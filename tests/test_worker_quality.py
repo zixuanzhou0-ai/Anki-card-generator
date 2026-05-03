@@ -128,6 +128,12 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(worker.find_phrase("I see what you mean, but I disagree.", "B1"), "i see what you mean")
         self.assertEqual(worker.find_phrase("And sometimes they are funny when we look back.", "B1"), "look back")
 
+    def test_find_phrase_mines_common_spoken_frames(self):
+        self.assertEqual(worker.find_phrase("Honestly, it's such a nice Monday morning.", "B1"), "such a nice")
+        self.assertEqual(worker.find_phrase("It feels like we are finally ready.", "B1"), "feels like")
+        self.assertEqual(worker.find_phrase("At some point, you just have to start.", "B1"), "at some point")
+        self.assertEqual(worker.find_phrase("We are going through a lot right now.", "B1"), "going through")
+
     def test_phrase_pool_respects_collection_levels(self):
         pool = worker.phrase_pool("B1", ["A1", "A2"])
 
@@ -206,6 +212,16 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("睡着", fields["chinese"])
         self.assertNotIn("待精修", fields["definition"])
 
+    def test_fallback_phrase_fields_hide_key_expression_placeholder(self):
+        fields = worker.fallback_phrase_fields(
+            "This sentence needs a human review.",
+            "key expression",
+            "B1",
+        )
+
+        self.assertEqual(fields["phrase"], "")
+        self.assertNotIn("key expression", " ".join(fields.values()))
+
     def test_segment_builder_keeps_short_complete_sentence(self):
         cues = [
             worker.Cue(1, 0.0, 1.9, "I was very tired and I fell asleep."),
@@ -255,7 +271,7 @@ class WorkerQualityTests(unittest.TestCase):
         )
 
         self.assertEqual(len(segments), 1)
-        self.assertEqual(segments[0]["phrase"], "key expression")
+        self.assertEqual(segments[0]["phrase"], "such a nice")
         self.assertGreaterEqual(segments[0]["score"], 3.2)
 
     def test_segment_builder_still_rejects_known_low_value_phrase(self):
@@ -482,7 +498,7 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(skipped[0]["phrase_review_status"], "reject")
         self.assertIn("半截泛短语", skipped[0]["phrase_reject_reason"])
 
-    def test_phrase_review_rejects_phrase_not_in_sentence_without_repair(self):
+    def test_phrase_review_repairs_phrase_not_in_sentence_when_local_phrase_exists(self):
         segment = {
             "id": "seg_0001",
             "start": 0.0,
@@ -504,9 +520,9 @@ class WorkerQualityTests(unittest.TestCase):
 
         kept, skipped = worker.apply_phrase_review_decisions([segment], reviews, {"level": "B1"})
 
-        self.assertEqual(kept, [])
-        self.assertEqual(skipped[0]["phrase_review_status"], "reject")
-        self.assertIn("不在原句", skipped[0]["phrase_reject_reason"])
+        self.assertEqual(skipped, [])
+        self.assertEqual(kept[0]["phrase"], "such a nice")
+        self.assertEqual(kept[0]["phrase_review_status"], "recommended")
 
     def test_duplicate_phrase_segments_keep_two_best_contexts(self):
         segments = [
@@ -736,6 +752,7 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertGreaterEqual(len(kept), 8)
         self.assertEqual(kept[0]["phrase_review_status"], "recommended")
         self.assertTrue(any(item["phrase_review_status"] == "needs_review" for item in kept))
+        self.assertNotIn("key expression", [item["phrase"] for item in kept])
         self.assertLess(len(skipped), len(segments) - 1)
 
     def test_score_three_review_card_is_not_enabled_by_default(self):

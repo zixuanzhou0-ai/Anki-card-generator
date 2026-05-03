@@ -181,6 +181,158 @@ EXPRESSION_PATTERNS = [
     r"\bdrop\s+a\s+comment\b",
 ]
 
+DISCOVERY_EXPRESSION_PATTERNS = [
+    r"\bsuch\s+(?:a|an)\s+[a-z']+\b",
+    r"\b(?:kind|sort)\s+of\b",
+    r"\b(?:this|that|the)\s+kind\s+of\b",
+    r"\ba\s+(?:little\s+)?bit\s+of\b",
+    r"\ba\s+little\s+bit\b",
+    r"\ba\s+couple\s+of\b",
+    r"\b(?:feel|feels|felt|feeling)\s+like\b",
+    r"\b(?:look|looks|looked|looking)\s+like\b",
+    r"\b(?:sound|sounds|sounded|sounding)\s+like\b",
+    r"\b(?:go|goes|went|gone|going)\s+through\b",
+    r"\b(?:get|gets|got|getting)\s+through\b",
+    r"\b(?:come|comes|came|coming)\s+across\b",
+    r"\b(?:show|shows|showed|showing)\s+up\b",
+    r"\b(?:set|sets|setting)\s+up\b",
+    r"\b(?:start|starts|started|starting)\s+out\b",
+    r"\b(?:keep|keeps|kept|keeping)\s+(?:going|doing|trying|moving)\b",
+    r"\b(?:bring|brings|brought|bringing)\s+up\b",
+    r"\b(?:put|puts|putting)\s+together\b",
+    r"\b(?:turn|turns|turned|turning)\s+into\b",
+    r"\b(?:make|makes|made|making)\s+it\s+(?:easy|easier|hard|harder|clear|possible)\b",
+    r"\b(?:make|makes|made|making)\s+the\s+most\s+of\b",
+    r"\bat\s+the\s+same\s+time\b",
+    r"\bat\s+(?:some|this|that)\s+point\b",
+    r"\bin\s+the\s+first\s+place\b",
+    r"\bin\s+the\s+middle\s+of\b",
+    r"\bat\s+the\s+end\s+of\b",
+    r"\bfor\s+the\s+first\s+time\b",
+    r"\bfrom\s+now\s+on\b",
+    r"\bright\s+away\b",
+    r"\bright\s+after\b",
+    r"\bover\s+time\b",
+    r"\bmore\s+than\s+just\b",
+    r"\bless\s+than\b",
+    r"\bas\s+[a-z']+\s+as\s+possible\b",
+]
+
+DISCOVERY_PHRASE_PARTICLES = {
+    "about",
+    "across",
+    "along",
+    "around",
+    "away",
+    "back",
+    "down",
+    "in",
+    "into",
+    "off",
+    "on",
+    "out",
+    "over",
+    "through",
+    "together",
+    "up",
+}
+
+DISCOVERY_PHRASE_VERBS = {
+    "bring",
+    "brings",
+    "brought",
+    "come",
+    "comes",
+    "came",
+    "deal",
+    "deals",
+    "dealt",
+    "feel",
+    "feels",
+    "felt",
+    "figure",
+    "figures",
+    "figured",
+    "find",
+    "finds",
+    "found",
+    "get",
+    "gets",
+    "got",
+    "give",
+    "gives",
+    "gave",
+    "go",
+    "goes",
+    "went",
+    "keep",
+    "keeps",
+    "kept",
+    "let",
+    "lets",
+    "look",
+    "looks",
+    "looked",
+    "make",
+    "makes",
+    "made",
+    "pick",
+    "picks",
+    "picked",
+    "put",
+    "puts",
+    "run",
+    "runs",
+    "ran",
+    "set",
+    "sets",
+    "show",
+    "shows",
+    "showed",
+    "start",
+    "starts",
+    "started",
+    "take",
+    "takes",
+    "took",
+    "turn",
+    "turns",
+    "turned",
+    "work",
+    "works",
+    "worked",
+}
+
+DISCOVERY_PREPOSITION_STARTS = {
+    "at",
+    "by",
+    "for",
+    "from",
+    "in",
+    "on",
+    "over",
+    "under",
+    "with",
+    "without",
+}
+
+DISCOVERY_SIGNAL_WORDS = {
+    "bit",
+    "couple",
+    "end",
+    "first",
+    "kind",
+    "long",
+    "middle",
+    "more",
+    "point",
+    "possible",
+    "same",
+    "sort",
+    "time",
+    "way",
+}
+
 COMMON_FUNCTION_STARTS = {
     "i",
     "you",
@@ -261,14 +413,25 @@ LOW_VALUE_STANDALONE_PHRASES = {
     "working with",
     "talking about",
     "be able to",
+    "figure in",
     "going to",
     "want to",
     "go home",
 }
 TOO_BASIC_FOR_INTERMEDIATE_PHRASES = {
+    "a lot of",
+    "be good at",
+    "come on",
+    "get back",
+    "going to",
+    "have to",
+    "look for",
+    "right now",
+    "sit down",
     "talk about",
     "talking about",
     "go home",
+    "want to",
 }
 TRANSFERABLE_FUNCTION_FRAME_PHRASES = {
     "it turns out",
@@ -276,6 +439,9 @@ TRANSFERABLE_FUNCTION_FRAME_PHRASES = {
     "it turns out that",
     "i see what you mean",
     "you know what i mean",
+    "it feels like",
+    "it looks like",
+    "it sounds like",
     "i get it",
     "you never know",
     "if you want to",
@@ -830,6 +996,120 @@ def phrase_pool(level: str, collection_levels: list[str] | None = None) -> list[
     return pool
 
 
+def normalize_phrase_candidate(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip(" \t\r\n.,!?;:\"“”‘’")).strip()
+
+
+def has_adjacent_duplicate_words(words: list[str]) -> bool:
+    return any(left == right for left, right in zip(words, words[1:]))
+
+
+def trim_discovery_phrase_words(words: list[str]) -> list[str]:
+    if len(words) >= 2 and words[0] in DISCOVERY_PHRASE_VERBS and words[1] in DISCOVERY_PHRASE_PARTICLES:
+        return words[:2]
+    if (
+        len(words) >= 3
+        and words[0] in DISCOVERY_PHRASE_VERBS
+        and words[1] in {"it", "this", "that", "things", "something", "someone", "me", "you", "him", "her", "us", "them"}
+        and words[2] in DISCOVERY_PHRASE_PARTICLES
+    ):
+        return words[:3]
+    return words
+
+
+def discovery_ngram_has_signal(words: list[str]) -> bool:
+    phrase = " ".join(words)
+    if phrase in TRANSFERABLE_FUNCTION_FRAME_PHRASES:
+        return True
+    if any(phrase == f"{item} that" for item in TRANSFERABLE_FUNCTION_FRAME_PHRASES):
+        return True
+    if len(words) == 2 and words[0] in {"feel", "feels", "felt", "look", "looks", "looked", "sound", "sounds", "sounded"} and words[1] == "like":
+        return True
+    if words[0] in DISCOVERY_PHRASE_VERBS and (
+        words[1] in DISCOVERY_PHRASE_PARTICLES
+        or (
+            len(words) >= 3
+            and words[1] in {"it", "this", "that", "things", "something", "someone", "me", "you", "him", "her", "us", "them"}
+            and words[2] in DISCOVERY_PHRASE_PARTICLES
+        )
+    ):
+        return True
+    if (
+        words[0] in DISCOVERY_PREPOSITION_STARTS
+        and words[-1] in {"end", "middle", "mood", "place", "point", "run", "start", "time", "way"}
+        and any(word in DISCOVERY_SIGNAL_WORDS for word in words[1:])
+    ):
+        return True
+    if len(words) >= 3 and words[0] == "such" and words[1] in {"a", "an"}:
+        return True
+    if len(words) >= 3 and words[0] in {"more", "less"} and "than" in words:
+        return True
+    if len(words) >= 4 and words[0] == "as" and words[-1] == "possible":
+        return True
+    if len(words) >= 3 and "kind" in words and "of" in words:
+        return True
+    if len(words) >= 3 and "sort" in words and "of" in words:
+        return True
+    return False
+
+
+def structurally_safe_discovery_phrase(phrase: str) -> bool:
+    words = overlap_words(phrase)
+    if len(words) < 2 or len(words) > 6:
+        return False
+    key = " ".join(words)
+    if key in {"key expression", *LOW_VALUE_STANDALONE_PHRASES}:
+        return False
+    if has_adjacent_duplicate_words(words):
+        return False
+    if sum(1 for word in words if any(char.isdigit() for char in word)) > 1:
+        return False
+    if words[0] in COMMON_FUNCTION_STARTS and key not in TRANSFERABLE_FUNCTION_FRAME_PHRASES:
+        return False
+    if words[0] in WEAK_PHRASE_STARTS and words[0] not in DISCOVERY_PREPOSITION_STARTS and not discovery_ngram_has_signal(words):
+        return False
+    if words[-1] in {"the", "a", "an", "and", "or", "but", "as", "because", "if", "than", "to", "with"}:
+        return False
+    return discovery_ngram_has_signal(words)
+
+
+def candidate_phrases_from_text(text: str) -> list[str]:
+    lower = str(text or "").lower()
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str, trusted: bool = False) -> None:
+        candidate = normalize_phrase_candidate(value)
+        if not trusted:
+            words = trim_discovery_phrase_words(overlap_words(candidate))
+            candidate = " ".join(words)
+        key = " ".join(overlap_words(candidate))
+        if not key or key in seen:
+            return
+        words = key.split()
+        if trusted and 2 <= len(words) <= 6 and key not in LOW_VALUE_STANDALONE_PHRASES and not has_adjacent_duplicate_words(words):
+            candidates.append(candidate)
+            seen.add(key)
+        elif structurally_safe_discovery_phrase(candidate):
+            candidates.append(candidate)
+            seen.add(key)
+
+    for pattern in DISCOVERY_EXPRESSION_PATTERNS:
+        for match in re.finditer(pattern, lower):
+            add(match.group(0), trusted=True)
+
+    words = overlap_words(lower)
+    for length in (5, 4, 3, 2):
+        if len(candidates) >= 8:
+            break
+        for index in range(0, max(0, len(words) - length + 1)):
+            add(" ".join(words[index : index + length]))
+            if len(candidates) >= 8:
+                break
+
+    return candidates
+
+
 def find_phrase(text: str, level: str, collection_levels: list[str] | None = None) -> str:
     lower = text.lower()
     for pattern in EXPRESSION_PATTERNS:
@@ -841,6 +1121,9 @@ def find_phrase(text: str, level: str, collection_levels: list[str] | None = Non
     for phrase in pool:
         if phrase in lower:
             return phrase
+
+    for phrase in candidate_phrases_from_text(text):
+        return phrase
 
     # Do not invent a phrase from arbitrary adjacent words. Bad fallback chunks like
     # "can we figure" or "ai model price" are worse than returning no phrase.
@@ -1152,6 +1435,18 @@ def build_segments(cues: list[Cue], payload: dict[str, Any]) -> list[dict[str, A
 
 
 def fallback_phrase_fields(text: str, phrase: str, level: str) -> dict[str, str]:
+    if not phrase or phrase == "key expression":
+        return {
+            "phrase": "",
+            "chinese": "本地待审：这句需要先确认真正值得学习的表达。",
+            "definition": "系统没有在原句中找到稳定、完整、可迁移的词伙；建议用作听力待审，不要直接导出为词伙卡。",
+            "collocations": "",
+            "context": "适合人工复核是否有听力难点或隐藏表达。",
+            "example": text,
+            "chinese_feel": "待精修：需要结合上下文改成自然中文。",
+            "why": "缺少明确词伙时默认不推荐导出，避免把占位内容做成废卡。",
+            "difficulty": CEFR_LABELS.get(level, level),
+        }
     guide = PHRASE_GUIDES.get(phrase_guide_key(phrase), {})
     if guide:
         return {
@@ -1279,6 +1574,16 @@ def quality_issue_labels(card_type: str, text: str, phrase: str, cloze: str, sou
             "get used to",
             "feel free to",
             "in the mood for",
+            "a bit of",
+            "a couple of",
+            "a lot of",
+            "at the end of",
+            "kind of",
+            "sort of",
+            "make the most of",
+            "the kind of",
+            "this kind of",
+            "that kind of",
             "what do you think about",
             "how do you feel about",
         }
@@ -1450,6 +1755,8 @@ def assess_card_quality(
 
 
 def make_cloze(text: str, phrase: str) -> str:
+    if not phrase:
+        return text
     pattern = re.compile(re.escape(phrase), re.IGNORECASE)
     if pattern.search(text):
         return pattern.sub("____", text, count=1)
@@ -1515,7 +1822,7 @@ def choose_best_phrase(text: str, proposed: str, fallback: str, level: str, coll
         seen.add(key)
         if usable_phrase(text, normalized):
             return normalized
-    return re.sub(r"\s+", " ", str(fallback or proposed or "")).strip() or "key expression"
+    return ""
 
 
 def repair_card_fields(card: dict[str, Any], segment: dict[str, Any], level: str) -> None:
@@ -2026,6 +2333,27 @@ def review_phrase_choice(
     return ""
 
 
+def repair_review_segment_phrase(
+    segment: dict[str, Any],
+    level: str,
+    collection_levels: list[str] | None = None,
+) -> dict[str, Any] | None:
+    phrase = review_phrase_choice(
+        str(segment.get("text") or ""),
+        str(segment.get("phrase") or ""),
+        "",
+        level,
+        collection_levels,
+    )
+    if not phrase:
+        return None
+    return {
+        **segment,
+        "phrase": phrase,
+        "recommendation": max(3, int(segment.get("recommendation") or 3)),
+    }
+
+
 def skipped_review_segment(segment: dict[str, Any], status: str, reason: str, value_score: int = 0) -> dict[str, Any]:
     return {
         **segment,
@@ -2052,9 +2380,10 @@ def apply_phrase_review_decisions(
     for segment in segments:
         review = reviews.get(segment["id"])
         if not review:
+            repaired = repair_review_segment_phrase(segment, level, collection_levels) or segment
             kept.append(
                 {
-                    **segment,
+                    **repaired,
                     "phrase_value_score": 3,
                     "phrase_review_status": "needs_review",
                     "phrase_review_source": "mimo",
@@ -2121,7 +2450,7 @@ def ensure_min_review_candidates(
     project: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     max_segments = resolved_max_segments(project)
-    min_count = min(len(original_segments), max_segments, max(8, min(10, max_segments // 4)))
+    min_count = min(len(original_segments), max_segments, max(8, min(18, round(max_segments * 0.45))))
     if len(kept) >= min_count:
         return kept, skipped
 
@@ -2140,9 +2469,16 @@ def ensure_min_review_candidates(
         segment_id = str(segment.get("id"))
         if segment_id in kept_ids:
             continue
+        repaired = repair_review_segment_phrase(
+            segment,
+            str(project.get("level", "B1")),
+            collection_levels_from_payload(project, str(project.get("level", "B1"))),
+        )
+        if not repaired:
+            continue
         kept.append(
             {
-                **segment,
+                **repaired,
                 "cards": [],
                 "phrase_value_score": 3,
                 "phrase_review_status": "needs_review",
