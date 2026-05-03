@@ -951,6 +951,20 @@ function phraseValueScore(value: number | string | null | undefined) {
   return Number.isFinite(score) ? score : null
 }
 
+function isPlaceholderPhrase(value: string | null | undefined) {
+  const phrase = String(value ?? '').trim().toLowerCase()
+  return !phrase || phrase === 'key expression' || phrase === 'n/a'
+}
+
+function segmentPhraseTitle(segment: Segment) {
+  if (!isPlaceholderPhrase(segment.phrase)) return segment.phrase
+  return '未识别词伙'
+}
+
+function segmentPhraseLabel(segment: Segment) {
+  return isPlaceholderPhrase(segment.phrase) ? '未识别词伙' : segment.phrase
+}
+
 function segmentReviewStatus(segment: Segment): SegmentFilter | 'unreviewed' {
   const status = String(segment.phrase_review_status ?? '').trim()
   if (status === 'recommended' || status === 'needs_review' || status === 'reject' || status === 'duplicate') {
@@ -2410,7 +2424,7 @@ function App() {
                         onClick={() => setActiveSegmentId(segment.id)}
                       >
                         <span>{segment.source_time}</span>
-                        <strong>{segment.phrase}</strong>
+                        <strong>{segmentPhraseTitle(segment)}</strong>
                         <small>
                           {segment.cards.filter((card) => card.enabled).length} 张卡 · 推荐 {segment.recommendation}/5
                         </small>
@@ -2485,7 +2499,7 @@ function App() {
                       </div>
                       <div>
                         <span className="label">重点词伙</span>
-                        <strong>{activeSegment.phrase}</strong>
+                        <strong>{segmentPhraseLabel(activeSegment)}</strong>
                       </div>
                     </div>
 
