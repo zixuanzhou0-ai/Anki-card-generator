@@ -1,0 +1,45 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Anki Card Generator",
+  "version": "0.9.0",
+  "identifier": "com.ankicard.generator",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Anki 卡片生成器",
+        "width": 1320,
+        "height": 860,
+        "minWidth": 1120,
+        "minHeight": 740,
+        "resizable": true,
+        "decorations": false,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "resources": {
+      "../workers/anki_worker.py": "workers/anki_worker.py",
+      "../workers/requirements.txt": "workers/requirements.txt",
+      "../workers/verify_apkg.py": "workers/verify_apkg.py"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

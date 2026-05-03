@@ -1,0 +1,57 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Generated media, card decks, caches, and verification output
+projects/
+*.apkg
+*.mp4
+*.webm
+*.mp3
+*.wav
+*.srt
+*.vtt
+*_verify*/
+*_e2e*/
+test_runs/
+test-results/
+overnight_verify_exports/
+overnight_verify_import/
+quality_verify_exports/
+youtube_*_verify/
+AnkiCard-*/
+DramaAnki-*/
+release/
+.package/
+NEXT_SESSION_HANDOFF.md
+OVERNIGHT_ACCEPTANCE.md
+UI_REDESIGN_REVIEW.md
+@AutomationLog.txt
+_incoming_ui_redesign/
+tests/animated-bar-chart/
+
+# Python/Rust build output
+__pycache__/
+workers/__pycache__/
+src-tauri/target/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

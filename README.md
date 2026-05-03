@@ -1,0 +1,99 @@
+# Anki Card Generator
+
+一个面向中文母语者的英语 Anki 卡片生成器。它可以从 YouTube / 本地视频 / SRT / 文档中提取可迁移词伙，生成带视频片段、原声、TTS、释义、例句和填空的 Anki 卡包。
+
+当前版本：`v0.9.0-beta`
+
+## 功能
+
+- YouTube URL 导入：自动下载视频和英文字幕。
+- 本地视频 + SRT：适合自己已有素材。
+- 文档制卡：支持 TXT、Markdown、DOCX、EPUB、PDF。
+- MIMO 词伙评审：优先保留可迁移表达，低价值内容默认不导出。
+- 自动片段预算：根据视频长度和字幕密度自动决定候选数量。
+- 自适应 Anki 模板：卡片在不同窗口尺寸下自动缩放。
+- 多音频导出：视频原声、整句 TTS、词伙 TTS。
+- Anki `.apkg` 导出：可手动导入 Anki，也可调用本机 Anki 打开。
+
+## 工作流程
+
+```mermaid
+flowchart LR
+  A["视频 / URL / 文档"] --> B["字幕解析和自动切段"]
+  B --> C["词伙候选提取"]
+  C --> D["MIMO 质量评审"]
+  D --> E["卡片字段生成"]
+  E --> F["视频 / 原声 / TTS 媒体处理"]
+  F --> G["导出 .apkg"]
+  G --> H["导入 Anki"]
+```
+
+## Windows 快速开始
+
+推荐先下载 GitHub Release 里的 Windows 便携包：
+
+1. 解压 `AnkiCardGenerator-v0.9.0-beta-windows-portable.zip`。
+2. 右键 `scripts/setup_runtime.ps1`，用 PowerShell 运行。
+3. 打开 `Anki Card Generator.exe`。
+4. 进入设置，点击“检查环境”。
+5. 填写自己的 MIMO API Key。
+6. 输入 YouTube URL 或选择本地视频，生成并导出 `.apkg`。
+
+详细图文流程见 [用户指南](docs/USER_GUIDE.md)。
+
+## 必需依赖
+
+便携包不内置这些外部运行时，首次使用前需要安装：
+
+| 依赖 | 用途 |
+| --- | --- |
+| Python 3.11+ | 运行制卡 worker |
+| genanki | 生成 `.apkg` |
+| yt-dlp | 下载 YouTube 视频和字幕 |
+| pypdf | 读取 PDF 文档 |
+| FFmpeg | 切视频、转音频、生成封面 |
+| Anki | 导入和复习卡片 |
+
+Python 依赖可以通过：
+
+```powershell
+python -m pip install -r workers/requirements.txt
+```
+
+## 开发运行
+
+```powershell
+npm install
+npm run tauri:dev
+```
+
+## 构建 Windows 包
+
+```powershell
+npm run build
+npm run tauri:build
+```
+
+构建产物位于：
+
+- `src-tauri/target/release/bundle/nsis/*.exe`
+- `src-tauri/target/release/bundle/msi/*.msi`
+
+## 隐私和密钥
+
+- 不要把真实 API Key 写进源码、README、issue 或 release note。
+- MIMO API Key 只应该由用户在本机设置页填写。
+- 生成的视频、音频、`.apkg`、项目缓存默认不会提交到 Git。
+
+## 发布验证
+
+发布前请跑：
+
+```powershell
+python -m unittest discover -s tests -p "test_worker_quality.py"
+npm run build
+npm run tauri:build
+powershell -ExecutionPolicy Bypass -File scripts/smoke_release.ps1
+```
+
+发布清单见 [Release Checklist](docs/RELEASE_CHECKLIST.md)。
