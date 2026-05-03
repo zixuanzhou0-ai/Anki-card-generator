@@ -80,11 +80,15 @@ flowchart TB
 
 ### YouTube 不能下载
 
-更新 yt-dlp：
+先更新 yt-dlp 和它的 EJS / impersonation 依赖：
 
 ```powershell
-python -m pip install --upgrade yt-dlp
+python -m pip install --upgrade -r workers/requirements.txt
 ```
+
+如果错误里出现 `Remote component challenge solver`、`n challenge solving failed`，请确认本机能运行 Deno 或 Node.js。软件会自动给 yt-dlp 加 `--remote-components ejs:github`，但仍然需要一个 JavaScript runtime。
+
+如果错误是 `HTTP Error 429: Too Many Requests`，通常是 YouTube 当前网络/IP 被限流，字幕接口尤其容易触发。可以稍后重试、换网络/代理，或先自己准备视频和 SRT 字幕，然后走“本地视频 + SRT”。
 
 ### 导出没有 TTS
 

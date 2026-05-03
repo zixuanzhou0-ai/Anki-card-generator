@@ -28,6 +28,20 @@ if (Test-Command "python") {
   python -m pip install -r $Requirements
 }
 
+if (-not (Test-Command "deno") -and -not (Test-Command "node")) {
+  Write-Host "No JavaScript runtime found. YouTube downloads may need Deno or Node for yt-dlp EJS challenge solving." -ForegroundColor Yellow
+  if ($InstallWithWinget -and (Test-Command "winget")) {
+    winget install --id DenoLand.Deno -e
+  } else {
+    Write-Host "Install Deno 2.0+ or Node.js 20+ and add it to PATH." -ForegroundColor Yellow
+    Write-Host "Deno: https://deno.com/ | Node.js: https://nodejs.org/" -ForegroundColor Yellow
+  }
+} elseif (Test-Command "deno") {
+  deno --version | Select-Object -First 1
+} else {
+  node --version
+}
+
 if (-not (Test-Command "ffmpeg")) {
   Write-Host "FFmpeg not found." -ForegroundColor Yellow
   if ($InstallWithWinget -and (Test-Command "winget")) {

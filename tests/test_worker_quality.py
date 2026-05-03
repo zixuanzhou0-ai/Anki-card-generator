@@ -22,6 +22,25 @@ worker = load_worker()
 
 
 class WorkerQualityTests(unittest.TestCase):
+    def test_ytdlp_node_runtime_enables_remote_ejs_components(self):
+        original_which = worker.shutil.which
+        try:
+            worker.shutil.which = lambda name: "C:/node/node.exe" if name == "node" else None
+
+            args = worker.yt_dlp_js_runtime_args()
+        finally:
+            worker.shutil.which = original_which
+
+        self.assertEqual(args, ["--js-runtimes", "node", "--remote-components", "ejs:github"])
+
+    def test_ytdlp_429_message_points_to_subtitle_rate_limit(self):
+        message = worker.format_yt_dlp_failure(
+            "ERROR: Unable to download video subtitles for 'en': HTTP Error 429: Too Many Requests"
+        )
+
+        self.assertIn("YouTube 返回 HTTP 429", message)
+        self.assertIn("本地 SRT", message)
+
     def test_video_html_keeps_mp4_and_webm_fallbacks(self):
         html = worker.anki_video_html("clip.webm", "clip.mp4", "clip.jpg")
 

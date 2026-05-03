@@ -68,6 +68,7 @@ flowchart LR
 | Python 3.11+ | 运行制卡 worker |
 | genanki | 生成 `.apkg` |
 | yt-dlp | 下载 YouTube 视频和字幕 |
+| Deno 2.0+ 或 Node.js 20+ | 帮 yt-dlp 解 YouTube EJS / n challenge |
 | pypdf | 读取 PDF 文档 |
 | FFmpeg | 切视频、转音频、生成封面 |
 | Anki | 导入和复习卡片 |

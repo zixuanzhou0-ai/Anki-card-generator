@@ -3,6 +3,7 @@
 import html
 import base64
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -2728,19 +2729,70 @@ def yt_dlp_base_command() -> list[str] | None:
 
 def yt_dlp_js_runtime_args() -> list[str]:
     if shutil.which("deno"):
-        return ["--js-runtimes", "deno"]
+        return ["--js-runtimes", "deno", "--remote-components", "ejs:github"]
     if shutil.which("node"):
-        return ["--js-runtimes", "node"]
+        return ["--js-runtimes", "node", "--remote-components", "ejs:github"]
+    if shutil.which("bun"):
+        return ["--js-runtimes", "bun", "--remote-components", "ejs:github"]
     return []
 
 
-def run_yt_dlp(args: list[str], timeout: int = 900) -> subprocess.CompletedProcess[str]:
+def yt_dlp_network_args() -> list[str]:
+    args = [
+        "--force-ipv4",
+        "--retries",
+        "10",
+        "--fragment-retries",
+        "10",
+        "--extractor-retries",
+        "5",
+        "--retry-sleep",
+        "http:linear=3::20",
+        "--sleep-requests",
+        "0.75",
+        "--sleep-subtitles",
+        "1.5",
+    ]
+    if importlib.util.find_spec("curl_cffi"):
+        args.extend(["--impersonate", "chrome"])
+    return args
+
+
+def yt_dlp_failure_detail(completed: subprocess.CompletedProcess[str]) -> str:
+    return (completed.stderr or completed.stdout or "").strip()
+
+
+def is_subtitle_rate_limited(detail: str) -> bool:
+    lower = detail.lower()
+    return "http error 429" in lower and "subtitles" in lower
+
+
+def format_yt_dlp_failure(detail: str) -> str:
+    tail = detail[-1800:]
+    if "HTTP Error 429" in detail:
+        return (
+            "URL 下载失败：YouTube 返回 HTTP 429，说明当前网络/IP 被临时限流，尤其是字幕接口。"
+            "我已经启用了 EJS、重试、降速和浏览器模拟；如果仍失败，请稍后重试、换网络/代理，"
+            "或先下载/准备本地 SRT 后走“本地视频 + SRT”。\n\n"
+            f"yt-dlp 原始信息：{tail}"
+        )
+    if "n challenge solving failed" in detail or "Remote component challenge solver" in detail:
+        return (
+            "URL 下载失败：YouTube JS challenge 没有解开。请运行 scripts/setup_runtime.ps1 更新依赖，"
+            "并确保已安装 Deno 2.0+ 或 Node.js 20+。新版会自动给 yt-dlp 加 "
+            "--remote-components ejs:github。\n\n"
+            f"yt-dlp 原始信息：{tail}"
+        )
+    return f"URL 下载失败：{tail}"
+
+
+def run_yt_dlp(args: list[str], timeout: int = 900, check: bool = True) -> subprocess.CompletedProcess[str]:
     command = yt_dlp_base_command()
     if not command:
         fail("找不到 yt-dlp。请运行：pip install yt-dlp，或把 yt-dlp 加入 PATH。")
 
     completed = subprocess.run(
-        [*command, *yt_dlp_js_runtime_args(), *args],
+        [*command, *yt_dlp_js_runtime_args(), *yt_dlp_network_args(), *args],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -2748,9 +2800,8 @@ def run_yt_dlp(args: list[str], timeout: int = 900) -> subprocess.CompletedProce
         errors="replace",
         timeout=timeout,
     )
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout).strip()
-        fail(f"URL 下载失败：{detail[-1800:]}")
+    if check and completed.returncode != 0:
+        fail(format_yt_dlp_failure(yt_dlp_failure_detail(completed)))
     return completed
 
 
@@ -2883,26 +2934,46 @@ def download_url_source(payload: dict[str, Any]) -> dict[str, Any]:
 
     output_template = str(download_dir / "source.%(ext)s")
     sub_langs = subtitle_language_args(payload.get("language", "English"))
-    run_yt_dlp(
-        [
-            "--no-playlist",
-            "--windows-filenames",
-            "--write-info-json",
-            "--write-subs",
-            "--write-auto-subs",
-            "--sub-langs",
-            sub_langs,
-            "--convert-subs",
-            "srt",
-            "--format",
-            "bv*[height<=480]+ba/b[height<=480]/best[height<=480]/best",
-            "--merge-output-format",
-            "mp4",
-            "--output",
-            output_template,
-            url,
-        ]
-    )
+    common_args = [
+        "--no-playlist",
+        "--windows-filenames",
+        "--write-info-json",
+        "--sub-langs",
+        sub_langs,
+        "--convert-subs",
+        "srt",
+        "--format",
+        "bv*[height<=480]+ba/b[height<=480]/best[height<=480]/best",
+        "--merge-output-format",
+        "mp4",
+        "--output",
+        output_template,
+    ]
+    download_args = [
+        *common_args,
+        "--write-subs",
+        "--write-auto-subs",
+        url,
+    ]
+    completed = run_yt_dlp(download_args, check=False)
+    if completed.returncode != 0:
+        detail = yt_dlp_failure_detail(completed)
+        if is_subtitle_rate_limited(detail):
+            # If YouTube rate-limits official subtitles, try auto subtitles only once after a short pause.
+            time.sleep(8)
+            retry = run_yt_dlp(
+                [
+                    *common_args,
+                    "--write-auto-subs",
+                    url,
+                ],
+                check=False,
+            )
+            if retry.returncode != 0:
+                retry_detail = yt_dlp_failure_detail(retry) or detail
+                fail(format_yt_dlp_failure(retry_detail))
+        else:
+            fail(format_yt_dlp_failure(detail))
 
     video_path = first_file_by_suffix(download_dir, (".mp4", ".mkv", ".webm", ".mov"))
     if not video_path:
