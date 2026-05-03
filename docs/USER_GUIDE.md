@@ -14,6 +14,8 @@ powershell -ExecutionPolicy Bypass -File scripts/setup_runtime.ps1
 
 进入软件右上角“设置”：
 
+![设置页](screenshots/settings-modal.png)
+
 ```mermaid
 flowchart TB
   A["打开软件"] --> B["点击 设置"]
@@ -50,12 +52,18 @@ flowchart TB
 4. 选择水平，比如 B1。
 5. 点击“生成卡片”。
 
+![生成后的卡片预览](screenshots/workflow-generated.png)
+
 生成完成后先看右侧预览：
 
 - 推荐：默认导出。
 - 待审：需要人工确认后再勾选。
 - 已拒绝：低价值或重复内容，不建议导出。
 - 重复合并：已经被去重处理。
+
+每个片段点开后可以看到视频片段、原句、重点词伙、评分和解释，导出前可以直接改字段：
+
+![卡片审核面板](screenshots/card-review-panel.png)
 
 ## 5. 导出到 Anki
 

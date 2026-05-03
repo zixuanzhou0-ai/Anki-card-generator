@@ -28,6 +28,24 @@ flowchart LR
   G --> H["导入 Anki"]
 ```
 
+## 界面预览
+
+主界面会把素材、学习设置、质量筛选和卡片预览放在同一个工作台里：
+
+![主工作台](docs/screenshots/workflow-start.png)
+
+从 YouTube URL 或本地视频生成后，右侧可以按推荐、待审、已拒绝、重复合并筛选卡片，并在导出前逐张编辑：
+
+![生成后的卡片预览](docs/screenshots/workflow-generated.png)
+
+卡片详情会显示视频片段、原句、词伙、质量评分、中文理解、搭配和老师评语：
+
+![卡片审核面板](docs/screenshots/card-review-panel.png)
+
+设置页集中管理文本模型、MIMO TTS 和本地环境检查；API Key 只在本机填写，不写入仓库：
+
+![设置页](docs/screenshots/settings-modal.png)
+
 ## Windows 快速开始
 
 推荐先下载 GitHub Release 里的 Windows 便携包：

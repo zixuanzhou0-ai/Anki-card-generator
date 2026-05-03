@@ -54,6 +54,34 @@ Result:
 - Installed worker smoke test passed and exported `.apkg`.
 - Installed GUI process started and stayed alive for 5 seconds.
 
+## GitHub Release Download Smoke
+
+Command:
+
+```powershell
+gh release download v0.9.0-beta --repo zixuanzhou0-ai/Anki-card-generator --pattern "*setup.exe" --dir release\download-test
+Start-Process "release\download-test\Anki.Card.Generator_0.9.0_x64-setup.exe" -ArgumentList "/S" -Wait
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_release.ps1 -WorkerPath "$env:LOCALAPPDATA\Anki Card Generator\workers\anki_worker.py" -OutputDir release\download-install-smoke
+```
+
+Result:
+
+- Downloaded the installer from the public GitHub Release.
+- SHA256 matched the Release asset digest: `5382CC1B45826A5C7FFB0227472FFF836D89FA9FAA44A8CB870ADF58032B38E4`.
+- Installer exit code: 0.
+- Installed executable found at `%LOCALAPPDATA%\Anki Card Generator\anki-card-generator.exe`.
+- Installed worker generated 3 subtitle segments and exported 2 Anki cards to `.apkg`.
+
+## Screenshot Verification
+
+Screenshots added to the repository:
+
+- `docs/screenshots/desktop-workspace.png`
+- `docs/screenshots/workflow-start.png`
+- `docs/screenshots/workflow-generated.png`
+- `docs/screenshots/card-review-panel.png`
+- `docs/screenshots/settings-modal.png`
+
 ## Remaining Manual Verification
 
 These require a clean Windows machine or Windows Sandbox:
