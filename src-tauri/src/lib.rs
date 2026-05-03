@@ -11,6 +11,12 @@ use std::{
 
 use tauri::{Emitter, Manager};
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 fn worker_candidates(app: &tauri::AppHandle) -> Vec<PathBuf> {
   let mut candidates = Vec::new();
 
@@ -73,14 +79,20 @@ fn run_worker(
   let input = serde_json::to_vec(&payload).map_err(|err| err.to_string())?;
   let work_dir = worker_work_dir(&app, &worker);
 
-  let mut child = Command::new("python")
+  let mut worker_command = Command::new("python");
+  worker_command
     .arg(&worker)
     .arg(command)
     .current_dir(work_dir)
     .env("PYTHONIOENCODING", "utf-8")
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())
-    .stderr(Stdio::piped())
+    .stderr(Stdio::piped());
+
+  #[cfg(windows)]
+  worker_command.creation_flags(CREATE_NO_WINDOW);
+
+  let mut child = worker_command
     .spawn()
     .map_err(|err| format!("无法启动 Python worker：{err}"))?;
 
