@@ -1306,6 +1306,12 @@ h3 {
   color: #1d4f3e;
 }
 
+.settings-callout.risk-callout {
+  background: #fff8ec;
+  border-color: #e8c98f;
+  color: #735016;
+}
+
 .settings-callout p,
 .api-test-card p,
 .settings-help-grid p {
@@ -1435,6 +1441,10 @@ h3 {
 .capability-heading span {
   color: #6d7974;
   font-size: 12px;
+}
+
+.settings-callout.risk-callout p {
+  color: #6d6254;
 }
 
 .capability-grid {
