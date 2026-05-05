@@ -716,6 +716,20 @@ function normalizeSavedMimoConfig(saved: GenerateRequest): GenerateRequest {
   }
 }
 
+function stripRequestSecrets(request: GenerateRequest): GenerateRequest {
+  return {
+    ...request,
+    api_config: {
+      ...request.api_config,
+      api_key: '',
+      tts_config: {
+        ...request.api_config.tts_config,
+        api_key: '',
+      },
+    },
+  }
+}
+
 function loadSavedRequest(): GenerateRequest {
   if (typeof window === 'undefined') return defaultRequest
   try {
@@ -726,7 +740,7 @@ function loadSavedRequest(): GenerateRequest {
     const savedTts = (savedApi.tts_config ?? {}) as Partial<TtsConfig>
     const legacyTtsProvider = savedApi.tts_provider?.trim()
     const legacyTtsModel = savedApi.tts_model?.trim()
-    return normalizeSavedMimoConfig({
+    return stripRequestSecrets(normalizeSavedMimoConfig({
       ...defaultRequest,
       ...saved,
       collection_levels: normalizeCollectionLevels(saved.collection_levels, (saved.level ?? defaultRequest.level) as Level),
@@ -746,7 +760,7 @@ function loadSavedRequest(): GenerateRequest {
         },
       },
       card_types: saved.card_types?.length ? saved.card_types : defaultRequest.card_types,
-    })
+    }))
   } catch {
     return defaultRequest
   }
@@ -1210,7 +1224,7 @@ function App() {
         : 'idle'
 
   useEffect(() => {
-    window.localStorage.setItem(REQUEST_STORAGE_KEY, JSON.stringify(request))
+    window.localStorage.setItem(REQUEST_STORAGE_KEY, JSON.stringify(stripRequestSecrets(request)))
   }, [request])
 
   useEffect(() => {
@@ -2920,7 +2934,7 @@ function App() {
                       onChange={(event) => patchApi({ api_key: event.target.value })}
                       placeholder={request.api_config.provider === 'mimo' ? 'sk-... / tp-...' : 'sk-...'}
                     />
-                    <small>只用于字幕理解和卡片解释生成；不会自动拿去做 TTS。</small>
+                    <small>只用于当前会话的字幕理解和卡片解释生成；不会写入本地缓存，也不会自动拿去做 TTS。</small>
                   </label>
                 </div>
                 <button className="capability-heading collapsible-heading" type="button" onClick={() => setShowCapabilities((value) => !value)}>
@@ -3144,7 +3158,7 @@ function App() {
                       onChange={(event) => patchTts({ api_key: event.target.value })}
                       placeholder={tts.provider === 'mimo' ? 'sk-... / tp-...' : 'xai-... / AIza...'}
                     />
-                    <small>MIMO TTS 可留空并复用上方 MIMO Key；填写后会优先使用这里的 Key。</small>
+                    <small>MIMO TTS 可留空并复用上方 MIMO Key；填写后优先使用这里的 Key，且不会写入本地缓存。</small>
                   </label>
                   <label className="field">
                     <span>语音模型</span>

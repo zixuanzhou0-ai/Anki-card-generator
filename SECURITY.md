@@ -22,7 +22,7 @@ This app runs a Python worker on the user's machine. The Tauri layer should only
 
 ## Secrets
 
-Never commit real API keys. Do not paste keys into issues, screenshots, release notes, CI logs, or test fixtures. The UI should avoid saving raw keys to browser localStorage; the target design is system keychain / secure storage.
+Never commit real API keys. Do not paste keys into issues, screenshots, release notes, CI logs, or test fixtures. The UI strips raw text/TTS keys before saving request settings to browser localStorage; the target design is system keychain / secure storage.
 
 ## Third-party services
 

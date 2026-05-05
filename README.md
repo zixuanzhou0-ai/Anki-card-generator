@@ -117,7 +117,7 @@ powershell -ExecutionPolicy Bypass -File scripts/package_portable.ps1 -ReleaseEx
 ## 隐私和密钥
 
 - 不要把真实 API Key 写进源码、README、issue 或 release note。
-- API Key 只应该由用户在本机设置页填写；后续应迁移到系统 keychain / secure storage。
+- API Key 只应该由用户在本机设置页填写；当前版本不会把文本/TTS Key 写入 localStorage，关闭或刷新应用后可能需要重新填写。后续应迁移到系统 keychain / secure storage。
 - 使用第三方模型或 TTS 时，字幕、文档片段和生成字段会发送给对应服务商。
 - 生成的视频、音频、`.apkg`、项目缓存默认不会提交到 Git。
 
