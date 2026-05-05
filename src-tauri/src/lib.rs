@@ -20,21 +20,17 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 fn worker_candidates(app: &tauri::AppHandle) -> Vec<PathBuf> {
   let mut candidates = Vec::new();
 
-  if let Ok(cwd) = env::current_dir() {
-    candidates.push(cwd.join("workers").join("anki_worker.py"));
-    candidates.push(cwd.join("..").join("workers").join("anki_worker.py"));
-  }
-
+  // Release builds should only trust files shipped as app resources. Searching the
+  // current directory or arbitrary executable ancestors makes it too easy to run a
+  // spoofed workers/anki_worker.py when the app is launched from an unsafe folder.
   if let Ok(resource_dir) = app.path().resource_dir() {
     candidates.push(resource_dir.join("workers").join("anki_worker.py"));
-    candidates.push(resource_dir.join("..").join("workers").join("anki_worker.py"));
   }
 
-  if let Ok(exe) = env::current_exe() {
-    for ancestor in exe.ancestors().take(8) {
-      candidates.push(ancestor.join("workers").join("anki_worker.py"));
-      candidates.push(ancestor.join("..").join("workers").join("anki_worker.py"));
-      candidates.push(ancestor.join("..").join("..").join("workers").join("anki_worker.py"));
+  if cfg!(debug_assertions) {
+    if let Ok(cwd) = env::current_dir() {
+      candidates.push(cwd.join("workers").join("anki_worker.py"));
+      candidates.push(cwd.join("..").join("workers").join("anki_worker.py"));
     }
   }
 
@@ -44,8 +40,20 @@ fn worker_candidates(app: &tauri::AppHandle) -> Vec<PathBuf> {
 fn find_worker(app: &tauri::AppHandle) -> Result<PathBuf, String> {
   worker_candidates(app)
     .into_iter()
-    .find(|path| path.exists())
+    .find(|path| path.is_file())
     .ok_or_else(|| "找不到 Python worker：workers/anki_worker.py".to_string())
+}
+
+fn worker_command_allowed(command: &str) -> bool {
+  matches!(
+    command,
+    "check_env"
+      | "generate"
+      | "export"
+      | "test_api"
+      | "test_tts"
+      | "verify_anki_import"
+  )
 }
 
 fn project_root_from_worker(worker: &Path) -> PathBuf {
@@ -69,17 +77,49 @@ fn worker_work_dir(app: &tauri::AppHandle, worker: &Path) -> PathBuf {
   project_root_from_worker(worker)
 }
 
+fn python_candidates(worker: &Path) -> Vec<PathBuf> {
+  let mut candidates = Vec::new();
+
+  if let Ok(path) = env::var("ANKI_CARD_GENERATOR_PYTHON") {
+    candidates.push(PathBuf::from(path));
+  }
+
+  for ancestor in worker.ancestors().take(8) {
+    #[cfg(windows)]
+    candidates.push(ancestor.join(".venv").join("Scripts").join("python.exe"));
+
+    #[cfg(not(windows))]
+    candidates.push(ancestor.join(".venv").join("bin").join("python"));
+  }
+
+  candidates.push(PathBuf::from("python"));
+  candidates.push(PathBuf::from("python3"));
+  candidates
+}
+
+fn find_python(worker: &Path) -> PathBuf {
+  python_candidates(worker)
+    .into_iter()
+    .find(|path| path.exists() || path.components().count() == 1)
+    .unwrap_or_else(|| PathBuf::from("python"))
+}
+
 #[tauri::command]
 fn run_worker(
   app: tauri::AppHandle,
   command: String,
   payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+  if !worker_command_allowed(&command) {
+    return Err(format!("不允许的 worker 命令：{command}"));
+  }
+
   let worker = find_worker(&app)?;
+  let python = find_python(&worker);
   let input = serde_json::to_vec(&payload).map_err(|err| err.to_string())?;
   let work_dir = worker_work_dir(&app, &worker);
 
-  let mut worker_command = Command::new("python");
+  let mut worker_command = Command::new(python);
   worker_command
     .arg(&worker)
     .arg(command)

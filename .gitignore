@@ -41,6 +41,7 @@ _incoming_ui_redesign/
 tests/animated-bar-chart/
 
 # Python/Rust build output
+.venv/
 __pycache__/
 workers/__pycache__/
 src-tauri/target/
