@@ -4,6 +4,16 @@
 
 当前版本：`v0.9.0-beta`
 
+## Beta 风险和数据边界
+
+这是 Windows 内测版本。YouTube 下载、字幕接口、模型 API、TTS 和本机 FFmpeg / Python 环境都会影响成功率。
+
+- YouTube 导入依赖 yt-dlp，可能因为 429、区域限制、字幕接口变化或 n challenge 失败。
+- 使用 MIMO、DeepSeek、OpenRouter、Claude、Gemini、xAI 等模型时，字幕、文档片段、卡片字段和 TTS 文本会发送给对应服务商。
+- TTS 会产生 API 调用费用；导出前请确认服务商计费规则。
+- 视频片段、字幕和文档可能受版权保护；生成的 `.apkg` 默认仅供个人学习使用，不建议公开分发。
+- 更完整的限制见 [Beta 限制说明](docs/BETA_LIMITATIONS.md)，数据流说明见 [Privacy](PRIVACY.md)。
+
 ## 功能
 
 - YouTube URL 导入：自动下载视频和英文字幕。
@@ -51,7 +61,7 @@ flowchart LR
 推荐先下载 GitHub Release 里的 Windows 便携包：
 
 1. 解压 `AnkiCardGenerator-v0.9.0-beta-windows-portable.zip`。
-2. 右键 `scripts/setup_runtime.ps1`，用 PowerShell 运行。
+2. 右键 `scripts/setup_runtime.ps1`，用 PowerShell 运行；脚本会创建项目本地 `.venv` 并安装 worker 依赖。
 3. 打开 `Anki Card Generator.exe`。
 4. 进入设置，点击“检查环境”。
 5. 填写自己的 MIMO API Key。
@@ -73,10 +83,10 @@ flowchart LR
 | FFmpeg | 切视频、转音频、生成封面 |
 | Anki | 导入和复习卡片 |
 
-Python 依赖可以通过：
+Python 依赖建议安装到项目本地 `.venv`，不要污染全局 Python：
 
 ```powershell
-python -m pip install -r workers/requirements.txt
+powershell -ExecutionPolicy Bypass -File scripts/setup_runtime.ps1
 ```
 
 ## 开发运行
@@ -98,10 +108,17 @@ npm run tauri:build
 - `src-tauri/target/release/bundle/nsis/*.exe`
 - `src-tauri/target/release/bundle/msi/*.msi`
 
+可以用脚本生成便携包：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/package_portable.ps1 -ReleaseExe "src-tauri/target/release/Anki Card Generator.exe"
+```
+
 ## 隐私和密钥
 
 - 不要把真实 API Key 写进源码、README、issue 或 release note。
-- MIMO API Key 只应该由用户在本机设置页填写。
+- API Key 只应该由用户在本机设置页填写；后续应迁移到系统 keychain / secure storage。
+- 使用第三方模型或 TTS 时，字幕、文档片段和生成字段会发送给对应服务商。
 - 生成的视频、音频、`.apkg`、项目缓存默认不会提交到 Git。
 
 ## 发布验证
@@ -109,8 +126,7 @@ npm run tauri:build
 发布前请跑：
 
 ```powershell
-python -m unittest discover -s tests -p "test_worker_quality.py"
-npm run build
+npm run check
 npm run tauri:build
 powershell -ExecutionPolicy Bypass -File scripts/smoke_release.ps1
 ```

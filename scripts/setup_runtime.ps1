@@ -5,6 +5,8 @@ param(
 $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $Requirements = Join-Path $Root "workers\requirements.txt"
+$Venv = Join-Path $Root ".venv"
+$VenvPython = Join-Path $Venv "Scripts\python.exe"
 
 function Test-Command($Name) {
   return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
@@ -24,8 +26,14 @@ if (-not (Test-Command "python")) {
 }
 
 if (Test-Command "python") {
-  python -m pip install --upgrade pip
-  python -m pip install -r $Requirements
+  if (-not (Test-Path $VenvPython)) {
+    Write-Host "Creating project-local Python environment: $Venv" -ForegroundColor Cyan
+    python -m venv $Venv
+  }
+
+  & $VenvPython -m pip install --upgrade pip
+  & $VenvPython -m pip install -r $Requirements
+  Write-Host "Worker Python: $VenvPython" -ForegroundColor Green
 }
 
 if (-not (Test-Command "deno") -and -not (Test-Command "node")) {

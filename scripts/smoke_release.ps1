@@ -22,6 +22,10 @@ $Video = Join-Path $SmokeInput "smoke-video.mp4"
 $Srt = Join-Path $SmokeInput "smoke-video.srt"
 $GenerateJson = Join-Path $OutputDir "generate.json"
 $ExportJson = Join-Path $OutputDir "export.json"
+$VerifyJson = Join-Path $OutputDir "verify_apkg.json"
+$VerifyOut = Join-Path $OutputDir "verify_import"
+$VenvPython = Join-Path $Root ".venv\Scripts\python.exe"
+$Python = if (Test-Path $VenvPython) { $VenvPython } else { "python" }
 
 if (-not (Test-Path $WorkerPath)) {
   throw "Worker not found: $WorkerPath"
@@ -47,7 +51,7 @@ if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
 
 ffmpeg -v error -y -f lavfi -i testsrc=size=1280x720:rate=30 -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100 -t 8 -shortest -pix_fmt yuv420p $Video | Out-Null
 
-$envResult = '{}' | python $WorkerPath check_env | ConvertFrom-Json
+$envResult = '{}' | & $Python $WorkerPath check_env | ConvertFrom-Json
 if (-not $envResult.genanki) {
   throw "genanki is not available. Run scripts/setup_runtime.ps1 first."
 }
@@ -93,7 +97,7 @@ $payload = @{
   }
 } | ConvertTo-Json -Depth 10
 
-$project = $payload | python $WorkerPath generate | ConvertFrom-Json
+$project = $payload | & $Python $WorkerPath generate | ConvertFrom-Json
 $project | ConvertTo-Json -Depth 20 | Set-Content -Encoding UTF8 $GenerateJson
 if (-not $project.segments -or $project.segments.Count -lt 1) {
   throw "Smoke generation produced no segments."
@@ -118,12 +122,22 @@ $exportPayload = @{
   output_dir = $SmokeOut
 } | ConvertTo-Json -Depth 30
 
-$export = $exportPayload | python $WorkerPath export | ConvertFrom-Json
+$export = $exportPayload | & $Python $WorkerPath export | ConvertFrom-Json
 $export | ConvertTo-Json -Depth 20 | Set-Content -Encoding UTF8 $ExportJson
 if (-not (Test-Path $export.apkg_path)) {
   throw "APKG was not created: $($export.apkg_path)"
 }
 
+$VerifyScript = Join-Path (Split-Path $WorkerPath -Parent) "verify_apkg.py"
+if (Test-Path $VerifyScript) {
+  $verify = & $Python $VerifyScript $export.apkg_path $VerifyOut | ConvertFrom-Json
+  $verify | ConvertTo-Json -Depth 30 | Set-Content -Encoding UTF8 $VerifyJson
+  if (-not $verify.ok) {
+    throw "APKG verification failed. See $VerifyJson"
+  }
+}
+
 Write-Host "Smoke test passed." -ForegroundColor Green
 Write-Host "Segments: $($project.segments.Count)"
 Write-Host "APKG: $($export.apkg_path)"
+Write-Host "Verify report: $VerifyJson"

@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-smoke:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install FFmpeg
+        run: choco install ffmpeg -y --no-progress
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build Tauri Rust shell
+        run: cargo build --manifest-path src-tauri/Cargo.toml --locked
+
+      - name: Install worker dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r workers/requirements.txt
+
+      - name: Compile worker files
+        run: python -m py_compile workers/anki_worker.py workers/verify_apkg.py tests/test_worker_quality.py
+
+      - name: Run worker tests
+        run: python -m unittest discover -s tests -p "test_worker_quality.py"
+
+      - name: Run release smoke test
+        run: powershell -ExecutionPolicy Bypass -File scripts/smoke_release.ps1
+
+      - name: Upload smoke output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-smoke-output
+          path: release/smoke
