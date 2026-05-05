@@ -10,7 +10,7 @@ The app may create local working files, including:
 - extracted video clips, audio clips, poster images, and TTS audio;
 - generated `.apkg` decks;
 - temporary JSON project data and smoke-test output;
-- local settings such as provider, model, base URL, and API key fields.
+- local settings such as provider, model, base URL, selected template, and learning options.
 
 Generated media, decks, caches, and `.venv/` are ignored by Git by default.
 
@@ -32,7 +32,9 @@ YouTube URL import uses yt-dlp. Video and subtitle download behavior depends on 
 
 ## API keys
 
-Do not commit or share API keys. The current beta still treats key handling as a local desktop setting; the target design is to move keys to system secure storage / keychain and keep only non-secret provider preferences in local settings.
+Do not commit or share API keys. The desktop UI keeps API keys in memory for the current session and strips text/TTS key fields before writing request settings to browser localStorage. Closing or refreshing the app may require entering keys again.
+
+The target design is to move keys to system secure storage / keychain. Until then, avoid screenshots, logs, or support bundles that expose key fields.
 
 ## Deleting local data
 

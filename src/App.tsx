@@ -716,6 +716,20 @@ function normalizeSavedMimoConfig(saved: GenerateRequest): GenerateRequest {
   }
 }
 
+function stripRequestSecrets(request: GenerateRequest): GenerateRequest {
+  return {
+    ...request,
+    api_config: {
+      ...request.api_config,
+      api_key: '',
+      tts_config: {
+        ...request.api_config.tts_config,
+        api_key: '',
+      },
+    },
+  }
+}
+
 function loadSavedRequest(): GenerateRequest {
   if (typeof window === 'undefined') return defaultRequest
   try {
@@ -726,7 +740,7 @@ function loadSavedRequest(): GenerateRequest {
     const savedTts = (savedApi.tts_config ?? {}) as Partial<TtsConfig>
     const legacyTtsProvider = savedApi.tts_provider?.trim()
     const legacyTtsModel = savedApi.tts_model?.trim()
-    return normalizeSavedMimoConfig({
+    return stripRequestSecrets(normalizeSavedMimoConfig({
       ...defaultRequest,
       ...saved,
       collection_levels: normalizeCollectionLevels(saved.collection_levels, (saved.level ?? defaultRequest.level) as Level),
@@ -746,7 +760,7 @@ function loadSavedRequest(): GenerateRequest {
         },
       },
       card_types: saved.card_types?.length ? saved.card_types : defaultRequest.card_types,
-    })
+    }))
   } catch {
     return defaultRequest
   }
@@ -1210,7 +1224,7 @@ function App() {
         : 'idle'
 
   useEffect(() => {
-    window.localStorage.setItem(REQUEST_STORAGE_KEY, JSON.stringify(request))
+    window.localStorage.setItem(REQUEST_STORAGE_KEY, JSON.stringify(stripRequestSecrets(request)))
   }, [request])
 
   useEffect(() => {
@@ -2764,6 +2778,15 @@ function App() {
                     </p>
                   </div>
                 </div>
+                <div className="settings-callout risk-callout">
+                  <CircleAlert size={18} />
+                  <div>
+                    <strong>字幕、文档和卡片字段会发送给你选择的模型服务商。</strong>
+                    <p>
+                      API Key 只保留在当前会话，关闭或刷新后可能需要重新填写；不要把私人素材或不想上传的内容交给第三方模型。
+                    </p>
+                  </div>
+                </div>
 
                 <div className={`api-test-card ${apiTestTone}`} aria-live="polite" aria-atomic="true">
                   <div className="api-test-icon" aria-hidden="true">
@@ -2920,7 +2943,7 @@ function App() {
                       onChange={(event) => patchApi({ api_key: event.target.value })}
                       placeholder={request.api_config.provider === 'mimo' ? 'sk-... / tp-...' : 'sk-...'}
                     />
-                    <small>只用于字幕理解和卡片解释生成；不会自动拿去做 TTS。</small>
+                    <small>只用于当前会话的字幕理解和卡片解释生成；不会写入本地缓存，也不会自动拿去做 TTS。</small>
                   </label>
                 </div>
                 <button className="capability-heading collapsible-heading" type="button" onClick={() => setShowCapabilities((value) => !value)}>
@@ -2979,6 +3002,15 @@ function App() {
                     <p>
                       MIMO V2.5 TTS、VoiceDesign、VoiceClone 和 V2 TTS 都可以作为独立语音模型配置。
                       如果上方文本模型已经配置了 MIMO Key，TTS 会默认复用它；只有想单独换语音服务时才需要另填 TTS Key。
+                    </p>
+                  </div>
+                </div>
+                <div className="settings-callout risk-callout">
+                  <CircleAlert size={18} />
+                  <div>
+                    <strong>TTS 会额外调用语音服务，并可能产生费用。</strong>
+                    <p>
+                      导出牌组如果包含视频片段、字幕或合成音频，默认仅供个人学习；分享前请确认素材和声音服务授权。
                     </p>
                   </div>
                 </div>
@@ -3144,7 +3176,7 @@ function App() {
                       onChange={(event) => patchTts({ api_key: event.target.value })}
                       placeholder={tts.provider === 'mimo' ? 'sk-... / tp-...' : 'xai-... / AIza...'}
                     />
-                    <small>MIMO TTS 可留空并复用上方 MIMO Key；填写后会优先使用这里的 Key。</small>
+                    <small>MIMO TTS 可留空并复用上方 MIMO Key；填写后优先使用这里的 Key，且不会写入本地缓存。</small>
                   </label>
                   <label className="field">
                     <span>语音模型</span>
