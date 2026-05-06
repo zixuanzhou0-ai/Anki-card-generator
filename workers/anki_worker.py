@@ -3227,6 +3227,11 @@ def read_download_info(directory: Path) -> dict[str, Any]:
         return {}
 
 
+def wants_subtitle_only(payload: dict[str, Any]) -> bool:
+    mode = str(payload.get("url_import_mode") or "").strip().lower()
+    return bool(payload.get("skip_video_slicing")) or mode in {"subtitles", "subtitle", "subtitle_only", "transcript"}
+
+
 def find_cached_url_source(cache_root: Path, url_hash: str, payload: dict[str, Any]) -> dict[str, Any] | None:
     candidates = [path for path in cache_root.glob(f"url_*{url_hash}") if path.is_dir()]
     stable_candidate = cache_root / f"url_{url_hash}"
@@ -3237,18 +3242,60 @@ def find_cached_url_source(cache_root: Path, url_hash: str, payload: dict[str, A
     for directory in candidates:
         video_path = first_file_by_suffix(directory, (".mp4", ".mkv", ".webm", ".mov"))
         subtitle_path = pick_subtitle_file(directory, payload.get("language", "English"))
-        if not video_path or not subtitle_path:
+        if not subtitle_path or (not video_path and not wants_subtitle_only(payload)):
             continue
         info = read_download_info(directory)
         return {
-            "video_path": str(video_path),
+            "video_path": str(video_path) if video_path else "",
             "subtitle_path": str(subtitle_path),
             "download_dir": str(directory),
             "url": str(payload.get("source_url") or "").strip(),
             "cached": True,
+            "transcript_only": not bool(video_path),
+            "skip_video_slicing": not bool(video_path) or bool(payload.get("skip_video_slicing")),
+            "download_mode": "subtitles" if not video_path else "video",
             **info,
         }
     return None
+
+
+def download_url_subtitles_only(payload: dict[str, Any], download_dir: Path, output_template: str, sub_langs: str) -> dict[str, Any]:
+    url = str(payload.get("source_url") or "").strip()
+    args = [
+        "--no-playlist",
+        "--windows-filenames",
+        "--write-info-json",
+        "--skip-download",
+        "--sub-langs",
+        sub_langs,
+        "--convert-subs",
+        "srt",
+        "--output",
+        output_template,
+        "--write-subs",
+        "--write-auto-subs",
+        url,
+    ]
+    completed = run_yt_dlp(args, check=False)
+    if completed.returncode != 0:
+        fail(format_yt_dlp_failure(yt_dlp_failure_detail(completed)))
+
+    subtitle_path = pick_subtitle_file(download_dir, payload.get("language", "English"))
+    if not subtitle_path:
+        fail("URL 字幕下载完成，但没有找到可用 SRT/VTT。请换一个带字幕的视频，或手动上传 SRT。")
+
+    info = read_download_info(download_dir)
+    return {
+        "video_path": "",
+        "subtitle_path": str(subtitle_path),
+        "download_dir": str(download_dir),
+        "url": url,
+        "transcript_only": True,
+        "skip_video_slicing": True,
+        "download_mode": "subtitles",
+        "warning": "本次只使用字幕生成卡片，导出的 APKG 不包含视频片段和原声音频。",
+        **info,
+    }
 
 
 def download_url_source(payload: dict[str, Any]) -> dict[str, Any]:
@@ -3270,6 +3317,9 @@ def download_url_source(payload: dict[str, Any]) -> dict[str, Any]:
 
     output_template = str(download_dir / "source.%(ext)s")
     sub_langs = subtitle_language_args(payload.get("language", "English"))
+    if wants_subtitle_only(payload):
+        return download_url_subtitles_only(payload, download_dir, output_template, sub_langs)
+
     common_args = [
         "--no-playlist",
         "--windows-filenames",
@@ -3307,8 +3357,18 @@ def download_url_source(payload: dict[str, Any]) -> dict[str, Any]:
             )
             if retry.returncode != 0:
                 retry_detail = yt_dlp_failure_detail(retry) or detail
+                if payload.get("url_auto_subtitle_fallback", True):
+                    try:
+                        return download_url_subtitles_only(payload, download_dir, output_template, sub_langs)
+                    except SystemExit as err:
+                        fail(f"{format_yt_dlp_failure(retry_detail)}\n\n字幕-only fallback 也失败，退出码：{err.code}")
                 fail(format_yt_dlp_failure(retry_detail))
         else:
+            if payload.get("url_auto_subtitle_fallback", True):
+                try:
+                    return download_url_subtitles_only(payload, download_dir, output_template, sub_langs)
+                except SystemExit as err:
+                    fail(f"{format_yt_dlp_failure(detail)}\n\n字幕-only fallback 也失败，退出码：{err.code}")
             fail(format_yt_dlp_failure(detail))
 
     video_path = first_file_by_suffix(download_dir, (".mp4", ".mkv", ".webm", ".mov"))
@@ -3317,6 +3377,8 @@ def download_url_source(payload: dict[str, Any]) -> dict[str, Any]:
 
     subtitle_path = pick_subtitle_file(download_dir, payload.get("language", "English"))
     if not subtitle_path:
+        if payload.get("url_auto_subtitle_fallback", True):
+            return download_url_subtitles_only(payload, download_dir, output_template, sub_langs)
         fail("视频已下载，但没有下载到可用字幕。请换一个带字幕/自动字幕的视频，或改用本地 SRT。")
 
     info = read_download_info(download_dir)
@@ -3325,6 +3387,9 @@ def download_url_source(payload: dict[str, Any]) -> dict[str, Any]:
         "subtitle_path": str(subtitle_path),
         "download_dir": str(download_dir),
         "url": url,
+        "transcript_only": False,
+        "skip_video_slicing": bool(payload.get("skip_video_slicing")),
+        "download_mode": "video",
         **info,
     }
 
@@ -3728,23 +3793,34 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
     if payload.get("source_mode") == "url" or payload.get("source_url"):
         emit_progress("generate", "download", 12, "正在准备 URL 视频和字幕。")
         source_info = download_url_source(payload)
+        source_message = "已复用 URL 缓存素材。" if source_info.get("cached") else "URL 素材下载完成。"
+        if source_info.get("transcript_only"):
+            source_message = (
+                "已复用 URL 字幕缓存，跳过视频切片。"
+                if source_info.get("cached")
+                else "URL 字幕已就绪，跳过视频切片。"
+            )
         emit_progress(
             "generate",
             "download",
             28,
-            "已复用 URL 缓存素材。" if source_info.get("cached") else "URL 素材下载完成。",
+            source_message,
         )
         payload = {
             **payload,
-            "video_path": source_info["video_path"],
+            "video_path": source_info.get("video_path", ""),
             "subtitle_path": source_info["subtitle_path"],
             "title": payload.get("title") or source_info.get("title") or "",
+            "skip_video_slicing": bool(source_info.get("skip_video_slicing")) or bool(payload.get("skip_video_slicing")),
         }
 
     video_path = payload.get("video_path", "")
     subtitle_path = payload.get("subtitle_path", "")
-    if not video_path or not Path(video_path).exists():
+    skip_video_slicing = bool(payload.get("skip_video_slicing") or (source_info or {}).get("transcript_only"))
+    if not skip_video_slicing and (not video_path or not Path(video_path).exists()):
         fail(f"视频文件不存在：{video_path}")
+    if not subtitle_path or not Path(subtitle_path).exists():
+        fail(f"字幕文件不存在：{subtitle_path}")
     emit_progress("generate", "subtitle", 34, "正在解析 SRT 字幕。")
     cues = parse_srt(subtitle_path)
     card_types = payload.get("card_types") or ["listening", "phrase", "cloze"]
@@ -3767,7 +3843,13 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         if review_enabled
         else payload
     )
-    emit_progress("generate", "segments", 48, "正在按时间轴筛选候选片段。")
+    emit_progress(
+        "generate",
+        "segments",
+        48,
+        f"正在按时间轴筛选候选片段：字幕 {len(cues)} 条，片段预算 {max_segments}，"
+        f"{'准备 MIMO 词伙评审。' if review_enabled else '使用本地评分。'}",
+    )
     segments = build_segments(cues, segment_payload)
     if not segments:
         fail("没有筛选出合适片段。请检查 SRT，或放宽内容开关。")
@@ -3800,7 +3882,10 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         segments = sorted([*segments, *skipped_segments], key=lambda item: item["start"])
 
     project_id = f"project_{int(time.time())}"
-    title = payload.get("title") or Path(video_path).stem
+    title = payload.get("title") or (Path(video_path).stem if video_path else (source_info or {}).get("title") or "字幕素材")
+    source_warning = (source_info or {}).get("warning")
+    if source_warning:
+        warning = f"{source_warning}；{warning}" if warning else source_warning
     emit_progress("generate", "done", 100, f"生成完成：{len(segments)} 个片段组。")
     return {
         "id": project_id,
@@ -3815,6 +3900,7 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         "card_types": card_types,
         "max_segments": max_segments,
         "auto_max_segments": auto_segments,
+        "skip_video_slicing": skip_video_slicing,
         "segments": segments,
         "warning": warning,
         "source_mode": payload.get("source_mode", "local"),
@@ -6489,8 +6575,10 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         fail(f"导出目录不存在：{output_dir}")
 
     is_document_project = project.get("source_mode") == "document"
-    video_path = Path(project.get("video_path", ""))
-    if not is_document_project and not video_path.exists():
+    video_path_raw = str(project.get("video_path") or "").strip()
+    skip_video_media = is_document_project or bool(project.get("skip_video_slicing")) or not video_path_raw
+    video_path = Path(video_path_raw) if video_path_raw else Path()
+    if not skip_video_media and not video_path.exists():
         fail(f"视频文件不存在：{video_path}")
 
     emit_progress("export", "template", 10, "正在准备 Anki 模板和导出目录。")
@@ -6499,7 +6587,8 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     media_dir = export_root / "media"
     media_dir.mkdir(parents=True, exist_ok=True)
 
-    deck_name = f"{'资料知识卡' if is_document_project else '视频语言卡'}::{project.get('title', 'Untitled')}"
+    deck_kind = "资料知识卡" if is_document_project else ("字幕语言卡" if skip_video_media else "视频语言卡")
+    deck_name = f"{deck_kind}::{project.get('title', 'Untitled')}"
     template_id = project.get("template_id", "immersive")
     template_label, template_css, front_template, back_template = anki_template_assets(template_id)
     model = genanki.Model(
@@ -6560,6 +6649,8 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         if any(card.get("enabled", True) for card in segment.get("cards", []))
     ]
     if not is_document_project:
+        if skip_video_media:
+            warnings.append("本次导出为字幕-only / 跳过视频切片模式，APKG 不包含视频片段和原声音频。")
         if not tts_requested:
             warnings.append("TTS 当前未启用，本次导出不会生成整句 AI 朗读和词伙小喇叭。")
         elif not tts_config["api_key"]:
@@ -6576,10 +6667,10 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
 
         segment_id = safe_filename(segment.get("id", "segment"))
         media_segment_id = f"{media_prefix}_{segment_id}"
-        video_webm_name = "" if is_document_project else f"{media_segment_id}.webm"
-        video_mp4_name = "" if is_document_project else f"{media_segment_id}.mp4"
-        poster_name = "" if is_document_project else f"{media_segment_id}.jpg"
-        audio_name = "" if is_document_project else f"{media_segment_id}.mp3"
+        video_webm_name = "" if skip_video_media else f"{media_segment_id}.webm"
+        video_mp4_name = "" if skip_video_media else f"{media_segment_id}.mp4"
+        poster_name = "" if skip_video_media else f"{media_segment_id}.jpg"
+        audio_name = "" if skip_video_media else f"{media_segment_id}.mp3"
         tts_name = f"{media_segment_id}_tts.mp3"
         video_webm_out = media_dir / video_webm_name
         video_mp4_out = media_dir / video_mp4_name
@@ -6588,13 +6679,21 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         tts_out = media_dir / tts_name
         segment_percent = 15 + int((index / max(1, len(export_segments))) * 68)
 
-        if is_document_project:
+        if skip_video_media:
             emit_progress(
                 "export",
                 "notes",
                 segment_percent,
-                f"正在整理知识卡 {index + 1}/{len(export_segments)}：{segment.get('source_time', segment_id)}",
+                f"正在整理无视频卡 {index + 1}/{len(export_segments)}：{segment.get('source_time', segment_id)}",
             )
+            if tts_requested and not is_document_project:
+                try:
+                    emit_progress("export", "tts", min(86, segment_percent + 4), f"正在生成整句朗读：{segment_id}")
+                    if synthesize_tts(project, segment, tts_out):
+                        media_files.append(str(tts_out))
+                        tts_by_segment[segment_id] = tts_name
+                except Exception as err:
+                    warnings.append(f"{segment_id} TTS 失败：{err}")
             cut_segments.add(segment_id)
         elif segment_id not in cut_segments:
             emit_progress(
@@ -6820,7 +6919,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         "cards": exported_cards,
         "segments": len(cut_segments),
         "media_summary": {
-            "video_segments": 0 if is_document_project else len(cut_segments),
+            "video_segments": 0 if skip_video_media else len(cut_segments),
             "video_files": video_file_count,
             "original_audio_files": original_audio_count,
             "sentence_tts_files": len(tts_by_segment),
@@ -6915,6 +7014,29 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def package_version(name: str) -> str:
+    try:
+        from importlib import metadata
+
+        return metadata.version(name)
+    except Exception:
+        return ""
+
+
+def check_anki_connect() -> tuple[bool, str]:
+    try:
+        response = http_json(
+            "http://127.0.0.1:8765",
+            {},
+            {"action": "version", "version": 6, "params": {}},
+            timeout=2,
+        )
+        version = response.get("result")
+        return True, f"AnkiConnect {version}" if version else "AnkiConnect 可用"
+    except Exception as err:
+        return False, str(err)
+
+
 def handle_check_env(_: dict[str, Any]) -> dict[str, Any]:
     try:
         import genanki  # noqa: F401
@@ -6936,13 +7058,95 @@ def handle_check_env(_: dict[str, Any]) -> dict[str, Any]:
         if completed.returncode == 0:
             yt_dlp_version = completed.stdout.strip()
 
+    ffmpeg_path = shutil.which("ffmpeg") or ""
+    ffmpeg_version = ""
+    if ffmpeg_path:
+        completed = subprocess.run(
+            ["ffmpeg", "-version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if completed.returncode == 0:
+            ffmpeg_version = (completed.stdout.splitlines() or [""])[0]
+    js_runtime = "deno" if shutil.which("deno") else ("node" if shutil.which("node") else "")
+    anki_connect_ready, anki_connect_detail = check_anki_connect()
+    venv_ready = ".venv" in str(Path(sys.executable).resolve()).lower()
+    packages = {
+        "genanki": package_version("genanki"),
+        "yt-dlp": package_version("yt-dlp"),
+        "pypdf": package_version("pypdf"),
+        "curl-cffi": package_version("curl_cffi") or package_version("curl-cffi"),
+    }
+    status_items = [
+        {
+            "id": "python",
+            "label": "Python worker",
+            "status": "ok",
+            "detail": f"{sys.version.split()[0]} · {sys.executable}",
+            "fix": "",
+        },
+        {
+            "id": "venv",
+            "label": "项目私有 venv",
+            "status": "ok" if venv_ready else "action",
+            "detail": "正在使用项目 .venv" if venv_ready else "当前没有使用项目 .venv，发布包建议先运行 setup_runtime.ps1。",
+            "fix": "运行 scripts/setup_runtime.ps1",
+        },
+        {
+            "id": "ffmpeg",
+            "label": "FFmpeg 视频切片",
+            "status": "ok" if ffmpeg_path else "blocked",
+            "detail": ffmpeg_version or "未在 PATH 找到 ffmpeg；本地视频导出会失败。",
+            "fix": "安装 FFmpeg 并加入 PATH，或运行 scripts/setup_runtime.ps1 -InstallWithWinget",
+        },
+        {
+            "id": "genanki",
+            "label": "genanki APKG 导出",
+            "status": "ok" if genanki_ready else "blocked",
+            "detail": packages.get("genanki") or "缺少 genanki。",
+            "fix": "运行 scripts/setup_runtime.ps1",
+        },
+        {
+            "id": "yt_dlp",
+            "label": "yt-dlp URL 导入",
+            "status": "ok" if yt_dlp_command else "action",
+            "detail": yt_dlp_version or "缺少 yt-dlp；URL 导入不可用，但本地 SRT/文档仍可用。",
+            "fix": "运行 scripts/setup_runtime.ps1",
+        },
+        {
+            "id": "js_runtime",
+            "label": "Deno / Node challenge solver",
+            "status": "ok" if js_runtime else "action",
+            "detail": js_runtime or "YouTube n challenge 可能失败。",
+            "fix": "安装 Deno 2.0+ 或 Node.js 20+。",
+        },
+        {
+            "id": "anki_connect",
+            "label": "AnkiConnect 导入核验",
+            "status": "ok" if anki_connect_ready else "action",
+            "detail": anki_connect_detail if anki_connect_ready else "Anki 未打开或未安装 AnkiConnect；仍可导出 APKG 后手动导入。",
+            "fix": "打开 Anki，并确认 AnkiConnect 插件启用。",
+        },
+    ]
+
     return {
         "python": sys.version.split()[0],
+        "python_executable": sys.executable,
+        "venv": venv_ready,
         "ffmpeg": bool(shutil.which("ffmpeg")),
+        "ffmpeg_path": ffmpeg_path,
+        "ffmpeg_version": ffmpeg_version,
         "genanki": genanki_ready,
         "yt_dlp": bool(yt_dlp_command),
         "yt_dlp_version": yt_dlp_version,
-        "yt_dlp_js_runtime": "deno" if shutil.which("deno") else ("node" if shutil.which("node") else ""),
+        "yt_dlp_js_runtime": js_runtime,
+        "anki_connect": anki_connect_ready,
+        "anki_connect_detail": anki_connect_detail,
+        "packages": packages,
+        "status_items": status_items,
         "worker": str(Path(__file__).resolve()),
     }
 

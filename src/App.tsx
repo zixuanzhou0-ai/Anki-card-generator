@@ -37,6 +37,7 @@ type TemplateId = 'immersive' | 'dictionary' | 'minimal'
 type Provider = 'local' | 'mimo' | 'openai-compatible' | 'claude' | 'gemini'
 type TtsProvider = 'disabled' | 'mimo' | 'grok' | 'gemini' | 'openai-compatible'
 type SourceMode = 'local' | 'url' | 'document'
+type UrlImportMode = 'video' | 'subtitles'
 type SettingsTab = 'api' | 'tts' | 'env'
 type SegmentFilter = 'all' | 'recommended' | 'needs_review' | 'reject' | 'duplicate'
 type PhraseReviewStatus = 'recommended' | 'needs_review' | 'reject' | 'duplicate' | 'unreviewed' | string
@@ -168,10 +169,21 @@ type WorkerProgress = {
   message: string
 }
 
+type EnvStatusItem = {
+  id: string
+  label: string
+  status: 'ok' | 'action' | 'blocked'
+  detail: string
+  fix?: string
+}
+
 type GenerateRequest = {
   title: string
   source_mode: SourceMode
   source_url: string
+  url_import_mode: UrlImportMode
+  url_auto_subtitle_fallback: boolean
+  skip_video_slicing: boolean
   video_path: string
   subtitle_path: string
   document_path: string
@@ -262,6 +274,7 @@ type Project = {
   card_types: CardKind[]
   max_segments?: number
   auto_max_segments?: boolean
+  skip_video_slicing?: boolean
   segments: Segment[]
   warning?: string | null
   created_at: number
@@ -269,12 +282,25 @@ type Project = {
 
 type EnvStatus = {
   python?: string
+  python_executable?: string
+  venv?: boolean
   ffmpeg?: boolean
+  ffmpeg_path?: string
+  ffmpeg_version?: string
   genanki?: boolean
   yt_dlp?: boolean
   yt_dlp_version?: string
   yt_dlp_js_runtime?: string
+  anki_connect?: boolean
+  anki_connect_detail?: string
+  packages?: Record<string, string>
+  status_items?: EnvStatusItem[]
   worker?: string
+}
+
+type SecretPrefs = {
+  rememberModelKey: boolean
+  rememberTtsKey: boolean
 }
 
 const MIMO_OPENAI_BASE_URL = 'https://api.xiaomimimo.com/v1'
@@ -611,6 +637,9 @@ const defaultRequest: GenerateRequest = {
   title: '',
   source_mode: 'local',
   source_url: '',
+  url_import_mode: 'video',
+  url_auto_subtitle_fallback: true,
+  skip_video_slicing: false,
   video_path: '',
   subtitle_path: '',
   document_path: '',
@@ -642,6 +671,7 @@ const defaultRequest: GenerateRequest = {
 }
 
 const REQUEST_STORAGE_KEY = 'anki-card-generator.request.v1'
+const SECRET_PREFS_STORAGE_KEY = 'anki-card-generator.secret-prefs.v1'
 
 function isTauriRuntime() {
   return Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__)
@@ -743,6 +773,9 @@ function loadSavedRequest(): GenerateRequest {
     return stripRequestSecrets(normalizeSavedMimoConfig({
       ...defaultRequest,
       ...saved,
+      url_import_mode: (saved.url_import_mode ?? defaultRequest.url_import_mode) as UrlImportMode,
+      url_auto_subtitle_fallback: saved.url_auto_subtitle_fallback ?? defaultRequest.url_auto_subtitle_fallback,
+      skip_video_slicing: saved.skip_video_slicing ?? defaultRequest.skip_video_slicing,
       collection_levels: normalizeCollectionLevels(saved.collection_levels, (saved.level ?? defaultRequest.level) as Level),
       content_toggles: {
         ...defaultRequest.content_toggles,
@@ -787,8 +820,38 @@ function loadSavedProject(): Project | null {
   }
 }
 
+function loadSecretPrefs(): SecretPrefs {
+  if (typeof window === 'undefined') return { rememberModelKey: false, rememberTtsKey: false }
+  try {
+    const raw = window.localStorage.getItem(SECRET_PREFS_STORAGE_KEY)
+    if (!raw) return { rememberModelKey: false, rememberTtsKey: false }
+    const parsed = JSON.parse(raw) as Partial<SecretPrefs>
+    return {
+      rememberModelKey: Boolean(parsed.rememberModelKey),
+      rememberTtsKey: Boolean(parsed.rememberTtsKey),
+    }
+  } catch {
+    return { rememberModelKey: false, rememberTtsKey: false }
+  }
+}
+
 async function runWorker<T>(command: string, payload: unknown): Promise<T> {
   return invoke<T>('run_worker', { command, payload })
+}
+
+async function saveSecret(key: 'model_api_key' | 'tts_api_key', value: string) {
+  if (!isTauriRuntime()) return
+  await invoke('save_secret', { key, value })
+}
+
+async function loadSecret(key: 'model_api_key' | 'tts_api_key') {
+  if (!isTauriRuntime()) return ''
+  return (await invoke<string | null>('load_secret', { key })) ?? ''
+}
+
+async function deleteSecret(key: 'model_api_key' | 'tts_api_key') {
+  if (!isTauriRuntime()) return
+  await invoke('delete_secret', { key })
 }
 
 function createDemoProject(request: GenerateRequest): Project {
@@ -1072,6 +1135,7 @@ function App() {
   const [showAdvancedTts, setShowAdvancedTts] = useState(false)
   const [showCapabilities, setShowCapabilities] = useState(false)
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('api')
+  const [secretPrefs, setSecretPrefs] = useState<SecretPrefs>(() => loadSecretPrefs())
   const [segmentFilter, setSegmentFilter] = useState<SegmentFilter>('all')
   const previewPanelRef = useRef<HTMLElement | null>(null)
   const settingsDialogRef = useRef<HTMLElement | null>(null)
@@ -1107,6 +1171,36 @@ function App() {
     }
   }, [project])
 
+  const qualityDiagnostics = useMemo(() => {
+    const segments = project?.segments ?? []
+    const scored = segments
+      .map((segment) => phraseValueScore(segment.phrase_value_score))
+      .filter((score): score is number => typeof score === 'number')
+    const avgScore = scored.length
+      ? scored.reduce((total, score) => total + score, 0) / scored.length
+      : null
+    const rejectReasons = segments
+      .filter((segment) => segmentReviewStatus(segment) === 'reject')
+      .map((segment) => segment.phrase_reject_reason || segment.phrase_decision_reason || '未给出拒绝理由')
+      .slice(0, 3)
+    const shortReason =
+      project && qualityCounts.recommended < 5
+        ? project.segments.length < 6
+          ? '字幕片段太少或切分后有效候选不足。'
+          : qualityCounts.recommended === 0
+            ? '当前筛选没有推荐卡，可能是词伙评分不足、模型返回空或筛选太严格。'
+            : '推荐卡偏少，通常是重复合并、低价值表达或模型评审较严格。'
+        : ''
+    return {
+      candidates: segments.length,
+      avgScore,
+      duplicate: segments.filter((segment) => segmentReviewStatus(segment) === 'duplicate').length,
+      rejectedSegments: segments.filter((segment) => segmentReviewStatus(segment) === 'reject').length,
+      rejectReasons,
+      shortReason,
+    }
+  }, [project, qualityCounts.recommended])
+
   const segmentReviewCounts = useMemo(() => {
     const segments = project?.segments ?? []
     return {
@@ -1135,6 +1229,7 @@ function App() {
     Boolean(
       envStatus?.genanki &&
         (request.source_mode === 'document' ||
+          (request.source_mode === 'url' && request.url_import_mode === 'subtitles' && envStatus.yt_dlp) ||
           (envStatus.ffmpeg && (request.source_mode === 'local' || envStatus.yt_dlp))),
     )
   const currentSelectionCount = project ? selectedCardCount : request.card_types.length
@@ -1226,6 +1321,59 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem(REQUEST_STORAGE_KEY, JSON.stringify(stripRequestSecrets(request)))
   }, [request])
+
+  useEffect(() => {
+    window.localStorage.setItem(SECRET_PREFS_STORAGE_KEY, JSON.stringify(secretPrefs))
+  }, [secretPrefs])
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return
+    let cancelled = false
+    const restore = async () => {
+      try {
+        const [modelKey, ttsKey] = await Promise.all([
+          secretPrefs.rememberModelKey ? loadSecret('model_api_key') : Promise.resolve(''),
+          secretPrefs.rememberTtsKey ? loadSecret('tts_api_key') : Promise.resolve(''),
+        ])
+        if (cancelled) return
+        setRequest((current) => ({
+          ...current,
+          api_config: {
+            ...current.api_config,
+            api_key: current.api_config.api_key || modelKey,
+            tts_config: {
+              ...current.api_config.tts_config,
+              api_key: current.api_config.tts_config.api_key || ttsKey,
+            },
+          },
+        }))
+      } catch {
+        setStatus('系统凭据读取失败，请在设置页重新填写 API Key。')
+      }
+    }
+    restore()
+    return () => {
+      cancelled = true
+    }
+  }, [secretPrefs.rememberModelKey, secretPrefs.rememberTtsKey])
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return
+    if (secretPrefs.rememberModelKey && request.api_config.api_key.trim()) {
+      saveSecret('model_api_key', request.api_config.api_key.trim()).catch(() => {
+        setStatus('模型 API Key 保存到系统凭据失败。')
+      })
+    }
+  }, [secretPrefs.rememberModelKey, request.api_config.api_key])
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return
+    if (secretPrefs.rememberTtsKey && request.api_config.tts_config.api_key.trim()) {
+      saveSecret('tts_api_key', request.api_config.tts_config.api_key.trim()).catch(() => {
+        setStatus('TTS API Key 保存到系统凭据失败。')
+      })
+    }
+  }, [secretPrefs.rememberTtsKey, request.api_config.tts_config.api_key])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -1400,6 +1548,28 @@ function App() {
       },
     }))
     setTtsTestResult(null)
+  }
+
+  const toggleRememberSecret = (kind: 'model' | 'tts') => {
+    const prefKey = kind === 'model' ? 'rememberModelKey' : 'rememberTtsKey'
+    const secretKey = kind === 'model' ? 'model_api_key' : 'tts_api_key'
+    setSecretPrefs((current) => {
+      const enabled = !current[prefKey]
+      if (!enabled) {
+        deleteSecret(secretKey).catch(() => {
+          setStatus('系统凭据删除失败，请稍后重试。')
+        })
+      }
+      if (enabled) {
+        const value = kind === 'model' ? request.api_config.api_key.trim() : request.api_config.tts_config.api_key.trim()
+        if (value) {
+          saveSecret(secretKey, value).catch(() => {
+            setStatus('系统凭据保存失败，请确认当前桌面端有凭据访问权限。')
+          })
+        }
+      }
+      return { ...current, [prefKey]: enabled }
+    })
   }
 
   const applyApiPreset = (preset: ApiPreset) => {
@@ -1687,7 +1857,9 @@ function App() {
     setBusy(true)
     setStatus(
       request.source_mode === 'url'
-        ? '正在下载 URL 视频和字幕，然后生成卡片草稿。'
+        ? request.url_import_mode === 'subtitles'
+          ? '正在下载 URL 字幕并跳过视频切片，然后生成卡片草稿。'
+          : '正在下载 URL 视频和字幕，然后生成卡片草稿。'
         : request.source_mode === 'document'
           ? '正在解析文档、总结知识点并生成卡片草稿。'
           : '正在解析字幕、筛选片段并生成卡片草稿。',
@@ -1711,13 +1883,21 @@ function App() {
         setProject(result)
         setSegmentFilter('all')
         setActiveSegmentId(result.segments[0]?.id ?? null)
+        const recommendedCount = result.segments.reduce(
+          (total, segment) => total + segment.cards.filter((card) => isRecommendedCardForExport(segment, card)).length,
+          0,
+        )
+        const shortHint =
+          recommendedCount < 5
+            ? '推荐卡偏少，通常是字幕太短、重复太多、词伙评分不足或模型返回空；可以在质量仪表盘查看原因。'
+            : ''
         setStatus(
           result.warning ||
             (result.source_mode === 'url'
-              ? `URL 导入成功，已生成 ${result.segments.length} 个片段组。`
+              ? `URL 导入成功，已生成 ${result.segments.length} 个片段组，推荐 ${recommendedCount} 张。${shortHint}`
               : result.source_mode === 'document'
                 ? `文档导入成功，已生成 ${result.segments.length} 个知识点组。`
-              : `已生成 ${result.segments.length} 个片段组。`),
+              : `已生成 ${result.segments.length} 个片段组，推荐 ${recommendedCount} 张。${shortHint}`),
         )
       }
     } catch (error) {
@@ -1755,7 +1935,13 @@ function App() {
 
     setBusy(true)
     setWorkerProgress({ command: 'export', stage: 'start', percent: 1, message: '准备开始导出。' })
-    setStatus(projectForExport.source_mode === 'document' ? '正在打包文档知识卡 apkg。' : '正在切视频、生成音频并打包 apkg。')
+    setStatus(
+      projectForExport.source_mode === 'document'
+        ? '正在打包文档知识卡 apkg。'
+        : projectForExport.skip_video_slicing
+          ? '正在打包字幕-only 卡包，并按需生成 TTS。'
+          : '正在切视频、生成音频并打包 apkg。',
+    )
     try {
       const result = await runWorker<ExportResult>('export', {
         project: { ...projectForExport, template_id: request.template_id, api_config: request.api_config },
@@ -2079,15 +2265,61 @@ function App() {
                     : '当前是本地视频：选择视频和 SRT 字幕后生成语言卡。'}
               </div>
               {request.source_mode === 'url' ? (
-                <label className="field">
-                  <span>YouTube / 视频 URL</span>
-                  <input
-                    value={request.source_url}
-                    onChange={(event) => patchRequest({ source_url: event.target.value })}
-                    placeholder="https://www.youtube.com/watch?v=..."
-                  />
-                  <small>生成时会自动下载视频和字幕；优先使用英文字幕/自动字幕，再进入制卡流程。</small>
-                </label>
+                <>
+                  <label className="field">
+                    <span>YouTube / 视频 URL</span>
+                    <input
+                      value={request.source_url}
+                      onChange={(event) => patchRequest({ source_url: event.target.value })}
+                      placeholder="https://www.youtube.com/watch?v=..."
+                    />
+                    <small>
+                      YouTube 属于中等/高风险输入源；失败时可以切到字幕-only 或手动上传 SRT 继续制卡。
+                    </small>
+                  </label>
+                  <div className="url-fallback-options" aria-label="URL 导入 fallback">
+                    <div className="segmented compact-segmented">
+                      <button
+                        type="button"
+                        className={request.url_import_mode === 'video' ? 'selected' : ''}
+                        onClick={() => patchRequest({ url_import_mode: 'video', skip_video_slicing: false })}
+                      >
+                        下载视频+字幕
+                      </button>
+                      <button
+                        type="button"
+                        className={request.url_import_mode === 'subtitles' ? 'selected' : ''}
+                        onClick={() => patchRequest({ url_import_mode: 'subtitles', skip_video_slicing: true })}
+                      >
+                        只用字幕生成
+                      </button>
+                    </div>
+                    <label className="toggle">
+                      <input
+                        type="checkbox"
+                        checked={request.url_auto_subtitle_fallback}
+                        onChange={() =>
+                          patchRequest({ url_auto_subtitle_fallback: !request.url_auto_subtitle_fallback })
+                        }
+                      />
+                      <span>视频下载失败时自动 fallback 到字幕-only</span>
+                    </label>
+                    <label className="toggle">
+                      <input
+                        type="checkbox"
+                        checked={request.skip_video_slicing}
+                        onChange={() => {
+                          const next = !request.skip_video_slicing
+                          patchRequest({
+                            skip_video_slicing: next,
+                            url_import_mode: next ? 'subtitles' : request.url_import_mode,
+                          })
+                        }}
+                      />
+                      <span>导出时跳过视频切片，只保留字幕和 TTS</span>
+                    </label>
+                  </div>
+                </>
               ) : request.source_mode === 'document' ? (
                 <label className="field file-field">
                   <span>文档资料</span>
@@ -2341,6 +2573,22 @@ function App() {
                     {request.level} · {request.language} · {activeTemplate?.label ?? '沉浸视频'}
                   </small>
               </div>
+              <div className="metric-card">
+                <span>平均词伙评分</span>
+                <strong>{project ? (qualityDiagnostics.avgScore === null ? '-' : qualityDiagnostics.avgScore.toFixed(1)) : '-'}</strong>
+                <small>{project ? `候选 ${qualityDiagnostics.candidates} · 重复合并 ${qualityDiagnostics.duplicate}` : '生成后显示评分'}</small>
+              </div>
+              <div className="metric-card">
+                <span>拒绝原因</span>
+                <strong>{project ? qualityDiagnostics.rejectedSegments : '-'}</strong>
+                <small>
+                  {project
+                    ? qualityDiagnostics.shortReason ||
+                      qualityDiagnostics.rejectReasons[0] ||
+                      (project.skip_video_slicing ? '字幕-only 导出，不含视频切片。' : '推荐数量正常')
+                    : '会说明为什么卡片少'}
+                </small>
+              </div>
             </div>
 
             <div className="review-filters" aria-label="片段质量筛选">
@@ -2446,6 +2694,12 @@ function App() {
                           {segmentStatusLabel(status)}
                           {score !== null ? ` · ${score}/5` : ''}
                         </em>
+                        <small className="segment-reason">
+                          {segment.phrase_reject_reason ||
+                            segment.phrase_decision_reason ||
+                            segment.phrase_card_focus ||
+                            '等待模型或规则给出推荐理由'}
+                        </small>
                       </button>
                     )
                   })}
@@ -2735,7 +2989,10 @@ function App() {
                   <Settings2 size={20} />
                   <h3>本地环境</h3>
                 </div>
-                <p>检查 Python worker、ffmpeg、yt-dlp 和 genanki 是否可用。URL 导入和导出真实卡包前建议先跑一次。</p>
+                <p>
+                  首次启动按顺序检查 Python venv、FFmpeg、yt-dlp、genanki、AnkiConnect 和 YouTube challenge solver。
+                  不含任何 API Key。
+                </p>
                 <div className="settings-row">
                   <button className="ghost-button" type="button" onClick={checkEnv} disabled={busy}>
                     {busy ? <Loader2 className="spin" size={18} /> : <CheckCircle2 size={18} />}
@@ -2753,12 +3010,42 @@ function App() {
                         <span className={envStatus.yt_dlp_js_runtime ? 'ok' : 'warn'}>
                           JS {envStatus.yt_dlp_js_runtime || '未配置'}
                         </span>
+                        <span className={envStatus.anki_connect ? 'ok' : 'warn'}>
+                          AnkiConnect {envStatus.anki_connect ? '可用' : '未连接'}
+                        </span>
                       </>
                     ) : (
                       <span>尚未检查</span>
                     )}
                   </div>
                 </div>
+                <div className="first-run-steps" aria-label="普通用户 5 步安装">
+                  {['解压发布包', '运行 setup_runtime.ps1', '打开 exe', '填写 API Key 并测试', '用内置示例导出 APKG'].map(
+                    (step, index) => (
+                      <span key={step}>
+                        <strong>{index + 1}</strong>
+                        {step}
+                      </span>
+                    ),
+                  )}
+                </div>
+                {envStatus?.status_items?.length ? (
+                  <div className="env-checklist" aria-label="环境检查明细">
+                    {envStatus.status_items.map((item) => (
+                      <div className={`env-check-item ${item.status}`} key={item.id}>
+                        <strong>{item.label}</strong>
+                        <span>{item.detail}</span>
+                        {item.status !== 'ok' && item.fix ? <small>{item.fix}</small> : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                {envStatus?.worker ? (
+                  <small className="diagnostic-footnote">
+                    Worker: {envStatus.worker}
+                    {envStatus.python_executable ? ` · Python: ${envStatus.python_executable}` : ''}
+                  </small>
+                ) : null}
               </section>
               ) : null}
 
@@ -2944,6 +3231,14 @@ function App() {
                       placeholder={request.api_config.provider === 'mimo' ? 'sk-... / tp-...' : 'sk-...'}
                     />
                     <small>只用于当前会话的字幕理解和卡片解释生成；不会写入本地缓存，也不会自动拿去做 TTS。</small>
+                  </label>
+                  <label className="toggle secret-toggle">
+                    <input
+                      type="checkbox"
+                      checked={secretPrefs.rememberModelKey}
+                      onChange={() => toggleRememberSecret('model')}
+                    />
+                    <span>记住本机模型 API Key（Windows Credential Manager）</span>
                   </label>
                 </div>
                 <button className="capability-heading collapsible-heading" type="button" onClick={() => setShowCapabilities((value) => !value)}>
@@ -3177,6 +3472,14 @@ function App() {
                       placeholder={tts.provider === 'mimo' ? 'sk-... / tp-...' : 'xai-... / AIza...'}
                     />
                     <small>MIMO TTS 可留空并复用上方 MIMO Key；填写后优先使用这里的 Key，且不会写入本地缓存。</small>
+                  </label>
+                  <label className="toggle secret-toggle">
+                    <input
+                      type="checkbox"
+                      checked={secretPrefs.rememberTtsKey}
+                      onChange={() => toggleRememberSecret('tts')}
+                    />
+                    <span>记住本机 TTS API Key（Windows Credential Manager）</span>
                   </label>
                   <label className="field">
                     <span>语音模型</span>

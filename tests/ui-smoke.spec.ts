@@ -22,6 +22,7 @@ test('desktop workflow shell supports simplified settings, URL mode, document mo
   await expect(page.getByRole('button', { name: /MIMO Public V2.5 Pro/ })).toBeVisible()
   await expect(page.getByText('测试通过代表什么？')).toBeVisible()
   await expect(page.getByRole('button', { name: /测试连接/ })).toBeVisible()
+  await expect(page.getByText('记住本机模型 API Key')).toBeVisible()
   await page.getByRole('tab', { name: '语音 TTS' }).click()
   await expect(page.getByRole('heading', { name: '语音 TTS' })).toBeVisible()
   await expect(page.getByRole('button', { name: /MIMO SGP TTS/ })).toBeVisible()
@@ -31,11 +32,16 @@ test('desktop workflow shell supports simplified settings, URL mode, document mo
   await expect(page.getByText('TTS 已开启，尚未测试')).toBeVisible()
   await expect(page.getByPlaceholder('sk-... / tp-...')).toBeVisible()
   await expect(page.getByPlaceholder('Mia / Chloe / Milo / Dean / mimo_default')).toHaveValue('Mia')
+  await expect(page.getByText('记住本机 TTS API Key')).toBeVisible()
+  await page.getByRole('tab', { name: '本地环境' }).click()
+  await expect(page.getByText('用内置示例导出 APKG')).toBeVisible()
   await page.screenshot({ path: 'test-results/settings-tts-config.png', fullPage: true })
   await page.getByLabel('关闭设置').click()
 
   await page.getByRole('button', { name: /视频链接/ }).click()
   await expect(page.getByText('当前是视频链接')).toBeVisible()
+  await expect(page.getByRole('button', { name: '只用字幕生成' })).toBeVisible()
+  await expect(page.getByText('视频下载失败时自动 fallback 到字幕-only')).toBeVisible()
   await page.getByPlaceholder('https://www.youtube.com/watch?v=...').fill('https://www.youtube.com/watch?v=UV1WDNe4J5w')
   await page.getByRole('button', { name: /生成卡片/ }).click()
 
@@ -43,6 +49,8 @@ test('desktop workflow shell supports simplified settings, URL mode, document mo
   await expect(page.getByText("I'm not really in the mood right now.")).toBeVisible()
   await expect(page.getByText('6 张已选')).toBeVisible()
   await expect(page.getByText('演示卡片生成完成。')).toBeVisible()
+  await expect(page.getByText('平均词伙评分')).toBeVisible()
+  await expect(page.getByText('拒绝原因')).toBeVisible()
 
   await expect(page.getByRole('button', { name: /词典解释/ })).toBeDisabled()
   await expect(page.getByRole('button', { name: /极简复习/ })).toBeDisabled()
@@ -68,6 +76,16 @@ test('desktop workflow shell supports simplified settings, URL mode, document mo
   }))
   expect(metrics.horizontalOverflow).toBe(false)
   expect(metrics.bodyHeight).toBeGreaterThanOrEqual(metrics.viewportHeight)
+
+  for (const viewport of [
+    { width: 1440, height: 1000 },
+    { width: 1280, height: 900 },
+    { width: 1120, height: 900 },
+  ]) {
+    await page.setViewportSize(viewport)
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)
+    expect(overflow).toBe(false)
+  }
 
   await page.screenshot({ path: 'test-results/ui-smoke-after-generate.png', fullPage: true })
 })
