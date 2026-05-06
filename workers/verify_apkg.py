@@ -15,6 +15,7 @@ for stream in (sys.stdout, sys.stderr):
 
 
 MODEL_PREFIXES = (
+    "Anki Card Generator V10",
     "Anki Card Generator V9",
     "Anki Card Generator V8",
     "Anki Card Generator V1",

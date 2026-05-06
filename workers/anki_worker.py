@@ -5259,16 +5259,16 @@ MINIMAL_FRONT_TEMPLATE = FRONT_TEMPLATE
 MINIMAL_BACK_TEMPLATE = BACK_TEMPLATE
 
 
-# V9 keeps one polished template, but changes the back side into a cleaner
-# top-media + study-notes layout so the card does not leave a large empty column.
+# V10 keeps the existing fields, but moves the visual language to a lighter
+# Apple-style study card with adaptive height, quieter borders, and blue emphasis.
 CARD_CSS = """
 .card {
   margin: 0;
   min-height: 0;
   padding: clamp(10px, 1.4vh, 18px);
-  background: #f5f2ec;
-  color: #17221e;
-  font-family: Inter, "SF Pro Display", "Segoe UI", "Noto Sans SC", Arial, sans-serif;
+  background: #f5f5f7;
+  color: #1d1d1f;
+  font-family: "SF Pro Display", "SF Pro Text", Inter, "Segoe UI", "Noto Sans SC", Arial, sans-serif;
   line-height: 1.42;
   text-align: left;
   letter-spacing: 0;
@@ -5302,20 +5302,23 @@ html, body, #qa {
 .wrap {
   width: min(1360px, calc(100vw - clamp(24px, 4vw, 88px)));
   max-width: calc(100vw - 20px);
-  height: min(1500px, 90vh);
-  min-height: min(720px, 90vh);
+  height: min(1500px, 91vh);
+  min-height: min(720px, 91vh);
   margin: 0 auto;
   display: grid;
   min-width: 0;
-  --ink: #17221e;
-  --muted: #66746e;
-  --line: rgba(23, 34, 30, 0.12);
-  --paper: #fffdf8;
-  --soft: #f8f5ee;
-  --green: #0b6b50;
-  --green-deep: #064332;
-  --green-soft: #edf7f2;
-  --amber: #9a6a22;
+  --ink: #1d1d1f;
+  --muted: #6e6e73;
+  --line: rgba(60, 60, 67, 0.14);
+  --paper: #ffffff;
+  --soft: #f5f5f7;
+  --blue: #007aff;
+  --blue-deep: #0057d8;
+  --blue-soft: rgba(0, 122, 255, 0.10);
+  --green: var(--blue);
+  --green-deep: var(--blue-deep);
+  --green-soft: var(--blue-soft);
+  --amber: #ff9f0a;
   --font-scale: 1;
 }
 .study-card {
@@ -5324,10 +5327,10 @@ html, body, #qa {
   min-height: 0;
   max-width: 100%;
   overflow: hidden;
-  border: 1px solid rgba(23, 34, 30, 0.12);
-  border-radius: 14px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
   background: var(--paper);
-  box-shadow: 0 18px 46px rgba(23, 28, 25, 0.12);
+  box-shadow: 0 20px 54px rgba(0, 0, 0, 0.10);
 }
 .front-card {
   display: grid;
@@ -5339,7 +5342,7 @@ html, body, #qa {
   grid-template-rows: auto minmax(0, 1fr);
   min-height: 0;
   padding: clamp(10px, 1.2vh, 16px);
-  background: #081310;
+  background: #111114;
 }
 .media-top {
   display: flex;
@@ -5370,7 +5373,7 @@ html, body, #qa {
   max-height: 100%;
   object-fit: contain;
   border-radius: 8px;
-  background: #050706;
+  background: #000;
 }
 .replay video {
   max-height: 100%;
@@ -5418,10 +5421,10 @@ html, body, #qa {
 .front-content {
   margin: clamp(8px, 1.2vh, 14px) 0 0;
   padding: clamp(10px, 1.4vh, 16px) clamp(12px, 1.8vw, 20px);
-  border-left: 3px solid var(--amber);
+  border-left: 3px solid var(--blue);
   border-radius: 8px;
-  background: #fff7e8;
-  color: #10201b;
+  background: var(--blue-soft);
+  color: var(--ink);
   font-size: clamp(18px, min(2.1vw, 3vh), 24px);
   line-height: 1.38;
   font-weight: 780;
@@ -5433,8 +5436,8 @@ html, body, #qa {
   width: 84px;
   min-height: 56px;
   padding: 9px;
-  border: 1px solid rgba(11, 107, 80, 0.18);
-  border-radius: 14px;
+  border: 1px solid rgba(0, 122, 255, 0.18);
+  border-radius: 12px;
   background: var(--green-soft);
   color: var(--green-deep);
   text-align: center;
@@ -5448,7 +5451,7 @@ html, body, #qa {
   overflow: hidden;
   padding: clamp(12px, 1.8vh, 22px) clamp(24px, 3.2vw, 42px);
   border-top: 1px solid var(--line);
-  background: #f8faf6;
+  background: #fbfbfd;
 }
 .audio-title,
 .hero-meta {
@@ -5496,7 +5499,7 @@ audio {
   max-height: none;
   overflow: hidden;
   padding: clamp(12px, 1.6vh, 22px);
-  background: #081310;
+  background: #111114;
 }
 .replay-media {
   height: 100%;
@@ -5526,7 +5529,7 @@ audio {
   min-height: 0;
   padding: clamp(20px, 2.6vh, 34px) clamp(32px, 4vw, 56px);
   border-bottom: 1px solid var(--line);
-  background: linear-gradient(135deg, #fffdf8 0%, #f0f8f3 100%);
+  background: linear-gradient(135deg, #ffffff 0%, #f5f8ff 100%);
   overflow: hidden;
 }
 .focus-word {
@@ -5554,19 +5557,19 @@ audio {
   width: 38px;
   height: 38px;
   margin-top: 4px;
-  border: 1px solid rgba(11, 107, 80, 0.24);
+  border: 1px solid rgba(0, 122, 255, 0.22);
   border-radius: 999px;
   background: #ffffff;
   color: var(--green-deep);
   font-size: 24px;
   line-height: 1;
-  box-shadow: 0 8px 18px rgba(11, 67, 50, 0.12);
+  box-shadow: 0 8px 18px rgba(0, 122, 255, 0.12);
   cursor: pointer;
   transition: background 140ms ease, color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
   position: relative;
 }
 .phrase-speaker:focus-visible {
-  outline: 3px solid rgba(11, 107, 80, 0.28);
+  outline: 3px solid rgba(0, 122, 255, 0.24);
   outline-offset: 3px;
 }
 .speaker-icon {
@@ -5605,13 +5608,13 @@ audio {
 .phrase-speaker.is-playing {
   background: var(--green-deep);
   color: #ffffff;
-  box-shadow: 0 10px 24px rgba(6, 67, 50, 0.28);
+  box-shadow: 0 10px 24px rgba(0, 122, 255, 0.24);
 }
 .phrase-speaker.is-playing::after {
   content: "";
   position: absolute;
   inset: -6px;
-  border: 2px solid rgba(11, 107, 80, 0.28);
+  border: 2px solid rgba(0, 122, 255, 0.25);
   border-radius: inherit;
   animation: speakerPulse 900ms ease-out infinite;
 }
@@ -5629,7 +5632,7 @@ audio {
 }
 .meaning {
   margin: 0;
-  color: #273631;
+  color: var(--ink);
   font-size: clamp(22px, min(2.8vw, 3.7vh), 34px);
   line-height: 1.22;
   font-weight: 900;
@@ -5637,7 +5640,7 @@ audio {
 }
 .translation {
   margin: 0;
-  color: #6d4b18;
+  color: #8a5a00;
   font-size: clamp(18px, min(2.1vw, 3vh), 26px);
   line-height: 1.26;
   font-weight: 820;
@@ -5654,7 +5657,7 @@ audio {
   gap: 6px;
   min-height: 0;
   padding: clamp(10px, 1.3vh, 16px) clamp(14px, 2vw, 22px);
-  border: 1px solid rgba(11, 107, 80, 0.14);
+  border: 1px solid rgba(0, 122, 255, 0.14);
   background: rgba(255, 255, 255, 0.52);
 }
 .answer-box span,
@@ -5676,7 +5679,7 @@ audio {
   overflow: hidden;
   padding: clamp(8px, 1vh, 14px) clamp(12px, 1.7vw, 18px);
   border: 1px solid rgba(154, 106, 34, 0.18);
-  color: #31413a;
+  color: #343437;
   font-size: clamp(14px, min(1.45vw, 2.1vh), 18px);
   line-height: 1.42;
   font-weight: 640;
@@ -5739,14 +5742,14 @@ audio {
   overflow: hidden;
   padding: clamp(16px, 2vh, 26px) clamp(32px, 4vw, 56px);
   border-bottom: 1px solid var(--line);
-  background: #fffbf5;
+  background: #fbfbfd;
 }
 .english {
   display: block;
   min-height: 0;
   height: auto;
   margin: 0;
-  color: #101817;
+  color: var(--ink);
   font-size: clamp(30px, min(4.5vw, 6vh), 58px);
   line-height: 1.08;
   font-weight: 1000;
@@ -5762,9 +5765,9 @@ audio {
 }
 .chip {
   padding: 6px 10px;
-  border: 1px solid rgba(11, 107, 80, 0.22);
+  border: 1px solid rgba(0, 122, 255, 0.22);
   border-radius: 999px;
-  background: #fffdf8;
+  background: #ffffff;
   color: var(--green-deep);
   font-size: clamp(13px, min(1.4vw, 2vh), 17px);
   line-height: 1.2;
@@ -5787,7 +5790,7 @@ audio {
   padding: clamp(10px, 1.3vh, 16px) clamp(12px, 1.6vw, 18px);
   border: 1px solid var(--line);
   border-radius: 9px;
-  background: #fffaf2;
+  background: #ffffff;
 }
 .detail:nth-child(1),
 .detail:nth-child(2),
@@ -5799,21 +5802,21 @@ audio {
   grid-column: span 3;
 }
 .detail.wide {
-  background: #f8fbf8;
+  background: #f8fbff;
 }
 .detail p {
   display: block;
   flex: 1;
   min-height: 0;
   margin: 6px 0 0;
-  color: #26352f;
+  color: #2c2c2e;
   font-size: clamp(14px, min(1.45vw, 2.15vh), 19px);
   line-height: 1.36;
   overflow: hidden;
   overflow-wrap: anywhere;
 }
 .detail p.english-detail {
-  color: #101817;
+  color: var(--ink);
   font-size: clamp(14px, min(1.6vw, 2.3vh), 21px);
   line-height: 1.24;
   font-weight: 760;
@@ -6293,12 +6296,12 @@ MINIMAL_BACK_TEMPLATE = BACK_TEMPLATE
 def anki_template_assets(template_id: str) -> tuple[str, str, str, str]:
     template_id = template_id if template_id in {"immersive", "dictionary", "minimal"} else "immersive"
     if template_id == "dictionary":
-        return "词典解释 V9", CARD_CSS, DICTIONARY_FRONT_TEMPLATE, DICTIONARY_BACK_TEMPLATE
+        return "词典解释 V10", CARD_CSS, DICTIONARY_FRONT_TEMPLATE, DICTIONARY_BACK_TEMPLATE
 
     if template_id == "minimal":
-        return "极简复习 V9", CARD_CSS, MINIMAL_FRONT_TEMPLATE, MINIMAL_BACK_TEMPLATE
+        return "极简复习 V10", CARD_CSS, MINIMAL_FRONT_TEMPLATE, MINIMAL_BACK_TEMPLATE
 
-    return "沉浸语言 V9", CARD_CSS, FRONT_TEMPLATE, BACK_TEMPLATE
+    return "沉浸语言 V10", CARD_CSS, FRONT_TEMPLATE, BACK_TEMPLATE
 
 
 def safe_filename(value: str) -> str:
@@ -6592,8 +6595,8 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     template_id = project.get("template_id", "immersive")
     template_label, template_css, front_template, back_template = anki_template_assets(template_id)
     model = genanki.Model(
-        stable_id(f"anki-card-model-v9-{template_id}", 1000000000),
-        f"Anki Card Generator V9 - {template_label}",
+        stable_id(f"anki-card-model-v10-{template_id}", 1000000000),
+        f"Anki Card Generator V10 - {template_label}",
         fields=[
             {"name": "CardId"},
             {"name": "CardType"},
@@ -6871,7 +6874,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     anki_text(card.get("cloze", "")),
                 ],
                 tags=[
-                    "anki_card_generator_v9",
+                    "anki_card_generator_v10",
                     project.get("language", "English"),
                     project.get("level", "B1"),
                     template_id,
@@ -6944,7 +6947,7 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
     if not expected_manifest:
         fail("缺少导出媒体清单，无法核验 Anki 媒体。")
 
-    query = "tag:anki_card_generator_v9"
+    query = "tag:anki_card_generator_v10"
     if deck_name:
         query = f'deck:"{deck_name}" {query}'
 
