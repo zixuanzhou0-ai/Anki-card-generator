@@ -12,6 +12,22 @@ function Test-Command($Name) {
   return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
+function Get-CommandPath($Name) {
+  $command = Get-Command $Name -ErrorAction SilentlyContinue
+  if ($command) { return $command.Source }
+  return ""
+}
+
+function Get-FirstLine($Command, $Arguments) {
+  try {
+    $output = & $Command @Arguments 2>&1 | Select-Object -First 1
+    if ($output) { return [string]$output }
+  } catch {
+    return ""
+  }
+  return ""
+}
+
 Write-Host "== Anki Card Generator runtime setup ==" -ForegroundColor Cyan
 
 if (-not (Test-Command "python")) {
@@ -66,4 +82,46 @@ if (-not (Test-Command "anki")) {
   Write-Host "Download Anki: https://apps.ankiweb.net/" -ForegroundColor Yellow
 }
 
+$PackageVersions = @{}
+if (Test-Path $VenvPython) {
+  try {
+    $PackageJson = & $VenvPython -c "import importlib.metadata as m, json; exec('def v(n):\n    try:\n        return m.version(n)\n    except Exception:\n        return str()'); names=['genanki','yt-dlp','pypdf','curl-cffi']; print(json.dumps({name: v(name) for name in names}))"
+    if ($PackageJson) {
+      $PackageVersions = $PackageJson | ConvertFrom-Json
+    }
+  } catch {
+    $PackageVersions = @{}
+  }
+}
+
+$Diagnostic = [ordered]@{
+  generated_at = (Get-Date).ToString("o")
+  root = [string]$Root
+  python = [ordered]@{
+    system_path = (Get-CommandPath "python")
+    system_version = if (Test-Command "python") { Get-FirstLine "python" @("--version") } else { "" }
+    venv_path = if (Test-Path $VenvPython) { [string]$VenvPython } else { "" }
+    venv_exists = [bool](Test-Path $VenvPython)
+  }
+  packages = $PackageVersions
+  ffmpeg = [ordered]@{
+    path = (Get-CommandPath "ffmpeg")
+    version = if (Test-Command "ffmpeg") { Get-FirstLine "ffmpeg" @("-version") } else { "" }
+  }
+  yt_dlp = [ordered]@{
+    available = [bool](Test-Path $VenvPython)
+    version = if (Test-Path $VenvPython) { Get-FirstLine $VenvPython @("-m", "yt_dlp", "--version") } else { "" }
+  }
+  javascript_runtime = [ordered]@{
+    deno = if (Test-Command "deno") { Get-FirstLine "deno" @("--version") } else { "" }
+    node = if (Test-Command "node") { Get-FirstLine "node" @("--version") } else { "" }
+  }
+  anki = [ordered]@{
+    path = (Get-CommandPath "anki")
+  }
+}
+
+$DiagnosticPath = Join-Path $Root "runtime_diagnostic.json"
+$Diagnostic | ConvertTo-Json -Depth 6 | Set-Content -Path $DiagnosticPath -Encoding UTF8
+Write-Host "Runtime diagnostic written: $DiagnosticPath" -ForegroundColor Green
 Write-Host "Runtime setup finished. Open the app and run Settings > Check environment." -ForegroundColor Green

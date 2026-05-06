@@ -18,6 +18,7 @@
 python -m py_compile workers\anki_worker.py workers\verify_apkg.py tests\test_worker_quality.py
 python -m unittest discover -s tests -p "test_worker_quality.py"
 npm run build
+npm run test:ui
 npm run tauri:build
 powershell -ExecutionPolicy Bypass -File scripts\smoke_release.ps1
 ```
@@ -31,7 +32,9 @@ GitHub Actions 必须是绿色；如果 CI 因外部服务故障失败，release
 - [ ] 便携包包含 `scripts/setup_runtime.ps1`。
 - [ ] 便携包包含 `README.md`、`PRIVACY.md`、`SECURITY.md` 和 `docs/`。
 - [ ] 从便携包运行 `scripts/setup_runtime.ps1` 会创建项目本地 `.venv`。
+- [ ] `runtime_diagnostic.json` 已生成，且不包含 API Key。
 - [ ] 从便携包运行 `scripts/smoke_release.ps1` 通过，并生成 `verify_apkg.json`。
+- [ ] 可选：`scripts/smoke_portable.ps1 -PortableZip <zip>` 能从 zip 解压后跑完整 smoke。
 
 ## 干净机器验证
 

@@ -61,11 +61,12 @@ flowchart LR
 推荐先下载 GitHub Release 里的 Windows 便携包：
 
 1. 解压 `AnkiCardGenerator-v0.9.0-beta-windows-portable.zip`。
-2. 右键 `scripts/setup_runtime.ps1`，用 PowerShell 运行；脚本会创建项目本地 `.venv` 并安装 worker 依赖。
+2. 右键 `scripts/setup_runtime.ps1`，用 PowerShell 运行；脚本会创建项目本地 `.venv`、安装 worker 依赖，并输出 `runtime_diagnostic.json`。
 3. 打开 `Anki Card Generator.exe`。
-4. 进入设置，点击“检查环境”。
-5. 填写自己的 MIMO API Key。
-6. 输入 YouTube URL 或选择本地视频，生成并导出 `.apkg`。
+4. 进入设置，点击“检查环境”，再填写自己的 MIMO API Key 并测试连接。
+5. 用内置示例、本地视频 + SRT，或 YouTube URL 生成并导出 `.apkg`。
+
+如果 YouTube 触发 429、n challenge 或字幕接口失败，URL 面板可以切到“只用字幕生成”或“跳过视频切片”，先把卡片做出来。
 
 详细图文流程见 [用户指南](docs/USER_GUIDE.md)。
 
@@ -117,7 +118,7 @@ powershell -ExecutionPolicy Bypass -File scripts/package_portable.ps1 -ReleaseEx
 ## 隐私和密钥
 
 - 不要把真实 API Key 写进源码、README、issue 或 release note。
-- API Key 只应该由用户在本机设置页填写；当前版本不会把文本/TTS Key 写入 localStorage，关闭或刷新应用后可能需要重新填写。后续应迁移到系统 keychain / secure storage。
+- API Key 只应该由用户在本机设置页填写；默认不会把文本/TTS Key 写入 localStorage。只有用户显式勾选“记住本机 Key”时，才会保存到 Windows Credential Manager。
 - 使用第三方模型或 TTS 时，字幕、文档片段和生成字段会发送给对应服务商。
 - 生成的视频、音频、`.apkg`、项目缓存默认不会提交到 Git。
 
@@ -131,6 +132,7 @@ powershell -ExecutionPolicy Bypass -File scripts/package_portable.ps1 -ReleaseEx
 
 ```powershell
 npm run check
+npm run test:ui
 npm run tauri:build
 powershell -ExecutionPolicy Bypass -File scripts/smoke_release.ps1
 ```

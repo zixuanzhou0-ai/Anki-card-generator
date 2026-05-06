@@ -16,6 +16,16 @@ use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+const SECRET_SERVICE: &str = "Anki Card Generator";
+const ALLOWED_SECRET_KEYS: &[&str] = &["model_api_key", "tts_api_key"];
+
+fn validate_secret_key(key: &str) -> Result<(), String> {
+  if ALLOWED_SECRET_KEYS.contains(&key) {
+    Ok(())
+  } else {
+    Err(format!("不允许保存这个凭据键：{key}"))
+  }
+}
 
 fn worker_candidates(app: &tauri::AppHandle) -> Vec<PathBuf> {
   let mut candidates = Vec::new();
@@ -269,10 +279,52 @@ fn reveal_path(path: String) -> Result<(), String> {
   Ok(())
 }
 
+#[tauri::command]
+fn save_secret(key: String, value: String) -> Result<(), String> {
+  validate_secret_key(&key)?;
+  keyring::Entry::new(SECRET_SERVICE, &key)
+    .map_err(|err| format!("无法打开系统凭据：{err}"))?
+    .set_password(&value)
+    .map_err(|err| format!("无法保存系统凭据：{err}"))?;
+  Ok(())
+}
+
+#[tauri::command]
+fn load_secret(key: String) -> Result<Option<String>, String> {
+  validate_secret_key(&key)?;
+  match keyring::Entry::new(SECRET_SERVICE, &key)
+    .map_err(|err| format!("无法打开系统凭据：{err}"))?
+    .get_password()
+  {
+    Ok(value) => Ok(Some(value)),
+    Err(keyring::Error::NoEntry) => Ok(None),
+    Err(err) => Err(format!("无法读取系统凭据：{err}")),
+  }
+}
+
+#[tauri::command]
+fn delete_secret(key: String) -> Result<(), String> {
+  validate_secret_key(&key)?;
+  match keyring::Entry::new(SECRET_SERVICE, &key)
+    .map_err(|err| format!("无法打开系统凭据：{err}"))?
+    .delete_credential()
+  {
+    Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+    Err(err) => Err(format!("无法删除系统凭据：{err}")),
+  }
+}
+
 pub fn run() {
   tauri::Builder::default()
     .plugin(tauri_plugin_dialog::init())
-    .invoke_handler(tauri::generate_handler![run_worker, reveal_path, open_anki_import])
+    .invoke_handler(tauri::generate_handler![
+      run_worker,
+      reveal_path,
+      open_anki_import,
+      save_secret,
+      load_secret,
+      delete_secret
+    ])
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(

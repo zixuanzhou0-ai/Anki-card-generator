@@ -41,6 +41,57 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("YouTube 返回 HTTP 429", message)
         self.assertIn("本地 SRT", message)
 
+    def test_cached_url_source_can_be_subtitle_only(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_root = Path(temp_dir)
+            source_dir = cache_root / "url_deadbeef"
+            source_dir.mkdir()
+            (source_dir / "source.en.srt").write_text(
+                "1\n00:00:00,000 --> 00:00:02,000\nIt turns out I was wrong.\n",
+                encoding="utf-8",
+            )
+
+            cached = worker.find_cached_url_source(
+                cache_root,
+                "deadbeef",
+                {
+                    "source_url": "https://www.youtube.com/watch?v=test",
+                    "language": "English",
+                    "url_import_mode": "subtitles",
+                },
+            )
+
+        self.assertIsNotNone(cached)
+        self.assertEqual(cached["video_path"], "")
+        self.assertTrue(cached["skip_video_slicing"])
+        self.assertEqual(cached["download_mode"], "subtitles")
+
+    def test_cached_url_source_requires_video_by_default(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_root = Path(temp_dir)
+            source_dir = cache_root / "url_deadbeef"
+            source_dir.mkdir()
+            (source_dir / "source.en.srt").write_text(
+                "1\n00:00:00,000 --> 00:00:02,000\nIt turns out I was wrong.\n",
+                encoding="utf-8",
+            )
+
+            cached = worker.find_cached_url_source(
+                cache_root,
+                "deadbeef",
+                {"source_url": "https://www.youtube.com/watch?v=test", "language": "English"},
+            )
+
+        self.assertIsNone(cached)
+
+    def test_check_env_returns_actionable_status_items_without_secrets(self):
+        status = worker.handle_check_env({})
+
+        self.assertIn("status_items", status)
+        self.assertTrue(any(item["id"] == "python" for item in status["status_items"]))
+        self.assertNotIn("api_key", worker.json.dumps(status).lower())
+        self.assertNotIn("sk-", worker.json.dumps(status).lower())
+
     def test_video_html_keeps_mp4_and_webm_fallbacks(self):
         html = worker.anki_video_html("clip.webm", "clip.mp4", "clip.jpg")
 

@@ -32,6 +32,7 @@ youtube_*_verify/
 AnkiCard-*/
 DramaAnki-*/
 release/
+runtime_diagnostic.json
 .package/
 NEXT_SESSION_HANDOFF.md
 OVERNIGHT_ACCEPTANCE.md
