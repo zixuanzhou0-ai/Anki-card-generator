@@ -1,6 +1,6 @@
 [package]
 name = "anki-card-generator"
-version = "0.9.0"
+version = "0.9.1"
 description = "Desktop Anki card generator for language-learning videos"
 authors = ["zixuanzhou0-ai"]
 repository = "https://github.com/zixuanzhou0-ai/Anki-card-generator"

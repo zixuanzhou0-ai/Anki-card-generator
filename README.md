@@ -2,7 +2,7 @@
 
 一个面向中文母语者的英语 Anki 卡片生成器。它可以从 YouTube / 本地视频 / SRT / 文档中提取可迁移词伙，生成带视频片段、原声、TTS、释义、例句和填空的 Anki 卡包。
 
-当前版本：`v0.9.0-beta`
+当前版本：`v0.9.1-beta`
 
 ## Beta 风险和数据边界
 
@@ -60,7 +60,7 @@ flowchart LR
 
 推荐先下载 GitHub Release 里的 Windows 便携包：
 
-1. 解压 `AnkiCardGenerator-v0.9.0-beta-windows-portable.zip`。
+1. 解压 `AnkiCardGenerator-v0.9.1-beta-windows-portable.zip`。
 2. 右键 `scripts/setup_runtime.ps1`，用 PowerShell 运行；脚本会创建项目本地 `.venv`、安装 worker 依赖，并输出 `runtime_diagnostic.json`。
 3. 打开 `Anki Card Generator.exe`。
 4. 进入设置，点击“检查环境”，再填写自己的 MIMO API Key 并测试连接。
