@@ -1103,7 +1103,8 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertTrue(first.startswith("Deck_"))
 
     def test_card_template_uses_responsive_canvas_and_fit_text(self):
-        self.assertIn("height: min(1500px, 90vh)", worker.CARD_CSS)
+        self.assertIn("height: min(1500px, 91vh)", worker.CARD_CSS)
+        self.assertIn("--blue: #007aff", worker.CARD_CSS)
         self.assertIn("--font-scale", worker.CARD_CSS)
         self.assertIn("data-fit", worker.BACK_TEMPLATE)
         self.assertIn("fitResponsiveText", worker.BACK_TEMPLATE)

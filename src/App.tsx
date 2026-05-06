@@ -4,6 +4,7 @@ import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import {
   Boxes,
   CheckCircle2,
@@ -163,10 +164,32 @@ type AnkiVerifyResult = {
 }
 
 type WorkerProgress = {
+  job_id?: string
   command: string
   stage: string
   percent: number
   message: string
+}
+
+type WorkerCommand = 'generate' | 'export' | 'verify_anki_import'
+
+type WorkerJob = {
+  job_id: string
+}
+
+type WorkerOperation = {
+  status: 'idle' | 'running' | 'cancelling' | 'succeeded' | 'failed'
+  command?: WorkerCommand
+  jobId?: string
+}
+
+type WorkerFinishedEvent = {
+  job_id: string
+  command: WorkerCommand
+  ok: boolean
+  result?: unknown
+  error?: string
+  cancelled?: boolean
 }
 
 type EnvStatusItem = {
@@ -367,7 +390,7 @@ const cardOptions: Array<{ id: CardKind; label: string; note: string }> = [
 ]
 
 const templateOptions: Array<{ id: TemplateId; label: string; note: string; locked?: boolean }> = [
-  { id: 'immersive', label: '沉浸语言 V9', note: '当前主力模板：视频、音频、答案重点优先' },
+  { id: 'immersive', label: '沉浸语言 V10', note: '当前主力模板：视频、音频、答案重点优先' },
   { id: 'dictionary', label: '词典解释', note: '下一轮打磨，暂不开放', locked: true },
   { id: 'minimal', label: '极简复习', note: '下一轮打磨，暂不开放', locked: true },
 ]
@@ -839,6 +862,14 @@ async function runWorker<T>(command: string, payload: unknown): Promise<T> {
   return invoke<T>('run_worker', { command, payload })
 }
 
+async function startWorkerJob(command: WorkerCommand, payload: unknown): Promise<WorkerJob> {
+  return invoke<WorkerJob>('start_worker_job', { command, payload })
+}
+
+async function cancelWorkerJob(jobId: string): Promise<{ cancelled: boolean }> {
+  return invoke<{ cancelled: boolean }>('cancel_worker_job', { jobId })
+}
+
 async function saveSecret(key: 'model_api_key' | 'tts_api_key', value: string) {
   if (!isTauriRuntime()) return
   await invoke('save_secret', { key, value })
@@ -1120,6 +1151,8 @@ function App() {
   const [envStatus, setEnvStatus] = useState<EnvStatus | null>(null)
   const [status, setStatus] = useState('准备生成 Anki 卡片。')
   const [busy, setBusy] = useState(false)
+  const [workerOperation, setWorkerOperation] = useState<WorkerOperation>({ status: 'idle' })
+  const [requestEditedDuringRun, setRequestEditedDuringRun] = useState(false)
   const [activeSegmentId, setActiveSegmentId] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [apiTesting, setApiTesting] = useState(false)
@@ -1137,8 +1170,11 @@ function App() {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('api')
   const [secretPrefs, setSecretPrefs] = useState<SecretPrefs>(() => loadSecretPrefs())
   const [segmentFilter, setSegmentFilter] = useState<SegmentFilter>('all')
+  const prefersReducedMotion = useReducedMotion()
   const previewPanelRef = useRef<HTMLElement | null>(null)
   const settingsDialogRef = useRef<HTMLElement | null>(null)
+  const workerOperationRef = useRef<WorkerOperation>(workerOperation)
+  const requestEditedDuringRunRef = useRef(requestEditedDuringRun)
 
   const selectedCardCount = useMemo(() => {
     return project?.segments.reduce(
@@ -1310,13 +1346,25 @@ function App() {
         ttsTestResult.latency_ms ? ` · ${ttsTestResult.latency_ms} ms` : ''
       }${ttsTestResult.bytes ? ` · ${ttsTestResult.bytes} bytes` : ''}`
     : `${tts.provider} · ${tts.model || '无模型名'} · ${tts.voice || '无 voice'}`
-  const statusTone = busy || workerProgress
+  const workerBusy = workerOperation.status === 'running' || workerOperation.status === 'cancelling'
+  const appBusy = busy || workerBusy
+  const isCancelling = workerOperation.status === 'cancelling'
+  const motionDuration = prefersReducedMotion ? 0 : 0.2
+  const statusTone = appBusy || workerProgress
     ? 'active'
     : /失败|缺少|不能|请先|不存在|错误|没有/.test(status)
       ? 'warn'
       : /完成|通过|成功|可用|已打开|已切换|已套用|已保留/.test(status)
         ? 'ok'
         : 'idle'
+
+  useEffect(() => {
+    workerOperationRef.current = workerOperation
+  }, [workerOperation])
+
+  useEffect(() => {
+    requestEditedDuringRunRef.current = requestEditedDuringRun
+  }, [requestEditedDuringRun])
 
   useEffect(() => {
     window.localStorage.setItem(REQUEST_STORAGE_KEY, JSON.stringify(stripRequestSecrets(request)))
@@ -1395,10 +1443,50 @@ function App() {
     }
   }, [project, activeSegmentId, visibleSegments])
 
+  function applyGeneratedProject(result: Project, editedDuringRun: boolean) {
+    setProject(result)
+    setSegmentFilter('all')
+    setActiveSegmentId(result.segments[0]?.id ?? null)
+    const recommendedCount = result.segments.reduce(
+      (total, segment) => total + segment.cards.filter((card) => isRecommendedCardForExport(segment, card)).length,
+      0,
+    )
+    const shortHint =
+      recommendedCount < 5
+        ? '推荐卡偏少，通常是字幕太短、重复太多、词伙评分不足或模型返回空；可以在质量仪表盘查看原因。'
+        : ''
+    const editedHint = editedDuringRun ? ' 生成期间你修改过设置；下一次生成会使用新配置。' : ''
+    setStatus(
+      (result.warning ||
+        (result.source_mode === 'url'
+          ? `URL 导入成功，已生成 ${result.segments.length} 个片段组，推荐 ${recommendedCount} 张。${shortHint}`
+          : result.source_mode === 'document'
+            ? `文档导入成功，已生成 ${result.segments.length} 个知识点组。`
+            : `已生成 ${result.segments.length} 个片段组，推荐 ${recommendedCount} 张。${shortHint}`)) + editedHint,
+    )
+  }
+
+  function applyExportResult(result: ExportResult) {
+    setLastExport(result)
+    setAnkiVerifyResult(null)
+    const mediaHint = result.media_summary
+      ? `媒体约 ${result.media_summary.media_mb} MB，视频 ${result.media_summary.video_segments} 段，词伙 TTS ${result.media_summary.phrase_tts_files} 条。`
+      : ''
+    setStatus(`导出完成：${result.cards} 张卡，${result.segments} 个片段。${mediaHint} ${result.apkg_path}`)
+  }
+
+  function applyVerifyResult(result: AnkiVerifyResult) {
+    setAnkiVerifyResult(result)
+    setStatus(result.message)
+  }
+
   useEffect(() => {
     if (!isTauriRuntime()) return
     let stopListening: (() => void) | undefined
+    let stopFinishedListening: (() => void) | undefined
     listen<WorkerProgress>('worker-progress', (event) => {
+      const active = workerOperationRef.current
+      if (event.payload.job_id && event.payload.job_id !== active.jobId) return
       setWorkerProgress(event.payload)
       setStatus(event.payload.message)
     })
@@ -1408,8 +1496,43 @@ function App() {
       .catch(() => {
         setWorkerProgress(null)
       })
+    listen<WorkerFinishedEvent>('worker-finished', (event) => {
+      const active = workerOperationRef.current
+      const payload = event.payload
+      if (payload.job_id !== active.jobId) return
+      setBusy(false)
+      setAnkiVerifying(false)
+      if (payload.cancelled) {
+        setWorkerProgress(null)
+        setWorkerOperation({ status: 'idle' })
+        setStatus('任务已取消，可以继续调整后重新生成。')
+        return
+      }
+      if (!payload.ok) {
+        setWorkerOperation({ status: 'failed', command: payload.command, jobId: payload.job_id })
+        setStatus(payload.error || '任务失败。')
+        return
+      }
+      setWorkerProgress({ job_id: payload.job_id, command: payload.command, stage: 'done', percent: 100, message: '任务完成。' })
+      if (payload.command === 'generate') {
+        applyGeneratedProject(payload.result as Project, requestEditedDuringRunRef.current)
+      } else if (payload.command === 'export') {
+        applyExportResult(payload.result as ExportResult)
+      } else if (payload.command === 'verify_anki_import') {
+        applyVerifyResult(payload.result as AnkiVerifyResult)
+      }
+      setWorkerOperation({ status: 'succeeded', command: payload.command, jobId: payload.job_id })
+      setRequestEditedDuringRun(false)
+    })
+      .then((unlisten) => {
+        stopFinishedListening = unlisten
+      })
+      .catch(() => {
+        setStatus('后台任务监听失败，请重启软件后再试。')
+      })
     return () => {
       stopListening?.()
+      stopFinishedListening?.()
     }
   }, [])
 
@@ -1471,6 +1594,9 @@ function App() {
   }
 
   const patchRequest = (patch: Partial<GenerateRequest>) => {
+    if (workerOperationRef.current.status === 'running') {
+      setRequestEditedDuringRun(true)
+    }
     setRequest((current) => ({ ...current, ...patch }))
   }
 
@@ -1839,6 +1965,10 @@ function App() {
   }
 
   const generate = async () => {
+    if (workerBusy) {
+      setStatus('已有任务正在运行，请先取消或等待完成。')
+      return
+    }
     if (request.source_mode === 'url' && !request.source_url.trim()) {
       setStatus('请先输入 YouTube / 视频 URL。')
       return
@@ -1855,6 +1985,7 @@ function App() {
     setAnkiVerifyResult(null)
     setWorkerProgress({ command: 'generate', stage: 'start', percent: 1, message: '准备开始生成。' })
     setBusy(true)
+    setRequestEditedDuringRun(false)
     setStatus(
       request.source_mode === 'url'
         ? request.url_import_mode === 'subtitles'
@@ -1865,8 +1996,9 @@ function App() {
           : '正在解析字幕、筛选片段并生成卡片草稿。',
     )
     try {
+      const requestSnapshot = JSON.parse(JSON.stringify(request)) as GenerateRequest
       if (!isTauriRuntime()) {
-        const demo = createDemoProject(request)
+        const demo = createDemoProject(requestSnapshot)
         setProject(demo)
         setSegmentFilter('all')
         setActiveSegmentId(demo.segments[0]?.id ?? null)
@@ -1878,36 +2010,51 @@ function App() {
               : '已生成浏览器演示卡片。真实视频切片和 apkg 导出请用 Tauri 桌面端。',
         )
         setWorkerProgress({ command: 'generate', stage: 'done', percent: 100, message: '演示卡片生成完成。' })
+        setWorkerOperation({ status: 'succeeded', command: 'generate' })
+        setBusy(false)
       } else {
-        const result = await runWorker<Project>('generate', request)
-        setProject(result)
-        setSegmentFilter('all')
-        setActiveSegmentId(result.segments[0]?.id ?? null)
-        const recommendedCount = result.segments.reduce(
-          (total, segment) => total + segment.cards.filter((card) => isRecommendedCardForExport(segment, card)).length,
-          0,
-        )
-        const shortHint =
-          recommendedCount < 5
-            ? '推荐卡偏少，通常是字幕太短、重复太多、词伙评分不足或模型返回空；可以在质量仪表盘查看原因。'
-            : ''
-        setStatus(
-          result.warning ||
-            (result.source_mode === 'url'
-              ? `URL 导入成功，已生成 ${result.segments.length} 个片段组，推荐 ${recommendedCount} 张。${shortHint}`
-              : result.source_mode === 'document'
-                ? `文档导入成功，已生成 ${result.segments.length} 个知识点组。`
-              : `已生成 ${result.segments.length} 个片段组，推荐 ${recommendedCount} 张。${shortHint}`),
-        )
+        const job = await startWorkerJob('generate', requestSnapshot)
+        setWorkerOperation({ status: 'running', command: 'generate', jobId: job.job_id })
+        setWorkerProgress({
+          job_id: job.job_id,
+          command: 'generate',
+          stage: 'start',
+          percent: 1,
+          message: '生成任务已在后台运行。你可以继续浏览、拖动窗口或打开设置。',
+        })
+        setStatus('生成任务已在后台运行。你可以继续浏览、拖动窗口或打开设置；再次生成和导出会暂时禁用。')
       }
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error))
-    } finally {
       setBusy(false)
+      setWorkerOperation({ status: 'failed', command: 'generate' })
+      setStatus(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  const cancelCurrentWorker = async () => {
+    const jobId = workerOperation.jobId
+    if (!jobId || !workerBusy) return
+    setWorkerOperation((current) => ({ ...current, status: 'cancelling' }))
+    setStatus('正在取消当前任务，请稍等。')
+    try {
+      const result = await cancelWorkerJob(jobId)
+      if (!result.cancelled) {
+        setBusy(false)
+        setWorkerOperation({ status: 'idle' })
+        setWorkerProgress(null)
+        setStatus('当前任务已经结束。')
+      }
+    } catch (error) {
+      setWorkerOperation((current) => ({ ...current, status: 'failed' }))
+      setStatus(error instanceof Error ? error.message : String(error))
     }
   }
 
   const exportApkg = async () => {
+    if (workerBusy) {
+      setStatus('已有任务正在运行，请先取消或等待完成。')
+      return
+    }
     if (!project) {
       setStatus('还没有可导出的卡片。')
       return
@@ -1943,20 +2090,24 @@ function App() {
           : '正在切视频、生成音频并打包 apkg。',
     )
     try {
-      const result = await runWorker<ExportResult>('export', {
+      const exportPayload = {
         project: { ...projectForExport, template_id: request.template_id, api_config: request.api_config },
         output_dir: outputDir,
+      }
+      const job = await startWorkerJob('export', exportPayload)
+      setWorkerOperation({ status: 'running', command: 'export', jobId: job.job_id })
+      setWorkerProgress({
+        job_id: job.job_id,
+        command: 'export',
+        stage: 'start',
+        percent: 1,
+        message: '导出任务已在后台运行。你可以继续浏览当前草稿。',
       })
-      setLastExport(result)
-      setAnkiVerifyResult(null)
-      const mediaHint = result.media_summary
-        ? `媒体约 ${result.media_summary.media_mb} MB，视频 ${result.media_summary.video_segments} 段，词伙 TTS ${result.media_summary.phrase_tts_files} 条。`
-        : ''
-      setStatus(`导出完成：${result.cards} 张卡，${result.segments} 个片段。${mediaHint} ${result.apkg_path}`)
+      setStatus('导出任务已在后台运行。导出期间不能再次生成或导出。')
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error))
-    } finally {
       setBusy(false)
+      setWorkerOperation({ status: 'failed', command: 'export' })
+      setStatus(error instanceof Error ? error.message : String(error))
     }
   }
 
@@ -1980,6 +2131,10 @@ function App() {
   }
 
   const verifyAnkiImport = async () => {
+    if (workerBusy) {
+      setStatus('已有任务正在运行，请先取消或等待完成。')
+      return
+    }
     if (!lastExport?.apkg_path) return
     if (!isTauriRuntime()) {
       setStatus('浏览器预览模式不能连接 AnkiConnect。')
@@ -1989,15 +2144,22 @@ function App() {
     setAnkiVerifyResult(null)
     setStatus('正在通过 AnkiConnect 核验导入后的卡片和媒体。')
     try {
-      const result = await runWorker<AnkiVerifyResult>('verify_anki_import', {
+      const job = await startWorkerJob('verify_anki_import', {
         export_result: lastExport,
       })
-      setAnkiVerifyResult(result)
-      setStatus(result.message)
+      setWorkerOperation({ status: 'running', command: 'verify_anki_import', jobId: job.job_id })
+      setWorkerProgress({
+        job_id: job.job_id,
+        command: 'verify_anki_import',
+        stage: 'start',
+        percent: 1,
+        message: 'Anki 媒体核验已在后台运行。',
+      })
+      setStatus('Anki 媒体核验已在后台运行。')
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error))
-    } finally {
       setAnkiVerifying(false)
+      setWorkerOperation({ status: 'failed', command: 'verify_anki_import' })
+      setStatus(error instanceof Error ? error.message : String(error))
     }
   }
 
@@ -2111,8 +2273,14 @@ function App() {
             <Settings2 size={18} />
             设置
           </button>
-          <button className="primary-button" type="button" onClick={generate} disabled={busy}>
-            {busy ? <Loader2 className="spin" size={18} /> : <Wand2 size={18} />}
+          {workerBusy ? (
+            <button className="ghost-button cancel-button" type="button" onClick={cancelCurrentWorker} disabled={isCancelling}>
+              {isCancelling ? <Loader2 className="spin" size={18} /> : <X size={18} />}
+              {isCancelling ? '取消中' : '取消任务'}
+            </button>
+          ) : null}
+          <button className="primary-button" type="button" onClick={generate} disabled={appBusy}>
+            {appBusy ? <Loader2 className="spin" size={18} /> : <Wand2 size={18} />}
             生成卡片
           </button>
         </div>
@@ -2206,9 +2374,12 @@ function App() {
           <section className={`panel status-panel ${statusTone}`} role="status" aria-live="polite" aria-atomic="true">
             <div className="status-panel-head">
               <span>当前状态</span>
-              <strong>{busy ? '处理中' : '就绪'}</strong>
+              <strong>{appBusy ? '处理中' : '就绪'}</strong>
             </div>
             <p>{status}</p>
+            {workerBusy && requestEditedDuringRun ? (
+              <small className="run-edit-note">本次任务使用开始时的配置；你刚修改的设置会在下一次生成生效。</small>
+            ) : null}
           </section>
 
           <section className="setup-grid">
@@ -2547,7 +2718,7 @@ function App() {
                 <button className="ghost-button" type="button" onClick={() => selectCardsByQuality('reviewable')} disabled={!project}>
                   推荐+待审
                 </button>
-                <button className="primary-button export-button" type="button" onClick={exportApkg} disabled={busy || !project}>
+                <button className="primary-button export-button" type="button" onClick={exportApkg} disabled={appBusy || !project}>
                   <Download size={18} />
                   导出 .apkg
                 </button>
@@ -2675,15 +2846,23 @@ function App() {
             ) : (
               <div className="preview-layout">
                 <div className="segment-list">
-                  {visibleSegments.map((segment) => {
+                  {visibleSegments.map((segment, index) => {
                     const status = segmentReviewStatus(segment)
                     const score = phraseValueScore(segment.phrase_value_score)
                     return (
-                      <button
+                      <motion.button
+                        layout
                         type="button"
                         key={segment.id}
                         className={`segment-tab ${segment.id === activeSegmentId ? 'selected' : ''}`}
                         onClick={() => setActiveSegmentId(segment.id)}
+                        initial={{ opacity: 0, y: prefersReducedMotion ? 0 : 6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{
+                          duration: motionDuration,
+                          delay: prefersReducedMotion ? 0 : Math.min(index, 7) * 0.025,
+                        }}
+                        whileTap={prefersReducedMotion ? undefined : { scale: 0.992 }}
                       >
                         <span>{segment.source_time}</span>
                         <strong>{segmentPhraseTitle(segment)}</strong>
@@ -2700,7 +2879,7 @@ function App() {
                             segment.phrase_card_focus ||
                             '等待模型或规则给出推荐理由'}
                         </small>
-                      </button>
+                      </motion.button>
                     )
                   })}
                   {visibleSegments.length === 0 ? (
@@ -2809,7 +2988,14 @@ function App() {
                         const cardPhraseStatus =
                           (card.phrase_review_status as SegmentFilter | undefined) ?? segmentReviewStatus(activeSegment)
                         return (
-                        <article className={`card-editor card-${qualityClass(card)}`} key={card.id}>
+                        <motion.article
+                          layout
+                          className={`card-editor card-${qualityClass(card)}`}
+                          key={card.id}
+                          initial={{ opacity: 0, y: prefersReducedMotion ? 0 : 8 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ duration: motionDuration }}
+                        >
                           <div className="card-editor-head">
                             <label className="toggle card-toggle">
                               <input
@@ -2915,7 +3101,7 @@ function App() {
                               />
                             </label>
                           </div>
-                        </article>
+                        </motion.article>
                         )
                       })}
                     </div>
@@ -2927,9 +3113,18 @@ function App() {
         </section>
       </main>
 
-      {settingsOpen ? (
-        <div className="settings-overlay" role="presentation" onClick={() => setSettingsOpen(false)}>
-          <section
+      <AnimatePresence>
+        {settingsOpen ? (
+        <motion.div
+          className="settings-overlay"
+          role="presentation"
+          onClick={() => setSettingsOpen(false)}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: motionDuration }}
+        >
+          <motion.section
             className="settings-dialog"
             ref={settingsDialogRef}
             role="dialog"
@@ -2937,6 +3132,10 @@ function App() {
             aria-labelledby="settings-title"
             tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
+            initial={{ opacity: 0, x: prefersReducedMotion ? 0 : 28 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: prefersReducedMotion ? 0 : 24 }}
+            transition={{ duration: motionDuration, ease: 'easeOut' }}
           >
             <div className="settings-dialog-header">
               <div>
@@ -2994,8 +3193,8 @@ function App() {
                   不含任何 API Key。
                 </p>
                 <div className="settings-row">
-                  <button className="ghost-button" type="button" onClick={checkEnv} disabled={busy}>
-                    {busy ? <Loader2 className="spin" size={18} /> : <CheckCircle2 size={18} />}
+                  <button className="ghost-button" type="button" onClick={checkEnv} disabled={appBusy}>
+                    {appBusy ? <Loader2 className="spin" size={18} /> : <CheckCircle2 size={18} />}
                     检查环境
                   </button>
                   <div className="env-grid">
@@ -3093,7 +3292,7 @@ function App() {
                     <p>{apiTestMessage}</p>
                     <small>{apiTestMeta}</small>
                   </div>
-                  <button className="primary-button" type="button" onClick={testApi} disabled={apiTesting}>
+                  <button className="primary-button" type="button" onClick={testApi} disabled={apiTesting || appBusy}>
                     {apiTesting ? <Loader2 className="spin" size={18} /> : <PlugZap size={18} />}
                     {apiTesting ? '测试中...' : '测试连接'}
                   </button>
@@ -3328,7 +3527,7 @@ function App() {
                     <p>{ttsTestMessage}</p>
                     <small>{ttsTestMeta}</small>
                   </div>
-                  <button className="primary-button" type="button" onClick={testTts} disabled={ttsTesting || busy}>
+                  <button className="primary-button" type="button" onClick={testTts} disabled={ttsTesting || appBusy}>
                     {ttsTesting ? <Loader2 className="spin" size={18} /> : <PlugZap size={18} />}
                     {ttsTesting ? '测试中...' : '测试 TTS'}
                   </button>
@@ -3580,9 +3779,10 @@ function App() {
               </section>
               ) : null}
             </div>
-          </section>
-        </div>
-      ) : null}
+          </motion.section>
+        </motion.div>
+        ) : null}
+      </AnimatePresence>
 
       {isTauriRuntime() ? (
         <div className="resize-handles" aria-hidden="true">
