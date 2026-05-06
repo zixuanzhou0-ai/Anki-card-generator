@@ -73,7 +73,7 @@ body,
 
 body {
   margin: 0;
-  min-width: 1120px;
+  min-width: 0;
   background: var(--bg);
 }
 
@@ -120,9 +120,9 @@ button:disabled {
   position: relative;
   z-index: 20;
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: minmax(180px, auto) minmax(0, 1fr) auto;
   align-items: center;
-  gap: 18px;
+  gap: 12px;
   height: var(--topbar-h);
   padding: 0 16px 0 14px;
   border-bottom: 1px solid var(--line);
@@ -187,6 +187,7 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
   max-width: min(520px, 46vw);
   padding: 7px 12px;
   color: var(--muted);
@@ -194,6 +195,13 @@ button:disabled {
   border-radius: 999px;
   background: var(--surface-raised);
   box-shadow: 0 1px 1px rgba(0, 0, 0, 0.03);
+}
+
+.status-chip span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-chip strong {
@@ -207,6 +215,7 @@ button:disabled {
 
 .topbar-actions {
   display: inline-flex;
+  min-width: 0;
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
@@ -275,7 +284,7 @@ button:disabled {
 
 .desktop-workspace {
   display: grid;
-  grid-template-columns: 58px minmax(320px, 370px) minmax(620px, 1fr);
+  grid-template-columns: 58px minmax(300px, 370px) minmax(0, 1fr);
   gap: 14px;
   height: calc(100vh - var(--topbar-h));
   padding: 14px;
@@ -311,6 +320,7 @@ button:disabled {
   justify-content: center;
   gap: 8px;
   min-height: 36px;
+  white-space: nowrap;
   border: 1px solid var(--line);
   border-radius: var(--radius-xs);
   font-weight: 690;
@@ -435,6 +445,7 @@ button:disabled {
 
 .panel-heading {
   display: flex;
+  min-width: 0;
   align-items: center;
   gap: 9px;
   color: var(--text);
@@ -442,9 +453,13 @@ button:disabled {
 
 .panel-heading h3 {
   margin: 0;
+  min-width: 0;
+  overflow: hidden;
   font-size: 15px;
   font-weight: 760;
   letter-spacing: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .label,
@@ -949,8 +964,18 @@ textarea:focus {
   gap: 12px;
 }
 
+.preview-header {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.preview-header .panel-heading {
+  flex: 1 1 180px;
+}
+
 .preview-actions {
   display: flex;
+  flex: 2 1 360px;
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
@@ -1709,23 +1734,121 @@ textarea:focus {
   cursor: nesw-resize;
 }
 
-@media (max-width: 1240px) {
+@media (max-width: 1400px) {
+  .brand-lockup {
+    min-width: 180px;
+  }
+
+  .brand-lockup .eyebrow {
+    display: none;
+  }
+
+  .mini-summary {
+    display: none;
+  }
+
+  .status-chip {
+    max-width: min(340px, 32vw);
+  }
+
+  .ghost-button,
+  .primary-button {
+    padding-right: 11px;
+    padding-left: 11px;
+  }
+
   .desktop-workspace {
-    grid-template-columns: 54px minmax(300px, 330px) minmax(620px, 1fr);
+    grid-template-columns: 48px minmax(220px, 260px) minmax(0, 1fr);
     gap: 10px;
     padding: 10px;
   }
 
   .review-dashboard {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .review-filters {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .preview-layout {
     grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 980px) {
+  .topbar {
+    grid-template-columns: minmax(150px, auto) minmax(0, 1fr) auto;
+    gap: 8px;
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+
+  .brand-lockup {
+    min-width: 150px;
+  }
+
+  .mini-summary {
+    display: none;
+  }
+
+  .status-chip {
+    max-width: min(260px, 30vw);
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+
+  .status-chip svg {
+    flex: 0 0 auto;
+  }
+
+  .desktop-workspace {
+    grid-template-columns: 42px minmax(190px, 230px) minmax(0, 1fr);
+    gap: 8px;
+    padding: 8px;
+  }
+
+  .app-rail {
+    border-radius: 16px;
+  }
+
+  .control-column > .panel,
+  .preview-panel {
+    padding: 14px;
+  }
+
+  .review-dashboard,
+  .review-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .preview-actions {
+    flex-basis: 100%;
+  }
+
+  .preview-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .segment-list {
+    max-height: 210px;
+  }
+
+  .segment-detail {
+    overflow: visible;
+  }
+
+  .segment-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .media-preview {
+    min-height: 170px;
+  }
+
+  .segment-copy,
+  .edit-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
