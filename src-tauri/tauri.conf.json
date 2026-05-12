@@ -15,7 +15,7 @@
         "title": "Anki 卡片生成器",
         "width": 1320,
         "height": 860,
-        "minWidth": 1120,
+        "minWidth": 960,
         "minHeight": 740,
         "resizable": true,
         "decorations": false,

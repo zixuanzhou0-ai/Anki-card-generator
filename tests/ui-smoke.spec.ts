@@ -8,11 +8,11 @@ test('desktop workflow shell supports simplified settings, URL mode, document mo
   await expect(page.getByText('等待生成')).toBeVisible()
   await expect(page.getByText('Anki 卡片列表预览')).toBeVisible()
 
-  await page.getByRole('button', { name: /设置/ }).click()
+  await page.getByRole('button', { name: '设置', exact: true }).click()
   await expect(page.getByRole('dialog', { name: '设置' })).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(page.getByRole('dialog', { name: '设置' })).toHaveCount(0)
-  await page.getByRole('button', { name: /设置/ }).click()
+  await page.getByRole('button', { name: '设置', exact: true }).click()
   await expect(page.getByRole('dialog', { name: '设置' })).toBeVisible()
   await expect(page.getByRole('button', { name: /MIMO Token Plan SGP/ })).toBeVisible()
   await expect(page.getByText('普通用户只需要选一个服务商')).toBeVisible()
@@ -81,11 +81,21 @@ test('desktop workflow shell supports simplified settings, URL mode, document mo
     { width: 1440, height: 1000 },
     { width: 1280, height: 900 },
     { width: 1120, height: 900 },
+    { width: 960, height: 900 },
   ]) {
     await page.setViewportSize(viewport)
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)
     expect(overflow).toBe(false)
   }
+
+  await page.setViewportSize({ width: 960, height: 900 })
+  await expect(page.getByRole('button', { name: /素材面板|打开面板/ })).toBeVisible()
+  await page.getByRole('button', { name: /素材面板|打开面板/ }).click()
+  await expect(page.getByLabel('素材和生成设置')).toBeVisible()
+  await expect(page.locator('.quality-funnel')).toBeVisible()
+  await page.getByLabel('关闭素材设置').click()
+  await page.waitForTimeout(260)
+  await page.setViewportSize({ width: 1440, height: 1000 })
 
   await page.screenshot({ path: 'test-results/ui-smoke-after-generate.png', fullPage: true })
 })

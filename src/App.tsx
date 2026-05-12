@@ -183,6 +183,23 @@ type WorkerOperation = {
   jobId?: string
 }
 
+type ResponsiveMode = 'wide' | 'medium' | 'compact'
+type InspectorState = 'open' | 'collapsed' | 'sheet'
+
+type QualityFunnel = {
+  subtitle_cues?: number
+  candidate_segments?: number
+  reviewed_keep?: number
+  mimo_kept?: number
+  recommended_cards?: number
+  review_cards?: number
+  rejected_cards?: number
+  rejected_segments?: number
+  duplicate_segments?: number
+  average_phrase_score?: number | null
+  short_reason?: string
+}
+
 type WorkerFinishedEvent = {
   job_id: string
   command: WorkerCommand
@@ -298,6 +315,7 @@ type Project = {
   max_segments?: number
   auto_max_segments?: boolean
   skip_video_slicing?: boolean
+  quality_funnel?: QualityFunnel
   segments: Segment[]
   warning?: string | null
   created_at: number
@@ -1064,13 +1082,19 @@ function isPlaceholderPhrase(value: string | null | undefined) {
   return !phrase || phrase === 'key expression' || phrase === 'n/a'
 }
 
+function clipText(value: string, maxLength: number) {
+  const text = value.replace(/\s+/g, ' ').trim()
+  if (text.length <= maxLength) return text
+  return `${text.slice(0, Math.max(0, maxLength - 1)).trim()}…`
+}
+
 function segmentPhraseTitle(segment: Segment) {
   if (!isPlaceholderPhrase(segment.phrase)) return segment.phrase
-  return '未识别词伙'
+  return segment.text ? `待选：${clipText(segment.text, 34)}` : '待模型挑选表达'
 }
 
 function segmentPhraseLabel(segment: Segment) {
-  return isPlaceholderPhrase(segment.phrase) ? '未识别词伙' : segment.phrase
+  return isPlaceholderPhrase(segment.phrase) ? '待模型挑选表达' : segment.phrase
 }
 
 function segmentReviewStatus(segment: Segment): SegmentFilter | 'unreviewed' {
@@ -1170,6 +1194,8 @@ function App() {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('api')
   const [secretPrefs, setSecretPrefs] = useState<SecretPrefs>(() => loadSecretPrefs())
   const [segmentFilter, setSegmentFilter] = useState<SegmentFilter>('all')
+  const [responsiveMode, setResponsiveMode] = useState<ResponsiveMode>('wide')
+  const [inspectorState, setInspectorState] = useState<InspectorState>('open')
   const prefersReducedMotion = useReducedMotion()
   const previewPanelRef = useRef<HTMLElement | null>(null)
   const settingsDialogRef = useRef<HTMLElement | null>(null)
@@ -1236,6 +1262,36 @@ function App() {
       shortReason,
     }
   }, [project, qualityCounts.recommended])
+
+  const qualityFunnel = useMemo<QualityFunnel>(() => {
+    const segments = project?.segments ?? []
+    const provided = project?.quality_funnel ?? {}
+    const scored = segments
+      .map((segment) => phraseValueScore(segment.phrase_value_score))
+      .filter((score): score is number => typeof score === 'number')
+    const averageScore = scored.length
+      ? scored.reduce((total, score) => total + score, 0) / scored.length
+      : null
+    return {
+      ...provided,
+      candidate_segments: provided.candidate_segments ?? segments.length,
+      reviewed_keep:
+        provided.reviewed_keep ??
+        segments.filter((segment) => {
+          const status = segmentReviewStatus(segment)
+          return status !== 'reject' && status !== 'duplicate'
+        }).length,
+      recommended_cards: qualityCounts.recommended,
+      review_cards: qualityCounts.review,
+      rejected_cards: qualityCounts.rejected,
+      rejected_segments:
+        provided.rejected_segments ?? segments.filter((segment) => segmentReviewStatus(segment) === 'reject').length,
+      duplicate_segments:
+        provided.duplicate_segments ?? segments.filter((segment) => segmentReviewStatus(segment) === 'duplicate').length,
+      average_phrase_score: provided.average_phrase_score ?? averageScore,
+      short_reason: provided.short_reason ?? qualityDiagnostics.shortReason,
+    }
+  }, [project, qualityCounts, qualityDiagnostics.shortReason])
 
   const segmentReviewCounts = useMemo(() => {
     const segments = project?.segments ?? []
@@ -1349,6 +1405,15 @@ function App() {
   const workerBusy = workerOperation.status === 'running' || workerOperation.status === 'cancelling'
   const appBusy = busy || workerBusy
   const isCancelling = workerOperation.status === 'cancelling'
+  const inspectorSheetOpen = responsiveMode === 'compact' && inspectorState === 'sheet'
+  const inspectorActionLabel =
+    responsiveMode === 'compact'
+      ? inspectorSheetOpen
+        ? '关闭面板'
+        : '素材面板'
+      : inspectorState === 'open'
+        ? '收起面板'
+        : '打开面板'
   const motionDuration = prefersReducedMotion ? 0 : 0.2
   const statusTone = appBusy || workerProgress
     ? 'active'
@@ -1365,6 +1430,25 @@ function App() {
   useEffect(() => {
     requestEditedDuringRunRef.current = requestEditedDuringRun
   }, [requestEditedDuringRun])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const syncResponsiveMode = () => {
+      const width = window.innerWidth
+      setResponsiveMode(width < 1080 ? 'compact' : width < 1320 ? 'medium' : 'wide')
+    }
+    syncResponsiveMode()
+    window.addEventListener('resize', syncResponsiveMode)
+    return () => window.removeEventListener('resize', syncResponsiveMode)
+  }, [])
+
+  useEffect(() => {
+    if (responsiveMode === 'compact' && inspectorState === 'open') {
+      setInspectorState('collapsed')
+    } else if (responsiveMode !== 'compact' && inspectorState === 'sheet') {
+      setInspectorState('open')
+    }
+  }, [responsiveMode, inspectorState])
 
   useEffect(() => {
     window.localStorage.setItem(REQUEST_STORAGE_KEY, JSON.stringify(stripRequestSecrets(request)))
@@ -1593,10 +1677,21 @@ function App() {
     setStatus(project ? '已定位到卡片预览区，可继续审核和编辑。' : '卡片预览区当前没有生成草稿，请先生成卡片。')
   }
 
-  const patchRequest = (patch: Partial<GenerateRequest>) => {
+  const markRequestEditedIfRunning = () => {
     if (workerOperationRef.current.status === 'running') {
       setRequestEditedDuringRun(true)
     }
+  }
+
+  const toggleInspector = () => {
+    setInspectorState((current) => {
+      if (responsiveMode === 'compact') return current === 'sheet' ? 'collapsed' : 'sheet'
+      return current === 'open' ? 'collapsed' : 'open'
+    })
+  }
+
+  const patchRequest = (patch: Partial<GenerateRequest>) => {
+    markRequestEditedIfRunning()
     setRequest((current) => ({ ...current, ...patch }))
   }
 
@@ -1608,6 +1703,7 @@ function App() {
   }
 
   const toggleCollectionLevel = (level: Level) => {
+    markRequestEditedIfRunning()
     setRequest((current) => {
       const selected = normalizeCollectionLevels(current.collection_levels, current.level)
       const next = selected.includes(level) ? selected.filter((item) => item !== level) : [...selected, level]
@@ -1619,6 +1715,7 @@ function App() {
   }
 
   const applyCollectionPreset = (mode: 'current' | 'below' | 'around') => {
+    markRequestEditedIfRunning()
     setRequest((current) => {
       const index = Math.max(0, levelOrder.indexOf(current.level))
       const collectionLevels =
@@ -1658,6 +1755,7 @@ function App() {
   }
 
   const patchApi = (patch: Partial<ApiConfig>) => {
+    markRequestEditedIfRunning()
     setRequest((current) => ({
       ...current,
       api_config: { ...current.api_config, ...patch },
@@ -1666,6 +1764,7 @@ function App() {
   }
 
   const patchTts = (patch: Partial<TtsConfig>) => {
+    markRequestEditedIfRunning()
     setRequest((current) => ({
       ...current,
       api_config: {
@@ -1699,6 +1798,7 @@ function App() {
   }
 
   const applyApiPreset = (preset: ApiPreset) => {
+    markRequestEditedIfRunning()
     setRequest((current) => ({
       ...current,
       api_config: {
@@ -1731,6 +1831,7 @@ function App() {
   }
 
   const toggleContent = (key: keyof ContentToggles) => {
+    markRequestEditedIfRunning()
     setRequest((current) => ({
       ...current,
       content_toggles: {
@@ -1741,6 +1842,7 @@ function App() {
   }
 
   const toggleCardType = (type: CardKind) => {
+    markRequestEditedIfRunning()
     setRequest((current) => {
       const exists = current.card_types.includes(type)
       const next = exists
@@ -2189,9 +2291,13 @@ function App() {
     const result = applyCardSelection(project, mode)
     setProject(result.project)
     setStatus(
-      mode === 'recommended'
-        ? `已只保留推荐卡：${result.selected} 张。待审和建议删除已关闭。`
-        : `已保留推荐卡和待审卡：${result.selected} 张。建议删除已关闭。`,
+      result.selected === 0
+        ? mode === 'recommended'
+          ? '当前没有推荐卡；可以切到“推荐+待审”，或查看质量漏斗了解为什么推荐数量少。'
+          : '当前没有可导出的推荐或待审卡；请手动勾选，或降低筛选强度后重新生成。'
+        : mode === 'recommended'
+          ? `已只保留推荐卡：${result.selected} 张。待审和建议删除已关闭。`
+          : `已保留推荐卡和待审卡：${result.selected} 张。建议删除已关闭。`,
     )
   }
 
@@ -2269,6 +2375,16 @@ function App() {
             <CheckCircle2 size={16} />
             <span>{status}</span>
           </div>
+          <button
+            className="ghost-button inspector-toggle"
+            type="button"
+            onClick={toggleInspector}
+            aria-pressed={inspectorState === 'open' || inspectorSheetOpen}
+            aria-expanded={inspectorState === 'open' || inspectorSheetOpen}
+          >
+            <Layers3 size={18} />
+            {inspectorActionLabel}
+          </button>
           <button className="ghost-button" type="button" onClick={() => setSettingsOpen(true)}>
             <Settings2 size={18} />
             设置
@@ -2298,7 +2414,10 @@ function App() {
       </header>
 
       <main className="workspace">
-        <section className="desktop-workspace">
+        <section
+          className={`desktop-workspace inspector-${inspectorState}`}
+          data-responsive-mode={responsiveMode}
+        >
           <nav className="app-rail" aria-label="功能导航">
             <div className="rail-brand" aria-hidden="true">
               <img src="/app-icon.png" alt="" />
@@ -2336,7 +2455,24 @@ function App() {
               <Settings2 size={19} />
             </button>
           </nav>
-          <aside className="control-column">
+          {inspectorSheetOpen ? (
+            <button
+              className="inspector-backdrop"
+              type="button"
+              aria-label="关闭素材面板遮罩"
+              onClick={() => setInspectorState('collapsed')}
+            />
+          ) : null}
+          <aside className={`control-column ${inspectorSheetOpen ? 'sheet-open' : ''}`} aria-label="素材和生成设置">
+          <div className="compact-inspector-head">
+            <div>
+              <span>素材设置</span>
+              <strong>生成前配置</strong>
+            </div>
+            <button type="button" className="icon-button" onClick={() => setInspectorState('collapsed')} aria-label="关闭素材设置">
+              <X size={18} />
+            </button>
+          </div>
           <section className="panel readiness-panel">
             <div className="readiness-head">
               <span>生成就绪</span>
@@ -2760,6 +2896,33 @@ function App() {
                     : '会说明为什么卡片少'}
                 </small>
               </div>
+            </div>
+
+            <div className="quality-funnel" aria-label="质量漏斗">
+              <span>
+                <strong>{project ? (qualityFunnel.subtitle_cues ?? '-') : '-'}</strong>
+                <small>字幕句</small>
+              </span>
+              <span>
+                <strong>{project ? (qualityFunnel.candidate_segments ?? '-') : '-'}</strong>
+                <small>候选片段</small>
+              </span>
+              <span>
+                <strong>{project ? (qualityFunnel.reviewed_keep ?? '-') : '-'}</strong>
+                <small>评审保留</small>
+              </span>
+              <span>
+                <strong>{project ? (qualityFunnel.recommended_cards ?? '-') : '-'}</strong>
+                <small>推荐卡</small>
+              </span>
+              <span>
+                <strong>{project ? (qualityFunnel.review_cards ?? '-') : '-'}</strong>
+                <small>待审卡</small>
+              </span>
+              <span>
+                <strong>{project ? (qualityFunnel.duplicate_segments ?? '-') : '-'}</strong>
+                <small>重复合并</small>
+              </span>
             </div>
 
             <div className="review-filters" aria-label="片段质量筛选">

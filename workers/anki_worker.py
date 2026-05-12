@@ -3761,6 +3761,11 @@ def handle_generate_document(payload: dict[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError):
         auto_segments = True
     emit_progress("generate", "done", 100, f"文档制卡完成：{len(segments)} 个知识点。")
+    quality_funnel = build_quality_funnel(
+        segments,
+        candidate_segments=len(segments),
+        reviewed_keep=len(segments),
+    )
     return {
         "id": f"project_{int(time.time())}",
         "title": title,
@@ -3775,12 +3780,58 @@ def handle_generate_document(payload: dict[str, Any]) -> dict[str, Any]:
         "card_types": ["knowledge"],
         "max_segments": max_segments,
         "auto_max_segments": auto_segments,
+        "quality_funnel": quality_funnel,
         "segments": segments,
         "warning": warning,
         "source_mode": "document",
         "source_url": "",
         "source_info": {"title": title, "document_path": document_path},
         "created_at": int(time.time()),
+    }
+
+
+def build_quality_funnel(
+    segments: list[dict[str, Any]],
+    subtitle_cues: int | None = None,
+    candidate_segments: int | None = None,
+    reviewed_keep: int | None = None,
+    mimo_kept: int | None = None,
+) -> dict[str, Any]:
+    cards = [card for segment in segments for card in segment.get("cards", [])]
+    recommended_cards = sum(1 for card in cards if (card.get("quality") or {}).get("status") == "recommended")
+    review_cards = sum(1 for card in cards if (card.get("quality") or {}).get("status") == "needs_review")
+    rejected_cards = sum(1 for card in cards if (card.get("quality") or {}).get("status") == "reject")
+    rejected_segments = sum(1 for segment in segments if segment.get("phrase_review_status") == "reject")
+    duplicate_segments = sum(1 for segment in segments if segment.get("phrase_review_status") == "duplicate")
+    scores = [
+        phrase_review_score(segment.get("phrase_value_score"))
+        for segment in segments
+        if phrase_review_score(segment.get("phrase_value_score")) > 0
+    ]
+    average_score = round(sum(scores) / len(scores), 2) if scores else None
+    if recommended_cards < 5:
+        if len(segments) < 6:
+            short_reason = "字幕片段太少或有效候选不足。"
+        elif recommended_cards == 0:
+            short_reason = "没有推荐卡，可能是词伙评分不足、模型返回空或筛选太严格。"
+        else:
+            short_reason = "推荐卡偏少，通常是重复合并、低价值表达或模型评审较严格。"
+    else:
+        short_reason = ""
+    return {
+        "subtitle_cues": subtitle_cues,
+        "candidate_segments": candidate_segments if candidate_segments is not None else len(segments),
+        "reviewed_keep": reviewed_keep
+        if reviewed_keep is not None
+        else sum(1 for segment in segments if segment.get("phrase_review_status") not in {"reject", "duplicate"}),
+        "mimo_kept": mimo_kept,
+        "recommended_cards": recommended_cards,
+        "review_cards": review_cards,
+        "rejected_cards": rejected_cards,
+        "rejected_segments": rejected_segments,
+        "duplicate_segments": duplicate_segments,
+        "average_phrase_score": average_score,
+        "short_reason": short_reason,
     }
 
 
@@ -3851,6 +3902,7 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         f"{'准备 MIMO 词伙评审。' if review_enabled else '使用本地评分。'}",
     )
     segments = build_segments(cues, segment_payload)
+    candidate_segment_count = len(segments)
     if not segments:
         fail("没有筛选出合适片段。请检查 SRT，或放宽内容开关。")
 
@@ -3876,6 +3928,7 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
     ai_payload = call_model_batches(payload, segments) if segments else None
     emit_progress("generate", "cards", 84, "正在整理卡片草稿。")
     segments, warning = merge_ai_cards(segments, ai_payload, card_types, level) if segments else ([], None)
+    reviewed_keep_count = len(segments)
     if review_warning:
         warning = f"{review_warning}；{warning}" if warning else review_warning
     if skipped_segments:
@@ -3886,6 +3939,13 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
     source_warning = (source_info or {}).get("warning")
     if source_warning:
         warning = f"{source_warning}；{warning}" if warning else source_warning
+    quality_funnel = build_quality_funnel(
+        segments,
+        subtitle_cues=len(cues),
+        candidate_segments=candidate_segment_count,
+        reviewed_keep=reviewed_keep_count,
+        mimo_kept=reviewed_keep_count if review_enabled else None,
+    )
     emit_progress("generate", "done", 100, f"生成完成：{len(segments)} 个片段组。")
     return {
         "id": project_id,
@@ -3901,6 +3961,7 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         "max_segments": max_segments,
         "auto_max_segments": auto_segments,
         "skip_video_slicing": skip_video_slicing,
+        "quality_funnel": quality_funnel,
         "segments": segments,
         "warning": warning,
         "source_mode": payload.get("source_mode", "local"),
