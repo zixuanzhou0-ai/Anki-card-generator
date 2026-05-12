@@ -109,6 +109,8 @@ import {
   getQualityFunnel,
   getSegmentReviewCounts,
 } from './domain/projectMetrics'
+import type { WorkerErrorActionId } from './domain/workerErrors'
+import { getWorkerErrorActions } from './domain/workerErrors'
 import {
   isMimoApiConfig,
   isMimoTokenPlanBase,
@@ -142,6 +144,7 @@ function App() {
   const [ttsTesting, setTtsTesting] = useState(false)
   const [ttsTestResult, setTtsTestResult] = useState<TtsTestResult | null>(null)
   const [lastExport, setLastExport] = useState<ExportResult | null>(null)
+  const [lastWorkerError, setLastWorkerError] = useState<WorkerFinishedEvent | null>(null)
   const [ankiVerifying, setAnkiVerifying] = useState(false)
   const [ankiVerifyResult, setAnkiVerifyResult] = useState<AnkiVerifyResult | null>(null)
   const [previewRate, setPreviewRate] = useState(0.75)
@@ -290,6 +293,10 @@ function App() {
       : /完成|通过|成功|可用|已打开|已切换|已套用|已保留/.test(status)
         ? 'ok'
         : 'idle'
+  const workerErrorActions = useMemo(
+    () => (lastWorkerError ? getWorkerErrorActions(lastWorkerError.error_code, lastWorkerError.fallbacks) : []),
+    [lastWorkerError],
+  )
 
   useEffect(() => {
     workerOperationRef.current = workerOperation
@@ -457,11 +464,13 @@ function App() {
       if (payload.cancelled) {
         setWorkerProgress(null)
         setWorkerOperation({ status: 'idle' })
+        setLastWorkerError(null)
         setStatus('任务已取消，可以继续调整后重新生成。')
         return
       }
       if (!payload.ok) {
         setWorkerOperation({ status: 'failed', command: payload.command, jobId: payload.job_id })
+        setLastWorkerError(payload)
         const safeError = redactSensitiveText(payload.error || '任务失败。')
         const structuredDetails = [
           payload.error_code ? `错误码：${payload.error_code}` : '',
@@ -481,6 +490,7 @@ function App() {
       } else if (payload.command === 'verify_anki_import') {
         applyVerifyResult(payload.result as AnkiVerifyResult)
       }
+      setLastWorkerError(null)
       setWorkerOperation({ status: 'succeeded', command: payload.command, jobId: payload.job_id })
       setRequestEditedDuringRun(false)
     })
@@ -602,6 +612,7 @@ function App() {
           : request.card_types
 
     setLastExport(null)
+    setLastWorkerError(null)
     setAnkiVerifyResult(null)
     setProject(null)
     setActiveSegmentId(null)
@@ -996,6 +1007,7 @@ function App() {
     } catch (error) {
       setBusy(false)
       setWorkerOperation({ status: 'failed', command: 'generate' })
+      setLastWorkerError(null)
       setStatus(redactSensitiveText(error))
     }
   }
@@ -1004,6 +1016,7 @@ function App() {
     const jobId = workerOperation.jobId
     if (!jobId || !workerBusy) return
     setWorkerOperation((current) => ({ ...current, status: 'cancelling' }))
+    setLastWorkerError(null)
     setStatus('正在取消当前任务，请稍等。')
     try {
       const result = await cancelWorkerJob(jobId)
@@ -1015,6 +1028,7 @@ function App() {
       }
     } catch (error) {
       setWorkerOperation((current) => ({ ...current, status: 'failed' }))
+      setLastWorkerError(null)
       setStatus(redactSensitiveText(error))
     }
   }
@@ -1057,6 +1071,7 @@ function App() {
     }
 
     setBusy(true)
+    setLastWorkerError(null)
     setWorkerProgress({ command: 'export', stage: 'start', percent: 1, message: '准备开始导出。' })
     setStatus(
       projectForExport.source_mode === 'document'
@@ -1083,6 +1098,7 @@ function App() {
     } catch (error) {
       setBusy(false)
       setWorkerOperation({ status: 'failed', command: 'export' })
+      setLastWorkerError(null)
       setStatus(redactSensitiveText(error))
     }
   }
@@ -1117,6 +1133,7 @@ function App() {
       return
     }
     setAnkiVerifying(true)
+    setLastWorkerError(null)
     setAnkiVerifyResult(null)
     setStatus('正在通过 AnkiConnect 核验导入后的卡片和媒体。')
     try {
@@ -1135,6 +1152,7 @@ function App() {
     } catch (error) {
       setAnkiVerifying(false)
       setWorkerOperation({ status: 'failed', command: 'verify_anki_import' })
+      setLastWorkerError(null)
       setStatus(redactSensitiveText(error))
     }
   }
@@ -1199,6 +1217,59 @@ function App() {
     setAnkiVerifyResult(null)
     patchRequest({ template_id: templateId })
     setProject((current) => (current ? { ...current, template_id: templateId } : current))
+  }
+
+  const handleWorkerErrorAction = (actionId: WorkerErrorActionId) => {
+    if (actionId === 'open-api-settings') {
+      setSettingsTab('api')
+      setSettingsOpen(true)
+      setLastWorkerError(null)
+      setStatus('已打开模型 API 设置，请检查 Key、Base URL 和模型名。')
+      return
+    }
+    if (actionId === 'open-tts-settings') {
+      setSettingsTab('tts')
+      setSettingsOpen(true)
+      setLastWorkerError(null)
+      setStatus('已打开 TTS 设置，请检查语音 Key、模型和声音。')
+      return
+    }
+    if (actionId === 'open-env-settings') {
+      setSettingsTab('env')
+      setSettingsOpen(true)
+      setLastWorkerError(null)
+      setStatus('已打开本地环境设置，请检查 Python、FFmpeg、yt-dlp 和依赖状态。')
+      return
+    }
+    if (actionId === 'use-subtitle-only') {
+      patchRequest({
+        source_mode: 'url',
+        url_import_mode: 'subtitles',
+        skip_video_slicing: true,
+        url_auto_subtitle_fallback: true,
+      })
+      setLastWorkerError(null)
+      setStatus('已切换到字幕-only：下次生成会跳过视频下载和切片，只用字幕继续制卡。')
+      return
+    }
+    if (actionId === 'skip-video-slicing') {
+      patchRequest({
+        skip_video_slicing: true,
+        url_import_mode: request.source_mode === 'url' ? 'subtitles' : request.url_import_mode,
+      })
+      setLastWorkerError(null)
+      setStatus('已开启跳过视频切片：下次导出会保留卡片内容，避开 FFmpeg 切片失败。')
+      return
+    }
+    if (actionId === 'retry') {
+      if (lastWorkerError?.command === 'export') {
+        void exportApkg()
+      } else if (lastWorkerError?.command === 'verify_anki_import') {
+        void verifyAnkiImport()
+      } else {
+        void generate()
+      }
+    }
   }
 
   const activeSegment = project?.segments.find((segment) => segment.id === activeSegmentId)
@@ -1357,6 +1428,21 @@ function App() {
               <strong>{appBusy ? '处理中' : '就绪'}</strong>
             </div>
             <p>{status}</p>
+            {workerErrorActions.length ? (
+              <div className="worker-error-actions" aria-label="失败后的可尝试操作">
+                {workerErrorActions.map((action) => (
+                  <button
+                    key={action.id}
+                    className="worker-error-action"
+                    type="button"
+                    title={action.description}
+                    onClick={() => handleWorkerErrorAction(action.id)}
+                  >
+                    {action.label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
             {workerBusy && requestEditedDuringRun ? (
               <small className="run-edit-note">本次任务使用开始时的配置；你刚修改的设置会在下一次生成生效。</small>
             ) : null}

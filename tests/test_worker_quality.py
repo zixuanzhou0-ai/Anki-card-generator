@@ -75,6 +75,15 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(payload["error_code"], "YOUTUBE_RATE_LIMIT")
         self.assertEqual(payload["fallbacks"], ["local_srt"])
 
+    def test_document_reader_is_exposed_through_worker_router(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            document_path = Path(temp_dir) / "note.txt"
+            document_path.write_text("Hello from a UTF-16 document.", encoding="utf-16")
+
+            text = worker.read_document_source(str(document_path))
+
+        self.assertIn("Hello from a UTF-16 document.", text)
+
     def test_cached_url_source_can_be_subtitle_only(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             cache_root = Path(temp_dir)

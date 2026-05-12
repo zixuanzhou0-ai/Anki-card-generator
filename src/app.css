@@ -856,6 +856,39 @@ textarea:focus {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.45;
+  white-space: pre-line;
+}
+
+.worker-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  padding-top: 2px;
+}
+
+.worker-error-action {
+  min-height: 30px;
+  padding: 0 10px;
+  color: var(--text);
+  border: 1px solid rgba(255, 159, 10, 0.32);
+  border-radius: var(--radius-xs);
+  background: rgba(255, 159, 10, 0.1);
+  font-size: 12px;
+  font-weight: 680;
+  line-height: 1;
+  transition:
+    transform 120ms ease,
+    border-color 160ms ease,
+    background-color 160ms ease;
+}
+
+.worker-error-action:hover {
+  border-color: rgba(255, 159, 10, 0.5);
+  background: rgba(255, 159, 10, 0.16);
+}
+
+.worker-error-action:active {
+  transform: scale(0.985);
 }
 
 .status-card header,
