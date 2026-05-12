@@ -2365,12 +2365,14 @@ function App() {
         </div>
         <div className="window-drag-region" />
         <div className="topbar-actions">
-          <div className="mini-summary" aria-label="项目摘要">
-            <span>{project ? `${project.segments.length} 个片段` : '等待生成'}</span>
-            <span>{badgeText(selectedCardCount)}</span>
-            <span>{project ? `${qualityCounts.review} 张待审` : segmentBudgetLabel(request.max_segments)}</span>
-            <span>{activeTemplate?.label ?? '沉浸视频'}</span>
-          </div>
+          {project ? (
+            <div className="mini-summary" aria-label="项目摘要">
+              <span>{`${project.segments.length} 个片段`}</span>
+              <span>{badgeText(selectedCardCount)}</span>
+              <span>{`${qualityCounts.review} 张待审`}</span>
+              <span>{activeTemplate?.label ?? '沉浸视频'}</span>
+            </div>
+          ) : null}
           <div className={`status-chip ${statusTone}`} title={status} role="status" aria-live="polite" aria-atomic="true">
             <CheckCircle2 size={16} />
             <span>{status}</span>
@@ -2839,26 +2841,33 @@ function App() {
             <div className="preview-header">
               <div className="panel-heading">
                 <MessageSquareText size={20} />
-                <h3 id="preview-title">Anki 卡片列表预览</h3>
+                <div>
+                  <h3 id="preview-title">{project ? 'Anki 卡片列表预览' : '生成工作台'}</h3>
+                  <p className="panel-subtitle">
+                    {project ? '检查片段、质量理由和可导出的卡片草稿。' : '先选择素材，再生成卡片；结果会在这里展开。'}
+                  </p>
+                </div>
               </div>
-              <div className="preview-actions">
-                <button className="ghost-button" type="button" onClick={() => setCardsEnabled(true)} disabled={!project}>
-                  全选
-                </button>
-                <button className="ghost-button" type="button" onClick={() => setCardsEnabled(false)} disabled={!project}>
-                  全不选
-                </button>
-                <button className="ghost-button" type="button" onClick={() => selectCardsByQuality('recommended')} disabled={!project}>
-                  只保留推荐
-                </button>
-                <button className="ghost-button" type="button" onClick={() => selectCardsByQuality('reviewable')} disabled={!project}>
-                  推荐+待审
-                </button>
-                <button className="primary-button export-button" type="button" onClick={exportApkg} disabled={appBusy || !project}>
-                  <Download size={18} />
-                  导出 .apkg
-                </button>
-              </div>
+              {project ? (
+                <div className="preview-actions">
+                  <button className="ghost-button" type="button" onClick={() => setCardsEnabled(true)}>
+                    全选
+                  </button>
+                  <button className="ghost-button" type="button" onClick={() => setCardsEnabled(false)}>
+                    全不选
+                  </button>
+                  <button className="ghost-button" type="button" onClick={() => selectCardsByQuality('recommended')}>
+                    只保留推荐
+                  </button>
+                  <button className="ghost-button" type="button" onClick={() => selectCardsByQuality('reviewable')}>
+                    推荐+待审
+                  </button>
+                  <button className="primary-button export-button" type="button" onClick={exportApkg} disabled={appBusy}>
+                    <Download size={18} />
+                    导出 .apkg
+                  </button>
+                </div>
+              ) : null}
             </div>
 
             {project ? (
@@ -2999,13 +3008,61 @@ function App() {
             ) : null}
 
             {!project ? (
-              <div className="empty-state">
-                <Sparkles size={28} />
-                <h4>当前没有打开的生成草稿</h4>
-                <p>
-                  这里不是 Anki 同步视图，只显示本软件生成后可编辑、可导出的草稿。已经导入到 Anki 的卡包和我用于
-                  验证模板的临时卡，不会自动回填到这里。选择素材后点击“生成卡片”，生成完成后才会出现片段和卡片列表。
-                </p>
+              <div className="empty-workbench">
+                <section className="workbench-hero">
+                  <span className="hero-kicker">Ready to build</span>
+                  <Sparkles size={32} />
+                  <h2>把真实素材变成 Anki 复习卡</h2>
+                  <p>
+                    选择视频、字幕或文档，设置学习范围，然后让模型提取值得记的表达。生成完成后，这里会显示片段、评分、理由和可导出的卡片。
+                  </p>
+                  <div className="hero-actions">
+                    <button className="primary-button" type="button" onClick={generate} disabled={appBusy}>
+                      {appBusy ? <Loader2 className="spin" size={18} /> : <Wand2 size={18} />}
+                      开始生成
+                    </button>
+                    <button className="ghost-button" type="button" onClick={() => setSettingsOpen(true)}>
+                      <Settings2 size={18} />
+                      检查 API
+                    </button>
+                  </div>
+                </section>
+                <div className="workflow-strip" aria-label="生成流程">
+                  <span>
+                    <strong>1</strong>
+                    素材
+                  </span>
+                  <span>
+                    <strong>2</strong>
+                    评审
+                  </span>
+                  <span>
+                    <strong>3</strong>
+                    制卡
+                  </span>
+                  <span>
+                    <strong>4</strong>
+                    导出
+                  </span>
+                </div>
+                <div className="workbench-summary-grid" aria-label="当前生成配置摘要">
+                  <span>
+                    <small>输入源</small>
+                    <strong>{request.source_mode === 'url' ? '视频链接' : request.source_mode === 'document' ? '文档资料' : '本地视频'}</strong>
+                  </span>
+                  <span>
+                    <small>学习水平</small>
+                    <strong>{request.level}</strong>
+                  </span>
+                  <span>
+                    <small>片段预算</small>
+                    <strong>{segmentBudgetLabel(request.max_segments)}</strong>
+                  </span>
+                  <span>
+                    <small>模板</small>
+                    <strong>{activeTemplate?.label ?? '沉浸视频'}</strong>
+                  </span>
+                </div>
               </div>
             ) : (
               <div className="preview-layout">

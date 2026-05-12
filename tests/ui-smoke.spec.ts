@@ -5,8 +5,9 @@ test('desktop workflow shell supports simplified settings, URL mode, document mo
   await page.goto('/')
 
   await expect(page.getByRole('heading', { name: 'Anki 卡片生成器' })).toBeVisible()
-  await expect(page.getByText('等待生成')).toBeVisible()
-  await expect(page.getByText('Anki 卡片列表预览')).toBeVisible()
+  await expect(page.getByText('生成工作台')).toBeVisible()
+  await expect(page.getByText('Ready to build', { exact: true })).toBeVisible()
+  await expect(page.getByText('把真实素材变成 Anki 复习卡')).toBeVisible()
 
   await page.getByRole('button', { name: '设置', exact: true }).click()
   await expect(page.getByRole('dialog', { name: '设置' })).toBeVisible()
