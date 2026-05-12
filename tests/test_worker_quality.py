@@ -84,6 +84,22 @@ class WorkerQualityTests(unittest.TestCase):
 
         self.assertIn("Hello from a UTF-16 document.", text)
 
+    def test_document_chunking_prefers_markdown_sections(self):
+        from acg.documents.chunking import split_document_chunks
+
+        text = "\n\n".join(
+            [
+                "# First idea\nThis section explains a transferable idea with enough detail for a review card.",
+                "# Second idea\nThis section explains another idea with examples, limits, and useful context.",
+            ]
+        )
+
+        segments = split_document_chunks(text, 5)
+
+        self.assertEqual(len(segments), 2)
+        self.assertEqual(segments[0]["id"], "doc_0001")
+        self.assertIn("First idea", segments[0]["phrase"])
+
     def test_cached_url_source_can_be_subtitle_only(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             cache_root = Path(temp_dir)

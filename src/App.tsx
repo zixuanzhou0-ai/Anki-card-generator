@@ -6,7 +6,6 @@ import {
   Boxes,
   CheckCircle2,
   CircleAlert,
-  CircleDot,
   Download,
   ExternalLink,
   FileText,
@@ -111,6 +110,9 @@ import {
 } from './domain/projectMetrics'
 import type { WorkerErrorActionId } from './domain/workerErrors'
 import { getWorkerErrorActions } from './domain/workerErrors'
+import { ReadinessPanel } from './features/generation/ReadinessPanel'
+import { StatusPanel } from './features/generation/StatusPanel'
+import { WorkerProgressPanel } from './features/generation/WorkerProgressPanel'
 import {
   isMimoApiConfig,
   isMimoTokenPlanBase,
@@ -1388,65 +1390,19 @@ function App() {
               <X size={18} />
             </button>
           </div>
-          <details className="panel readiness-panel readiness-details">
-            <summary className="readiness-head">
-              <span>生成就绪</span>
-              <strong>
-                {readiness.filter((item) => item.done).length}/{readiness.length}
-              </strong>
-            </summary>
-            <div className="readiness-grid">
-              {readiness.map((item) => (
-                <span className={item.done ? 'ready' : 'pending'} key={item.id}>
-                  {item.done ? <CheckCircle2 size={14} /> : <CircleAlert size={14} />}
-                  <strong>{item.label}</strong>
-                  <small>{item.detail}</small>
-                </span>
-              ))}
-            </div>
-          </details>
+          <ReadinessPanel items={readiness} />
 
-          {workerProgress ? (
-            <section className={`panel progress-panel ${workerProgress.percent >= 100 ? 'done' : ''}`}>
-              <div className="progress-head">
-                <span>{workerProgress.command === 'export' ? '导出进度' : '生成进度'}</span>
-                <strong>{workerProgress.percent}%</strong>
-              </div>
-              <div className="progress-bar" aria-label="任务进度">
-                <span style={{ width: `${workerProgress.percent}%` }} />
-              </div>
-              <p>
-                <CircleDot size={14} />
-                {workerProgress.message}
-              </p>
-            </section>
-          ) : null}
+          {workerProgress ? <WorkerProgressPanel progress={workerProgress} /> : null}
 
-          <section className={`panel status-panel ${statusTone}`} role="status" aria-live="polite" aria-atomic="true">
-            <div className="status-panel-head">
-              <span>当前状态</span>
-              <strong>{appBusy ? '处理中' : '就绪'}</strong>
-            </div>
-            <p>{status}</p>
-            {workerErrorActions.length ? (
-              <div className="worker-error-actions" aria-label="失败后的可尝试操作">
-                {workerErrorActions.map((action) => (
-                  <button
-                    key={action.id}
-                    className="worker-error-action"
-                    type="button"
-                    title={action.description}
-                    onClick={() => handleWorkerErrorAction(action.id)}
-                  >
-                    {action.label}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-            {workerBusy && requestEditedDuringRun ? (
-              <small className="run-edit-note">本次任务使用开始时的配置；你刚修改的设置会在下一次生成生效。</small>
-            ) : null}
-          </section>
+          <StatusPanel
+            appBusy={appBusy}
+            requestEditedDuringRun={requestEditedDuringRun}
+            status={status}
+            statusTone={statusTone}
+            workerBusy={workerBusy}
+            workerErrorActions={workerErrorActions}
+            onWorkerErrorAction={handleWorkerErrorAction}
+          />
 
           <section className="setup-grid">
             <div className="panel source-panel">
