@@ -1,5 +1,5 @@
 ﻿import { useEffect, useMemo, useRef, useState } from 'react'
-import type { ChangeEvent, MouseEvent, SyntheticEvent } from 'react'
+import type { MouseEvent } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import {
@@ -18,7 +18,6 @@ import {
   MessageSquareText,
   Minus,
   PlugZap,
-  Play,
   Settings2,
   Square,
   Subtitles,
@@ -45,7 +44,6 @@ import type {
   ResizeDirection,
   ResponsiveMode,
   SecretPrefs,
-  Segment,
   SegmentFilter,
   SettingsTab,
   SourceMode,
@@ -86,16 +84,7 @@ import {
   applyCardSelection,
   badgeText,
   isRecommendedCardForExport,
-  phraseValueScore,
-  qualityClass,
-  qualityLabel,
   segmentMatchesFilter,
-  segmentMediaEnd,
-  segmentMediaStart,
-  segmentPhraseLabel,
-  segmentPhraseTitle,
-  segmentReviewStatus,
-  segmentStatusLabel,
 } from './domain/quality'
 import {
   countSelectedCards,
@@ -112,6 +101,8 @@ import { WorkerProgressPanel } from './features/generation/WorkerProgressPanel'
 import { EmptyWorkbench } from './features/review/EmptyWorkbench'
 import { ExportResultPanel } from './features/review/ExportResultPanel'
 import { ReviewSummaryPanel } from './features/review/ReviewSummaryPanel'
+import { SegmentDetail } from './features/review/SegmentDetail'
+import { SegmentList } from './features/review/SegmentList'
 import {
   isMimoApiConfig,
   isMimoTokenPlanBase,
@@ -1276,22 +1267,6 @@ function App() {
   const activeSegment = project?.segments.find((segment) => segment.id === activeSegmentId)
   const activeSegmentVideoSrc = activeSegment && project?.video_path ? toAssetUrl(project.video_path) : ''
 
-  const handlePreviewLoaded = (event: SyntheticEvent<HTMLVideoElement>, segment: Segment) => {
-    const video = event.currentTarget
-    video.currentTime = Math.max(0, segmentMediaStart(segment))
-    video.playbackRate = previewRate
-  }
-
-  const handlePreviewTimeUpdate = (event: SyntheticEvent<HTMLVideoElement>, segment: Segment) => {
-    const video = event.currentTarget
-    const start = segmentMediaStart(segment)
-    const end = segmentMediaEnd(segment)
-    video.playbackRate = previewRate
-    if (video.currentTime >= end || video.currentTime < start) {
-      video.currentTime = Math.max(0, start)
-    }
-  }
-
   return (
     <div className="app-shell">
       <header
@@ -1815,269 +1790,25 @@ function App() {
               />
             ) : (
               <div className="preview-layout">
-                <div className="segment-list">
-                  {visibleSegments.map((segment, index) => {
-                    const status = segmentReviewStatus(segment)
-                    const score = phraseValueScore(segment.phrase_value_score)
-                    return (
-                      <motion.button
-                        layout
-                        type="button"
-                        key={segment.id}
-                        className={`segment-tab ${segment.id === activeSegmentId ? 'selected' : ''}`}
-                        onClick={() => setActiveSegmentId(segment.id)}
-                        initial={{ opacity: 0, y: prefersReducedMotion ? 0 : 6 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{
-                          duration: motionDuration,
-                          delay: prefersReducedMotion ? 0 : Math.min(index, 7) * 0.025,
-                        }}
-                        whileTap={prefersReducedMotion ? undefined : { scale: 0.992 }}
-                      >
-                        <span className="segment-tab-top">
-                          <span>{segment.source_time}</span>
-                          <em className={`segment-status ${status}`}>
-                            {segmentStatusLabel(status)}
-                            {score !== null ? ` · ${score}/5` : ''}
-                          </em>
-                        </span>
-                        <strong>{segmentPhraseTitle(segment)}</strong>
-                        <small>
-                          {segment.cards.filter((card) => card.enabled).length} 张卡 · 推荐 {segment.recommendation}/5
-                        </small>
-                        <small className="segment-reason">
-                          {segment.phrase_reject_reason ||
-                            segment.phrase_decision_reason ||
-                            segment.phrase_card_focus ||
-                            '等待模型或规则给出推荐理由'}
-                        </small>
-                      </motion.button>
-                    )
-                  })}
-                  {visibleSegments.length === 0 ? (
-                    <div className="filter-empty-state">
-                      <strong>当前筛选下没有片段</strong>
-                      <span>切换到“全部”可以查看完整生成结果。</span>
-                    </div>
-                  ) : null}
-                </div>
+                <SegmentList
+                  activeSegmentId={activeSegmentId}
+                  motionDuration={motionDuration}
+                  prefersReducedMotion={Boolean(prefersReducedMotion)}
+                  segments={visibleSegments}
+                  onSelectSegment={setActiveSegmentId}
+                />
 
                 {activeSegment ? (
-                  <div className="segment-detail">
-                    <div className="segment-toolbar">
-                      <div className="preview-rate" aria-label="预览播放速度">
-                        <span>播放</span>
-                        {[0.75, 1].map((rate) => (
-                          <button
-                            type="button"
-                            key={rate}
-                            className={previewRate === rate ? 'selected' : ''}
-                            onClick={() => setPreviewRate(rate)}
-                          >
-                            {rate}x
-                          </button>
-                        ))}
-                      </div>
-                      <div className="segment-actions">
-                        <button className="ghost-button" type="button" onClick={() => setCardsEnabled(true, activeSegment.id)}>
-                          本段全选
-                        </button>
-                        <button className="ghost-button" type="button" onClick={() => setCardsEnabled(false, activeSegment.id)}>
-                          本段停用
-                        </button>
-                      </div>
-                    </div>
-                    <div
-                      className={`media-preview ${activeSegmentVideoSrc ? 'has-video' : ''}`}
-                      aria-label="片段视频预览"
-                    >
-                      {activeSegmentVideoSrc ? (
-                        <>
-                          <video
-                            key={`${activeSegment.id}-${previewRate}`}
-                            controls
-                            playsInline
-                            preload="metadata"
-                            src={activeSegmentVideoSrc}
-                            onLoadedMetadata={(event) => handlePreviewLoaded(event, activeSegment)}
-                            onTimeUpdate={(event) => handlePreviewTimeUpdate(event, activeSegment)}
-                          />
-                          <span className="media-time">{activeSegment.media_source_time ?? activeSegment.source_time}</span>
-                        </>
-                      ) : (
-                        <>
-                          <Play size={28} />
-                          <span>{activeSegment.media_source_time ?? activeSegment.source_time}</span>
-                        </>
-                      )}
-                    </div>
-                    <div className="segment-copy">
-                      <div>
-                        <span className="label">英文原句</span>
-                        <strong>{activeSegment.text}</strong>
-                      </div>
-                      <div>
-                        <span className="label">重点词伙</span>
-                        <strong>{segmentPhraseLabel(activeSegment)}</strong>
-                      </div>
-                    </div>
-
-                    {(activeSegment.phrase_review_status ||
-                      activeSegment.phrase_decision_reason ||
-                      activeSegment.phrase_reject_reason ||
-                      activeSegment.phrase_card_focus ||
-                      activeSegment.phrase_value_score !== undefined) ? (
-                      <div className={`phrase-review-panel status-${segmentReviewStatus(activeSegment)}`}>
-                        <div>
-                          <span>AI 词伙评审</span>
-                          <strong>
-                            {segmentStatusLabel(segmentReviewStatus(activeSegment))}
-                            {phraseValueScore(activeSegment.phrase_value_score) !== null
-                              ? ` · ${phraseValueScore(activeSegment.phrase_value_score)}/5`
-                              : ''}
-                          </strong>
-                        </div>
-                        {activeSegment.phrase_card_focus ? <p>{activeSegment.phrase_card_focus}</p> : null}
-                        {activeSegment.phrase_decision_reason ? <p>{activeSegment.phrase_decision_reason}</p> : null}
-                        {activeSegment.phrase_reject_reason ? <p>{activeSegment.phrase_reject_reason}</p> : null}
-                      </div>
-                    ) : null}
-
-                    <div className="card-editor-list">
-                      {activeSegment.cards.length === 0 ? (
-                        <div className="segment-empty-note">
-                          <strong>这个片段没有生成可导出的卡</strong>
-                          <span>
-                            {activeSegment.phrase_reject_reason ||
-                              activeSegment.phrase_decision_reason ||
-                              '模型或规则认为它暂时不适合做精品词伙卡。'}
-                          </span>
-                        </div>
-                      ) : null}
-                      {activeSegment.cards.map((card) => {
-                        const skippedEntries = Object.entries(card.skipped_card_types ?? {})
-                        const cardPhraseScore = phraseValueScore(card.phrase_value_score ?? activeSegment.phrase_value_score)
-                        const cardPhraseStatus =
-                          (card.phrase_review_status as SegmentFilter | undefined) ?? segmentReviewStatus(activeSegment)
-                        return (
-                        <motion.article
-                          layout
-                          className={`card-editor card-${qualityClass(card)}`}
-                          key={card.id}
-                          initial={{ opacity: 0, y: prefersReducedMotion ? 0 : 8 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          transition={{ duration: motionDuration }}
-                        >
-                          <div className="card-editor-head">
-                            <label className="toggle card-toggle">
-                              <input
-                                type="checkbox"
-                                checked={card.enabled}
-                                onChange={() =>
-                                  updateCard(activeSegment.id, card.id, { enabled: !card.enabled })
-                                }
-                              />
-                              <span>{card.type_label}</span>
-                            </label>
-                            <div className="card-meta-row">
-                              <span className="difficulty">{card.difficulty}</span>
-                              <span className={`quality-badge ${qualityClass(card)}`}>
-                                {qualityLabel(card)}
-                                {typeof card.quality?.score === 'number' ? ` · ${card.quality.score}` : ''}
-                              </span>
-                            </div>
-                          </div>
-                          {(card.learning_goal || card.decision_reason || skippedEntries.length > 0) ? (
-                            <div className="card-plan" aria-label="卡片生成规划">
-                              <div>
-                                <span className={`role-badge ${card.card_role ?? 'primary'}`}>
-                                  {card.card_role === 'specialist' ? '专项卡' : '主卡'}
-                                </span>
-                                {card.learning_goal ? <strong>{card.learning_goal}</strong> : null}
-                              </div>
-                              {card.decision_reason ? <p>{card.decision_reason}</p> : null}
-                              {skippedEntries.length > 0 ? (
-                                <details className="skipped-card-types">
-                                  <summary>已合并 {skippedEntries.length} 个低价值卡型</summary>
-                                  <div>
-                                    {skippedEntries.map(([type, reason]) => (
-                                      <span key={type}>
-                                        {type}: {reason}
-                                      </span>
-                                    ))}
-                                  </div>
-                                </details>
-                              ) : null}
-                            </div>
-                          ) : null}
-                          {card.quality?.issues?.length ? (
-                            <div className="quality-issues" aria-label="卡片质量提示">
-                              {card.quality.issues.map((issue) => (
-                                <span key={issue}>{issue}</span>
-                              ))}
-                            </div>
-                          ) : null}
-                          {(cardPhraseScore !== null ||
-                            card.phrase_decision_reason ||
-                            card.phrase_reject_reason ||
-                            card.phrase_card_focus) ? (
-                            <div className={`phrase-card-review status-${cardPhraseStatus}`}>
-                              <span>
-                                词伙分
-                                {cardPhraseScore !== null ? ` ${cardPhraseScore}/5` : ''}
-                              </span>
-                              {card.phrase_card_focus ? <strong>{card.phrase_card_focus}</strong> : null}
-                              {card.phrase_decision_reason ? <p>{card.phrase_decision_reason}</p> : null}
-                              {card.phrase_reject_reason ? <p>{card.phrase_reject_reason}</p> : null}
-                            </div>
-                          ) : null}
-                          <div className="edit-grid">
-                            <label>
-                              中文意思
-                              <textarea
-                                value={card.chinese}
-                                onChange={(event: ChangeEvent<HTMLTextAreaElement>) =>
-                                  updateCard(activeSegment.id, card.id, { chinese: event.target.value })
-                                }
-                              />
-                            </label>
-                            <label>
-                              重点词伙
-                              <textarea
-                                value={card.phrase}
-                                onChange={(event: ChangeEvent<HTMLTextAreaElement>) =>
-                                  updateCard(activeSegment.id, card.id, { phrase: event.target.value })
-                                }
-                              />
-                            </label>
-                            <label>
-                              释义 / 搭配
-                              <textarea
-                                value={`${card.definition}\n${card.collocations}`}
-                                onChange={(event: ChangeEvent<HTMLTextAreaElement>) => {
-                                  const [definition, ...rest] = event.target.value.split('\n')
-                                  updateCard(activeSegment.id, card.id, {
-                                    definition,
-                                    collocations: rest.join('\n'),
-                                  })
-                                }}
-                              />
-                            </label>
-                            <label>
-                              老师评语
-                              <textarea
-                                value={card.teacher_note}
-                                onChange={(event: ChangeEvent<HTMLTextAreaElement>) =>
-                                  updateCard(activeSegment.id, card.id, { teacher_note: event.target.value })
-                                }
-                              />
-                            </label>
-                          </div>
-                        </motion.article>
-                        )
-                      })}
-                    </div>
-                  </div>
+                  <SegmentDetail
+                    motionDuration={motionDuration}
+                    prefersReducedMotion={Boolean(prefersReducedMotion)}
+                    previewRate={previewRate}
+                    segment={activeSegment}
+                    videoSrc={activeSegmentVideoSrc}
+                    onPreviewRateChange={setPreviewRate}
+                    onSetSegmentCardsEnabled={setCardsEnabled}
+                    onUpdateCard={updateCard}
+                  />
                 ) : null}
               </div>
             )}
