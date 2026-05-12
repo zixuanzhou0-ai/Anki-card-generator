@@ -284,7 +284,7 @@ button:disabled {
 
 .desktop-workspace {
   display: grid;
-  grid-template-columns: 58px minmax(300px, 370px) minmax(0, 1fr);
+  grid-template-columns: 58px minmax(380px, 430px) minmax(0, 1fr);
   gap: 14px;
   height: calc(100vh - var(--topbar-h));
   padding: 14px;
@@ -431,7 +431,7 @@ button:disabled {
   display: flex;
   min-height: 0;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
   overflow: auto;
   padding-right: 2px;
 }
@@ -445,7 +445,7 @@ button:disabled {
 }
 
 .control-column > .panel {
-  padding: 18px;
+  padding: 14px;
 }
 
 .setup-grid {
@@ -457,7 +457,7 @@ button:disabled {
 .settings-panel,
 .generation-panel {
   display: grid;
-  gap: 14px;
+  gap: 12px;
 }
 
 .panel-heading {
@@ -549,7 +549,7 @@ button:disabled {
 .segment-tab {
   width: 100%;
   min-width: 0;
-  padding: 12px;
+  padding: 10px;
   color: var(--text);
   text-align: left;
   transition:
@@ -671,15 +671,16 @@ textarea:focus {
 .toggle {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
   color: var(--text);
   font-weight: 650;
 }
 
 .toggle input {
-  width: 20px;
-  height: 20px;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
   accent-color: var(--blue);
 }
 
@@ -690,11 +691,13 @@ textarea:focus {
 .toggle-grid .toggle,
 .secret-toggle,
 .tts-enable-row {
-  min-height: 42px;
-  padding: 10px 12px;
+  min-height: 36px;
+  padding: 8px 10px;
   border: 1px solid var(--line);
   border-radius: var(--radius-xs);
   background: rgba(255, 255, 255, 0.62);
+  font-size: 14px;
+  line-height: 1.25;
 }
 
 .readiness-grid {
@@ -918,17 +921,32 @@ textarea:focus {
 
 .level-segmented {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .level-segmented button {
   display: grid;
-  gap: 3px;
-  min-height: 68px;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 52px;
+  padding: 9px 11px;
+  text-align: left;
 }
 
 .level-segmented button strong {
-  font-size: 18px;
+  margin: 0;
+  font-size: 19px;
+  line-height: 1;
+}
+
+.level-segmented button span {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.25;
+  word-break: keep-all;
 }
 
 .level-subheading {
@@ -1001,7 +1019,7 @@ textarea:focus {
 
 .review-dashboard {
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  margin-top: 14px;
+  margin-top: 12px;
 }
 
 .quality-funnel {
@@ -1044,7 +1062,8 @@ textarea:focus {
 
 .metric-card {
   min-width: 0;
-  padding: 14px;
+  min-height: 86px;
+  padding: 14px 16px;
 }
 
 .metric-card span {
@@ -1329,6 +1348,21 @@ textarea:focus {
   margin: 0;
   color: var(--muted);
   line-height: 1.55;
+}
+
+.empty-state {
+  align-self: center;
+  width: min(760px, 100%);
+  margin: clamp(42px, 8vh, 96px) auto 0;
+  padding: 30px 34px;
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow: none;
+}
+
+.empty-state h4 {
+  margin: 10px 0 8px;
+  font-size: 20px;
+  line-height: 1.25;
 }
 
 .card-editor-list {
@@ -1821,7 +1855,7 @@ textarea:focus {
   }
 
   .desktop-workspace {
-    grid-template-columns: 48px minmax(220px, 260px) minmax(0, 1fr);
+    grid-template-columns: 48px minmax(300px, 330px) minmax(0, 1fr);
     gap: 10px;
     padding: 10px;
   }
