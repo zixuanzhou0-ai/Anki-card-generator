@@ -1,7 +1,10 @@
 import importlib.util
+import io
+import json
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 
 
@@ -40,6 +43,37 @@ class WorkerQualityTests(unittest.TestCase):
 
         self.assertIn("YouTube 返回 HTTP 429", message)
         self.assertIn("本地 SRT", message)
+
+    def test_ytdlp_429_meta_is_structured_and_actionable(self):
+        meta = worker.yt_dlp_failure_meta(
+            "ERROR: Unable to download video subtitles for 'en': HTTP Error 429: Too Many Requests"
+        )
+
+        self.assertEqual(meta["error_code"], "YOUTUBE_RATE_LIMIT")
+        self.assertEqual(meta["stage"], "download_subtitles")
+        self.assertTrue(meta["retryable"])
+        self.assertIn("local_srt", meta["fallbacks"])
+
+    def test_worker_fail_emits_machine_readable_error(self):
+        from acg.protocol import ERROR_PREFIX, fail
+
+        stderr = io.StringIO()
+        with self.assertRaises(SystemExit):
+            with redirect_stderr(stderr):
+                fail(
+                    "YouTube 限流。",
+                    error_code="YOUTUBE_RATE_LIMIT",
+                    stage="download_subtitles",
+                    retryable=True,
+                    fallbacks=["local_srt"],
+                )
+
+        first_line = stderr.getvalue().splitlines()[0]
+        self.assertTrue(first_line.startswith(ERROR_PREFIX))
+        payload = json.loads(first_line.removeprefix(ERROR_PREFIX))
+        self.assertEqual(payload["message"], "YouTube 限流。")
+        self.assertEqual(payload["error_code"], "YOUTUBE_RATE_LIMIT")
+        self.assertEqual(payload["fallbacks"], ["local_srt"])
 
     def test_cached_url_source_can_be_subtitle_only(self):
         with tempfile.TemporaryDirectory() as temp_dir:

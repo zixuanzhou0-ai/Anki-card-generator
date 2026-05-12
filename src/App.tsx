@@ -1,9 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+﻿import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, MouseEvent, SyntheticEvent } from 'react'
-import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { open as openDialog } from '@tauri-apps/plugin-dialog'
-import { getCurrentWindow } from '@tauri-apps/api/window'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import {
   Boxes,
@@ -32,1143 +29,104 @@ import {
   X,
 } from 'lucide-react'
 
-type Level = 'A1' | 'A2' | 'B1' | 'B2' | 'C1' | 'C2'
-type CardKind = 'listening' | 'phrase' | 'cloze' | 'knowledge'
-type TemplateId = 'immersive' | 'dictionary' | 'minimal'
-type Provider = 'local' | 'mimo' | 'openai-compatible' | 'claude' | 'gemini'
-type TtsProvider = 'disabled' | 'mimo' | 'grok' | 'gemini' | 'openai-compatible'
-type SourceMode = 'local' | 'url' | 'document'
-type UrlImportMode = 'video' | 'subtitles'
-type SettingsTab = 'api' | 'tts' | 'env'
-type SegmentFilter = 'all' | 'recommended' | 'needs_review' | 'reject' | 'duplicate'
-type PhraseReviewStatus = 'recommended' | 'needs_review' | 'reject' | 'duplicate' | 'unreviewed' | string
-type ResizeDirection =
-  | 'East'
-  | 'North'
-  | 'NorthEast'
-  | 'NorthWest'
-  | 'South'
-  | 'SouthEast'
-  | 'SouthWest'
-  | 'West'
-
-type ContentToggles = {
-  daily: boolean
-  slang: boolean
-  sarcasm: boolean
-  business: boolean
-  culture: boolean
-  profanity: boolean
-  romance: boolean
-  rare: boolean
-}
-
-type ApiConfig = {
-  provider: Provider
-  base_url: string
-  api_key: string
-  model: string
-  capabilities: string[]
-  tts_provider?: string
-  tts_model?: string
-  tts_config: TtsConfig
-}
-
-type TtsConfig = {
-  enabled: boolean
-  provider: TtsProvider
-  base_url: string
-  api_key: string
-  model: string
-  voice: string
-  language: string
-  sample_rate: number
-  bit_rate: number
-}
-
-type ApiPreset = {
-  id: string
-  label: string
-  provider: Provider
-  base_url: string
-  model: string
-  capabilities: string[]
-  note: string
-  key_hint: string
-}
-
-type TtsPreset = {
-  id: string
-  label: string
-  provider: TtsProvider
-  base_url: string
-  model: string
-  voice: string
-  note: string
-  key_hint: string
-}
-
-type ApiTestResult = {
-  ok: boolean
-  provider: string
-  model: string
-  message: string
-  latency_ms?: number
-}
-
-type TtsTestResult = {
-  ok: boolean
-  provider: string
-  model: string
-  voice: string
-  message: string
-  latency_ms?: number
-  bytes?: number
-}
-
-type ExportResult = {
-  apkg_path: string
-  media_dir: string
-  deck_name?: string
-  media_prefix?: string
-  media_manifest?: Record<string, { sha256: string; bytes: number }>
-  cards: number
-  segments: number
-  media_summary?: {
-    video_segments: number
-    video_files: number
-    original_audio_files: number
-    sentence_tts_files: number
-    phrase_tts_files: number
-    media_files: number
-    media_bytes: number
-    media_mb: number
-  }
-  warnings?: string[]
-}
-
-type AnkiVerifyResult = {
-  ok: boolean
-  message: string
-  failed_checks: string[]
-  deck_name?: string
-  card_count?: number
-  expected_cards?: number | null
-  media_count_expected?: number
-  media_count_referenced?: number
-  media_count_checked?: number
-  missing_media?: string[]
-  mismatched_media?: Array<{ file: string; expected_sha256: string; actual_sha256: string }>
-  unexpected_media_references?: string[]
-  unreferenced_expected_media?: string[]
-}
-
-type WorkerProgress = {
-  job_id?: string
-  command: string
-  stage: string
-  percent: number
-  message: string
-}
-
-type WorkerCommand = 'generate' | 'export' | 'verify_anki_import'
-
-type WorkerJob = {
-  job_id: string
-}
-
-type WorkerOperation = {
-  status: 'idle' | 'running' | 'cancelling' | 'succeeded' | 'failed'
-  command?: WorkerCommand
-  jobId?: string
-}
-
-type ResponsiveMode = 'wide' | 'medium' | 'compact'
-type InspectorState = 'open' | 'collapsed' | 'sheet'
-
-type QualityFunnel = {
-  subtitle_cues?: number
-  candidate_segments?: number
-  reviewed_keep?: number
-  mimo_kept?: number
-  recommended_cards?: number
-  review_cards?: number
-  rejected_cards?: number
-  rejected_segments?: number
-  duplicate_segments?: number
-  average_phrase_score?: number | null
-  short_reason?: string
-}
-
-type WorkerFinishedEvent = {
-  job_id: string
-  command: WorkerCommand
-  ok: boolean
-  result?: unknown
-  error?: string
-  cancelled?: boolean
-}
-
-type EnvStatusItem = {
-  id: string
-  label: string
-  status: 'ok' | 'action' | 'blocked'
-  detail: string
-  fix?: string
-}
-
-type GenerateRequest = {
-  title: string
-  source_mode: SourceMode
-  source_url: string
-  url_import_mode: UrlImportMode
-  url_auto_subtitle_fallback: boolean
-  skip_video_slicing: boolean
-  video_path: string
-  subtitle_path: string
-  document_path: string
-  language: string
-  level: Level
-  collection_levels: Level[]
-  template_id: TemplateId
-  content_toggles: ContentToggles
-  card_types: CardKind[]
-  max_segments: number
-  api_config: ApiConfig
-}
-
-type Card = {
-  id: string
-  type: CardKind
-  type_label: string
-  enabled: boolean
-  card_role?: 'primary' | 'specialist' | string
-  learning_goal?: string
-  decision_reason?: string
-  skipped_card_types?: Record<string, string>
-  phrase_value_score?: number | string | null
-  phrase_decision_reason?: string
-  phrase_reject_reason?: string
-  phrase_card_focus?: string
-  phrase_review_status?: PhraseReviewStatus
-  english: string
-  chinese: string
-  phrase: string
-  definition: string
-  collocations: string
-  context: string
-  example: string
-  chinese_feel: string
-  why: string
-  difficulty: string
-  teacher_note: string
-  cloze: string
-  quality?: {
-    score: number
-    status: 'recommended' | 'needs_review' | 'reject'
-    issues: string[]
-  }
-}
-
-type Segment = {
-  id: string
-  start: number
-  end: number
-  media_start?: number
-  media_end?: number
-  media_source_time?: string
-  source_time: string
-  text: string
-  duration: number
-  recommendation: number
-  phrase: string
-  phrase_value_score?: number | string | null
-  phrase_decision_reason?: string
-  phrase_reject_reason?: string
-  phrase_card_focus?: string
-  phrase_review_status?: PhraseReviewStatus
-  phrase_review_source?: string
-  cards: Card[]
-}
-
-type Project = {
-  id: string
-  title: string
-  source_mode?: SourceMode
-  source_url?: string
-  source_info?: {
-    title?: string
-    webpage_url?: string
-    duration?: number
-    uploader?: string
-    download_dir?: string
-  } | null
-  video_path: string
-  subtitle_path: string
-  document_path?: string
-  language: string
-  level: Level
-  collection_levels?: Level[]
-  template_id: TemplateId
-  content_toggles: ContentToggles
-  card_types: CardKind[]
-  max_segments?: number
-  auto_max_segments?: boolean
-  skip_video_slicing?: boolean
-  quality_funnel?: QualityFunnel
-  segments: Segment[]
-  warning?: string | null
-  created_at: number
-}
-
-type EnvStatus = {
-  python?: string
-  python_executable?: string
-  venv?: boolean
-  ffmpeg?: boolean
-  ffmpeg_path?: string
-  ffmpeg_version?: string
-  genanki?: boolean
-  yt_dlp?: boolean
-  yt_dlp_version?: string
-  yt_dlp_js_runtime?: string
-  anki_connect?: boolean
-  anki_connect_detail?: string
-  packages?: Record<string, string>
-  status_items?: EnvStatusItem[]
-  worker?: string
-}
-
-type SecretPrefs = {
-  rememberModelKey: boolean
-  rememberTtsKey: boolean
-}
-
-const MIMO_OPENAI_BASE_URL = 'https://api.xiaomimimo.com/v1'
-const MIMO_TOKEN_PLAN_CN_BASE_URL = 'https://token-plan-cn.xiaomimimo.com/v1'
-const MIMO_TOKEN_PLAN_SGP_BASE_URL = 'https://token-plan-sgp.xiaomimimo.com/v1'
-const MIMO_TOKEN_PLAN_SGP_ANTHROPIC_BASE_URL = 'https://token-plan-sgp.xiaomimimo.com/anthropic'
-const PROJECT_STORAGE_KEY = 'anki-card-generator:last-project'
-
-const mimoTextModels = [
-  { value: 'mimo-v2.5-pro', label: 'MiMo-V2.5-Pro' },
-  { value: 'mimo-v2.5', label: 'MiMo-V2.5' },
-  { value: 'mimo-v2-pro', label: 'MiMo-V2-Pro' },
-  { value: 'mimo-v2-omni', label: 'MiMo-V2-Omni' },
-]
-
-const mimoTtsModels = [
-  { value: 'mimo-v2.5-tts', label: 'MiMo-V2.5-TTS' },
-  { value: 'mimo-v2.5-tts-voicedesign', label: 'MiMo-V2.5-TTS-VoiceDesign' },
-  { value: 'mimo-v2.5-tts-voiceclone', label: 'MiMo-V2.5-TTS-VoiceClone' },
-  { value: 'mimo-v2-tts', label: 'MiMo-V2-TTS' },
-]
-
-const mimoTtsVoices = ['Mia', 'Chloe', 'Milo', 'Dean', 'mimo_default', '冰糖', '茉莉', '苏打', '白桦', 'default_en', 'default_zh']
-
-const levels: Array<{ id: Level; label: string; note: string }> = [
-  { id: 'A1', label: 'A1 入门', note: '基础表达' },
-  { id: 'A2', label: 'A2 基础', note: '短句高频' },
-  { id: 'B1', label: 'B1 日常交流', note: '自然口语' },
-  { id: 'B2', label: 'B2 独立表达', note: '表达块' },
-  { id: 'C1', label: 'C1 高阶表达', note: '语气和隐含义' },
-  { id: 'C2', label: 'C2 接近母语', note: '细微语域' },
-]
-
-const levelOrder: Level[] = levels.map((level) => level.id)
-
-function defaultCollectionLevels(level: Level): Level[] {
-  const index = Math.max(0, levelOrder.indexOf(level))
-  const lower = Math.max(0, index - 1)
-  return levelOrder.slice(lower, index + 1)
-}
-
-function normalizeCollectionLevels(value: unknown, currentLevel: Level): Level[] {
-  if (!Array.isArray(value)) return defaultCollectionLevels(currentLevel)
-  const selected = value.filter((item): item is Level => levelOrder.includes(item as Level))
-  const unique = Array.from(new Set(selected))
-  return unique.length ? unique.sort((a, b) => levelOrder.indexOf(a) - levelOrder.indexOf(b)) : defaultCollectionLevels(currentLevel)
-}
-
-const contentOptions: Array<{ key: keyof ContentToggles; label: string; defaultOn: boolean }> = [
-  { key: 'daily', label: '日常表达', defaultOn: true },
-  { key: 'slang', label: '俚语', defaultOn: true },
-  { key: 'sarcasm', label: '吐槽 / 讽刺', defaultOn: true },
-  { key: 'business', label: '职场表达', defaultOn: true },
-  { key: 'culture', label: '文化梗', defaultOn: true },
-  { key: 'profanity', label: '脏话 / 粗口', defaultOn: false },
-  { key: 'romance', label: '暧昧 / 恋爱表达', defaultOn: false },
-  { key: 'rare', label: '低频生僻表达', defaultOn: false },
-]
-
-const cardOptions: Array<{ id: CardKind; label: string; note: string }> = [
-  { id: 'listening', label: '听力卡', note: '先听原声，不显示字幕' },
-  { id: 'phrase', label: '词伙卡', note: '释义、搭配、语境、中文感' },
-  { id: 'cloze', label: '填空卡', note: '翻面后核对关键表达' },
-]
-
-const templateOptions: Array<{ id: TemplateId; label: string; note: string; locked?: boolean }> = [
-  { id: 'immersive', label: '沉浸语言 V10', note: '当前主力模板：视频、音频、答案重点优先' },
-  { id: 'dictionary', label: '词典解释', note: '下一轮打磨，暂不开放', locked: true },
-  { id: 'minimal', label: '极简复习', note: '下一轮打磨，暂不开放', locked: true },
-]
-
-const capabilityLabels = ['structured_json', 'long_context', 'tts', 'asr', 'vision', 'omni', 'cheap_batch']
-
-const capabilityHelp: Record<string, string> = {
-  structured_json: '能稳定返回 JSON，生成卡片字段更不容易乱。',
-  long_context: '能处理更长字幕片段，适合一整集分块分析。',
-  tts: '支持语音合成，可在导出时额外生成 AI 朗读音频。',
-  asr: '后续用于无字幕视频识别，V1 暂未开放。',
-  vision: '后续可结合画面理解剧情，V1 暂未开放。',
-  omni: '支持图像、视频、音频等多模态理解；当前先保留为能力标签。',
-  cheap_batch: '适合批量便宜生成，质量通常需要人工抽查。',
-}
-
-const apiPresets: ApiPreset[] = [
-  {
-    id: 'local',
-    label: '本地草稿',
-    provider: 'local',
-    base_url: '',
-    model: 'local-fallback',
-    capabilities: ['structured_json'],
-    note: '不用 API Key，先用本地规则生成草稿，适合测试流程。',
-    key_hint: '不需要填写',
-  },
-  {
-    id: 'mimo-token-plan-sgp',
-    label: 'MIMO Token Plan SGP',
-    provider: 'mimo',
-    base_url: MIMO_TOKEN_PLAN_SGP_BASE_URL,
-    model: 'mimo-v2.5-pro',
-    capabilities: ['structured_json', 'long_context'],
-    note: '新加坡 Token Plan 专属 OpenAI 兼容端点；你的 tp-... Key 优先选这个。',
-    key_hint: 'Token Plan 专属 API Key，通常是 tp-...',
-  },
-  {
-    id: 'mimo-token-plan-sgp-anthropic',
-    label: 'MIMO SGP Anthropic',
-    provider: 'claude',
-    base_url: MIMO_TOKEN_PLAN_SGP_ANTHROPIC_BASE_URL,
-    model: 'mimo-v2.5-pro',
-    capabilities: ['structured_json', 'long_context'],
-    note: '兼容 Anthropic 协议的 Token Plan 端点；适合 Claude Code/OpenCode 类接口。',
-    key_hint: 'Token Plan 专属 API Key，通常是 tp-...',
-  },
-  {
-    id: 'mimo-v25-pro',
-    label: 'MIMO Public V2.5 Pro',
-    provider: 'mimo',
-    base_url: MIMO_OPENAI_BASE_URL,
-    model: 'mimo-v2.5-pro',
-    capabilities: ['structured_json', 'long_context'],
-    note: '小米 MiMo 旗舰文本/Agent 模型，适合高质量解释、长字幕和复杂筛选。',
-    key_hint: 'MiMo API Key，sk-... 或 Token Plan 的 tp-...',
-  },
-  {
-    id: 'mimo-v25',
-    label: 'MIMO V2.5 Omni',
-    provider: 'mimo',
-    base_url: MIMO_OPENAI_BASE_URL,
-    model: 'mimo-v2.5',
-    capabilities: ['structured_json', 'long_context', 'vision', 'asr', 'omni'],
-    note: '小米 MiMo V2.5 全模态模型；V1 先用于文本制卡，后续可接图像/音频理解。',
-    key_hint: 'MiMo API Key，sk-... 或 tp-...',
-  },
-  {
-    id: 'mimo-token-plan-cn',
-    label: 'MIMO Token Plan',
-    provider: 'mimo',
-    base_url: MIMO_TOKEN_PLAN_CN_BASE_URL,
-    model: 'mimo-v2.5-pro',
-    capabilities: ['structured_json', 'long_context'],
-    note: '套餐用户可用；如果控制台给了新加坡/欧洲专属端点，直接改 Base URL。',
-    key_hint: 'Token Plan Key，通常是 tp-...',
-  },
-  {
-    id: 'deepseek',
-    label: 'DeepSeek',
-    provider: 'openai-compatible',
-    base_url: 'https://api.deepseek.com/v1',
-    model: 'deepseek-chat',
-    capabilities: ['structured_json', 'long_context', 'cheap_batch'],
-    note: '推荐作为入门默认项：成本友好，适合批量生成解释草稿。',
-    key_hint: 'DeepSeek 控制台里的 API Key',
-  },
-  {
-    id: 'qwen',
-    label: 'Qwen / 通义',
-    provider: 'openai-compatible',
-    base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    model: 'qwen-plus',
-    capabilities: ['structured_json', 'long_context', 'cheap_batch'],
-    note: '中文解释通常稳，适合中英双语卡片字段生成。',
-    key_hint: 'DashScope API Key',
-  },
-  {
-    id: 'kimi',
-    label: 'Kimi / Moonshot',
-    provider: 'openai-compatible',
-    base_url: 'https://api.moonshot.cn/v1',
-    model: 'moonshot-v1-32k',
-    capabilities: ['structured_json', 'long_context'],
-    note: '长上下文友好，适合字幕块较长时使用。',
-    key_hint: 'Moonshot API Key',
-  },
-  {
-    id: 'grok',
-    label: 'Grok / xAI',
-    provider: 'openai-compatible',
-    base_url: 'https://api.x.ai/v1',
-    model: 'grok-3-mini',
-    capabilities: ['structured_json', 'long_context'],
-    note: '这是 xAI 文本模型配置；Grok TTS 请在下方“语音 TTS”单独配置。',
-    key_hint: 'xAI API Key',
-  },
-  {
-    id: 'openrouter',
-    label: 'OpenRouter',
-    provider: 'openai-compatible',
-    base_url: 'https://openrouter.ai/api/v1',
-    model: 'anthropic/claude-3.5-sonnet',
-    capabilities: ['structured_json', 'long_context'],
-    note: '适合一个 Key 路由多个模型；模型名要填 OpenRouter 的完整 ID。',
-    key_hint: 'OpenRouter API Key',
-  },
-  {
-    id: 'custom-compatible',
-    label: '自定义兼容',
-    provider: 'openai-compatible',
-    base_url: '',
-    model: '',
-    capabilities: ['structured_json', 'cheap_batch'],
-    note: '其他 OpenAI-compatible 服务用这个；按服务商后台复制 Base URL、Model 和 Key。',
-    key_hint: 'API Key',
-  },
-  {
-    id: 'claude',
-    label: 'Claude 原生',
-    provider: 'claude',
-    base_url: '',
-    model: 'claude-3-5-sonnet-latest',
-    capabilities: ['structured_json', 'long_context'],
-    note: '解释质量通常好，适合追求更自然、更像老师的中文说明。',
-    key_hint: 'Anthropic API Key',
-  },
-  {
-    id: 'gemini',
-    label: 'Gemini 原生',
-    provider: 'gemini',
-    base_url: '',
-    model: 'gemini-2.5-flash',
-    capabilities: ['structured_json', 'long_context'],
-    note: '适合长字幕理解；Gemini TTS 请在下方“语音 TTS”单独配置。',
-    key_hint: 'Gemini API Key',
-  },
-]
-
-const ttsPresets: TtsPreset[] = [
-  {
-    id: 'disabled',
-    label: '关闭 TTS',
-    provider: 'disabled',
-    base_url: '',
-    model: '',
-    voice: '',
-    note: '只使用视频原声音频，不额外生成 AI 朗读。',
-    key_hint: '不需要填写',
-  },
-  {
-    id: 'mimo-token-plan-sgp-tts',
-    label: 'MIMO SGP TTS',
-    provider: 'mimo',
-    base_url: MIMO_TOKEN_PLAN_SGP_BASE_URL,
-    model: 'mimo-v2.5-tts',
-    voice: 'Mia',
-    note: '新加坡 Token Plan 专属 TTS；走 /chat/completions + audio，不是 /audio/speech。',
-    key_hint: 'Token Plan 专属 API Key，通常是 tp-...',
-  },
-  {
-    id: 'mimo-v25-tts',
-    label: 'MIMO V2.5 TTS',
-    provider: 'mimo',
-    base_url: MIMO_OPENAI_BASE_URL,
-    model: 'mimo-v2.5-tts',
-    voice: 'Mia',
-    note: '小米 MiMo V2.5 基础语音合成；支持 Mia、Chloe、Milo、Dean 等内置声音。',
-    key_hint: '公共平台 Key，通常是 sk-...；tp- Key 请选 SGP TTS。',
-  },
-  {
-    id: 'mimo-v25-voice-design',
-    label: 'MIMO VoiceDesign',
-    provider: 'mimo',
-    base_url: MIMO_OPENAI_BASE_URL,
-    model: 'mimo-v2.5-tts-voicedesign',
-    voice: 'A warm, clear English teacher voice with natural pacing.',
-    note: 'MiMo V2.5 声音设计模型；Voice 栏填写声音描述，不填内置 voice_id。',
-    key_hint: 'MiMo API Key',
-  },
-  {
-    id: 'mimo-v25-voice-clone',
-    label: 'MIMO VoiceClone',
-    provider: 'mimo',
-    base_url: MIMO_OPENAI_BASE_URL,
-    model: 'mimo-v2.5-tts-voiceclone',
-    voice: 'mimo_default',
-    note: 'MiMo V2.5 声音克隆模型；当前先保留模型入口，参考平台要求填 voice。',
-    key_hint: 'MiMo API Key',
-  },
-  {
-    id: 'mimo-v2-tts',
-    label: 'MIMO V2 TTS',
-    provider: 'mimo',
-    base_url: MIMO_OPENAI_BASE_URL,
-    model: 'mimo-v2-tts',
-    voice: 'default_en',
-    note: 'MiMo V2 语音合成模型，适合旧套餐；常用 default_en、default_zh、mimo_default。',
-    key_hint: 'MiMo API Key',
-  },
-  {
-    id: 'grok',
-    label: 'Grok / xAI TTS',
-    provider: 'grok',
-    base_url: 'https://api.x.ai/v1',
-    model: '',
-    voice: 'eve',
-    note: '单独填写 xAI API Key；Grok TTS 使用 voice_id，例如 eve、ara、leo、rex、sal。',
-    key_hint: 'xAI API Key',
-  },
-  {
-    id: 'gemini-tts',
-    label: 'Gemini TTS',
-    provider: 'gemini',
-    base_url: '',
-    model: 'gemini-2.5-flash-preview-tts',
-    voice: 'Kore',
-    note: '单独填写 Gemini API Key；模型和声音按 Google AI Studio 后台调整。',
-    key_hint: 'Gemini API Key',
-  },
-  {
-    id: 'openai-speech',
-    label: 'OpenAI-compatible Speech',
-    provider: 'openai-compatible',
-    base_url: 'https://api.openai.com/v1',
-    model: 'gpt-4o-mini-tts',
-    voice: 'alloy',
-    note: '适配 /audio/speech 兼容接口；也可填 Groq 等服务商的 speech Base URL。',
-    key_hint: 'Speech API Key',
-  },
-]
-
-const featuredApiPresetIds = new Set(['mimo-token-plan-sgp', 'deepseek', 'custom-compatible'])
-const featuredTtsPresetIds = new Set(['disabled', 'mimo-token-plan-sgp-tts', 'grok', 'gemini-tts'])
-
-const featuredApiPresets = apiPresets.filter((preset) => featuredApiPresetIds.has(preset.id))
-const advancedApiPresets = apiPresets.filter((preset) => !featuredApiPresetIds.has(preset.id))
-const featuredTtsPresets = ttsPresets.filter((preset) => featuredTtsPresetIds.has(preset.id))
-const advancedTtsPresets = ttsPresets.filter((preset) => !featuredTtsPresetIds.has(preset.id))
-
-const defaultToggles = contentOptions.reduce((result, item) => {
-  result[item.key] = item.defaultOn
-  return result
-}, {} as ContentToggles)
-
-const defaultRequest: GenerateRequest = {
-  title: '',
-  source_mode: 'local',
-  source_url: '',
-  url_import_mode: 'video',
-  url_auto_subtitle_fallback: true,
-  skip_video_slicing: false,
-  video_path: '',
-  subtitle_path: '',
-  document_path: '',
-  language: 'English',
-  level: 'B1',
-  collection_levels: defaultCollectionLevels('B1'),
-  template_id: 'immersive',
-  content_toggles: defaultToggles,
-  card_types: ['listening', 'phrase', 'cloze'],
-  max_segments: 0,
-  api_config: {
-    provider: 'openai-compatible',
-    base_url: 'https://api.deepseek.com/v1',
-    api_key: '',
-    model: 'deepseek-chat',
-    capabilities: ['structured_json', 'long_context'],
-    tts_config: {
-      enabled: false,
-      provider: 'grok',
-      base_url: 'https://api.x.ai/v1',
-      api_key: '',
-      model: '',
-      voice: 'eve',
-      language: 'auto',
-      sample_rate: 24000,
-      bit_rate: 128000,
-    },
-  },
-}
-
-const REQUEST_STORAGE_KEY = 'anki-card-generator.request.v1'
-const SECRET_PREFS_STORAGE_KEY = 'anki-card-generator.secret-prefs.v1'
-
-function isTauriRuntime() {
-  return Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__)
-}
-
-function normalizeMimoModelId(value: string) {
-  const trimmed = value.trim()
-  return trimmed.toLowerCase().startsWith('mimo-') ? trimmed.toLowerCase() : trimmed
-}
-
-function isMimoTokenPlanKey(value: string) {
-  return value.trim().toLowerCase().startsWith('tp-')
-}
-
-function isMimoTokenPlanBase(value: string) {
-  return value.trim().toLowerCase().includes('token-plan-')
-}
-
-function isMimoApiConfig(api: ApiConfig) {
-  return api.provider === 'mimo' || api.base_url.toLowerCase().includes('xiaomimimo.com')
-}
-
-function resolveTtsConfig(tts: TtsConfig, api: ApiConfig): TtsConfig {
-  if (tts.provider !== 'mimo') return tts
-
-  const canReuseMainMimo = isMimoApiConfig(api) && api.api_key.trim()
-  const mainApiKey = canReuseMainMimo ? api.api_key.trim() : ''
-  const explicitTtsKey = tts.api_key.trim()
-  const staleTokenPlanTtsKey =
-    mainApiKey &&
-    isMimoTokenPlanKey(mainApiKey) &&
-    isMimoTokenPlanKey(explicitTtsKey) &&
-    explicitTtsKey !== mainApiKey
-  const apiKey = staleTokenPlanTtsKey ? mainApiKey : explicitTtsKey || mainApiKey
-  let baseUrl = tts.base_url.trim()
-
-  if (!baseUrl && canReuseMainMimo) {
-    baseUrl = api.base_url.trim()
-  }
-  if (!baseUrl) {
-    baseUrl = isMimoTokenPlanKey(apiKey) ? MIMO_TOKEN_PLAN_SGP_BASE_URL : MIMO_OPENAI_BASE_URL
-  }
-  if (isMimoTokenPlanKey(apiKey) && !isMimoTokenPlanBase(baseUrl)) {
-    baseUrl = MIMO_TOKEN_PLAN_SGP_BASE_URL
-  }
-
-  return {
-    ...tts,
-    api_key: apiKey,
-    base_url: baseUrl,
-    model: normalizeMimoModelId(tts.model || 'mimo-v2.5-tts'),
-    voice: tts.voice || 'Mia',
-  }
-}
-
-function normalizeSavedMimoConfig(saved: GenerateRequest): GenerateRequest {
-  const apiBase = saved.api_config.base_url.toLowerCase()
-  const isMimoText = saved.api_config.provider === 'mimo' || apiBase.includes('xiaomimimo.com')
-  const ttsBase = saved.api_config.tts_config.base_url.toLowerCase()
-  const isMimoTts = saved.api_config.tts_config.provider === 'mimo' || ttsBase.includes('xiaomimimo.com')
-
-  return {
-    ...saved,
-    api_config: {
-      ...saved.api_config,
-      model: isMimoText ? normalizeMimoModelId(saved.api_config.model) : saved.api_config.model,
-      tts_config: {
-        ...saved.api_config.tts_config,
-        model: isMimoTts ? normalizeMimoModelId(saved.api_config.tts_config.model) : saved.api_config.tts_config.model,
-      },
-    },
-  }
-}
-
-function stripRequestSecrets(request: GenerateRequest): GenerateRequest {
-  return {
-    ...request,
-    api_config: {
-      ...request.api_config,
-      api_key: '',
-      tts_config: {
-        ...request.api_config.tts_config,
-        api_key: '',
-      },
-    },
-  }
-}
-
-function loadSavedRequest(): GenerateRequest {
-  if (typeof window === 'undefined') return defaultRequest
-  try {
-    const raw = window.localStorage.getItem(REQUEST_STORAGE_KEY)
-    if (!raw) return defaultRequest
-    const saved = JSON.parse(raw) as Partial<GenerateRequest>
-    const savedApi = (saved.api_config ?? {}) as Partial<ApiConfig>
-    const savedTts = (savedApi.tts_config ?? {}) as Partial<TtsConfig>
-    const legacyTtsProvider = savedApi.tts_provider?.trim()
-    const legacyTtsModel = savedApi.tts_model?.trim()
-    return stripRequestSecrets(normalizeSavedMimoConfig({
-      ...defaultRequest,
-      ...saved,
-      url_import_mode: (saved.url_import_mode ?? defaultRequest.url_import_mode) as UrlImportMode,
-      url_auto_subtitle_fallback: saved.url_auto_subtitle_fallback ?? defaultRequest.url_auto_subtitle_fallback,
-      skip_video_slicing: saved.skip_video_slicing ?? defaultRequest.skip_video_slicing,
-      collection_levels: normalizeCollectionLevels(saved.collection_levels, (saved.level ?? defaultRequest.level) as Level),
-      content_toggles: {
-        ...defaultRequest.content_toggles,
-        ...(saved.content_toggles ?? {}),
-      },
-      api_config: {
-        ...defaultRequest.api_config,
-        ...savedApi,
-        tts_config: {
-          ...defaultRequest.api_config.tts_config,
-          ...savedTts,
-          provider: (savedTts.provider ?? legacyTtsProvider ?? defaultRequest.api_config.tts_config.provider) as TtsProvider,
-          voice: savedTts.voice ?? legacyTtsModel ?? defaultRequest.api_config.tts_config.voice,
-          enabled: savedTts.enabled ?? Boolean(legacyTtsProvider),
-        },
-      },
-      card_types: saved.card_types?.length ? saved.card_types : defaultRequest.card_types,
-    }))
-  } catch {
-    return defaultRequest
-  }
-}
-
-function loadSavedProject(): Project | null {
-  if (typeof window === 'undefined') return null
-  try {
-    const raw = window.localStorage.getItem(PROJECT_STORAGE_KEY)
-    if (!raw) return null
-    const saved = JSON.parse(raw) as Project
-    if (!saved || !Array.isArray(saved.segments) || saved.segments.length === 0) return null
-    return {
-      ...saved,
-      template_id: saved.template_id ?? 'immersive',
-      source_mode: saved.source_mode ?? 'local',
-      segments: saved.segments.map((segment) => ({
-        ...segment,
-        cards: Array.isArray(segment.cards) ? segment.cards : [],
-      })),
-    }
-  } catch {
-    return null
-  }
-}
-
-function loadSecretPrefs(): SecretPrefs {
-  if (typeof window === 'undefined') return { rememberModelKey: false, rememberTtsKey: false }
-  try {
-    const raw = window.localStorage.getItem(SECRET_PREFS_STORAGE_KEY)
-    if (!raw) return { rememberModelKey: false, rememberTtsKey: false }
-    const parsed = JSON.parse(raw) as Partial<SecretPrefs>
-    return {
-      rememberModelKey: Boolean(parsed.rememberModelKey),
-      rememberTtsKey: Boolean(parsed.rememberTtsKey),
-    }
-  } catch {
-    return { rememberModelKey: false, rememberTtsKey: false }
-  }
-}
-
-async function runWorker<T>(command: string, payload: unknown): Promise<T> {
-  return invoke<T>('run_worker', { command, payload })
-}
-
-async function startWorkerJob(command: WorkerCommand, payload: unknown): Promise<WorkerJob> {
-  return invoke<WorkerJob>('start_worker_job', { command, payload })
-}
-
-async function cancelWorkerJob(jobId: string): Promise<{ cancelled: boolean }> {
-  return invoke<{ cancelled: boolean }>('cancel_worker_job', { jobId })
-}
-
-async function saveSecret(key: 'model_api_key' | 'tts_api_key', value: string) {
-  if (!isTauriRuntime()) return
-  await invoke('save_secret', { key, value })
-}
-
-async function loadSecret(key: 'model_api_key' | 'tts_api_key') {
-  if (!isTauriRuntime()) return ''
-  return (await invoke<string | null>('load_secret', { key })) ?? ''
-}
-
-async function deleteSecret(key: 'model_api_key' | 'tts_api_key') {
-  if (!isTauriRuntime()) return
-  await invoke('delete_secret', { key })
-}
-
-function createDemoProject(request: GenerateRequest): Project {
-  if (request.source_mode === 'document') {
-    const segment: Segment = {
-      id: 'doc_demo_001',
-      start: 0,
-      end: 0,
-      source_time: '文档知识点 1',
-      text: 'What is spaced repetition and why does it improve long-term memory?',
-      duration: 0,
-      recommendation: 5,
-      phrase: 'spaced repetition',
-      cards: [
-        {
-          id: 'doc_demo_001_knowledge',
-          type: 'knowledge',
-          type_label: '知识卡',
-          enabled: true,
-          english: 'What is spaced repetition and why does it improve long-term memory?',
-          chinese: '间隔重复会在遗忘前重新唤起记忆，让长期记忆更稳固。',
-          phrase: 'spaced repetition',
-          definition: '一种把复习安排在逐渐拉长的时间间隔中的学习方法。',
-          collocations: 'spaced repetition system; review interval; active recall',
-          context: '适合从文章、教材、讲义中抽取核心概念和可复习问题。',
-          example: 'Anki uses spaced repetition to schedule the next review.',
-          chinese_feel: '中文里更接近“隔一段时间再复习，而不是一次性死背”。',
-          why: '这是理解 Anki 工作方式的基础概念，也容易迁移到任何学科。',
-          difficulty: 'B1 日常交流',
-          teacher_note: '这张卡要记住的是机制，不是背定义：为什么“隔开复习”更有效。',
-          cloze: '____ improves long-term memory by scheduling reviews before forgetting.',
-          quality: {
-            score: 88,
-            status: 'recommended',
-            issues: [],
-          },
-        },
-      ],
-    }
-    return {
-      id: 'demo_document_project',
-      title: request.title || '文档知识卡 Demo',
-      source_mode: request.source_mode,
-      source_url: '',
-      source_info: null,
-      video_path: '',
-      subtitle_path: '',
-      document_path: request.document_path || 'demo.md',
-      language: request.language,
-      level: request.level,
-      collection_levels: request.collection_levels,
-      template_id: request.template_id,
-      content_toggles: request.content_toggles,
-      card_types: ['knowledge'],
-      segments: [segment],
-      warning: '浏览器预览模式：真实文档解析和 apkg 导出需要在 Tauri 桌面端运行。',
-      created_at: Date.now(),
-    }
-  }
-
-  const sampleSegments: Segment[] = [
-    {
-      id: 'seg_demo_001',
-      start: 754.2,
-      end: 758.4,
-      source_time: '00:12:34.200 - 00:12:38.400',
-      text: "I'm not really in the mood right now.",
-      duration: 4.2,
-      recommendation: 5,
-      phrase: 'in the mood',
-      cards: [],
-    },
-    {
-      id: 'seg_demo_002',
-      start: 941.1,
-      end: 945.3,
-      source_time: '00:15:41.100 - 00:15:45.300',
-      text: "Can we figure this out later?",
-      duration: 4.2,
-      recommendation: 4,
-      phrase: 'figure out',
-      cards: [],
-    },
-  ]
-
-  sampleSegments.forEach((segment) => {
-    segment.cards = request.card_types.map((type) => {
-      const label = cardOptions.find((card) => card.id === type)?.label ?? type
-      const cloze = segment.text.replace(new RegExp(segment.phrase, 'i'), '____')
-      return {
-        id: `${segment.id}_${type}`,
-        type,
-        type_label: label,
-        enabled: true,
-        english: segment.text,
-        chinese:
-          segment.id === 'seg_demo_001'
-            ? '我现在真的没那个心情。'
-            : '我们能不能晚点再把这件事弄明白？',
-        phrase: segment.phrase,
-        definition: `${segment.phrase} 是一个高频口语词伙，表达状态、处理问题或理解含义。`,
-        collocations:
-          segment.phrase === 'in the mood'
-            ? 'not in the mood; in the mood for coffee; in the mood to talk'
-            : 'figure it out; figure out why; figure out what happened',
-        context: '常见于朋友、家人、同事之间的自然对话，语气比正式书面表达更松弛。',
-        example:
-          segment.phrase === 'in the mood'
-            ? "I'm not in the mood to go out tonight."
-            : "Give me a minute. I'll figure it out.",
-        chinese_feel:
-          segment.phrase === 'in the mood'
-            ? '中文里更接近“没那个心情”。'
-            : '中文里更接近“弄明白 / 想清楚”。',
-        why: '这句短、真实、可迁移，适合用来训练听力和表达块。',
-        difficulty: levels.find((level) => level.id === request.level)?.label ?? request.level,
-        teacher_note: `这句值得学，因为 ${segment.phrase} 是真实口语里的高频表达。`,
-        cloze,
-        quality: {
-          score: 86,
-          status: 'recommended',
-          issues: [],
-        },
-      }
-    })
-  })
-
-  return {
-    id: 'demo_project',
-    title: request.title || 'Friends S01E01 Demo',
-    source_mode: request.source_mode,
-    source_url: request.source_url,
-    source_info: request.source_mode === 'url' ? { title: 'URL Demo', webpage_url: request.source_url } : null,
-    video_path: request.video_path || 'demo.mp4',
-    subtitle_path: request.subtitle_path || 'demo.srt',
-    language: request.language,
-    level: request.level,
-    collection_levels: request.collection_levels,
-    template_id: request.template_id,
-    content_toggles: request.content_toggles,
-    card_types: request.card_types,
-    segments: sampleSegments,
-    warning: '浏览器预览模式：真实视频切片和 apkg 导出需要在 Tauri 桌面端运行。',
-    created_at: Date.now(),
-  }
-}
-
-function badgeText(count: number) {
-  return count > 0 ? `${count} 张已选` : '未选择卡片'
-}
-
-function qualityLabel(card: Card) {
-  const status = card.quality?.status
-  if (status === 'recommended') return '推荐保留'
-  if (status === 'needs_review') return '需要检查'
-  if (status === 'reject') return '建议删除'
-  return '未评分'
-}
-
-function qualityClass(card: Card) {
-  return card.quality?.status ?? 'unknown'
-}
-
-const segmentFilterOptions: Array<{ id: SegmentFilter; label: string }> = [
-  { id: 'all', label: '全部' },
-  { id: 'recommended', label: '推荐' },
-  { id: 'needs_review', label: '待审' },
-  { id: 'reject', label: '已拒绝' },
-  { id: 'duplicate', label: '重复合并' },
-]
-
-function phraseValueScore(value: number | string | null | undefined) {
-  const score = Number(value)
-  return Number.isFinite(score) ? score : null
-}
-
-function isPlaceholderPhrase(value: string | null | undefined) {
-  const phrase = String(value ?? '').trim().toLowerCase()
-  return !phrase || phrase === 'key expression' || phrase === 'n/a'
-}
-
-function clipText(value: string, maxLength: number) {
-  const text = value.replace(/\s+/g, ' ').trim()
-  if (text.length <= maxLength) return text
-  return `${text.slice(0, Math.max(0, maxLength - 1)).trim()}…`
-}
-
-function segmentPhraseTitle(segment: Segment) {
-  if (!isPlaceholderPhrase(segment.phrase)) return segment.phrase
-  return segment.text ? `待选：${clipText(segment.text, 34)}` : '待模型挑选表达'
-}
-
-function segmentPhraseLabel(segment: Segment) {
-  return isPlaceholderPhrase(segment.phrase) ? '待模型挑选表达' : segment.phrase
-}
-
-function segmentReviewStatus(segment: Segment): SegmentFilter | 'unreviewed' {
-  const status = String(segment.phrase_review_status ?? '').trim()
-  if (status === 'recommended' || status === 'needs_review' || status === 'reject' || status === 'duplicate') {
-    return status
-  }
-  if (segment.cards.some((card) => card.quality?.status === 'recommended')) return 'recommended'
-  if (segment.cards.some((card) => card.quality?.status === 'needs_review')) return 'needs_review'
-  if (!segment.cards.length || segment.cards.every((card) => card.quality?.status === 'reject')) return 'reject'
-  return 'unreviewed'
-}
-
-function segmentStatusLabel(status: SegmentFilter | 'unreviewed') {
-  if (status === 'recommended') return '推荐'
-  if (status === 'needs_review') return '待审'
-  if (status === 'reject') return '已拒绝'
-  if (status === 'duplicate') return '重复合并'
-  return '未评审'
-}
-
-function segmentMatchesFilter(segment: Segment, filter: SegmentFilter) {
-  if (filter === 'all') return true
-  return segmentReviewStatus(segment) === filter
-}
-
-function segmentMediaStart(segment: Segment) {
-  return Number.isFinite(Number(segment.media_start)) ? Number(segment.media_start) : segment.start
-}
-
-function segmentMediaEnd(segment: Segment) {
-  return Number.isFinite(Number(segment.media_end)) ? Number(segment.media_end) : segment.end
-}
-
-function segmentBudgetLabel(value: number | undefined) {
-  return value && value > 0 ? `${value} 段上限` : '自动片段'
-}
-
-function isRecommendedCardForExport(segment: Segment, card: Card) {
-  const quality = card.quality?.status
-  if (quality === 'recommended') return true
-  if (quality === 'reject') return false
-  const reviewStatus = segmentReviewStatus(segment)
-  const score = phraseValueScore(card.phrase_value_score ?? segment.phrase_value_score)
-  return reviewStatus === 'recommended' || Boolean(score && score >= 4)
-}
-
-function isReviewableCardForExport(segment: Segment, card: Card) {
-  if (card.quality?.status === 'reject') return false
-  if (isRecommendedCardForExport(segment, card)) return true
-  const reviewStatus = segmentReviewStatus(segment)
-  const score = phraseValueScore(card.phrase_value_score ?? segment.phrase_value_score)
-  return card.quality?.status === 'needs_review' || reviewStatus === 'needs_review' || Boolean(score && score >= 3)
-}
-
-function applyCardSelection(project: Project, mode: 'recommended' | 'reviewable') {
-  let selected = 0
-  const nextProject = {
-    ...project,
-    segments: project.segments.map((segment) => ({
-      ...segment,
-      cards: segment.cards.map((card) => {
-        const enabled =
-          mode === 'recommended'
-            ? isRecommendedCardForExport(segment, card)
-            : isReviewableCardForExport(segment, card)
-        if (enabled) selected += 1
-        return { ...card, enabled }
-      }),
-    })),
-  }
-  return { project: nextProject, selected }
-}
-
+import type {
+  AnkiVerifyResult,
+  ApiConfig,
+  ApiPreset,
+  ApiTestResult,
+  Card,
+  CardKind,
+  ContentToggles,
+  EnvStatus,
+  ExportResult,
+  GenerateRequest,
+  InspectorState,
+  Level,
+  Project,
+  Provider,
+  QualityFunnel,
+  ResizeDirection,
+  ResponsiveMode,
+  SecretPrefs,
+  Segment,
+  SegmentFilter,
+  SettingsTab,
+  SourceMode,
+  TemplateId,
+  TtsConfig,
+  TtsPreset,
+  TtsProvider,
+  TtsTestResult,
+  WorkerFinishedEvent,
+  WorkerOperation,
+  WorkerProgress,
+} from './domain/types'
+import { createDemoProject } from './domain/demoProject'
+import {
+  advancedApiPresets,
+  advancedTtsPresets,
+  capabilityHelp,
+  capabilityLabels,
+  cardOptions,
+  contentOptions,
+  defaultCollectionLevels,
+  featuredApiPresets,
+  featuredTtsPresets,
+  levelOrder,
+  levels,
+  MIMO_OPENAI_BASE_URL,
+  MIMO_TOKEN_PLAN_SGP_BASE_URL,
+  mimoTextModels,
+  mimoTtsModels,
+  mimoTtsVoices,
+  normalizeCollectionLevels,
+  PROJECT_STORAGE_KEY,
+  REQUEST_STORAGE_KEY,
+  SECRET_PREFS_STORAGE_KEY,
+  templateOptions,
+} from './domain/options'
+import {
+  applyCardSelection,
+  badgeText,
+  isRecommendedCardForExport,
+  phraseValueScore,
+  qualityClass,
+  qualityLabel,
+  segmentBudgetLabel,
+  segmentFilterOptions,
+  segmentMatchesFilter,
+  segmentMediaEnd,
+  segmentMediaStart,
+  segmentPhraseLabel,
+  segmentPhraseTitle,
+  segmentReviewStatus,
+  segmentStatusLabel,
+} from './domain/quality'
+import {
+  countSelectedCards,
+  getQualityCounts,
+  getQualityDiagnostics,
+  getQualityFunnel,
+  getSegmentReviewCounts,
+} from './domain/projectMetrics'
+import {
+  isMimoApiConfig,
+  isMimoTokenPlanBase,
+  isMimoTokenPlanKey,
+  resolveTtsConfig,
+  validateApiConfigForRequest,
+  validateTtsConfigForRequest,
+} from './services/apiConfig'
+import { loadSavedProject, loadSavedRequest, loadSecretPrefs, stripRequestSecrets } from './services/projectStorage'
+import { cancelWorkerJob, deleteSecret, loadSecret, runWorker, saveSecret, startWorkerJob } from './services/tauriWorker'
+import { isTauriRuntime } from './services/runtime'
+import { openAnkiImport as openAnkiImportFile, revealPath, selectDirectory, selectSingleFile, toAssetUrl } from './services/nativeShell'
+import { redactSensitiveText } from './services/redaction'
+import {
+  runWindowAction as runNativeWindowAction,
+  startWindowDrag as startNativeWindowDrag,
+  startWindowResize as startNativeWindowResize,
+} from './services/windowChrome'
 function App() {
   const [request, setRequest] = useState<GenerateRequest>(() => loadSavedRequest())
   const [project, setProject] = useState<Project | null>(() => loadSavedProject())
@@ -1202,107 +160,17 @@ function App() {
   const workerOperationRef = useRef<WorkerOperation>(workerOperation)
   const requestEditedDuringRunRef = useRef(requestEditedDuringRun)
 
-  const selectedCardCount = useMemo(() => {
-    return project?.segments.reduce(
-      (total, segment) => total + segment.cards.filter((card) => card.enabled).length,
-      0,
-    ) ?? 0
-  }, [project])
-
-  const qualityCounts = useMemo(() => {
-    const segments = project?.segments ?? []
-    const cards = segments.flatMap((segment) => segment.cards)
-    return {
-      total: cards.length,
-      recommended: segments.reduce(
-        (total, segment) => total + segment.cards.filter((card) => isRecommendedCardForExport(segment, card)).length,
-        0,
-      ),
-      review: segments.reduce(
-        (total, segment) =>
-          total +
-          segment.cards.filter(
-            (card) => !isRecommendedCardForExport(segment, card) && isReviewableCardForExport(segment, card),
-          ).length,
-        0,
-      ),
-      rejected: segments.reduce(
-        (total, segment) => total + segment.cards.filter((card) => !isReviewableCardForExport(segment, card)).length,
-        0,
-      ),
-    }
-  }, [project])
-
-  const qualityDiagnostics = useMemo(() => {
-    const segments = project?.segments ?? []
-    const scored = segments
-      .map((segment) => phraseValueScore(segment.phrase_value_score))
-      .filter((score): score is number => typeof score === 'number')
-    const avgScore = scored.length
-      ? scored.reduce((total, score) => total + score, 0) / scored.length
-      : null
-    const rejectReasons = segments
-      .filter((segment) => segmentReviewStatus(segment) === 'reject')
-      .map((segment) => segment.phrase_reject_reason || segment.phrase_decision_reason || '未给出拒绝理由')
-      .slice(0, 3)
-    const shortReason =
-      project && qualityCounts.recommended < 5
-        ? project.segments.length < 6
-          ? '字幕片段太少或切分后有效候选不足。'
-          : qualityCounts.recommended === 0
-            ? '当前筛选没有推荐卡，可能是词伙评分不足、模型返回空或筛选太严格。'
-            : '推荐卡偏少，通常是重复合并、低价值表达或模型评审较严格。'
-        : ''
-    return {
-      candidates: segments.length,
-      avgScore,
-      duplicate: segments.filter((segment) => segmentReviewStatus(segment) === 'duplicate').length,
-      rejectedSegments: segments.filter((segment) => segmentReviewStatus(segment) === 'reject').length,
-      rejectReasons,
-      shortReason,
-    }
-  }, [project, qualityCounts.recommended])
-
-  const qualityFunnel = useMemo<QualityFunnel>(() => {
-    const segments = project?.segments ?? []
-    const provided = project?.quality_funnel ?? {}
-    const scored = segments
-      .map((segment) => phraseValueScore(segment.phrase_value_score))
-      .filter((score): score is number => typeof score === 'number')
-    const averageScore = scored.length
-      ? scored.reduce((total, score) => total + score, 0) / scored.length
-      : null
-    return {
-      ...provided,
-      candidate_segments: provided.candidate_segments ?? segments.length,
-      reviewed_keep:
-        provided.reviewed_keep ??
-        segments.filter((segment) => {
-          const status = segmentReviewStatus(segment)
-          return status !== 'reject' && status !== 'duplicate'
-        }).length,
-      recommended_cards: qualityCounts.recommended,
-      review_cards: qualityCounts.review,
-      rejected_cards: qualityCounts.rejected,
-      rejected_segments:
-        provided.rejected_segments ?? segments.filter((segment) => segmentReviewStatus(segment) === 'reject').length,
-      duplicate_segments:
-        provided.duplicate_segments ?? segments.filter((segment) => segmentReviewStatus(segment) === 'duplicate').length,
-      average_phrase_score: provided.average_phrase_score ?? averageScore,
-      short_reason: provided.short_reason ?? qualityDiagnostics.shortReason,
-    }
-  }, [project, qualityCounts, qualityDiagnostics.shortReason])
-
-  const segmentReviewCounts = useMemo(() => {
-    const segments = project?.segments ?? []
-    return {
-      all: segments.length,
-      recommended: segments.filter((segment) => segmentReviewStatus(segment) === 'recommended').length,
-      needs_review: segments.filter((segment) => segmentReviewStatus(segment) === 'needs_review').length,
-      reject: segments.filter((segment) => segmentReviewStatus(segment) === 'reject').length,
-      duplicate: segments.filter((segment) => segmentReviewStatus(segment) === 'duplicate').length,
-    }
-  }, [project])
+  const selectedCardCount = useMemo(() => countSelectedCards(project), [project])
+  const qualityCounts = useMemo(() => getQualityCounts(project), [project])
+  const qualityDiagnostics = useMemo(
+    () => getQualityDiagnostics(project, qualityCounts.recommended),
+    [project, qualityCounts.recommended],
+  )
+  const qualityFunnel = useMemo<QualityFunnel>(
+    () => getQualityFunnel(project, qualityCounts, qualityDiagnostics),
+    [project, qualityCounts, qualityDiagnostics],
+  )
+  const segmentReviewCounts = useMemo(() => getSegmentReviewCounts(project), [project])
 
   const visibleSegments = useMemo(() => {
     return project?.segments.filter((segment) => segmentMatchesFilter(segment, segmentFilter)) ?? []
@@ -1594,7 +462,15 @@ function App() {
       }
       if (!payload.ok) {
         setWorkerOperation({ status: 'failed', command: payload.command, jobId: payload.job_id })
-        setStatus(payload.error || '任务失败。')
+        const safeError = redactSensitiveText(payload.error || '任务失败。')
+        const structuredDetails = [
+          payload.error_code ? `错误码：${payload.error_code}` : '',
+          payload.stage ? `阶段：${payload.stage}` : '',
+          payload.fallbacks?.length ? `可尝试：${payload.fallbacks.join(' / ')}` : '',
+        ]
+          .filter(Boolean)
+          .join('；')
+        setStatus(`${safeError}${structuredDetails ? `\n${structuredDetails}` : ''}`)
         return
       }
       setWorkerProgress({ job_id: payload.job_id, command: payload.command, stage: 'done', percent: 100, message: '任务完成。' })
@@ -1641,22 +517,14 @@ function App() {
   }, [settingsOpen])
 
   const runWindowAction = async (action: 'minimize' | 'toggleMaximize' | 'close') => {
-    if (!isTauriRuntime()) return
-    const appWindow = getCurrentWindow()
-    if (action === 'minimize') {
-      await appWindow.minimize()
-    } else if (action === 'toggleMaximize') {
-      await appWindow.toggleMaximize()
-    } else {
-      await appWindow.close()
-    }
+    await runNativeWindowAction(action)
   }
 
   const startWindowDrag = async (event: MouseEvent<HTMLElement>) => {
-    if (!isTauriRuntime() || event.button !== 0) return
+    if (event.button !== 0) return
     const target = event.target as HTMLElement
     if (target.closest('button,input,select,textarea,a,label,summary,.topbar-actions,.window-controls')) return
-    await getCurrentWindow().startDragging()
+    await startNativeWindowDrag(event)
   }
 
   const handleTopbarDoubleClick = async (event: MouseEvent<HTMLElement>) => {
@@ -1666,15 +534,9 @@ function App() {
   }
 
   const startWindowResize = async (direction: ResizeDirection, event: MouseEvent<HTMLDivElement>) => {
-    if (!isTauriRuntime() || event.button !== 0) return
-    event.preventDefault()
+    if (event.button !== 0) return
     event.stopPropagation()
-    await getCurrentWindow().startResizeDragging(direction)
-  }
-
-  const focusPreviewPanel = () => {
-    previewPanelRef.current?.focus({ preventScroll: true })
-    setStatus(project ? '已定位到卡片预览区，可继续审核和编辑。' : '卡片预览区当前没有生成草稿，请先生成卡片。')
+    await startNativeWindowResize(direction, event)
   }
 
   const markRequestEditedIfRunning = () => {
@@ -1873,16 +735,13 @@ function App() {
       return
     }
 
-    const selected = await openDialog({
-      multiple: false,
-      directory: false,
-      filters:
-        kind === 'video'
-          ? [{ name: 'Video', extensions: ['mp4', 'mkv', 'mov', 'avi', 'webm'] }]
-          : kind === 'subtitle'
-            ? [{ name: 'Subtitle', extensions: ['srt'] }]
-            : [{ name: 'Document', extensions: ['txt', 'md', 'markdown', 'pdf', 'docx', 'epub'] }],
-    })
+    const selected = await selectSingleFile(
+      kind === 'video'
+        ? [{ name: 'Video', extensions: ['mp4', 'mkv', 'mov', 'avi', 'webm'] }]
+        : kind === 'subtitle'
+          ? [{ name: 'Subtitle', extensions: ['srt'] }]
+          : [{ name: 'Document', extensions: ['txt', 'md', 'markdown', 'pdf', 'docx', 'epub'] }],
+    )
 
     if (typeof selected === 'string') {
       patchRequest(
@@ -1909,7 +768,7 @@ function App() {
         setStatus(result.ffmpeg && result.genanki ? '环境检查通过。' : '环境缺少依赖，请查看状态卡。')
       }
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error))
+      setStatus(redactSensitiveText(error))
     } finally {
       setBusy(false)
     }
@@ -1927,16 +786,9 @@ function App() {
       setStatus(`API 测试失败：${message}`)
     }
 
-    if (api.provider !== 'local' && !api.api_key.trim()) {
-      failBeforeRequest('还没有填写 API Key。')
-      return
-    }
-    if (api.provider !== 'local' && !api.model.trim()) {
-      failBeforeRequest('还没有填写模型名。')
-      return
-    }
-    if ((api.provider === 'openai-compatible' || api.provider === 'mimo') && !api.base_url.trim()) {
-      failBeforeRequest(api.provider === 'mimo' ? 'MIMO 需要填写 Base URL。' : 'OpenAI-compatible 需要填写 Base URL。')
+    const configError = validateApiConfigForRequest(api)
+    if (configError) {
+      failBeforeRequest(configError)
       return
     }
 
@@ -1963,7 +815,7 @@ function App() {
         setStatus(result.ok ? `API 测试通过：${result.message}` : `API 测试失败：${result.message}`)
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
+      const message = redactSensitiveText(error)
       setApiTestResult({
         ok: false,
         provider: api.provider,
@@ -1993,8 +845,9 @@ function App() {
       failBeforeRequest('TTS 当前是关闭状态。')
       return
     }
-    if (!currentTts.api_key.trim()) {
-      failBeforeRequest('还没有填写 TTS API Key。')
+    const ttsConfigError = validateTtsConfigForRequest(currentTts)
+    if (ttsConfigError) {
+      failBeforeRequest(ttsConfigError)
       return
     }
     if (currentTts.provider === 'grok' && !currentTts.voice.trim()) {
@@ -2052,7 +905,7 @@ function App() {
         setStatus(result.ok ? `TTS 测试通过：${result.message}` : `TTS 测试失败：${result.message}`)
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
+      const message = redactSensitiveText(error)
       setTtsTestResult({
         ok: false,
         provider: currentTts.provider,
@@ -2082,6 +935,20 @@ function App() {
     if (request.source_mode === 'local' && (!request.video_path || !request.subtitle_path)) {
       setStatus('请先选择视频和 SRT 字幕。')
       return
+    }
+    if (isTauriRuntime()) {
+      const apiConfigError = validateApiConfigForRequest(request.api_config)
+      if (apiConfigError) {
+        setStatus(`生成前配置检查失败：${apiConfigError}`)
+        return
+      }
+      const ttsConfigError = validateTtsConfigForRequest(
+        resolveTtsConfig(request.api_config.tts_config, request.api_config),
+      )
+      if (ttsConfigError) {
+        setStatus(`生成前 TTS 配置检查失败：${ttsConfigError}`)
+        return
+      }
     }
     setLastExport(null)
     setAnkiVerifyResult(null)
@@ -2129,7 +996,7 @@ function App() {
     } catch (error) {
       setBusy(false)
       setWorkerOperation({ status: 'failed', command: 'generate' })
-      setStatus(error instanceof Error ? error.message : String(error))
+      setStatus(redactSensitiveText(error))
     }
   }
 
@@ -2148,7 +1015,7 @@ function App() {
       }
     } catch (error) {
       setWorkerOperation((current) => ({ ...current, status: 'failed' }))
-      setStatus(error instanceof Error ? error.message : String(error))
+      setStatus(redactSensitiveText(error))
     }
   }
 
@@ -2176,8 +1043,15 @@ function App() {
       setStatus('浏览器预览模式不能导出 apkg，请运行 npm run tauri:dev。')
       return
     }
+    const exportTtsConfigError = validateTtsConfigForRequest(
+      resolveTtsConfig(request.api_config.tts_config, request.api_config),
+    )
+    if (exportTtsConfigError) {
+      setStatus(`导出前 TTS 配置检查失败：${exportTtsConfigError}`)
+      return
+    }
 
-    const outputDir = await openDialog({ directory: true, multiple: false })
+    const outputDir = await selectDirectory()
     if (typeof outputDir !== 'string') {
       return
     }
@@ -2209,26 +1083,26 @@ function App() {
     } catch (error) {
       setBusy(false)
       setWorkerOperation({ status: 'failed', command: 'export' })
-      setStatus(error instanceof Error ? error.message : String(error))
+      setStatus(redactSensitiveText(error))
     }
   }
 
   const revealExport = async () => {
     if (!lastExport?.apkg_path) return
     try {
-      await invoke('reveal_path', { path: lastExport.apkg_path })
+      await revealPath(lastExport.apkg_path)
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error))
+      setStatus(redactSensitiveText(error))
     }
   }
 
   const openAnkiImport = async () => {
     if (!lastExport?.apkg_path) return
     try {
-      await invoke('open_anki_import', { apkgPath: lastExport.apkg_path })
+      await openAnkiImportFile(lastExport.apkg_path)
       setStatus('已打开 Anki 导入窗口。')
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error))
+      setStatus(redactSensitiveText(error))
     }
   }
 
@@ -2261,7 +1135,7 @@ function App() {
     } catch (error) {
       setAnkiVerifying(false)
       setWorkerOperation({ status: 'failed', command: 'verify_anki_import' })
-      setStatus(error instanceof Error ? error.message : String(error))
+      setStatus(redactSensitiveText(error))
     }
   }
 
@@ -2328,8 +1202,7 @@ function App() {
   }
 
   const activeSegment = project?.segments.find((segment) => segment.id === activeSegmentId)
-  const activeSegmentVideoSrc =
-    activeSegment && project?.video_path && isTauriRuntime() ? convertFileSrc(project.video_path) : ''
+  const activeSegmentVideoSrc = activeSegment && project?.video_path ? toAssetUrl(project.video_path) : ''
 
   const handlePreviewLoaded = (event: SyntheticEvent<HTMLVideoElement>, segment: Segment) => {
     const video = event.currentTarget
@@ -2426,43 +1299,6 @@ function App() {
           className={`desktop-workspace inspector-${inspectorState}`}
           data-responsive-mode={responsiveMode}
         >
-          <nav className="app-rail" aria-label="功能导航">
-            <div className="rail-brand" aria-hidden="true">
-              <img src="/app-icon.png" alt="" />
-            </div>
-            <div className="rail-items">
-              <button
-                className={`rail-item ${request.source_mode !== 'document' ? 'active' : ''}`}
-                type="button"
-                title="视频制卡"
-                aria-label="视频制卡"
-                onClick={() => selectSourceMode(request.source_mode === 'url' ? 'url' : 'local')}
-              >
-                <Film size={19} />
-              </button>
-              <button className="rail-item" type="button" title="卡片预览" aria-label="卡片预览" onClick={focusPreviewPanel}>
-                <MessageSquareText size={19} />
-              </button>
-              <button
-                className={`rail-item ${request.source_mode === 'document' ? 'active' : ''}`}
-                type="button"
-                title="文档制卡"
-                aria-label="文档制卡"
-                onClick={() => selectSourceMode('document')}
-              >
-                <FileText size={19} />
-              </button>
-            </div>
-            <button
-              className="rail-item rail-settings"
-              type="button"
-              title="偏好"
-              aria-label="偏好"
-              onClick={() => setSettingsOpen(true)}
-            >
-              <Settings2 size={19} />
-            </button>
-          </nav>
           {inspectorSheetOpen ? (
             <button
               className="inspector-backdrop"

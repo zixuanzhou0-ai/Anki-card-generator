@@ -8,6 +8,7 @@ test('desktop workflow shell supports simplified settings, URL mode, document mo
   await expect(page.getByText('生成工作台')).toBeVisible()
   await expect(page.getByText('Ready to build', { exact: true })).toBeVisible()
   await expect(page.getByText('把真实素材变成 Anki 复习卡')).toBeVisible()
+  await expect(page.locator('.app-rail')).toHaveCount(0)
   const topbarBox = await page.locator('.topbar').boundingBox()
   const windowControlsBox = await page.locator('.window-controls').boundingBox()
   expect(topbarBox).not.toBeNull()
@@ -92,6 +93,7 @@ test('desktop workflow shell supports simplified settings, URL mode, document mo
     { width: 1440, height: 1000 },
     { width: 1280, height: 900 },
     { width: 1180, height: 780 },
+    { width: 1080, height: 720 },
   ]) {
     await page.setViewportSize(viewport)
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)

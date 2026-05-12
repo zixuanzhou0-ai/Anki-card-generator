@@ -1,6 +1,6 @@
 # Privacy
 
-This document describes the data flow for Anki Card Generator `v0.9.0-beta`.
+This document describes the data flow for Anki Card Generator `v0.9.2-beta`.
 
 ## Data kept on this device
 
@@ -34,7 +34,7 @@ YouTube URL import uses yt-dlp. Video and subtitle download behavior depends on 
 
 Do not commit or share API keys. The desktop UI keeps API keys in memory for the current session and strips text/TTS key fields before writing request settings to browser localStorage. Closing or refreshing the app may require entering keys again.
 
-The target design is to move keys to system secure storage / keychain. Until then, avoid screenshots, logs, or support bundles that expose key fields.
+If the user explicitly enables "remember this local key", the app stores the selected model or TTS key in Windows Credential Manager through the Tauri backend. Users can delete saved keys from the settings UI. Avoid screenshots, logs, or support bundles that expose key fields.
 
 ## Deleting local data
 

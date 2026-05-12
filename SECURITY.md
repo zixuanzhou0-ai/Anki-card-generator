@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-`v0.9.0-beta` is an internal Windows beta. Security fixes should be made on `main` and included in the next beta release.
+`v0.9.2-beta` is the current Windows beta. Security fixes should be made on `main` and included in the next beta release.
 
 ## Reporting a vulnerability
 
@@ -22,7 +22,7 @@ This app runs a Python worker on the user's machine. The Tauri layer should only
 
 ## Secrets
 
-Never commit real API keys. Do not paste keys into issues, screenshots, release notes, CI logs, or test fixtures. The UI strips raw text/TTS keys before saving request settings to browser localStorage; the target design is system keychain / secure storage.
+Never commit real API keys. Do not paste keys into issues, screenshots, release notes, CI logs, or test fixtures. The UI strips raw text/TTS keys before saving request settings to browser localStorage. When users explicitly choose to remember keys, the app stores them in Windows Credential Manager through the Tauri backend.
 
 ## Third-party services
 

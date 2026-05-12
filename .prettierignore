@@ -1,0 +1,7 @@
+dist
+node_modules
+src-tauri/target
+release
+test-results
+playwright-report
+tests/animated-bar-chart

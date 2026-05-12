@@ -40,6 +40,12 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      - name: Run UI smoke tests
+        run: npm run test:ui
+
+      - name: Check version consistency
+        run: powershell -ExecutionPolicy Bypass -File scripts/check_versions.ps1
+
       - name: Build Tauri Rust shell
         run: cargo build --manifest-path src-tauri/Cargo.toml --locked
 
