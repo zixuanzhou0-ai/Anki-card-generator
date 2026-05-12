@@ -1,7 +1,7 @@
 param(
   [string]$ReleaseExe,
   [string]$OutputDir = "release",
-  [string]$Version = "0.9.1-beta"
+  [string]$Version = "0.9.2-beta"
 )
 
 $ErrorActionPreference = "Stop"

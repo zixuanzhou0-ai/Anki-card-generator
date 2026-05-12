@@ -12,7 +12,7 @@ use std::{
 
 use serde::Serialize;
 use serde_json::json;
-use tauri::{Emitter, Manager, State};
+use tauri::{Emitter, LogicalSize, Manager, Size, State};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -21,6 +21,8 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const SECRET_SERVICE: &str = "Anki Card Generator";
 const ALLOWED_SECRET_KEYS: &[&str] = &["model_api_key", "tts_api_key"];
+const MIN_WINDOW_WIDTH: f64 = 1180.0;
+const MIN_WINDOW_HEIGHT: f64 = 780.0;
 
 #[derive(Clone, Default)]
 struct WorkerJobs {
@@ -627,6 +629,13 @@ pub fn run() {
             delete_secret
         ])
         .setup(|app| {
+            if let Some(window) = app.get_webview_window("main") {
+                window.set_min_size(Some(Size::Logical(LogicalSize {
+                    width: MIN_WINDOW_WIDTH,
+                    height: MIN_WINDOW_HEIGHT,
+                })))?;
+            }
+
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()

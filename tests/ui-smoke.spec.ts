@@ -8,6 +8,12 @@ test('desktop workflow shell supports simplified settings, URL mode, document mo
   await expect(page.getByText('生成工作台')).toBeVisible()
   await expect(page.getByText('Ready to build', { exact: true })).toBeVisible()
   await expect(page.getByText('把真实素材变成 Anki 复习卡')).toBeVisible()
+  const topbarBox = await page.locator('.topbar').boundingBox()
+  const windowControlsBox = await page.locator('.window-controls').boundingBox()
+  expect(topbarBox).not.toBeNull()
+  expect(windowControlsBox).not.toBeNull()
+  expect(windowControlsBox!.y).toBeGreaterThanOrEqual(topbarBox!.y)
+  expect(windowControlsBox!.y + windowControlsBox!.height).toBeLessThanOrEqual(topbarBox!.y + topbarBox!.height + 1)
 
   await page.getByRole('button', { name: '设置', exact: true }).click()
   await expect(page.getByRole('dialog', { name: '设置' })).toBeVisible()
@@ -28,6 +34,8 @@ test('desktop workflow shell supports simplified settings, URL mode, document mo
   await expect(page.getByRole('heading', { name: '语音 TTS' })).toBeVisible()
   await expect(page.getByRole('button', { name: /MIMO SGP TTS/ })).toBeVisible()
   await expect(page.getByRole('button', { name: /高级 TTS 模型和参数/ })).toBeVisible()
+  await expect(page.getByText('TTS 说明与费用')).toBeVisible()
+  await page.getByText('TTS 说明与费用').click()
   await expect(page.getByText('TTS 是独立配置，MIMO 语音模型也在这里选。')).toBeVisible()
   await page.getByRole('button', { name: /MIMO SGP TTS/ }).click()
   await expect(page.getByText('TTS 已开启，尚未测试')).toBeVisible()
@@ -40,7 +48,8 @@ test('desktop workflow shell supports simplified settings, URL mode, document mo
   await page.getByLabel('关闭设置').click()
 
   await page.getByRole('button', { name: /视频链接/ }).click()
-  await expect(page.getByText('当前是视频链接')).toBeVisible()
+  await expect(page.getByText('视频链接').first()).toBeVisible()
+  await page.getByText('下载和 fallback').click()
   await expect(page.getByRole('button', { name: '只用字幕生成' })).toBeVisible()
   await expect(page.getByText('视频下载失败时自动 fallback 到字幕-only')).toBeVisible()
   await page.getByPlaceholder('https://www.youtube.com/watch?v=...').fill('https://www.youtube.com/watch?v=UV1WDNe4J5w')
@@ -53,6 +62,7 @@ test('desktop workflow shell supports simplified settings, URL mode, document mo
   await expect(page.getByText('平均词伙评分')).toBeVisible()
   await expect(page.getByText('拒绝原因')).toBeVisible()
 
+  await page.locator('.preference-details summary').click()
   await expect(page.getByRole('button', { name: /词典解释/ })).toBeDisabled()
   await expect(page.getByRole('button', { name: /极简复习/ })).toBeDisabled()
   await expect(page.locator('.preview-panel.template-immersive')).toBeVisible()
@@ -63,7 +73,7 @@ test('desktop workflow shell supports simplified settings, URL mode, document mo
   await expect(page.getByText('6 张已选')).toBeVisible()
 
   await page.getByRole('button', { name: /文档资料/ }).click()
-  await expect(page.getByText('知识点卡')).toBeVisible()
+  await expect(page.getByText('知识点卡').first()).toBeVisible()
   await expect(page.getByText('支持 TXT、Markdown、DOCX、EPUB、PDF。扫描版 PDF 需要后续 OCR。')).toBeVisible()
   await page.getByPlaceholder('选择文档资料').fill('E:\\ANKI\\anki_live_e2e\\sample_document_notes.md')
   await page.getByRole('button', { name: /生成卡片/ }).click()
@@ -81,21 +91,16 @@ test('desktop workflow shell supports simplified settings, URL mode, document mo
   for (const viewport of [
     { width: 1440, height: 1000 },
     { width: 1280, height: 900 },
-    { width: 1120, height: 900 },
-    { width: 960, height: 900 },
+    { width: 1180, height: 780 },
   ]) {
     await page.setViewportSize(viewport)
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)
     expect(overflow).toBe(false)
   }
 
-  await page.setViewportSize({ width: 960, height: 900 })
-  await expect(page.getByRole('button', { name: /素材面板|打开面板/ })).toBeVisible()
-  await page.getByRole('button', { name: /素材面板|打开面板/ }).click()
-  await expect(page.getByLabel('素材和生成设置')).toBeVisible()
-  await expect(page.locator('.quality-funnel')).toBeVisible()
-  await page.getByLabel('关闭素材设置').click()
-  await page.waitForTimeout(260)
+  await page.setViewportSize({ width: 1180, height: 780 })
+  await expect(page.locator('.window-controls')).toBeVisible()
+  await expect(page.locator('.control-column')).toBeVisible()
   await page.setViewportSize({ width: 1440, height: 1000 })
 
   await page.screenshot({ path: 'test-results/ui-smoke-after-generate.png', fullPage: true })

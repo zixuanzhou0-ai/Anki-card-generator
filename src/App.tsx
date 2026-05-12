@@ -2397,9 +2397,15 @@ function App() {
               {isCancelling ? '取消中' : '取消任务'}
             </button>
           ) : null}
+          {project && selectedCardCount > 0 && !workerBusy ? (
+            <button className="ghost-button command-export" type="button" onClick={exportApkg} disabled={appBusy}>
+              <Download size={18} />
+              导出
+            </button>
+          ) : null}
           <button className="primary-button" type="button" onClick={generate} disabled={appBusy}>
             {appBusy ? <Loader2 className="spin" size={18} /> : <Wand2 size={18} />}
-            生成卡片
+            {project ? '重新生成' : '生成卡片'}
           </button>
         </div>
         <div className="window-controls" aria-label="窗口控制">
@@ -2475,13 +2481,13 @@ function App() {
               <X size={18} />
             </button>
           </div>
-          <section className="panel readiness-panel">
-            <div className="readiness-head">
+          <details className="panel readiness-panel readiness-details">
+            <summary className="readiness-head">
               <span>生成就绪</span>
               <strong>
                 {readiness.filter((item) => item.done).length}/{readiness.length}
               </strong>
-            </div>
+            </summary>
             <div className="readiness-grid">
               {readiness.map((item) => (
                 <span className={item.done ? 'ready' : 'pending'} key={item.id}>
@@ -2491,7 +2497,7 @@ function App() {
                 </span>
               ))}
             </div>
-          </section>
+          </details>
 
           {workerProgress ? (
             <section className={`panel progress-panel ${workerProgress.percent >= 100 ? 'done' : ''}`}>
@@ -2526,14 +2532,6 @@ function App() {
                 <FolderOpen size={20} />
                 <h3>素材</h3>
               </div>
-              <label className="field">
-                <span>项目标题</span>
-                <input
-                  value={request.title}
-                  onChange={(event) => patchRequest({ title: event.target.value })}
-                  placeholder="例如 Friends S01E01"
-                />
-              </label>
               <div className="source-switch" aria-label="素材来源">
                 <button
                   type="button"
@@ -2566,15 +2564,26 @@ function App() {
                   <small>PDF / Word / EPUB</small>
                 </button>
               </div>
-              <div className="source-mode-hint" data-mode={request.source_mode}>
-                {request.source_mode === 'url'
-                  ? '当前是视频链接：粘贴 YouTube 或视频 URL，生成时自动下载视频和字幕。'
-                  : request.source_mode === 'document'
-                    ? '当前是文档资料：选择文档后生成结构化卡片。'
-                    : '当前是本地视频：选择视频和 SRT 字幕后生成语言卡。'}
-              </div>
-              {request.source_mode === 'url' ? (
-                <>
+              <details className="compact-details source-input-details" open>
+                <summary>
+                  <span>输入内容</span>
+                  <strong>
+                    {request.source_mode === 'url'
+                      ? '视频链接'
+                      : request.source_mode === 'document'
+                        ? '文档资料'
+                        : '本地视频'}
+                  </strong>
+                </summary>
+                <label className="field project-title-field">
+                  <span>项目标题</span>
+                  <input
+                    value={request.title}
+                    onChange={(event) => patchRequest({ title: event.target.value })}
+                    placeholder="例如 Friends S01E01"
+                  />
+                </label>
+                {request.source_mode === 'url' ? (
                   <label className="field">
                     <span>YouTube / 视频 URL</span>
                     <input
@@ -2583,9 +2592,61 @@ function App() {
                       placeholder="https://www.youtube.com/watch?v=..."
                     />
                     <small>
-                      YouTube 属于中等/高风险输入源；失败时可以切到字幕-only 或手动上传 SRT 继续制卡。
+                      失败时可切到字幕-only 或手动上传 SRT 继续制卡。
                     </small>
                   </label>
+                ) : request.source_mode === 'document' ? (
+                  <label className="field file-field">
+                    <span>文档资料</span>
+                    <div>
+                      <input
+                        value={request.document_path}
+                        onChange={(event) => patchRequest({ document_path: event.target.value })}
+                        placeholder="选择文档资料"
+                      />
+                      <button type="button" onClick={() => selectPath('document')} aria-label="选择文档资料">
+                        <FileText size={18} />
+                      </button>
+                    </div>
+                    <small>支持 TXT、Markdown、DOCX、EPUB、PDF。扫描版 PDF 需要后续 OCR。</small>
+                  </label>
+                ) : (
+                  <>
+                    <label className="field file-field">
+                      <span>视频文件</span>
+                      <div>
+                        <input
+                          value={request.video_path}
+                          onChange={(event) => patchRequest({ video_path: event.target.value })}
+                          placeholder="选择本地视频"
+                        />
+                        <button type="button" onClick={() => selectPath('video')} aria-label="选择视频文件">
+                          <Film size={18} />
+                        </button>
+                      </div>
+                    </label>
+                    <label className="field file-field">
+                      <span>SRT 字幕</span>
+                      <div>
+                        <input
+                          value={request.subtitle_path}
+                          onChange={(event) => patchRequest({ subtitle_path: event.target.value })}
+                          placeholder="选择 SRT 字幕"
+                        />
+                        <button type="button" onClick={() => selectPath('subtitle')} aria-label="选择字幕文件">
+                          <Subtitles size={18} />
+                        </button>
+                      </div>
+                    </label>
+                  </>
+                )}
+              </details>
+              {request.source_mode === 'url' ? (
+                <details className="compact-details inspector-fold url-options-details">
+                  <summary>
+                    <span>下载和 fallback</span>
+                    <strong>{request.url_import_mode === 'subtitles' ? '字幕-only' : '视频+字幕'}</strong>
+                  </summary>
                   <div className="url-fallback-options" aria-label="URL 导入 fallback">
                     <div className="segmented compact-segmented">
                       <button
@@ -2628,52 +2689,8 @@ function App() {
                       <span>导出时跳过视频切片，只保留字幕和 TTS</span>
                     </label>
                   </div>
-                </>
-              ) : request.source_mode === 'document' ? (
-                <label className="field file-field">
-                  <span>文档资料</span>
-                  <div>
-                    <input
-                      value={request.document_path}
-                      onChange={(event) => patchRequest({ document_path: event.target.value })}
-                      placeholder="选择文档资料"
-                    />
-                    <button type="button" onClick={() => selectPath('document')} aria-label="选择文档资料">
-                      <FileText size={18} />
-                    </button>
-                  </div>
-                  <small>支持 TXT、Markdown、DOCX、EPUB、PDF。扫描版 PDF 需要后续 OCR。</small>
-                </label>
-              ) : (
-                <>
-                  <label className="field file-field">
-                    <span>视频文件</span>
-                    <div>
-                      <input
-                        value={request.video_path}
-                        onChange={(event) => patchRequest({ video_path: event.target.value })}
-                        placeholder="选择本地视频"
-                      />
-                      <button type="button" onClick={() => selectPath('video')} aria-label="选择视频文件">
-                        <Film size={18} />
-                      </button>
-                    </div>
-                  </label>
-                  <label className="field file-field">
-                    <span>SRT 字幕</span>
-                    <div>
-                      <input
-                        value={request.subtitle_path}
-                        onChange={(event) => patchRequest({ subtitle_path: event.target.value })}
-                        placeholder="选择 SRT 字幕"
-                      />
-                      <button type="button" onClick={() => selectPath('subtitle')} aria-label="选择字幕文件">
-                        <Subtitles size={18} />
-                      </button>
-                    </div>
-                  </label>
-                </>
-              )}
+                </details>
+              ) : null}
             </div>
 
             <div className="panel settings-panel">
@@ -2734,101 +2751,117 @@ function App() {
                   </button>
                 ))}
               </div>
-              <div className="level-range-panel" aria-label="收录难度范围">
-                <div className="settings-subheading level-subheading">
-                  <strong>收录难度范围</strong>
-                  <span>{normalizeCollectionLevels(request.collection_levels, request.level).join(' / ')}</span>
+              <details className="compact-details inspector-fold level-range-panel" aria-label="收录难度范围">
+                <summary>
+                  <span>收录难度范围</span>
+                  <strong>{normalizeCollectionLevels(request.collection_levels, request.level).join(' / ')}</strong>
+                </summary>
+                <div className="level-range-body">
+                  <div className="range-actions" aria-label="收录范围快捷设置">
+                    <button type="button" onClick={() => applyCollectionPreset('current')}>
+                      只当前
+                    </button>
+                    <button type="button" onClick={() => applyCollectionPreset('below')}>
+                      当前及以下
+                    </button>
+                    <button type="button" onClick={() => applyCollectionPreset('around')}>
+                      上下一级
+                    </button>
+                  </div>
+                  <div className="level-range-grid">
+                    {levels.map((level) => {
+                      const selected = normalizeCollectionLevels(request.collection_levels, request.level).includes(level.id)
+                      return (
+                        <button
+                          type="button"
+                          key={level.id}
+                          className={selected ? 'selected' : ''}
+                          onClick={() => toggleCollectionLevel(level.id)}
+                          aria-pressed={selected}
+                        >
+                          <strong>{level.id}</strong>
+                          <span>{level.note}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
                 </div>
-                <div className="range-actions" aria-label="收录范围快捷设置">
-                  <button type="button" onClick={() => applyCollectionPreset('current')}>
-                    只当前
-                  </button>
-                  <button type="button" onClick={() => applyCollectionPreset('below')}>
-                    当前及以下
-                  </button>
-                  <button type="button" onClick={() => applyCollectionPreset('around')}>
-                    上下一级
-                  </button>
+              </details>
+              <details className="compact-details content-preferences">
+                <summary>
+                  <span>内容偏好</span>
+                  <strong>
+                    {contentOptions.filter((item) => request.content_toggles[item.key]).length} 项已选
+                  </strong>
+                </summary>
+                <div className="toggle-grid">
+                  {contentOptions.map((item) => (
+                    <label className="toggle" key={item.key}>
+                      <input
+                        type="checkbox"
+                        checked={request.content_toggles[item.key]}
+                        onChange={() => toggleContent(item.key)}
+                      />
+                      <span>{item.label}</span>
+                    </label>
+                  ))}
                 </div>
-                <div className="level-range-grid">
-                  {levels.map((level) => {
-                    const selected = normalizeCollectionLevels(request.collection_levels, request.level).includes(level.id)
-                    return (
-                      <button
-                        type="button"
-                        key={level.id}
-                        className={selected ? 'selected' : ''}
-                        onClick={() => toggleCollectionLevel(level.id)}
-                        aria-pressed={selected}
-                      >
-                        <strong>{level.id}</strong>
-                        <span>{level.note}</span>
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-              <div className="toggle-grid">
-                {contentOptions.map((item) => (
-                  <label className="toggle" key={item.key}>
-                    <input
-                      type="checkbox"
-                      checked={request.content_toggles[item.key]}
-                      onChange={() => toggleContent(item.key)}
-                    />
-                    <span>{item.label}</span>
-                  </label>
-                ))}
-              </div>
+              </details>
             </div>
           </section>
 
           <section className="panel generation-panel">
-            <div className="panel-heading">
-              <Layers3 size={20} />
-              <h3>卡片和模板</h3>
-            </div>
-            {request.source_mode === 'document' ? (
-              <div className="doc-card-mode">
-                <FileText size={18} />
-                <div>
-                  <strong>知识点卡</strong>
-                  <span>正面是问题或概念提示，反面是结构化答案、解释、例子和为什么值得记。</span>
+            <details className="compact-details preference-details">
+              <summary>
+                <span>卡片和模板</span>
+                <strong>
+                  {request.source_mode === 'document'
+                    ? '知识点卡'
+                    : `${request.card_types.length} 类 · ${activeTemplate?.label ?? '沉浸视频'}`}
+                </strong>
+              </summary>
+              {request.source_mode === 'document' ? (
+                <div className="doc-card-mode">
+                  <FileText size={18} />
+                  <div>
+                    <strong>知识点卡</strong>
+                    <span>正面是问题或概念提示，反面是结构化答案、解释、例子和为什么值得记。</span>
+                  </div>
                 </div>
-              </div>
-            ) : (
+              ) : (
+                <div className="choice-row">
+                  {cardOptions.map((item) => (
+                    <button
+                      type="button"
+                      key={item.id}
+                      className={`choice ${request.card_types.includes(item.id) ? 'selected' : ''}`}
+                      onClick={() => toggleCardType(item.id)}
+                    >
+                      <strong>{item.label}</strong>
+                      <span>{item.note}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
               <div className="choice-row">
-                {cardOptions.map((item) => (
+                {templateOptions.map((item) => (
                   <button
                     type="button"
                     key={item.id}
-                    className={`choice ${request.card_types.includes(item.id) ? 'selected' : ''}`}
-                    onClick={() => toggleCardType(item.id)}
+                    className={`choice template-choice ${request.template_id === item.id ? 'selected' : ''} ${
+                      item.locked ? 'locked' : ''
+                    }`}
+                    onClick={() => {
+                      if (!item.locked) selectTemplate(item.id)
+                    }}
+                    disabled={item.locked}
                   >
                     <strong>{item.label}</strong>
                     <span>{item.note}</span>
                   </button>
                 ))}
               </div>
-            )}
-            <div className="choice-row">
-              {templateOptions.map((item) => (
-                <button
-                  type="button"
-                  key={item.id}
-                  className={`choice template-choice ${request.template_id === item.id ? 'selected' : ''} ${
-                    item.locked ? 'locked' : ''
-                  }`}
-                  onClick={() => {
-                    if (!item.locked) selectTemplate(item.id)
-                  }}
-                  disabled={item.locked}
-                >
-                  <strong>{item.label}</strong>
-                  <span>{item.note}</span>
-                </button>
-              ))}
-            </div>
+            </details>
           </section>
           </aside>
 
@@ -2842,9 +2875,9 @@ function App() {
               <div className="panel-heading">
                 <MessageSquareText size={20} />
                 <div>
-                  <h3 id="preview-title">{project ? 'Anki 卡片列表预览' : '生成工作台'}</h3>
+                  <h3 id="preview-title">{project ? 'AI 评审工作台' : '生成工作台'}</h3>
                   <p className="panel-subtitle">
-                    {project ? '检查片段、质量理由和可导出的卡片草稿。' : '先选择素材，再生成卡片；结果会在这里展开。'}
+                    {project ? '查看模型留下的表达、判断理由和可导出的卡片草稿。' : '先选择素材，再生成卡片；结果会在这里展开。'}
                   </p>
                 </div>
               </div>
@@ -2861,10 +2894,6 @@ function App() {
                   </button>
                   <button className="ghost-button" type="button" onClick={() => selectCardsByQuality('reviewable')}>
                     推荐+待审
-                  </button>
-                  <button className="primary-button export-button" type="button" onClick={exportApkg} disabled={appBusy}>
-                    <Download size={18} />
-                    导出 .apkg
                   </button>
                 </div>
               ) : null}
@@ -2907,32 +2936,41 @@ function App() {
                   </div>
                 </div>
 
-                <div className="quality-funnel" aria-label="质量漏斗">
-                  <span>
-                    <strong>{qualityFunnel.subtitle_cues ?? '-'}</strong>
-                    <small>字幕句</small>
-                  </span>
-                  <span>
-                    <strong>{qualityFunnel.candidate_segments ?? '-'}</strong>
-                    <small>候选片段</small>
-                  </span>
-                  <span>
-                    <strong>{qualityFunnel.reviewed_keep ?? '-'}</strong>
-                    <small>评审保留</small>
-                  </span>
-                  <span>
-                    <strong>{qualityFunnel.recommended_cards ?? '-'}</strong>
-                    <small>推荐卡</small>
-                  </span>
-                  <span>
-                    <strong>{qualityFunnel.review_cards ?? '-'}</strong>
-                    <small>待审卡</small>
-                  </span>
-                  <span>
-                    <strong>{qualityFunnel.duplicate_segments ?? '-'}</strong>
-                    <small>重复合并</small>
-                  </span>
-                </div>
+                <details className="quality-funnel-details">
+                  <summary>
+                    <span className="funnel-summary-title">
+                      <Sparkles size={14} />
+                      AI 评审流水线
+                    </span>
+                    <strong>{`候选 ${qualityFunnel.candidate_segments ?? '-'} · 推荐 ${qualityFunnel.recommended_cards ?? '-'}`}</strong>
+                  </summary>
+                  <div className="quality-funnel" aria-label="质量漏斗">
+                    <span>
+                      <strong>{qualityFunnel.subtitle_cues ?? '-'}</strong>
+                      <small>字幕句</small>
+                    </span>
+                    <span>
+                      <strong>{qualityFunnel.candidate_segments ?? '-'}</strong>
+                      <small>候选片段</small>
+                    </span>
+                    <span>
+                      <strong>{qualityFunnel.reviewed_keep ?? '-'}</strong>
+                      <small>评审保留</small>
+                    </span>
+                    <span>
+                      <strong>{qualityFunnel.recommended_cards ?? '-'}</strong>
+                      <small>推荐卡</small>
+                    </span>
+                    <span>
+                      <strong>{qualityFunnel.review_cards ?? '-'}</strong>
+                      <small>待审卡</small>
+                    </span>
+                    <span>
+                      <strong>{qualityFunnel.duplicate_segments ?? '-'}</strong>
+                      <small>重复合并</small>
+                    </span>
+                  </div>
+                </details>
 
                 <div className="review-filters" aria-label="片段质量筛选">
                   {segmentFilterOptions.map((option) => (
@@ -3085,15 +3123,17 @@ function App() {
                         }}
                         whileTap={prefersReducedMotion ? undefined : { scale: 0.992 }}
                       >
-                        <span>{segment.source_time}</span>
+                        <span className="segment-tab-top">
+                          <span>{segment.source_time}</span>
+                          <em className={`segment-status ${status}`}>
+                            {segmentStatusLabel(status)}
+                            {score !== null ? ` · ${score}/5` : ''}
+                          </em>
+                        </span>
                         <strong>{segmentPhraseTitle(segment)}</strong>
                         <small>
                           {segment.cards.filter((card) => card.enabled).length} 张卡 · 推荐 {segment.recommendation}/5
                         </small>
-                        <em className={`segment-status ${status}`}>
-                          {segmentStatusLabel(status)}
-                          {score !== null ? ` · ${score}/5` : ''}
-                        </em>
                         <small className="segment-reason">
                           {segment.phrase_reject_reason ||
                             segment.phrase_decision_reason ||
@@ -3178,7 +3218,7 @@ function App() {
                       activeSegment.phrase_value_score !== undefined) ? (
                       <div className={`phrase-review-panel status-${segmentReviewStatus(activeSegment)}`}>
                         <div>
-                          <span>词伙评审</span>
+                          <span>AI 词伙评审</span>
                           <strong>
                             {segmentStatusLabel(segmentReviewStatus(activeSegment))}
                             {phraseValueScore(activeSegment.phrase_value_score) !== null
@@ -3475,25 +3515,31 @@ function App() {
                   <Boxes size={20} />
                   <h3>模型 API</h3>
                 </div>
-                <div className="settings-callout">
-                  <PlugZap size={18} />
-                  <div>
-                    <strong>你现在用 MIMO，可以直接选 MIMO V2.5 Pro。</strong>
-                    <p>
-                      Token Plan 用户优先选 MIMO Token Plan SGP。程序会按官方要求自动使用 api-key 请求头、
-                      小写模型 ID 和更大的 max_completion_tokens；填好 Key 后先点“测试连接”。
-                    </p>
+                <details className="settings-disclosure">
+                  <summary>
+                    <span>模型说明与隐私</span>
+                    <strong>安全 / 费用 / MIMO Token Plan</strong>
+                  </summary>
+                  <div className="settings-callout">
+                    <PlugZap size={18} />
+                    <div>
+                      <strong>你现在用 MIMO，可以直接选 MIMO V2.5 Pro。</strong>
+                      <p>
+                        Token Plan 用户优先选 MIMO Token Plan SGP。程序会按官方要求自动使用 api-key 请求头、
+                        小写模型 ID 和更大的 max_completion_tokens；填好 Key 后先点“测试连接”。
+                      </p>
+                    </div>
                   </div>
-                </div>
-                <div className="settings-callout risk-callout">
-                  <CircleAlert size={18} />
-                  <div>
-                    <strong>字幕、文档和卡片字段会发送给你选择的模型服务商。</strong>
-                    <p>
-                      API Key 只保留在当前会话，关闭或刷新后可能需要重新填写；不要把私人素材或不想上传的内容交给第三方模型。
-                    </p>
+                  <div className="settings-callout risk-callout">
+                    <CircleAlert size={18} />
+                    <div>
+                      <strong>字幕、文档和卡片字段会发送给你选择的模型服务商。</strong>
+                      <p>
+                        API Key 只保留在当前会话，关闭或刷新后可能需要重新填写；不要把私人素材或不想上传的内容交给第三方模型。
+                      </p>
+                    </div>
                   </div>
-                </div>
+                </details>
 
                 <div className={`api-test-card ${apiTestTone}`} aria-live="polite" aria-atomic="true">
                   <div className="api-test-icon" aria-hidden="true">
@@ -3710,25 +3756,31 @@ function App() {
                   <PlugZap size={20} />
                   <h3>语音 TTS</h3>
                 </div>
-                <div className="settings-callout tts-callout">
-                  <CircleAlert size={18} />
-                  <div>
-                    <strong>TTS 是独立配置，MIMO 语音模型也在这里选。</strong>
-                    <p>
-                      MIMO V2.5 TTS、VoiceDesign、VoiceClone 和 V2 TTS 都可以作为独立语音模型配置。
-                      如果上方文本模型已经配置了 MIMO Key，TTS 会默认复用它；只有想单独换语音服务时才需要另填 TTS Key。
-                    </p>
+                <details className="settings-disclosure">
+                  <summary>
+                    <span>TTS 说明与费用</span>
+                    <strong>语音模型 / 授权 / 费用</strong>
+                  </summary>
+                  <div className="settings-callout tts-callout">
+                    <CircleAlert size={18} />
+                    <div>
+                      <strong>TTS 是独立配置，MIMO 语音模型也在这里选。</strong>
+                      <p>
+                        MIMO V2.5 TTS、VoiceDesign、VoiceClone 和 V2 TTS 都可以作为独立语音模型配置。
+                        如果上方文本模型已经配置了 MIMO Key，TTS 会默认复用它；只有想单独换语音服务时才需要另填 TTS Key。
+                      </p>
+                    </div>
                   </div>
-                </div>
-                <div className="settings-callout risk-callout">
-                  <CircleAlert size={18} />
-                  <div>
-                    <strong>TTS 会额外调用语音服务，并可能产生费用。</strong>
-                    <p>
-                      导出牌组如果包含视频片段、字幕或合成音频，默认仅供个人学习；分享前请确认素材和声音服务授权。
-                    </p>
+                  <div className="settings-callout risk-callout">
+                    <CircleAlert size={18} />
+                    <div>
+                      <strong>TTS 会额外调用语音服务，并可能产生费用。</strong>
+                      <p>
+                        导出牌组如果包含视频片段、字幕或合成音频，默认仅供个人学习；分享前请确认素材和声音服务授权。
+                      </p>
+                    </div>
                   </div>
-                </div>
+                </details>
 
                 <div className={`api-test-card ${ttsTestTone}`} aria-live="polite" aria-atomic="true">
                   <div className="api-test-icon" aria-hidden="true">

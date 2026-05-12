@@ -53,9 +53,9 @@ GitHub Actions 必须是绿色；如果 CI 因外部服务故障失败，release
 
 ## GitHub Release 内容
 
-- `AnkiCardGenerator-v0.9.1-beta-windows-portable.zip`
-- `AnkiCardGenerator-v0.9.1-beta-source.zip`
-- `AnkiCardGenerator-v0.9.1-beta-source.bundle`
-- `Anki Card Generator_0.9.1_x64-setup.exe`
-- `Anki Card Generator_0.9.1_x64_en-US.msi`
-- Release notes: `docs/RELEASE_NOTES_v0.9.1-beta.md`
+- `AnkiCardGenerator-v0.9.2-beta-windows-portable.zip`
+- `AnkiCardGenerator-v0.9.2-beta-source.zip`
+- `AnkiCardGenerator-v0.9.2-beta-source.bundle`
+- `Anki Card Generator_0.9.2_x64-setup.exe`
+- `Anki Card Generator_0.9.2_x64_en-US.msi`
+- Release notes: `docs/RELEASE_NOTES_v0.9.2-beta.md`

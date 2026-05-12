@@ -1,6 +1,6 @@
 # Beta 限制说明
 
-`v0.9.1-beta` 是 Windows 内测版本，目标是验证本地视频 / SRT / YouTube / 文档制卡主流程。它还不是“开箱即稳”的大众发行版。
+`v0.9.2-beta` 是 Windows 内测版本，目标是验证本地视频 / SRT / YouTube / 文档制卡主流程。它还不是“开箱即稳”的大众发行版。
 
 ## YouTube 导入
 
