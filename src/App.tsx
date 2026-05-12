@@ -7,7 +7,6 @@ import {
   CheckCircle2,
   CircleAlert,
   Download,
-  ExternalLink,
   FileText,
   Film,
   FolderOpen,
@@ -22,7 +21,6 @@ import {
   Play,
   Settings2,
   Square,
-  Sparkles,
   Subtitles,
   Wand2,
   X,
@@ -91,8 +89,6 @@ import {
   phraseValueScore,
   qualityClass,
   qualityLabel,
-  segmentBudgetLabel,
-  segmentFilterOptions,
   segmentMatchesFilter,
   segmentMediaEnd,
   segmentMediaStart,
@@ -113,6 +109,9 @@ import { getWorkerErrorActions } from './domain/workerErrors'
 import { ReadinessPanel } from './features/generation/ReadinessPanel'
 import { StatusPanel } from './features/generation/StatusPanel'
 import { WorkerProgressPanel } from './features/generation/WorkerProgressPanel'
+import { EmptyWorkbench } from './features/review/EmptyWorkbench'
+import { ExportResultPanel } from './features/review/ExportResultPanel'
+import { ReviewSummaryPanel } from './features/review/ReviewSummaryPanel'
 import {
   isMimoApiConfig,
   isMimoTokenPlanBase,
@@ -1778,208 +1777,42 @@ function App() {
             </div>
 
             {project ? (
-              <>
-                <div className="review-dashboard" aria-label="生成审核概览">
-                  <div className="metric-card primary">
-                    <span>有效卡片</span>
-                    <strong>{`${selectedCardCount}/${qualityCounts.total}`}</strong>
-                    <small>当前勾选后会进入导出</small>
-                  </div>
-                  <div className="metric-card">
-                    <span>推荐保留</span>
-                    <strong>{qualityCounts.recommended}</strong>
-                    <small>{`${qualityCounts.review} 张待审 · ${qualityCounts.rejected} 张建议删除`}</small>
-                  </div>
-                  <div className="metric-card">
-                    <span>片段预算</span>
-                    <strong>{project.segments.length}</strong>
-                      <small>
-                        {project.max_segments ? `${project.auto_max_segments ? '自动预算' : '预算'} ${project.max_segments} · ` : ''}
-                        {request.level} · {request.language} · {activeTemplate?.label ?? '沉浸视频'}
-                      </small>
-                  </div>
-                  <div className="metric-card">
-                    <span>平均词伙评分</span>
-                    <strong>{qualityDiagnostics.avgScore === null ? '-' : qualityDiagnostics.avgScore.toFixed(1)}</strong>
-                    <small>{`候选 ${qualityDiagnostics.candidates} · 重复合并 ${qualityDiagnostics.duplicate}`}</small>
-                  </div>
-                  <div className="metric-card">
-                    <span>拒绝原因</span>
-                    <strong>{qualityDiagnostics.rejectedSegments}</strong>
-                    <small>
-                      {qualityDiagnostics.shortReason ||
-                        qualityDiagnostics.rejectReasons[0] ||
-                        (project.skip_video_slicing ? '字幕-only 导出，不含视频切片。' : '推荐数量正常')}
-                    </small>
-                  </div>
-                </div>
-
-                <details className="quality-funnel-details">
-                  <summary>
-                    <span className="funnel-summary-title">
-                      <Sparkles size={14} />
-                      AI 评审流水线
-                    </span>
-                    <strong>{`候选 ${qualityFunnel.candidate_segments ?? '-'} · 推荐 ${qualityFunnel.recommended_cards ?? '-'}`}</strong>
-                  </summary>
-                  <div className="quality-funnel" aria-label="质量漏斗">
-                    <span>
-                      <strong>{qualityFunnel.subtitle_cues ?? '-'}</strong>
-                      <small>字幕句</small>
-                    </span>
-                    <span>
-                      <strong>{qualityFunnel.candidate_segments ?? '-'}</strong>
-                      <small>候选片段</small>
-                    </span>
-                    <span>
-                      <strong>{qualityFunnel.reviewed_keep ?? '-'}</strong>
-                      <small>评审保留</small>
-                    </span>
-                    <span>
-                      <strong>{qualityFunnel.recommended_cards ?? '-'}</strong>
-                      <small>推荐卡</small>
-                    </span>
-                    <span>
-                      <strong>{qualityFunnel.review_cards ?? '-'}</strong>
-                      <small>待审卡</small>
-                    </span>
-                    <span>
-                      <strong>{qualityFunnel.duplicate_segments ?? '-'}</strong>
-                      <small>重复合并</small>
-                    </span>
-                  </div>
-                </details>
-
-                <div className="review-filters" aria-label="片段质量筛选">
-                  {segmentFilterOptions.map((option) => (
-                    <button
-                      key={option.id}
-                      type="button"
-                      className={segmentFilter === option.id ? 'selected' : ''}
-                      aria-pressed={segmentFilter === option.id}
-                      onClick={() => setSegmentFilter(option.id)}
-                    >
-                      <span>{option.label}</span>
-                      <strong>{segmentReviewCounts[option.id]}</strong>
-                    </button>
-                  ))}
-                </div>
-              </>
+              <ReviewSummaryPanel
+                activeTemplateLabel={activeTemplate?.label ?? '沉浸视频'}
+                language={request.language}
+                level={request.level}
+                project={project}
+                qualityCounts={qualityCounts}
+                qualityDiagnostics={qualityDiagnostics}
+                qualityFunnel={qualityFunnel}
+                selectedCardCount={selectedCardCount}
+                segmentFilter={segmentFilter}
+                segmentReviewCounts={segmentReviewCounts}
+                onSegmentFilterChange={setSegmentFilter}
+              />
             ) : null}
 
             {lastExport ? (
-              <div className="export-result" role="status">
-                <CheckCircle2 size={18} />
-                <div>
-                  <strong>已导出 {lastExport.cards} 张卡</strong>
-                  {lastExport.media_summary ? (
-                    <div className="export-media-summary" aria-label="导出媒体统计">
-                      <span>视频 {lastExport.media_summary.video_segments} 段</span>
-                      <span>原声 {lastExport.media_summary.original_audio_files} 条</span>
-                      <span>整句 TTS {lastExport.media_summary.sentence_tts_files} 条</span>
-                      <span>词伙 TTS {lastExport.media_summary.phrase_tts_files} 条</span>
-                      <span>{lastExport.media_summary.media_mb} MB</span>
-                    </div>
-                  ) : null}
-                  {lastExport.warnings?.length ? (
-                    <div className="export-warnings" aria-label="导出警告">
-                      {lastExport.warnings.map((warning) => (
-                        <span key={warning}>{warning}</span>
-                      ))}
-                    </div>
-                  ) : null}
-                  <span>{lastExport.apkg_path}</span>
-                </div>
-                <button className="ghost-button" type="button" onClick={revealExport}>
-                  定位文件
-                </button>
-                <button className="primary-button" type="button" onClick={openAnkiImport}>
-                  <ExternalLink size={18} />
-                  打开 Anki
-                </button>
-                <button className="ghost-button" type="button" onClick={verifyAnkiImport} disabled={ankiVerifying}>
-                  {ankiVerifying ? <Loader2 className="spin" size={18} /> : <PlugZap size={18} />}
-                  核验媒体
-                </button>
-                {ankiVerifyResult ? (
-                  <div className={`anki-verify-result ${ankiVerifyResult.ok ? 'ok' : 'warn'}`}>
-                    <strong>{ankiVerifyResult.ok ? '媒体一致' : '需要检查媒体'}</strong>
-                    <span>
-                      卡片 {ankiVerifyResult.card_count ?? 0}
-                      {ankiVerifyResult.expected_cards ? `/${ankiVerifyResult.expected_cards}` : ''} · 媒体{' '}
-                      {ankiVerifyResult.media_count_checked ?? 0}/{ankiVerifyResult.media_count_expected ?? 0}
-                    </span>
-                    {ankiVerifyResult.failed_checks?.length ? (
-                      <small>{ankiVerifyResult.failed_checks.join(' / ')}</small>
-                    ) : null}
-                    {ankiVerifyResult.missing_media?.length ? (
-                      <small>缺失：{ankiVerifyResult.missing_media.slice(0, 3).join('、')}</small>
-                    ) : null}
-                    {ankiVerifyResult.mismatched_media?.length ? (
-                      <small>哈希不一致：{ankiVerifyResult.mismatched_media.slice(0, 3).map((item) => item.file).join('、')}</small>
-                    ) : null}
-                  </div>
-                ) : null}
-              </div>
+              <ExportResultPanel
+                ankiVerifying={ankiVerifying}
+                ankiVerifyResult={ankiVerifyResult}
+                lastExport={lastExport}
+                onOpenAnkiImport={openAnkiImport}
+                onRevealExport={revealExport}
+                onVerifyAnkiImport={verifyAnkiImport}
+              />
             ) : null}
 
             {!project ? (
-              <div className="empty-workbench">
-                <section className="workbench-hero">
-                  <span className="hero-kicker">Ready to build</span>
-                  <Sparkles size={32} />
-                  <h2>把真实素材变成 Anki 复习卡</h2>
-                  <p>
-                    选择视频、字幕或文档，设置学习范围，然后让模型提取值得记的表达。生成完成后，这里会显示片段、评分、理由和可导出的卡片。
-                  </p>
-                  <div className="hero-actions">
-                    <button className="primary-button" type="button" onClick={generate} disabled={appBusy}>
-                      {appBusy ? <Loader2 className="spin" size={18} /> : <Wand2 size={18} />}
-                      开始生成
-                    </button>
-                    <button className="ghost-button" type="button" onClick={() => setSettingsOpen(true)}>
-                      <Settings2 size={18} />
-                      检查 API
-                    </button>
-                  </div>
-                </section>
-                <div className="workflow-strip" aria-label="生成流程">
-                  <span>
-                    <strong>1</strong>
-                    素材
-                  </span>
-                  <span>
-                    <strong>2</strong>
-                    评审
-                  </span>
-                  <span>
-                    <strong>3</strong>
-                    制卡
-                  </span>
-                  <span>
-                    <strong>4</strong>
-                    导出
-                  </span>
-                </div>
-                <div className="workbench-summary-grid" aria-label="当前生成配置摘要">
-                  <span>
-                    <small>输入源</small>
-                    <strong>{request.source_mode === 'url' ? '视频链接' : request.source_mode === 'document' ? '文档资料' : '本地视频'}</strong>
-                  </span>
-                  <span>
-                    <small>学习水平</small>
-                    <strong>{request.level}</strong>
-                  </span>
-                  <span>
-                    <small>片段预算</small>
-                    <strong>{segmentBudgetLabel(request.max_segments)}</strong>
-                  </span>
-                  <span>
-                    <small>模板</small>
-                    <strong>{activeTemplate?.label ?? '沉浸视频'}</strong>
-                  </span>
-                </div>
-              </div>
+              <EmptyWorkbench
+                appBusy={appBusy}
+                level={request.level}
+                maxSegments={request.max_segments}
+                sourceMode={request.source_mode}
+                templateLabel={activeTemplate?.label ?? '沉浸视频'}
+                onGenerate={generate}
+                onOpenSettings={() => setSettingsOpen(true)}
+              />
             ) : (
               <div className="preview-layout">
                 <div className="segment-list">
