@@ -6,7 +6,6 @@ import {
   CheckCircle2,
   Download,
   FileText,
-  Languages,
   Layers3,
   Loader2,
   MessageSquareText,
@@ -88,6 +87,7 @@ import { getWorkerErrorActions } from './domain/workerErrors'
 import { ReadinessPanel } from './features/generation/ReadinessPanel'
 import { StatusPanel } from './features/generation/StatusPanel'
 import { WorkerProgressPanel } from './features/generation/WorkerProgressPanel'
+import { LearningSettingsPanel } from './features/learning/LearningSettingsPanel'
 import { EmptyWorkbench } from './features/review/EmptyWorkbench'
 import { ExportResultPanel } from './features/review/ExportResultPanel'
 import { ReviewSummaryPanel } from './features/review/ReviewSummaryPanel'
@@ -1380,121 +1380,16 @@ function App() {
               onSelectSourceMode={selectSourceMode}
             />
 
-            <div className="panel settings-panel">
-              <div className="panel-heading">
-                <Languages size={20} />
-                <h3>学习设置</h3>
-              </div>
-              <div className="two-fields">
-                <label className="field">
-                  <span>学习语言</span>
-                  <select
-                    value={request.language}
-                    onChange={(event) => patchRequest({ language: event.target.value })}
-                  >
-                    <option>English</option>
-                    <option>Français</option>
-                    <option>Español</option>
-                    <option>日本語</option>
-                  </select>
-                </label>
-                <label className="field">
-                  <span>最大片段数</span>
-                  <div className="segment-budget-input">
-                    <input
-                      type="number"
-                      min={3}
-                      max={120}
-                      value={request.max_segments > 0 ? request.max_segments : ''}
-                      placeholder="自动"
-                      disabled={request.max_segments <= 0}
-                      onChange={(event) => patchRequest({ max_segments: Number(event.target.value) })}
-                    />
-                    <button
-                      type="button"
-                      className={request.max_segments <= 0 ? 'selected' : ''}
-                      onClick={() => patchRequest({ max_segments: request.max_segments <= 0 ? 35 : 0 })}
-                    >
-                      自动
-                    </button>
-                  </div>
-                  <small>{request.max_segments <= 0 ? '根据视频长度、字幕密度和句子完整性自动计算。' : '手动限制最终进入制卡的片段数量。'}</small>
-                </label>
-              </div>
-              <div className="settings-subheading level-subheading">
-                <strong>当前水平</strong>
-                <span>控制解释深度和质量门槛</span>
-              </div>
-              <div className="segmented level-segmented" aria-label="当前学习水平">
-                {levels.map((level) => (
-                  <button
-                    type="button"
-                    key={level.id}
-                    className={request.level === level.id ? 'selected' : ''}
-                    onClick={() => selectCurrentLevel(level.id)}
-                  >
-                    <strong>{level.id}</strong>
-                    <span>{level.note}</span>
-                  </button>
-                ))}
-              </div>
-              <details className="compact-details inspector-fold level-range-panel" aria-label="收录难度范围">
-                <summary>
-                  <span>收录难度范围</span>
-                  <strong>{normalizeCollectionLevels(request.collection_levels, request.level).join(' / ')}</strong>
-                </summary>
-                <div className="level-range-body">
-                  <div className="range-actions" aria-label="收录范围快捷设置">
-                    <button type="button" onClick={() => applyCollectionPreset('current')}>
-                      只当前
-                    </button>
-                    <button type="button" onClick={() => applyCollectionPreset('below')}>
-                      当前及以下
-                    </button>
-                    <button type="button" onClick={() => applyCollectionPreset('around')}>
-                      上下一级
-                    </button>
-                  </div>
-                  <div className="level-range-grid">
-                    {levels.map((level) => {
-                      const selected = normalizeCollectionLevels(request.collection_levels, request.level).includes(level.id)
-                      return (
-                        <button
-                          type="button"
-                          key={level.id}
-                          className={selected ? 'selected' : ''}
-                          onClick={() => toggleCollectionLevel(level.id)}
-                          aria-pressed={selected}
-                        >
-                          <strong>{level.id}</strong>
-                          <span>{level.note}</span>
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
-              </details>
-              <details className="compact-details content-preferences">
-                <summary>
-                  <span>内容偏好</span>
-                  <strong>
-                    {contentOptions.filter((item) => request.content_toggles[item.key]).length} 项已选
-                  </strong>
-                </summary>
-                <div className="toggle-grid">
-                  {contentOptions.map((item) => (
-                    <label className="toggle" key={item.key}>
-                      <input
-                        type="checkbox"
-                        checked={request.content_toggles[item.key]}
-                        onChange={() => toggleContent(item.key)}
-                      />
-                      <span>{item.label}</span>
-                    </label>
-                  ))}
-                </div>
-              </details>
-            </div>
+            <LearningSettingsPanel
+              contentOptions={contentOptions}
+              levels={levels}
+              request={request}
+              onApplyCollectionPreset={applyCollectionPreset}
+              onPatchRequest={patchRequest}
+              onSelectCurrentLevel={selectCurrentLevel}
+              onToggleCollectionLevel={toggleCollectionLevel}
+              onToggleContent={toggleContent}
+            />
           </section>
 
           <section className="panel generation-panel">
