@@ -1,7 +1,7 @@
 ﻿import { useEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
+import { useReducedMotion } from 'motion/react'
 import { MessageSquareText, X } from 'lucide-react'
 
 import type {
@@ -83,9 +83,7 @@ import { ExportResultPanel } from './features/review/ExportResultPanel'
 import { ReviewSummaryPanel } from './features/review/ReviewSummaryPanel'
 import { SegmentDetail } from './features/review/SegmentDetail'
 import { SegmentList } from './features/review/SegmentList'
-import { ApiSettingsPanel } from './features/settings/ApiSettingsPanel'
-import { EnvSettingsPanel } from './features/settings/EnvSettingsPanel'
-import { TtsSettingsPanel } from './features/settings/TtsSettingsPanel'
+import { SettingsDialog } from './features/settings/SettingsDialog'
 import { SourceSetupPanel } from './features/source/SourceSetupPanel'
 import {
   isMimoApiConfig,
@@ -1451,137 +1449,64 @@ function App() {
         </section>
       </main>
 
-      <AnimatePresence>
-        {settingsOpen ? (
-        <motion.div
-          className="settings-overlay"
-          role="presentation"
-          onClick={() => setSettingsOpen(false)}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: motionDuration }}
-        >
-          <motion.section
-            className="settings-dialog"
-            ref={settingsDialogRef}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="settings-title"
-            tabIndex={-1}
-            onClick={(event) => event.stopPropagation()}
-            initial={{ opacity: 0, x: prefersReducedMotion ? 0 : 28 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: prefersReducedMotion ? 0 : 24 }}
-            transition={{ duration: motionDuration, ease: 'easeOut' }}
-          >
-            <div className="settings-dialog-header">
-              <div>
-                <p className="eyebrow">Settings</p>
-                <h2 id="settings-title">设置</h2>
-              </div>
-              <button
-                className="icon-button"
-                type="button"
-                onClick={() => setSettingsOpen(false)}
-                aria-label="关闭设置"
-              >
-                <X size={18} />
-              </button>
-            </div>
-            <div className="settings-tabs" role="tablist" aria-label="设置分类">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={settingsTab === 'api'}
-                className={settingsTab === 'api' ? 'selected' : ''}
-                onClick={() => setSettingsTab('api')}
-              >
-                模型 API
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={settingsTab === 'tts'}
-                className={settingsTab === 'tts' ? 'selected' : ''}
-                onClick={() => setSettingsTab('tts')}
-              >
-                语音 TTS
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={settingsTab === 'env'}
-                className={settingsTab === 'env' ? 'selected' : ''}
-                onClick={() => setSettingsTab('env')}
-              >
-                本地环境
-              </button>
-            </div>
-
-            <div className="settings-content">
-              {settingsTab === 'env' ? (
-                <EnvSettingsPanel appBusy={appBusy} envStatus={envStatus} onCheckEnv={checkEnv} />
-              ) : null}
-
-              {settingsTab === 'api' ? (
-                <ApiSettingsPanel
-                  advancedApiPresets={advancedApiPresets}
-                  apiConfig={request.api_config}
-                  apiTestMessage={apiTestMessage}
-                  apiTestMeta={apiTestMeta}
-                  apiTestOk={apiTestResult?.ok}
-                  apiTestTitle={apiTestTitle}
-                  apiTestTone={apiTestTone}
-                  apiTesting={apiTesting}
-                  appBusy={appBusy}
-                  capabilityHelp={capabilityHelp}
-                  capabilityLabels={capabilityLabels}
-                  featuredApiPresets={featuredApiPresets}
-                  mimoOpenAiBaseUrl={MIMO_OPENAI_BASE_URL}
-                  mimoTextModels={mimoTextModels}
-                  secretPrefs={secretPrefs}
-                  showAdvancedApi={showAdvancedApi}
-                  showCapabilities={showCapabilities}
-                  onApplyApiPreset={applyApiPreset}
-                  onPatchApi={patchApi}
-                  onSetShowAdvancedApi={setShowAdvancedApi}
-                  onSetShowCapabilities={setShowCapabilities}
-                  onTestApi={testApi}
-                  onToggleRememberModelKey={() => toggleRememberSecret('model')}
-                />
-              ) : null}
-
-              {settingsTab === 'tts' ? (
-                <TtsSettingsPanel
-                  advancedTtsPresets={advancedTtsPresets}
-                  appBusy={appBusy}
-                  featuredTtsPresets={featuredTtsPresets}
-                  mimoOpenAiBaseUrl={MIMO_OPENAI_BASE_URL}
-                  mimoTokenPlanSgpBaseUrl={MIMO_TOKEN_PLAN_SGP_BASE_URL}
-                  mimoTtsModels={mimoTtsModels}
-                  mimoTtsVoices={mimoTtsVoices}
-                  secretPrefs={secretPrefs}
-                  showAdvancedTts={showAdvancedTts}
-                  tts={tts}
-                  ttsTestMessage={ttsTestMessage}
-                  ttsTestMeta={ttsTestMeta}
-                  ttsTestOk={ttsTestResult?.ok}
-                  ttsTestTitle={ttsTestTitle}
-                  ttsTestTone={ttsTestTone}
-                  ttsTesting={ttsTesting}
-                  onApplyTtsPreset={applyTtsPreset}
-                  onPatchTts={patchTts}
-                  onSetShowAdvancedTts={setShowAdvancedTts}
-                  onTestTts={testTts}
-                  onToggleRememberTtsKey={() => toggleRememberSecret('tts')}
-                />
-              ) : null}
-            </div>
-          </motion.section>
-        </motion.div>
-        ) : null}
-      </AnimatePresence>
+      <SettingsDialog
+        apiSettings={{
+          advancedApiPresets,
+          apiConfig: request.api_config,
+          apiTestMessage,
+          apiTestMeta,
+          apiTestOk: apiTestResult?.ok,
+          apiTestTitle,
+          apiTestTone,
+          apiTesting,
+          appBusy,
+          capabilityHelp,
+          capabilityLabels,
+          featuredApiPresets,
+          mimoOpenAiBaseUrl: MIMO_OPENAI_BASE_URL,
+          mimoTextModels,
+          secretPrefs,
+          showAdvancedApi,
+          showCapabilities,
+          onApplyApiPreset: applyApiPreset,
+          onPatchApi: patchApi,
+          onSetShowAdvancedApi: setShowAdvancedApi,
+          onSetShowCapabilities: setShowCapabilities,
+          onTestApi: testApi,
+          onToggleRememberModelKey: () => toggleRememberSecret('model'),
+        }}
+        dialogRef={settingsDialogRef}
+        envSettings={{ appBusy, envStatus, onCheckEnv: checkEnv }}
+        motionDuration={motionDuration}
+        open={settingsOpen}
+        prefersReducedMotion={Boolean(prefersReducedMotion)}
+        settingsTab={settingsTab}
+        ttsSettings={{
+          advancedTtsPresets,
+          appBusy,
+          featuredTtsPresets,
+          mimoOpenAiBaseUrl: MIMO_OPENAI_BASE_URL,
+          mimoTokenPlanSgpBaseUrl: MIMO_TOKEN_PLAN_SGP_BASE_URL,
+          mimoTtsModels,
+          mimoTtsVoices,
+          secretPrefs,
+          showAdvancedTts,
+          tts,
+          ttsTestMessage,
+          ttsTestMeta,
+          ttsTestOk: ttsTestResult?.ok,
+          ttsTestTitle,
+          ttsTestTone,
+          ttsTesting,
+          onApplyTtsPreset: applyTtsPreset,
+          onPatchTts: patchTts,
+          onSetShowAdvancedTts: setShowAdvancedTts,
+          onTestTts: testTts,
+          onToggleRememberTtsKey: () => toggleRememberSecret('tts'),
+        }}
+        onClose={() => setSettingsOpen(false)}
+        onSettingsTabChange={setSettingsTab}
+      />
 
       {isTauriRuntime() ? (
         <div className="resize-handles" aria-hidden="true">
