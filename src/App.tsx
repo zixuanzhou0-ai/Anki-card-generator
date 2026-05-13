@@ -5,7 +5,6 @@ import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import {
   CheckCircle2,
   Download,
-  FileText,
   Layers3,
   Loader2,
   MessageSquareText,
@@ -84,6 +83,7 @@ import {
 } from './domain/projectMetrics'
 import type { WorkerErrorActionId } from './domain/workerErrors'
 import { getWorkerErrorActions } from './domain/workerErrors'
+import { CardTemplatePanel } from './features/generation/CardTemplatePanel'
 import { ReadinessPanel } from './features/generation/ReadinessPanel'
 import { StatusPanel } from './features/generation/StatusPanel'
 import { WorkerProgressPanel } from './features/generation/WorkerProgressPanel'
@@ -1392,59 +1392,16 @@ function App() {
             />
           </section>
 
-          <section className="panel generation-panel">
-            <details className="compact-details preference-details">
-              <summary>
-                <span>卡片和模板</span>
-                <strong>
-                  {request.source_mode === 'document'
-                    ? '知识点卡'
-                    : `${request.card_types.length} 类 · ${activeTemplate?.label ?? '沉浸视频'}`}
-                </strong>
-              </summary>
-              {request.source_mode === 'document' ? (
-                <div className="doc-card-mode">
-                  <FileText size={18} />
-                  <div>
-                    <strong>知识点卡</strong>
-                    <span>正面是问题或概念提示，反面是结构化答案、解释、例子和为什么值得记。</span>
-                  </div>
-                </div>
-              ) : (
-                <div className="choice-row">
-                  {cardOptions.map((item) => (
-                    <button
-                      type="button"
-                      key={item.id}
-                      className={`choice ${request.card_types.includes(item.id) ? 'selected' : ''}`}
-                      onClick={() => toggleCardType(item.id)}
-                    >
-                      <strong>{item.label}</strong>
-                      <span>{item.note}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-              <div className="choice-row">
-                {templateOptions.map((item) => (
-                  <button
-                    type="button"
-                    key={item.id}
-                    className={`choice template-choice ${request.template_id === item.id ? 'selected' : ''} ${
-                      item.locked ? 'locked' : ''
-                    }`}
-                    onClick={() => {
-                      if (!item.locked) selectTemplate(item.id)
-                    }}
-                    disabled={item.locked}
-                  >
-                    <strong>{item.label}</strong>
-                    <span>{item.note}</span>
-                  </button>
-                ))}
-              </div>
-            </details>
-          </section>
+          <CardTemplatePanel
+            activeTemplateLabel={activeTemplate?.label ?? '沉浸视频'}
+            cardOptions={cardOptions}
+            cardTypes={request.card_types}
+            sourceMode={request.source_mode}
+            templateId={request.template_id}
+            templateOptions={templateOptions}
+            onSelectTemplate={selectTemplate}
+            onToggleCardType={toggleCardType}
+          />
           </aside>
 
           <section
