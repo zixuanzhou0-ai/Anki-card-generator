@@ -103,6 +103,8 @@ import { ExportResultPanel } from './features/review/ExportResultPanel'
 import { ReviewSummaryPanel } from './features/review/ReviewSummaryPanel'
 import { SegmentDetail } from './features/review/SegmentDetail'
 import { SegmentList } from './features/review/SegmentList'
+import { ConnectionTestCard } from './features/settings/ConnectionTestCard'
+import { EnvSettingsPanel } from './features/settings/EnvSettingsPanel'
 import {
   isMimoApiConfig,
   isMimoTokenPlanBase,
@@ -1886,69 +1888,7 @@ function App() {
 
             <div className="settings-content">
               {settingsTab === 'env' ? (
-              <section className="settings-section settings-section-single">
-                <div className="panel-heading">
-                  <Settings2 size={20} />
-                  <h3>本地环境</h3>
-                </div>
-                <p>
-                  首次启动按顺序检查 Python venv、FFmpeg、yt-dlp、genanki、AnkiConnect 和 YouTube challenge solver。
-                  不含任何 API Key。
-                </p>
-                <div className="settings-row">
-                  <button className="ghost-button" type="button" onClick={checkEnv} disabled={appBusy}>
-                    {appBusy ? <Loader2 className="spin" size={18} /> : <CheckCircle2 size={18} />}
-                    检查环境
-                  </button>
-                  <div className="env-grid">
-                    {envStatus ? (
-                      <>
-                        <span>Python {envStatus.python ?? '-'}</span>
-                        <span className={envStatus.ffmpeg ? 'ok' : 'warn'}>ffmpeg</span>
-                        <span className={envStatus.genanki ? 'ok' : 'warn'}>genanki</span>
-                        <span className={envStatus.yt_dlp ? 'ok' : 'warn'}>
-                          yt-dlp {envStatus.yt_dlp_version ?? ''}
-                        </span>
-                        <span className={envStatus.yt_dlp_js_runtime ? 'ok' : 'warn'}>
-                          JS {envStatus.yt_dlp_js_runtime || '未配置'}
-                        </span>
-                        <span className={envStatus.anki_connect ? 'ok' : 'warn'}>
-                          AnkiConnect {envStatus.anki_connect ? '可用' : '未连接'}
-                        </span>
-                      </>
-                    ) : (
-                      <span>尚未检查</span>
-                    )}
-                  </div>
-                </div>
-                <div className="first-run-steps" aria-label="普通用户 5 步安装">
-                  {['解压发布包', '运行 setup_runtime.ps1', '打开 exe', '填写 API Key 并测试', '用内置示例导出 APKG'].map(
-                    (step, index) => (
-                      <span key={step}>
-                        <strong>{index + 1}</strong>
-                        {step}
-                      </span>
-                    ),
-                  )}
-                </div>
-                {envStatus?.status_items?.length ? (
-                  <div className="env-checklist" aria-label="环境检查明细">
-                    {envStatus.status_items.map((item) => (
-                      <div className={`env-check-item ${item.status}`} key={item.id}>
-                        <strong>{item.label}</strong>
-                        <span>{item.detail}</span>
-                        {item.status !== 'ok' && item.fix ? <small>{item.fix}</small> : null}
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
-                {envStatus?.worker ? (
-                  <small className="diagnostic-footnote">
-                    Worker: {envStatus.worker}
-                    {envStatus.python_executable ? ` · Python: ${envStatus.python_executable}` : ''}
-                  </small>
-                ) : null}
-              </section>
+                <EnvSettingsPanel appBusy={appBusy} envStatus={envStatus} onCheckEnv={checkEnv} />
               ) : null}
 
               {settingsTab === 'api' ? (
@@ -1983,29 +1923,19 @@ function App() {
                   </div>
                 </details>
 
-                <div className={`api-test-card ${apiTestTone}`} aria-live="polite" aria-atomic="true">
-                  <div className="api-test-icon" aria-hidden="true">
-                    {apiTesting ? (
-                      <Loader2 className="spin" size={22} />
-                    ) : apiTestResult?.ok ? (
-                      <CheckCircle2 size={22} />
-                    ) : apiTestResult ? (
-                      <CircleAlert size={22} />
-                    ) : (
-                      <PlugZap size={22} />
-                    )}
-                  </div>
-                  <div className="api-test-copy">
-                    <span className="label">连接状态</span>
-                    <strong>{apiTestTitle}</strong>
-                    <p>{apiTestMessage}</p>
-                    <small>{apiTestMeta}</small>
-                  </div>
-                  <button className="primary-button" type="button" onClick={testApi} disabled={apiTesting || appBusy}>
-                    {apiTesting ? <Loader2 className="spin" size={18} /> : <PlugZap size={18} />}
-                    {apiTesting ? '测试中...' : '测试连接'}
-                  </button>
-                </div>
+                <ConnectionTestCard
+                  buttonLabel="测试连接"
+                  disabled={apiTesting || appBusy}
+                  message={apiTestMessage}
+                  meta={apiTestMeta}
+                  ok={apiTestResult?.ok}
+                  statusLabel="连接状态"
+                  testing={apiTesting}
+                  testingLabel="测试中..."
+                  title={apiTestTitle}
+                  tone={apiTestTone}
+                  onTest={testApi}
+                />
 
                 <div className="settings-subheading">
                   <strong>推荐配置</strong>
@@ -2224,29 +2154,19 @@ function App() {
                   </div>
                 </details>
 
-                <div className={`api-test-card ${ttsTestTone}`} aria-live="polite" aria-atomic="true">
-                  <div className="api-test-icon" aria-hidden="true">
-                    {ttsTesting ? (
-                      <Loader2 className="spin" size={22} />
-                    ) : ttsTestResult?.ok ? (
-                      <CheckCircle2 size={22} />
-                    ) : ttsTestResult ? (
-                      <CircleAlert size={22} />
-                    ) : (
-                      <PlugZap size={22} />
-                    )}
-                  </div>
-                  <div className="api-test-copy">
-                    <span className="label">TTS 状态</span>
-                    <strong>{ttsTestTitle}</strong>
-                    <p>{ttsTestMessage}</p>
-                    <small>{ttsTestMeta}</small>
-                  </div>
-                  <button className="primary-button" type="button" onClick={testTts} disabled={ttsTesting || appBusy}>
-                    {ttsTesting ? <Loader2 className="spin" size={18} /> : <PlugZap size={18} />}
-                    {ttsTesting ? '测试中...' : '测试 TTS'}
-                  </button>
-                </div>
+                <ConnectionTestCard
+                  buttonLabel="测试 TTS"
+                  disabled={ttsTesting || appBusy}
+                  message={ttsTestMessage}
+                  meta={ttsTestMeta}
+                  ok={ttsTestResult?.ok}
+                  statusLabel="TTS 状态"
+                  testing={ttsTesting}
+                  testingLabel="测试中..."
+                  title={ttsTestTitle}
+                  tone={ttsTestTone}
+                  onTest={testTts}
+                />
 
                 <div className="settings-subheading">
                   <strong>常用语音</strong>
