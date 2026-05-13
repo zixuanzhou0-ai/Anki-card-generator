@@ -9,19 +9,35 @@
     "tauri:build": "tauri build",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "lint": "eslint src tests/ui-smoke.spec.ts playwright.config.ts vitest.config.ts eslint.config.js",
+    "format:check": "prettier --check .",
+    "test:unit": "vitest run",
     "test:ui": "playwright test",
     "test:worker": "python -m unittest discover -s tests -p \"test_worker_quality.py\"",
     "smoke:release": "powershell -ExecutionPolicy Bypass -File scripts/smoke_release.ps1",
-    "check": "npm run build && npm run test:worker"
+    "check:versions": "powershell -ExecutionPolicy Bypass -File scripts/check_versions.ps1",
+    "check": "npm run check:versions && npm run lint && npm run test:unit && npm run build && npm run test:worker",
+    "check:full": "npm run check && npm run test:ui && cargo build --manifest-path src-tauri/Cargo.toml --locked && npm run smoke:release"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.59.1",
     "@tauri-apps/cli": "^2.10.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
+    "eslint": "^10.3.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.6.0",
+    "jsdom": "^29.1.1",
+    "prettier": "^3.8.3",
     "typescript": "~6.0.2",
-    "vite": "^8.0.10"
+    "typescript-eslint": "^8.59.3",
+    "vite": "^8.0.10",
+    "vitest": "^4.1.6"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.1",

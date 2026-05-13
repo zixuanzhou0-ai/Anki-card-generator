@@ -1,6 +1,8 @@
 import { expect, test } from '@playwright/test'
 
 test('desktop workflow shell supports simplified settings, URL mode, document mode, and generation', async ({ page }) => {
+  test.setTimeout(60_000)
+
   await page.addInitScript(() => window.localStorage.clear())
   await page.goto('/')
 
@@ -8,6 +10,7 @@ test('desktop workflow shell supports simplified settings, URL mode, document mo
   await expect(page.getByText('生成工作台')).toBeVisible()
   await expect(page.getByText('Ready to build', { exact: true })).toBeVisible()
   await expect(page.getByText('把真实素材变成 Anki 复习卡')).toBeVisible()
+  await expect(page.locator('.app-rail')).toHaveCount(0)
   const topbarBox = await page.locator('.topbar').boundingBox()
   const windowControlsBox = await page.locator('.window-controls').boundingBox()
   expect(topbarBox).not.toBeNull()
@@ -35,7 +38,11 @@ test('desktop workflow shell supports simplified settings, URL mode, document mo
   await expect(page.getByRole('button', { name: /MIMO SGP TTS/ })).toBeVisible()
   await expect(page.getByRole('button', { name: /高级 TTS 模型和参数/ })).toBeVisible()
   await expect(page.getByText('TTS 说明与费用')).toBeVisible()
-  await page.getByText('TTS 说明与费用').click()
+  await page
+    .locator('details.settings-disclosure')
+    .filter({ hasText: 'TTS 说明与费用' })
+    .locator('summary')
+    .click()
   await expect(page.getByText('TTS 是独立配置，MIMO 语音模型也在这里选。')).toBeVisible()
   await page.getByRole('button', { name: /MIMO SGP TTS/ }).click()
   await expect(page.getByText('TTS 已开启，尚未测试')).toBeVisible()
@@ -68,9 +75,9 @@ test('desktop workflow shell supports simplified settings, URL mode, document mo
   await expect(page.locator('.preview-panel.template-immersive')).toBeVisible()
 
   await page.getByRole('button', { name: '本段停用' }).click()
-  await expect(page.getByText('3 张已选')).toBeVisible()
+  await expect(page.locator('.metric-card.primary')).toContainText('3/6')
   await page.getByRole('button', { name: '本段全选' }).click()
-  await expect(page.getByText('6 张已选')).toBeVisible()
+  await expect(page.locator('.metric-card.primary')).toContainText('6/6')
 
   await page.getByRole('button', { name: /文档资料/ }).click()
   await expect(page.getByText('知识点卡').first()).toBeVisible()
@@ -92,6 +99,7 @@ test('desktop workflow shell supports simplified settings, URL mode, document mo
     { width: 1440, height: 1000 },
     { width: 1280, height: 900 },
     { width: 1180, height: 780 },
+    { width: 1080, height: 720 },
   ]) {
     await page.setViewportSize(viewport)
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)

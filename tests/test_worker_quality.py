@@ -1,7 +1,10 @@
 import importlib.util
+import io
+import json
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 
 
@@ -22,6 +25,17 @@ worker = load_worker()
 
 
 class WorkerQualityTests(unittest.TestCase):
+    def test_mimo_token_plan_key_uses_token_plan_base_url(self):
+        base_url = worker.compatible_base_url(
+            {
+                "provider": "mimo",
+                "api_key": "tp-test-token",
+                "base_url": "https://api.xiaomimimo.com/v1",
+            }
+        )
+
+        self.assertEqual(base_url, worker.MIMO_TOKEN_PLAN_SGP_BASE_URL)
+
     def test_ytdlp_node_runtime_enables_remote_ejs_components(self):
         original_which = worker.shutil.which
         try:
@@ -40,6 +54,71 @@ class WorkerQualityTests(unittest.TestCase):
 
         self.assertIn("YouTube 返回 HTTP 429", message)
         self.assertIn("本地 SRT", message)
+
+    def test_ytdlp_429_meta_is_structured_and_actionable(self):
+        meta = worker.yt_dlp_failure_meta(
+            "ERROR: Unable to download video subtitles for 'en': HTTP Error 429: Too Many Requests"
+        )
+
+        self.assertEqual(meta["error_code"], "YOUTUBE_RATE_LIMIT")
+        self.assertEqual(meta["stage"], "download_subtitles")
+        self.assertTrue(meta["retryable"])
+        self.assertIn("local_srt", meta["fallbacks"])
+
+    def test_worker_fail_emits_machine_readable_error(self):
+        from acg.protocol import ERROR_PREFIX, fail
+
+        stderr = io.StringIO()
+        with self.assertRaises(SystemExit):
+            with redirect_stderr(stderr):
+                fail(
+                    "YouTube 限流。",
+                    error_code="YOUTUBE_RATE_LIMIT",
+                    stage="download_subtitles",
+                    retryable=True,
+                    fallbacks=["local_srt"],
+                )
+
+        first_line = stderr.getvalue().splitlines()[0]
+        self.assertTrue(first_line.startswith(ERROR_PREFIX))
+        payload = json.loads(first_line.removeprefix(ERROR_PREFIX))
+        self.assertEqual(payload["schema_version"], 2)
+        self.assertEqual(payload["message"], "YouTube 限流。")
+        self.assertEqual(payload["error_code"], "YOUTUBE_RATE_LIMIT")
+        self.assertEqual(payload["fallbacks"], ["local_srt"])
+
+    def test_worker_protocol_adds_schema_version_to_success_payloads(self):
+        from acg.protocol import with_schema_version
+
+        payload = with_schema_version({"ok": True})
+
+        self.assertEqual(payload["schema_version"], 2)
+        self.assertTrue(payload["ok"])
+
+    def test_document_reader_is_exposed_through_worker_router(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            document_path = Path(temp_dir) / "note.txt"
+            document_path.write_text("Hello from a UTF-16 document.", encoding="utf-16")
+
+            text = worker.read_document_source(str(document_path))
+
+        self.assertIn("Hello from a UTF-16 document.", text)
+
+    def test_document_chunking_prefers_markdown_sections(self):
+        from acg.documents.chunking import split_document_chunks
+
+        text = "\n\n".join(
+            [
+                "# First idea\nThis section explains a transferable idea with enough detail for a review card.",
+                "# Second idea\nThis section explains another idea with examples, limits, and useful context.",
+            ]
+        )
+
+        segments = split_document_chunks(text, 5)
+
+        self.assertEqual(len(segments), 2)
+        self.assertEqual(segments[0]["id"], "doc_0001")
+        self.assertIn("First idea", segments[0]["phrase"])
 
     def test_cached_url_source_can_be_subtitle_only(self):
         with tempfile.TemporaryDirectory() as temp_dir:

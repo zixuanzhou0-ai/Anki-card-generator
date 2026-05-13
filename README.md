@@ -16,7 +16,7 @@
 
 ## 功能
 
-- 极简三片式桌面界面：左侧 Inspector、右侧生成工作台和可折叠设置分区。
+- 极简两片式桌面界面：左侧 Inspector 管理素材和学习设置，右侧 Workspace 负责生成、审核和导出。
 - 窗口最小尺寸保护：桌面端不会缩到破坏布局的尺寸。
 - YouTube URL 导入：自动下载视频和英文字幕。
 - 本地视频 + SRT：适合自己已有素材。
@@ -42,7 +42,7 @@ flowchart LR
 
 ## 界面预览
 
-主界面会把素材、学习设置、质量筛选和卡片预览放在同一个三片式工作台里；左侧复杂选项会收在展开项里：
+主界面采用两片式工作台：左侧收纳素材和学习设置，右侧展示质量筛选、卡片预览和导出结果；复杂选项会收在展开项里：
 
 ![主工作台](docs/screenshots/workflow-start.png)
 
@@ -70,21 +70,21 @@ flowchart LR
 
 如果 YouTube 触发 429、n challenge 或字幕接口失败，URL 面板可以切到“只用字幕生成”或“跳过视频切片”，先把卡片做出来。
 
-详细图文流程见 [用户指南](docs/USER_GUIDE.md)。
+详细图文流程见 [用户指南](docs/USER_GUIDE.md)。开发和发布维护见 [架构说明](docs/ARCHITECTURE.md)，常见失败处理见 [故障排查](docs/TROUBLESHOOTING.md)。
 
 ## 必需依赖
 
 便携包不内置这些外部运行时，首次使用前需要安装：
 
-| 依赖 | 用途 |
-| --- | --- |
-| Python 3.11+ | 运行制卡 worker |
-| genanki | 生成 `.apkg` |
-| yt-dlp | 下载 YouTube 视频和字幕 |
+| 依赖                     | 用途                                   |
+| ------------------------ | -------------------------------------- |
+| Python 3.11+             | 运行制卡 worker                        |
+| genanki                  | 生成 `.apkg`                           |
+| yt-dlp                   | 下载 YouTube 视频和字幕                |
 | Deno 2.0+ 或 Node.js 20+ | 帮 yt-dlp 解 YouTube EJS / n challenge |
-| pypdf | 读取 PDF 文档 |
-| FFmpeg | 切视频、转音频、生成封面 |
-| Anki | 导入和复习卡片 |
+| pypdf                    | 读取 PDF 文档                          |
+| FFmpeg                   | 切视频、转音频、生成封面               |
+| Anki                     | 导入和复习卡片                         |
 
 Python 依赖建议安装到项目本地 `.venv`，不要污染全局 Python：
 
@@ -133,10 +133,8 @@ powershell -ExecutionPolicy Bypass -File scripts/package_portable.ps1 -ReleaseEx
 发布前请跑：
 
 ```powershell
-npm run check
-npm run test:ui
+npm run check:full
 npm run tauri:build
-powershell -ExecutionPolicy Bypass -File scripts/smoke_release.ps1
 ```
 
 发布清单见 [Release Checklist](docs/RELEASE_CHECKLIST.md)。

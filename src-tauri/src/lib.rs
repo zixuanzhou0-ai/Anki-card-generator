@@ -11,7 +11,7 @@ use std::{
 };
 
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{json, Value};
 use tauri::{Emitter, LogicalSize, Manager, Size, State};
 
 #[cfg(windows)]
@@ -19,10 +19,12 @@ use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+const WORKER_PROGRESS_PREFIX: &str = "__ANKI_CARD_PROGRESS__";
+const WORKER_ERROR_PREFIX: &str = "__ANKI_CARD_ERROR__";
 const SECRET_SERVICE: &str = "Anki Card Generator";
 const ALLOWED_SECRET_KEYS: &[&str] = &["model_api_key", "tts_api_key"];
-const MIN_WINDOW_WIDTH: f64 = 1180.0;
-const MIN_WINDOW_HEIGHT: f64 = 780.0;
+const MIN_WINDOW_WIDTH: f64 = 1360.0;
+const MIN_WINDOW_HEIGHT: f64 = 1040.0;
 
 #[derive(Clone, Default)]
 struct WorkerJobs {
@@ -165,13 +167,64 @@ fn make_job_id(command: &str) -> String {
     format!("{command}-{millis}-{}", std::process::id())
 }
 
-fn emit_worker_finished(
+fn parse_worker_error_line(line: &str) -> Option<Value> {
+    line.strip_prefix(WORKER_ERROR_PREFIX)
+        .and_then(|payload| serde_json::from_str::<Value>(payload).ok())
+}
+
+fn worker_failure_message(stderr: &str, stdout: &str, error_details: Option<&Value>) -> String {
+    if let Some(message) = error_details
+        .and_then(|details| details.get("message"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+    {
+        return message.to_string();
+    }
+
+    let fallback = if stderr.trim().is_empty() {
+        stdout.trim()
+    } else {
+        stderr.trim()
+    };
+    fallback.to_string()
+}
+
+fn apply_worker_error_payload(
+    payload: &mut Value,
+    error: Option<String>,
+    error_details: Option<Value>,
+) {
+    if let Some(details) = error_details {
+        if let Some(message) = details
+            .get("message")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|message| !message.is_empty())
+        {
+            payload["error"] = json!(message);
+        } else if let Some(error) = error {
+            payload["error"] = json!(error);
+        }
+
+        for key in ["error_code", "stage", "retryable", "fallbacks"] {
+            if let Some(value) = details.get(key) {
+                payload[key] = value.clone();
+            }
+        }
+    } else if let Some(error) = error {
+        payload["error"] = json!(error);
+    }
+}
+
+fn emit_worker_finished_with_error(
     app: &tauri::AppHandle,
     job_id: &str,
     command: &str,
     ok: bool,
     result: Option<serde_json::Value>,
     error: Option<String>,
+    error_details: Option<Value>,
     cancelled: bool,
 ) {
     let mut payload = json!({
@@ -183,10 +236,20 @@ fn emit_worker_finished(
     if let Some(result) = result {
         payload["result"] = result;
     }
-    if let Some(error) = error {
-        payload["error"] = json!(error);
-    }
+    apply_worker_error_payload(&mut payload, error, error_details);
     let _ = app.emit("worker-finished", payload);
+}
+
+fn emit_worker_finished(
+    app: &tauri::AppHandle,
+    job_id: &str,
+    command: &str,
+    ok: bool,
+    result: Option<serde_json::Value>,
+    error: Option<String>,
+    cancelled: bool,
+) {
+    emit_worker_finished_with_error(app, job_id, command, ok, result, error, None, cancelled);
 }
 
 fn kill_process_tree(pid: u32) -> Result<(), String> {
@@ -240,13 +303,19 @@ fn run_worker(
         .ok_or_else(|| "无法读取 worker 输出。".to_string())?;
     let stderr_text = Arc::new(Mutex::new(String::new()));
     let stderr_sink = Arc::clone(&stderr_text);
+    let stderr_error = Arc::new(Mutex::new(None::<Value>));
+    let stderr_error_sink = Arc::clone(&stderr_error);
     let app_for_progress = app.clone();
     let progress_thread = thread::spawn(move || {
         let reader = BufReader::new(stderr);
         for line in reader.lines().map_while(Result::ok) {
-            if let Some(payload) = line.strip_prefix("__ANKI_CARD_PROGRESS__") {
+            if let Some(payload) = line.strip_prefix(WORKER_PROGRESS_PREFIX) {
                 if let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) {
                     let _ = app_for_progress.emit("worker-progress", value);
+                }
+            } else if let Some(error) = parse_worker_error_line(&line) {
+                if let Ok(mut value) = stderr_error_sink.lock() {
+                    *value = Some(error);
                 }
             } else if let Ok(mut text) = stderr_sink.lock() {
                 text.push_str(&line);
@@ -277,12 +346,8 @@ fn run_worker(
             .lock()
             .map(|text| text.clone())
             .unwrap_or_default();
-        let message = if stderr.trim().is_empty() {
-            stdout_text
-        } else {
-            stderr
-        };
-        return Err(message.trim().to_string());
+        let error_details = stderr_error.lock().ok().and_then(|value| value.clone());
+        return Err(worker_failure_message(&stderr, &stdout_text, error_details.as_ref()));
     }
 
     serde_json::from_str(&stdout_text).map_err(|err| format!("worker 输出不是有效 JSON：{err}"))
@@ -351,13 +416,15 @@ fn start_worker_job(
 
     let stderr_text = Arc::new(Mutex::new(String::new()));
     let stderr_sink = Arc::clone(&stderr_text);
+    let stderr_error = Arc::new(Mutex::new(None::<Value>));
+    let stderr_error_sink = Arc::clone(&stderr_error);
     let app_for_progress = app.clone();
     let progress_job_id = job_id.clone();
     let progress_thread = thread::spawn(move || {
         let reader = BufReader::new(stderr);
         let mut last_emit = Instant::now() - Duration::from_millis(100);
         for line in reader.lines().map_while(Result::ok) {
-            if let Some(payload) = line.strip_prefix("__ANKI_CARD_PROGRESS__") {
+            if let Some(payload) = line.strip_prefix(WORKER_PROGRESS_PREFIX) {
                 if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(payload) {
                     value["job_id"] = json!(progress_job_id);
                     let percent = value
@@ -368,6 +435,10 @@ fn start_worker_job(
                         let _ = app_for_progress.emit("worker-progress", value);
                         last_emit = Instant::now();
                     }
+                }
+            } else if let Some(error) = parse_worker_error_line(&line) {
+                if let Ok(mut value) = stderr_error_sink.lock() {
+                    *value = Some(error);
                 }
             } else if let Ok(mut text) = stderr_sink.lock() {
                 text.push_str(&line);
@@ -442,18 +513,16 @@ fn start_worker_job(
                     .lock()
                     .map(|text| text.clone())
                     .unwrap_or_default();
-                let message = if stderr.trim().is_empty() {
-                    stdout_text
-                } else {
-                    stderr
-                };
-                emit_worker_finished(
+                let error_details = stderr_error.lock().ok().and_then(|value| value.clone());
+                let message = worker_failure_message(&stderr, &stdout_text, error_details.as_ref());
+                emit_worker_finished_with_error(
                     &app_for_finish,
                     &finish_job_id,
                     &finish_command,
                     false,
                     None,
-                    Some(message.trim().to_string()),
+                    Some(message),
+                    error_details,
                     false,
                 );
             }
@@ -529,11 +598,46 @@ fn find_anki() -> Result<PathBuf, String> {
         })
 }
 
+fn path_is_within(target: &Path, root: &Path) -> bool {
+    let Ok(target) = target.canonicalize() else {
+        return false;
+    };
+    let Ok(root) = root.canonicalize() else {
+        return false;
+    };
+    target == root || target.starts_with(root)
+}
+
+fn reveal_path_allowed(app: &tauri::AppHandle, target: &Path) -> bool {
+    if let Ok(app_data) = app.path().app_local_data_dir() {
+        if path_is_within(target, &app_data) {
+            return true;
+        }
+    }
+
+    if let Ok(cwd) = env::current_dir() {
+        for root in [cwd.join("projects"), cwd.join("release"), cwd.join("anki_live_e2e")] {
+            if root.exists() && path_is_within(target, &root) {
+                return true;
+            }
+        }
+
+        if cfg!(debug_assertions) && path_is_within(target, &cwd) {
+            return true;
+        }
+    }
+
+    false
+}
+
 #[tauri::command]
 fn open_anki_import(apkg_path: String) -> Result<(), String> {
     let apkg = PathBuf::from(apkg_path);
     if !apkg.exists() {
         return Err(format!("apkg 文件不存在：{}", apkg.display()));
+    }
+    if !apkg.is_file() || apkg.extension().and_then(|value| value.to_str()) != Some("apkg") {
+        return Err("只能导入 .apkg 文件。".to_string());
     }
 
     let anki = find_anki()?;
@@ -545,10 +649,13 @@ fn open_anki_import(apkg_path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn reveal_path(path: String) -> Result<(), String> {
+fn reveal_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
     let target = PathBuf::from(path);
     if !target.exists() {
         return Err(format!("路径不存在：{}", target.display()));
+    }
+    if !reveal_path_allowed(&app, &target) {
+        return Err("只能打开本应用生成或管理的输出路径。".to_string());
     }
 
     #[cfg(target_os = "windows")]

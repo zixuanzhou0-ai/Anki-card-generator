@@ -37,8 +37,23 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Install Playwright browsers
+        run: npx playwright install chromium
+
+      - name: Run lint
+        run: npm run lint
+
+      - name: Run frontend unit tests
+        run: npm run test:unit
+
       - name: Build frontend
         run: npm run build
+
+      - name: Run UI smoke tests
+        run: npm run test:ui
+
+      - name: Check version consistency
+        run: powershell -ExecutionPolicy Bypass -File scripts/check_versions.ps1
 
       - name: Build Tauri Rust shell
         run: cargo build --manifest-path src-tauri/Cargo.toml --locked
@@ -49,7 +64,9 @@ jobs:
           python -m pip install -r workers/requirements.txt
 
       - name: Compile worker files
-        run: python -m py_compile workers/anki_worker.py workers/verify_apkg.py tests/test_worker_quality.py
+        run: |
+          python -m py_compile workers/anki_worker.py workers/verify_apkg.py tests/test_worker_quality.py
+          python -m compileall -q workers/acg
 
       - name: Run worker tests
         run: python -m unittest discover -s tests -p "test_worker_quality.py"

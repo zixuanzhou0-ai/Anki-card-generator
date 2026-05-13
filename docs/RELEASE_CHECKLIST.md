@@ -16,11 +16,11 @@
 
 ```powershell
 python -m py_compile workers\anki_worker.py workers\verify_apkg.py tests\test_worker_quality.py
-python -m unittest discover -s tests -p "test_worker_quality.py"
-npm run build
+npm run check
 npm run test:ui
+cargo build --manifest-path src-tauri/Cargo.toml --locked
 npm run tauri:build
-powershell -ExecutionPolicy Bypass -File scripts\smoke_release.ps1
+npm run smoke:release
 ```
 
 GitHub Actions 必须是绿色；如果 CI 因外部服务故障失败，release note 需要写明原因和人工复核结果。

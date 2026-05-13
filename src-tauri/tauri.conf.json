@@ -13,10 +13,10 @@
     "windows": [
       {
         "title": "Anki 卡片生成器",
-        "width": 1320,
-        "height": 860,
-        "minWidth": 1180,
-        "minHeight": 780,
+        "width": 1540,
+        "height": 1080,
+        "minWidth": 1360,
+        "minHeight": 1040,
         "resizable": true,
         "decorations": false,
         "fullscreen": false
@@ -31,15 +31,10 @@
     "targets": "all",
     "resources": {
       "../workers/anki_worker.py": "workers/anki_worker.py",
+      "../workers/acg": "workers/acg",
       "../workers/requirements.txt": "workers/requirements.txt",
       "../workers/verify_apkg.py": "workers/verify_apkg.py"
     },
-    "icon": [
-      "icons/32x32.png",
-      "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
-    ]
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"]
   }
 }
