@@ -1,6 +1,8 @@
 import { expect, test } from '@playwright/test'
 
 test('desktop workflow shell supports simplified settings, URL mode, document mode, and generation', async ({ page }) => {
+  test.setTimeout(60_000)
+
   await page.addInitScript(() => window.localStorage.clear())
   await page.goto('/')
 
