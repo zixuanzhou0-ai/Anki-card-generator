@@ -2,7 +2,6 @@
 import type { MouseEvent } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { useReducedMotion } from 'motion/react'
-import { X } from 'lucide-react'
 
 import type {
   AnkiVerifyResult,
@@ -72,15 +71,10 @@ import {
 } from './domain/projectMetrics'
 import type { WorkerErrorActionId } from './domain/workerErrors'
 import { getWorkerErrorActions } from './domain/workerErrors'
+import { InspectorPanel } from './features/app/InspectorPanel'
 import { Topbar } from './features/app/Topbar'
-import { CardTemplatePanel } from './features/generation/CardTemplatePanel'
-import { ReadinessPanel } from './features/generation/ReadinessPanel'
-import { StatusPanel } from './features/generation/StatusPanel'
-import { WorkerProgressPanel } from './features/generation/WorkerProgressPanel'
-import { LearningSettingsPanel } from './features/learning/LearningSettingsPanel'
 import { ReviewWorkspace } from './features/review/ReviewWorkspace'
 import { SettingsDialog } from './features/settings/SettingsDialog'
-import { SourceSetupPanel } from './features/source/SourceSetupPanel'
 import {
   isMimoApiConfig,
   isMimoTokenPlanBase,
@@ -1290,61 +1284,36 @@ function App() {
               onClick={() => setInspectorState('collapsed')}
             />
           ) : null}
-          <aside className={`control-column ${inspectorSheetOpen ? 'sheet-open' : ''}`} aria-label="素材和生成设置">
-          <div className="compact-inspector-head">
-            <div>
-              <span>素材设置</span>
-              <strong>生成前配置</strong>
-            </div>
-            <button type="button" className="icon-button" onClick={() => setInspectorState('collapsed')} aria-label="关闭素材设置">
-              <X size={18} />
-            </button>
-          </div>
-          <ReadinessPanel items={readiness} />
-
-          {workerProgress ? <WorkerProgressPanel progress={workerProgress} /> : null}
-
-          <StatusPanel
+          <InspectorPanel
+            activeTemplateLabel={activeTemplate?.label ?? '沉浸视频'}
             appBusy={appBusy}
+            cardOptions={cardOptions}
+            cardTypes={request.card_types}
+            contentOptions={contentOptions}
+            inspectorSheetOpen={inspectorSheetOpen}
+            levels={levels}
+            readiness={readiness}
+            request={request}
             requestEditedDuringRun={requestEditedDuringRun}
             status={status}
             statusTone={statusTone}
-            workerBusy={workerBusy}
-            workerErrorActions={workerErrorActions}
-            onWorkerErrorAction={handleWorkerErrorAction}
-          />
-
-          <section className="setup-grid">
-            <SourceSetupPanel
-              request={request}
-              onPatchRequest={patchRequest}
-              onSelectPath={selectPath}
-              onSelectSourceMode={selectSourceMode}
-            />
-
-            <LearningSettingsPanel
-              contentOptions={contentOptions}
-              levels={levels}
-              request={request}
-              onApplyCollectionPreset={applyCollectionPreset}
-              onPatchRequest={patchRequest}
-              onSelectCurrentLevel={selectCurrentLevel}
-              onToggleCollectionLevel={toggleCollectionLevel}
-              onToggleContent={toggleContent}
-            />
-          </section>
-
-          <CardTemplatePanel
-            activeTemplateLabel={activeTemplate?.label ?? '沉浸视频'}
-            cardOptions={cardOptions}
-            cardTypes={request.card_types}
-            sourceMode={request.source_mode}
             templateId={request.template_id}
             templateOptions={templateOptions}
+            workerBusy={workerBusy}
+            workerErrorActions={workerErrorActions}
+            workerProgress={workerProgress}
+            onApplyCollectionPreset={applyCollectionPreset}
+            onCloseSheet={() => setInspectorState('collapsed')}
+            onPatchRequest={patchRequest}
+            onSelectCurrentLevel={selectCurrentLevel}
+            onSelectPath={selectPath}
+            onSelectSourceMode={selectSourceMode}
             onSelectTemplate={selectTemplate}
             onToggleCardType={toggleCardType}
+            onToggleCollectionLevel={toggleCollectionLevel}
+            onToggleContent={toggleContent}
+            onWorkerErrorAction={handleWorkerErrorAction}
           />
-          </aside>
 
           <ReviewWorkspace
             activeSegment={activeSegment}
