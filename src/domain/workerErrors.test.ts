@@ -22,8 +22,11 @@ describe('worker error actions', () => {
     expect(getWorkerErrorActions('TTS_AUTH_FAILED').map((action) => action.id)).toEqual(['open-tts-settings'])
   })
 
+  it('keeps an explicit retry path for unknown worker failures', () => {
+    expect(getWorkerErrorActions('UNKNOWN_WORKER_ERROR').map((action) => action.id)).toEqual(['retry'])
+  })
+
   it('ignores unknown error codes safely', () => {
     expect(getWorkerErrorActions('SOMETHING_NEW')).toEqual([])
   })
 })
-

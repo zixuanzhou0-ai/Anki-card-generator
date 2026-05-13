@@ -63,6 +63,7 @@ const ERROR_ACTIONS: Partial<Record<WorkerErrorCode, WorkerErrorActionId[]>> = {
   ANKI_VERIFY_FAILED: ['retry'],
   WORKER_CANCELLED: [],
   WORKER_TIMEOUT: ['retry'],
+  UNKNOWN_WORKER_ERROR: ['retry'],
 }
 
 const FALLBACK_ACTIONS: Record<string, WorkerErrorActionId> = {
@@ -84,4 +85,3 @@ export function getWorkerErrorActions(errorCode?: string, fallbacks: string[] = 
 
   return uniqueActions([...fromError, ...fromFallbacks])
 }
-

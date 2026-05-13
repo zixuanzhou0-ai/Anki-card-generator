@@ -71,9 +71,18 @@ class WorkerQualityTests(unittest.TestCase):
         first_line = stderr.getvalue().splitlines()[0]
         self.assertTrue(first_line.startswith(ERROR_PREFIX))
         payload = json.loads(first_line.removeprefix(ERROR_PREFIX))
+        self.assertEqual(payload["schema_version"], 2)
         self.assertEqual(payload["message"], "YouTube 限流。")
         self.assertEqual(payload["error_code"], "YOUTUBE_RATE_LIMIT")
         self.assertEqual(payload["fallbacks"], ["local_srt"])
+
+    def test_worker_protocol_adds_schema_version_to_success_payloads(self):
+        from acg.protocol import with_schema_version
+
+        payload = with_schema_version({"ok": True})
+
+        self.assertEqual(payload["schema_version"], 2)
+        self.assertTrue(payload["ok"])
 
     def test_document_reader_is_exposed_through_worker_router(self):
         with tempfile.TemporaryDirectory() as temp_dir:

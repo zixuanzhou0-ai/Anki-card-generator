@@ -4,6 +4,8 @@ import json
 import sys
 from typing import Any
 
+from acg.errors import SCHEMA_VERSION
+
 
 PROGRESS_PREFIX = "__ANKI_CARD_PROGRESS__"
 ERROR_PREFIX = "__ANKI_CARD_ERROR__"
@@ -16,7 +18,14 @@ def read_payload() -> dict[str, Any]:
     return json.loads(raw)
 
 
+def with_schema_version(payload: Any) -> Any:
+    if isinstance(payload, dict) and "schema_version" not in payload:
+        return {"schema_version": SCHEMA_VERSION, **payload}
+    return payload
+
+
 def emit(payload: Any) -> None:
+    payload = with_schema_version(payload)
     print(json.dumps(payload, ensure_ascii=False))
 
 
@@ -39,6 +48,7 @@ def worker_error_payload(
     fallbacks: list[str] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
         "message": message,
         "retryable": retryable,
         "fallbacks": fallbacks or [],

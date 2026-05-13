@@ -155,6 +155,7 @@ export type WorkerErrorCode =
   | 'ANKI_VERIFY_FAILED'
   | 'WORKER_CANCELLED'
   | 'WORKER_TIMEOUT'
+  | 'UNKNOWN_WORKER_ERROR'
 
 export type WorkerJob = {
   job_id: string
