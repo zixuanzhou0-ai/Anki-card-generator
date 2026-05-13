@@ -70,6 +70,7 @@ import {
   isMimoApiConfig,
   isMimoTokenPlanBase,
   isMimoTokenPlanKey,
+  normalizeApiConfigForRequest,
   resolveTtsConfig,
   validateApiConfigForRequest,
   validateTtsConfigForRequest,
@@ -761,7 +762,15 @@ export function useAppController() {
   }
 
   const testApi = async () => {
-    const api = request.api_config
+    const api = normalizeApiConfigForRequest(request.api_config)
+    if (
+      api.base_url !== request.api_config.base_url ||
+      api.model !== request.api_config.model ||
+      api.provider !== request.api_config.provider
+    ) {
+      patchRequest({ api_config: api })
+      setStatus('已自动修正模型 API 配置，再开始测试连接。')
+    }
     const failBeforeRequest = (message: string) => {
       setApiTestResult({
         ok: false,
@@ -920,13 +929,21 @@ export function useAppController() {
       return
     }
     if (isTauriRuntime()) {
-      const apiConfigError = validateApiConfigForRequest(request.api_config)
+      const normalizedApi = normalizeApiConfigForRequest(request.api_config)
+      if (
+        normalizedApi.base_url !== request.api_config.base_url ||
+        normalizedApi.model !== request.api_config.model ||
+        normalizedApi.provider !== request.api_config.provider
+      ) {
+        patchRequest({ api_config: normalizedApi })
+      }
+      const apiConfigError = validateApiConfigForRequest(normalizedApi)
       if (apiConfigError) {
         setStatus(`生成前配置检查失败：${apiConfigError}`)
         return
       }
       const ttsConfigError = validateTtsConfigForRequest(
-        resolveTtsConfig(request.api_config.tts_config, request.api_config),
+        resolveTtsConfig(normalizedApi.tts_config, normalizedApi),
       )
       if (ttsConfigError) {
         setStatus(`生成前 TTS 配置检查失败：${ttsConfigError}`)
@@ -948,7 +965,12 @@ export function useAppController() {
           : '正在解析字幕、筛选片段并生成卡片草稿。',
     )
     try {
-      const requestSnapshot = JSON.parse(JSON.stringify(request)) as GenerateRequest
+      const requestSnapshot = JSON.parse(
+        JSON.stringify({
+          ...request,
+          api_config: normalizeApiConfigForRequest(request.api_config),
+        }),
+      ) as GenerateRequest
       if (!isTauriRuntime()) {
         const demo = createDemoProject(requestSnapshot)
         setProject(demo)

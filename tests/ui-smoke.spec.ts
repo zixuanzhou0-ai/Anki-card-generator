@@ -75,9 +75,9 @@ test('desktop workflow shell supports simplified settings, URL mode, document mo
   await expect(page.locator('.preview-panel.template-immersive')).toBeVisible()
 
   await page.getByRole('button', { name: '本段停用' }).click()
-  await expect(page.getByText('3 张已选')).toBeVisible()
+  await expect(page.locator('.metric-card.primary')).toContainText('3/6')
   await page.getByRole('button', { name: '本段全选' }).click()
-  await expect(page.getByText('6 张已选')).toBeVisible()
+  await expect(page.locator('.metric-card.primary')).toContainText('6/6')
 
   await page.getByRole('button', { name: /文档资料/ }).click()
   await expect(page.getByText('知识点卡').first()).toBeVisible()

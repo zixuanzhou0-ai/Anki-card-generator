@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { validateServiceBaseUrl, validateTtsConfigForRequest } from './apiConfig'
+import {
+  normalizeApiConfigForRequest,
+  validateServiceBaseUrl,
+  validateTtsConfigForRequest,
+} from './apiConfig'
 
 describe('validateServiceBaseUrl', () => {
   it('accepts https provider URLs', () => {
@@ -31,5 +35,29 @@ describe('validateServiceBaseUrl', () => {
         bit_rate: 128000,
       }),
     ).toBeNull()
+  })
+
+  it('routes MIMO Token Plan keys to the token-plan endpoint before requests', () => {
+    const normalized = normalizeApiConfigForRequest({
+      provider: 'mimo',
+      base_url: 'https://api.xiaomimimo.com/v1',
+      api_key: 'tp-test-token-plan-key',
+      model: 'MiMo-V2.5-Pro',
+      capabilities: ['structured_json'],
+      tts_config: {
+        enabled: false,
+        provider: 'disabled',
+        base_url: '',
+        api_key: '',
+        model: '',
+        voice: '',
+        language: 'auto',
+        sample_rate: 24000,
+        bit_rate: 128000,
+      },
+    })
+
+    expect(normalized.base_url).toBe('https://token-plan-sgp.xiaomimimo.com/v1')
+    expect(normalized.model).toBe('mimo-v2.5-pro')
   })
 })

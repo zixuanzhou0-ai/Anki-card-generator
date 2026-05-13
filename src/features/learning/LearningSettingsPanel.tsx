@@ -40,27 +40,47 @@ export function LearningSettingsPanel({
 }: LearningSettingsPanelProps) {
   const collectionLevels = normalizeCollectionLevels(request.collection_levels, request.level)
   const selectedContentCount = contentOptions.filter((item) => request.content_toggles[item.key]).length
+  const currentLevel = levels.find((level) => level.id === request.level) ?? levels[0]
+  const segmentBudgetLabel = request.max_segments <= 0 ? '自动片段' : `${request.max_segments} 段`
 
   return (
     <div className="panel settings-panel">
       <div className="panel-heading">
         <Languages size={20} />
-        <h3>学习设置</h3>
+        <div className="panel-title-stack">
+          <h3>学习设置</h3>
+          <span>{`${request.language} · ${request.level} · ${segmentBudgetLabel}`}</span>
+        </div>
       </div>
-      <div className="two-fields">
-        <label className="field">
-          <span>学习语言</span>
-          <select value={request.language} onChange={(event) => onPatchRequest({ language: event.target.value })}>
+      <div className="learning-core-card">
+        <label className="learning-setting-row">
+          <span>
+            <strong>学习语言</strong>
+            <small>生成解释、例句和老师评语时使用</small>
+          </span>
+          <select
+            aria-label="学习语言"
+            value={request.language}
+            onChange={(event) => onPatchRequest({ language: event.target.value })}
+          >
             <option>English</option>
             <option>Français</option>
             <option>Español</option>
             <option>日本語</option>
           </select>
         </label>
-        <label className="field">
-          <span>最大片段数</span>
+        <label className="learning-setting-row">
+          <span>
+            <strong>片段预算</strong>
+            <small>
+              {request.max_segments <= 0
+                ? '按视频长度、字幕密度和句子完整性自动估算'
+                : '手动限制最终进入制卡的片段数量'}
+            </small>
+          </span>
           <div className="segment-budget-input">
             <input
+              aria-label="最大片段数"
               type="number"
               min={3}
               max={120}
@@ -77,27 +97,23 @@ export function LearningSettingsPanel({
               自动
             </button>
           </div>
-          <small>
-            {request.max_segments <= 0
-              ? '根据视频长度、字幕密度和句子完整性自动计算。'
-              : '手动限制最终进入制卡的片段数量。'}
-          </small>
         </label>
       </div>
-      <div className="settings-subheading level-subheading">
+      <div className="settings-subheading level-subheading refined-level-heading">
         <strong>当前水平</strong>
-        <span>控制解释深度和质量门槛</span>
+        <span>{currentLevel ? `${currentLevel.label} · ${currentLevel.note}` : '控制解释深度和质量门槛'}</span>
       </div>
-      <div className="segmented level-segmented" aria-label="当前学习水平">
+      <div className="level-strip" aria-label="当前学习水平">
         {levels.map((level) => (
           <button
             type="button"
             key={level.id}
             className={request.level === level.id ? 'selected' : ''}
+            aria-label={`${level.id}${level.note}`}
+            title={`${level.label} · ${level.note}`}
             onClick={() => onSelectCurrentLevel(level.id)}
           >
             <strong>{level.id}</strong>
-            <span>{level.note}</span>
           </button>
         ))}
       </div>

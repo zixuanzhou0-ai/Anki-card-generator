@@ -1405,11 +1405,14 @@ def anki_field_value(fields: dict[str, Any], name: str) -> str:
 
 def compatible_base_url(config: dict[str, Any], default_url: str = "") -> str:
     provider = str(config.get("provider", "")).strip().lower()
+    api_key = str(config.get("api_key") or "").strip().lower()
     base_url = str(config.get("base_url") or "").strip().rstrip("/")
+    if is_mimo_config(config) and api_key.startswith("tp-") and "token-plan-" not in base_url.lower():
+        return MIMO_TOKEN_PLAN_SGP_BASE_URL
     if base_url:
         return base_url
     if provider in MIMO_PROVIDERS:
-        return MIMO_OPENAI_BASE_URL
+        return MIMO_TOKEN_PLAN_SGP_BASE_URL if api_key.startswith("tp-") else MIMO_OPENAI_BASE_URL
     return default_url.rstrip("/")
 
 
@@ -1480,6 +1483,33 @@ def compatible_chat_completion(
             timeout=timeout,
         )
     except Exception as err:
+        if is_mimo_config(api):
+            retry_body = dict(body)
+            retry_body.pop("reasoning_effort", None)
+            retry_body.pop("thinking", None)
+            try:
+                return http_json(
+                    f"{base_url}/chat/completions",
+                    api_key_header(api),
+                    retry_body,
+                    timeout=timeout,
+                )
+            except Exception as retry_err:
+                if "max_completion_tokens" in retry_body:
+                    fallback_body = dict(retry_body)
+                    fallback_body["max_tokens"] = fallback_body.pop("max_completion_tokens")
+                    try:
+                        return http_json(
+                            f"{base_url}/chat/completions",
+                            api_key_header(api),
+                            fallback_body,
+                            timeout=timeout,
+                        )
+                    except Exception as token_retry_err:
+                        raise RuntimeError(
+                            f"{err}; 去掉 MIMO 扩展参数重试失败：{retry_err}; 改用 max_tokens 重试仍失败：{token_retry_err}"
+                        ) from token_retry_err
+                raise RuntimeError(f"{err}; 去掉 MIMO 扩展参数重试仍失败：{retry_err}") from retry_err
         # Some OpenAI-compatible providers, including Token Plan gateways, may not support
         # response_format even when they can reliably return JSON from the prompt.
         if not supports_response_retry:

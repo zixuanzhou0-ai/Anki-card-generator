@@ -44,6 +44,25 @@ export function validateApiConfigForRequest(api: ApiConfig): string | null {
   return validateServiceBaseUrl(api.base_url, api.provider === 'mimo' ? 'MIMO Base URL' : '模型 Base URL')
 }
 
+export function normalizeApiConfigForRequest(api: ApiConfig): ApiConfig {
+  if (!isMimoApiConfig(api) || api.provider === 'claude') return api
+
+  const apiKey = api.api_key.trim()
+  let baseUrl = api.base_url.trim()
+  if (!baseUrl) {
+    baseUrl = isMimoTokenPlanKey(apiKey) ? MIMO_TOKEN_PLAN_SGP_BASE_URL : MIMO_OPENAI_BASE_URL
+  }
+  if (isMimoTokenPlanKey(apiKey) && !isMimoTokenPlanBase(baseUrl)) {
+    baseUrl = MIMO_TOKEN_PLAN_SGP_BASE_URL
+  }
+
+  return {
+    ...api,
+    base_url: baseUrl,
+    model: normalizeMimoModelId(api.model || 'mimo-v2.5-pro'),
+  }
+}
+
 export function validateTtsConfigForRequest(tts: TtsConfig): string | null {
   if (!tts.enabled || tts.provider === 'disabled') return null
   if (!tts.api_key.trim()) return '还没有填写 TTS API Key。'

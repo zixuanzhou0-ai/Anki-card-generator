@@ -23,8 +23,8 @@ const WORKER_PROGRESS_PREFIX: &str = "__ANKI_CARD_PROGRESS__";
 const WORKER_ERROR_PREFIX: &str = "__ANKI_CARD_ERROR__";
 const SECRET_SERVICE: &str = "Anki Card Generator";
 const ALLOWED_SECRET_KEYS: &[&str] = &["model_api_key", "tts_api_key"];
-const MIN_WINDOW_WIDTH: f64 = 1180.0;
-const MIN_WINDOW_HEIGHT: f64 = 780.0;
+const MIN_WINDOW_WIDTH: f64 = 1360.0;
+const MIN_WINDOW_HEIGHT: f64 = 1040.0;
 
 #[derive(Clone, Default)]
 struct WorkerJobs {

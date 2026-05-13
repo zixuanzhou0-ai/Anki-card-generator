@@ -25,6 +25,17 @@ worker = load_worker()
 
 
 class WorkerQualityTests(unittest.TestCase):
+    def test_mimo_token_plan_key_uses_token_plan_base_url(self):
+        base_url = worker.compatible_base_url(
+            {
+                "provider": "mimo",
+                "api_key": "tp-test-token",
+                "base_url": "https://api.xiaomimimo.com/v1",
+            }
+        )
+
+        self.assertEqual(base_url, worker.MIMO_TOKEN_PLAN_SGP_BASE_URL)
+
     def test_ytdlp_node_runtime_enables_remote_ejs_components(self):
         original_which = worker.shutil.which
         try:

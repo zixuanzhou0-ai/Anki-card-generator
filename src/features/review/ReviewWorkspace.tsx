@@ -178,6 +178,7 @@ export function ReviewWorkspace({
             prefersReducedMotion={prefersReducedMotion}
             segments={visibleSegments}
             onSelectSegment={onSelectSegment}
+            onSetSegmentCardsEnabled={onSetCardsEnabled}
           />
 
           {activeSegment ? (

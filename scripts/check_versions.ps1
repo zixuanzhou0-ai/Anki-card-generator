@@ -55,6 +55,7 @@ try {
   Assert-Contains "docs/BETA_LIMITATIONS.md" ([regex]::Escape($betaVersion)) "Beta limitations version"
   Assert-Contains "docs/RELEASE_CHECKLIST.md" ([regex]::Escape($betaVersion)) "Release checklist beta version"
   Assert-Contains "docs/RELEASE_CHECKLIST.md" ([regex]::Escape($version)) "Release checklist package version"
+  Assert-Contains "src-tauri/tauri.conf.json" '"\.\./workers/acg"\s*:\s*"workers/acg"' "Tauri bundled worker package resource"
 
   Write-Host "Version check passed: $betaVersion"
 }

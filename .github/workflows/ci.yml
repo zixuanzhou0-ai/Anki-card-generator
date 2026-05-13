@@ -64,7 +64,9 @@ jobs:
           python -m pip install -r workers/requirements.txt
 
       - name: Compile worker files
-        run: python -m py_compile workers/anki_worker.py workers/verify_apkg.py tests/test_worker_quality.py
+        run: |
+          python -m py_compile workers/anki_worker.py workers/verify_apkg.py tests/test_worker_quality.py
+          python -m compileall -q workers/acg
 
       - name: Run worker tests
         run: python -m unittest discover -s tests -p "test_worker_quality.py"

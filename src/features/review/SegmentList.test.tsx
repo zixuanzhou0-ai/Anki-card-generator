@@ -41,6 +41,7 @@ const segment: Segment = {
 describe('SegmentList', () => {
   it('renders segment status and selection callback', () => {
     const onSelectSegment = vi.fn()
+    const onSetSegmentCardsEnabled = vi.fn()
 
     render(
       <SegmentList
@@ -49,14 +50,18 @@ describe('SegmentList', () => {
         prefersReducedMotion
         segments={[segment]}
         onSelectSegment={onSelectSegment}
+        onSetSegmentCardsEnabled={onSetSegmentCardsEnabled}
       />,
     )
 
     fireEvent.click(screen.getByRole('button', { name: /figure out/ }))
 
     expect(screen.getByText(/推荐 · 5\/5/)).toBeInTheDocument()
-    expect(screen.getByText('1 张卡 · 推荐 5/5')).toBeInTheDocument()
+    expect(screen.getByText('1/1 张已选 · 推荐 5/5')).toBeInTheDocument()
     expect(onSelectSegment).toHaveBeenCalledWith('seg-1')
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /选择片段：figure out/ }))
+    expect(onSetSegmentCardsEnabled).toHaveBeenCalledWith(false, 'seg-1')
   })
 
   it('shows an empty filter state', () => {
@@ -67,6 +72,7 @@ describe('SegmentList', () => {
         prefersReducedMotion
         segments={[]}
         onSelectSegment={vi.fn()}
+        onSetSegmentCardsEnabled={vi.fn()}
       />,
     )
 
