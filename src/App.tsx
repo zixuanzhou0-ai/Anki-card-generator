@@ -2,18 +2,7 @@
 import type { MouseEvent } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
-import {
-  CheckCircle2,
-  Download,
-  Layers3,
-  Loader2,
-  MessageSquareText,
-  Minus,
-  Settings2,
-  Square,
-  Wand2,
-  X,
-} from 'lucide-react'
+import { MessageSquareText, X } from 'lucide-react'
 
 import type {
   AnkiVerifyResult,
@@ -83,6 +72,7 @@ import {
 } from './domain/projectMetrics'
 import type { WorkerErrorActionId } from './domain/workerErrors'
 import { getWorkerErrorActions } from './domain/workerErrors'
+import { Topbar } from './features/app/Topbar'
 import { CardTemplatePanel } from './features/generation/CardTemplatePanel'
 import { ReadinessPanel } from './features/generation/ReadinessPanel'
 import { StatusPanel } from './features/generation/StatusPanel'
@@ -1263,77 +1253,35 @@ function App() {
 
   return (
     <div className="app-shell">
-      <header
-        className="topbar"
-        onMouseDown={startWindowDrag}
+      <Topbar
+        appBusy={appBusy}
+        hasExportableCards={selectedCardCount > 0}
+        hasProject={Boolean(project)}
+        inspectorActionLabel={inspectorActionLabel}
+        inspectorActive={inspectorState === 'open' || inspectorSheetOpen}
+        isCancelling={isCancelling}
+        projectSummary={
+          project
+            ? {
+                reviewCount: qualityCounts.review,
+                selectedCardLabel: badgeText(selectedCardCount),
+                segmentCount: project.segments.length,
+                templateLabel: activeTemplate?.label ?? '沉浸视频',
+              }
+            : undefined
+        }
+        status={status}
+        statusTone={statusTone}
+        workerBusy={workerBusy}
+        onCancelCurrentWorker={cancelCurrentWorker}
         onDoubleClick={handleTopbarDoubleClick}
-      >
-        <div className="brand-lockup">
-          <div className="app-mark" aria-hidden="true">
-            <img src="/app-icon.png" alt="" />
-          </div>
-          <div>
-            <p className="eyebrow">Anki Card Generator V1</p>
-            <h1>Anki 卡片生成器</h1>
-          </div>
-        </div>
-        <div className="window-drag-region" />
-        <div className="topbar-actions">
-          {project ? (
-            <div className="mini-summary" aria-label="项目摘要">
-              <span>{`${project.segments.length} 个片段`}</span>
-              <span>{badgeText(selectedCardCount)}</span>
-              <span>{`${qualityCounts.review} 张待审`}</span>
-              <span>{activeTemplate?.label ?? '沉浸视频'}</span>
-            </div>
-          ) : null}
-          <div className={`status-chip ${statusTone}`} title={status} role="status" aria-live="polite" aria-atomic="true">
-            <CheckCircle2 size={16} />
-            <span>{status}</span>
-          </div>
-          <button
-            className="ghost-button inspector-toggle"
-            type="button"
-            onClick={toggleInspector}
-            aria-pressed={inspectorState === 'open' || inspectorSheetOpen}
-            aria-expanded={inspectorState === 'open' || inspectorSheetOpen}
-          >
-            <Layers3 size={18} />
-            {inspectorActionLabel}
-          </button>
-          <button className="ghost-button" type="button" onClick={() => setSettingsOpen(true)}>
-            <Settings2 size={18} />
-            设置
-          </button>
-          {workerBusy ? (
-            <button className="ghost-button cancel-button" type="button" onClick={cancelCurrentWorker} disabled={isCancelling}>
-              {isCancelling ? <Loader2 className="spin" size={18} /> : <X size={18} />}
-              {isCancelling ? '取消中' : '取消任务'}
-            </button>
-          ) : null}
-          {project && selectedCardCount > 0 && !workerBusy ? (
-            <button className="ghost-button command-export" type="button" onClick={exportApkg} disabled={appBusy}>
-              <Download size={18} />
-              导出
-            </button>
-          ) : null}
-          <button className="primary-button" type="button" onClick={generate} disabled={appBusy}>
-            {appBusy ? <Loader2 className="spin" size={18} /> : <Wand2 size={18} />}
-            {project ? '重新生成' : '生成卡片'}
-          </button>
-        </div>
-        <div className="window-controls" aria-label="窗口控制">
-          <button type="button" onClick={() => runWindowAction('minimize')} aria-label="最小化">
-            <Minus size={17} />
-          </button>
-          <button type="button" onClick={() => runWindowAction('toggleMaximize')} aria-label="最大化">
-            <Square size={15} />
-          </button>
-          <button className="close-window" type="button" onClick={() => runWindowAction('close')} aria-label="关闭">
-            <X size={18} />
-          </button>
-        </div>
-      </header>
+        onExport={exportApkg}
+        onGenerate={generate}
+        onMouseDown={startWindowDrag}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onToggleInspector={toggleInspector}
+        onWindowAction={runWindowAction}
+      />
 
       <main className="workspace">
         <section
