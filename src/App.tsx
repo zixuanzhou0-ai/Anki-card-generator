@@ -2,7 +2,7 @@
 import type { MouseEvent } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { useReducedMotion } from 'motion/react'
-import { MessageSquareText, X } from 'lucide-react'
+import { X } from 'lucide-react'
 
 import type {
   AnkiVerifyResult,
@@ -78,11 +78,7 @@ import { ReadinessPanel } from './features/generation/ReadinessPanel'
 import { StatusPanel } from './features/generation/StatusPanel'
 import { WorkerProgressPanel } from './features/generation/WorkerProgressPanel'
 import { LearningSettingsPanel } from './features/learning/LearningSettingsPanel'
-import { EmptyWorkbench } from './features/review/EmptyWorkbench'
-import { ExportResultPanel } from './features/review/ExportResultPanel'
-import { ReviewSummaryPanel } from './features/review/ReviewSummaryPanel'
-import { SegmentDetail } from './features/review/SegmentDetail'
-import { SegmentList } from './features/review/SegmentList'
+import { ReviewWorkspace } from './features/review/ReviewWorkspace'
 import { SettingsDialog } from './features/settings/SettingsDialog'
 import { SourceSetupPanel } from './features/source/SourceSetupPanel'
 import {
@@ -1350,102 +1346,44 @@ function App() {
           />
           </aside>
 
-          <section
-            className={`panel preview-panel template-${request.template_id}`}
-            ref={previewPanelRef}
-            tabIndex={-1}
-            aria-labelledby="preview-title"
-          >
-            <div className="preview-header">
-              <div className="panel-heading">
-                <MessageSquareText size={20} />
-                <div>
-                  <h3 id="preview-title">{project ? 'AI 评审工作台' : '生成工作台'}</h3>
-                  <p className="panel-subtitle">
-                    {project ? '查看模型留下的表达、判断理由和可导出的卡片草稿。' : '先选择素材，再生成卡片；结果会在这里展开。'}
-                  </p>
-                </div>
-              </div>
-              {project ? (
-                <div className="preview-actions">
-                  <button className="ghost-button" type="button" onClick={() => setCardsEnabled(true)}>
-                    全选
-                  </button>
-                  <button className="ghost-button" type="button" onClick={() => setCardsEnabled(false)}>
-                    全不选
-                  </button>
-                  <button className="ghost-button" type="button" onClick={() => selectCardsByQuality('recommended')}>
-                    只保留推荐
-                  </button>
-                  <button className="ghost-button" type="button" onClick={() => selectCardsByQuality('reviewable')}>
-                    推荐+待审
-                  </button>
-                </div>
-              ) : null}
-            </div>
-
-            {project ? (
-              <ReviewSummaryPanel
-                activeTemplateLabel={activeTemplate?.label ?? '沉浸视频'}
-                language={request.language}
-                level={request.level}
-                project={project}
-                qualityCounts={qualityCounts}
-                qualityDiagnostics={qualityDiagnostics}
-                qualityFunnel={qualityFunnel}
-                selectedCardCount={selectedCardCount}
-                segmentFilter={segmentFilter}
-                segmentReviewCounts={segmentReviewCounts}
-                onSegmentFilterChange={setSegmentFilter}
-              />
-            ) : null}
-
-            {lastExport ? (
-              <ExportResultPanel
-                ankiVerifying={ankiVerifying}
-                ankiVerifyResult={ankiVerifyResult}
-                lastExport={lastExport}
-                onOpenAnkiImport={openAnkiImport}
-                onRevealExport={revealExport}
-                onVerifyAnkiImport={verifyAnkiImport}
-              />
-            ) : null}
-
-            {!project ? (
-              <EmptyWorkbench
-                appBusy={appBusy}
-                level={request.level}
-                maxSegments={request.max_segments}
-                sourceMode={request.source_mode}
-                templateLabel={activeTemplate?.label ?? '沉浸视频'}
-                onGenerate={generate}
-                onOpenSettings={() => setSettingsOpen(true)}
-              />
-            ) : (
-              <div className="preview-layout">
-                <SegmentList
-                  activeSegmentId={activeSegmentId}
-                  motionDuration={motionDuration}
-                  prefersReducedMotion={Boolean(prefersReducedMotion)}
-                  segments={visibleSegments}
-                  onSelectSegment={setActiveSegmentId}
-                />
-
-                {activeSegment ? (
-                  <SegmentDetail
-                    motionDuration={motionDuration}
-                    prefersReducedMotion={Boolean(prefersReducedMotion)}
-                    previewRate={previewRate}
-                    segment={activeSegment}
-                    videoSrc={activeSegmentVideoSrc}
-                    onPreviewRateChange={setPreviewRate}
-                    onSetSegmentCardsEnabled={setCardsEnabled}
-                    onUpdateCard={updateCard}
-                  />
-                ) : null}
-              </div>
-            )}
-          </section>
+          <ReviewWorkspace
+            activeSegment={activeSegment}
+            activeSegmentId={activeSegmentId}
+            activeSegmentVideoSrc={activeSegmentVideoSrc}
+            activeTemplateLabel={activeTemplate?.label ?? '沉浸视频'}
+            ankiVerifying={ankiVerifying}
+            ankiVerifyResult={ankiVerifyResult}
+            appBusy={appBusy}
+            lastExport={lastExport}
+            language={request.language}
+            level={request.level}
+            maxSegments={request.max_segments}
+            motionDuration={motionDuration}
+            prefersReducedMotion={Boolean(prefersReducedMotion)}
+            previewPanelRef={previewPanelRef}
+            previewRate={previewRate}
+            project={project}
+            qualityCounts={qualityCounts}
+            qualityDiagnostics={qualityDiagnostics}
+            qualityFunnel={qualityFunnel}
+            selectedCardCount={selectedCardCount}
+            segmentFilter={segmentFilter}
+            segmentReviewCounts={segmentReviewCounts}
+            sourceMode={request.source_mode}
+            templateId={request.template_id}
+            visibleSegments={visibleSegments}
+            onGenerate={generate}
+            onOpenAnkiImport={openAnkiImport}
+            onOpenSettings={() => setSettingsOpen(true)}
+            onPreviewRateChange={setPreviewRate}
+            onRevealExport={revealExport}
+            onSegmentFilterChange={setSegmentFilter}
+            onSelectCardsByQuality={selectCardsByQuality}
+            onSelectSegment={setActiveSegmentId}
+            onSetCardsEnabled={setCardsEnabled}
+            onUpdateCard={updateCard}
+            onVerifyAnkiImport={verifyAnkiImport}
+          />
         </section>
       </main>
 
