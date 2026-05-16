@@ -1,6 +1,14 @@
 import type { ContentToggles, GenerateRequest } from './types'
 import { contentOptions } from './cards'
+import { defaultDocumentFocus } from './documentFocus'
+import {
+  defaultDocumentAnswerLanguage,
+  defaultDocumentAnswerLength,
+  defaultDocumentDepth,
+  defaultDocumentStudyMode,
+} from './documentStudy'
 import { defaultCollectionLevels } from './levels'
+import { defaultLanguageFocus } from './learningFocus'
 
 export const PROJECT_STORAGE_KEY = 'anki-card-generator:last-project'
 export const defaultToggles = contentOptions.reduce((result, item) => {
@@ -23,6 +31,12 @@ export const defaultRequest: GenerateRequest = {
   collection_levels: defaultCollectionLevels('B1'),
   template_id: 'immersive',
   content_toggles: defaultToggles,
+  language_focus: defaultLanguageFocus,
+  document_focus: defaultDocumentFocus,
+  document_study_mode: defaultDocumentStudyMode,
+  document_answer_language: defaultDocumentAnswerLanguage,
+  document_depth: defaultDocumentDepth,
+  document_answer_length: defaultDocumentAnswerLength,
   card_types: ['listening', 'phrase', 'cloze'],
   max_segments: 0,
   api_config: {

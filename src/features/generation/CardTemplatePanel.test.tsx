@@ -13,6 +13,7 @@ function renderPanel(overrides: Partial<ComponentProps<typeof CardTemplatePanel>
     activeTemplateLabel: '沉浸语言 V10',
     cardOptions,
     cardTypes: ['listening', 'phrase'],
+    documentStudyMode: 'knowledge',
     sourceMode: 'local',
     templateId: 'immersive',
     templateOptions,
@@ -42,8 +43,17 @@ describe('CardTemplatePanel', () => {
 
     fireEvent.click(screen.getByText('卡片和模板'))
 
-    expect(screen.getAllByText('知识点卡')[1]).toBeVisible()
+    expect(screen.getAllByText('知识问答卡')[1]).toBeVisible()
     expect(screen.getByText('正面是问题或概念提示，反面是结构化答案、解释、例子和为什么值得记。')).toBeVisible()
+  })
+
+  it('renders document language reading card copy', () => {
+    renderPanel({ documentStudyMode: 'language_reading', sourceMode: 'document' })
+
+    fireEvent.click(screen.getByText('卡片和模板'))
+
+    expect(screen.getAllByText('文档精读卡')[1]).toBeVisible()
+    expect(screen.getByText('从文档里提取表达、词汇或语法点；不生成听力卡，默认进入待审。')).toBeVisible()
   })
 
   it('does not select locked templates', () => {

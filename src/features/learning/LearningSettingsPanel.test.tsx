@@ -3,7 +3,7 @@ import type { ComponentProps } from 'react'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { contentOptions, defaultRequest, levels } from '../../domain/options'
+import { contentOptions, defaultRequest, languageFocusOptions, levels } from '../../domain/options'
 import { LearningSettingsPanel } from './LearningSettingsPanel'
 
 afterEach(() => cleanup())
@@ -11,6 +11,7 @@ afterEach(() => cleanup())
 function renderPanel(overrides: Partial<ComponentProps<typeof LearningSettingsPanel>> = {}) {
   const props: ComponentProps<typeof LearningSettingsPanel> = {
     contentOptions,
+    languageFocusOptions,
     levels,
     request: defaultRequest,
     onApplyCollectionPreset: vi.fn(),
@@ -18,6 +19,7 @@ function renderPanel(overrides: Partial<ComponentProps<typeof LearningSettingsPa
     onSelectCurrentLevel: vi.fn(),
     onToggleCollectionLevel: vi.fn(),
     onToggleContent: vi.fn(),
+    onToggleLanguageFocus: vi.fn(),
     ...overrides,
   }
   render(<LearningSettingsPanel {...props} />)
@@ -58,5 +60,22 @@ describe('LearningSettingsPanel', () => {
 
     expect(screen.getByText(/项已选/)).toBeVisible()
     expect(props.onToggleContent).toHaveBeenCalledWith('daily')
+  })
+
+  it('toggles language learning focus for video and URL sources', () => {
+    const props = renderPanel()
+
+    fireEvent.click(screen.getByRole('button', { name: /单词用法/ }))
+
+    expect(screen.getByText('词伙表达 / 听力难点')).toBeVisible()
+    expect(props.onToggleLanguageFocus).toHaveBeenCalledWith('vocabulary')
+  })
+
+  it('keeps document learning separate from language focus controls', () => {
+    renderPanel({ request: { ...defaultRequest, source_mode: 'document' } })
+
+    expect(screen.getByText('文档资料')).toBeVisible()
+    expect(screen.getByText(/文档会单独按知识点、术语和章节结构制卡/)).toBeVisible()
+    expect(screen.queryByLabelText('语言学习重点')).not.toBeInTheDocument()
   })
 })

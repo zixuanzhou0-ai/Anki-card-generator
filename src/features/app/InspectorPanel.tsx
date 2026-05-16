@@ -3,7 +3,9 @@ import { X } from 'lucide-react'
 import type {
   CardKind,
   ContentToggles,
+  DocumentFocus,
   GenerateRequest,
+  LanguageFocus,
   Level,
   SourceMode,
   TemplateId,
@@ -15,6 +17,7 @@ import { ReadinessPanel } from '../generation/ReadinessPanel'
 import type { ReadinessItem } from '../generation/ReadinessPanel'
 import { StatusPanel } from '../generation/StatusPanel'
 import { WorkerProgressPanel } from '../generation/WorkerProgressPanel'
+import { DocumentStudyPanel } from '../learning/DocumentStudyPanel'
 import { LearningSettingsPanel } from '../learning/LearningSettingsPanel'
 import { SourceSetupPanel } from '../source/SourceSetupPanel'
 
@@ -27,6 +30,20 @@ type LevelOption = {
 type ContentOption = {
   key: keyof ContentToggles
   label: string
+  defaultOn: boolean
+}
+
+type LanguageFocusOption = {
+  id: LanguageFocus
+  label: string
+  note: string
+  defaultOn: boolean
+}
+
+type DocumentFocusOption = {
+  id: DocumentFocus
+  label: string
+  note: string
   defaultOn: boolean
 }
 
@@ -51,7 +68,9 @@ type InspectorPanelProps = {
   cardOptions: CardOption[]
   cardTypes: CardKind[]
   contentOptions: ContentOption[]
+  documentFocusOptions: DocumentFocusOption[]
   inspectorSheetOpen: boolean
+  languageFocusOptions: LanguageFocusOption[]
   levels: LevelOption[]
   readiness: ReadinessItem[]
   request: GenerateRequest
@@ -73,6 +92,8 @@ type InspectorPanelProps = {
   onToggleCardType: (type: CardKind) => void
   onToggleCollectionLevel: (level: Level) => void
   onToggleContent: (key: keyof ContentToggles) => void
+  onToggleDocumentFocus: (focus: DocumentFocus) => void
+  onToggleLanguageFocus: (focus: LanguageFocus) => void
   onWorkerErrorAction: (actionId: WorkerErrorActionId) => void
 }
 
@@ -82,7 +103,9 @@ export function InspectorPanel({
   cardOptions,
   cardTypes,
   contentOptions,
+  documentFocusOptions,
   inspectorSheetOpen,
+  languageFocusOptions,
   levels,
   readiness,
   request,
@@ -104,6 +127,8 @@ export function InspectorPanel({
   onToggleCardType,
   onToggleCollectionLevel,
   onToggleContent,
+  onToggleDocumentFocus,
+  onToggleLanguageFocus,
   onWorkerErrorAction,
 }: InspectorPanelProps) {
   return (
@@ -139,22 +164,38 @@ export function InspectorPanel({
           onSelectSourceMode={onSelectSourceMode}
         />
 
-        <LearningSettingsPanel
-          contentOptions={contentOptions}
-          levels={levels}
-          request={request}
-          onApplyCollectionPreset={onApplyCollectionPreset}
-          onPatchRequest={onPatchRequest}
-          onSelectCurrentLevel={onSelectCurrentLevel}
-          onToggleCollectionLevel={onToggleCollectionLevel}
-          onToggleContent={onToggleContent}
-        />
+        {request.source_mode === 'document' ? (
+          <DocumentStudyPanel
+            documentFocusOptions={documentFocusOptions}
+            languageFocusOptions={languageFocusOptions}
+            levels={levels}
+            request={request}
+            onPatchRequest={onPatchRequest}
+            onSelectCurrentLevel={onSelectCurrentLevel}
+            onToggleDocumentFocus={onToggleDocumentFocus}
+            onToggleLanguageFocus={onToggleLanguageFocus}
+          />
+        ) : (
+          <LearningSettingsPanel
+            contentOptions={contentOptions}
+            languageFocusOptions={languageFocusOptions}
+            levels={levels}
+            request={request}
+            onApplyCollectionPreset={onApplyCollectionPreset}
+            onPatchRequest={onPatchRequest}
+            onSelectCurrentLevel={onSelectCurrentLevel}
+            onToggleCollectionLevel={onToggleCollectionLevel}
+            onToggleContent={onToggleContent}
+            onToggleLanguageFocus={onToggleLanguageFocus}
+          />
+        )}
       </section>
 
       <CardTemplatePanel
         activeTemplateLabel={activeTemplateLabel}
         cardOptions={cardOptions}
         cardTypes={cardTypes}
+        documentStudyMode={request.document_study_mode}
         sourceMode={request.source_mode}
         templateId={templateId}
         templateOptions={templateOptions}

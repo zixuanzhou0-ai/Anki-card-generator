@@ -4,7 +4,10 @@ import { Play } from 'lucide-react'
 
 import type { Card, Segment, SegmentFilter } from '../../domain/types'
 import {
+  isKnowledgeSegment,
+  knowledgeTypeLabel,
   phraseValueScore,
+  phraseTypeLabel,
   qualityClass,
   qualityLabel,
   segmentMediaEnd,
@@ -12,6 +15,7 @@ import {
   segmentPhraseLabel,
   segmentReviewStatus,
   segmentStatusLabel,
+  segmentTrainingFocus,
 } from '../../domain/quality'
 
 type SegmentDetailProps = {
@@ -51,6 +55,9 @@ export function SegmentDetail({
   onSetSegmentCardsEnabled,
   onUpdateCard,
 }: SegmentDetailProps) {
+  const isKnowledge = isKnowledgeSegment(segment)
+  const knowledgeCard = segment.cards.find((card) => card.type === 'knowledge') ?? segment.cards[0]
+  const knowledgeType = knowledgeTypeLabel(segment.knowledge_type ?? knowledgeCard?.knowledge_type)
   return (
     <div className="segment-detail">
       <div className="segment-toolbar">
@@ -99,20 +106,37 @@ export function SegmentDetail({
       </div>
       <div className="segment-copy">
         <div>
-          <span className="label">英文原句</span>
+          <span className="label">{isKnowledge ? '正面问题' : '英文原句'}</span>
           <strong>{segment.text}</strong>
         </div>
         <div>
-          <span className="label">重点词伙</span>
+          <span className="label">{isKnowledge ? '知识点' : '重点词伙'}</span>
           <strong>{segmentPhraseLabel(segment)}</strong>
         </div>
       </div>
 
-      {segment.phrase_review_status ||
-      segment.phrase_decision_reason ||
-      segment.phrase_reject_reason ||
-      segment.phrase_card_focus ||
-      segment.phrase_value_score !== undefined ? (
+      {isKnowledge && knowledgeCard ? (
+        <div className={`phrase-review-panel status-${segmentReviewStatus(segment)}`}>
+          <div>
+            <span>文档知识评审</span>
+            <strong>
+              {segmentStatusLabel(segmentReviewStatus(segment))}
+              {knowledgeType ? ` · ${knowledgeType}` : ''}
+            </strong>
+          </div>
+          <p>记忆动作：{segmentTrainingFocus(segment)}</p>
+          {knowledgeCard.why_it_matters || knowledgeCard.why ? (
+            <p>为什么值得记：{knowledgeCard.why_it_matters || knowledgeCard.why}</p>
+          ) : null}
+          {knowledgeCard.quality?.issues?.length ? (
+            <p>待审提示：{knowledgeCard.quality.issues.join(' / ')}</p>
+          ) : null}
+        </div>
+      ) : segment.phrase_review_status ||
+        segment.phrase_decision_reason ||
+        segment.phrase_reject_reason ||
+        segment.phrase_card_focus ||
+        segment.phrase_value_score !== undefined ? (
         <div className={`phrase-review-panel status-${segmentReviewStatus(segment)}`}>
           <div>
             <span>AI 词伙评审</span>
@@ -123,9 +147,10 @@ export function SegmentDetail({
                 : ''}
             </strong>
           </div>
-          {segment.phrase_card_focus ? <p>{segment.phrase_card_focus}</p> : null}
-          {segment.phrase_decision_reason ? <p>{segment.phrase_decision_reason}</p> : null}
-          {segment.phrase_reject_reason ? <p>{segment.phrase_reject_reason}</p> : null}
+          <p>训练点：{segmentTrainingFocus(segment)}</p>
+          {segment.phrase_type ? <p>表达类型：{phraseTypeLabel(segment.phrase_type) || segment.phrase_type}</p> : null}
+          {segment.phrase_decision_reason ? <p>推荐理由：{segment.phrase_decision_reason}</p> : null}
+          {segment.phrase_reject_reason ? <p>拒绝 / 修复提示：{segment.phrase_reject_reason}</p> : null}
         </div>
       ) : null}
 
@@ -136,7 +161,7 @@ export function SegmentDetail({
             <span>
               {segment.phrase_reject_reason ||
                 segment.phrase_decision_reason ||
-                '模型或规则认为它暂时不适合做精品词伙卡。'}
+                (isKnowledge ? '模型或规则认为它暂时不适合做知识卡。' : '模型或规则认为它暂时不适合做精品词伙卡。')}
             </span>
           </div>
         ) : null}
@@ -165,8 +190,12 @@ type CardEditorProps = {
 
 function CardEditor({ card, motionDuration, prefersReducedMotion, segment, onUpdateCard }: CardEditorProps) {
   const skippedEntries = Object.entries(card.skipped_card_types ?? {})
+  const isKnowledgeCard = card.type === 'knowledge'
   const cardPhraseScore = phraseValueScore(card.phrase_value_score ?? segment.phrase_value_score)
   const cardPhraseStatus = (card.phrase_review_status as SegmentFilter | undefined) ?? segmentReviewStatus(segment)
+  const learningTarget = card.learning_target || card.learning_goal
+  const whyItMatters = card.why_it_matters || card.why
+  const howToUseIt = card.how_to_use_it || card.context
 
   return (
     <motion.article
@@ -194,13 +223,13 @@ function CardEditor({ card, motionDuration, prefersReducedMotion, segment, onUpd
           </span>
         </div>
       </div>
-      {card.learning_goal || card.decision_reason || skippedEntries.length > 0 ? (
+      {learningTarget || card.decision_reason || skippedEntries.length > 0 ? (
         <div className="card-plan" aria-label="卡片生成规划">
           <div>
             <span className={`role-badge ${card.card_role ?? 'primary'}`}>
               {card.card_role === 'specialist' ? '专项卡' : '主卡'}
             </span>
-            {card.learning_goal ? <strong>{card.learning_goal}</strong> : null}
+            {learningTarget ? <strong>{learningTarget}</strong> : null}
           </div>
           {card.decision_reason ? <p>{card.decision_reason}</p> : null}
           {skippedEntries.length > 0 ? (
@@ -224,12 +253,22 @@ function CardEditor({ card, motionDuration, prefersReducedMotion, segment, onUpd
           ))}
         </div>
       ) : null}
-      {cardPhraseScore !== null || card.phrase_decision_reason || card.phrase_reject_reason || card.phrase_card_focus ? (
+      {isKnowledgeCard ? (
+        <div className={`phrase-card-review status-${cardPhraseStatus}`}>
+          <span>{knowledgeTypeLabel(card.knowledge_type ?? segment.knowledge_type) || '知识卡'}</span>
+          {learningTarget ? <strong>记忆动作：{learningTarget}</strong> : null}
+          {whyItMatters ? <p>为什么值得记：{whyItMatters}</p> : null}
+          {howToUseIt ? <p>适用语境：{howToUseIt}</p> : null}
+          {card.quality?.issues?.length ? <p>待审提示：{card.quality.issues.join(' / ')}</p> : null}
+        </div>
+      ) : cardPhraseScore !== null || card.phrase_decision_reason || card.phrase_reject_reason || card.phrase_card_focus ? (
         <div className={`phrase-card-review status-${cardPhraseStatus}`}>
           <span>词伙分{cardPhraseScore !== null ? ` ${cardPhraseScore}/5` : ''}</span>
-          {card.phrase_card_focus ? <strong>{card.phrase_card_focus}</strong> : null}
-          {card.phrase_decision_reason ? <p>{card.phrase_decision_reason}</p> : null}
-          {card.phrase_reject_reason ? <p>{card.phrase_reject_reason}</p> : null}
+          {card.phrase_card_focus ? <strong>训练点：{card.phrase_card_focus}</strong> : null}
+          {whyItMatters ? <p>为什么值得学：{whyItMatters}</p> : null}
+          {howToUseIt ? <p>怎么用：{howToUseIt}</p> : null}
+          {card.phrase_decision_reason ? <p>推荐理由：{card.phrase_decision_reason}</p> : null}
+          {card.phrase_reject_reason ? <p>拒绝 / 修复提示：{card.phrase_reject_reason}</p> : null}
         </div>
       ) : null}
       <div className="edit-grid">
@@ -243,7 +282,7 @@ function CardEditor({ card, motionDuration, prefersReducedMotion, segment, onUpd
           />
         </label>
         <label>
-          重点词伙
+          {isKnowledgeCard ? '知识点' : '重点词伙'}
           <textarea
             value={card.phrase}
             onChange={(event: ChangeEvent<HTMLTextAreaElement>) =>

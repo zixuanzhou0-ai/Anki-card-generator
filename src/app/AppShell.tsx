@@ -35,6 +35,7 @@ export function AppShell({ controller }: AppShellProps) {
     cardOptions,
     checkEnv,
     contentOptions,
+    documentFocusOptions,
     envStatus,
     exportApkg,
     featuredApiPresets,
@@ -48,6 +49,7 @@ export function AppShell({ controller }: AppShellProps) {
     isCancelling,
     isDesktopRuntime,
     lastExport,
+    languageFocusOptions,
     levels,
     MIMO_OPENAI_BASE_URL,
     MIMO_TOKEN_PLAN_SGP_BASE_URL,
@@ -107,6 +109,8 @@ export function AppShell({ controller }: AppShellProps) {
     toggleCardType,
     toggleCollectionLevel,
     toggleContent,
+    toggleDocumentFocus,
+    toggleLanguageFocus,
     toggleInspector,
     toggleRememberSecret,
     tts,
@@ -172,7 +176,9 @@ export function AppShell({ controller }: AppShellProps) {
             cardOptions={cardOptions}
             cardTypes={request.card_types}
             contentOptions={contentOptions}
+            documentFocusOptions={documentFocusOptions}
             inspectorSheetOpen={inspectorSheetOpen}
+            languageFocusOptions={languageFocusOptions}
             levels={levels}
             readiness={readiness}
             request={request}
@@ -194,6 +200,8 @@ export function AppShell({ controller }: AppShellProps) {
             onToggleCardType={toggleCardType}
             onToggleCollectionLevel={toggleCollectionLevel}
             onToggleContent={toggleContent}
+            onToggleDocumentFocus={toggleDocumentFocus}
+            onToggleLanguageFocus={toggleLanguageFocus}
             onWorkerErrorAction={handleWorkerErrorAction}
           />
 

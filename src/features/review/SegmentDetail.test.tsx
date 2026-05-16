@@ -22,6 +22,9 @@ const segment: Segment = {
       example: '',
       id: 'card-1',
       learning_goal: '掌握 figure out',
+      learning_target: '练解决问题时的自然表达',
+      why_it_matters: '它比 understand 更像口语里的“弄明白”。',
+      how_to_use_it: '下次说搞清楚原因或办法时，用 figure out + what/why/how。',
       phrase: 'figure out',
       quality: { issues: ['语境清楚'], score: 5, status: 'recommended' },
       teacher_note: '很常见。',
@@ -36,6 +39,7 @@ const segment: Segment = {
   phrase: 'figure out',
   phrase_card_focus: '解决问题时的自然表达',
   phrase_decision_reason: '可迁移，口语常用。',
+  phrase_type: 'collocation',
   phrase_review_status: 'recommended',
   phrase_value_score: 5,
   recommendation: 5,
@@ -65,6 +69,9 @@ describe('SegmentDetail', () => {
 
     expect(screen.getByText('I figured it out.')).toBeInTheDocument()
     expect(screen.getByText(/AI 词伙评审/)).toBeInTheDocument()
+    expect(screen.getByText(/自然搭配：解决问题时的自然表达/)).toBeInTheDocument()
+    expect(screen.getByText(/表达类型：自然搭配/)).toBeInTheDocument()
+    expect(screen.getByText(/为什么值得学：它比 understand 更像口语里的“弄明白”。/)).toBeInTheDocument()
     expect(onUpdateCard).toHaveBeenCalledWith('seg-1', 'card-1', { chinese: '想出办法' })
   })
 

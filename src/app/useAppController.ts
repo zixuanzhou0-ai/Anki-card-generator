@@ -11,10 +11,12 @@ import type {
   Card,
   CardKind,
   ContentToggles,
+  DocumentFocus,
   EnvStatus,
   ExportResult,
   GenerateRequest,
   InspectorState,
+  LanguageFocus,
   Level,
   Project,
   QualityFunnel,
@@ -41,8 +43,10 @@ import {
   cardOptions,
   contentOptions,
   defaultCollectionLevels,
+  documentFocusOptions,
   featuredApiPresets,
   featuredTtsPresets,
+  languageFocusOptions,
   levelOrder,
   levels,
   MIMO_OPENAI_BASE_URL,
@@ -692,6 +696,24 @@ export function useAppController() {
     }))
   }
 
+  const toggleLanguageFocus = (focus: LanguageFocus) => {
+    markRequestEditedIfRunning()
+    setRequest((current) => {
+      const exists = current.language_focus.includes(focus)
+      const next = exists ? current.language_focus.filter((item) => item !== focus) : [...current.language_focus, focus]
+      return { ...current, language_focus: next.length ? next : current.language_focus }
+    })
+  }
+
+  const toggleDocumentFocus = (focus: DocumentFocus) => {
+    markRequestEditedIfRunning()
+    setRequest((current) => {
+      const exists = current.document_focus.includes(focus)
+      const next = exists ? current.document_focus.filter((item) => item !== focus) : [...current.document_focus, focus]
+      return { ...current, document_focus: next.length ? next : current.document_focus }
+    })
+  }
+
   const toggleCardType = (type: CardKind) => {
     markRequestEditedIfRunning()
     setRequest((current) => {
@@ -1295,6 +1317,7 @@ export function useAppController() {
     cardOptions,
     checkEnv,
     contentOptions,
+    documentFocusOptions,
     envStatus,
     exportApkg,
     featuredApiPresets,
@@ -1308,6 +1331,7 @@ export function useAppController() {
     isCancelling,
     isDesktopRuntime: isTauriRuntime(),
     lastExport,
+    languageFocusOptions,
     levels,
     MIMO_OPENAI_BASE_URL,
     MIMO_TOKEN_PLAN_SGP_BASE_URL,
@@ -1367,6 +1391,8 @@ export function useAppController() {
     toggleCardType,
     toggleCollectionLevel,
     toggleContent,
+    toggleDocumentFocus,
+    toggleLanguageFocus,
     toggleInspector,
     toggleRememberSecret,
     tts,

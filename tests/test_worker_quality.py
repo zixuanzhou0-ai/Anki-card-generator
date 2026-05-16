@@ -120,6 +120,149 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(segments[0]["id"], "doc_0001")
         self.assertIn("First idea", segments[0]["phrase"])
 
+    def test_document_prompt_uses_selected_absorption_focus(self):
+        prompt = worker.build_document_prompt(
+            {
+                "level": "B1",
+                "document_focus": ["terms", "examples"],
+                "document_answer_language": "bilingual",
+                "document_depth": "deep",
+                "document_answer_length": "long",
+            },
+            [
+                {
+                    "id": "doc_0001",
+                    "source_time": "文档知识点 1",
+                    "text": "What is spaced repetition?",
+                    "document_excerpt": "Spaced repetition schedules reviews before forgetting.",
+                }
+            ],
+        )
+
+        self.assertIn("术语定义 / 例子案例", prompt)
+        self.assertIn("中文理解为主", prompt)
+        self.assertIn("深入掌握", prompt)
+        self.assertIn("详细答案", prompt)
+        self.assertIn("读书笔记老师", prompt)
+        self.assertIn("不要照抄整段原文", prompt)
+        self.assertIn('"knowledge_type":"concepts|arguments|terms|examples"', prompt)
+
+    def test_document_language_reading_prompt_excludes_listening_focus(self):
+        prompt = worker.build_document_prompt(
+            {
+                "level": "B1",
+                "document_study_mode": "language_reading",
+                "language_focus": ["phrases", "listening", "grammar"],
+            },
+            [
+                {
+                    "id": "doc_0001",
+                    "source_time": "文档知识点 1",
+                    "text": "What does the phrase mean?",
+                    "document_excerpt": "It turns out the method works in practice.",
+                }
+            ],
+        )
+
+        self.assertIn("英文文档精读老师", prompt)
+        self.assertIn("词伙表达", prompt)
+        self.assertIn("语法框架", prompt)
+        self.assertIn("禁止生成听力卡", prompt)
+        self.assertNotIn("听力难点", prompt)
+
+    def test_document_language_reading_cards_default_to_review(self):
+        segments = [
+            {
+                "id": "doc_0001",
+                "source_time": "文档知识点 1",
+                "text": "What does it turns out mean?",
+                "phrase": "it turns out",
+                "document_excerpt": "It turns out the method works in practice.",
+            }
+        ]
+        ai_payload = {
+            "segments": [
+                {
+                    "id": "doc_0001",
+                    "cards": [
+                        {
+                            "type": "knowledge",
+                            "knowledge_type": "terms",
+                            "english": "How does the document use it turns out?",
+                            "chinese": "它表示后来发现或结果证明。",
+                            "phrase": "it turns out",
+                            "definition": "用来引出后来发现的结果。",
+                            "collocations": "it turns out that; as it turns out",
+                            "context": "文档里用它引出方法实际有效的结果。",
+                            "example": "It turns out the simple method works.",
+                            "why": "这是阅读文章时常见的转折发现表达。",
+                            "teacher_note": "复习时注意它不是 turn out the lights 的动作含义。",
+                            "cloze": "____ the method works.",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        merged, _ = worker.merge_document_cards(segments, ai_payload, "B1", study_mode="language_reading")
+        card = merged[0]["cards"][0]
+
+        self.assertFalse(card["enabled"])
+        self.assertEqual(card["quality"]["status"], "needs_review")
+        self.assertIn("文档精读卡默认待审", " / ".join(card["quality"]["issues"]))
+
+    def test_fallback_document_card_is_review_only(self):
+        card = worker.fallback_document_card(
+            {
+                "id": "doc_0001",
+                "text": "What is the idea?",
+                "document_excerpt": "This passage introduces a concept but needs model refinement.",
+            },
+            "B1",
+        )
+
+        self.assertFalse(card["enabled"])
+        self.assertEqual(card["quality"]["status"], "needs_review")
+        self.assertIn("本地文档草稿", card["quality"]["issues"][0])
+
+    def test_placeholder_document_concept_is_downgraded(self):
+        segments = [
+            {
+                "id": "doc_0001",
+                "source_time": "文档知识点 1",
+                "text": "这段主要讲什么？",
+                "phrase": "核心知识点",
+                "document_excerpt": "The text explains why spaced repetition works.",
+            }
+        ]
+        ai_payload = {
+            "segments": [
+                {
+                    "id": "doc_0001",
+                    "cards": [
+                        {
+                            "type": "knowledge",
+                            "knowledge_type": "concepts",
+                            "english": "这段主要讲什么？",
+                            "chinese": "It is about spaced repetition.",
+                            "phrase": "核心知识点",
+                            "definition": "It is about spaced repetition.",
+                            "why": "",
+                            "teacher_note": "很重要",
+                            "cloze": "核心知识点 的核心是 ____。",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        merged, _ = worker.merge_document_cards(segments, ai_payload, "B1")
+        card = merged[0]["cards"][0]
+
+        self.assertFalse(card["enabled"])
+        self.assertEqual(card["quality"]["status"], "needs_review")
+        self.assertIn("概念名是占位词", " / ".join(card["quality"]["issues"]))
+
     def test_cached_url_source_can_be_subtitle_only(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             cache_root = Path(temp_dir)
@@ -600,6 +743,64 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(kept[0]["phrase_review_status"], "recommended")
         self.assertEqual(kept[1]["phrase_review_status"], "needs_review")
 
+    def test_phrase_review_recomputes_media_bounds_for_final_phrase(self):
+        segment = {
+            "id": "seg_0001",
+            "start": 100.0,
+            "end": 112.0,
+            "source_time": "00:01:40.000 - 00:01:52.000",
+            "media_start": 99.88,
+            "media_end": 112.18,
+            "media_source_time": "00:01:39.880 - 00:01:52.180",
+            "text": "Before we start I need to coat some chicken in the cornflakes and then we move on.",
+            "phrase": "key expression",
+            "score": 3.4,
+            "recommendation": 3,
+        }
+        reviews = {
+            "seg_0001": {
+                "decision": "keep",
+                "phrase": "coat some chicken in the cornflakes",
+                "value_score": 4,
+                "reason": "可迁移的烹饪动作表达。",
+            }
+        }
+
+        kept, skipped = worker.apply_phrase_review_decisions([segment], reviews, {"level": "B1"})
+
+        self.assertEqual(skipped, [])
+        self.assertEqual(kept[0]["phrase"], "coat some chicken in the cornflakes")
+        self.assertGreater(kept[0]["media_start"], 100.0)
+        self.assertLess(kept[0]["media_end"], 112.18)
+        self.assertLessEqual(kept[0]["media_end"] - kept[0]["media_start"], 6.25)
+
+    def test_phrase_review_prompt_requests_teacher_level_judgement(self):
+        prompt = worker.build_phrase_review_prompt(
+            {"language": "English", "level": "B1", "language_focus": ["vocabulary", "grammar"]},
+            [
+                {
+                    "id": "seg_0001",
+                    "start": 0.0,
+                    "end": 2.0,
+                    "source_time": "00:00:00.000 - 00:00:02.000",
+                    "text": "Honestly, it's such a nice Monday morning.",
+                    "phrase": "key expression",
+                    "score": 3.4,
+                    "recommendation": 3,
+                }
+            ],
+        )
+
+        self.assertIn("学习动作", prompt)
+        self.assertIn("phrase_type", prompt)
+        self.assertIn("score_breakdown", prompt)
+        self.assertIn("单词用法", prompt)
+        self.assertIn("语法框架", prompt)
+        self.assertIn("vocabulary_usage", prompt)
+        self.assertIn("grammar_pattern", prompt)
+        self.assertIn("such a nice Monday morning", prompt)
+        self.assertIn("talk about", prompt)
+
     def test_phrase_review_skip_does_not_generate_candidate(self):
         segment = {
             "id": "seg_0001",
@@ -926,6 +1127,57 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(merged[0]["cards"][0]["quality"]["status"], "needs_review")
         self.assertFalse(merged[0]["cards"][0]["enabled"])
 
+    def test_merge_ai_cards_maps_learning_action_fields_to_legacy_fields(self):
+        segments = [
+            {
+                "id": "seg_0001",
+                "text": "Honestly, it's such a nice Monday morning.",
+                "phrase": "such a nice",
+                "source_time": "00:00:01.000 - 00:00:04.000",
+                "phrase_value_score": 5,
+                "phrase_review_status": "recommended",
+            }
+        ]
+        ai_payload = {
+            "segments": [
+                {
+                    "id": "seg_0001",
+                    "cards": [
+                        {
+                            "type": "phrase",
+                            "phrase": "such a nice",
+                            "chinese": "Honestly, it's such a nice Monday morning.",
+                            "definition": "This phrase is useful in daily English.",
+                            "collocations": "such a nice + natural object",
+                            "context": "本地待审字段。",
+                            "example": "It was such a nice evening.",
+                            "chinese_feel": "",
+                            "why": "",
+                            "difficulty": "B1 日常交流",
+                            "teacher_note": "很常见。",
+                            "cloze": "Honestly, it's ____ Monday morning.",
+                            "learning_target": "训练 such a nice + 名词表达自然赞叹。",
+                            "why_it_matters": "比 very nice 更像真实口语。",
+                            "how_to_use_it": "下次夸天气、地方或体验时，用 such a nice + 名词。",
+                            "natural_chinese": "说真的，这是一个特别舒服的周一早晨。",
+                            "replacement_examples": "such a nice day / such a nice place",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        merged, _ = worker.merge_ai_cards(segments, ai_payload, ["phrase"], "B1")
+        card = merged[0]["cards"][0]
+
+        self.assertEqual(card["chinese"], "说真的，这是一个特别舒服的周一早晨。")
+        self.assertEqual(card["learning_goal"], "训练 such a nice + 名词表达自然赞叹。")
+        self.assertEqual(card["why"], "比 very nice 更像真实口语。")
+        self.assertEqual(card["context"], "下次夸天气、地方或体验时，用 such a nice + 名词。")
+        self.assertEqual(card["collocations"], "such a nice day / such a nice place")
+        self.assertEqual(card["teacher_note"], "训练 such a nice + 名词表达自然赞叹。")
+        self.assertEqual(card["definition"], "训练 such a nice + 名词表达自然赞叹。")
+
     def test_segment_builder_rejects_unbalanced_quote_fragments(self):
         cues = [worker.Cue(1, 0.0, 2.4, 'Suddenly, I woke up and shouted, "Stop the car.')]
         segments = worker.build_segments(
@@ -991,6 +1243,30 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("字段像模板废话", quality["issues"])
         self.assertIn("中文意思不是中文", quality["issues"])
         self.assertIn("老师提示和学习理由重复", quality["issues"])
+        self.assertIn("释义太泛", quality["issues"])
+
+    def test_quality_downgrades_generic_teacher_note_and_definition(self):
+        card = {
+            "type": "phrase",
+            "english": "Honestly, it's such a nice Monday morning.",
+            "phrase": "such a nice",
+            "chinese": "说真的，这是一个特别舒服的周一早晨。",
+            "definition": "This phrase is useful in daily English.",
+            "collocations": "such a nice day / such a nice place",
+            "context": "用来真诚地夸一个日子、地方或体验。",
+            "example": "It was such a nice evening.",
+            "chinese_feel": "中文里像“真是个很舒服的...”。",
+            "why": "可迁移到天气、地点、体验和人物印象。",
+            "teacher_note": "很常见。",
+            "difficulty": "B1 日常交流",
+            "cloze": "Honestly, it's ____ Monday morning.",
+            "learning_goal": "训练 such a nice + 名词表达自然赞叹。",
+        }
+        quality = worker.assess_card_quality(card, {"text": card["english"]}, "ai", "B1")
+
+        self.assertNotEqual(quality["status"], "recommended")
+        self.assertIn("释义太泛", quality["issues"])
+        self.assertIn("老师提示缺少具体用法", quality["issues"])
 
     def test_prompt_asks_model_to_skip_low_value_segments(self):
         prompt = worker.build_prompt(
@@ -1011,6 +1287,33 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("example 必须是新的短例句", prompt)
         self.assertIn("默认每个片段只生成 1 张主卡", prompt)
         self.assertNotIn("cards 必须包含全部需要卡型", prompt)
+
+    def test_prompt_requests_learning_action_fields_and_examples(self):
+        prompt = worker.build_prompt(
+            {"card_types": ["phrase"], "language": "English", "level": "B1", "language_focus": ["grammar"]},
+            [
+                {
+                    "id": "seg_0001",
+                    "source_time": "00:00:01.000 - 00:00:04.000",
+                    "text": "Honestly, it's such a nice Monday morning.",
+                    "phrase": "such a nice",
+                    "recommendation": 5,
+                    "phrase_value_score": 5,
+                    "phrase_review_status": "recommended",
+                    "phrase_card_focus": "训练 such a nice + 名词表达自然赞叹。",
+                }
+            ],
+        )
+
+        self.assertIn("英语学习卡片编辑老师", prompt)
+        self.assertIn("learning_target", prompt)
+        self.assertIn("why_it_matters", prompt)
+        self.assertIn("how_to_use_it", prompt)
+        self.assertIn("replacement_examples", prompt)
+        self.assertIn("语法框架", prompt)
+        self.assertIn("请只围绕这些重点判断和制卡", prompt)
+        self.assertIn("such a nice Monday morning", prompt)
+        self.assertIn("talk about", prompt)
 
     def test_card_planner_defaults_to_one_main_card(self):
         segment = {
@@ -1189,7 +1492,14 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("fitResponsiveText", worker.BACK_TEMPLATE)
         self.assertIn("fitAdaptiveCard", worker.BACK_TEMPLATE)
         self.assertIn("hasHiddenOverflow", worker.BACK_TEMPLATE)
+        self.assertIn('data-fit-min="18" data-fit-max="44"', worker.BACK_TEMPLATE)
+        self.assertIn("audio-missing", worker.BACK_TEMPLATE)
+        self.assertIn("未生成；待审卡建议人工确认", worker.BACK_TEMPLATE)
+        self.assertNotIn("scale.toFixed", worker.BACK_TEMPLATE)
         self.assertIn('class="teacher" data-fit', worker.BACK_TEMPLATE)
+        self.assertIn("怎么理解", worker.BACK_TEMPLATE)
+        self.assertIn("怎么用", worker.BACK_TEMPLATE)
+        self.assertIn("learning-grid", worker.CARD_CSS)
         self.assertNotIn("@media (max-height: 980px)", worker.CARD_CSS)
 
 

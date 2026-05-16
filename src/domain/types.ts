@@ -1,5 +1,11 @@
 ﻿export type Level = 'A1' | 'A2' | 'B1' | 'B2' | 'C1' | 'C2'
 export type CardKind = 'listening' | 'phrase' | 'cloze' | 'knowledge'
+export type LanguageFocus = 'phrases' | 'vocabulary' | 'grammar' | 'listening'
+export type DocumentFocus = 'concepts' | 'arguments' | 'terms' | 'examples'
+export type DocumentStudyMode = 'knowledge' | 'language_reading'
+export type DocumentAnswerLanguage = 'zh' | 'en' | 'bilingual'
+export type DocumentDepth = 'quick' | 'standard' | 'deep'
+export type DocumentAnswerLength = 'short' | 'medium' | 'long'
 export type TemplateId = 'immersive' | 'dictionary' | 'minimal'
 export type Provider = 'local' | 'mimo' | 'openai-compatible' | 'claude' | 'gemini'
 export type TtsProvider = 'disabled' | 'mimo' | 'grok' | 'gemini' | 'openai-compatible'
@@ -220,6 +226,12 @@ export type GenerateRequest = {
   collection_levels: Level[]
   template_id: TemplateId
   content_toggles: ContentToggles
+  language_focus: LanguageFocus[]
+  document_focus: DocumentFocus[]
+  document_study_mode: DocumentStudyMode
+  document_answer_language: DocumentAnswerLanguage
+  document_depth: DocumentDepth
+  document_answer_length: DocumentAnswerLength
   card_types: CardKind[]
   max_segments: number
   api_config: ApiConfig
@@ -239,6 +251,9 @@ export type Card = {
   phrase_reject_reason?: string
   phrase_card_focus?: string
   phrase_review_status?: PhraseReviewStatus
+  phrase_type?: string
+  knowledge_type?: DocumentFocus | string
+  score_breakdown?: Record<string, number | string>
   english: string
   chinese: string
   phrase: string
@@ -251,6 +266,12 @@ export type Card = {
   difficulty: string
   teacher_note: string
   cloze: string
+  learning_target?: string
+  why_it_matters?: string
+  how_to_use_it?: string
+  natural_chinese?: string
+  replacement_examples?: string | string[]
+  avoid_reason?: string
   quality?: {
     score: number
     status: 'recommended' | 'needs_review' | 'reject'
@@ -276,6 +297,9 @@ export type Segment = {
   phrase_card_focus?: string
   phrase_review_status?: PhraseReviewStatus
   phrase_review_source?: string
+  phrase_type?: string
+  knowledge_type?: DocumentFocus | string
+  score_breakdown?: Record<string, number | string>
   cards: Card[]
 }
 
@@ -300,6 +324,12 @@ export type Project = {
   collection_levels?: Level[]
   template_id: TemplateId
   content_toggles: ContentToggles
+  language_focus?: LanguageFocus[]
+  document_focus?: DocumentFocus[]
+  document_study_mode?: DocumentStudyMode
+  document_answer_language?: DocumentAnswerLanguage
+  document_depth?: DocumentDepth
+  document_answer_length?: DocumentAnswerLength
   card_types: CardKind[]
   max_segments?: number
   auto_max_segments?: boolean

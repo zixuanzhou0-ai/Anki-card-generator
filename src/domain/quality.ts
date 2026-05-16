@@ -1,4 +1,4 @@
-﻿import type { Card, Project, Segment, SegmentFilter } from './types'
+import type { Card, DocumentFocus, Project, Segment, SegmentFilter } from './types'
 
 export function badgeText(count: number) {
   return count > 0 ? `${count} 张已选` : '未选择卡片'
@@ -31,7 +31,7 @@ export function phraseValueScore(value: number | string | null | undefined) {
 
 export function isPlaceholderPhrase(value: string | null | undefined) {
   const phrase = String(value ?? '').trim().toLowerCase()
-  return !phrase || phrase === 'key expression' || phrase === 'n/a'
+  return !phrase || phrase === 'key expression' || phrase === 'n/a' || phrase === '核心知识点'
 }
 
 export function clipText(value: string, maxLength: number) {
@@ -40,13 +40,68 @@ export function clipText(value: string, maxLength: number) {
   return `${text.slice(0, Math.max(0, maxLength - 1)).trim()}…`
 }
 
+export function isKnowledgeSegment(segment: Segment) {
+  return segment.cards.some((card) => card.type === 'knowledge')
+}
+
 export function segmentPhraseTitle(segment: Segment) {
+  if (isKnowledgeSegment(segment)) {
+    if (!isPlaceholderPhrase(segment.phrase)) return segment.phrase
+    const cardPhrase = segment.cards.find((card) => !isPlaceholderPhrase(card.phrase))?.phrase
+    if (cardPhrase) return cardPhrase
+    return segment.text ? `知识点：${clipText(segment.text, 34)}` : '待模型提炼知识点'
+  }
   if (!isPlaceholderPhrase(segment.phrase)) return segment.phrase
   return segment.text ? `待选：${clipText(segment.text, 34)}` : '待模型挑选表达'
 }
 
 export function segmentPhraseLabel(segment: Segment) {
+  if (isKnowledgeSegment(segment)) {
+    if (!isPlaceholderPhrase(segment.phrase)) return segment.phrase
+    return segment.cards.find((card) => !isPlaceholderPhrase(card.phrase))?.phrase ?? '待模型提炼知识点'
+  }
   return isPlaceholderPhrase(segment.phrase) ? '待模型挑选表达' : segment.phrase
+}
+
+export function phraseTypeLabel(value: string | null | undefined) {
+  const type = String(value ?? '').trim()
+  if (type === 'spoken_phrase') return '口语短句'
+  if (type === 'sentence_frame') return '句型框架'
+  if (type === 'collocation') return '自然搭配'
+  if (type === 'discourse_marker') return '话语标记'
+  if (type === 'listening_sentence') return '听力句'
+  if (type === 'vocabulary_usage') return '单词用法'
+  if (type === 'grammar_pattern') return '语法框架'
+  return ''
+}
+
+export function knowledgeTypeLabel(value: DocumentFocus | string | null | undefined) {
+  const type = String(value ?? '').trim()
+  if (type === 'concepts') return '概念卡'
+  if (type === 'arguments') return '观点卡'
+  if (type === 'terms') return '术语卡'
+  if (type === 'examples') return '例子卡'
+  return type
+}
+
+export function segmentTrainingFocus(segment: Segment) {
+  if (isKnowledgeSegment(segment)) {
+    const card = segment.cards.find((item) => item.type === 'knowledge') ?? segment.cards[0]
+    const typeLabel = knowledgeTypeLabel(segment.knowledge_type ?? card?.knowledge_type)
+    const focus =
+      card?.learning_target ||
+      card?.learning_goal ||
+      card?.why_it_matters ||
+      card?.why ||
+      card?.teacher_note ||
+      ''
+    if (typeLabel && focus) return `${typeLabel}：${focus}`
+    return focus || typeLabel || '等待模型提炼记忆动作'
+  }
+  const typeLabel = phraseTypeLabel(segment.phrase_type)
+  const focus = segment.phrase_card_focus || segment.cards.find((card) => card.learning_goal)?.learning_goal || ''
+  if (typeLabel && focus) return `${typeLabel}：${focus}`
+  return focus || typeLabel || '等待模型给出训练点'
 }
 
 export function segmentReviewStatus(segment: Segment): SegmentFilter | 'unreviewed' {

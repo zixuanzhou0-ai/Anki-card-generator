@@ -69,6 +69,7 @@ describe('SourceSetupPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: '选择文档资料' }))
 
     expect(screen.getByText('支持 TXT、Markdown、DOCX、EPUB、PDF。扫描版 PDF 需要后续 OCR。')).toBeVisible()
+    expect(screen.getByText('文档目标、讲解语言和吸收深度在下方“文档目标”里调整。')).toBeVisible()
     expect(props.onSelectPath).toHaveBeenCalledWith('document')
   })
 })

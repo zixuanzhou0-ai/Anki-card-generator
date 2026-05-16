@@ -3,10 +3,12 @@ import { motion } from 'motion/react'
 
 import type { Segment } from '../../domain/types'
 import {
+  isKnowledgeSegment,
   phraseValueScore,
   segmentPhraseTitle,
   segmentReviewStatus,
   segmentStatusLabel,
+  segmentTrainingFocus,
 } from '../../domain/quality'
 
 type SegmentListProps = {
@@ -36,6 +38,17 @@ export function SegmentList({
         const allCardsEnabled = totalCards > 0 && enabledCards === totalCards
         const partiallyEnabled = enabledCards > 0 && enabledCards < totalCards
         const phraseTitle = segmentPhraseTitle(segment)
+        const trainingFocus = segmentTrainingFocus(segment)
+        const isKnowledge = isKnowledgeSegment(segment)
+        const primaryCard = segment.cards[0]
+        const reason =
+          segment.phrase_reject_reason ||
+          segment.phrase_decision_reason ||
+          segment.phrase_card_focus ||
+          primaryCard?.why_it_matters ||
+          primaryCard?.why ||
+          primaryCard?.teacher_note ||
+          '等待模型或规则给出推荐理由'
         return (
           <motion.div
             layout
@@ -75,12 +88,8 @@ export function SegmentList({
               <small>
                 {enabledCards}/{totalCards} 张已选 · 推荐 {segment.recommendation}/5
               </small>
-              <small className="segment-reason">
-                {segment.phrase_reject_reason ||
-                  segment.phrase_decision_reason ||
-                  segment.phrase_card_focus ||
-                  '等待模型或规则给出推荐理由'}
-              </small>
+              <small className="segment-focus">{isKnowledge ? '记忆动作' : '训练点'}：{trainingFocus}</small>
+              <small className="segment-reason">{reason}</small>
             </button>
           </motion.div>
         )

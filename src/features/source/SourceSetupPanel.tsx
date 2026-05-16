@@ -80,20 +80,23 @@ export function SourceSetupPanel({
             <small>失败时可切到字幕-only 或手动上传 SRT 继续制卡。</small>
           </label>
         ) : request.source_mode === 'document' ? (
-          <label className="field file-field">
-            <span>文档资料</span>
-            <div>
-              <input
-                value={request.document_path}
-                onChange={(event) => onPatchRequest({ document_path: event.target.value })}
-                placeholder="选择文档资料"
-              />
-              <button type="button" onClick={() => onSelectPath('document')} aria-label="选择文档资料">
-                <FileText size={18} />
-              </button>
-            </div>
-            <small>支持 TXT、Markdown、DOCX、EPUB、PDF。扫描版 PDF 需要后续 OCR。</small>
-          </label>
+          <>
+            <label className="field file-field">
+              <span>文档资料</span>
+              <div>
+                <input
+                  value={request.document_path}
+                  onChange={(event) => onPatchRequest({ document_path: event.target.value })}
+                  placeholder="选择文档资料"
+                />
+                <button type="button" onClick={() => onSelectPath('document')} aria-label="选择文档资料">
+                  <FileText size={18} />
+                </button>
+              </div>
+              <small>支持 TXT、Markdown、DOCX、EPUB、PDF。扫描版 PDF 需要后续 OCR。</small>
+            </label>
+            <p className="document-source-hint">文档目标、讲解语言和吸收深度在下方“文档目标”里调整。</p>
+          </>
         ) : (
           <>
             <label className="field file-field">

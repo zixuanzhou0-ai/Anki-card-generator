@@ -1,7 +1,7 @@
 import { Languages } from 'lucide-react'
 
-import type { ContentToggles, GenerateRequest, Level } from '../../domain/types'
-import { normalizeCollectionLevels } from '../../domain/options'
+import type { ContentToggles, GenerateRequest, LanguageFocus, Level } from '../../domain/types'
+import { languageFocusSummary, normalizeCollectionLevels } from '../../domain/options'
 
 type LevelOption = {
   id: Level
@@ -15,10 +15,18 @@ type ContentOption = {
   defaultOn: boolean
 }
 
+type LanguageFocusOption = {
+  id: LanguageFocus
+  label: string
+  note: string
+  defaultOn: boolean
+}
+
 type CollectionPreset = 'current' | 'below' | 'around'
 
 type LearningSettingsPanelProps = {
   contentOptions: ContentOption[]
+  languageFocusOptions: LanguageFocusOption[]
   levels: LevelOption[]
   request: GenerateRequest
   onApplyCollectionPreset: (preset: CollectionPreset) => void
@@ -26,10 +34,12 @@ type LearningSettingsPanelProps = {
   onSelectCurrentLevel: (level: Level) => void
   onToggleCollectionLevel: (level: Level) => void
   onToggleContent: (key: keyof ContentToggles) => void
+  onToggleLanguageFocus: (focus: LanguageFocus) => void
 }
 
 export function LearningSettingsPanel({
   contentOptions,
+  languageFocusOptions,
   levels,
   request,
   onApplyCollectionPreset,
@@ -37,9 +47,11 @@ export function LearningSettingsPanel({
   onSelectCurrentLevel,
   onToggleCollectionLevel,
   onToggleContent,
+  onToggleLanguageFocus,
 }: LearningSettingsPanelProps) {
   const collectionLevels = normalizeCollectionLevels(request.collection_levels, request.level)
   const selectedContentCount = contentOptions.filter((item) => request.content_toggles[item.key]).length
+  const focusSummary = languageFocusSummary(request.language_focus)
   const currentLevel = levels.find((level) => level.id === request.level) ?? levels[0]
   const segmentBudgetLabel = request.max_segments <= 0 ? '自动片段' : `${request.max_segments} 段`
 
@@ -99,6 +111,36 @@ export function LearningSettingsPanel({
           </div>
         </label>
       </div>
+      {request.source_mode !== 'document' ? (
+        <details className="compact-details language-focus-panel" open>
+          <summary>
+            <span>学习重点</span>
+            <strong>{focusSummary}</strong>
+          </summary>
+          <div className="focus-choice-grid" aria-label="语言学习重点">
+            {languageFocusOptions.map((item) => {
+              const selected = request.language_focus.includes(item.id)
+              return (
+                <button
+                  type="button"
+                  key={item.id}
+                  className={selected ? 'focus-choice selected' : 'focus-choice'}
+                  aria-pressed={selected}
+                  onClick={() => onToggleLanguageFocus(item.id)}
+                >
+                  <strong>{item.label}</strong>
+                  <span>{item.note}</span>
+                </button>
+              )
+            })}
+          </div>
+        </details>
+      ) : (
+        <div className="document-focus-note">
+          <strong>文档资料</strong>
+          <span>文档会单独按知识点、术语和章节结构制卡，不混入语言素材的词伙 / 听力选择。</span>
+        </div>
+      )}
       <div className="settings-subheading level-subheading refined-level-heading">
         <strong>当前水平</strong>
         <span>{currentLevel ? `${currentLevel.label} · ${currentLevel.note}` : '控制解释深度和质量门槛'}</span>

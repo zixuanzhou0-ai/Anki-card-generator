@@ -305,6 +305,123 @@ def collection_levels_from_payload(payload: dict[str, Any], current_level: str) 
     return normalize_collection_levels(payload.get("collection_levels"), current_level)
 
 
+LANGUAGE_FOCUS_ORDER = ["phrases", "vocabulary", "grammar", "listening"]
+LANGUAGE_FOCUS_LABELS = {
+    "phrases": "词伙表达",
+    "vocabulary": "单词用法",
+    "grammar": "语法框架",
+    "listening": "听力难点",
+}
+LANGUAGE_FOCUS_RULES = {
+    "phrases": "优先选择可迁移的词伙、搭配、口语块和话语标记；phrase 必须来自原句且不能是整句。",
+    "vocabulary": "可以选择原句里的一个核心单词或短搭配，但必须训练真实语境里的词义、搭配或用法，不做词典式单词卡。",
+    "grammar": "可以选择原句里的可替换句型、结构或语法框架；重点解释它怎么换场景复用，而不是讲抽象语法术语。",
+    "listening": "只在弱读、连读、缩读、停顿切分或听音辨义明显时强化听力点；不要把所有句子都硬做听力卡。",
+}
+
+
+def normalized_language_focus(payload: dict[str, Any]) -> list[str]:
+    raw = payload.get("language_focus")
+    if not isinstance(raw, list):
+        return ["phrases", "listening"]
+    selected = [str(item) for item in raw if str(item) in LANGUAGE_FOCUS_ORDER]
+    unique = list(dict.fromkeys(selected))
+    return unique or ["phrases", "listening"]
+
+
+def language_focus_instruction(payload: dict[str, Any]) -> str:
+    focus = normalized_language_focus(payload)
+    labels = " / ".join(LANGUAGE_FOCUS_LABELS[item] for item in focus)
+    rules = "".join(f"{LANGUAGE_FOCUS_LABELS[item]}：{LANGUAGE_FOCUS_RULES[item]}" for item in focus)
+    return (
+        f"本次用户选择的学习重点：{labels}。请只围绕这些重点判断和制卡。"
+        "如果某个片段只有未选择的学习价值，优先降级为待审或跳过，不要为了数量硬凑。"
+        f"{rules}"
+    )
+
+
+DOCUMENT_FOCUS_ORDER = ["concepts", "arguments", "terms", "examples"]
+DOCUMENT_FOCUS_LABELS = {
+    "concepts": "核心概念",
+    "arguments": "观点论证",
+    "terms": "术语定义",
+    "examples": "例子案例",
+}
+DOCUMENT_FOCUS_RULES = {
+    "concepts": "抽取文档里必须理解的概念、机制或原则；问题要能训练主动回忆，不要把章节标题硬当概念。",
+    "arguments": "抽取作者观点、理由、证据和推导链；要说明观点为什么成立，避免只写一句空泛结论。",
+    "terms": "抽取术语、定义、边界和易混点；要能区分相关概念，不做词典式堆料。",
+    "examples": "抽取真正能帮助记住概念的例子或案例；例子必须服务于一个明确知识点。",
+}
+DOCUMENT_STUDY_MODES = {"knowledge", "language_reading"}
+DOCUMENT_ANSWER_LANGUAGES = {
+    "zh": "反面解释优先用自然中文；关键术语可以保留英文。",
+    "en": "反面答案和解释优先用英文；避免中文长解释。",
+    "bilingual": "中文理解为主，同时保留关键英文术语和简短英文表达。",
+}
+DOCUMENT_DEPTH_RULES = {
+    "quick": "快速记忆：问题要短，答案尽量 1 句，避免展开过多背景。",
+    "standard": "标准理解：答案 1-3 句，保留必要条件、原因或例子。",
+    "deep": "深入掌握：强调边界、推理链、对比项和容易误解的点。",
+}
+DOCUMENT_LENGTH_RULES = {
+    "short": "短答案：反面核心答案尽量 1 句。",
+    "medium": "中等答案：反面核心答案 1-3 句。",
+    "long": "详细答案：允许更多解释，但仍禁止照抄原文长段。",
+}
+
+
+def normalized_document_focus(payload: dict[str, Any]) -> list[str]:
+    raw = payload.get("document_focus")
+    if not isinstance(raw, list):
+        return ["concepts", "arguments", "terms"]
+    selected = [str(item) for item in raw if str(item) in DOCUMENT_FOCUS_ORDER]
+    unique = list(dict.fromkeys(selected))
+    return unique or ["concepts", "arguments", "terms"]
+
+
+def normalized_document_study_mode(payload: dict[str, Any]) -> str:
+    raw = str(payload.get("document_study_mode") or "knowledge")
+    return raw if raw in DOCUMENT_STUDY_MODES else "knowledge"
+
+
+def normalized_document_answer_language(payload: dict[str, Any]) -> str:
+    raw = str(payload.get("document_answer_language") or "zh")
+    return raw if raw in DOCUMENT_ANSWER_LANGUAGES else "zh"
+
+
+def normalized_document_depth(payload: dict[str, Any]) -> str:
+    raw = str(payload.get("document_depth") or "standard")
+    return raw if raw in DOCUMENT_DEPTH_RULES else "standard"
+
+
+def normalized_document_answer_length(payload: dict[str, Any]) -> str:
+    raw = str(payload.get("document_answer_length") or "medium")
+    return raw if raw in DOCUMENT_LENGTH_RULES else "medium"
+
+
+def document_style_instruction(payload: dict[str, Any]) -> str:
+    answer_language = normalized_document_answer_language(payload)
+    depth = normalized_document_depth(payload)
+    answer_length = normalized_document_answer_length(payload)
+    return (
+        f"讲解语言：{DOCUMENT_ANSWER_LANGUAGES[answer_language]}"
+        f"卡片深度：{DOCUMENT_DEPTH_RULES[depth]}"
+        f"答案长度：{DOCUMENT_LENGTH_RULES[answer_length]}"
+    )
+
+
+def document_focus_instruction(payload: dict[str, Any]) -> str:
+    focus = normalized_document_focus(payload)
+    labels = " / ".join(DOCUMENT_FOCUS_LABELS[item] for item in focus)
+    rules = "".join(f"{DOCUMENT_FOCUS_LABELS[item]}：{DOCUMENT_FOCUS_RULES[item]}" for item in focus)
+    return (
+        f"本次文档吸收目标：{labels}。请只围绕这些目标做知识卡。"
+        "每张卡必须只有一个明确记忆动作：定义概念、解释观点、区分概念或记住例子。"
+        f"{rules}"
+    )
+
+
 def phrase_pool(level: str, collection_levels: list[str] | None = None) -> list[str]:
     order = CEFR_ORDER
     if collection_levels:
@@ -512,6 +629,46 @@ def is_low_value_standalone_phrase(phrase: str) -> bool:
     return lower in LOW_VALUE_STANDALONE_PHRASES
 
 
+GENERIC_DEFINITION_PATTERNS = [
+    r"\bthis phrase is useful\b",
+    r"\buseful in daily english\b",
+    r"\bcommon(?:ly)? used\b",
+    r"\bvery common\b",
+    r"这个表达很常见",
+    r"常用表达",
+    r"高频表达",
+    r"日常英语.*有用",
+]
+
+GENERIC_TEACHER_NOTE_PATTERNS = [
+    r"^很常见[。.!]?$",
+    r"^真实口语常用[。.!]?$",
+    r"^高频口语表达[。.!]?$",
+    r"^这个表达很常用[。.!]?$",
+    r"^适合日常交流[。.!]?$",
+    r"\buse it in daily english\b",
+    r"\bthis is a common expression\b",
+]
+
+
+def has_generic_definition(value: str) -> bool:
+    text = re.sub(r"\s+", " ", str(value or "").strip().lower())
+    return bool(text and any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in GENERIC_DEFINITION_PATTERNS))
+
+
+def has_generic_teacher_note(value: str) -> bool:
+    text = re.sub(r"\s+", " ", str(value or "").strip().lower())
+    return bool(text and any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in GENERIC_TEACHER_NOTE_PATTERNS))
+
+
+def normalized_action_text(value: Any) -> str:
+    if isinstance(value, list):
+        return " / ".join(str(item).strip() for item in value if str(item).strip())
+    if isinstance(value, dict):
+        return " / ".join(f"{key}: {item}" for key, item in value.items() if str(item).strip())
+    return str(value or "").strip()
+
+
 def cefr_rank(value: str) -> int:
     match = re.search(r"\b(A1|A2|B1|B2|C1|C2)\b", str(value or "").upper())
     if not match:
@@ -650,6 +807,39 @@ def segment_media_bounds(start: float, end: float, text: str, phrase: str, revie
         media_start = max(0.0, center - 3.1)
         media_end = center + 3.1
     return round(media_start, 3), round(media_end, 3)
+
+
+def refine_segment_media_for_phrase(
+    segment: dict[str, Any],
+    phrase: str,
+    review_mode: bool = False,
+) -> dict[str, Any]:
+    """Keep exported media centered on the final learning phrase.
+
+    Candidate building can keep a broad sentence for MIMO review. Once MIMO
+    chooses the actual phrase, recompute the clip window so video/original audio
+    and the final card focus do not drift apart.
+    """
+    if not phrase or not phrase_word_indices(str(segment.get("text") or ""), phrase):
+        return segment
+    try:
+        start = float(segment.get("start") or 0)
+        end = float(segment.get("end") or start)
+    except (TypeError, ValueError):
+        return segment
+    media_start, media_end = segment_media_bounds(
+        start,
+        end,
+        str(segment.get("text") or ""),
+        phrase,
+        review_mode,
+    )
+    return {
+        **segment,
+        "media_start": media_start,
+        "media_end": media_end,
+        "media_source_time": f"{fmt_time(media_start)} - {fmt_time(media_end)}",
+    }
 
 
 def review_candidate_mode(payload: dict[str, Any], max_segments: int, candidate_limit: int) -> bool:
@@ -972,6 +1162,8 @@ def quality_from_score(score: int, issues: list[str]) -> dict[str, Any]:
         "例句只是照抄原句",
         "例句和原句过于相似",
         "老师提示和学习理由重复",
+        "老师提示缺少具体用法",
+        "释义太泛",
         "目标表达低于用户水平",
         "词伙评审拒绝",
         "词伙重复合并",
@@ -1012,6 +1204,11 @@ def assess_card_quality(
         card.get("chinese_feel", ""),
         card.get("why", ""),
         card.get("teacher_note", ""),
+        card.get("learning_goal", ""),
+        card.get("decision_reason", ""),
+        card.get("learning_target", ""),
+        card.get("why_it_matters", ""),
+        card.get("how_to_use_it", ""),
     ]
     if any("???" in str(value) or "\ufffd" in str(value) for value in text_fields):
         issues.append("字段疑似乱码")
@@ -1043,10 +1240,16 @@ def assess_card_quality(
     if card.get("type") in {"phrase", "cloze"} and not str(card.get("definition", "")).strip():
         issues.append("缺少释义")
         score -= 18
+    if card.get("type") in {"phrase", "cloze"} and has_generic_definition(str(card.get("definition", ""))):
+        issues.append("释义太泛")
+        score -= 20
     teacher_note = str(card.get("teacher_note", "") or "").strip()
     if len(teacher_note) < 8:
         issues.append("老师提示太薄")
         score -= 8
+    if teacher_note and has_generic_teacher_note(teacher_note):
+        issues.append("老师提示缺少具体用法")
+        score -= 18
     comparable_teacher_note = re.sub(r"\s+", " ", teacher_note)
     for key in ["why", "context", "chinese_feel"]:
         comparable_value = re.sub(r"\s+", " ", str(card.get(key, "") or "").strip())
@@ -1054,6 +1257,25 @@ def assess_card_quality(
             issues.append("老师提示和学习理由重复")
             score -= 14
             break
+        if (
+            comparable_teacher_note
+            and comparable_value
+            and min(len(overlap_words(comparable_teacher_note)), len(overlap_words(comparable_value))) >= 6
+            and word_overlap_ratio(comparable_teacher_note, comparable_value) >= 0.86
+        ):
+            issues.append("老师提示和学习理由重复")
+            score -= 14
+            break
+    action_fields = [
+        card.get("learning_goal", ""),
+        card.get("decision_reason", ""),
+        card.get("phrase_card_focus", ""),
+        card.get("learning_target", ""),
+        card.get("how_to_use_it", ""),
+    ]
+    if source == "ai" and not any(str(value or "").strip() for value in action_fields):
+        issues.append("卡片训练点不明确")
+        score -= 10
     if is_too_basic_for_level(phrase_lower, target_level):
         issues.append("目标表达低于用户水平")
         score -= 30
@@ -1161,6 +1383,68 @@ def repair_card_fields(card: dict[str, Any], segment: dict[str, Any], level: str
     card["cloze"] = make_cloze(text, phrase)
 
 
+def normalize_learning_action_fields(card: dict[str, Any]) -> None:
+    learning_target = normalized_action_text(card.get("learning_target"))
+    why_it_matters = normalized_action_text(card.get("why_it_matters"))
+    how_to_use_it = normalized_action_text(card.get("how_to_use_it"))
+    natural_chinese = normalized_action_text(card.get("natural_chinese"))
+    replacement_examples = normalized_action_text(card.get("replacement_examples"))
+    avoid_reason = normalized_action_text(card.get("avoid_reason"))
+
+    if natural_chinese and (not str(card.get("chinese") or "").strip() or not has_cjk(str(card.get("chinese") or ""))):
+        card["chinese"] = natural_chinese
+    learning_goal = str(card.get("learning_goal") or "").strip()
+    if learning_target and (
+        not learning_goal
+        or "核心价值" in learning_goal
+        or "额外能力点" in learning_goal
+        or "这张卡训练什么" in learning_goal
+    ):
+        card["learning_goal"] = learning_target
+    why = str(card.get("why") or "").strip()
+    if why_it_matters and (
+        not why
+        or "本地 fallback" in why
+        or "正式导出前" in why
+        or "为什么值得学" in why
+    ):
+        card["why"] = why_it_matters
+    context = str(card.get("context") or "").strip()
+    if how_to_use_it and (
+        not context
+        or "本地待审字段" in context
+        or "review page" in context.lower()
+    ):
+        card["context"] = how_to_use_it
+    collocations = str(card.get("collocations") or "").strip()
+    if replacement_examples and (
+        not collocations
+        or "natural object" in collocations.lower()
+        or "complete sentence" in collocations.lower()
+        or collocations.lower().startswith("use ")
+    ):
+        card["collocations"] = replacement_examples
+    if avoid_reason and not str(card.get("phrase_reject_reason") or "").strip():
+        card["phrase_reject_reason"] = avoid_reason
+
+    teacher_note = str(card.get("teacher_note") or "").strip()
+    if (not teacher_note or has_generic_teacher_note(teacher_note)) and how_to_use_it:
+        card["teacher_note"] = how_to_use_it
+    if has_generic_definition(str(card.get("definition", ""))) and learning_target:
+        card["definition"] = learning_target
+
+    comparable_teacher_note = re.sub(r"\s+", " ", str(card.get("teacher_note") or "").strip())
+    for key, replacement in [
+        ("why", learning_target or how_to_use_it),
+        ("context", learning_target or why_it_matters),
+        ("chinese_feel", how_to_use_it or why_it_matters),
+    ]:
+        comparable_value = re.sub(r"\s+", " ", str(card.get(key, "") or "").strip())
+        if comparable_teacher_note and comparable_value and comparable_teacher_note == comparable_value and replacement:
+            card["teacher_note"] = replacement
+            break
+
+
 def requested_card_types(card_types: list[str]) -> list[str]:
     requested = [str(card_type) for card_type in card_types if card_type in {"listening", "phrase", "cloze"}]
     return requested or ["phrase"]
@@ -1266,6 +1550,12 @@ def fallback_cards(segment: dict[str, Any], card_types: list[str], level: str) -
             "card_role": "primary" if card_type == plan["primary"] else "specialist",
             "learning_goal": plan["reason"] if card_type == plan["primary"] else "这张专项卡只训练一个额外能力点，避免和主卡重复。",
             "decision_reason": plan["reason"],
+            "learning_target": plan["reason"],
+            "why_it_matters": fields.get("why", ""),
+            "how_to_use_it": fields.get("context", ""),
+            "natural_chinese": fields.get("chinese", ""),
+            "replacement_examples": fields.get("collocations", ""),
+            "avoid_reason": "",
             "skipped_card_types": plan["skipped"],
             "phrase_value_score": segment.get("phrase_value_score"),
             "phrase_decision_reason": segment.get("phrase_decision_reason", ""),
@@ -1283,6 +1573,7 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
     requested_types = requested_card_types([str(card_type) for card_type in project.get("card_types", []) if card_type])
     current_level = str(project.get("level", "B1"))
     collection_levels = collection_levels_from_payload(project, current_level)
+    focus_instruction = language_focus_instruction(project)
     compact = [
         {
             "id": segment["id"],
@@ -1294,26 +1585,43 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
             "phrase_review_status": segment.get("phrase_review_status", ""),
             "phrase_decision_reason": segment.get("phrase_decision_reason", ""),
             "phrase_card_focus": segment.get("phrase_card_focus", ""),
+            "phrase_type": segment.get("phrase_type", ""),
+            "score_breakdown": segment.get("score_breakdown", {}),
         }
         for segment in segments
     ]
     return (
         "你是给中文母语者做英语 Anki 卡的资深老师。目标不是多写信息，而是让学习者翻面后立刻知道："
         "这句我该听懂什么、该记住哪个表达、以后怎么自己用。"
+        "你不是字段填写器，而是英语学习卡片编辑老师：先判断学习价值，再决定是否制卡，最后自检这张卡是不是有明确训练动作。"
+        "制卡前请在心里回答四个问题：这句最值得学的是什么？它是词伙、句型、口语短句、语气表达还是听力句？"
+        "中文学习者为什么容易忽略它？这张卡训练听懂、会用、会替换还是理解语气？如果回答不清楚，返回 cards: []。"
+        f"{focus_instruction}"
         "请只为真正值得复习的片段生成卡；如果片段只是主题介绍、专有名词、技术名词堆叠或没有可迁移表达，返回该片段的 cards: []。"
         "内容标准："
-        "1) phrase 必须是原句里 2-6 个词的完整可迁移表达，不能是整句、半截词串、产品名、主题名或 working with 这种孤立泛表达。"
+        "1) phrase 必须来自原句：词伙通常 2-6 个词；单词用法可以是 1 个核心词；语法框架可以是原句里的可替换结构。"
+        "它不能是整句、半截词串、产品名、主题名或 working with 这种孤立泛表达。"
         "如果候选里有 phrase_review_status 和 phrase_value_score，说明 MIMO 已经做过词伙评审；正式制卡必须优先使用 phrase_hint，"
         "除非你能从同一句 english 里找到更完整、更可迁移的替代表达。替代表达仍必须逐词出现在原句里。"
         "如果 phrase_hint 是 key expression，说明本地规则没有识别出词伙；请你从 english 中自己选择最值得学的完整表达。"
         "如果句子里确实没有可迁移表达，返回该片段 cards: []，不要硬凑。"
         "如果用户水平是 B1 或更高，不要把 talk about 这类 A1/A2 基础短语当作重点；没有更具体表达就返回 cards: []。"
+        "优先真实生活中可复用的短句、句型和口语框架，例如 it feels like、it turns out、what happens next、in the mood for、"
+        "at some point、not because..., but because...、the thing is、I see what you mean、such a nice...。"
         "2) chinese 要翻译原句核心意思，中文必须自然，不能写“中文里更接近自然顺口的一句话”这类空话。"
         "3) definition 要直接解释这个 phrase 的实际用法，面向学习者，不要词典腔，不要模板句。"
         "4) collocations 只能给自然搭配或句型框架，用 ' / ' 分隔；不要编造不自然搭配，比如 not really + 任意 phrase。"
         "5) example 必须是新的短例句，不能照抄原句。"
         "6) context 说明什么场景会用；chinese_feel 说明中文语感；why 说明为什么值得学。每项 1 句即可。"
         "7) teacher_note 要按卡型聚焦：listening 说听力注意点；phrase 说怎么迁移使用；cloze 说挖空答案为什么是它。"
+        "8) 每张卡还必须给学习动作字段：learning_target=这张卡训练什么；why_it_matters=为什么值得学；"
+        "how_to_use_it=下次怎么换场景使用；natural_chinese=自然中文理解；replacement_examples=1-2 个可替换例子；"
+        "avoid_reason=不值得制卡时的原因。"
+        "好卡样例：english=Honestly, it's such a nice Monday morning. phrase=such a nice；"
+        "learning_target=训练 such a nice + 名词来表达自然赞叹；how_to_use_it=such a nice day / such a nice place；"
+        "teacher_note=下次想夸天气、地方或体验时，用 such a nice + 名词，比 very nice 更像真实口语。"
+        "废卡样例：english=Today we are going to talk about AI models. phrase=talk about；B1 用户不推荐，因为太基础且不是真正值得学的内容。"
+        "重复卡样例：同一句同时生成听力卡、词伙卡、填空卡但训练点一样时，只保留一张沉浸主卡。"
         "卡片规划规则：默认每个片段只生成 1 张主卡，不要机械生成三张。"
         "只有当训练目标明显不同，才额外生成 1 张专项卡；同一片段最多 2 张卡。"
         "phrase 作为默认主卡，整合听力、语义、中文感、例句和挖空答案；"
@@ -1329,7 +1637,10 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
         '"context":"语境","example":"例句","chinese_feel":"中文感","why":"为什么值得学",'
         '"difficulty":"A1 入门|A2 基础|B1 日常交流|B2 独立表达|C1 高阶表达|C2 接近母语",'
         '"teacher_note":"一句老师评语","cloze":"挖空句","card_role":"primary|specialist",'
-        '"learning_goal":"这张卡训练什么","decision_reason":"为什么生成这张卡"}]}]}。'
+        '"learning_goal":"这张卡训练什么","decision_reason":"为什么生成这张卡",'
+        '"learning_target":"这张卡训练什么","why_it_matters":"为什么值得学",'
+        '"how_to_use_it":"下次怎么换场景使用","natural_chinese":"自然中文理解",'
+        '"replacement_examples":"1-2 个可替换例子","avoid_reason":"不值得制卡时的原因"}]}]}。'
         f"学习语言：{project.get('language', 'English')}。"
         f"用户当前水平：{current_level}，解释深度和中文提示按这个水平写。"
         f"允许收录难度范围：{', '.join(collection_levels)}；可以收录这些等级里的高频表达，但不要因为简单就写废话。"
@@ -1627,6 +1938,7 @@ def phrase_review_available(project: dict[str, Any]) -> bool:
 def build_phrase_review_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str:
     level = str(project.get("level", "B1"))
     collection_levels = collection_levels_from_payload(project, level)
+    focus_instruction = language_focus_instruction(project)
     compact = [
         {
             "id": segment["id"],
@@ -1641,15 +1953,24 @@ def build_phrase_review_prompt(project: dict[str, Any], segments: list[dict[str,
         "你是中文母语者的英语词伙筛选老师。请只判断这些字幕片段里是否有值得做 Anki 卡的可迁移表达，"
         "不要生成卡片内容。目标是同时提高数量和质量：保留真实可用的口语表达，拒绝主题词、专有名词、"
         "半截词串、视频口播引入语和过基础表达。"
+        "请像英语老师一样先判断学习动作：这个片段训练听懂、会用、会替换、理解语气，还是根本不值得制卡。"
+        f"{focus_instruction}"
         "判断标准："
-        "1) phrase 必须来自 english 原句，通常 2-6 个词，必须完整、自然、可换场景复用。"
+        "1) phrase 必须来自 english 原句；词伙通常 2-6 个词，单词用法可以是 1 个核心词，语法框架可以是原句里的可替换结构。"
+        "它必须完整、自然、可换场景复用。"
         "2) keep 只给真正值得复习的表达；如果只是句子主题、名词堆叠、产品名、working with 这类泛短语，decision=skip。"
         "3) B1 或更高水平不要把 talk about、go home 这类 A1/A2 基础表达评为 keep，除非原句里有更具体的表达框架。"
         "4) value_score 用 1-5：5=非常值得学，4=推荐制卡，3=可待审，1-2=跳过。"
-        "5) card_focus 用一句短中文说明这张卡应该训练什么；skip 时写 reject_reason。"
+        "5) phrase_type 从 spoken_phrase、sentence_frame、collocation、discourse_marker、listening_sentence、vocabulary_usage、grammar_pattern 中选一个。"
+        "6) score_breakdown 必须给 transferability、spoken_naturalness、level_fit、context_clarity 四项 1-5 分。"
+        "7) card_focus 用一句短中文说明这张卡应该训练什么；skip 时写 reject_reason。"
+        "好例子：Honestly, it's such a nice Monday morning. -> keep, phrase=such a nice, phrase_type=sentence_frame, card_focus=训练 such a nice + 名词表达自然赞叹。"
+        "废例子：Today we are going to talk about AI models. -> skip, phrase=talk about, reject_reason=B1 用户太基础，而且只是视频引入。"
         "只返回严格 JSON，不要 Markdown。结构："
         '{"candidates":[{"id":"seg_0001","decision":"keep|skip","phrase":"原句里的词伙",'
-        '"value_score":1,"reason":"推荐理由","card_focus":"训练重点","reject_reason":"跳过原因"}]}。'
+        '"phrase_type":"spoken_phrase|sentence_frame|collocation|discourse_marker|listening_sentence|vocabulary_usage|grammar_pattern",'
+        '"value_score":1,"score_breakdown":{"transferability":1,"spoken_naturalness":1,"level_fit":1,"context_clarity":1},'
+        '"reason":"推荐理由","card_focus":"训练重点","reject_reason":"跳过原因"}]}。'
         f"用户当前水平：{level}。允许收录难度范围：{', '.join(collection_levels)}。"
         f"候选字幕：{json.dumps(compact, ensure_ascii=False)}"
     )
@@ -1735,6 +2056,7 @@ def apply_phrase_review_decisions(
         review = reviews.get(segment["id"])
         if not review:
             repaired = repair_review_segment_phrase(segment, level, collection_levels) or segment
+            repaired = refine_segment_media_for_phrase(repaired, str(repaired.get("phrase") or ""))
             kept.append(
                 {
                     **repaired,
@@ -1754,6 +2076,8 @@ def apply_phrase_review_decisions(
         reason = str(review.get("reason") or "").strip()
         reject_reason = str(review.get("reject_reason") or "").strip()
         card_focus = str(review.get("card_focus") or "").strip()
+        phrase_type = str(review.get("phrase_type") or "").strip()
+        score_breakdown = review.get("score_breakdown") if isinstance(review.get("score_breakdown"), dict) else {}
         phrase = review_phrase_choice(segment["text"], proposed, segment.get("phrase", ""), level, collection_levels)
 
         if decision != "keep" or value_score < 3:
@@ -1780,9 +2104,10 @@ def apply_phrase_review_decisions(
             value_score = min(value_score, 3)
 
         status = "recommended" if value_score >= 4 else "needs_review"
+        refined_segment = refine_segment_media_for_phrase(segment, phrase)
         kept.append(
             {
-                **segment,
+                **refined_segment,
                 "phrase": phrase,
                 "recommendation": min(5, max(1, value_score)),
                 "phrase_value_score": value_score,
@@ -1791,6 +2116,8 @@ def apply_phrase_review_decisions(
                 "phrase_decision_reason": reason or card_focus or "MIMO 认为这个表达值得制卡。",
                 "phrase_reject_reason": "" if status == "recommended" else "词伙价值分为 3，默认进入待审。",
                 "phrase_card_focus": card_focus or "围绕这个表达的真实语境和迁移用法制卡。",
+                "phrase_type": phrase_type,
+                "score_breakdown": score_breakdown,
             }
         )
 
@@ -1830,6 +2157,7 @@ def ensure_min_review_candidates(
         )
         if not repaired:
             continue
+        repaired = refine_segment_media_for_phrase(repaired, str(repaired.get("phrase") or ""))
         kept.append(
             {
                 **repaired,
@@ -2367,11 +2695,18 @@ def merge_ai_cards(
                     "card_role",
                     "learning_goal",
                     "decision_reason",
+                    "learning_target",
+                    "why_it_matters",
+                    "how_to_use_it",
+                    "natural_chinese",
+                    "replacement_examples",
+                    "avoid_reason",
                     "phrase_value_score",
                     "phrase_decision_reason",
                     "phrase_reject_reason",
                     "phrase_card_focus",
                     "phrase_review_status",
+                    "phrase_type",
                 ]:
                     if ai_card.get(key):
                         card[key] = str(ai_card[key])
@@ -2380,6 +2715,7 @@ def merge_ai_cards(
                         card.get("teacher_note")
                         or "同片段 AI 已识别出重点表达，这张卡由系统补齐为对应训练任务。"
                     )
+                normalize_learning_action_fields(card)
                 repair_card_fields(card, segment, level)
                 for key in [
                     "phrase_value_score",
@@ -2792,6 +3128,9 @@ def download_url_source(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_document_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str:
+    focus_instruction = document_focus_instruction(project)
+    style_instruction = document_style_instruction(project)
+    study_mode = normalized_document_study_mode(project)
     compact = [
         {
             "id": segment["id"],
@@ -2801,16 +3140,63 @@ def build_document_prompt(project: dict[str, Any], segments: list[dict[str, Any]
         }
         for segment in segments
     ]
+    if study_mode == "language_reading":
+        focus = normalized_language_focus(project)
+        reading_focus = [item for item in focus if item in {"phrases", "vocabulary", "grammar"}] or ["phrases"]
+        focus_labels = {
+            "phrases": "词伙表达：抽取可迁移短语、搭配和句型块，禁止整句当词伙。",
+            "vocabulary": "单词用法：抽取真实语境里的词义、搭配和易错用法，不做孤立词典卡。",
+            "grammar": "语法框架：抽取可替换句型、结构和语气功能，不做抽象语法定义。",
+        }
+        focus_instruction = "".join(focus_labels[item] for item in reading_focus)
+        return (
+            "你是中文母语者的英文文档精读老师和 Anki 卡片编辑老师。请从文档片段里抽取语言学习点，"
+            "不是总结知识内容。重点是让学习者下次能读懂、会用或能辨认表达结构。"
+            "文档没有原声，禁止生成听力卡，禁止提到原声/TTS/视频切片。"
+            f"本次语言精读目标：{focus_instruction}"
+            f"{style_instruction}"
+            "制卡标准："
+            "1) 每张卡只训练一个语言动作：理解一个表达、掌握一个词的用法、看懂一个语法框架。"
+            "2) phrase 必须来自原文片段，不能是 key expression，不能是整句。"
+            "3) english 写主动回忆问题或原文提示；chinese 写自然中文理解。"
+            "4) definition 写怎么理解；collocations 写可替换框架/搭配；context 写文档语境。"
+            "5) why 和 teacher_note 必须说明为什么这个语言点值得学、下次怎么辨认或复用。"
+            "6) 弱卡默认待审：不要为了数量硬凑语言点。"
+            "返回严格 JSON，不要 Markdown。JSON 结构："
+            '{"segments":[{"id":"doc_0001","cards":[{"type":"knowledge",'
+            '"knowledge_type":"terms|concepts|examples","english":"正面问题或原文提示","chinese":"自然中文理解",'
+            '"phrase":"原文中的表达/单词/语法框架","definition":"怎么理解",'
+            '"collocations":"替换框架/搭配","context":"文档语境","example":"原文例子或改写例子","chinese_feel":"中文直觉",'
+            '"why":"为什么值得学","difficulty":"A1 入门|A2 基础|B1 日常交流|B2 独立表达|C1 高阶表达|C2 接近母语",'
+            '"teacher_note":"一句老师提醒","learning_target":"这张卡练什么",'
+            '"why_it_matters":"为什么值得学","how_to_use_it":"下次如何辨认或复用",'
+            '"cloze":"挖空复习句，且只有一个 ____"}]}]}。'
+            f"用户水平：{project.get('level', 'B1')}。"
+            f"文档片段：{json.dumps(compact, ensure_ascii=False)}"
+        )
     return (
-        "你是中文母语者的知识制卡老师。请把文档片段生成高质量 Anki 知识卡。"
-        "每张卡必须适合长期复习：正面是清晰问题，反面是准确答案、概念解释、例子和为什么值得记。"
-        "不要照抄整段原文，不要写空泛总结。概念名 phrase 要短，通常 2-10 个字或 1-6 个英文词。"
+        "你是中文母语者的读书笔记老师和 Anki 知识卡编辑老师。请把文档片段变成少而精的知识卡，"
+        "不要把它当摘要任务。先判断这段到底值得记什么，再写卡片。"
+        f"{focus_instruction}"
+        f"{style_instruction}"
+        "制卡标准："
+        "1) 每张卡只训练一个知识动作：定义一个概念、解释一个观点、区分一组概念、记住一个例子。"
+        "2) 正面 english 必须是可主动回忆的问题；不要写“这段主要讲什么”这种泛问题。"
+        "3) 反面 chinese 必须短而准，优先 1-3 句；不要照抄整段原文。"
+        "4) phrase 是概念名、观点名或术语，必须短；禁止输出“核心知识点”“知识点”“章节标题”“N/A”。"
+        "5) definition 写怎么理解；collocations 写相关概念/对比项；context 写出现语境或适用范围。"
+        "6) example 必须来自文档例子或基于文档改写，不能空泛编造。"
+        "7) why 和 teacher_note 要解释为什么值得记、复习时怎么抓关键，不要写套话。"
+        "8) 如果片段只有铺垫、目录、广告、空泛背景，cards 返回空数组。"
         "返回严格 JSON，不要 Markdown。JSON 结构："
         '{"segments":[{"id":"doc_0001","cards":[{"type":"knowledge",'
-        '"english":"正面问题","chinese":"反面核心答案","phrase":"概念名","definition":"概念解释",'
+        '"knowledge_type":"concepts|arguments|terms|examples","english":"正面问题","chinese":"反面核心答案",'
+        '"phrase":"概念名/观点名/术语","definition":"概念解释",'
         '"collocations":"相关概念/搭配","context":"适用语境","example":"例子","chinese_feel":"中文理解",'
         '"why":"为什么值得记","difficulty":"A1 入门|A2 基础|B1 日常交流|B2 独立表达|C1 高阶表达|C2 接近母语",'
-        '"teacher_note":"一句老师提醒","cloze":"挖空复习句，且只有一个 ____"}]}]}。'
+        '"teacher_note":"一句老师提醒","learning_target":"这张卡练什么",'
+        '"why_it_matters":"为什么值得记","how_to_use_it":"复习时如何迁移或判断",'
+        '"cloze":"挖空复习句，且只有一个 ____"}]}]}。'
         f"用户水平：{project.get('level', 'B1')}。"
         f"文档片段：{json.dumps(compact, ensure_ascii=False)}"
     )
@@ -2882,7 +3268,8 @@ def fallback_document_card(segment: dict[str, Any], level: str) -> dict[str, Any
         "id": f"{segment['id']}_knowledge",
         "type": "knowledge",
         "type_label": "知识卡",
-        "enabled": True,
+        "enabled": False,
+        "knowledge_type": "concepts",
         "english": segment.get("text", ""),
         "chinese": answer or "请根据原文补充核心答案。",
         "phrase": phrase,
@@ -2892,6 +3279,9 @@ def fallback_document_card(segment: dict[str, Any], level: str) -> dict[str, Any
         "example": clip_words(excerpt, 42),
         "chinese_feel": "先用自己的话解释，再核对原文中的关键条件和例子。",
         "why": "这段内容被拆成可复习的问题，适合后续在 Anki 里主动回忆。",
+        "learning_target": "确认这段文档里是否有明确概念或观点值得记。",
+        "why_it_matters": "本地 fallback 只能保留原文线索，需要模型或人工把它改成具体知识动作。",
+        "how_to_use_it": "先检查问题是否具体，再把答案压缩成自己的话。",
         "difficulty": CEFR_LABELS.get(level, level),
         "teacher_note": "本地待审卡：建议检查问题是否具体，答案是否过长。",
         "cloze": f"{phrase} 的核心是 ____。",
@@ -2903,10 +3293,43 @@ def fallback_document_card(segment: dict[str, Any], level: str) -> dict[str, Any
     }
 
 
+def document_card_quality(card: dict[str, Any], fallback: bool = False) -> dict[str, Any]:
+    issues: list[str] = []
+    phrase = str(card.get("phrase", "")).strip().lower()
+    english = str(card.get("english", "")).strip()
+    chinese = str(card.get("chinese", "")).strip()
+    definition = str(card.get("definition", "")).strip()
+    teacher_note = str(card.get("teacher_note", "")).strip()
+    why = str(card.get("why_it_matters") or card.get("why") or "").strip()
+    knowledge_type = str(card.get("knowledge_type", "")).strip()
+
+    if fallback:
+        issues.append("本地文档草稿，需要人工确认")
+    if phrase in {"", "核心知识点", "知识点", "key point", "knowledge point", "n/a", "none"}:
+        issues.append("概念名是占位词，需人工提炼")
+    if knowledge_type not in DOCUMENT_FOCUS_ORDER:
+        issues.append("缺少明确知识类型")
+    if not english or len(english) < 8 or english in {"这段主要讲什么？", "这段内容的核心是什么？"}:
+        issues.append("正面问题太泛")
+    if len(chinese) > 260:
+        issues.append("答案过长，建议压缩成 1-3 句")
+    if not definition or definition == chinese:
+        issues.append("缺少独立概念解释")
+    if not why:
+        issues.append("缺少为什么值得记")
+    if not teacher_note or "很重要" == teacher_note:
+        issues.append("老师提醒不够具体")
+
+    score = max(45, 86 - len(issues) * 10 - (10 if fallback else 0))
+    status = "recommended" if not issues and score >= 78 else "needs_review"
+    return {"score": score, "status": status, "issues": issues}
+
+
 def merge_document_cards(
     segments: list[dict[str, Any]],
     ai_payload: dict[str, Any] | None,
     level: str,
+    study_mode: str = "knowledge",
 ) -> tuple[list[dict[str, Any]], str | None]:
     ai_by_segment: dict[str, dict[str, Any]] = {}
     warning = None
@@ -2928,12 +3351,16 @@ def merge_document_cards(
                     "english",
                     "chinese",
                     "phrase",
+                    "knowledge_type",
                     "definition",
                     "collocations",
                     "context",
                     "example",
                     "chinese_feel",
                     "why",
+                    "learning_target",
+                    "why_it_matters",
+                    "how_to_use_it",
                     "difficulty",
                     "teacher_note",
                     "cloze",
@@ -2942,12 +3369,26 @@ def merge_document_cards(
                         card[key] = str(ai_card[key])
                 if card["cloze"].count("____") != 1:
                     card["cloze"] = f"{card['phrase']} 的核心是 ____。"
-                card["quality"] = {
-                    "score": 82,
-                    "status": "recommended",
-                    "issues": [],
-                }
-                card["enabled"] = True
+                card["quality"] = document_card_quality(card, fallback=False)
+                if study_mode == "language_reading":
+                    card["quality"]["status"] = "needs_review"
+                    card["quality"].setdefault("issues", []).append("文档精读卡默认待审，需确认语言点是否值得保留")
+                    card["teacher_note"] = (
+                        card.get("teacher_note", "")
+                        or "文档精读卡：请确认这个表达、词义或语法框架确实值得复习。"
+                    )
+                card["enabled"] = card["quality"]["status"] == "recommended"
+        else:
+            card["quality"] = document_card_quality(card, fallback=True)
+            card["enabled"] = False
+        segment["phrase"] = card.get("phrase", segment.get("phrase", ""))
+        segment["knowledge_type"] = card.get("knowledge_type", "")
+        segment["phrase_review_status"] = card["quality"]["status"]
+        segment["phrase_card_focus"] = card.get("learning_target") or card.get("teacher_note", "")
+        if card["quality"].get("issues"):
+            segment["phrase_reject_reason"] = " / ".join(card["quality"]["issues"])
+        else:
+            segment["phrase_decision_reason"] = card.get("why_it_matters") or card.get("why", "")
         segment["cards"] = [card]
     return segments, warning
 
@@ -2960,14 +3401,16 @@ def handle_generate_document(payload: dict[str, Any]) -> dict[str, Any]:
     emit_progress("generate", "document", 22, "正在读取文档。")
     text = read_document_source(document_path)
     level = payload.get("level", "B1")
+    study_mode = normalized_document_study_mode(payload)
     collection_levels = collection_levels_from_payload(payload, level)
     max_segments = resolved_max_segments(payload, text=text)
     emit_progress("generate", "document", 42, "正在拆分文档知识点。")
     segments = split_document_chunks(text, min(max_segments, 36))
-    emit_progress("generate", "ai", 66, f"正在总结文档知识卡：{len(segments)} 个知识点。")
+    progress_label = "语言精读卡" if study_mode == "language_reading" else "文档知识卡"
+    emit_progress("generate", "ai", 66, f"正在生成{progress_label}：{len(segments)} 个片段。")
     ai_payload = call_document_model(payload, segments)
     emit_progress("generate", "cards", 86, "正在整理文档卡字段。")
-    segments, warning = merge_document_cards(segments, ai_payload, level)
+    segments, warning = merge_document_cards(segments, ai_payload, level, study_mode=study_mode)
 
     title = payload.get("title") or Path(document_path).stem
     try:
@@ -2991,6 +3434,12 @@ def handle_generate_document(payload: dict[str, Any]) -> dict[str, Any]:
         "collection_levels": collection_levels,
         "template_id": payload.get("template_id", "immersive"),
         "content_toggles": payload.get("content_toggles", {}),
+        "language_focus": normalized_language_focus(payload),
+        "document_focus": normalized_document_focus(payload),
+        "document_study_mode": study_mode,
+        "document_answer_language": normalized_document_answer_language(payload),
+        "document_depth": normalized_document_depth(payload),
+        "document_answer_length": normalized_document_answer_length(payload),
         "card_types": ["knowledge"],
         "max_segments": max_segments,
         "auto_max_segments": auto_segments,
@@ -2999,7 +3448,11 @@ def handle_generate_document(payload: dict[str, Any]) -> dict[str, Any]:
         "warning": warning,
         "source_mode": "document",
         "source_url": "",
-        "source_info": {"title": title, "document_path": document_path},
+        "source_info": {
+            "title": title,
+            "document_path": document_path,
+            "document_study_mode": study_mode,
+        },
         "created_at": int(time.time()),
     }
 
@@ -3171,6 +3624,7 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         "collection_levels": collection_levels,
         "template_id": payload.get("template_id", "immersive"),
         "content_toggles": payload.get("content_toggles", {}),
+        "language_focus": normalized_language_focus(payload),
         "card_types": card_types,
         "max_segments": max_segments,
         "auto_max_segments": auto_segments,
@@ -5023,11 +5477,11 @@ audio {
 }
 .sentence {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  gap: clamp(5px, 0.8vh, 10px);
+  grid-template-rows: auto auto auto;
+  gap: clamp(7px, 0.9vh, 12px);
   min-height: 0;
-  overflow: hidden;
-  padding: clamp(16px, 2vh, 26px) clamp(32px, 4vw, 56px);
+  overflow: visible;
+  padding: clamp(18px, 2.1vh, 28px) clamp(34px, 4vw, 58px);
   border-bottom: 1px solid var(--line);
   background: #fbfbfd;
 }
@@ -5037,11 +5491,13 @@ audio {
   height: auto;
   margin: 0;
   color: var(--ink);
-  font-size: clamp(30px, min(4.5vw, 6vh), 58px);
-  line-height: 1.08;
+  font-size: clamp(24px, min(3.4vw, 4.7vh), 44px);
+  line-height: 1.18;
   font-weight: 1000;
-  overflow: hidden;
-  overflow-wrap: anywhere;
+  overflow: visible;
+  overflow-wrap: break-word;
+  word-break: normal;
+  text-wrap: balance;
   max-width: 100%;
 }
 .chips {
@@ -5049,8 +5505,10 @@ audio {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 0;
+  min-width: 0;
 }
 .chip {
+  max-width: 100%;
   padding: 6px 10px;
   border: 1px solid rgba(0, 122, 255, 0.22);
   border-radius: 999px;
@@ -5059,6 +5517,18 @@ audio {
   font-size: clamp(13px, min(1.4vw, 2vh), 17px);
   line-height: 1.2;
   font-weight: 920;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.audio-row.audio-missing {
+  border-color: rgba(154, 106, 34, 0.2);
+  background: rgba(255, 244, 224, 0.84);
+  color: #8a5a00;
+}
+.audio-row.audio-missing em {
+  font-style: normal;
+  font-weight: 760;
+  color: #8a5a00;
 }
 .detail-grid {
   display: grid;
@@ -5109,6 +5579,27 @@ audio {
   font-weight: 760;
   overflow-wrap: anywhere;
 }
+.learning-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
+}
+.learning-grid .detail {
+  grid-column: auto;
+}
+.learning-block {
+  gap: clamp(4px, 0.7vh, 9px);
+}
+.learning-block p {
+  flex: 0 1 auto;
+}
+.support-note {
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+  color: var(--muted) !important;
+}
+.example-line {
+  color: var(--blue-deep) !important;
+}
 @media (max-width: 680px) {
   .card { padding: 6px; }
   .wrap {
@@ -5146,7 +5637,7 @@ audio {
   .speaker-icon { width: 21px; height: 21px; }
   .meaning { font-size: 20px; }
   .translation { font-size: 17px; }
-  .english { font-size: 29px; }
+  .english { font-size: 26px; }
   .answer-box strong { font-size: 26px; }
   .front-content { font-size: 17px; }
   .detail p,
@@ -5223,7 +5714,7 @@ audio {
     gap: 4px;
     padding: 10px 22px;
   }
-  .english { font-size: clamp(24px, min(3.8vw, 4.8vh), 42px); }
+  .english { font-size: clamp(21px, min(3.1vw, 4vh), 35px); }
   .detail-grid {
     gap: 7px;
     padding: 9px 22px 11px;
@@ -5334,24 +5825,12 @@ FRONT_TEMPLATE = """
     var scope = root || document;
     var wrap = scope.querySelector(".wrap");
     var card = scope.querySelector(".study-card");
-    if (!wrap || !card) {
-      fitResponsiveText(scope);
-      return;
+    if (wrap) {
+      wrap.style.setProperty("--font-scale", "1");
+      wrap.classList.remove("dense-card", "ultra-dense-card");
     }
-    var scale = 1;
-    wrap.style.setProperty("--font-scale", "1");
-    wrap.classList.remove("dense-card", "ultra-dense-card");
+    if (!card) return;
     fitResponsiveText(scope);
-    for (var i = 0; i < 12; i += 1) {
-      var overflowing = nodeHasOverflow(card) || nodeHasOverflow(wrap) || hasHiddenOverflow(scope);
-      if (!overflowing) break;
-      scale = Math.max(0.62, scale - (i < 4 ? 0.05 : 0.035));
-      wrap.style.setProperty("--font-scale", scale.toFixed(3));
-      if (scale < 0.9) wrap.classList.add("dense-card");
-      if (scale < 0.76) wrap.classList.add("ultra-dense-card");
-      fitResponsiveText(scope);
-      if (scale <= 0.62) break;
-    }
   }
   function scheduleResponsiveFit() {
     if (responsiveFitQueued) return;
@@ -5374,8 +5853,8 @@ FRONT_TEMPLATE = """
     });
     fitAdaptiveCard(document);
   }
-  setTimeout(refreshResponsiveCard, 80);
-  setTimeout(scheduleResponsiveFit, 320);
+  refreshResponsiveCard();
+  setTimeout(scheduleResponsiveFit, 120);
   window.addEventListener("resize", scheduleResponsiveFit);
   if (window.ResizeObserver) {
     var observedWrap = document.querySelector(".wrap");
@@ -5394,6 +5873,7 @@ BACK_TEMPLATE = """
         <div class="audio-title"><strong>回放校对</strong><span>{{SourceTime}}</span></div>
         {{#Audio}}<div class="audio-row"><span>原声音频</span>{{Audio}}</div>{{/Audio}}
         {{#TtsAudio}}<div class="audio-row"><span>整句 AI 朗读</span>{{TtsAudio}}</div>{{/TtsAudio}}
+        {{^TtsAudio}}<div class="audio-row audio-missing"><span>整句 AI 朗读</span><em>未生成；待审卡建议人工确认，或测试 TTS 后重新导出。</em></div>{{/TtsAudio}}
       </div>
     </div>{{/Video}}
 
@@ -5414,19 +5894,25 @@ BACK_TEMPLATE = """
 
     <div class="sentence">
       <span class="label">{{#Video}}英文原句{{/Video}}{{^Video}}正面问题{{/Video}}</span>
-      <div class="english" data-fit data-fit-min="20" data-fit-max="58">{{English}}</div>
+      <div class="english" data-fit data-fit-min="18" data-fit-max="44">{{English}}</div>
       <div class="chips">
         {{#Cloze}}<span class="chip cloze-chip">填空：{{Cloze}}</span>{{/Cloze}}
         <span class="chip">{{SourceTime}}</span>
       </div>
     </div>
 
-    <div class="detail-grid">
-      <div class="detail"><strong>释义 / 概念</strong><p data-fit data-fit-min="13" data-fit-max="19">{{Definition}}</p></div>
-      <div class="detail"><strong>搭配 / 相关概念</strong><p class="english-detail" data-fit data-fit-min="13" data-fit-max="21">{{Collocations}}</p></div>
-      <div class="detail"><strong>语境</strong><p data-fit data-fit-min="13" data-fit-max="19">{{Context}}</p></div>
-      <div class="detail"><strong>例句</strong><p class="english-detail" data-fit data-fit-min="13" data-fit-max="21">{{Example}}</p></div>
-      <div class="detail wide"><strong>为什么值得学</strong><p data-fit data-fit-min="13" data-fit-max="19">{{Why}}</p></div>
+    <div class="detail-grid learning-grid">
+      <div class="detail learning-block understand-block">
+        <strong>怎么理解</strong>
+        <p data-fit data-fit-min="13" data-fit-max="20">{{Definition}}</p>
+        {{#Why}}<p class="support-note" data-fit data-fit-min="12" data-fit-max="18">{{Why}}</p>{{/Why}}
+      </div>
+      <div class="detail learning-block use-block">
+        <strong>怎么用</strong>
+        <p class="english-detail" data-fit data-fit-min="13" data-fit-max="21">{{Collocations}}</p>
+        {{#Context}}<p class="support-note" data-fit data-fit-min="12" data-fit-max="18">{{Context}}</p>{{/Context}}
+        {{#Example}}<p class="english-detail example-line" data-fit data-fit-min="13" data-fit-max="20">{{Example}}</p>{{/Example}}
+      </div>
     </div>
   </section>
 </div>
@@ -5484,24 +5970,12 @@ BACK_TEMPLATE = """
     var scope = root || document;
     var wrap = scope.querySelector(".wrap");
     var card = scope.querySelector(".study-card");
-    if (!wrap || !card) {
-      fitResponsiveText(scope);
-      return;
+    if (wrap) {
+      wrap.style.setProperty("--font-scale", "1");
+      wrap.classList.remove("dense-card", "ultra-dense-card");
     }
-    var scale = 1;
-    wrap.style.setProperty("--font-scale", "1");
-    wrap.classList.remove("dense-card", "ultra-dense-card");
+    if (!card) return;
     fitResponsiveText(scope);
-    for (var i = 0; i < 12; i += 1) {
-      var overflowing = nodeHasOverflow(card) || nodeHasOverflow(wrap) || hasHiddenOverflow(scope);
-      if (!overflowing) break;
-      scale = Math.max(0.62, scale - (i < 4 ? 0.05 : 0.035));
-      wrap.style.setProperty("--font-scale", scale.toFixed(3));
-      if (scale < 0.9) wrap.classList.add("dense-card");
-      if (scale < 0.76) wrap.classList.add("ultra-dense-card");
-      fitResponsiveText(scope);
-      if (scale <= 0.62) break;
-    }
   }
   function scheduleResponsiveFit() {
     if (responsiveFitQueued) return;
@@ -5529,8 +6003,8 @@ BACK_TEMPLATE = """
     });
     fitAdaptiveCard(document);
   }
-  setTimeout(refreshResponsiveCard, 80);
-  setTimeout(scheduleResponsiveFit, 320);
+  refreshResponsiveCard();
+  setTimeout(scheduleResponsiveFit, 120);
   window.addEventListener("resize", scheduleResponsiveFit);
   if (window.ResizeObserver) {
     var observedWrap = document.querySelector(".wrap");

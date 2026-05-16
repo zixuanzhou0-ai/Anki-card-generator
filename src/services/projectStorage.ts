@@ -1,5 +1,17 @@
 ﻿import type { ApiConfig, GenerateRequest, Level, Project, SecretPrefs, TtsConfig, TtsProvider, UrlImportMode } from '../domain/types'
-import { defaultRequest, PROJECT_STORAGE_KEY, REQUEST_STORAGE_KEY, SECRET_PREFS_STORAGE_KEY, normalizeCollectionLevels } from '../domain/options'
+import {
+  defaultRequest,
+  normalizeDocumentAnswerLanguage,
+  normalizeDocumentAnswerLength,
+  normalizeDocumentDepth,
+  normalizeCollectionLevels,
+  normalizeDocumentFocus,
+  normalizeDocumentStudyMode,
+  normalizeLanguageFocus,
+  PROJECT_STORAGE_KEY,
+  REQUEST_STORAGE_KEY,
+  SECRET_PREFS_STORAGE_KEY,
+} from '../domain/options'
 import { normalizeMimoModelId } from './apiConfig'
 
 export function normalizeSavedMimoConfig(saved: GenerateRequest): GenerateRequest {
@@ -56,6 +68,12 @@ export function loadSavedRequest(): GenerateRequest {
         ...defaultRequest.content_toggles,
         ...(saved.content_toggles ?? {}),
       },
+      language_focus: normalizeLanguageFocus(saved.language_focus),
+      document_focus: normalizeDocumentFocus(saved.document_focus),
+      document_study_mode: normalizeDocumentStudyMode(saved.document_study_mode),
+      document_answer_language: normalizeDocumentAnswerLanguage(saved.document_answer_language),
+      document_depth: normalizeDocumentDepth(saved.document_depth),
+      document_answer_length: normalizeDocumentAnswerLength(saved.document_answer_length),
       api_config: {
         ...defaultRequest.api_config,
         ...savedApi,
@@ -85,6 +103,12 @@ export function loadSavedProject(): Project | null {
       ...saved,
       template_id: saved.template_id ?? 'immersive',
       source_mode: saved.source_mode ?? 'local',
+      language_focus: normalizeLanguageFocus(saved.language_focus),
+      document_focus: normalizeDocumentFocus(saved.document_focus),
+      document_study_mode: normalizeDocumentStudyMode(saved.document_study_mode),
+      document_answer_language: normalizeDocumentAnswerLanguage(saved.document_answer_language),
+      document_depth: normalizeDocumentDepth(saved.document_depth),
+      document_answer_length: normalizeDocumentAnswerLength(saved.document_answer_length),
       segments: saved.segments.map((segment) => ({
         ...segment,
         cards: Array.isArray(segment.cards) ? segment.cards : [],

@@ -80,7 +80,9 @@ test('desktop workflow shell supports simplified settings, URL mode, document mo
   await expect(page.locator('.metric-card.primary')).toContainText('6/6')
 
   await page.getByRole('button', { name: /文档资料/ }).click()
-  await expect(page.getByText('知识点卡').first()).toBeVisible()
+  await expect(page.getByText('文档目标').first()).toBeVisible()
+  await expect(page.getByText('知识吸收').first()).toBeVisible()
+  await expect(page.getByText('知识问答卡').first()).toBeVisible()
   await expect(page.getByText('支持 TXT、Markdown、DOCX、EPUB、PDF。扫描版 PDF 需要后续 OCR。')).toBeVisible()
   await page.getByPlaceholder('选择文档资料').fill('E:\\ANKI\\anki_live_e2e\\sample_document_notes.md')
   await page.getByRole('button', { name: /生成卡片/ }).click()

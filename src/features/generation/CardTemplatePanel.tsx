@@ -1,6 +1,6 @@
 import { FileText } from 'lucide-react'
 
-import type { CardKind, SourceMode, TemplateId } from '../../domain/types'
+import type { CardKind, DocumentStudyMode, SourceMode, TemplateId } from '../../domain/types'
 
 type CardOption = {
   id: CardKind
@@ -19,6 +19,7 @@ type CardTemplatePanelProps = {
   activeTemplateLabel: string
   cardOptions: CardOption[]
   cardTypes: CardKind[]
+  documentStudyMode: DocumentStudyMode
   sourceMode: SourceMode
   templateId: TemplateId
   templateOptions: TemplateOption[]
@@ -30,6 +31,7 @@ export function CardTemplatePanel({
   activeTemplateLabel,
   cardOptions,
   cardTypes,
+  documentStudyMode,
   sourceMode,
   templateId,
   templateOptions,
@@ -41,14 +43,24 @@ export function CardTemplatePanel({
       <details className="compact-details preference-details">
         <summary>
           <span>卡片和模板</span>
-          <strong>{sourceMode === 'document' ? '知识点卡' : `${cardTypes.length} 类 · ${activeTemplateLabel}`}</strong>
+          <strong>
+            {sourceMode === 'document'
+              ? documentStudyMode === 'language_reading'
+                ? '文档精读卡'
+                : '知识问答卡'
+              : `${cardTypes.length} 类 · ${activeTemplateLabel}`}
+          </strong>
         </summary>
         {sourceMode === 'document' ? (
           <div className="doc-card-mode">
             <FileText size={18} />
             <div>
-              <strong>知识点卡</strong>
-              <span>正面是问题或概念提示，反面是结构化答案、解释、例子和为什么值得记。</span>
+              <strong>{documentStudyMode === 'language_reading' ? '文档精读卡' : '知识问答卡'}</strong>
+              <span>
+                {documentStudyMode === 'language_reading'
+                  ? '从文档里提取表达、词汇或语法点；不生成听力卡，默认进入待审。'
+                  : '正面是问题或概念提示，反面是结构化答案、解释、例子和为什么值得记。'}
+              </span>
             </div>
           </div>
         ) : (
