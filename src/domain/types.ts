@@ -14,6 +14,7 @@ export type UrlImportMode = 'video' | 'subtitles'
 export type SettingsTab = 'api' | 'tts' | 'env'
 export type SegmentFilter = 'all' | 'recommended' | 'needs_review' | 'reject' | 'duplicate'
 export type PhraseReviewStatus = 'recommended' | 'needs_review' | 'reject' | 'duplicate' | 'unreviewed' | string
+export type DocumentCardKind = 'knowledge' | 'language_reading'
 export type ResizeDirection =
   | 'East'
   | 'North'
@@ -253,6 +254,7 @@ export type Card = {
   phrase_review_status?: PhraseReviewStatus
   phrase_type?: string
   knowledge_type?: DocumentFocus | string
+  document_card_kind?: DocumentCardKind | string
   score_breakdown?: Record<string, number | string>
   english: string
   chinese: string
@@ -299,8 +301,26 @@ export type Segment = {
   phrase_review_source?: string
   phrase_type?: string
   knowledge_type?: DocumentFocus | string
+  document_card_kind?: DocumentCardKind | string
   score_breakdown?: Record<string, number | string>
   cards: Card[]
+}
+
+export type UrlSourceInfo = {
+  title?: string
+  webpage_url?: string
+  duration?: number
+  uploader?: string
+  download_dir?: string
+  download_mode?: string
+  transcript_only?: boolean
+  skip_video_slicing?: boolean
+}
+
+export type DocumentSourceInfo = {
+  title?: string
+  document_path?: string
+  document_study_mode?: DocumentStudyMode
 }
 
 export type Project = {
@@ -309,13 +329,7 @@ export type Project = {
   title: string
   source_mode?: SourceMode
   source_url?: string
-  source_info?: {
-    title?: string
-    webpage_url?: string
-    duration?: number
-    uploader?: string
-    download_dir?: string
-  } | null
+  source_info?: UrlSourceInfo | DocumentSourceInfo | null
   video_path: string
   subtitle_path: string
   document_path?: string

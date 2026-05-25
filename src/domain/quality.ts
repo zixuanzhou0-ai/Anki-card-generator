@@ -1,4 +1,4 @@
-import type { Card, DocumentFocus, Project, Segment, SegmentFilter } from './types'
+import type { Card, DocumentFocus, DocumentStudyMode, Project, Segment, SegmentFilter } from './types'
 
 export function badgeText(count: number) {
   return count > 0 ? `${count} 张已选` : '未选择卡片'
@@ -44,7 +44,21 @@ export function isKnowledgeSegment(segment: Segment) {
   return segment.cards.some((card) => card.type === 'knowledge')
 }
 
-export function segmentPhraseTitle(segment: Segment) {
+export function isDocumentReadingSegment(segment: Segment, documentStudyMode?: DocumentStudyMode) {
+  return (
+    documentStudyMode === 'language_reading' ||
+    segment.document_card_kind === 'language_reading' ||
+    segment.cards.some((card) => card.document_card_kind === 'language_reading')
+  )
+}
+
+export function segmentPhraseTitle(segment: Segment, documentStudyMode?: DocumentStudyMode) {
+  if (isDocumentReadingSegment(segment, documentStudyMode)) {
+    if (!isPlaceholderPhrase(segment.phrase)) return segment.phrase
+    const cardPhrase = segment.cards.find((card) => !isPlaceholderPhrase(card.phrase))?.phrase
+    if (cardPhrase) return cardPhrase
+    return segment.text ? `精读点：${clipText(segment.text, 34)}` : '待模型提炼精读点'
+  }
   if (isKnowledgeSegment(segment)) {
     if (!isPlaceholderPhrase(segment.phrase)) return segment.phrase
     const cardPhrase = segment.cards.find((card) => !isPlaceholderPhrase(card.phrase))?.phrase
@@ -55,7 +69,11 @@ export function segmentPhraseTitle(segment: Segment) {
   return segment.text ? `待选：${clipText(segment.text, 34)}` : '待模型挑选表达'
 }
 
-export function segmentPhraseLabel(segment: Segment) {
+export function segmentPhraseLabel(segment: Segment, documentStudyMode?: DocumentStudyMode) {
+  if (isDocumentReadingSegment(segment, documentStudyMode)) {
+    if (!isPlaceholderPhrase(segment.phrase)) return segment.phrase
+    return segment.cards.find((card) => !isPlaceholderPhrase(card.phrase))?.phrase ?? '待模型提炼精读点'
+  }
   if (isKnowledgeSegment(segment)) {
     if (!isPlaceholderPhrase(segment.phrase)) return segment.phrase
     return segment.cards.find((card) => !isPlaceholderPhrase(card.phrase))?.phrase ?? '待模型提炼知识点'
@@ -84,7 +102,21 @@ export function knowledgeTypeLabel(value: DocumentFocus | string | null | undefi
   return type
 }
 
-export function segmentTrainingFocus(segment: Segment) {
+export function segmentTrainingFocus(segment: Segment, documentStudyMode?: DocumentStudyMode) {
+  if (isDocumentReadingSegment(segment, documentStudyMode)) {
+    const card = segment.cards.find((item) => item.type === 'knowledge') ?? segment.cards[0]
+    const focus =
+      card?.learning_target ||
+      card?.learning_goal ||
+      card?.how_to_use_it ||
+      card?.why_it_matters ||
+      card?.teacher_note ||
+      segment.phrase_card_focus ||
+      ''
+    const typeLabel = phraseTypeLabel(segment.phrase_type) || knowledgeTypeLabel(segment.knowledge_type ?? card?.knowledge_type)
+    if (typeLabel && focus) return `${typeLabel}：${focus}`
+    return focus || typeLabel || '等待模型提炼精读动作'
+  }
   if (isKnowledgeSegment(segment)) {
     const card = segment.cards.find((item) => item.type === 'knowledge') ?? segment.cards[0]
     const typeLabel = knowledgeTypeLabel(segment.knowledge_type ?? card?.knowledge_type)

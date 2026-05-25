@@ -1,8 +1,9 @@
 import { useEffect, useRef } from 'react'
 import { motion } from 'motion/react'
 
-import type { Segment } from '../../domain/types'
+import type { DocumentStudyMode, Segment } from '../../domain/types'
 import {
+  isDocumentReadingSegment,
   isKnowledgeSegment,
   phraseValueScore,
   segmentPhraseTitle,
@@ -16,6 +17,7 @@ type SegmentListProps = {
   motionDuration: number
   prefersReducedMotion: boolean
   segments: Segment[]
+  documentStudyMode?: DocumentStudyMode
   onSelectSegment: (segmentId: string) => void
   onSetSegmentCardsEnabled: (enabled: boolean, segmentId?: string) => void
 }
@@ -25,6 +27,7 @@ export function SegmentList({
   motionDuration,
   prefersReducedMotion,
   segments,
+  documentStudyMode,
   onSelectSegment,
   onSetSegmentCardsEnabled,
 }: SegmentListProps) {
@@ -37,8 +40,9 @@ export function SegmentList({
         const enabledCards = segment.cards.filter((card) => card.enabled).length
         const allCardsEnabled = totalCards > 0 && enabledCards === totalCards
         const partiallyEnabled = enabledCards > 0 && enabledCards < totalCards
-        const phraseTitle = segmentPhraseTitle(segment)
-        const trainingFocus = segmentTrainingFocus(segment)
+        const phraseTitle = segmentPhraseTitle(segment, documentStudyMode)
+        const trainingFocus = segmentTrainingFocus(segment, documentStudyMode)
+        const isReading = isDocumentReadingSegment(segment, documentStudyMode)
         const isKnowledge = isKnowledgeSegment(segment)
         const primaryCard = segment.cards[0]
         const reason =
@@ -88,7 +92,7 @@ export function SegmentList({
               <small>
                 {enabledCards}/{totalCards} 张已选 · 推荐 {segment.recommendation}/5
               </small>
-              <small className="segment-focus">{isKnowledge ? '记忆动作' : '训练点'}：{trainingFocus}</small>
+              <small className="segment-focus">{isReading ? '精读动作' : isKnowledge ? '记忆动作' : '训练点'}：{trainingFocus}</small>
               <small className="segment-reason">{reason}</small>
             </button>
           </motion.div>

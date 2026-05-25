@@ -1,6 +1,7 @@
 ﻿import type { ApiConfig, GenerateRequest, Level, Project, SecretPrefs, TtsConfig, TtsProvider, UrlImportMode } from '../domain/types'
 import {
   defaultRequest,
+  documentReadingFocusOptions,
   normalizeDocumentAnswerLanguage,
   normalizeDocumentAnswerLength,
   normalizeDocumentDepth,
@@ -47,6 +48,11 @@ export function stripRequestSecrets(request: GenerateRequest): GenerateRequest {
   }
 }
 
+function normalizeDocumentLanguageFocus(value: unknown) {
+  const focus = normalizeLanguageFocus(value).filter((item) => documentReadingFocusOptions.includes(item))
+  return focus.length ? focus : (['phrases'] as typeof focus)
+}
+
 export function loadSavedRequest(): GenerateRequest {
   if (typeof window === 'undefined') return defaultRequest
   try {
@@ -57,6 +63,7 @@ export function loadSavedRequest(): GenerateRequest {
     const savedTts = (savedApi.tts_config ?? {}) as Partial<TtsConfig>
     const legacyTtsProvider = savedApi.tts_provider?.trim()
     const legacyTtsModel = savedApi.tts_model?.trim()
+    const documentStudyMode = normalizeDocumentStudyMode(saved.document_study_mode)
     return stripRequestSecrets(normalizeSavedMimoConfig({
       ...defaultRequest,
       ...saved,
@@ -68,9 +75,12 @@ export function loadSavedRequest(): GenerateRequest {
         ...defaultRequest.content_toggles,
         ...(saved.content_toggles ?? {}),
       },
-      language_focus: normalizeLanguageFocus(saved.language_focus),
+      language_focus:
+        documentStudyMode === 'language_reading'
+          ? normalizeDocumentLanguageFocus(saved.language_focus)
+          : normalizeLanguageFocus(saved.language_focus),
       document_focus: normalizeDocumentFocus(saved.document_focus),
-      document_study_mode: normalizeDocumentStudyMode(saved.document_study_mode),
+      document_study_mode: documentStudyMode,
       document_answer_language: normalizeDocumentAnswerLanguage(saved.document_answer_language),
       document_depth: normalizeDocumentDepth(saved.document_depth),
       document_answer_length: normalizeDocumentAnswerLength(saved.document_answer_length),
@@ -99,13 +109,17 @@ export function loadSavedProject(): Project | null {
     if (!raw) return null
     const saved = JSON.parse(raw) as Project
     if (!saved || !Array.isArray(saved.segments) || saved.segments.length === 0) return null
+    const documentStudyMode = normalizeDocumentStudyMode(saved.document_study_mode)
     return {
       ...saved,
       template_id: saved.template_id ?? 'immersive',
       source_mode: saved.source_mode ?? 'local',
-      language_focus: normalizeLanguageFocus(saved.language_focus),
+      language_focus:
+        documentStudyMode === 'language_reading'
+          ? normalizeDocumentLanguageFocus(saved.language_focus)
+          : normalizeLanguageFocus(saved.language_focus),
       document_focus: normalizeDocumentFocus(saved.document_focus),
-      document_study_mode: normalizeDocumentStudyMode(saved.document_study_mode),
+      document_study_mode: documentStudyMode,
       document_answer_language: normalizeDocumentAnswerLanguage(saved.document_answer_language),
       document_depth: normalizeDocumentDepth(saved.document_depth),
       document_answer_length: normalizeDocumentAnswerLength(saved.document_answer_length),

@@ -135,7 +135,7 @@ npm run tauri:build
 可以用脚本生成便携包：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/package_portable.ps1 -ReleaseExe "src-tauri/target/release/Anki Card Generator.exe"
+powershell -ExecutionPolicy Bypass -File scripts/package_portable.ps1 -ReleaseExe "src-tauri/target/release/anki-card-generator.exe"
 ```
 
 ## 隐私和密钥

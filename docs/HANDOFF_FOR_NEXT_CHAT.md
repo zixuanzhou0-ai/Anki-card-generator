@@ -117,7 +117,7 @@ The next iteration should focus on the strongest remaining beta gaps:
 4. Improve Anki card visual stability: no sentence clipping, no jumpy zoom between cards, clearer pending-review indicators.
 5. Continue simplifying the left Inspector with large sections and drawers.
 6. Make review dashboard labels source-aware: phrase-score language for video, knowledge-point language for documents.
-7. Decide whether the current `1360 x 1040` minimum window is acceptable, or lower it and fix responsive layout properly.
+7. Continue checking whether the lowered `1180 x 780` minimum window is sufficient across common Windows scaling settings.
 8. Continue extracting `workers/acg/legacy_worker.py` into real document, LLM, media, TTS, and Anki modules.
 
 ## Prompt For A Fresh Codex Window

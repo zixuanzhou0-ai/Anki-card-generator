@@ -384,9 +384,15 @@ export function useAppController() {
       (total, segment) => total + segment.cards.filter((card) => isRecommendedCardForExport(segment, card)).length,
       0,
     )
+    const isDocument = result.source_mode === 'document'
+    const isReading = isDocument && result.document_study_mode === 'language_reading'
     const shortHint =
       recommendedCount < 5
-        ? '推荐卡偏少，通常是字幕太短、重复太多、词伙评分不足或模型返回空；可以在质量仪表盘查看原因。'
+        ? isReading
+          ? '推荐精读卡偏少，通常是语言点较弱、模型返回空或多数卡仍需人工确认；可以在质量仪表盘查看原因。'
+          : isDocument
+            ? '推荐知识卡偏少，通常是文档分段较少、模型返回空或多数卡仍需人工确认；可以在质量仪表盘查看原因。'
+            : '推荐卡偏少，通常是字幕太短、重复太多、词伙评分不足或模型返回空；可以在质量仪表盘查看原因。'
         : ''
     const editedHint = editedDuringRun ? ' 生成期间你修改过设置；下一次生成会使用新配置。' : ''
     setStatus(
@@ -394,7 +400,7 @@ export function useAppController() {
         (result.source_mode === 'url'
           ? `URL 导入成功，已生成 ${result.segments.length} 个片段组，推荐 ${recommendedCount} 张。${shortHint}`
           : result.source_mode === 'document'
-            ? `文档导入成功，已生成 ${result.segments.length} 个知识点组。`
+            ? `文档导入成功，已生成 ${result.segments.length} 个${isReading ? '精读点' : '知识点'}组。${shortHint}`
             : `已生成 ${result.segments.length} 个片段组，推荐 ${recommendedCount} 张。${shortHint}`)) + editedHint,
     )
   }

@@ -57,4 +57,17 @@ describe('DocumentStudyPanel', () => {
     expect(props.onSelectCurrentLevel).toHaveBeenCalledWith('B2')
     expect(props.onToggleLanguageFocus).toHaveBeenCalledWith('vocabulary')
   })
+
+  it('filters hidden listening focus when switching to language reading', () => {
+    const props = renderPanel({
+      request: { ...defaultRequest, source_mode: 'document', language_focus: ['phrases', 'listening'] },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /语言精读/ }))
+
+    expect(props.onPatchRequest).toHaveBeenCalledWith({
+      document_study_mode: 'language_reading',
+      language_focus: ['phrases'],
+    })
+  })
 })

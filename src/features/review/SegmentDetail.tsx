@@ -2,8 +2,9 @@ import type { ChangeEvent, SyntheticEvent } from 'react'
 import { motion } from 'motion/react'
 import { Play } from 'lucide-react'
 
-import type { Card, Segment, SegmentFilter } from '../../domain/types'
+import type { Card, DocumentStudyMode, Segment, SegmentFilter } from '../../domain/types'
 import {
+  isDocumentReadingSegment,
   isKnowledgeSegment,
   knowledgeTypeLabel,
   phraseValueScore,
@@ -24,6 +25,7 @@ type SegmentDetailProps = {
   previewRate: number
   segment: Segment
   videoSrc: string
+  documentStudyMode?: DocumentStudyMode
   onPreviewRateChange: (rate: number) => void
   onSetSegmentCardsEnabled: (enabled: boolean, segmentId: string) => void
   onUpdateCard: (segmentId: string, cardId: string, patch: Partial<Card>) => void
@@ -51,11 +53,13 @@ export function SegmentDetail({
   previewRate,
   segment,
   videoSrc,
+  documentStudyMode,
   onPreviewRateChange,
   onSetSegmentCardsEnabled,
   onUpdateCard,
 }: SegmentDetailProps) {
   const isKnowledge = isKnowledgeSegment(segment)
+  const isReading = isDocumentReadingSegment(segment, documentStudyMode)
   const knowledgeCard = segment.cards.find((card) => card.type === 'knowledge') ?? segment.cards[0]
   const knowledgeType = knowledgeTypeLabel(segment.knowledge_type ?? knowledgeCard?.knowledge_type)
   return (
@@ -110,23 +114,23 @@ export function SegmentDetail({
           <strong>{segment.text}</strong>
         </div>
         <div>
-          <span className="label">{isKnowledge ? '知识点' : '重点词伙'}</span>
-          <strong>{segmentPhraseLabel(segment)}</strong>
+          <span className="label">{isReading ? '精读点' : isKnowledge ? '知识点' : '重点词伙'}</span>
+          <strong>{segmentPhraseLabel(segment, documentStudyMode)}</strong>
         </div>
       </div>
 
       {isKnowledge && knowledgeCard ? (
         <div className={`phrase-review-panel status-${segmentReviewStatus(segment)}`}>
           <div>
-            <span>文档知识评审</span>
+            <span>{isReading ? '文档精读评审' : '文档知识评审'}</span>
             <strong>
               {segmentStatusLabel(segmentReviewStatus(segment))}
               {knowledgeType ? ` · ${knowledgeType}` : ''}
             </strong>
           </div>
-          <p>记忆动作：{segmentTrainingFocus(segment)}</p>
+          <p>{isReading ? '精读动作' : '记忆动作'}：{segmentTrainingFocus(segment, documentStudyMode)}</p>
           {knowledgeCard.why_it_matters || knowledgeCard.why ? (
-            <p>为什么值得记：{knowledgeCard.why_it_matters || knowledgeCard.why}</p>
+            <p>{isReading ? '为什么值得学' : '为什么值得记'}：{knowledgeCard.why_it_matters || knowledgeCard.why}</p>
           ) : null}
           {knowledgeCard.quality?.issues?.length ? (
             <p>待审提示：{knowledgeCard.quality.issues.join(' / ')}</p>
@@ -161,7 +165,11 @@ export function SegmentDetail({
             <span>
               {segment.phrase_reject_reason ||
                 segment.phrase_decision_reason ||
-                (isKnowledge ? '模型或规则认为它暂时不适合做知识卡。' : '模型或规则认为它暂时不适合做精品词伙卡。')}
+                (isReading
+                  ? '模型或规则认为它暂时不适合做文档精读卡。'
+                  : isKnowledge
+                    ? '模型或规则认为它暂时不适合做知识卡。'
+                    : '模型或规则认为它暂时不适合做精品词伙卡。')}
             </span>
           </div>
         ) : null}
@@ -172,6 +180,7 @@ export function SegmentDetail({
             motionDuration={motionDuration}
             prefersReducedMotion={prefersReducedMotion}
             segment={segment}
+            documentStudyMode={documentStudyMode}
             onUpdateCard={onUpdateCard}
           />
         ))}
@@ -185,12 +194,14 @@ type CardEditorProps = {
   motionDuration: number
   prefersReducedMotion: boolean
   segment: Segment
+  documentStudyMode?: DocumentStudyMode
   onUpdateCard: (segmentId: string, cardId: string, patch: Partial<Card>) => void
 }
 
-function CardEditor({ card, motionDuration, prefersReducedMotion, segment, onUpdateCard }: CardEditorProps) {
+function CardEditor({ card, documentStudyMode, motionDuration, prefersReducedMotion, segment, onUpdateCard }: CardEditorProps) {
   const skippedEntries = Object.entries(card.skipped_card_types ?? {})
   const isKnowledgeCard = card.type === 'knowledge'
+  const isReadingCard = isDocumentReadingSegment(segment, documentStudyMode)
   const cardPhraseScore = phraseValueScore(card.phrase_value_score ?? segment.phrase_value_score)
   const cardPhraseStatus = (card.phrase_review_status as SegmentFilter | undefined) ?? segmentReviewStatus(segment)
   const learningTarget = card.learning_target || card.learning_goal
@@ -255,10 +266,10 @@ function CardEditor({ card, motionDuration, prefersReducedMotion, segment, onUpd
       ) : null}
       {isKnowledgeCard ? (
         <div className={`phrase-card-review status-${cardPhraseStatus}`}>
-          <span>{knowledgeTypeLabel(card.knowledge_type ?? segment.knowledge_type) || '知识卡'}</span>
-          {learningTarget ? <strong>记忆动作：{learningTarget}</strong> : null}
-          {whyItMatters ? <p>为什么值得记：{whyItMatters}</p> : null}
-          {howToUseIt ? <p>适用语境：{howToUseIt}</p> : null}
+          <span>{isReadingCard ? '文档精读卡' : knowledgeTypeLabel(card.knowledge_type ?? segment.knowledge_type) || '知识卡'}</span>
+          {learningTarget ? <strong>{isReadingCard ? '精读动作' : '记忆动作'}：{learningTarget}</strong> : null}
+          {whyItMatters ? <p>{isReadingCard ? '为什么值得学' : '为什么值得记'}：{whyItMatters}</p> : null}
+          {howToUseIt ? <p>{isReadingCard ? '辨认 / 复用' : '适用语境'}：{howToUseIt}</p> : null}
           {card.quality?.issues?.length ? <p>待审提示：{card.quality.issues.join(' / ')}</p> : null}
         </div>
       ) : cardPhraseScore !== null || card.phrase_decision_reason || card.phrase_reject_reason || card.phrase_card_focus ? (
@@ -282,7 +293,7 @@ function CardEditor({ card, motionDuration, prefersReducedMotion, segment, onUpd
           />
         </label>
         <label>
-          {isKnowledgeCard ? '知识点' : '重点词伙'}
+          {isReadingCard ? '精读点' : isKnowledgeCard ? '知识点' : '重点词伙'}
           <textarea
             value={card.phrase}
             onChange={(event: ChangeEvent<HTMLTextAreaElement>) =>

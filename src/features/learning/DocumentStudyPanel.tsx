@@ -81,8 +81,11 @@ export function DocumentStudyPanel({
             className={request.document_study_mode === item.id ? 'document-study-mode selected' : 'document-study-mode'}
             aria-pressed={request.document_study_mode === item.id}
             onClick={() => {
-              if (item.id === 'language_reading' && selectedReadingFocus.length === 0) {
-                onPatchRequest({ document_study_mode: item.id, language_focus: ['phrases'] })
+              if (item.id === 'language_reading') {
+                onPatchRequest({
+                  document_study_mode: item.id,
+                  language_focus: selectedReadingFocus.length ? selectedReadingFocus : ['phrases'],
+                })
                 return
               }
               onPatchRequest({ document_study_mode: item.id })

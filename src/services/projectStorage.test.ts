@@ -6,9 +6,11 @@ import {
   defaultDocumentDepth,
   defaultDocumentFocus,
   defaultDocumentStudyMode,
+  defaultRequest,
+  PROJECT_STORAGE_KEY,
   REQUEST_STORAGE_KEY,
 } from '../domain/options'
-import { loadSavedRequest } from './projectStorage'
+import { loadSavedProject, loadSavedRequest } from './projectStorage'
 
 describe('projectStorage document focus migration', () => {
   beforeEach(() => {
@@ -50,5 +52,53 @@ describe('projectStorage document focus migration', () => {
     expect(request.document_answer_language).toBe('bilingual')
     expect(request.document_depth).toBe('deep')
     expect(request.document_answer_length).toBe('long')
+  })
+
+  it('removes hidden listening focus from saved language reading requests', () => {
+    window.localStorage.setItem(
+      REQUEST_STORAGE_KEY,
+      JSON.stringify({
+        document_study_mode: 'language_reading',
+        language_focus: ['phrases', 'listening', 'grammar'],
+      }),
+    )
+
+    expect(loadSavedRequest().language_focus).toEqual(['phrases', 'grammar'])
+  })
+
+  it('preserves document source info and cleans reading focus on saved projects', () => {
+    window.localStorage.setItem(
+      PROJECT_STORAGE_KEY,
+      JSON.stringify({
+        ...defaultRequest,
+        id: 'doc-project',
+        source_mode: 'document',
+        source_info: {
+          title: 'Doc',
+          document_path: 'doc.md',
+          document_study_mode: 'language_reading',
+        },
+        document_study_mode: 'language_reading',
+        language_focus: ['phrases', 'listening'],
+        segments: [
+          {
+            id: 'doc_0001',
+            start: 0,
+            end: 0,
+            source_time: '文档精读点 1',
+            text: 'What does it mean?',
+            duration: 0,
+            recommendation: 4,
+            phrase: 'it turns out',
+            cards: [],
+          },
+        ],
+        created_at: 1,
+      }),
+    )
+
+    const project = loadSavedProject()
+    expect(project?.language_focus).toEqual(['phrases'])
+    expect(project?.source_info).toMatchObject({ document_study_mode: 'language_reading' })
   })
 })

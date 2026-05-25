@@ -208,8 +208,33 @@ class WorkerQualityTests(unittest.TestCase):
         card = merged[0]["cards"][0]
 
         self.assertFalse(card["enabled"])
+        self.assertEqual(card["type_label"], "文档精读卡")
+        self.assertEqual(card["document_card_kind"], "language_reading")
         self.assertEqual(card["quality"]["status"], "needs_review")
         self.assertIn("文档精读卡默认待审", " / ".join(card["quality"]["issues"]))
+        self.assertEqual(merged[0]["phrase_review_status"], "needs_review")
+
+    def test_document_language_reading_project_filters_listening_focus(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            document = Path(temp_dir) / "reading.md"
+            document.write_text(
+                "# Reading point\nIt turns out the simple method works in practice and the phrase marks a discovered result.",
+                encoding="utf-8",
+            )
+            project = worker.handle_generate_document(
+                {
+                    "document_path": str(document),
+                    "document_study_mode": "language_reading",
+                    "language_focus": ["phrases", "listening", "grammar"],
+                    "api_config": {"provider": "local"},
+                    "level": "B1",
+                }
+            )
+
+        self.assertEqual(project["document_study_mode"], "language_reading")
+        self.assertEqual(project["language_focus"], ["phrases", "grammar"])
+        self.assertTrue(project["segments"][0]["source_time"].startswith("文档精读点"))
+        self.assertEqual(project["segments"][0]["cards"][0]["type_label"], "文档精读卡")
 
     def test_fallback_document_card_is_review_only(self):
         card = worker.fallback_document_card(
@@ -260,7 +285,7 @@ class WorkerQualityTests(unittest.TestCase):
         card = merged[0]["cards"][0]
 
         self.assertFalse(card["enabled"])
-        self.assertEqual(card["quality"]["status"], "needs_review")
+        self.assertEqual(card["quality"]["status"], "reject")
         self.assertIn("概念名是占位词", " / ".join(card["quality"]["issues"]))
 
     def test_cached_url_source_can_be_subtitle_only(self):

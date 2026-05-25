@@ -57,6 +57,8 @@ export function getQualityCounts(project: Project | null): QualityCounts {
 
 export function getQualityDiagnostics(project: Project | null, recommendedCount: number): QualityDiagnostics {
   const segments = project?.segments ?? []
+  const isDocument = project?.source_mode === 'document'
+  const isReading = isDocument && project?.document_study_mode === 'language_reading'
   const scored = segments
     .map((segment) => phraseValueScore(segment.phrase_value_score))
     .filter((score): score is number => typeof score === 'number')
@@ -68,10 +70,20 @@ export function getQualityDiagnostics(project: Project | null, recommendedCount:
   const shortReason =
     project && recommendedCount < 5
       ? project.segments.length < 6
-        ? '字幕片段太少或切分后有效候选不足。'
+        ? isDocument
+          ? '文档分段较少或可制卡片段不足。'
+          : '字幕片段太少或切分后有效候选不足。'
         : recommendedCount === 0
-          ? '当前筛选没有推荐卡，可能是词伙评分不足、模型返回空或筛选太严格。'
-          : '推荐卡偏少，通常是重复合并、低价值表达或模型评审较严格。'
+          ? isReading
+            ? '当前筛选没有推荐精读卡，可能是模型返回空或多数语言点仍需人工确认。'
+            : isDocument
+              ? '当前筛选没有推荐知识卡，可能是模型返回空或多数知识点仍需人工确认。'
+              : '当前筛选没有推荐卡，可能是词伙评分不足、模型返回空或筛选太严格。'
+          : isReading
+            ? '推荐精读卡偏少，通常是语言点价值较弱或模型评审较严格。'
+            : isDocument
+              ? '推荐知识卡偏少，通常是文档片段信息不足或模型评审较严格。'
+              : '推荐卡偏少，通常是重复合并、低价值表达或模型评审较严格。'
       : ''
 
   return {

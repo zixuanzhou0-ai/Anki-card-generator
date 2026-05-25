@@ -329,6 +329,11 @@ def normalized_language_focus(payload: dict[str, Any]) -> list[str]:
     return unique or ["phrases", "listening"]
 
 
+def normalized_document_reading_focus(payload: dict[str, Any]) -> list[str]:
+    focus = [item for item in normalized_language_focus(payload) if item in {"phrases", "vocabulary", "grammar"}]
+    return focus or ["phrases"]
+
+
 def language_focus_instruction(payload: dict[str, Any]) -> str:
     focus = normalized_language_focus(payload)
     labels = " / ".join(LANGUAGE_FOCUS_LABELS[item] for item in focus)
@@ -3141,8 +3146,7 @@ def build_document_prompt(project: dict[str, Any], segments: list[dict[str, Any]
         for segment in segments
     ]
     if study_mode == "language_reading":
-        focus = normalized_language_focus(project)
-        reading_focus = [item for item in focus if item in {"phrases", "vocabulary", "grammar"}] or ["phrases"]
+        reading_focus = normalized_document_reading_focus(project)
         focus_labels = {
             "phrases": "词伙表达：抽取可迁移短语、搭配和句型块，禁止整句当词伙。",
             "vocabulary": "单词用法：抽取真实语境里的词义、搭配和易错用法，不做孤立词典卡。",
@@ -3260,35 +3264,37 @@ def call_document_model(project: dict[str, Any], segments: list[dict[str, Any]])
     return None
 
 
-def fallback_document_card(segment: dict[str, Any], level: str) -> dict[str, Any]:
+def fallback_document_card(segment: dict[str, Any], level: str, study_mode: str = "knowledge") -> dict[str, Any]:
     excerpt = segment.get("document_excerpt", "")
     phrase = segment.get("phrase") or "核心知识点"
     answer = clip_words(excerpt, 70)
+    is_reading = study_mode == "language_reading"
     return {
         "id": f"{segment['id']}_knowledge",
         "type": "knowledge",
-        "type_label": "知识卡",
+        "type_label": "文档精读卡" if is_reading else "知识卡",
         "enabled": False,
-        "knowledge_type": "concepts",
+        "document_card_kind": "language_reading" if is_reading else "knowledge",
+        "knowledge_type": "terms" if is_reading else "concepts",
         "english": segment.get("text", ""),
-        "chinese": answer or "请根据原文补充核心答案。",
+        "chinese": answer or ("请根据原文补充语言点理解。" if is_reading else "请根据原文补充核心答案。"),
         "phrase": phrase,
         "definition": answer or "本地草稿：请用模型精修或手动补充定义。",
-        "collocations": "相关概念；关键原因；典型例子",
-        "context": "来自导入文档的知识点，适合做概念理解和主动回忆。",
+        "collocations": "替换框架；语境搭配；易混用法" if is_reading else "相关概念；关键原因；典型例子",
+        "context": "来自导入文档的精读点，适合确认表达、词义或语法框架。" if is_reading else "来自导入文档的知识点，适合做概念理解和主动回忆。",
         "example": clip_words(excerpt, 42),
         "chinese_feel": "先用自己的话解释，再核对原文中的关键条件和例子。",
         "why": "这段内容被拆成可复习的问题，适合后续在 Anki 里主动回忆。",
-        "learning_target": "确认这段文档里是否有明确概念或观点值得记。",
-        "why_it_matters": "本地 fallback 只能保留原文线索，需要模型或人工把它改成具体知识动作。",
-        "how_to_use_it": "先检查问题是否具体，再把答案压缩成自己的话。",
+        "learning_target": "确认这段文档里是否有明确语言点值得精读。" if is_reading else "确认这段文档里是否有明确概念或观点值得记。",
+        "why_it_matters": "本地 fallback 只能保留原文线索，需要模型或人工把它改成具体精读动作。" if is_reading else "本地 fallback 只能保留原文线索，需要模型或人工把它改成具体知识动作。",
+        "how_to_use_it": "先确认表达是否来自原文，再补充下次阅读时如何辨认或复用。" if is_reading else "先检查问题是否具体，再把答案压缩成自己的话。",
         "difficulty": CEFR_LABELS.get(level, level),
-        "teacher_note": "本地待审卡：建议检查问题是否具体，答案是否过长。",
+        "teacher_note": "本地待审精读卡：建议检查语言点是否来自原文且值得复习。" if is_reading else "本地待审卡：建议检查问题是否具体，答案是否过长。",
         "cloze": f"{phrase} 的核心是 ____。",
         "quality": {
             "score": 64,
             "status": "needs_review",
-            "issues": ["本地文档草稿，需要人工确认"],
+            "issues": ["本地文档精读草稿，需要人工确认"] if is_reading else ["本地文档草稿，需要人工确认"],
         },
     }
 
@@ -3320,8 +3326,17 @@ def document_card_quality(card: dict[str, Any], fallback: bool = False) -> dict[
     if not teacher_note or "很重要" == teacher_note:
         issues.append("老师提醒不够具体")
 
-    score = max(45, 86 - len(issues) * 10 - (10 if fallback else 0))
-    status = "recommended" if not issues and score >= 78 else "needs_review"
+    severe_issues = {
+        "概念名是占位词，需人工提炼",
+        "正面问题太泛",
+        "缺少独立概念解释",
+        "缺少为什么值得记",
+    }
+    score = max(35, 86 - len(issues) * 10 - (10 if fallback else 0))
+    if not fallback and len(severe_issues.intersection(issues)) >= 3:
+        status = "reject"
+    else:
+        status = "recommended" if not issues and score >= 78 else "needs_review"
     return {"score": score, "status": status, "issues": issues}
 
 
@@ -3342,7 +3357,7 @@ def merge_document_cards(
         warning = "未配置可用模型，已生成本地待审文档草稿。"
 
     for segment in segments:
-        card = fallback_document_card(segment, level)
+        card = fallback_document_card(segment, level, study_mode=study_mode)
         ai_segment = ai_by_segment.get(segment["id"])
         if ai_segment:
             ai_card = next((item for item in ai_segment.get("cards", []) if item.get("type") == "knowledge"), None)
@@ -3369,6 +3384,8 @@ def merge_document_cards(
                         card[key] = str(ai_card[key])
                 if card["cloze"].count("____") != 1:
                     card["cloze"] = f"{card['phrase']} 的核心是 ____。"
+                card["type_label"] = "文档精读卡" if study_mode == "language_reading" else "知识卡"
+                card["document_card_kind"] = "language_reading" if study_mode == "language_reading" else "knowledge"
                 card["quality"] = document_card_quality(card, fallback=False)
                 if study_mode == "language_reading":
                     card["quality"]["status"] = "needs_review"
@@ -3383,6 +3400,7 @@ def merge_document_cards(
             card["enabled"] = False
         segment["phrase"] = card.get("phrase", segment.get("phrase", ""))
         segment["knowledge_type"] = card.get("knowledge_type", "")
+        segment["document_card_kind"] = card.get("document_card_kind", "knowledge")
         segment["phrase_review_status"] = card["quality"]["status"]
         segment["phrase_card_focus"] = card.get("learning_target") or card.get("teacher_note", "")
         if card["quality"].get("issues"):
@@ -3404,8 +3422,14 @@ def handle_generate_document(payload: dict[str, Any]) -> dict[str, Any]:
     study_mode = normalized_document_study_mode(payload)
     collection_levels = collection_levels_from_payload(payload, level)
     max_segments = resolved_max_segments(payload, text=text)
-    emit_progress("generate", "document", 42, "正在拆分文档知识点。")
+    split_label = "文档精读点" if study_mode == "language_reading" else "文档知识点"
+    emit_progress("generate", "document", 42, f"正在拆分{split_label}。")
     segments = split_document_chunks(text, min(max_segments, 36))
+    if study_mode == "language_reading":
+        for index, segment in enumerate(segments, 1):
+            segment["source_time"] = f"文档精读点 {index}"
+            title = segment.get("phrase") or f"精读点 {index}"
+            segment["text"] = f"这段资料里值得精读的表达、词义或语法框架是什么：{title}"
     progress_label = "语言精读卡" if study_mode == "language_reading" else "文档知识卡"
     emit_progress("generate", "ai", 66, f"正在生成{progress_label}：{len(segments)} 个片段。")
     ai_payload = call_document_model(payload, segments)
@@ -3417,7 +3441,7 @@ def handle_generate_document(payload: dict[str, Any]) -> dict[str, Any]:
         auto_segments = int(payload.get("max_segments", 0) or 0) <= 0
     except (TypeError, ValueError):
         auto_segments = True
-    emit_progress("generate", "done", 100, f"文档制卡完成：{len(segments)} 个知识点。")
+    emit_progress("generate", "done", 100, f"文档制卡完成：{len(segments)} 个{split_label}。")
     quality_funnel = build_quality_funnel(
         segments,
         candidate_segments=len(segments),
@@ -3434,7 +3458,7 @@ def handle_generate_document(payload: dict[str, Any]) -> dict[str, Any]:
         "collection_levels": collection_levels,
         "template_id": payload.get("template_id", "immersive"),
         "content_toggles": payload.get("content_toggles", {}),
-        "language_focus": normalized_language_focus(payload),
+        "language_focus": normalized_document_reading_focus(payload) if study_mode == "language_reading" else normalized_language_focus(payload),
         "document_focus": normalized_document_focus(payload),
         "document_study_mode": study_mode,
         "document_answer_language": normalized_document_answer_language(payload),
@@ -6351,7 +6375,10 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     media_dir = export_root / "media"
     media_dir.mkdir(parents=True, exist_ok=True)
 
-    deck_kind = "资料知识卡" if is_document_project else ("字幕语言卡" if skip_video_media else "视频语言卡")
+    if is_document_project:
+        deck_kind = "文档精读卡" if project.get("document_study_mode") == "language_reading" else "文档知识卡"
+    else:
+        deck_kind = "字幕语言卡" if skip_video_media else "视频语言卡"
     deck_name = f"{deck_kind}::{project.get('title', 'Untitled')}"
     template_id = project.get("template_id", "immersive")
     template_label, template_css, front_template, back_template = anki_template_assets(template_id)

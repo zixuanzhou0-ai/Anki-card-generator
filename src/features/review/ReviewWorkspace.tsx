@@ -174,6 +174,7 @@ export function ReviewWorkspace({
         <div className="preview-layout">
           <SegmentList
             activeSegmentId={activeSegmentId}
+            documentStudyMode={project.document_study_mode}
             motionDuration={motionDuration}
             prefersReducedMotion={prefersReducedMotion}
             segments={visibleSegments}
@@ -183,6 +184,7 @@ export function ReviewWorkspace({
 
           {activeSegment ? (
             <SegmentDetail
+              documentStudyMode={project.document_study_mode}
               motionDuration={motionDuration}
               prefersReducedMotion={prefersReducedMotion}
               previewRate={previewRate}

@@ -33,6 +33,41 @@ export function ReviewSummaryPanel({
   segmentReviewCounts,
   onSegmentFilterChange,
 }: ReviewSummaryPanelProps) {
+  const isDocument = project.source_mode === 'document'
+  const isReading = isDocument && project.document_study_mode === 'language_reading'
+  const labels = isReading
+    ? {
+        score: '精读点质量',
+        candidate: '精读点',
+        pipeline: '文档精读流水线',
+        sourceUnits: '文档片段',
+        reviewed: '精读保留',
+        recommended: '推荐精读卡',
+        review: '待审精读卡',
+        duplicate: '重复精读点',
+      }
+    : isDocument
+      ? {
+          score: '知识点质量',
+          candidate: '知识点',
+          pipeline: '文档知识流水线',
+          sourceUnits: '文档片段',
+          reviewed: '知识保留',
+          recommended: '推荐知识卡',
+          review: '待审知识卡',
+          duplicate: '重复知识点',
+        }
+      : {
+          score: '平均词伙评分',
+          candidate: '候选片段',
+          pipeline: 'AI 评审流水线',
+          sourceUnits: '字幕句',
+          reviewed: '评审保留',
+          recommended: '推荐卡',
+          review: '待审卡',
+          duplicate: '重复合并',
+        }
+
   return (
     <>
       <div className="review-dashboard" aria-label="生成审核概览">
@@ -55,9 +90,9 @@ export function ReviewSummaryPanel({
           </small>
         </div>
         <div className="metric-card">
-          <span>平均词伙评分</span>
+          <span>{labels.score}</span>
           <strong>{qualityDiagnostics.avgScore === null ? '-' : qualityDiagnostics.avgScore.toFixed(1)}</strong>
-          <small>{`候选 ${qualityDiagnostics.candidates} · 重复合并 ${qualityDiagnostics.duplicate}`}</small>
+          <small>{`${labels.candidate} ${qualityDiagnostics.candidates} · ${labels.duplicate} ${qualityDiagnostics.duplicate}`}</small>
         </div>
         <div className="metric-card">
           <span>拒绝原因</span>
@@ -74,34 +109,36 @@ export function ReviewSummaryPanel({
         <summary>
           <span className="funnel-summary-title">
             <Sparkles size={14} />
-            AI 评审流水线
+            {labels.pipeline}
           </span>
-          <strong>{`候选 ${qualityFunnel.candidate_segments ?? '-'} · 推荐 ${qualityFunnel.recommended_cards ?? '-'}`}</strong>
+          <strong>{`${labels.candidate} ${qualityFunnel.candidate_segments ?? '-'} · ${labels.recommended} ${
+            qualityFunnel.recommended_cards ?? '-'
+          }`}</strong>
         </summary>
         <div className="quality-funnel" aria-label="质量漏斗">
           <span>
             <strong>{qualityFunnel.subtitle_cues ?? '-'}</strong>
-            <small>字幕句</small>
+            <small>{labels.sourceUnits}</small>
           </span>
           <span>
             <strong>{qualityFunnel.candidate_segments ?? '-'}</strong>
-            <small>候选片段</small>
+            <small>{labels.candidate}</small>
           </span>
           <span>
             <strong>{qualityFunnel.reviewed_keep ?? '-'}</strong>
-            <small>评审保留</small>
+            <small>{labels.reviewed}</small>
           </span>
           <span>
             <strong>{qualityFunnel.recommended_cards ?? '-'}</strong>
-            <small>推荐卡</small>
+            <small>{labels.recommended}</small>
           </span>
           <span>
             <strong>{qualityFunnel.review_cards ?? '-'}</strong>
-            <small>待审卡</small>
+            <small>{labels.review}</small>
           </span>
           <span>
             <strong>{qualityFunnel.duplicate_segments ?? '-'}</strong>
-            <small>重复合并</small>
+            <small>{labels.duplicate}</small>
           </span>
         </div>
       </details>

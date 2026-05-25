@@ -3,46 +3,57 @@ import { cardOptions, levels } from './options'
 
 export function createDemoProject(request: GenerateRequest): Project {
   if (request.source_mode === 'document') {
+    const isReading = request.document_study_mode === 'language_reading'
     const segment: Segment = {
       id: 'doc_demo_001',
       start: 0,
       end: 0,
-      source_time: '文档知识点 1',
-      text: 'What is spaced repetition and why does it improve long-term memory?',
+      source_time: isReading ? '文档精读点 1' : '文档知识点 1',
+      text: isReading
+        ? 'How does the document use “it turns out” to introduce a discovered result?'
+        : 'What is spaced repetition and why does it improve long-term memory?',
       duration: 0,
-      recommendation: 5,
-      phrase: 'spaced repetition',
-      knowledge_type: 'concepts',
+      recommendation: isReading ? 4 : 5,
+      phrase: isReading ? 'it turns out' : 'spaced repetition',
+      knowledge_type: isReading ? 'terms' : 'concepts',
+      document_card_kind: isReading ? 'language_reading' : 'knowledge',
       cards: [
         {
           id: 'doc_demo_001_knowledge',
           type: 'knowledge',
-          type_label: '知识卡',
-          enabled: true,
-          english: 'What is spaced repetition and why does it improve long-term memory?',
-          chinese: '间隔重复会在遗忘前重新唤起记忆，让长期记忆更稳固。',
-          phrase: 'spaced repetition',
-          knowledge_type: 'concepts',
-          definition: '一种把复习安排在逐渐拉长的时间间隔中的学习方法。',
-          collocations: 'spaced repetition system; review interval; active recall',
-          context: '适合从文章、教材、讲义中抽取核心概念和可复习问题。',
-          example: 'Anki uses spaced repetition to schedule the next review.',
-          chinese_feel: '中文里更接近“隔一段时间再复习，而不是一次性死背”。',
-          why: '这是理解 Anki 工作方式的基础概念，也容易迁移到任何学科。',
+          type_label: isReading ? '文档精读卡' : '知识卡',
+          enabled: !isReading,
+          english: isReading
+            ? 'How does the document use “it turns out” to introduce a discovered result?'
+            : 'What is spaced repetition and why does it improve long-term memory?',
+          chinese: isReading ? '它用来引出后来发现或结果证明的内容。' : '间隔重复会在遗忘前重新唤起记忆，让长期记忆更稳固。',
+          phrase: isReading ? 'it turns out' : 'spaced repetition',
+          knowledge_type: isReading ? 'terms' : 'concepts',
+          document_card_kind: isReading ? 'language_reading' : 'knowledge',
+          definition: isReading ? '一个引出“结果证明 / 后来发现”的阅读表达。' : '一种把复习安排在逐渐拉长的时间间隔中的学习方法。',
+          collocations: isReading
+            ? 'it turns out that; as it turns out; turned out to be'
+            : 'spaced repetition system; review interval; active recall',
+          context: isReading ? '常见于论文、博客和说明文里，用来承接新的发现或结论。' : '适合从文章、教材、讲义中抽取核心概念和可复习问题。',
+          example: isReading ? 'It turns out the simple method works in practice.' : 'Anki uses spaced repetition to schedule the next review.',
+          chinese_feel: isReading ? '中文更像“结果发现 / 事实证明”。' : '中文里更接近“隔一段时间再复习，而不是一次性死背”。',
+          why: isReading ? '阅读英文资料时经常遇到，能帮助识别作者在引出结论。' : '这是理解 Anki 工作方式的基础概念，也容易迁移到任何学科。',
           difficulty: 'B1 日常交流',
-          teacher_note: '这张卡要记住的是机制，不是背定义：为什么“隔开复习”更有效。',
-          cloze: '____ improves long-term memory by scheduling reviews before forgetting.',
+          teacher_note: isReading
+            ? '这张精读卡默认待审：确认表达来自原文，并补一个你会再次遇到的语境。'
+            : '这张卡要记住的是机制，不是背定义：为什么“隔开复习”更有效。',
+          cloze: isReading ? '____ the simple method works in practice.' : '____ improves long-term memory by scheduling reviews before forgetting.',
           quality: {
-            score: 88,
-            status: 'recommended',
-            issues: [],
+            score: isReading ? 72 : 88,
+            status: isReading ? 'needs_review' : 'recommended',
+            issues: isReading ? ['文档精读卡默认待审，需确认语言点是否值得保留'] : [],
           },
         },
       ],
     }
     return {
       id: 'demo_document_project',
-      title: request.title || '文档知识卡 Demo',
+      title: request.title || (isReading ? '文档精读卡 Demo' : '文档知识卡 Demo'),
       source_mode: request.source_mode,
       source_url: '',
       source_info: null,
@@ -54,7 +65,7 @@ export function createDemoProject(request: GenerateRequest): Project {
       collection_levels: request.collection_levels,
       template_id: request.template_id,
       content_toggles: request.content_toggles,
-      language_focus: request.language_focus,
+      language_focus: isReading ? request.language_focus.filter((focus) => focus !== 'listening') : request.language_focus,
       document_focus: request.document_focus,
       document_study_mode: request.document_study_mode,
       document_answer_language: request.document_answer_language,
