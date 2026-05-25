@@ -5853,8 +5853,8 @@ FRONT_TEMPLATE = """
     });
     fitAdaptiveCard(document);
   }
-  refreshResponsiveCard();
-  setTimeout(scheduleResponsiveFit, 120);
+  setTimeout(refreshResponsiveCard, 80);
+  setTimeout(scheduleResponsiveFit, 320);
   window.addEventListener("resize", scheduleResponsiveFit);
   if (window.ResizeObserver) {
     var observedWrap = document.querySelector(".wrap");
@@ -6003,8 +6003,8 @@ BACK_TEMPLATE = """
     });
     fitAdaptiveCard(document);
   }
-  refreshResponsiveCard();
-  setTimeout(scheduleResponsiveFit, 120);
+  setTimeout(refreshResponsiveCard, 80);
+  setTimeout(scheduleResponsiveFit, 320);
   window.addEventListener("resize", scheduleResponsiveFit);
   if (window.ResizeObserver) {
     var observedWrap = document.querySelector(".wrap");
