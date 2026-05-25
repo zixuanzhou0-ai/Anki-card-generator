@@ -206,8 +206,8 @@ $documentExport | ConvertTo-Json -Depth 20 | Set-Content -Encoding UTF8 $Documen
 if (-not (Test-Path $documentExport.apkg_path)) {
   throw "Document APKG was not created: $($documentExport.apkg_path)"
 }
-if ($documentExport.deck_name -notlike "文档知识卡::*") {
-  throw "Document APKG deck name is not source-aware: $($documentExport.deck_name)"
+if ($documentExport.deck_kind -ne "document_knowledge") {
+  throw "Document APKG deck kind is not source-aware: $($documentExport.deck_kind) / $($documentExport.deck_name)"
 }
 
 if (Test-Path $VerifyScript) {

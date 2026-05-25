@@ -6376,8 +6376,10 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     media_dir.mkdir(parents=True, exist_ok=True)
 
     if is_document_project:
-        deck_kind = "文档精读卡" if project.get("document_study_mode") == "language_reading" else "文档知识卡"
+        deck_kind_code = "document_reading" if project.get("document_study_mode") == "language_reading" else "document_knowledge"
+        deck_kind = "文档精读卡" if deck_kind_code == "document_reading" else "文档知识卡"
     else:
+        deck_kind_code = "subtitle_language" if skip_video_media else "video_language"
         deck_kind = "字幕语言卡" if skip_video_media else "视频语言卡"
     deck_name = f"{deck_kind}::{project.get('title', 'Untitled')}"
     template_id = project.get("template_id", "immersive")
@@ -6705,6 +6707,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         "apkg_path": str(apkg_path),
         "media_dir": str(media_dir),
         "deck_name": deck_name,
+        "deck_kind": deck_kind_code,
         "media_prefix": media_prefix,
         "media_manifest": exported_media_manifest,
         "cards": exported_cards,

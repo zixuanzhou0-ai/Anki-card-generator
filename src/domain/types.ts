@@ -118,6 +118,7 @@ export type ExportResult = {
     media_mb: number
   }
   warnings?: string[]
+  deck_kind?: 'video_language' | 'subtitle_language' | 'document_knowledge' | 'document_reading' | string
 }
 
 export type AnkiVerifyResult = {
