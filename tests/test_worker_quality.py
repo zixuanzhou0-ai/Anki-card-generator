@@ -1363,6 +1363,21 @@ class WorkerQualityTests(unittest.TestCase):
 
         self.assertEqual([card["type"] for card in cards], ["phrase"])
 
+    def test_fallback_listening_without_phrase_stays_reviewable(self):
+        segment = {
+            "id": "seg_0001",
+            "text": "My name is Walter Hartwell White.",
+            "phrase": "key expression",
+        }
+        cards = worker.fallback_cards(segment, ["listening", "phrase", "cloze"], "B1")
+
+        self.assertEqual([card["type"] for card in cards], ["listening"])
+        self.assertEqual(cards[0]["quality"]["status"], "needs_review")
+        self.assertFalse(cards[0]["enabled"])
+        self.assertIn("本地草稿，需要人工确认", cards[0]["quality"]["issues"])
+        self.assertNotIn("缺少明确目标表达", cards[0]["quality"]["issues"])
+        self.assertNotIn("例句只是照抄原句", cards[0]["quality"]["issues"])
+
     def test_merge_ai_cards_does_not_inflate_to_all_requested_types(self):
         segments = [
             {

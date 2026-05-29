@@ -63,6 +63,12 @@ export function getQualityDiagnostics(project: Project | null, recommendedCount:
     .map((segment) => phraseValueScore(segment.phrase_value_score))
     .filter((score): score is number => typeof score === 'number')
   const avgScore = scored.length ? scored.reduce((total, score) => total + score, 0) / scored.length : null
+  const reviewableCount = segments.reduce(
+    (total, segment) =>
+      total +
+      segment.cards.filter((card) => !isRecommendedCardForExport(segment, card) && isReviewableCardForExport(segment, card)).length,
+    0,
+  )
   const rejectReasons = segments
     .filter((segment) => segmentReviewStatus(segment) === 'reject')
     .map((segment) => segment.phrase_reject_reason || segment.phrase_decision_reason || '未给出拒绝理由')
@@ -74,11 +80,17 @@ export function getQualityDiagnostics(project: Project | null, recommendedCount:
           ? '文档分段较少或可制卡片段不足。'
           : '字幕片段太少或切分后有效候选不足。'
         : recommendedCount === 0
-          ? isReading
-            ? '当前筛选没有推荐精读卡，可能是模型返回空或多数语言点仍需人工确认。'
-            : isDocument
-              ? '当前筛选没有推荐知识卡，可能是模型返回空或多数知识点仍需人工确认。'
-              : '当前筛选没有推荐卡，可能是词伙评分不足、模型返回空或筛选太严格。'
+          ? reviewableCount > 0
+            ? isReading
+              ? `当前筛选没有推荐精读卡，但有 ${reviewableCount} 张待审精读卡；请人工确认后再导出。`
+              : isDocument
+                ? `当前筛选没有推荐知识卡，但有 ${reviewableCount} 张待审知识卡；请人工确认后再导出。`
+                : `当前筛选没有推荐卡，但有 ${reviewableCount} 张待审卡；请人工确认或配置模型精修。`
+            : isReading
+              ? '当前筛选没有推荐精读卡，可能是模型返回空或多数语言点仍需人工确认。'
+              : isDocument
+                ? '当前筛选没有推荐知识卡，可能是模型返回空或多数知识点仍需人工确认。'
+                : '当前筛选没有推荐卡，可能是词伙评分不足、模型返回空或筛选太严格。'
           : isReading
             ? '推荐精读卡偏少，通常是语言点价值较弱或模型评审较严格。'
             : isDocument

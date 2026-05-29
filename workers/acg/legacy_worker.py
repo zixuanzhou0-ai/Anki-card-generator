@@ -1031,7 +1031,8 @@ def phrase_in_text(text: str, phrase: str) -> bool:
 
 
 def quality_issue_labels(card_type: str, text: str, phrase: str, cloze: str, source: str) -> tuple[int, list[str]]:
-    score = 92 if source == "ai" else 52
+    is_listening = card_type == "listening"
+    score = 92 if source == "ai" else (64 if is_listening else 52)
     issues: list[str] = []
     words = overlap_words(phrase)
     text_words = overlap_words(text)
@@ -1043,16 +1044,16 @@ def quality_issue_labels(card_type: str, text: str, phrase: str, cloze: str, sou
     if not text_words:
         issues.append("缺少英文原句")
         score -= 34
-    if not phrase or phrase == "key expression":
+    if not is_listening and (not phrase or phrase == "key expression"):
         issues.append("缺少明确目标表达")
         score -= 28
-    if len(words) < 2:
+    if not is_listening and len(words) < 2:
         issues.append("目标表达过短")
         score -= 14
-    if len(words) > 6:
+    if not is_listening and len(words) > 6:
         issues.append("目标表达偏长")
         score -= 24
-    if len(words) >= max(4, len(text_words) - 1) and len(text_words) >= 5:
+    if not is_listening and len(words) >= max(4, len(text_words) - 1) and len(text_words) >= 5:
         issues.append("目标表达像整句而不是词伙")
         score -= 28
     if len(text_words) > 15:
@@ -1068,10 +1069,10 @@ def quality_issue_labels(card_type: str, text: str, phrase: str, cloze: str, sou
         issues.append("原句像截断片段")
         score -= 18
     phrase_lower = phrase.lower()
-    if is_non_transferable_phrase(phrase_lower):
+    if not is_listening and is_non_transferable_phrase(phrase_lower):
         issues.append("表达太像视频口播引入语")
         score -= 30
-    if is_low_value_standalone_phrase(phrase_lower):
+    if not is_listening and is_low_value_standalone_phrase(phrase_lower):
         issues.append("目标表达太泛，学习价值低")
         score -= 26
     if looks_like_video_intro(text):
@@ -1107,16 +1108,16 @@ def quality_issue_labels(card_type: str, text: str, phrase: str, cloze: str, sou
             "how do you feel about",
         }
     )
-    if words and words[-1] in trailing_prepositions and not allows_trailing_preposition:
+    if not is_listening and words and words[-1] in trailing_prepositions and not allows_trailing_preposition:
         issues.append("表达像半截词串")
         score -= 18
-    if words and words[0] in COMMON_FUNCTION_STARTS and not allows_function_start_phrase(phrase):
+    if not is_listening and words and words[0] in COMMON_FUNCTION_STARTS and not allows_function_start_phrase(phrase):
         issues.append("表达可能从功能词开头")
         score -= 16
-    if words and words[0] == "about" and re.search(r"\babout\s+[A-Z0-9][A-Za-z0-9-]*", phrase):
+    if not is_listening and words and words[0] == "about" and re.search(r"\babout\s+[A-Z0-9][A-Za-z0-9-]*", phrase):
         issues.append("表达像主题名而不是可迁移词伙")
         score -= 24
-    if phrase and not phrase_in_text(text, phrase):
+    if not is_listening and phrase and not phrase_in_text(text, phrase):
         issues.append("表达和原句不完全匹配")
         score -= 12
     if card_type == "cloze":
@@ -1191,6 +1192,7 @@ def assess_card_quality(
     source: str,
     target_level: str = "B1",
 ) -> dict[str, Any]:
+    is_listening = card.get("type") == "listening"
     score, issues = quality_issue_labels(
         card.get("type", ""),
         card.get("english") or segment.get("text", ""),
@@ -1233,10 +1235,16 @@ def assess_card_quality(
         score -= 24
     example_lower = re.sub(r"\s+", " ", str(card.get("example", "") or "").strip().lower())
     english_lower = re.sub(r"\s+", " ", str((card.get("english") or segment.get("text", "")) or "").strip().lower())
-    if example_lower and english_lower and example_lower == english_lower:
+    if not is_listening and example_lower and english_lower and example_lower == english_lower:
         issues.append("例句只是照抄原句")
         score -= 14
-    elif example_lower and english_lower and len(overlap_words(example_lower)) >= 4 and word_overlap_ratio(example_lower, english_lower) >= 0.82:
+    elif (
+        not is_listening
+        and example_lower
+        and english_lower
+        and len(overlap_words(example_lower)) >= 4
+        and word_overlap_ratio(example_lower, english_lower) >= 0.82
+    ):
         issues.append("例句和原句过于相似")
         score -= 14
     if not str(card.get("chinese", "")).strip():
@@ -1258,12 +1266,13 @@ def assess_card_quality(
     comparable_teacher_note = re.sub(r"\s+", " ", teacher_note)
     for key in ["why", "context", "chinese_feel"]:
         comparable_value = re.sub(r"\s+", " ", str(card.get(key, "") or "").strip())
-        if comparable_teacher_note and comparable_value and comparable_teacher_note == comparable_value:
+        if not is_listening and comparable_teacher_note and comparable_value and comparable_teacher_note == comparable_value:
             issues.append("老师提示和学习理由重复")
             score -= 14
             break
         if (
-            comparable_teacher_note
+            not is_listening
+            and comparable_teacher_note
             and comparable_value
             and min(len(overlap_words(comparable_teacher_note)), len(overlap_words(comparable_value))) >= 6
             and word_overlap_ratio(comparable_teacher_note, comparable_value) >= 0.86
@@ -1281,7 +1290,7 @@ def assess_card_quality(
     if source == "ai" and not any(str(value or "").strip() for value in action_fields):
         issues.append("卡片训练点不明确")
         score -= 10
-    if is_too_basic_for_level(phrase_lower, target_level):
+    if not is_listening and is_too_basic_for_level(phrase_lower, target_level):
         issues.append("目标表达低于用户水平")
         score -= 30
     difficulty_rank = cefr_rank(str(card.get("difficulty", "")))
@@ -3504,7 +3513,10 @@ def build_quality_funnel(
         if len(segments) < 6:
             short_reason = "字幕片段太少或有效候选不足。"
         elif recommended_cards == 0:
-            short_reason = "没有推荐卡，可能是词伙评分不足、模型返回空或筛选太严格。"
+            if review_cards > 0:
+                short_reason = f"没有推荐卡，但有 {review_cards} 张待审卡；请人工确认或配置模型精修。"
+            else:
+                short_reason = "没有推荐卡，可能是词伙评分不足、模型返回空或筛选太严格。"
         else:
             short_reason = "推荐卡偏少，通常是重复合并、低价值表达或模型评审较严格。"
     else:
@@ -3637,6 +3649,16 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         reviewed_keep=reviewed_keep_count,
         mimo_kept=reviewed_keep_count if review_enabled else None,
     )
+    if ai_payload is None and quality_funnel.get("review_cards", 0) > 0:
+        local_review_warning = (
+            f"已解析 {len(cues)} 条字幕，生成 {quality_funnel['review_cards']} 张待审本地草稿卡（默认停用）。"
+            "配置模型精修后可得到推荐卡，或在审核页手动确认后导出。"
+        )
+        warning = (
+            f"{warning}；{local_review_warning}"
+            if warning and "模型没有返回可用精修结果" not in warning
+            else local_review_warning
+        )
     emit_progress("generate", "done", 100, f"生成完成：{len(segments)} 个片段组。")
     return {
         "id": project_id,
@@ -6528,6 +6550,8 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     "4",
                     "-pix_fmt",
                     "yuv420p",
+                    "-ac",
+                    "2",
                     "-c:a",
                     "libopus",
                     "-b:a",
@@ -6553,6 +6577,8 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     "veryfast",
                     "-crf",
                     "26",
+                    "-ac",
+                    "2",
                     "-c:a",
                     "aac",
                     "-b:a",
@@ -6571,6 +6597,8 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     "-i",
                     str(video_path),
                     "-vn",
+                    "-ac",
+                    "2",
                     "-acodec",
                     "libmp3lame",
                     "-q:a",
