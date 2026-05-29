@@ -95,6 +95,7 @@ import {
   revealPath,
   selectDirectory,
   selectSingleFile,
+  suggestSubtitlePath,
   toAssetUrl,
 } from '../services/nativeShell'
 import { redactSensitiveText } from '../services/redaction'
@@ -106,6 +107,11 @@ import {
 
 function cleanLocalPath(value: string) {
   return value.trim().replace(/^["'](.+)["']$/, '$1')
+}
+
+function titleFromPath(value: string) {
+  const fileName = cleanLocalPath(value).split(/[\\/]/).pop() ?? ''
+  return fileName.replace(/\.[^.]+$/, '')
 }
 
 export function useAppController() {
@@ -159,13 +165,16 @@ export function useAppController() {
   }, [project, segmentFilter])
 
   const activeTemplate = templateOptions.find((template) => template.id === request.template_id)
+  const localVideoPath = cleanLocalPath(request.video_path)
+  const localSubtitlePath = cleanLocalPath(request.subtitle_path)
   const sourceReady =
     request.source_mode === 'url'
       ? Boolean(request.source_url.trim())
       : request.source_mode === 'document'
         ? Boolean(request.document_path?.trim())
-        : Boolean(request.video_path && request.subtitle_path)
-  const apiReady = request.api_config.provider === 'local' || Boolean(apiTestResult?.ok)
+        : Boolean(localVideoPath)
+  const apiReady =
+    request.source_mode === 'local' || request.api_config.provider === 'local' || Boolean(apiTestResult?.ok)
   const envReady =
     !isTauriRuntime() ||
     Boolean(
@@ -186,7 +195,11 @@ export function useAppController() {
           ? '待输入链接'
           : request.source_mode === 'document'
             ? '待选择 TXT/Markdown'
-            : '待选择视频和字幕',
+            : localVideoPath
+              ? localSubtitlePath
+                ? '视频和字幕已选择'
+                : '已选视频，自动匹配字幕'
+              : '待选择视频；SRT 可自动匹配',
     },
     {
       id: 'env',
@@ -201,11 +214,13 @@ export function useAppController() {
       detail:
         request.api_config.provider === 'local'
           ? '本地草稿'
-          : apiTestResult?.ok
-            ? '已通过'
-            : apiTestResult
-              ? '失败'
-              : '未测试',
+          : request.source_mode === 'local'
+            ? '本地规则可生成'
+            : apiTestResult?.ok
+              ? '已通过'
+              : apiTestResult
+                ? '失败'
+                : '未测试',
     },
     {
       id: 'cards',
@@ -765,13 +780,25 @@ export function useAppController() {
     )
 
     if (typeof selected === 'string') {
-      patchRequest(
-        kind === 'video'
-          ? { video_path: selected }
-          : kind === 'subtitle'
-            ? { subtitle_path: selected }
-            : { document_path: selected },
-      )
+      if (kind === 'video') {
+        const patch: Partial<GenerateRequest> = { video_path: selected }
+        if (!request.title.trim()) {
+          patch.title = titleFromPath(selected)
+        }
+        if (!request.subtitle_path.trim()) {
+          try {
+            const suggestedSubtitle = await suggestSubtitlePath(selected, request.language)
+            if (suggestedSubtitle) {
+              patch.subtitle_path = suggestedSubtitle
+            }
+          } catch {
+            // A missing suggestion should not block selecting the video.
+          }
+        }
+        patchRequest(patch)
+      } else {
+        patchRequest(kind === 'subtitle' ? { subtitle_path: selected } : { document_path: selected })
+      }
     }
   }
 
@@ -964,8 +991,8 @@ export function useAppController() {
       setStatus('请先选择 TXT、Markdown、DOCX、EPUB 或 PDF 文档。')
       return
     }
-    if (generateRequest.source_mode === 'local' && (!generateRequest.video_path || !generateRequest.subtitle_path)) {
-      setStatus('请先选择视频和 SRT 字幕。')
+    if (generateRequest.source_mode === 'local' && !generateRequest.video_path) {
+      setStatus('请先选择视频文件。SRT 可以手动选择，也可以放在视频同目录自动匹配。')
       return
     }
     const resolvedApi = resolveGenerateApiConfig(generateRequest.api_config, generateRequest.source_mode)
@@ -997,7 +1024,9 @@ export function useAppController() {
           ? '正在解析文档、总结知识点并生成卡片草稿。'
           : resolvedApi.fallbackReason
             ? `模型 API 未就绪（${resolvedApi.fallbackReason}），本次先用本地规则解析字幕并生成推荐卡。`
-            : '正在解析字幕、筛选片段并生成卡片草稿。',
+            : generateRequest.subtitle_path
+              ? '正在解析字幕、筛选片段并生成卡片草稿。'
+              : '正在自动匹配同目录字幕、筛选片段并生成卡片草稿。',
     )
     try {
       const requestSnapshot = JSON.parse(

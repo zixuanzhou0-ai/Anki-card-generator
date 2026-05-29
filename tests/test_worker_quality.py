@@ -69,6 +69,54 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(worker.clean_input_path(' "F:\\Video\\clip.mkv" '), "F:\\Video\\clip.mkv")
         self.assertEqual(worker.clean_input_path("'F:\\Video\\clip.srt'"), "F:\\Video\\clip.srt")
 
+    def test_discover_local_subtitle_matches_same_video_stem(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            video = root / "JMDS S01E01.mkv"
+            english_subtitle = root / "JMDS S01E01-EN.srt"
+            other_subtitle = root / "JMDS S01E02-EN.srt"
+            video.write_bytes(b"video")
+            english_subtitle.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello.\n", encoding="utf-8")
+            other_subtitle.write_text("1\n00:00:00,000 --> 00:00:01,000\nWrong.\n", encoding="utf-8")
+
+            selected = worker.discover_local_subtitle(f' "{video}" ', "English")
+
+        self.assertEqual(selected, english_subtitle)
+
+    def test_local_generate_auto_discovers_subtitle_when_path_is_empty(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            video = root / "clip.mkv"
+            subtitle = root / "clip.en.srt"
+            video.write_bytes(b"video")
+            subtitle.write_text(
+                "1\n"
+                "00:00:00,000 --> 00:00:02,000\n"
+                "Dad, come check this out.\n\n"
+                "2\n"
+                "00:00:03,000 --> 00:00:05,000\n"
+                "It looks like a normal morning.\n",
+                encoding="utf-8",
+            )
+
+            project = worker.handle_generate(
+                {
+                    "source_mode": "local",
+                    "title": "auto subtitle",
+                    "video_path": str(video),
+                    "subtitle_path": "",
+                    "language": "English",
+                    "level": "B1",
+                    "collection_levels": ["A2", "B1", "B2"],
+                    "card_types": ["phrase"],
+                    "content_toggles": {"daily": True},
+                    "api_config": {"provider": "local"},
+                }
+            )
+
+        self.assertEqual(project["subtitle_path"], str(subtitle))
+        self.assertGreaterEqual(project["quality_funnel"]["subtitle_cues"], 2)
+
     def test_worker_fail_emits_machine_readable_error(self):
         from acg.protocol import ERROR_PREFIX, fail
 

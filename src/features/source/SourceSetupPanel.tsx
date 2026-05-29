@@ -9,12 +9,7 @@ type SourceSetupPanelProps = {
   onSelectSourceMode: (mode: SourceMode) => void
 }
 
-export function SourceSetupPanel({
-  request,
-  onPatchRequest,
-  onSelectPath,
-  onSelectSourceMode,
-}: SourceSetupPanelProps) {
+export function SourceSetupPanel({ request, onPatchRequest, onSelectPath, onSelectSourceMode }: SourceSetupPanelProps) {
   const sourceLabel =
     request.source_mode === 'url' ? '视频链接' : request.source_mode === 'document' ? '文档资料' : '本地视频'
 
@@ -124,6 +119,7 @@ export function SourceSetupPanel({
                   <Subtitles size={18} />
                 </button>
               </div>
+              <small>可留空；生成时会自动匹配视频同目录下的同名 SRT/VTT。</small>
             </label>
           </>
         )}
@@ -155,9 +151,7 @@ export function SourceSetupPanel({
               <input
                 type="checkbox"
                 checked={request.url_auto_subtitle_fallback}
-                onChange={() =>
-                  onPatchRequest({ url_auto_subtitle_fallback: !request.url_auto_subtitle_fallback })
-                }
+                onChange={() => onPatchRequest({ url_auto_subtitle_fallback: !request.url_auto_subtitle_fallback })}
               />
               <span>视频下载失败时自动 fallback 到字幕-only</span>
             </label>

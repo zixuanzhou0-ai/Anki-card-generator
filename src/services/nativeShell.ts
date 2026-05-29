@@ -18,6 +18,11 @@ export function toAssetUrl(path: string) {
   return isTauriRuntime() ? convertFileSrc(path) : ''
 }
 
+export async function suggestSubtitlePath(videoPath: string, language: string) {
+  if (!isTauriRuntime()) return null
+  return invoke<string | null>('suggest_subtitle_path', { videoPath, language })
+}
+
 export async function revealPath(path: string) {
   await invoke('reveal_path', { path })
 }

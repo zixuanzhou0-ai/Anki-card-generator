@@ -347,7 +347,11 @@ fn run_worker(
             .map(|text| text.clone())
             .unwrap_or_default();
         let error_details = stderr_error.lock().ok().and_then(|value| value.clone());
-        return Err(worker_failure_message(&stderr, &stdout_text, error_details.as_ref()));
+        return Err(worker_failure_message(
+            &stderr,
+            &stdout_text,
+            error_details.as_ref(),
+        ));
     }
 
     serde_json::from_str(&stdout_text).map_err(|err| format!("worker 输出不是有效 JSON：{err}"))
@@ -598,6 +602,143 @@ fn find_anki() -> Result<PathBuf, String> {
         })
 }
 
+fn clean_user_path(value: &str) -> String {
+    value
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .to_string()
+}
+
+fn compact_match_text(value: &str) -> String {
+    value
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect()
+}
+
+fn language_code(language: &str) -> &str {
+    match language.to_ascii_lowercase().as_str() {
+        "english" | "en" => "en",
+        "chinese" | "zh" | "zh-cn" => "zh",
+        "japanese" | "ja" => "ja",
+        "korean" | "ko" => "ko",
+        "spanish" | "es" => "es",
+        "french" | "fr" => "fr",
+        "german" | "de" => "de",
+        _ => "en",
+    }
+}
+
+fn subtitle_language_markers(language: &str) -> Vec<String> {
+    let code = language_code(language);
+    let mut markers = vec![
+        format!(".{code}"),
+        format!("-{code}"),
+        format!("_{code}"),
+        format!(" {code}"),
+        format!(".{code}-"),
+        format!(".{code}_"),
+    ];
+    if code == "en" {
+        markers.extend(
+            ["english", ".eng", "-eng", "_eng", " eng"]
+                .iter()
+                .map(|value| value.to_string()),
+        );
+    }
+    markers
+}
+
+#[tauri::command]
+fn suggest_subtitle_path(video_path: String, language: String) -> Result<Option<String>, String> {
+    let video = PathBuf::from(clean_user_path(&video_path));
+    let Some(directory) = video.parent() else {
+        return Ok(None);
+    };
+    if !directory.exists() {
+        return Ok(None);
+    }
+
+    let mut subtitles = Vec::new();
+    for entry in fs::read_dir(directory).map_err(|err| format!("无法读取视频目录：{err}"))?
+    {
+        let path = entry
+            .map_err(|err| format!("无法读取视频目录项：{err}"))?
+            .path();
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if path.is_file() && matches!(extension.as_str(), "srt" | "vtt") {
+            subtitles.push(path);
+        }
+    }
+    if subtitles.is_empty() {
+        return Ok(None);
+    }
+
+    let video_stem = video
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let compact_video = compact_match_text(&video_stem);
+    let markers = subtitle_language_markers(&language);
+    let single_subtitle = subtitles.len() == 1;
+
+    let mut scored = subtitles
+        .into_iter()
+        .filter_map(|path| {
+            let stem = path.file_stem()?.to_str()?.to_ascii_lowercase();
+            let compact_stem = compact_match_text(&stem);
+            let has_language_marker = markers.iter().any(|marker| stem.contains(marker));
+            let bucket = if compact_stem == compact_video {
+                0
+            } else if !compact_video.is_empty()
+                && compact_stem.starts_with(&compact_video)
+                && has_language_marker
+            {
+                1
+            } else if !compact_video.is_empty()
+                && compact_stem.contains(&compact_video)
+                && has_language_marker
+            {
+                2
+            } else if !compact_video.is_empty() && compact_stem.starts_with(&compact_video) {
+                3
+            } else if single_subtitle {
+                4
+            } else {
+                9
+            };
+            if bucket >= 9 {
+                return None;
+            }
+            let size = path.metadata().map(|meta| meta.len()).unwrap_or_default();
+            let name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            Some((bucket, size, name, path))
+        })
+        .collect::<Vec<_>>();
+
+    scored.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| right.1.cmp(&left.1))
+            .then_with(|| left.2.cmp(&right.2))
+    });
+
+    Ok(scored
+        .first()
+        .map(|(_, _, _, path)| path.display().to_string()))
+}
+
 fn path_is_within(target: &Path, root: &Path) -> bool {
     let Ok(target) = target.canonicalize() else {
         return false;
@@ -616,7 +757,11 @@ fn reveal_path_allowed(app: &tauri::AppHandle, target: &Path) -> bool {
     }
 
     if let Ok(cwd) = env::current_dir() {
-        for root in [cwd.join("projects"), cwd.join("release"), cwd.join("anki_live_e2e")] {
+        for root in [
+            cwd.join("projects"),
+            cwd.join("release"),
+            cwd.join("anki_live_e2e"),
+        ] {
             if root.exists() && path_is_within(target, &root) {
                 return true;
             }
@@ -729,6 +874,7 @@ pub fn run() {
             run_worker,
             start_worker_job,
             cancel_worker_job,
+            suggest_subtitle_path,
             reveal_path,
             open_anki_import,
             save_secret,

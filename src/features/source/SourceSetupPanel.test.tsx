@@ -42,6 +42,7 @@ describe('SourceSetupPanel', () => {
 
     expect(screen.getByPlaceholderText('选择本地视频')).toBeVisible()
     expect(screen.getByPlaceholderText('选择 SRT 字幕')).toBeVisible()
+    expect(screen.getByText('可留空；生成时会自动匹配视频同目录下的同名 SRT/VTT。')).toBeVisible()
     expect(props.onSelectSourceMode).toHaveBeenCalledWith('url')
     expect(props.onSelectPath).toHaveBeenCalledWith('video')
   })
@@ -56,9 +57,7 @@ describe('SourceSetupPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: '只用字幕生成' }))
     fireEvent.click(screen.getByLabelText(/导出时跳过视频切片/))
 
-    expect(screen.getByPlaceholderText('https://www.youtube.com/watch?v=...')).toHaveValue(
-      'https://example.com/watch',
-    )
+    expect(screen.getByPlaceholderText('https://www.youtube.com/watch?v=...')).toHaveValue('https://example.com/watch')
     expect(onPatchRequest).toHaveBeenCalledWith({ url_import_mode: 'subtitles', skip_video_slicing: true })
     expect(onPatchRequest).toHaveBeenCalledWith({ skip_video_slicing: true, url_import_mode: 'subtitles' })
   })

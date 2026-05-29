@@ -2958,6 +2958,61 @@ def pick_subtitle_file(directory: Path, language: str) -> Path | None:
     return selected
 
 
+def compact_match_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
+def subtitle_language_markers(language: str) -> set[str]:
+    code = language_code(language)
+    markers = {f".{code}", f"-{code}", f"_{code}", f" {code}", f".{code}-", f".{code}_"}
+    if code == "en":
+        markers.update({"english", ".eng", "-eng", "_eng", " eng"})
+    return markers
+
+
+def discover_local_subtitle(video_path: str, language: str = "English") -> Path | None:
+    video = Path(clean_input_path(video_path))
+    directory = video.parent
+    if not video.name or not directory.exists():
+        return None
+
+    subtitles = [
+        path
+        for path in directory.iterdir()
+        if path.is_file() and path.suffix.lower() in {".srt", ".vtt"}
+    ]
+    if not subtitles:
+        return None
+
+    video_stem = video.stem.lower()
+    compact_video = compact_match_text(video_stem)
+    markers = subtitle_language_markers(language)
+
+    def score(path: Path) -> tuple[int, int, str]:
+        stem = path.stem.lower()
+        compact_stem = compact_match_text(stem)
+        has_language_marker = any(marker in stem for marker in markers)
+        size = path.stat().st_size if path.exists() else 0
+        if compact_stem == compact_video:
+            return (0, -size, path.name.lower())
+        if compact_video and compact_stem.startswith(compact_video) and has_language_marker:
+            return (1, -size, path.name.lower())
+        if compact_video and compact_video in compact_stem and has_language_marker:
+            return (2, -size, path.name.lower())
+        if compact_video and compact_stem.startswith(compact_video):
+            return (3, -size, path.name.lower())
+        if len(subtitles) == 1:
+            return (4, -size, path.name.lower())
+        return (9, -size, path.name.lower())
+
+    selected = sorted(subtitles, key=score)[0]
+    if score(selected)[0] >= 9:
+        return None
+    if selected.suffix.lower() == ".vtt":
+        return convert_vtt_to_srt(selected)
+    return selected
+
+
 def read_download_info(directory: Path) -> dict[str, Any]:
     info_files = sorted(directory.glob("*.info.json"))
     if not info_files:
@@ -3593,8 +3648,17 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
     skip_video_slicing = bool(payload.get("skip_video_slicing") or (source_info or {}).get("transcript_only"))
     if not skip_video_slicing and (not video_path or not Path(video_path).exists()):
         fail(f"视频文件不存在：{video_path}")
+    if video_path and (not subtitle_path or not Path(subtitle_path).exists()):
+        discovered_subtitle = discover_local_subtitle(video_path, payload.get("language", "English"))
+        if discovered_subtitle:
+            subtitle_path = str(discovered_subtitle)
     if not subtitle_path or not Path(subtitle_path).exists():
-        fail(f"字幕文件不存在：{subtitle_path}")
+        fail(
+            f"字幕文件不存在：{subtitle_path or '未选择'}。请手动选择 SRT，或把同名 .srt/.vtt 放在视频同目录。",
+            error_code="LOCAL_SUBTITLE_MISSING",
+            stage="subtitle",
+            retryable=True,
+        )
     emit_progress("generate", "subtitle", 34, "正在解析 SRT 字幕。")
     cues = parse_srt(subtitle_path)
     card_types = payload.get("card_types") or ["listening", "phrase", "cloze"]

@@ -53,6 +53,7 @@ const ERROR_ACTIONS: Partial<Record<WorkerErrorCode, WorkerErrorActionId[]>> = {
   YOUTUBE_RATE_LIMIT: ['use-subtitle-only', 'retry'],
   YOUTUBE_N_CHALLENGE: ['use-subtitle-only', 'open-env-settings', 'retry'],
   YOUTUBE_SUBTITLE_UNAVAILABLE: ['use-subtitle-only'],
+  LOCAL_SUBTITLE_MISSING: ['retry'],
   MODEL_AUTH_FAILED: ['open-api-settings'],
   MODEL_TIMEOUT: ['open-api-settings', 'retry'],
   MODEL_JSON_INVALID: ['open-api-settings', 'retry'],
@@ -78,7 +79,7 @@ function uniqueActions(ids: WorkerErrorActionId[]): WorkerErrorAction[] {
 }
 
 export function getWorkerErrorActions(errorCode?: string, fallbacks: string[] = []): WorkerErrorAction[] {
-  const fromError = errorCode && errorCode in ERROR_ACTIONS ? ERROR_ACTIONS[errorCode as WorkerErrorCode] ?? [] : []
+  const fromError = errorCode && errorCode in ERROR_ACTIONS ? (ERROR_ACTIONS[errorCode as WorkerErrorCode] ?? []) : []
   const fromFallbacks = fallbacks
     .map((fallback) => FALLBACK_ACTIONS[fallback])
     .filter((action): action is WorkerErrorActionId => Boolean(action))
