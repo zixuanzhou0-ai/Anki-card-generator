@@ -65,6 +65,10 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertTrue(meta["retryable"])
         self.assertIn("local_srt", meta["fallbacks"])
 
+    def test_clean_input_path_removes_outer_quotes_and_spaces(self):
+        self.assertEqual(worker.clean_input_path(' "F:\\Video\\clip.mkv" '), "F:\\Video\\clip.mkv")
+        self.assertEqual(worker.clean_input_path("'F:\\Video\\clip.srt'"), "F:\\Video\\clip.srt")
+
     def test_worker_fail_emits_machine_readable_error(self):
         from acg.protocol import ERROR_PREFIX, fail
 

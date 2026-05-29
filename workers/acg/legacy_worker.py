@@ -69,6 +69,10 @@ def has_cjk(value: str) -> bool:
     return bool(re.search(r"[\u3400-\u9fff]", str(value or "")))
 
 
+def clean_input_path(value: Any) -> str:
+    return str(value or "").strip().strip('"').strip("'")
+
+
 def word_overlap_ratio(left: str, right: str) -> float:
     left_words = set(overlap_words(left))
     right_words = set(overlap_words(right))
@@ -3437,7 +3441,7 @@ def merge_document_cards(
 
 
 def handle_generate_document(payload: dict[str, Any]) -> dict[str, Any]:
-    document_path = str(payload.get("document_path") or "").strip()
+    document_path = clean_input_path(payload.get("document_path"))
     if not document_path:
         fail("请先选择 TXT、Markdown、DOCX、EPUB 或 PDF 文档。")
 
@@ -3584,8 +3588,8 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
             "skip_video_slicing": bool(source_info.get("skip_video_slicing")) or bool(payload.get("skip_video_slicing")),
         }
 
-    video_path = payload.get("video_path", "")
-    subtitle_path = payload.get("subtitle_path", "")
+    video_path = clean_input_path(payload.get("video_path", ""))
+    subtitle_path = clean_input_path(payload.get("subtitle_path", ""))
     skip_video_slicing = bool(payload.get("skip_video_slicing") or (source_info or {}).get("transcript_only"))
     if not skip_video_slicing and (not video_path or not Path(video_path).exists()):
         fail(f"视频文件不存在：{video_path}")
@@ -6409,7 +6413,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         fail(f"导出目录不存在：{output_dir}")
 
     is_document_project = project.get("source_mode") == "document"
-    video_path_raw = str(project.get("video_path") or "").strip()
+    video_path_raw = clean_input_path(project.get("video_path"))
     skip_video_media = is_document_project or bool(project.get("skip_video_slicing")) or not video_path_raw
     video_path = Path(video_path_raw) if video_path_raw else Path()
     if not skip_video_media and not video_path.exists():

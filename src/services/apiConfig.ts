@@ -1,5 +1,6 @@
 ﻿import type { ApiConfig, TtsConfig } from '../domain/types'
 import { MIMO_OPENAI_BASE_URL, MIMO_TOKEN_PLAN_SGP_BASE_URL } from '../domain/options'
+import type { SourceMode } from '../domain/types'
 
 export function normalizeMimoModelId(value: string) {
   const trimmed = value.trim()
@@ -42,6 +43,32 @@ export function validateApiConfigForRequest(api: ApiConfig): string | null {
   if (!api.api_key.trim()) return '还没有填写 API Key。'
   if (!api.model.trim()) return '还没有填写模型名。'
   return validateServiceBaseUrl(api.base_url, api.provider === 'mimo' ? 'MIMO Base URL' : '模型 Base URL')
+}
+
+export function localFallbackApiConfig(api: ApiConfig): ApiConfig {
+  return {
+    ...api,
+    provider: 'local',
+    base_url: '',
+    api_key: '',
+    model: 'local-fallback',
+    capabilities: ['structured_json'],
+  }
+}
+
+export function resolveGenerateApiConfig(api: ApiConfig, sourceMode: SourceMode) {
+  const normalized = normalizeApiConfigForRequest(api)
+  const error = validateApiConfigForRequest(normalized)
+  if (!error) {
+    return { api: normalized, fallbackReason: '' }
+  }
+  if (sourceMode === 'local') {
+    return {
+      api: localFallbackApiConfig(normalized),
+      fallbackReason: error,
+    }
+  }
+  return { api: normalized, error }
 }
 
 export function normalizeApiConfigForRequest(api: ApiConfig): ApiConfig {

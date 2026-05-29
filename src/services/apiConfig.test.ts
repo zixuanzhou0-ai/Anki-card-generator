@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   normalizeApiConfigForRequest,
+  resolveGenerateApiConfig,
   validateServiceBaseUrl,
   validateTtsConfigForRequest,
 } from './apiConfig'
@@ -59,5 +60,61 @@ describe('validateServiceBaseUrl', () => {
 
     expect(normalized.base_url).toBe('https://token-plan-sgp.xiaomimimo.com/v1')
     expect(normalized.model).toBe('mimo-v2.5-pro')
+  })
+
+  it('allows local video generation to fall back when model API is not configured', () => {
+    const resolved = resolveGenerateApiConfig(
+      {
+        provider: 'openai-compatible',
+        base_url: 'https://api.deepseek.com/v1',
+        api_key: '',
+        model: 'deepseek-chat',
+        capabilities: ['structured_json'],
+        tts_config: {
+          enabled: false,
+          provider: 'disabled',
+          base_url: '',
+          api_key: '',
+          model: '',
+          voice: '',
+          language: 'auto',
+          sample_rate: 24000,
+          bit_rate: 128000,
+        },
+      },
+      'local',
+    )
+
+    expect(resolved.error).toBeUndefined()
+    expect(resolved.fallbackReason).toContain('API Key')
+    expect(resolved.api.provider).toBe('local')
+    expect(resolved.api.model).toBe('local-fallback')
+  })
+
+  it('still blocks URL generation when model API is not configured', () => {
+    const resolved = resolveGenerateApiConfig(
+      {
+        provider: 'openai-compatible',
+        base_url: 'https://api.deepseek.com/v1',
+        api_key: '',
+        model: 'deepseek-chat',
+        capabilities: ['structured_json'],
+        tts_config: {
+          enabled: false,
+          provider: 'disabled',
+          base_url: '',
+          api_key: '',
+          model: '',
+          voice: '',
+          language: 'auto',
+          sample_rate: 24000,
+          bit_rate: 128000,
+        },
+      },
+      'url',
+    )
+
+    expect(resolved.error).toContain('API Key')
+    expect(resolved.api.provider).toBe('openai-compatible')
   })
 })

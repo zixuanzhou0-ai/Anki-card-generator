@@ -75,6 +75,7 @@ import {
   isMimoTokenPlanBase,
   isMimoTokenPlanKey,
   normalizeApiConfigForRequest,
+  resolveGenerateApiConfig,
   resolveTtsConfig,
   validateApiConfigForRequest,
   validateTtsConfigForRequest,
@@ -102,6 +103,11 @@ import {
   startWindowDrag as startNativeWindowDrag,
   startWindowResize as startNativeWindowResize,
 } from '../services/windowChrome'
+
+function cleanLocalPath(value: string) {
+  return value.trim().replace(/^["'](.+)["']$/, '$1')
+}
+
 export function useAppController() {
   const [request, setRequest] = useState<GenerateRequest>(() => loadSavedRequest())
   const [project, setProject] = useState<Project | null>(() => loadSavedProject())
@@ -940,42 +946,41 @@ export function useAppController() {
   }
 
   const generate = async () => {
+    const generateRequest: GenerateRequest = {
+      ...request,
+      video_path: cleanLocalPath(request.video_path),
+      subtitle_path: cleanLocalPath(request.subtitle_path),
+      document_path: cleanLocalPath(request.document_path),
+    }
     if (workerBusy) {
       setStatus('已有任务正在运行，请先取消或等待完成。')
       return
     }
-    if (request.source_mode === 'url' && !request.source_url.trim()) {
+    if (generateRequest.source_mode === 'url' && !generateRequest.source_url.trim()) {
       setStatus('请先输入 YouTube / 视频 URL。')
       return
     }
-    if (request.source_mode === 'document' && !request.document_path.trim()) {
+    if (generateRequest.source_mode === 'document' && !generateRequest.document_path.trim()) {
       setStatus('请先选择 TXT、Markdown、DOCX、EPUB 或 PDF 文档。')
       return
     }
-    if (request.source_mode === 'local' && (!request.video_path || !request.subtitle_path)) {
+    if (generateRequest.source_mode === 'local' && (!generateRequest.video_path || !generateRequest.subtitle_path)) {
       setStatus('请先选择视频和 SRT 字幕。')
       return
     }
+    const resolvedApi = resolveGenerateApiConfig(generateRequest.api_config, generateRequest.source_mode)
     if (isTauriRuntime()) {
-      const normalizedApi = normalizeApiConfigForRequest(request.api_config)
+      if (resolvedApi.error) {
+        setStatus(`生成前配置检查失败：${resolvedApi.error}`)
+        return
+      }
       if (
-        normalizedApi.base_url !== request.api_config.base_url ||
-        normalizedApi.model !== request.api_config.model ||
-        normalizedApi.provider !== request.api_config.provider
+        !resolvedApi.fallbackReason &&
+        (resolvedApi.api.base_url !== request.api_config.base_url ||
+          resolvedApi.api.model !== request.api_config.model ||
+          resolvedApi.api.provider !== request.api_config.provider)
       ) {
-        patchRequest({ api_config: normalizedApi })
-      }
-      const apiConfigError = validateApiConfigForRequest(normalizedApi)
-      if (apiConfigError) {
-        setStatus(`生成前配置检查失败：${apiConfigError}`)
-        return
-      }
-      const ttsConfigError = validateTtsConfigForRequest(
-        resolveTtsConfig(normalizedApi.tts_config, normalizedApi),
-      )
-      if (ttsConfigError) {
-        setStatus(`生成前 TTS 配置检查失败：${ttsConfigError}`)
-        return
+        patchRequest({ api_config: resolvedApi.api })
       }
     }
     setLastExport(null)
@@ -984,19 +989,21 @@ export function useAppController() {
     setBusy(true)
     setRequestEditedDuringRun(false)
     setStatus(
-      request.source_mode === 'url'
-        ? request.url_import_mode === 'subtitles'
+      generateRequest.source_mode === 'url'
+        ? generateRequest.url_import_mode === 'subtitles'
           ? '正在下载 URL 字幕并跳过视频切片，然后生成卡片草稿。'
           : '正在下载 URL 视频和字幕，然后生成卡片草稿。'
-        : request.source_mode === 'document'
+        : generateRequest.source_mode === 'document'
           ? '正在解析文档、总结知识点并生成卡片草稿。'
-          : '正在解析字幕、筛选片段并生成卡片草稿。',
+          : resolvedApi.fallbackReason
+            ? `模型 API 未就绪（${resolvedApi.fallbackReason}），本次先用本地规则解析字幕并生成推荐卡。`
+            : '正在解析字幕、筛选片段并生成卡片草稿。',
     )
     try {
       const requestSnapshot = JSON.parse(
         JSON.stringify({
-          ...request,
-          api_config: normalizeApiConfigForRequest(request.api_config),
+          ...generateRequest,
+          api_config: resolvedApi.api,
         }),
       ) as GenerateRequest
       if (!isTauriRuntime()) {
@@ -1005,9 +1012,9 @@ export function useAppController() {
         setSegmentFilter('all')
         setActiveSegmentId(demo.segments[0]?.id ?? null)
         setStatus(
-          request.source_mode === 'url'
+          generateRequest.source_mode === 'url'
             ? '已生成浏览器演示卡片。URL 下载需要在 Tauri 桌面端运行。'
-            : request.source_mode === 'document'
+            : generateRequest.source_mode === 'document'
               ? '已生成浏览器演示文档卡。真实文档解析和 apkg 导出请用 Tauri 桌面端。'
               : '已生成浏览器演示卡片。真实视频切片和 apkg 导出请用 Tauri 桌面端。',
         )
