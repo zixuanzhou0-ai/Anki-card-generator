@@ -971,6 +971,11 @@ def fallback_phrase_fields(text: str, phrase: str, level: str) -> dict[str, str]
         return {
             "phrase": phrase,
             "difficulty": CEFR_LABELS.get(level, level),
+            "teacher_note": guide.get(
+                "teacher_note",
+                f"把 {phrase} 当作一个整体记；复习时先听懂原句，再换一个场景自己说一遍。",
+            ),
+            "_quality_source": "curated_fallback",
             **guide,
         }
     return {
@@ -1032,13 +1037,21 @@ def phrase_in_text(text: str, phrase: str) -> bool:
 
 def quality_issue_labels(card_type: str, text: str, phrase: str, cloze: str, source: str) -> tuple[int, list[str]]:
     is_listening = card_type == "listening"
-    score = 92 if source == "ai" else (64 if is_listening else 52)
+    if source == "ai":
+        score = 92
+    elif source == "curated_fallback":
+        score = 78
+    else:
+        score = 64 if is_listening else 52
     issues: list[str] = []
     words = overlap_words(phrase)
     text_words = overlap_words(text)
     trailing_prepositions = {"about", "of", "for", "to", "with", "from", "by", "at"}
 
-    if source != "ai":
+    if source == "curated_fallback":
+        issues.append("本地规则卡，需要人工确认")
+        score -= 4
+    elif source != "ai":
         issues.append("本地草稿，需要人工确认")
         score -= 18
     if not text_words:
@@ -1549,6 +1562,7 @@ def plan_card_types(segment: dict[str, Any], card_types: list[str], level: str) 
 
 def fallback_cards(segment: dict[str, Any], card_types: list[str], level: str) -> list[dict[str, Any]]:
     fields = fallback_phrase_fields(segment["text"], segment["phrase"], level)
+    quality_source = fields.pop("_quality_source", "fallback")
     plan = plan_card_types(segment, card_types, level)
     cards: list[dict[str, Any]] = []
     for card_type in plan["types"]:
@@ -1560,7 +1574,7 @@ def fallback_cards(segment: dict[str, Any], card_types: list[str], level: str) -
             "english": segment["text"],
             "chinese": "本地草稿：请在预览页用模型精修或手动改成自然中文。",
             "cloze": make_cloze(segment["text"], fields["phrase"]),
-            "teacher_note": fields["why"],
+            "teacher_note": fields.get("teacher_note") or fields["why"],
             "card_role": "primary" if card_type == plan["primary"] else "specialist",
             "learning_goal": plan["reason"] if card_type == plan["primary"] else "这张专项卡只训练一个额外能力点，避免和主卡重复。",
             "decision_reason": plan["reason"],
@@ -1578,7 +1592,9 @@ def fallback_cards(segment: dict[str, Any], card_types: list[str], level: str) -
             "phrase_review_status": segment.get("phrase_review_status", ""),
             **fields,
         }
-        card["quality"] = assess_card_quality(card, segment, "fallback", level)
+        card_quality_source = quality_source if card_type == "phrase" else "fallback"
+        card["quality"] = assess_card_quality(card, segment, card_quality_source, level)
+        card["enabled"] = card_quality_source == "curated_fallback" and card["quality"]["status"] == "recommended"
         cards.append(card)
     return cards
 
@@ -3649,11 +3665,19 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         reviewed_keep=reviewed_keep_count,
         mimo_kept=reviewed_keep_count if review_enabled else None,
     )
-    if ai_payload is None and quality_funnel.get("review_cards", 0) > 0:
-        local_review_warning = (
-            f"已解析 {len(cues)} 条字幕，生成 {quality_funnel['review_cards']} 张待审本地草稿卡（默认停用）。"
-            "配置模型精修后可得到推荐卡，或在审核页手动确认后导出。"
-        )
+    if ai_payload is None and (quality_funnel.get("recommended_cards", 0) > 0 or quality_funnel.get("review_cards", 0) > 0):
+        recommended_count = int(quality_funnel.get("recommended_cards", 0) or 0)
+        review_count = int(quality_funnel.get("review_cards", 0) or 0)
+        if recommended_count:
+            local_review_warning = (
+                f"已解析 {len(cues)} 条字幕，生成 {recommended_count} 张本地推荐卡"
+                f"和 {review_count} 张待审卡。推荐卡已可直接审核导出；配置模型精修后可继续提升中文释义和例句质量。"
+            )
+        else:
+            local_review_warning = (
+                f"已解析 {len(cues)} 条字幕，生成 {review_count} 张待审本地草稿卡（默认停用）。"
+                "配置模型精修后可得到推荐卡，或在审核页手动确认后导出。"
+            )
         warning = (
             f"{warning}；{local_review_warning}"
             if warning and "模型没有返回可用精修结果" not in warning

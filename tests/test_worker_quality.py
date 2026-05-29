@@ -1378,6 +1378,64 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertNotIn("缺少明确目标表达", cards[0]["quality"]["issues"])
         self.assertNotIn("例句只是照抄原句", cards[0]["quality"]["issues"])
 
+    def test_curated_fallback_phrase_is_recommended_and_enabled(self):
+        segment = {
+            "id": "seg_0001",
+            "text": "Why don't you just hang out here for a second?",
+            "phrase": "hang out",
+        }
+        cards = worker.fallback_cards(segment, ["listening", "phrase", "cloze"], "B1")
+
+        phrase_card = next(card for card in cards if card["type"] == "phrase")
+
+        self.assertEqual(phrase_card["quality"]["status"], "recommended")
+        self.assertTrue(phrase_card["enabled"])
+        self.assertIn("本地规则卡，需要人工确认", phrase_card["quality"]["issues"])
+        self.assertNotIn("本地草稿，需要人工确认", phrase_card["quality"]["issues"])
+        self.assertNotIn("字段像模板废话", phrase_card["quality"]["issues"])
+
+    def test_local_generate_warning_counts_curated_recommendations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            video_path = root / "clip.mkv"
+            subtitle_path = root / "clip.srt"
+            video_path.write_bytes(b"placeholder")
+            subtitle_path.write_text(
+                "\n".join(
+                    [
+                        "1",
+                        "00:00:01,000 --> 00:00:03,000",
+                        "Why don't you just hang out here for a second?",
+                        "",
+                        "2",
+                        "00:00:04,000 --> 00:00:06,000",
+                        "My name is Walter Hartwell White.",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            project = worker.handle_generate(
+                {
+                    "source_mode": "local",
+                    "title": "local curated smoke",
+                    "video_path": str(video_path),
+                    "subtitle_path": str(subtitle_path),
+                    "api_config": {"provider": "local", "model": "local-fallback", "api_key": ""},
+                    "language": "English",
+                    "level": "B1",
+                    "collection_levels": ["A2", "B1", "B2"],
+                    "card_types": ["listening", "phrase", "cloze"],
+                    "max_segments": 3,
+                    "content_toggles": {"slang": True, "daily": True},
+                }
+            )
+
+        self.assertGreaterEqual(project["quality_funnel"]["recommended_cards"], 1)
+        self.assertIn("本地推荐卡", project["warning"])
+        self.assertIn("推荐卡已可直接审核导出", project["warning"])
+
     def test_merge_ai_cards_does_not_inflate_to_all_requested_types(self):
         segments = [
             {
