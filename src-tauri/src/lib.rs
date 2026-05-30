@@ -35,6 +35,7 @@ struct WorkerJobs {
 struct RunningJob {
     pid: u32,
     cancel_requested: bool,
+    failure_message: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -165,6 +166,14 @@ fn make_job_id(command: &str) -> String {
         .unwrap_or_default()
         .as_millis();
     format!("{command}-{millis}-{}", std::process::id())
+}
+
+fn worker_idle_timeout(command: &str) -> Duration {
+    match command {
+        "generate" | "export" => Duration::from_secs(300),
+        "test_api" | "test_tts" | "verify_anki_import" => Duration::from_secs(120),
+        _ => Duration::from_secs(180),
+    }
 }
 
 fn parse_worker_error_line(line: &str) -> Option<Value> {
@@ -414,6 +423,7 @@ fn start_worker_job(
             RunningJob {
                 pid,
                 cancel_requested: false,
+                failure_message: None,
             },
         );
     }
@@ -422,6 +432,8 @@ fn start_worker_job(
     let stderr_sink = Arc::clone(&stderr_text);
     let stderr_error = Arc::new(Mutex::new(None::<Value>));
     let stderr_error_sink = Arc::clone(&stderr_error);
+    let last_progress = Arc::new(Mutex::new(Instant::now()));
+    let last_progress_sink = Arc::clone(&last_progress);
     let app_for_progress = app.clone();
     let progress_job_id = job_id.clone();
     let progress_thread = thread::spawn(move || {
@@ -429,6 +441,9 @@ fn start_worker_job(
         let mut last_emit = Instant::now() - Duration::from_millis(100);
         for line in reader.lines().map_while(Result::ok) {
             if let Some(payload) = line.strip_prefix(WORKER_PROGRESS_PREFIX) {
+                if let Ok(mut seen_at) = last_progress_sink.lock() {
+                    *seen_at = Instant::now();
+                }
                 if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(payload) {
                     value["job_id"] = json!(progress_job_id);
                     let percent = value
@@ -451,6 +466,43 @@ fn start_worker_job(
         }
     });
 
+    let watchdog_jobs = Arc::clone(&jobs.jobs);
+    let watchdog_job_id = job_id.clone();
+    let watchdog_command = command.clone();
+    let watchdog_last_progress = Arc::clone(&last_progress);
+    thread::spawn(move || {
+        let timeout = worker_idle_timeout(&watchdog_command);
+        loop {
+            thread::sleep(Duration::from_secs(5));
+            let should_stop = watchdog_jobs
+                .lock()
+                .ok()
+                .and_then(|jobs| jobs.get(&watchdog_job_id).cloned())
+                .map(|job| job.cancel_requested || job.failure_message.is_some())
+                .unwrap_or(true);
+            if should_stop {
+                break;
+            }
+            let idle_for = watchdog_last_progress
+                .lock()
+                .map(|seen_at| seen_at.elapsed())
+                .unwrap_or_default();
+            if idle_for >= timeout {
+                let message = format!(
+                    "worker 超过 {} 秒没有任何进度更新，已自动终止。通常是网络/API 请求卡住；请稍后重试，或检查代理、Base URL 和模型服务状态。",
+                    timeout.as_secs()
+                );
+                if let Ok(mut jobs) = watchdog_jobs.lock() {
+                    if let Some(job) = jobs.get_mut(&watchdog_job_id) {
+                        job.failure_message = Some(message);
+                    }
+                }
+                let _ = kill_process_tree(pid);
+                break;
+            }
+        }
+    });
+
     let app_for_finish = app.clone();
     let jobs_for_finish = Arc::clone(&jobs.jobs);
     let finish_job_id = job_id.clone();
@@ -460,12 +512,15 @@ fn start_worker_job(
         let read_result = BufReader::new(stdout).read_to_string(&mut stdout_text);
         let wait_result = child.wait();
         let _ = progress_thread.join();
-        let cancelled = jobs_for_finish
+        let job_state = jobs_for_finish
             .lock()
             .ok()
-            .and_then(|mut jobs| jobs.remove(&finish_job_id))
+            .and_then(|mut jobs| jobs.remove(&finish_job_id));
+        let cancelled = job_state
+            .as_ref()
             .map(|job| job.cancel_requested)
             .unwrap_or(false);
+        let failure_message = job_state.and_then(|job| job.failure_message);
 
         if let Err(err) = read_result {
             emit_worker_finished(
@@ -511,6 +566,15 @@ fn start_worker_job(
                 None,
                 Some("任务已取消。".to_string()),
                 true,
+            ),
+            Ok(_) if failure_message.is_some() => emit_worker_finished(
+                &app_for_finish,
+                &finish_job_id,
+                &finish_command,
+                false,
+                None,
+                failure_message,
+                false,
             ),
             Ok(_) => {
                 let stderr = stderr_text
