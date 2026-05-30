@@ -1685,16 +1685,34 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
     )
 
 
+def strip_reasoning_text(text: str) -> str:
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<thinking>.*?</thinking>", "", text, flags=re.IGNORECASE | re.DOTALL)
+    return text.strip()
+
+
 def extract_json_object(text: str) -> dict[str, Any]:
+    text = strip_reasoning_text(text)
     text = text.strip()
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?", "", text).strip()
         text = re.sub(r"```$", "", text).strip()
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1:
+    decoder = json.JSONDecoder()
+    candidates: list[dict[str, Any]] = []
+    for match in re.finditer(r"\{", text):
+        try:
+            value, _end = decoder.raw_decode(text[match.start() :])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            candidates.append(value)
+    if not candidates:
         raise ValueError("模型没有返回 JSON 对象。")
-    return json.loads(text[start : end + 1])
+    for key in ("segments", "candidates"):
+        for candidate in reversed(candidates):
+            if key in candidate:
+                return candidate
+    return candidates[-1]
 
 
 def http_json(url: str, headers: dict[str, str], body: dict[str, Any], timeout: int = 60) -> dict[str, Any]:
@@ -1710,6 +1728,92 @@ def http_json(url: str, headers: dict[str, str], body: dict[str, Any], timeout: 
     except urllib.error.HTTPError as err:
         detail = err.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"API HTTP {err.code}: {detail}") from err
+
+
+def http_sse_json_events(url: str, headers: dict[str, str], body: dict[str, Any], timeout: int = 120) -> list[dict[str, Any]]:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Accept": "text/event-stream", **headers},
+        method="POST",
+    )
+    events: list[dict[str, Any]] = []
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data_lines: list[str] = []
+            for raw_line in response:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line:
+                    if data_lines:
+                        data = "\n".join(data_lines).strip()
+                        data_lines = []
+                        if data == "[DONE]":
+                            break
+                        if data:
+                            events.append(json.loads(data))
+                    continue
+                if line.startswith(":"):
+                    continue
+                if line.startswith("data:"):
+                    data = line[len("data:") :].strip()
+                    if data == "[DONE]":
+                        break
+                    data_lines.append(data)
+            if data_lines:
+                data = "\n".join(data_lines).strip()
+                if data and data != "[DONE]":
+                    events.append(json.loads(data))
+    except urllib.error.HTTPError as err:
+        detail = err.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"API HTTP {err.code}: {detail}") from err
+    return events
+
+
+def stream_chat_completion(
+    url: str,
+    headers: dict[str, str],
+    body: dict[str, Any],
+    timeout: int = 120,
+    progress: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    finish_reason: str | None = None
+    last_emit = 0.0
+    for event in http_sse_json_events(url, headers, body, timeout=timeout):
+        for choice in event.get("choices") or []:
+            delta = choice.get("delta") or {}
+            if delta.get("reasoning_content"):
+                reasoning_parts.append(str(delta["reasoning_content"]))
+            if delta.get("content"):
+                content_parts.append(str(delta["content"]))
+            if choice.get("finish_reason"):
+                finish_reason = str(choice["finish_reason"])
+        if progress:
+            now = time.time()
+            if now - last_emit >= 3:
+                content_chars = sum(len(part) for part in content_parts)
+                reasoning_chars = sum(len(part) for part in reasoning_parts)
+                phase = "正在输出最终 JSON" if content_chars else "正在思考"
+                emit_progress(
+                    str(progress.get("command") or "generate"),
+                    str(progress.get("stage") or "ai"),
+                    int(progress.get("percent") or 66),
+                    f"{progress.get('message') or '模型正在生成'}：{phase}，已收到 {content_chars} 个答案字符 / {reasoning_chars} 个 thinking 字符。",
+                )
+                last_emit = now
+    return {
+        "choices": [
+            {
+                "finish_reason": finish_reason or "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": "".join(content_parts),
+                    "reasoning_content": "".join(reasoning_parts),
+                },
+            }
+        ]
+    }
 
 
 def http_binary(url: str, headers: dict[str, str], body: dict[str, Any], timeout: int = 90) -> bytes:
@@ -1793,6 +1897,22 @@ def is_qwen_config(config: dict[str, Any]) -> bool:
     )
 
 
+def thinking_budget(config: dict[str, Any], default_value: int = 800) -> int:
+    for key in ("thinking_budget", "reasoning_budget"):
+        value = config.get(key)
+        try:
+            budget = int(value)
+        except (TypeError, ValueError):
+            continue
+        if budget > 0:
+            return min(budget, 4000)
+    return default_value
+
+
+def should_stream_reasoning(config: dict[str, Any]) -> bool:
+    return is_qwen_config(config) or is_mimo_config(config)
+
+
 def api_key_header(config: dict[str, Any]) -> dict[str, str]:
     api_key = str(config.get("api_key") or "").strip()
     if is_mimo_config(config):
@@ -1826,6 +1946,7 @@ def compatible_chat_completion(
     temperature: float,
     timeout: int = 60,
     max_tokens: int | None = None,
+    progress: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     base_url = compatible_base_url(api)
     if not base_url:
@@ -1837,66 +1958,78 @@ def compatible_chat_completion(
         "messages": messages,
         "temperature": temperature,
     }
+    stream_reasoning = should_stream_reasoning(api)
     if not is_mimo:
         body["response_format"] = {"type": "json_object"}
     else:
         body["reasoning_effort"] = "low"
-        body["thinking"] = {"type": "disabled"}
+        body["thinking"] = {"type": "enabled"}
     if is_qwen:
-        body["enable_thinking"] = False
-        body["stream"] = False
+        body["enable_thinking"] = True
+        body["thinking_budget"] = thinking_budget(api)
+        body["preserve_thinking"] = False
+    if stream_reasoning:
+        body["stream"] = True
+        body["stream_options"] = {"include_usage": True}
     if max_tokens is not None:
         body["max_completion_tokens" if is_mimo else "max_tokens"] = max_tokens
     supports_response_retry = "response_format" in body
-    try:
+    endpoint = f"{base_url}/chat/completions"
+
+    def send(request_body: dict[str, Any]) -> dict[str, Any]:
+        if request_body.get("stream"):
+            return stream_chat_completion(
+                endpoint,
+                api_key_header(api),
+                request_body,
+                timeout=timeout,
+                progress=progress,
+            )
         return http_json(
-            f"{base_url}/chat/completions",
+            endpoint,
             api_key_header(api),
-            body,
+            request_body,
             timeout=timeout,
         )
+
+    try:
+        return send(body)
     except Exception as err:
         if is_mimo:
             retry_body = dict(body)
-            retry_body.pop("reasoning_effort", None)
-            retry_body.pop("thinking", None)
+            if retry_body.get("stream"):
+                retry_body["stream"] = False
+                retry_body.pop("stream_options", None)
             try:
-                return http_json(
-                    f"{base_url}/chat/completions",
-                    api_key_header(api),
-                    retry_body,
-                    timeout=timeout,
-                )
+                return send(retry_body)
             except Exception as retry_err:
                 if "max_completion_tokens" in retry_body:
                     fallback_body = dict(retry_body)
                     fallback_body["max_tokens"] = fallback_body.pop("max_completion_tokens")
                     try:
-                        return http_json(
-                            f"{base_url}/chat/completions",
-                            api_key_header(api),
-                            fallback_body,
-                            timeout=timeout,
-                        )
+                        return send(fallback_body)
                     except Exception as token_retry_err:
                         raise RuntimeError(
-                            f"{err}; 去掉 MIMO 扩展参数重试失败：{retry_err}; 改用 max_tokens 重试仍失败：{token_retry_err}"
+                            f"{err}; 保留 MIMO thinking 重试失败：{retry_err}; 改用 max_tokens 重试仍失败：{token_retry_err}"
                         ) from token_retry_err
-                raise RuntimeError(f"{err}; 去掉 MIMO 扩展参数重试仍失败：{retry_err}") from retry_err
+                raise RuntimeError(f"{err}; 保留 MIMO thinking 重试仍失败：{retry_err}") from retry_err
         # Some OpenAI-compatible providers, including Token Plan gateways, may not support
         # response_format even when they can reliably return JSON from the prompt.
         if not supports_response_retry:
             raise
         body.pop("response_format", None)
         try:
-            return http_json(
-                f"{base_url}/chat/completions",
-                api_key_header(api),
-                body,
-                timeout=timeout,
-            )
+            return send(body)
         except Exception as retry_err:
             raise RuntimeError(f"{err}; 去掉 response_format 重试仍失败：{retry_err}") from retry_err
+
+
+def chat_completion_content(response: dict[str, Any]) -> str:
+    message = response.get("choices", [{}])[0].get("message", {})
+    content = message.get("content", "")
+    if isinstance(content, list):
+        return "".join(str(part.get("text", "")) if isinstance(part, dict) else str(part) for part in content)
+    return str(content or "")
 
 
 def call_model(project: dict[str, Any], segments: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -1921,8 +2054,14 @@ def call_model(project: dict[str, Any], segments: list[dict[str, Any]]) -> dict[
                 temperature=0.3,
                 timeout=120 if (is_mimo_config(api) or is_qwen_config(api)) else 60,
                 max_tokens=token_budget,
+                progress={
+                    "command": "generate",
+                    "stage": "ai",
+                    "percent": 70,
+                    "message": "模型保留 thinking 生成卡片字段",
+                },
             )
-            content = response["choices"][0]["message"]["content"]
+            content = chat_completion_content(response)
             return extract_json_object(content)
 
         if provider == "claude":
@@ -1981,7 +2120,7 @@ def call_model_batches(project: dict[str, Any], segments: list[dict[str, Any]], 
     for start in range(0, len(segments), batch_size):
         batch = segments[start : start + batch_size]
         batch_index = start // batch_size + 1
-        provider_hint = "，thinking 已关闭" if (is_qwen_config(api) or is_mimo_config(api)) else ""
+        provider_hint = "，thinking 已保留" if (is_qwen_config(api) or is_mimo_config(api)) else ""
         percent = min(82, 66 + int((batch_index - 1) / total_batches * 14))
         emit_progress(
             "generate",
@@ -2341,7 +2480,7 @@ def review_phrase_candidates_with_mimo(
                 "generate",
                 "phrase_review",
                 percent,
-                f"MIMO 正在评审词伙候选：第 {batch_index}/{total_batches} 批，thinking 已关闭。",
+                f"MIMO 正在评审词伙候选：第 {batch_index}/{total_batches} 批，thinking 已保留。",
             )
             prompt = build_phrase_review_prompt(project, batch)
             response = compatible_chat_completion(
@@ -2353,8 +2492,14 @@ def review_phrase_candidates_with_mimo(
                 temperature=0.1,
                 timeout=120,
                 max_tokens=3200,
+                progress={
+                    "command": "generate",
+                    "stage": "phrase_review",
+                    "percent": percent,
+                    "message": "MIMO 保留 thinking 评审词伙候选",
+                },
             )
-            content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+            content = chat_completion_content(response)
             payload = extract_json_object(content or "")
             for item in payload.get("candidates", []):
                 if isinstance(item, dict) and item.get("id"):
@@ -2449,7 +2594,7 @@ def handle_test_api(payload: dict[str, Any]) -> dict[str, Any]:
                 timeout=30,
                 max_tokens=2000 if is_mimo_config(api) else 800,
             )
-            content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+            content = chat_completion_content(response)
             if content is None:
                 content = ""
 
@@ -3558,8 +3703,14 @@ def call_document_model(project: dict[str, Any], segments: list[dict[str, Any]])
                 temperature=0.25,
                 timeout=120 if (is_mimo_config(api) or is_qwen_config(api)) else 60,
                 max_tokens=token_budget,
+                progress={
+                    "command": "generate",
+                    "stage": "ai",
+                    "percent": 70,
+                    "message": "模型保留 thinking 生成文档卡字段",
+                },
             )
-            content = response["choices"][0]["message"]["content"]
+            content = chat_completion_content(response)
             return extract_json_object(content)
 
         if provider == "claude":
