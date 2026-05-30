@@ -139,7 +139,68 @@ class WorkerQualityTests(unittest.TestCase):
             )
 
         self.assertEqual(project["subtitle_path"], str(subtitle))
+        self.assertEqual(project["source_info"]["subtitle_source"], "auto_matched")
+        self.assertIn("自动匹配同目录字幕", project["warning"])
         self.assertGreaterEqual(project["quality_funnel"]["subtitle_cues"], 2)
+
+    def test_try_run_ffmpeg_returns_error_instead_of_exiting(self):
+        original_which = worker.shutil.which
+        try:
+            worker.shutil.which = lambda name: None if name == "ffmpeg" else original_which(name)
+
+            message = worker.try_run_ffmpeg(["-version"])
+        finally:
+            worker.shutil.which = original_which
+
+        self.assertIn("找不到 ffmpeg", message)
+
+    def test_export_keeps_text_cards_when_local_media_slicing_fails(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            video_path = root / "not-a-real-video.mkv"
+            subtitle_path = root / "not-a-real-video.srt"
+            output_dir = root / "out"
+            video_path.write_bytes(b"not a real video")
+            subtitle_path.write_text(
+                "1\n"
+                "00:00:00,000 --> 00:00:02,000\n"
+                "Dad, come check this out.\n\n"
+                "2\n"
+                "00:00:03,000 --> 00:00:05,000\n"
+                "It looks like a normal morning.\n",
+                encoding="utf-8",
+            )
+            output_dir.mkdir()
+
+            project = worker.handle_generate(
+                {
+                    "source_mode": "local",
+                    "title": "bad media fallback",
+                    "video_path": str(video_path),
+                    "subtitle_path": str(subtitle_path),
+                    "language": "English",
+                    "level": "B1",
+                    "collection_levels": ["A2", "B1", "B2"],
+                    "card_types": ["phrase"],
+                    "content_toggles": {"daily": True},
+                    "api_config": {"provider": "local"},
+                }
+            )
+            for segment in project["segments"]:
+                for card in segment["cards"]:
+                    card["enabled"] = True
+
+            result = worker.handle_export({"project": project, "output_dir": str(output_dir)})
+
+            self.assertTrue(Path(result["apkg_path"]).exists())
+            self.assertGreater(result["cards"], 0)
+            self.assertEqual(result["media_summary"]["video_segments"], 0)
+            self.assertTrue(any("视频/原声切片失败" in warning for warning in result["warnings"]))
 
     def test_worker_fail_emits_machine_readable_error(self):
         from acg.protocol import ERROR_PREFIX, fail

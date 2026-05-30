@@ -319,6 +319,13 @@ export type UrlSourceInfo = {
   skip_video_slicing?: boolean
 }
 
+export type LocalSourceInfo = {
+  title?: string
+  video_path?: string
+  subtitle_path?: string
+  subtitle_source?: 'manual' | 'auto_matched' | 'embedded' | string
+}
+
 export type DocumentSourceInfo = {
   title?: string
   document_path?: string
@@ -331,7 +338,7 @@ export type Project = {
   title: string
   source_mode?: SourceMode
   source_url?: string
-  source_info?: UrlSourceInfo | DocumentSourceInfo | null
+  source_info?: UrlSourceInfo | LocalSourceInfo | DocumentSourceInfo | null
   video_path: string
   subtitle_path: string
   document_path?: string

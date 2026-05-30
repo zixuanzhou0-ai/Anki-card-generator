@@ -3758,6 +3758,7 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
 
     video_path = clean_input_path(payload.get("video_path", ""))
     subtitle_path = clean_input_path(payload.get("subtitle_path", ""))
+    subtitle_source = "manual" if subtitle_path and Path(subtitle_path).exists() else ""
     skip_video_slicing = bool(payload.get("skip_video_slicing") or (source_info or {}).get("transcript_only"))
     if not skip_video_slicing and (not video_path or not Path(video_path).exists()):
         fail(f"视频文件不存在：{video_path}")
@@ -3765,11 +3766,13 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         discovered_subtitle = discover_local_subtitle(video_path, payload.get("language", "English"))
         if discovered_subtitle:
             subtitle_path = str(discovered_subtitle)
+            subtitle_source = "auto_matched"
     if video_path and (not subtitle_path or not Path(subtitle_path).exists()):
         emit_progress("generate", "subtitle", 30, "正在从视频内嵌字幕提取 SRT。")
         embedded_subtitle = extract_embedded_subtitle(video_path, payload.get("language", "English"))
         if embedded_subtitle:
             subtitle_path = str(embedded_subtitle)
+            subtitle_source = "embedded"
     if not subtitle_path or not Path(subtitle_path).exists():
         fail(
             f"字幕文件不存在：{subtitle_path or '未选择'}。已尝试同目录 SRT/VTT 和视频内嵌文字字幕；请手动选择 SRT，或确认视频包含可提取的 SubRip/ASS/WebVTT 字幕。",
@@ -3842,8 +3845,10 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
     project_id = f"project_{int(time.time())}"
     title = payload.get("title") or (Path(video_path).stem if video_path else (source_info or {}).get("title") or "字幕素材")
     source_warning = (source_info or {}).get("warning")
-    if source_warning:
-        warning = f"{source_warning}；{warning}" if warning else source_warning
+    source_notice = source_warning or ""
+    if not source_info and subtitle_source in {"auto_matched", "embedded"}:
+        subtitle_source_label = "自动匹配同目录字幕" if subtitle_source == "auto_matched" else "从视频内嵌字幕提取"
+        source_notice = f"{subtitle_source_label}：{Path(subtitle_path).name}"
     quality_funnel = build_quality_funnel(
         segments,
         subtitle_cues=len(cues),
@@ -3869,6 +3874,8 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
             if warning and "模型没有返回可用精修结果" not in warning
             else local_review_warning
         )
+    if source_notice and source_notice not in (warning or ""):
+        warning = f"{source_notice}；{warning}" if warning else source_notice
     emit_progress("generate", "done", 100, f"生成完成：{len(segments)} 个片段组。")
     return {
         "id": project_id,
@@ -3890,7 +3897,13 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         "warning": warning,
         "source_mode": payload.get("source_mode", "local"),
         "source_url": payload.get("source_url", ""),
-        "source_info": source_info,
+        "source_info": source_info
+        or {
+            "title": title,
+            "video_path": video_path,
+            "subtitle_path": subtitle_path,
+            "subtitle_source": subtitle_source or "manual",
+        },
         "created_at": int(time.time()),
     }
 
@@ -3924,6 +3937,22 @@ def run_ffmpeg(args: list[str]) -> None:
             retryable=True,
             fallbacks=["skip_video_slicing"],
         )
+
+
+def try_run_ffmpeg(args: list[str]) -> str:
+    if not shutil.which("ffmpeg"):
+        return "找不到 ffmpeg。请先安装 ffmpeg 并加入 PATH。"
+    completed = subprocess.run(
+        ["ffmpeg", "-y", *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if completed.returncode != 0:
+        return completed.stderr[-900:] or f"ffmpeg 退出码 {completed.returncode}"
+    return ""
 
 
 CARD_CSS = """
@@ -6663,6 +6692,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     expected_phrase_tts_keys: set[str] = set()
     exported_cards = 0
     cut_segments: set[str] = set()
+    video_segment_count = 0
     video_file_count = 0
     original_audio_count = 0
     project_card_prefix = safe_filename(project.get("title") or project.get("id") or "deck")
@@ -6734,91 +6764,109 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                 clip_end = float(segment.get("end", clip_start + 0.5) or clip_start + 0.5)
             start = str(max(0.0, clip_start))
             duration = str(max(0.5, clip_end - clip_start))
-            run_ffmpeg(
-                [
-                    "-ss",
-                    start,
-                    "-t",
-                    duration,
-                    "-i",
-                    str(video_path),
-                    "-map",
-                    "0:v:0?",
-                    "-map",
-                    "0:a:0?",
-                    "-c:v",
-                    "libvpx-vp9",
-                    "-b:v",
-                    "0",
-                    "-crf",
-                    "36",
-                    "-row-mt",
-                    "1",
-                    "-deadline",
-                    "good",
-                    "-cpu-used",
-                    "4",
-                    "-pix_fmt",
-                    "yuv420p",
-                    "-ac",
-                    "2",
-                    "-c:a",
-                    "libopus",
-                    "-b:a",
-                    "64k",
-                    str(video_webm_out),
-                ]
-            )
-            run_ffmpeg(
-                [
-                    "-ss",
-                    start,
-                    "-t",
-                    duration,
-                    "-i",
-                    str(video_path),
-                    "-map",
-                    "0:v:0?",
-                    "-map",
-                    "0:a:0?",
-                    "-c:v",
-                    "libx264",
-                    "-preset",
-                    "veryfast",
-                    "-crf",
-                    "26",
-                    "-ac",
-                    "2",
-                    "-c:a",
-                    "aac",
-                    "-b:a",
-                    "96k",
-                    "-movflags",
-                    "+faststart",
-                    str(video_mp4_out),
-                ]
-            )
-            run_ffmpeg(
-                [
-                    "-ss",
-                    start,
-                    "-t",
-                    duration,
-                    "-i",
-                    str(video_path),
-                    "-vn",
-                    "-ac",
-                    "2",
-                    "-acodec",
-                    "libmp3lame",
-                    "-q:a",
-                    "5",
-                    str(audio_out),
-                ]
-            )
-            try:
+            media_commands = [
+                (
+                    video_webm_out,
+                    [
+                        "-ss",
+                        start,
+                        "-t",
+                        duration,
+                        "-i",
+                        str(video_path),
+                        "-map",
+                        "0:v:0?",
+                        "-map",
+                        "0:a:0?",
+                        "-c:v",
+                        "libvpx-vp9",
+                        "-b:v",
+                        "0",
+                        "-crf",
+                        "36",
+                        "-row-mt",
+                        "1",
+                        "-deadline",
+                        "good",
+                        "-cpu-used",
+                        "4",
+                        "-pix_fmt",
+                        "yuv420p",
+                        "-ac",
+                        "2",
+                        "-c:a",
+                        "libopus",
+                        "-b:a",
+                        "64k",
+                        str(video_webm_out),
+                    ],
+                ),
+                (
+                    video_mp4_out,
+                    [
+                        "-ss",
+                        start,
+                        "-t",
+                        duration,
+                        "-i",
+                        str(video_path),
+                        "-map",
+                        "0:v:0?",
+                        "-map",
+                        "0:a:0?",
+                        "-c:v",
+                        "libx264",
+                        "-preset",
+                        "veryfast",
+                        "-crf",
+                        "26",
+                        "-ac",
+                        "2",
+                        "-c:a",
+                        "aac",
+                        "-b:a",
+                        "96k",
+                        "-movflags",
+                        "+faststart",
+                        str(video_mp4_out),
+                    ],
+                ),
+                (
+                    audio_out,
+                    [
+                        "-ss",
+                        start,
+                        "-t",
+                        duration,
+                        "-i",
+                        str(video_path),
+                        "-vn",
+                        "-ac",
+                        "2",
+                        "-acodec",
+                        "libmp3lame",
+                        "-q:a",
+                        "5",
+                        str(audio_out),
+                    ],
+                ),
+            ]
+            media_errors = [
+                error
+                for _, command in media_commands
+                if (error := try_run_ffmpeg(command))
+            ]
+            if media_errors:
+                for output_path, _ in media_commands:
+                    output_path.unlink(missing_ok=True)
+                video_webm_name = ""
+                video_mp4_name = ""
+                poster_name = ""
+                audio_name = ""
+                warnings.append(f"{segment_id} 视频/原声切片失败，已保留文字卡：{media_errors[0]}")
+            else:
                 poster_at = str(float(start) + min(0.75, max(0.1, float(duration) / 2)))
-                run_ffmpeg(
+                poster_error = try_run_ffmpeg(
                     [
                         "-ss",
                         poster_at,
@@ -6833,14 +6881,16 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                         str(poster_out),
                     ]
                 )
-            except Exception as err:
-                poster_name = ""
-                warnings.append(f"{segment_id} 视频封面生成失败：{err}")
-            media_files.extend([str(video_webm_out), str(video_mp4_out), str(audio_out)])
-            if poster_name and poster_out.exists():
-                media_files.append(str(poster_out))
-            video_file_count += 2
-            original_audio_count += 1
+                if poster_error:
+                    poster_name = ""
+                    poster_out.unlink(missing_ok=True)
+                    warnings.append(f"{segment_id} 视频封面生成失败：{poster_error}")
+                media_files.extend([str(video_webm_out), str(video_mp4_out), str(audio_out)])
+                if poster_name and poster_out.exists():
+                    media_files.append(str(poster_out))
+                video_segment_count += 1
+                video_file_count += 2
+                original_audio_count += 1
             try:
                 emit_progress("export", "tts", min(86, segment_percent + 4), f"正在处理音频：{segment_id}")
                 if synthesize_tts(project, segment, tts_out):
@@ -6951,7 +7001,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         "cards": exported_cards,
         "segments": len(cut_segments),
         "media_summary": {
-            "video_segments": 0 if skip_video_media else len(cut_segments),
+            "video_segments": video_segment_count,
             "video_files": video_file_count,
             "original_audio_files": original_audio_count,
             "sentence_tts_files": len(tts_by_segment),
