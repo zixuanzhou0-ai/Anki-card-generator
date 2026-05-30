@@ -607,6 +607,53 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(result["media_count_checked"], 0)
         self.assertEqual(result["card_count"], 1)
 
+    def test_qwen_tts_audio_uses_dashscope_generation_endpoint(self):
+        calls = {}
+        original_http_json = worker._legacy_worker.http_json
+        original_http_get_binary = worker._legacy_worker.http_get_binary
+
+        def fake_http_json(url, headers, body, timeout=60):
+            calls["url"] = url
+            calls["headers"] = headers
+            calls["body"] = body
+            return {"output": {"audio": {"url": "https://example.com/audio.wav"}}}
+
+        def fake_http_get_binary(url, headers=None, timeout=90):
+            calls["download_url"] = url
+            return b"RIFF....WAVE"
+
+        try:
+            worker._legacy_worker.http_json = fake_http_json
+            worker._legacy_worker.http_get_binary = fake_http_get_binary
+            audio = worker.call_tts_audio(
+                {
+                    "provider": "qwen",
+                    "base_url": "https://dashscope.aliyuncs.com/api/v1",
+                    "api_key": "sk-test",
+                    "model": "qwen3-tts-flash",
+                    "voice": "Cherry",
+                    "language": "en",
+                    "sample_rate": 24000,
+                    "bit_rate": 128000,
+                },
+                "Hello from a local video card.",
+                "English",
+            )
+        finally:
+            worker._legacy_worker.http_json = original_http_json
+            worker._legacy_worker.http_get_binary = original_http_get_binary
+
+        self.assertEqual(audio, b"RIFF....WAVE")
+        self.assertEqual(
+            calls["url"],
+            "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+        )
+        self.assertEqual(calls["headers"]["Authorization"], "Bearer sk-test")
+        self.assertEqual(calls["body"]["model"], "qwen3-tts-flash")
+        self.assertEqual(calls["body"]["input"]["voice"], "Cherry")
+        self.assertEqual(calls["body"]["input"]["language_type"], "English")
+        self.assertEqual(calls["download_url"], "https://example.com/audio.wav")
+
     def test_phrase_match_requires_all_phrase_words_in_compact_order(self):
         self.assertTrue(worker.phrase_in_text("I need to make sure we are ready.", "make sure"))
         self.assertFalse(worker.phrase_in_text("I need to make sure we are ready.", "make ready"))

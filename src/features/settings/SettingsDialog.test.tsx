@@ -4,7 +4,18 @@ import { createRef } from 'react'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { advancedApiPresets, advancedTtsPresets, defaultRequest, featuredApiPresets, featuredTtsPresets, mimoTextModels, mimoTtsModels, mimoTtsVoices } from '../../domain/options'
+import {
+  advancedApiPresets,
+  advancedTtsPresets,
+  defaultRequest,
+  featuredApiPresets,
+  featuredTtsPresets,
+  mimoTextModels,
+  mimoTtsModels,
+  mimoTtsVoices,
+  qwenTtsModels,
+  qwenTtsVoices,
+} from '../../domain/options'
 import { SettingsDialog } from './SettingsDialog'
 
 afterEach(() => cleanup())
@@ -54,6 +65,8 @@ function renderDialog(overrides: Partial<ComponentProps<typeof SettingsDialog>> 
       mimoTokenPlanSgpBaseUrl: 'https://token-plan-sgp.xiaomimimo.com/v1',
       mimoTtsModels,
       mimoTtsVoices,
+      qwenTtsModels,
+      qwenTtsVoices,
       secretPrefs,
       showAdvancedTts: false,
       tts: defaultRequest.api_config.tts_config,

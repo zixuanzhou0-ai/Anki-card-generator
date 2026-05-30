@@ -54,6 +54,9 @@ import {
   mimoTextModels,
   mimoTtsModels,
   mimoTtsVoices,
+  qwenTextModels,
+  qwenTtsModels,
+  qwenTtsVoices,
   normalizeCollectionLevels,
   PROJECT_STORAGE_KEY,
   REQUEST_STORAGE_KEY,
@@ -77,6 +80,7 @@ import {
   normalizeApiConfigForRequest,
   resolveGenerateApiConfig,
   resolveTtsConfig,
+  isQwenApiConfig,
   validateApiConfigForRequest,
   validateTtsConfigForRequest,
 } from '../services/apiConfig'
@@ -709,18 +713,22 @@ export function useAppController() {
   const applyTtsPreset = (preset: TtsPreset) => {
     const shouldReuseMainMimoKey =
       preset.provider === 'mimo' && isMimoApiConfig(request.api_config) && request.api_config.api_key.trim()
+    const shouldReuseMainQwenKey =
+      preset.provider === 'qwen' && isQwenApiConfig(request.api_config) && request.api_config.api_key.trim()
     patchTts({
       enabled: preset.provider !== 'disabled',
       provider: preset.provider,
       base_url: preset.base_url,
       model: preset.model,
       voice: preset.voice,
-      api_key: shouldReuseMainMimoKey ? '' : request.api_config.tts_config.api_key,
+      api_key: shouldReuseMainMimoKey || shouldReuseMainQwenKey ? '' : request.api_config.tts_config.api_key,
     })
     setStatus(
       preset.provider === 'disabled'
         ? '已关闭 TTS，导出时只使用视频原声音频。'
-        : `已套用 ${preset.label}，请填写对应 API Key 后测试 TTS。`,
+        : shouldReuseMainMimoKey || shouldReuseMainQwenKey
+          ? `已套用 ${preset.label}，会复用上方同服务商 API Key；建议先测试 TTS。`
+          : `已套用 ${preset.label}，请填写对应 API Key 后测试 TTS。`,
     )
   }
 
@@ -1396,6 +1404,9 @@ export function useAppController() {
     mimoTextModels,
     mimoTtsModels,
     mimoTtsVoices,
+    qwenTextModels,
+    qwenTtsModels,
+    qwenTtsVoices,
     motionDuration,
     openAnkiImport,
     patchApi,

@@ -4,12 +4,23 @@ export const MIMO_OPENAI_BASE_URL = 'https://api.xiaomimimo.com/v1'
 export const MIMO_TOKEN_PLAN_CN_BASE_URL = 'https://token-plan-cn.xiaomimimo.com/v1'
 export const MIMO_TOKEN_PLAN_SGP_BASE_URL = 'https://token-plan-sgp.xiaomimimo.com/v1'
 export const MIMO_TOKEN_PLAN_SGP_ANTHROPIC_BASE_URL = 'https://token-plan-sgp.xiaomimimo.com/anthropic'
+export const QWEN_DASHSCOPE_CN_COMPATIBLE_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+export const QWEN_DASHSCOPE_INTL_COMPATIBLE_BASE_URL = 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1'
 
 export const mimoTextModels = [
   { value: 'mimo-v2.5-pro', label: 'MiMo-V2.5-Pro' },
   { value: 'mimo-v2.5', label: 'MiMo-V2.5' },
   { value: 'mimo-v2-pro', label: 'MiMo-V2-Pro' },
   { value: 'mimo-v2-omni', label: 'MiMo-V2-Omni' },
+]
+
+export const qwenTextModels = [
+  { value: 'qwen3.7-max', label: 'Qwen3.7-Max' },
+  { value: 'qwen3-max', label: 'Qwen3-Max' },
+  { value: 'qwen3.6-plus', label: 'Qwen3.6-Plus' },
+  { value: 'qwen-plus', label: 'Qwen Plus' },
+  { value: 'qwen-max', label: 'Qwen Max' },
+  { value: 'qwen-flash', label: 'Qwen Flash' },
 ]
 
 export const capabilityLabels = ['structured_json', 'long_context', 'tts', 'asr', 'vision', 'omni', 'cheap_batch']
@@ -96,14 +107,44 @@ export const apiPresets: ApiPreset[] = [
     key_hint: 'DeepSeek 控制台里的 API Key',
   },
   {
+    id: 'qwen37-max-cn',
+    label: 'Qwen3.7 Max',
+    provider: 'openai-compatible',
+    base_url: QWEN_DASHSCOPE_CN_COMPATIBLE_BASE_URL,
+    model: 'qwen3.7-max',
+    capabilities: ['structured_json', 'long_context'],
+    note: '阿里云百炼北京地域 OpenAI 兼容端点；当前官方 Max 系列优先选这个。',
+    key_hint: '北京地域 DashScope / 百炼 API Key',
+  },
+  {
+    id: 'qwen36-plus-cn',
+    label: 'Qwen3.6 Plus',
+    provider: 'openai-compatible',
+    base_url: QWEN_DASHSCOPE_CN_COMPATIBLE_BASE_URL,
+    model: 'qwen3.6-plus',
+    capabilities: ['structured_json', 'long_context', 'cheap_batch'],
+    note: '质量和成本更均衡，适合批量生成字幕解释和文档卡字段。',
+    key_hint: '北京地域 DashScope / 百炼 API Key',
+  },
+  {
     id: 'qwen',
     label: 'Qwen / 通义',
     provider: 'openai-compatible',
-    base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    base_url: QWEN_DASHSCOPE_CN_COMPATIBLE_BASE_URL,
     model: 'qwen-plus',
     capabilities: ['structured_json', 'long_context', 'cheap_batch'],
     note: '中文解释通常稳，适合中英双语卡片字段生成。',
     key_hint: 'DashScope API Key',
+  },
+  {
+    id: 'qwen37-max-intl',
+    label: 'Qwen3.7 Max Intl',
+    provider: 'openai-compatible',
+    base_url: QWEN_DASHSCOPE_INTL_COMPATIBLE_BASE_URL,
+    model: 'qwen3.7-max',
+    capabilities: ['structured_json', 'long_context'],
+    note: '新加坡/国际地域 OpenAI 兼容端点；需要使用对应地域的 DashScope Key。',
+    key_hint: '国际地域 DashScope API Key',
   },
   {
     id: 'kimi',
@@ -167,7 +208,7 @@ export const apiPresets: ApiPreset[] = [
   },
 ]
 
-export const featuredApiPresetIds = new Set(['mimo-token-plan-sgp', 'deepseek', 'custom-compatible'])
+export const featuredApiPresetIds = new Set(['mimo-token-plan-sgp', 'qwen37-max-cn', 'deepseek', 'custom-compatible'])
 
 export const featuredApiPresets = apiPresets.filter((preset) => featuredApiPresetIds.has(preset.id))
 export const advancedApiPresets = apiPresets.filter((preset) => !featuredApiPresetIds.has(preset.id))

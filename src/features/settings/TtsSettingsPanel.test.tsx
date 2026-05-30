@@ -54,6 +54,8 @@ function renderPanel(overrides: Partial<ComponentProps<typeof TtsSettingsPanel>>
     mimoTokenPlanSgpBaseUrl: 'https://token-plan-sgp.xiaomimimo.com/v1',
     mimoTtsModels: [{ label: 'MIMO V2.5 TTS', value: 'mimo-v2.5-tts' }],
     mimoTtsVoices: ['Mia', 'Chloe'],
+    qwenTtsModels: [{ label: 'Qwen3 TTS Flash', value: 'qwen3-tts-flash' }],
+    qwenTtsVoices: ['Cherry', 'Serena'],
     secretPrefs,
     showAdvancedTts: false,
     tts,
@@ -85,18 +87,18 @@ describe('TtsSettingsPanel', () => {
     expect(props.onTestTts).toHaveBeenCalledOnce()
   })
 
-  it('enables TTS with MIMO defaults', () => {
+  it('enables TTS with Qwen defaults', () => {
     const onPatchTts = vi.fn()
     renderPanel({ onPatchTts })
 
     fireEvent.click(screen.getByLabelText(/导出时生成整句和词伙 TTS/))
 
     expect(onPatchTts).toHaveBeenCalledWith({
-      base_url: 'https://token-plan-sgp.xiaomimimo.com/v1',
+      base_url: 'https://dashscope.aliyuncs.com/api/v1',
       enabled: true,
-      model: 'mimo-v2.5-tts',
-      provider: 'mimo',
-      voice: 'Mia',
+      model: 'qwen3-tts-flash',
+      provider: 'qwen',
+      voice: 'Cherry',
     })
   })
 
@@ -124,5 +126,22 @@ describe('TtsSettingsPanel', () => {
     fireEvent.click(screen.getByLabelText(/记住本机 TTS API Key/))
 
     expect(onToggleRememberTtsKey).toHaveBeenCalledOnce()
+  })
+
+  it('patches Qwen TTS provider defaults', () => {
+    const onPatchTts = vi.fn()
+    renderPanel({ onPatchTts, tts: { ...enabledTts, provider: 'mimo', model: '', voice: '' } })
+
+    fireEvent.change(screen.getByLabelText(/语音服务/), { target: { value: 'qwen' } })
+
+    expect(onPatchTts).toHaveBeenCalledWith(
+      expect.objectContaining({
+        base_url: 'https://dashscope.aliyuncs.com/api/v1',
+        enabled: true,
+        model: 'qwen3-tts-flash',
+        provider: 'qwen',
+        voice: 'Cherry',
+      }),
+    )
   })
 })

@@ -57,7 +57,9 @@ for stream in (sys.stdin, sys.stdout, sys.stderr):
 
 MIMO_OPENAI_BASE_URL = "https://api.xiaomimimo.com/v1"
 MIMO_TOKEN_PLAN_SGP_BASE_URL = "https://token-plan-sgp.xiaomimimo.com/v1"
+QWEN_DASHSCOPE_CN_TTS_BASE_URL = "https://dashscope.aliyuncs.com/api/v1"
 MIMO_PROVIDERS = {"mimo", "xiaomi-mimo"}
+QWEN_TTS_PROVIDERS = {"qwen", "dashscope", "aliyun-dashscope"}
 OPENAI_COMPATIBLE_PROVIDERS = {"openai-compatible", *MIMO_PROVIDERS}
 
 
@@ -1725,6 +1727,16 @@ def http_binary(url: str, headers: dict[str, str], body: dict[str, Any], timeout
         raise RuntimeError(f"TTS HTTP {err.code}: {detail}") from err
 
 
+def http_get_binary(url: str, headers: dict[str, str] | None = None, timeout: int = 90) -> bytes:
+    request = urllib.request.Request(url, headers=headers or {}, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.read()
+    except urllib.error.HTTPError as err:
+        detail = err.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"TTS download HTTP {err.code}: {detail}") from err
+
+
 def anki_connect(action: str, params: dict[str, Any] | None = None, url: str = "http://127.0.0.1:8765") -> Any:
     response = http_json(
         url,
@@ -2467,6 +2479,9 @@ def normalized_tts_config(project_or_payload: dict[str, Any]) -> dict[str, Any]:
     api_key = str(tts.get("api_key") or "").strip()
     main_api_key = str(api.get("api_key") or "").strip()
     main_is_mimo = provider_name(api) in MIMO_PROVIDERS or "xiaomimimo.com" in api_base_url.lower()
+    main_is_qwen = provider_name(api) == "openai-compatible" and (
+        "dashscope" in api_base_url.lower() or "qwencloud" in api_base_url.lower()
+    )
 
     if provider in MIMO_PROVIDERS:
         stale_token_plan_key = (
@@ -2483,6 +2498,12 @@ def normalized_tts_config(project_or_payload: dict[str, Any]) -> dict[str, Any]:
             base_url = MIMO_TOKEN_PLAN_SGP_BASE_URL if api_key.lower().startswith("tp-") else MIMO_OPENAI_BASE_URL
         if api_key.lower().startswith("tp-") and "token-plan-" not in base_url.lower():
             base_url = MIMO_TOKEN_PLAN_SGP_BASE_URL
+
+    if provider in QWEN_TTS_PROVIDERS:
+        if not api_key and main_is_qwen:
+            api_key = main_api_key
+        if not base_url:
+            base_url = QWEN_DASHSCOPE_CN_TTS_BASE_URL
 
     return {
         "enabled": bool(tts.get("enabled", False)),
@@ -2503,6 +2524,40 @@ def grok_tts_endpoint(base_url: str) -> str:
 
 def openai_speech_endpoint(base_url: str) -> str:
     return f"{base_url.rstrip('/')}/audio/speech"
+
+
+def qwen_tts_endpoint(base_url: str) -> str:
+    base = (base_url or QWEN_DASHSCOPE_CN_TTS_BASE_URL).rstrip("/")
+    if base.endswith("/services/aigc/multimodal-generation/generation"):
+        return base
+    return f"{base}/services/aigc/multimodal-generation/generation"
+
+
+def qwen_language_type(language: str) -> str:
+    lower = str(language or "").strip().lower()
+    if lower in {"auto", ""}:
+        return "Auto"
+    if lower.startswith("zh") or "中文" in lower or "chinese" in lower:
+        return "Chinese"
+    if lower.startswith("en") or "english" in lower:
+        return "English"
+    if lower.startswith("ja") or "japanese" in lower or "日本" in lower:
+        return "Japanese"
+    if lower.startswith("ko") or "korean" in lower:
+        return "Korean"
+    if lower.startswith("fr") or "french" in lower:
+        return "French"
+    if lower.startswith("de") or "german" in lower:
+        return "German"
+    if lower.startswith("es") or "spanish" in lower:
+        return "Spanish"
+    if lower.startswith("pt") or "portuguese" in lower:
+        return "Portuguese"
+    if lower.startswith("it") or "italian" in lower:
+        return "Italian"
+    if lower.startswith("ru") or "russian" in lower:
+        return "Russian"
+    return "Auto"
 
 
 def mimo_tts_audio(tts: dict[str, Any], text: str, language: str) -> bytes:
@@ -2546,6 +2601,39 @@ def mimo_tts_audio(tts: dict[str, Any], text: str, language: str) -> bytes:
     return base64.b64decode(data)
 
 
+def qwen_tts_audio(tts: dict[str, Any], text: str, language: str) -> bytes:
+    model = tts["model"] or "qwen3-tts-flash"
+    body = {
+        "model": model,
+        "input": {
+            "text": text,
+            "voice": tts.get("voice") or "Cherry",
+            "language_type": qwen_language_type(tts.get("language") or language),
+        },
+    }
+    model_lower = model.lower()
+    if "instruct" in model_lower:
+        body["input"]["instructions"] = (
+            "Read naturally and clearly for a language-learning Anki card. "
+            "Use steady pacing and accurate pronunciation."
+        )
+        body["input"]["optimize_instructions"] = True
+    response = http_json(
+        qwen_tts_endpoint(tts.get("base_url") or QWEN_DASHSCOPE_CN_TTS_BASE_URL),
+        {"Authorization": f"Bearer {tts['api_key']}"},
+        body,
+        timeout=120,
+    )
+    audio = ((response.get("output") or {}).get("audio") or {})
+    data = audio.get("data")
+    if data:
+        return base64.b64decode(data)
+    url = audio.get("url")
+    if url:
+        return http_get_binary(str(url), timeout=120)
+    raise RuntimeError("Qwen TTS 没有返回 output.audio.url 或 output.audio.data。请检查模型、voice、地域和 API Key。")
+
+
 def call_tts_audio(tts: dict[str, Any], text: str, language: str) -> bytes:
     provider = tts["provider"]
     api_key = tts["api_key"]
@@ -2567,6 +2655,9 @@ def call_tts_audio(tts: dict[str, Any], text: str, language: str) -> bytes:
 
     if is_mimo_config(tts):
         return mimo_tts_audio(tts, text, language)
+
+    if provider in QWEN_TTS_PROVIDERS:
+        return qwen_tts_audio(tts, text, language)
 
     if provider in OPENAI_COMPATIBLE_PROVIDERS:
         return http_binary(
@@ -6559,6 +6650,38 @@ def synthesize_tts(
             raise RuntimeError(f"MIMO TTS 音频转码失败：{completed.stderr[-800:]}")
         return True
 
+    if provider in QWEN_TTS_PROVIDERS:
+        if not tts["base_url"] or not tts["model"]:
+            return False
+        wav_path = output_path.with_suffix(".qwen.wav")
+        audio = call_tts_audio(tts, text, project.get("language", "English"))
+        wav_path.write_bytes(audio)
+        if not shutil.which("ffmpeg"):
+            wav_path.unlink(missing_ok=True)
+            raise RuntimeError("找不到 ffmpeg，无法把 Qwen TTS 返回的音频转成 Anki 用的 mp3。")
+        completed = subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(wav_path),
+                "-acodec",
+                "libmp3lame",
+                "-q:a",
+                "5",
+                str(output_path),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        wav_path.unlink(missing_ok=True)
+        if completed.returncode != 0:
+            raise RuntimeError(f"Qwen TTS 音频转码失败：{completed.stderr[-800:]}")
+        return True
+
     if provider in OPENAI_COMPATIBLE_PROVIDERS:
         if not compatible_base_url(tts) or not tts["model"]:
             return False
@@ -6713,10 +6836,10 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             warnings.append("TTS 当前未启用，本次导出不会生成整句 AI 朗读和词伙小喇叭。")
         elif not tts_config["api_key"]:
             warnings.append("TTS 已启用但缺少 API Key，本次导出不会生成 MIMO / AI 朗读音频。")
-        elif tts_config["provider"] in OPENAI_COMPATIBLE_PROVIDERS and (
+        elif (tts_config["provider"] in OPENAI_COMPATIBLE_PROVIDERS or tts_config["provider"] in QWEN_TTS_PROVIDERS) and (
             not compatible_base_url(tts_config) or not tts_config["model"]
         ):
-            warnings.append("TTS 已启用但缺少 Base URL 或模型名，本次导出不会生成 MIMO / AI 朗读音频。")
+            warnings.append("TTS 已启用但缺少 Base URL 或模型名，本次导出不会生成 AI 朗读音频。")
 
     for index, segment in enumerate(export_segments):
         enabled_cards = [card for card in segment.get("cards", []) if card.get("enabled", True)]

@@ -60,9 +60,7 @@ export function ApiSettingsPanel({
   onToggleRememberModelKey,
 }: ApiSettingsPanelProps) {
   const isPresetSelected = (preset: ApiPreset) =>
-    apiConfig.provider === preset.provider &&
-    apiConfig.base_url === preset.base_url &&
-    apiConfig.model === preset.model
+    apiConfig.provider === preset.provider && apiConfig.base_url === preset.base_url && apiConfig.model === preset.model
 
   const handleProviderChange = (provider: Provider) => {
     onPatchApi({
@@ -105,8 +103,8 @@ export function ApiSettingsPanel({
           <div>
             <strong>你现在用 MIMO，可以直接选 MIMO V2.5 Pro。</strong>
             <p>
-              Token Plan 用户优先选 MIMO Token Plan SGP。程序会按官方要求自动使用 api-key 请求头、
-              小写模型 ID 和更大的 max_completion_tokens；填好 Key 后先点“测试连接”。
+              Token Plan 用户优先选 MIMO Token Plan SGP。程序会按官方要求自动使用 api-key 请求头、 小写模型 ID 和更大的
+              max_completion_tokens；填好 Key 后先点“测试连接”。
             </p>
           </div>
         </div>
@@ -143,11 +141,7 @@ export function ApiSettingsPanel({
         {featuredApiPresets.map(renderPreset)}
       </div>
 
-      <button
-        className="advanced-toggle"
-        type="button"
-        onClick={() => onSetShowAdvancedApi((value) => !value)}
-      >
+      <button className="advanced-toggle" type="button" onClick={() => onSetShowAdvancedApi((value) => !value)}>
         {showAdvancedApi ? '收起更多服务商' : '展开更多服务商'}
       </button>
       {showAdvancedApi ? (
@@ -201,7 +195,7 @@ export function ApiSettingsPanel({
           <small>
             {apiConfig.provider === 'mimo'
               ? '官方要求模型 ID 小写：mimo-v2.5-pro、mimo-v2.5、mimo-v2-pro、mimo-v2-omni。'
-              : '填模型 ID，不是产品名。比如 deepseek-chat、qwen-plus。'}
+              : '填模型 ID，不是产品名。比如 deepseek-chat、qwen3.7-max、qwen3.6-plus。'}
           </small>
         </label>
         <label className="field">
@@ -215,11 +209,7 @@ export function ApiSettingsPanel({
           <small>只用于当前会话的字幕理解和卡片解释生成；不会写入本地缓存，也不会自动拿去做 TTS。</small>
         </label>
         <label className="toggle secret-toggle">
-          <input
-            type="checkbox"
-            checked={secretPrefs.rememberModelKey}
-            onChange={onToggleRememberModelKey}
-          />
+          <input type="checkbox" checked={secretPrefs.rememberModelKey} onChange={onToggleRememberModelKey} />
           <span>记住本机模型 API Key（Windows Credential Manager）</span>
         </label>
       </div>

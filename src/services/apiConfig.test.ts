@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   normalizeApiConfigForRequest,
   resolveGenerateApiConfig,
+  resolveTtsConfig,
   validateServiceBaseUrl,
   validateTtsConfigForRequest,
 } from './apiConfig'
@@ -60,6 +61,45 @@ describe('validateServiceBaseUrl', () => {
 
     expect(normalized.base_url).toBe('https://token-plan-sgp.xiaomimimo.com/v1')
     expect(normalized.model).toBe('mimo-v2.5-pro')
+  })
+
+  it('lets Qwen TTS reuse the main DashScope key', () => {
+    const resolved = resolveTtsConfig(
+      {
+        enabled: true,
+        provider: 'qwen',
+        base_url: '',
+        api_key: '',
+        model: '',
+        voice: '',
+        language: 'auto',
+        sample_rate: 24000,
+        bit_rate: 128000,
+      },
+      {
+        provider: 'openai-compatible',
+        base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+        api_key: 'sk-dashscope',
+        model: 'qwen3.7-max',
+        capabilities: ['structured_json'],
+        tts_config: {
+          enabled: false,
+          provider: 'disabled',
+          base_url: '',
+          api_key: '',
+          model: '',
+          voice: '',
+          language: 'auto',
+          sample_rate: 24000,
+          bit_rate: 128000,
+        },
+      },
+    )
+
+    expect(resolved.api_key).toBe('sk-dashscope')
+    expect(resolved.base_url).toBe('https://dashscope.aliyuncs.com/api/v1')
+    expect(resolved.model).toBe('qwen3-tts-flash')
+    expect(resolved.voice).toBe('Cherry')
   })
 
   it('allows local video generation to fall back when model API is not configured', () => {

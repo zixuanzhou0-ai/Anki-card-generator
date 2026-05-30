@@ -1,5 +1,5 @@
 ﻿import type { ApiConfig, TtsConfig } from '../domain/types'
-import { MIMO_OPENAI_BASE_URL, MIMO_TOKEN_PLAN_SGP_BASE_URL } from '../domain/options'
+import { MIMO_OPENAI_BASE_URL, MIMO_TOKEN_PLAN_SGP_BASE_URL, QWEN_DASHSCOPE_CN_TTS_BASE_URL } from '../domain/options'
 import type { SourceMode } from '../domain/types'
 
 export function normalizeMimoModelId(value: string) {
@@ -17,6 +17,11 @@ export function isMimoTokenPlanBase(value: string) {
 
 export function isMimoApiConfig(api: ApiConfig) {
   return api.provider === 'mimo' || api.base_url.toLowerCase().includes('xiaomimimo.com')
+}
+
+export function isQwenApiConfig(api: ApiConfig) {
+  const baseUrl = api.base_url.toLowerCase()
+  return api.provider === 'openai-compatible' && (baseUrl.includes('dashscope') || baseUrl.includes('qwencloud'))
 }
 
 export function validateServiceBaseUrl(value: string, label = 'Base URL'): string | null {
@@ -100,16 +105,24 @@ export function validateTtsConfigForRequest(tts: TtsConfig): string | null {
 }
 
 export function resolveTtsConfig(tts: TtsConfig, api: ApiConfig): TtsConfig {
+  if (tts.provider === 'qwen') {
+    const canReuseMainQwen = isQwenApiConfig(api) && api.api_key.trim()
+    return {
+      ...tts,
+      api_key: tts.api_key.trim() || (canReuseMainQwen ? api.api_key.trim() : ''),
+      base_url: tts.base_url.trim() || QWEN_DASHSCOPE_CN_TTS_BASE_URL,
+      model: tts.model || 'qwen3-tts-flash',
+      voice: tts.voice || 'Cherry',
+    }
+  }
+
   if (tts.provider !== 'mimo') return tts
 
   const canReuseMainMimo = isMimoApiConfig(api) && api.api_key.trim()
   const mainApiKey = canReuseMainMimo ? api.api_key.trim() : ''
   const explicitTtsKey = tts.api_key.trim()
   const staleTokenPlanTtsKey =
-    mainApiKey &&
-    isMimoTokenPlanKey(mainApiKey) &&
-    isMimoTokenPlanKey(explicitTtsKey) &&
-    explicitTtsKey !== mainApiKey
+    mainApiKey && isMimoTokenPlanKey(mainApiKey) && isMimoTokenPlanKey(explicitTtsKey) && explicitTtsKey !== mainApiKey
   const apiKey = staleTokenPlanTtsKey ? mainApiKey : explicitTtsKey || mainApiKey
   let baseUrl = tts.base_url.trim()
 

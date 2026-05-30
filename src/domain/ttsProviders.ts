@@ -1,6 +1,9 @@
 import type { TtsPreset } from './types'
 import { MIMO_OPENAI_BASE_URL, MIMO_TOKEN_PLAN_SGP_BASE_URL } from './providers'
 
+export const QWEN_DASHSCOPE_CN_TTS_BASE_URL = 'https://dashscope.aliyuncs.com/api/v1'
+export const QWEN_DASHSCOPE_INTL_TTS_BASE_URL = 'https://dashscope-intl.aliyuncs.com/api/v1'
+
 export const mimoTtsModels = [
   { value: 'mimo-v2.5-tts', label: 'MiMo-V2.5-TTS' },
   { value: 'mimo-v2.5-tts-voicedesign', label: 'MiMo-V2.5-TTS-VoiceDesign' },
@@ -21,6 +24,15 @@ export const mimoTtsVoices = [
   'default_en',
   'default_zh',
 ]
+
+export const qwenTtsModels = [
+  { value: 'qwen3-tts-flash', label: 'Qwen3-TTS-Flash' },
+  { value: 'qwen3-tts-instruct-flash', label: 'Qwen3-TTS-Instruct-Flash' },
+  { value: 'qwen-tts-latest', label: 'Qwen-TTS Latest' },
+  { value: 'qwen-tts', label: 'Qwen-TTS' },
+]
+
+export const qwenTtsVoices = ['Cherry', 'Serena', 'Ethan', 'Chelsie', 'Momo', 'Dylan', 'Jada', 'Sunny', 'Camila']
 
 export const ttsPresets: TtsPreset[] = [
   {
@@ -84,6 +96,46 @@ export const ttsPresets: TtsPreset[] = [
     key_hint: 'MiMo API Key',
   },
   {
+    id: 'qwen3-tts-flash-cn',
+    label: 'Qwen3 TTS',
+    provider: 'qwen',
+    base_url: QWEN_DASHSCOPE_CN_TTS_BASE_URL,
+    model: 'qwen3-tts-flash',
+    voice: 'Cherry',
+    note: '阿里云百炼北京地域 Qwen3-TTS；适合英语/中文卡片朗读，输出会自动转成 Anki mp3。',
+    key_hint: '北京地域 DashScope / 百炼 API Key',
+  },
+  {
+    id: 'qwen3-tts-instruct-cn',
+    label: 'Qwen3 TTS Instruct',
+    provider: 'qwen',
+    base_url: QWEN_DASHSCOPE_CN_TTS_BASE_URL,
+    model: 'qwen3-tts-instruct-flash',
+    voice: 'Cherry',
+    note: '支持指令控制的千问 3 TTS；当前使用自然清晰朗读默认指令。',
+    key_hint: '北京地域 DashScope / 百炼 API Key',
+  },
+  {
+    id: 'qwen3-tts-flash-intl',
+    label: 'Qwen3 TTS Intl',
+    provider: 'qwen',
+    base_url: QWEN_DASHSCOPE_INTL_TTS_BASE_URL,
+    model: 'qwen3-tts-flash',
+    voice: 'Cherry',
+    note: '新加坡/国际地域 Qwen3-TTS；需要使用对应地域的 DashScope Key。',
+    key_hint: '国际地域 DashScope API Key',
+  },
+  {
+    id: 'qwen-tts-latest-cn',
+    label: 'Qwen TTS Legacy',
+    provider: 'qwen',
+    base_url: QWEN_DASHSCOPE_CN_TTS_BASE_URL,
+    model: 'qwen-tts-latest',
+    voice: 'Cherry',
+    note: '旧版 Qwen-TTS，按 Token 计费；新项目优先使用 Qwen3 TTS。',
+    key_hint: '北京地域 DashScope / 百炼 API Key',
+  },
+  {
     id: 'grok',
     label: 'Grok / xAI TTS',
     provider: 'grok',
@@ -115,7 +167,7 @@ export const ttsPresets: TtsPreset[] = [
   },
 ]
 
-export const featuredTtsPresetIds = new Set(['disabled', 'mimo-token-plan-sgp-tts', 'grok', 'gemini-tts'])
+export const featuredTtsPresetIds = new Set(['disabled', 'qwen3-tts-flash-cn', 'mimo-token-plan-sgp-tts', 'gemini-tts'])
 
 export const featuredTtsPresets = ttsPresets.filter((preset) => featuredTtsPresetIds.has(preset.id))
 export const advancedTtsPresets = ttsPresets.filter((preset) => !featuredTtsPresetIds.has(preset.id))

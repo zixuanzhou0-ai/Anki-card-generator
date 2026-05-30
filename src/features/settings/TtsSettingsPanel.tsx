@@ -16,6 +16,8 @@ type TtsSettingsPanelProps = {
   mimoTokenPlanSgpBaseUrl: string
   mimoTtsModels: ModelOption[]
   mimoTtsVoices: string[]
+  qwenTtsModels: ModelOption[]
+  qwenTtsVoices: string[]
   secretPrefs: SecretPrefs
   showAdvancedTts: boolean
   tts: TtsConfig
@@ -40,6 +42,8 @@ export function TtsSettingsPanel({
   mimoTokenPlanSgpBaseUrl,
   mimoTtsModels,
   mimoTtsVoices,
+  qwenTtsModels,
+  qwenTtsVoices,
   secretPrefs,
   showAdvancedTts,
   tts,
@@ -65,10 +69,10 @@ export function TtsSettingsPanel({
   const handleEnabledChange = () => {
     onPatchTts({
       enabled: !tts.enabled,
-      provider: !tts.enabled ? (tts.provider === 'disabled' ? 'mimo' : tts.provider) : 'disabled',
-      base_url: !tts.enabled && tts.provider === 'disabled' ? mimoTokenPlanSgpBaseUrl : tts.base_url,
-      model: !tts.enabled && !tts.model ? 'mimo-v2.5-tts' : tts.model,
-      voice: !tts.enabled && !tts.voice ? 'Mia' : tts.voice,
+      provider: !tts.enabled ? (tts.provider === 'disabled' ? 'qwen' : tts.provider) : 'disabled',
+      base_url: !tts.enabled && tts.provider === 'disabled' ? 'https://dashscope.aliyuncs.com/api/v1' : tts.base_url,
+      model: !tts.enabled && !tts.model ? 'qwen3-tts-flash' : tts.model,
+      voice: !tts.enabled && !tts.voice ? 'Cherry' : tts.voice,
     })
   }
 
@@ -78,14 +82,32 @@ export function TtsSettingsPanel({
       enabled: provider !== 'disabled',
       base_url:
         provider === 'mimo'
-          ? tts.base_url || mimoTokenPlanSgpBaseUrl
-          : provider === 'grok'
-            ? 'https://api.x.ai/v1'
-            : provider === 'openai-compatible'
-              ? tts.base_url || 'https://api.openai.com/v1'
-              : tts.base_url,
-      model: provider === 'mimo' && !tts.model ? 'mimo-v2.5-tts' : tts.model,
-      voice: provider === 'mimo' ? tts.voice || 'Mia' : provider === 'grok' ? tts.voice || 'eve' : tts.voice,
+          ? tts.base_url.includes('xiaomimimo.com')
+            ? tts.base_url
+            : mimoTokenPlanSgpBaseUrl
+          : provider === 'qwen'
+            ? tts.base_url.includes('dashscope')
+              ? tts.base_url
+              : 'https://dashscope.aliyuncs.com/api/v1'
+            : provider === 'grok'
+              ? 'https://api.x.ai/v1'
+              : provider === 'openai-compatible'
+                ? tts.base_url || 'https://api.openai.com/v1'
+                : tts.base_url,
+      model:
+        provider === 'mimo' && !tts.model
+          ? 'mimo-v2.5-tts'
+          : provider === 'qwen' && !tts.model
+            ? 'qwen3-tts-flash'
+            : tts.model,
+      voice:
+        provider === 'mimo'
+          ? tts.voice || 'Mia'
+          : provider === 'qwen'
+            ? tts.voice || 'Cherry'
+            : provider === 'grok'
+              ? tts.voice || 'eve'
+              : tts.voice,
     })
   }
 
@@ -116,10 +138,10 @@ export function TtsSettingsPanel({
         <div className="settings-callout tts-callout">
           <CircleAlert size={18} />
           <div>
-            <strong>TTS 是独立配置，MIMO 语音模型也在这里选。</strong>
+            <strong>TTS 是独立配置，千问和 MIMO 语音模型都在这里选。</strong>
             <p>
-              MIMO V2.5 TTS、VoiceDesign、VoiceClone 和 V2 TTS 都可以作为独立语音模型配置。
-              如果上方文本模型已经配置了 MIMO Key，TTS 会默认复用它；只有想单独换语音服务时才需要另填 TTS Key。
+              千问3 TTS、MIMO V2.5 TTS、VoiceDesign、VoiceClone 和 V2 TTS 都可以作为独立语音模型配置。
+              如果上方文本模型已经配置了同服务商 Key，TTS 会默认复用它；只有想单独换语音服务时才需要另填 TTS Key。
             </p>
           </div>
         </div>
@@ -177,6 +199,7 @@ export function TtsSettingsPanel({
             <select value={tts.provider} onChange={(event) => handleProviderChange(event.target.value as TtsProvider)}>
               <option value="disabled">关闭 TTS</option>
               <option value="mimo">MIMO / 小米 TTS</option>
+              <option value="qwen">Qwen / 千问 TTS</option>
               <option value="grok">Grok / xAI TTS</option>
               <option value="gemini">Gemini TTS</option>
               <option value="openai-compatible">OpenAI-compatible Speech</option>
@@ -188,12 +211,20 @@ export function TtsSettingsPanel({
             <input
               value={tts.base_url}
               onChange={(event) => onPatchTts({ base_url: event.target.value })}
-              placeholder={tts.provider === 'mimo' ? mimoOpenAiBaseUrl : 'https://api.x.ai/v1'}
+              placeholder={
+                tts.provider === 'mimo'
+                  ? mimoOpenAiBaseUrl
+                  : tts.provider === 'qwen'
+                    ? 'https://dashscope.aliyuncs.com/api/v1'
+                    : 'https://api.x.ai/v1'
+              }
             />
             <small>
               {tts.provider === 'mimo'
                 ? `MIMO 默认 ${mimoOpenAiBaseUrl}；你的 tp-... 套餐 Key 优先用 ${mimoTokenPlanSgpBaseUrl}。`
-                : 'Grok 默认 https://api.x.ai/v1；Gemini 可留空。'}
+                : tts.provider === 'qwen'
+                  ? '千问 TTS 默认北京地域 https://dashscope.aliyuncs.com/api/v1；新加坡改成 intl 端点。'
+                  : 'Grok 默认 https://api.x.ai/v1；Gemini 可留空。'}
             </small>
           </label>
           <label className="field">
@@ -202,9 +233,11 @@ export function TtsSettingsPanel({
               type="password"
               value={tts.api_key}
               onChange={(event) => onPatchTts({ api_key: event.target.value })}
-              placeholder={tts.provider === 'mimo' ? 'sk-... / tp-...' : 'xai-... / AIza...'}
+              placeholder={
+                tts.provider === 'mimo' ? 'sk-... / tp-...' : tts.provider === 'qwen' ? 'sk-...' : 'xai-... / AIza...'
+              }
             />
-            <small>MIMO TTS 可留空并复用上方 MIMO Key；填写后优先使用这里的 Key，且不会写入本地缓存。</small>
+            <small>MIMO / 千问 TTS 可留空并复用上方同服务商 Key；填写后优先使用这里的 Key，且不会写入本地缓存。</small>
           </label>
           <label className="toggle secret-toggle">
             <input type="checkbox" checked={secretPrefs.rememberTtsKey} onChange={onToggleRememberTtsKey} />
@@ -218,13 +251,15 @@ export function TtsSettingsPanel({
               placeholder={
                 tts.provider === 'mimo'
                   ? 'mimo-v2.5-tts'
-                  : tts.provider === 'grok'
-                    ? '留空即可，Grok TTS 不需要模型名'
-                    : tts.provider === 'gemini'
-                      ? 'gemini-2.5-flash-preview-tts'
-                      : 'gpt-4o-mini-tts'
+                  : tts.provider === 'qwen'
+                    ? 'qwen3-tts-flash'
+                    : tts.provider === 'grok'
+                      ? '留空即可，Grok TTS 不需要模型名'
+                      : tts.provider === 'gemini'
+                        ? 'gemini-2.5-flash-preview-tts'
+                        : 'gpt-4o-mini-tts'
               }
-              list="mimo-tts-models"
+              list={tts.provider === 'qwen' ? 'qwen-tts-models' : 'mimo-tts-models'}
             />
             <datalist id="mimo-tts-models">
               {mimoTtsModels.map((model) => (
@@ -233,10 +268,19 @@ export function TtsSettingsPanel({
                 </option>
               ))}
             </datalist>
+            <datalist id="qwen-tts-models">
+              {qwenTtsModels.map((model) => (
+                <option key={model.value} value={model.value}>
+                  {model.label}
+                </option>
+              ))}
+            </datalist>
             <small>
               {tts.provider === 'mimo'
                 ? '官方要求模型 ID 小写：mimo-v2.5-tts、voicedesign、voiceclone、mimo-v2-tts。'
-                : 'Grok TTS 当前不需要模型名，可留空；Gemini / Speech API 需要模型名。'}
+                : tts.provider === 'qwen'
+                  ? '千问推荐 qwen3-tts-flash；需要语气/情绪控制时用 qwen3-tts-instruct-flash。'
+                  : 'Grok TTS 当前不需要模型名，可留空；Gemini / Speech API 需要模型名。'}
             </small>
           </label>
           <label className="field">
@@ -247,21 +291,27 @@ export function TtsSettingsPanel({
               placeholder={
                 tts.provider === 'mimo'
                   ? 'Mia / Chloe / Milo / Dean / mimo_default'
-                  : tts.provider === 'grok'
-                    ? 'eve / ara / leo / rex / sal'
-                    : 'Kore / alloy'
+                  : tts.provider === 'qwen'
+                    ? 'Cherry / Serena / Ethan / Chelsie'
+                    : tts.provider === 'grok'
+                      ? 'eve / ara / leo / rex / sal'
+                      : 'Kore / alloy'
               }
-              list={tts.provider === 'mimo' ? 'mimo-tts-voices' : undefined}
+              list={
+                tts.provider === 'mimo' ? 'mimo-tts-voices' : tts.provider === 'qwen' ? 'qwen-tts-voices' : undefined
+              }
             />
             <datalist id="mimo-tts-voices">
               {mimoTtsVoices.map((voice) => (
                 <option key={voice} value={voice} />
               ))}
             </datalist>
-            <small>
-              MIMO V2.5 内置声音可填 Mia、Chloe、Milo、Dean；VoiceDesign 模型这里填声音描述，VoiceClone 模型这里填
-              data:audio/...;base64。
-            </small>
+            <datalist id="qwen-tts-voices">
+              {qwenTtsVoices.map((voice) => (
+                <option key={voice} value={voice} />
+              ))}
+            </datalist>
+            <small>MIMO V2.5 内置声音可填 Mia、Chloe、Milo、Dean；千问常用 Cherry、Serena、Ethan、Chelsie。</small>
           </label>
           {showAdvancedTts ? (
             <>
