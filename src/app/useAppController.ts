@@ -114,6 +114,12 @@ function titleFromPath(value: string) {
   return fileName.replace(/\.[^.]+$/, '')
 }
 
+function touchesSourceMaterial(patch: Partial<GenerateRequest>) {
+  return ['source_mode', 'source_url', 'video_path', 'subtitle_path', 'document_path'].some((key) =>
+    Object.prototype.hasOwnProperty.call(patch, key),
+  )
+}
+
 export function useAppController() {
   const [request, setRequest] = useState<GenerateRequest>(() => loadSavedRequest())
   const [project, setProject] = useState<Project | null>(() => loadSavedProject())
@@ -571,6 +577,12 @@ export function useAppController() {
 
   const patchRequest = (patch: Partial<GenerateRequest>) => {
     markRequestEditedIfRunning()
+    if (touchesSourceMaterial(patch)) {
+      setProject(null)
+      setLastExport(null)
+      setAnkiVerifyResult(null)
+      setActiveSegmentId(null)
+    }
     setRequest((current) => ({ ...current, ...patch }))
   }
 
@@ -1032,6 +1044,10 @@ export function useAppController() {
       const requestSnapshot = JSON.parse(
         JSON.stringify({
           ...generateRequest,
+          source_url: generateRequest.source_mode === 'url' ? generateRequest.source_url : '',
+          video_path: generateRequest.source_mode === 'local' ? generateRequest.video_path : '',
+          subtitle_path: generateRequest.source_mode === 'local' ? generateRequest.subtitle_path : '',
+          document_path: generateRequest.source_mode === 'document' ? generateRequest.document_path : '',
           api_config: resolvedApi.api,
         }),
       ) as GenerateRequest

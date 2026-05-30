@@ -143,6 +143,52 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("自动匹配同目录字幕", project["warning"])
         self.assertGreaterEqual(project["quality_funnel"]["subtitle_cues"], 2)
 
+    def test_local_generate_ignores_stale_source_url(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            video = root / "local-episode.mkv"
+            subtitle = root / "local-episode.srt"
+            video.write_bytes(b"video")
+            subtitle.write_text(
+                "1\n"
+                "00:00:00,000 --> 00:00:02,000\n"
+                "Local only line, do not use the stale URL.\n\n"
+                "2\n"
+                "00:00:03,000 --> 00:00:05,000\n"
+                "This local subtitle should drive the cards.\n",
+                encoding="utf-8",
+            )
+            original_download_url_source = worker._legacy_worker.download_url_source
+
+            def fail_if_url_source_is_used(payload):
+                raise AssertionError("Local generation must not use stale source_url")
+
+            try:
+                worker._legacy_worker.download_url_source = fail_if_url_source_is_used
+                project = worker.handle_generate(
+                    {
+                        "source_mode": "local",
+                        "source_url": "https://www.youtube.com/watch?v=stale",
+                        "title": "local stale url guard",
+                        "video_path": str(video),
+                        "subtitle_path": str(subtitle),
+                        "language": "English",
+                        "level": "B1",
+                        "collection_levels": ["A2", "B1", "B2"],
+                        "card_types": ["phrase"],
+                        "content_toggles": {"daily": True},
+                        "api_config": {"provider": "local"},
+                    }
+                )
+            finally:
+                worker._legacy_worker.download_url_source = original_download_url_source
+
+        self.assertEqual(project["source_mode"], "local")
+        self.assertEqual(project["source_url"], "")
+        self.assertEqual(project["video_path"], str(video))
+        self.assertEqual(project["subtitle_path"], str(subtitle))
+        self.assertTrue(any("Local only line" in segment["text"] for segment in project["segments"]))
+
     def test_try_run_ffmpeg_returns_error_instead_of_exiting(self):
         original_which = worker.shutil.which
         try:

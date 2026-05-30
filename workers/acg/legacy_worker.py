@@ -3728,11 +3728,14 @@ def build_quality_funnel(
 
 def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
     emit_progress("generate", "source", 5, "准备素材。")
-    if payload.get("source_mode") == "document":
+    source_mode = str(payload.get("source_mode") or "").strip().lower()
+    if not source_mode:
+        source_mode = "url" if str(payload.get("source_url") or "").strip() else "local"
+    if source_mode == "document":
         return handle_generate_document(payload)
 
     source_info = None
-    if payload.get("source_mode") == "url" or payload.get("source_url"):
+    if source_mode == "url":
         emit_progress("generate", "download", 12, "正在准备 URL 视频和字幕。")
         source_info = download_url_source(payload)
         source_message = "已复用 URL 缓存素材。" if source_info.get("cached") else "URL 素材下载完成。"
@@ -3895,8 +3898,8 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         "quality_funnel": quality_funnel,
         "segments": segments,
         "warning": warning,
-        "source_mode": payload.get("source_mode", "local"),
-        "source_url": payload.get("source_url", ""),
+        "source_mode": source_mode,
+        "source_url": payload.get("source_url", "") if source_mode == "url" else "",
         "source_info": source_info
         or {
             "title": title,
