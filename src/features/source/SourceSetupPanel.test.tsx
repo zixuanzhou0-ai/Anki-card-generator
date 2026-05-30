@@ -59,6 +59,22 @@ describe('SourceSetupPanel', () => {
     expect(onPatchRequest).toHaveBeenCalledWith({ skip_video_slicing: true })
   })
 
+  it('keeps local source mode when choosing a local video', () => {
+    const onPatchRequest = vi.fn()
+    const onSelectPath = vi.fn()
+    const onSelectSourceMode = vi.fn()
+    renderPanel({ onPatchRequest, onSelectPath, onSelectSourceMode })
+
+    fireEvent.change(screen.getByPlaceholderText('选择本地视频'), {
+      target: { value: 'F:\\Videos\\episode.mkv' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '选择视频文件' }))
+
+    expect(onPatchRequest).toHaveBeenCalledWith({ video_path: 'F:\\Videos\\episode.mkv' })
+    expect(onSelectPath).toHaveBeenCalledWith('video')
+    expect(onSelectSourceMode).not.toHaveBeenCalled()
+  })
+
   it('patches URL source options', () => {
     const onPatchRequest = vi.fn()
     renderPanel({
