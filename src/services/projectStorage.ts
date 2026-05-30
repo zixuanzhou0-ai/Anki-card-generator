@@ -14,6 +14,7 @@ import {
   SECRET_PREFS_STORAGE_KEY,
 } from '../domain/options'
 import { normalizeMimoModelId } from './apiConfig'
+import { isTauriRuntime } from './runtime'
 
 export function normalizeSavedMimoConfig(saved: GenerateRequest): GenerateRequest {
   const apiBase = saved.api_config.base_url.toLowerCase()
@@ -134,16 +135,23 @@ export function loadSavedProject(): Project | null {
 }
 
 export function loadSecretPrefs(): SecretPrefs {
-  if (typeof window === 'undefined') return { rememberModelKey: false, rememberTtsKey: false }
+  const defaults = defaultSecretPrefs()
+  if (typeof window === 'undefined') return defaults
   try {
     const raw = window.localStorage.getItem(SECRET_PREFS_STORAGE_KEY)
-    if (!raw) return { rememberModelKey: false, rememberTtsKey: false }
+    if (!raw) return defaults
     const parsed = JSON.parse(raw) as Partial<SecretPrefs>
     return {
       rememberModelKey: Boolean(parsed.rememberModelKey),
       rememberTtsKey: Boolean(parsed.rememberTtsKey),
     }
   } catch {
-    return { rememberModelKey: false, rememberTtsKey: false }
+    return defaults
   }
+}
+
+function defaultSecretPrefs(): SecretPrefs {
+  return isTauriRuntime()
+    ? { rememberModelKey: true, rememberTtsKey: true }
+    : { rememberModelKey: false, rememberTtsKey: false }
 }

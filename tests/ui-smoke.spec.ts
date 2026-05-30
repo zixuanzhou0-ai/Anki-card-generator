@@ -43,7 +43,7 @@ test('desktop workflow shell supports simplified settings, URL mode, document mo
     .filter({ hasText: 'TTS 说明与费用' })
     .locator('summary')
     .click()
-  await expect(page.getByText('TTS 是独立配置，MIMO 语音模型也在这里选。')).toBeVisible()
+  await expect(page.getByText(/TTS 是独立配置，千问和 MIMO 语音模型都在这里选/)).toBeVisible()
   await page.getByRole('button', { name: /MIMO SGP TTS/ }).click()
   await expect(page.getByText('TTS 已开启，尚未测试')).toBeVisible()
   await expect(page.getByPlaceholder('sk-... / tp-...')).toBeVisible()

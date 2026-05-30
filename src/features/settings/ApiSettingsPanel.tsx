@@ -206,11 +206,11 @@ export function ApiSettingsPanel({
             onChange={(event) => onPatchApi({ api_key: event.target.value })}
             placeholder={apiConfig.provider === 'mimo' ? 'sk-... / tp-...' : 'sk-...'}
           />
-          <small>只用于当前会话的字幕理解和卡片解释生成；不会写入本地缓存，也不会自动拿去做 TTS。</small>
+          <small>只用于字幕理解和卡片解释生成；记住后保存到本机系统凭据 / DPAPI，不写入明文缓存。</small>
         </label>
         <label className="toggle secret-toggle">
           <input type="checkbox" checked={secretPrefs.rememberModelKey} onChange={onToggleRememberModelKey} />
-          <span>记住本机模型 API Key（Windows Credential Manager）</span>
+          <span>记住本机模型 API Key（系统凭据 / DPAPI 加密）</span>
         </label>
       </div>
       <button

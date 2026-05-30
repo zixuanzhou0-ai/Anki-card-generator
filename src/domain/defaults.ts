@@ -60,4 +60,4 @@ export const defaultRequest: GenerateRequest = {
 }
 
 export const REQUEST_STORAGE_KEY = 'anki-card-generator.request.v1'
-export const SECRET_PREFS_STORAGE_KEY = 'anki-card-generator.secret-prefs.v1'
+export const SECRET_PREFS_STORAGE_KEY = 'anki-card-generator.secret-prefs.v2'

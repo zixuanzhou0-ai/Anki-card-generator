@@ -9,12 +9,14 @@ import {
   defaultRequest,
   PROJECT_STORAGE_KEY,
   REQUEST_STORAGE_KEY,
+  SECRET_PREFS_STORAGE_KEY,
 } from '../domain/options'
-import { loadSavedProject, loadSavedRequest } from './projectStorage'
+import { loadSavedProject, loadSavedRequest, loadSecretPrefs } from './projectStorage'
 
 describe('projectStorage document focus migration', () => {
   beforeEach(() => {
     window.localStorage.clear()
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
   })
 
   it('restores default document focus for legacy saved requests', () => {
@@ -100,5 +102,35 @@ describe('projectStorage document focus migration', () => {
     const project = loadSavedProject()
     expect(project?.language_focus).toEqual(['phrases'])
     expect(project?.source_info).toMatchObject({ document_study_mode: 'language_reading' })
+  })
+
+  it('keeps secret persistence opt-in for browser previews', () => {
+    expect(loadSecretPrefs()).toEqual({ rememberModelKey: false, rememberTtsKey: false })
+  })
+
+  it('defaults desktop secret persistence to Windows credentials', () => {
+    ;(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+
+    expect(loadSecretPrefs()).toEqual({ rememberModelKey: true, rememberTtsKey: true })
+  })
+
+  it('ignores the legacy v1 secret preference key on desktop', () => {
+    ;(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    window.localStorage.setItem(
+      'anki-card-generator.secret-prefs.v1',
+      JSON.stringify({ rememberModelKey: false, rememberTtsKey: false }),
+    )
+
+    expect(loadSecretPrefs()).toEqual({ rememberModelKey: true, rememberTtsKey: true })
+  })
+
+  it('preserves an explicit v2 desktop opt-out', () => {
+    ;(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    window.localStorage.setItem(
+      SECRET_PREFS_STORAGE_KEY,
+      JSON.stringify({ rememberModelKey: false, rememberTtsKey: false }),
+    )
+
+    expect(loadSecretPrefs()).toEqual({ rememberModelKey: false, rememberTtsKey: false })
   })
 })

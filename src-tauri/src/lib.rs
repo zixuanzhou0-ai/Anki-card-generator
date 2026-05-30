@@ -18,10 +18,19 @@ use tauri::{Emitter, LogicalSize, Manager, Size, State};
 use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
+use windows_sys::Win32::{
+    Foundation::LocalFree,
+    Security::Cryptography::{
+        CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
+    },
+};
+
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const WORKER_PROGRESS_PREFIX: &str = "__ANKI_CARD_PROGRESS__";
 const WORKER_ERROR_PREFIX: &str = "__ANKI_CARD_ERROR__";
 const SECRET_SERVICE: &str = "Anki Card Generator";
+const SECRET_FALLBACK_DIR: &str = "com.ankicard.generator";
 const ALLOWED_SECRET_KEYS: &[&str] = &["model_api_key", "tts_api_key"];
 const MIN_WINDOW_WIDTH: f64 = 1180.0;
 const MIN_WINDOW_HEIGHT: f64 = 780.0;
@@ -53,6 +62,185 @@ fn validate_secret_key(key: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("不允许保存这个凭据键：{key}"))
+    }
+}
+
+fn save_keyring_secret(key: &str, value: &str) -> Result<(), String> {
+    let entry = keyring::Entry::new(SECRET_SERVICE, key)
+        .map_err(|err| format!("无法打开系统凭据：{err}"))?;
+    entry
+        .set_password(value)
+        .map_err(|err| format!("无法保存系统凭据：{err}"))?;
+    match entry.get_password() {
+        Ok(loaded) if loaded == value => Ok(()),
+        Ok(_) => Err("系统凭据写入后校验失败。".to_string()),
+        Err(err) => Err(format!("系统凭据写入后无法读回：{err}")),
+    }
+}
+
+fn load_keyring_secret(key: &str) -> Result<Option<String>, String> {
+    match keyring::Entry::new(SECRET_SERVICE, key)
+        .map_err(|err| format!("无法打开系统凭据：{err}"))?
+        .get_password()
+    {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(err) => Err(format!("无法读取系统凭据：{err}")),
+    }
+}
+
+fn delete_keyring_secret(key: &str) -> Result<(), String> {
+    match keyring::Entry::new(SECRET_SERVICE, key)
+        .map_err(|err| format!("无法打开系统凭据：{err}"))?
+        .delete_credential()
+    {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(err) => Err(format!("无法删除系统凭据：{err}")),
+    }
+}
+
+fn secret_fallback_path(key: &str) -> Result<PathBuf, String> {
+    validate_secret_key(key)?;
+    let root = env::var_os("LOCALAPPDATA")
+        .or_else(|| env::var_os("APPDATA"))
+        .map(PathBuf::from)
+        .ok_or_else(|| "无法定位当前用户 AppData 目录。".to_string())?;
+    Ok(root
+        .join(SECRET_FALLBACK_DIR)
+        .join("secrets")
+        .join(format!("{key}.dpapi")))
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut result = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        result.push(HEX[(byte >> 4) as usize] as char);
+        result.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    result
+}
+
+fn decode_hex(text: &str) -> Result<Vec<u8>, String> {
+    let trimmed = text.trim();
+    if trimmed.len() % 2 != 0 {
+        return Err("加密凭据文件格式不完整。".to_string());
+    }
+    let mut bytes = Vec::with_capacity(trimmed.len() / 2);
+    for index in (0..trimmed.len()).step_by(2) {
+        let byte = u8::from_str_radix(&trimmed[index..index + 2], 16)
+            .map_err(|err| format!("加密凭据文件格式无效：{err}"))?;
+        bytes.push(byte);
+    }
+    Ok(bytes)
+}
+
+#[cfg(windows)]
+fn protect_secret(value: &str) -> Result<Vec<u8>, String> {
+    let bytes = value.as_bytes();
+    let input = CRYPT_INTEGER_BLOB {
+        cbData: bytes.len() as u32,
+        pbData: bytes.as_ptr() as *mut u8,
+    };
+    let mut output = CRYPT_INTEGER_BLOB {
+        cbData: 0,
+        pbData: std::ptr::null_mut(),
+    };
+    let ok = unsafe {
+        CryptProtectData(
+            &input,
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null(),
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        )
+    };
+    if ok == 0 {
+        return Err(format!(
+            "DPAPI 加密失败：{}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let encrypted =
+        unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
+    unsafe {
+        let _ = LocalFree(output.pbData.cast());
+    }
+    Ok(encrypted)
+}
+
+#[cfg(windows)]
+fn unprotect_secret(bytes: &[u8]) -> Result<String, String> {
+    let input = CRYPT_INTEGER_BLOB {
+        cbData: bytes.len() as u32,
+        pbData: bytes.as_ptr() as *mut u8,
+    };
+    let mut output = CRYPT_INTEGER_BLOB {
+        cbData: 0,
+        pbData: std::ptr::null_mut(),
+    };
+    let ok = unsafe {
+        CryptUnprotectData(
+            &input,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null(),
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        )
+    };
+    if ok == 0 {
+        return Err(format!(
+            "DPAPI 解密失败：{}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let decrypted =
+        unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
+    unsafe {
+        let _ = LocalFree(output.pbData.cast());
+    }
+    String::from_utf8(decrypted).map_err(|err| format!("DPAPI 凭据不是有效 UTF-8：{err}"))
+}
+
+#[cfg(not(windows))]
+fn protect_secret(_value: &str) -> Result<Vec<u8>, String> {
+    Err("当前平台不支持 DPAPI 凭据兜底。".to_string())
+}
+
+#[cfg(not(windows))]
+fn unprotect_secret(_bytes: &[u8]) -> Result<String, String> {
+    Err("当前平台不支持 DPAPI 凭据兜底。".to_string())
+}
+
+fn save_secret_fallback(key: &str, value: &str) -> Result<(), String> {
+    let path = secret_fallback_path(key)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| format!("无法创建凭据目录：{err}"))?;
+    }
+    let encrypted = protect_secret(value)?;
+    fs::write(path, encode_hex(&encrypted)).map_err(|err| format!("无法写入 DPAPI 凭据：{err}"))
+}
+
+fn load_secret_fallback(key: &str) -> Result<Option<String>, String> {
+    let path = secret_fallback_path(key)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(path).map_err(|err| format!("无法读取 DPAPI 凭据：{err}"))?;
+    let encrypted = decode_hex(&raw)?;
+    unprotect_secret(&encrypted).map(Some)
+}
+
+fn delete_secret_fallback(key: &str) -> Result<(), String> {
+    let path = secret_fallback_path(key)?;
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!("无法删除 DPAPI 凭据：{err}")),
     }
 }
 
@@ -898,35 +1086,46 @@ fn reveal_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
 #[tauri::command]
 fn save_secret(key: String, value: String) -> Result<(), String> {
     validate_secret_key(&key)?;
-    keyring::Entry::new(SECRET_SERVICE, &key)
-        .map_err(|err| format!("无法打开系统凭据：{err}"))?
-        .set_password(&value)
-        .map_err(|err| format!("无法保存系统凭据：{err}"))?;
-    Ok(())
+    let keyring_result = save_keyring_secret(&key, &value);
+    let fallback_result = save_secret_fallback(&key, &value);
+    if keyring_result.is_ok() || fallback_result.is_ok() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{}；{}",
+            keyring_result.unwrap_err(),
+            fallback_result.unwrap_err()
+        ))
+    }
 }
 
 #[tauri::command]
 fn load_secret(key: String) -> Result<Option<String>, String> {
     validate_secret_key(&key)?;
-    match keyring::Entry::new(SECRET_SERVICE, &key)
-        .map_err(|err| format!("无法打开系统凭据：{err}"))?
-        .get_password()
-    {
-        Ok(value) => Ok(Some(value)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(err) => Err(format!("无法读取系统凭据：{err}")),
+    match load_keyring_secret(&key) {
+        Ok(Some(value)) => Ok(Some(value)),
+        Ok(None) => load_secret_fallback(&key),
+        Err(keyring_error) => match load_secret_fallback(&key) {
+            Ok(Some(value)) => Ok(Some(value)),
+            Ok(None) => Err(keyring_error),
+            Err(fallback_error) => Err(format!("{keyring_error}；{fallback_error}")),
+        },
     }
 }
 
 #[tauri::command]
 fn delete_secret(key: String) -> Result<(), String> {
     validate_secret_key(&key)?;
-    match keyring::Entry::new(SECRET_SERVICE, &key)
-        .map_err(|err| format!("无法打开系统凭据：{err}"))?
-        .delete_credential()
-    {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(err) => Err(format!("无法删除系统凭据：{err}")),
+    let keyring_result = delete_keyring_secret(&key);
+    let fallback_result = delete_secret_fallback(&key);
+    if keyring_result.is_ok() || fallback_result.is_ok() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{}；{}",
+            keyring_result.unwrap_err(),
+            fallback_result.unwrap_err()
+        ))
     }
 }
 
@@ -964,4 +1163,22 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "writes a temporary credential to the local OS keyring"]
+    fn secret_keyring_round_trip() {
+        let key = "model_api_key".to_string();
+        let value = format!("codex-test-{}", std::process::id());
+
+        save_secret(key.clone(), value.clone()).expect("save test credential");
+        let loaded = load_secret(key.clone()).expect("load test credential");
+        delete_secret(key).expect("delete test credential");
+
+        assert_eq!(loaded, Some(value));
+    }
 }

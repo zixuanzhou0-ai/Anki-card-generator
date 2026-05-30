@@ -237,11 +237,11 @@ export function TtsSettingsPanel({
                 tts.provider === 'mimo' ? 'sk-... / tp-...' : tts.provider === 'qwen' ? 'sk-...' : 'xai-... / AIza...'
               }
             />
-            <small>MIMO / 千问 TTS 可留空并复用上方同服务商 Key；填写后优先使用这里的 Key，且不会写入本地缓存。</small>
+            <small>MIMO / 千问 TTS 可留空并复用上方同服务商 Key；记住后保存到本机系统凭据 / DPAPI。</small>
           </label>
           <label className="toggle secret-toggle">
             <input type="checkbox" checked={secretPrefs.rememberTtsKey} onChange={onToggleRememberTtsKey} />
-            <span>记住本机 TTS API Key（Windows Credential Manager）</span>
+            <span>记住本机 TTS API Key（系统凭据 / DPAPI 加密）</span>
           </label>
           <label className="field">
             <span>语音模型</span>
