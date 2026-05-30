@@ -5800,7 +5800,7 @@ audio {
 .back-card {
   display: grid;
   grid-template-columns: 1fr;
-  grid-template-rows: minmax(145px, 24%) auto auto minmax(0, 1fr);
+  grid-template-rows: minmax(260px, 38%) auto auto minmax(0, 1fr);
   min-height: 0;
 }
 .back-card:not(.has-media) {
@@ -5808,9 +5808,8 @@ audio {
 }
 .replay {
   display: grid;
-  grid-template-columns: minmax(280px, 0.42fr) minmax(0, 1fr);
-  gap: clamp(16px, 2.2vw, 30px);
-  align-items: center;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: clamp(10px, 1.4vh, 16px);
   height: 100%;
   min-height: 0;
   max-height: none;
@@ -5819,24 +5818,101 @@ audio {
   background: #111114;
 }
 .replay-media {
+  display: grid;
+  place-items: center;
+  justify-self: center;
+  width: 100%;
+  max-width: 1040px;
   height: 100%;
   min-height: 0;
   padding: 8px;
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.06);
 }
+.replay-media video {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  object-fit: contain;
+  border-radius: 7px;
+}
+.replay-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  min-width: 0;
+}
 .replay .audio-title {
   color: rgba(255, 255, 255, 0.72);
+  flex: 1 1 220px;
+  align-items: center;
 }
-.replay .audio-row {
-  margin-top: clamp(8px, 1.1vh, 14px);
-  grid-template-columns: clamp(76px, 9vw, 116px) minmax(0, 1fr);
+.replay-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
-.replay .audio-row span {
-  color: rgba(255, 255, 255, 0.66);
+.replay-audio-control {
+  position: relative;
 }
-.replay audio {
-  min-height: 30px;
+.replay-audio-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 9px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  background: #f7f7f8;
+  color: #111114;
+  font-size: 13px;
+  font-weight: 880;
+  line-height: 1;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.18);
+  cursor: pointer;
+  transition: transform 140ms ease, background 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+.replay-audio-button:focus-visible {
+  outline: 3px solid rgba(255, 255, 255, 0.26);
+  outline-offset: 3px;
+}
+.replay-audio-button:active {
+  transform: translateY(1px);
+}
+.replay-audio-button.is-playing {
+  border-color: rgba(10, 132, 255, 0.55);
+  background: #0a84ff;
+  color: #ffffff;
+}
+.play-dot {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  border-top: 6px solid transparent;
+  border-bottom: 6px solid transparent;
+  border-left: 9px solid currentColor;
+}
+.replay-audio-source {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+.replay .audio-missing {
+  min-height: 38px;
+  margin: 0;
+  padding: 9px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+.replay .audio-missing span {
+  display: none;
 }
 .answer-hero {
   display: grid;
@@ -6188,12 +6264,17 @@ audio {
     grid-template-rows: minmax(0, 48%) minmax(130px, 26%) minmax(95px, 26%);
   }
   .back-card {
-    grid-template-rows: minmax(120px, 22%) auto auto minmax(0, 1fr);
+    grid-template-rows: minmax(230px, 36%) auto auto minmax(0, 1fr);
   }
   .front-task,
-  .audio-row,
-  .replay {
+  .audio-row {
     grid-template-columns: 1fr;
+  }
+  .replay-tools {
+    align-content: start;
+  }
+  .replay-buttons {
+    justify-content: flex-start;
   }
   .detail-grid {
     grid-template-columns: 1fr;
@@ -6227,7 +6308,7 @@ audio {
 }
 @media (max-height: 940px) {
   .back-card {
-    grid-template-rows: minmax(126px, 24%) auto auto minmax(0, 1fr);
+    grid-template-rows: minmax(240px, 36%) auto auto minmax(0, 1fr);
   }
   .answer-hero {
     gap: 5px;
@@ -6263,19 +6344,21 @@ audio {
     grid-template-rows: minmax(0, 50%) minmax(120px, 25%) minmax(90px, 25%);
   }
   .back-card {
-    grid-template-rows: minmax(128px, 24%) auto auto minmax(0, 1fr);
+    grid-template-rows: minmax(190px, 34%) auto auto minmax(0, 1fr);
   }
   .replay {
-    grid-template-columns: minmax(170px, 0.34fr) minmax(0, 1fr);
-    gap: 10px;
+    gap: 8px;
     padding: 8px;
   }
-  .replay .audio-row { margin-top: 5px; }
-  .audio-strip .audio-row + .audio-row,
-  .replay .audio-row + .audio-row {
+  .audio-strip .audio-row + .audio-row {
     margin-top: 4px;
   }
-  .replay audio { min-height: 26px; }
+  .replay-audio-button,
+  .replay .audio-missing {
+    min-height: 34px;
+    padding: 8px 11px;
+    font-size: 12px;
+  }
   .answer-hero {
     gap: 5px;
     padding: 12px 22px;
@@ -6308,7 +6391,7 @@ audio {
     min-height: 92vh;
   }
   .back-card {
-    grid-template-rows: minmax(105px, 23%) auto auto minmax(0, 1fr);
+    grid-template-rows: minmax(160px, 31%) auto auto minmax(0, 1fr);
   }
   .front-content { display: none; }
   .teacher { padding: 5px 8px; }
@@ -6445,11 +6528,13 @@ BACK_TEMPLATE = """
   <section class="study-card back-card {{#Video}}has-media{{/Video}}">
     {{#Video}}<div class="replay">
       <div class="replay-media">{{Video}}</div>
-      <div>
+      <div class="replay-tools">
         <div class="audio-title"><strong>回放校对</strong><span>{{SourceTime}}</span></div>
-        {{#Audio}}<div class="audio-row"><span>原声音频</span>{{Audio}}</div>{{/Audio}}
-        {{#TtsAudio}}<div class="audio-row"><span>整句 AI 朗读</span>{{TtsAudio}}</div>{{/TtsAudio}}
-        {{^TtsAudio}}<div class="audio-row audio-missing"><span>整句 AI 朗读</span><em>未生成；待审卡建议人工确认，或测试 TTS 后重新导出。</em></div>{{/TtsAudio}}
+        <div class="replay-buttons">
+          {{#Audio}}<span class="replay-audio-control"><button class="replay-audio-button" type="button" title="播放原声音频" onclick="playReplayAudio(this)"><span class="play-dot" aria-hidden="true"></span><span>原声</span></button><span class="replay-audio-source">{{Audio}}</span></span>{{/Audio}}
+          {{#TtsAudio}}<span class="replay-audio-control"><button class="replay-audio-button" type="button" title="播放整句 AI 朗读" onclick="playReplayAudio(this)"><span class="play-dot" aria-hidden="true"></span><span>AI 朗读</span></button><span class="replay-audio-source">{{TtsAudio}}</span></span>{{/TtsAudio}}
+          {{^TtsAudio}}<span class="audio-missing"><span>整句 AI 朗读</span><em>AI 朗读未生成</em></span>{{/TtsAudio}}
+        </div>
       </div>
     </div>{{/Video}}
 
@@ -6618,6 +6703,39 @@ BACK_TEMPLATE = """
     var playResult = audio.play();
     if (playResult && playResult.catch) {
       playResult.catch(function () { resetPhraseSpeaker(button); });
+    }
+  }
+  function resetReplayButton(button) {
+    if (!button) return;
+    button.classList.remove("is-playing");
+  }
+  function playReplayAudio(button) {
+    var root = button && button.closest ? button.closest(".replay-audio-control") : null;
+    var audio = root ? root.querySelector(".replay-audio-source audio") : null;
+    if (!audio) return;
+    if (!audio.paused) {
+      audio.pause();
+      audio.currentTime = 0;
+      resetReplayButton(button);
+      return;
+    }
+    document.querySelectorAll(".replay-audio-source audio").forEach(function (node) {
+      if (node !== audio) {
+        node.pause();
+        node.currentTime = 0;
+      }
+    });
+    document.querySelectorAll(".replay-audio-button.is-playing").forEach(resetReplayButton);
+    button.classList.add("is-playing");
+    audio.loop = true;
+    audio.playbackRate = 0.75;
+    audio.currentTime = 0;
+    audio.onpause = function () {
+      if (audio.currentTime === 0 || audio.ended) resetReplayButton(button);
+    };
+    var playResult = audio.play();
+    if (playResult && playResult.catch) {
+      playResult.catch(function () { resetReplayButton(button); });
     }
   }
 </script>
