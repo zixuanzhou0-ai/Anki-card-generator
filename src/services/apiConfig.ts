@@ -53,6 +53,9 @@ export function validateApiConfigForRequest(api: ApiConfig): string | null {
   if (api.provider === 'local') return null
   if (!api.api_key.trim()) return '还没有填写 API Key。'
   if (!api.model.trim()) return '还没有填写模型名。'
+  if (isMimoApiConfig(api) && isMimoTokenPlanBase(api.base_url) && !isMimoTokenPlanKey(api.api_key)) {
+    return 'MIMO Token Plan Base URL 需要 tp- 开头的 Token Plan Key。当前 Key 更像 DashScope / OpenAI-compatible Key，请切换到 Qwen/DashScope 预设，或改用匹配的 MIMO Key。'
+  }
   return validateServiceBaseUrl(api.base_url, api.provider === 'mimo' ? 'MIMO Base URL' : '模型 Base URL')
 }
 
@@ -107,6 +110,9 @@ export function validateTtsConfigForRequest(tts: TtsConfig): string | null {
   if (tts.provider !== 'grok' && !tts.model.trim()) return '还没有填写 TTS 模型。'
   if (!tts.voice.trim()) return '还没有填写 TTS voice。'
   if (tts.provider === 'gemini' && !tts.base_url.trim()) return null
+  if (tts.provider === 'mimo' && isMimoTokenPlanBase(tts.base_url) && !isMimoTokenPlanKey(tts.api_key)) {
+    return 'MIMO Token Plan TTS Base URL 需要 tp- 开头的 Token Plan Key。当前 Key 更像 DashScope / OpenAI-compatible Key，请切换到 Qwen3 TTS 预设，或改用匹配的 MIMO TTS Key。'
+  }
   return validateServiceBaseUrl(tts.base_url, 'TTS Base URL')
 }
 

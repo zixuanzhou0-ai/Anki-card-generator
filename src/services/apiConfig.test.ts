@@ -3,6 +3,7 @@ import {
   normalizeApiConfigForRequest,
   resolveGenerateApiConfig,
   resolveTtsConfig,
+  validateApiConfigForRequest,
   validateServiceBaseUrl,
   validateTtsConfigForRequest,
 } from './apiConfig'
@@ -61,6 +62,45 @@ describe('validateServiceBaseUrl', () => {
 
     expect(normalized.base_url).toBe('https://token-plan-sgp.xiaomimimo.com/v1')
     expect(normalized.model).toBe('mimo-v2.5-pro')
+  })
+
+  it('rejects DashScope-shaped keys on MIMO Token Plan endpoints before a network request', () => {
+    const apiMessage = validateApiConfigForRequest({
+      provider: 'mimo',
+      base_url: 'https://token-plan-sgp.xiaomimimo.com/v1',
+      api_key: 'sk-dashscope',
+      model: 'mimo-v2.5-pro',
+      capabilities: ['structured_json'],
+      tts_config: {
+        enabled: false,
+        provider: 'disabled',
+        base_url: '',
+        api_key: '',
+        model: '',
+        voice: '',
+        language: 'auto',
+        sample_rate: 24000,
+        bit_rate: 128000,
+      },
+    })
+
+    expect(apiMessage).toContain('tp-')
+    expect(apiMessage).toContain('Qwen/DashScope')
+
+    const ttsMessage = validateTtsConfigForRequest({
+      enabled: true,
+      provider: 'mimo',
+      base_url: 'https://token-plan-sgp.xiaomimimo.com/v1',
+      api_key: 'sk-dashscope',
+      model: 'mimo-v2.5-tts',
+      voice: 'Mia',
+      language: 'auto',
+      sample_rate: 24000,
+      bit_rate: 128000,
+    })
+
+    expect(ttsMessage).toContain('tp-')
+    expect(ttsMessage).toContain('Qwen3 TTS')
   })
 
   it('lets Qwen TTS reuse the main DashScope key', () => {
