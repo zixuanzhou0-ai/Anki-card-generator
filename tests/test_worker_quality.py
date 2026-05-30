@@ -36,6 +36,76 @@ class WorkerQualityTests(unittest.TestCase):
 
         self.assertEqual(base_url, worker.MIMO_TOKEN_PLAN_SGP_BASE_URL)
 
+    def test_qwen_compatible_chat_completion_disables_thinking(self):
+        calls = {}
+        original_http_json = worker._legacy_worker.http_json
+
+        def fake_http_json(url, headers, body, timeout=60):
+            calls["url"] = url
+            calls["headers"] = headers
+            calls["body"] = body
+            calls["timeout"] = timeout
+            return {"choices": [{"message": {"content": '{"segments":[]}'}}]}
+
+        try:
+            worker._legacy_worker.http_json = fake_http_json
+            worker.compatible_chat_completion(
+                {
+                    "provider": "openai-compatible",
+                    "api_key": "sk-test",
+                    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                    "model": "qwen3.1-max",
+                },
+                [{"role": "user", "content": "Return JSON."}],
+                temperature=0,
+                timeout=90,
+                max_tokens=800,
+            )
+        finally:
+            worker._legacy_worker.http_json = original_http_json
+
+        self.assertEqual(calls["url"], "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")
+        self.assertEqual(calls["headers"]["Authorization"], "Bearer sk-test")
+        self.assertEqual(calls["body"]["response_format"], {"type": "json_object"})
+        self.assertFalse(calls["body"]["enable_thinking"])
+        self.assertFalse(calls["body"]["stream"])
+        self.assertEqual(calls["body"]["max_tokens"], 800)
+        self.assertEqual(calls["timeout"], 90)
+
+    def test_mimo_compatible_chat_completion_disables_thinking(self):
+        calls = {}
+        original_http_json = worker._legacy_worker.http_json
+
+        def fake_http_json(url, headers, body, timeout=60):
+            calls["url"] = url
+            calls["headers"] = headers
+            calls["body"] = body
+            return {"choices": [{"message": {"content": '{"segments":[]}'}}]}
+
+        try:
+            worker._legacy_worker.http_json = fake_http_json
+            worker.compatible_chat_completion(
+                {
+                    "provider": "mimo",
+                    "api_key": "test-key",
+                    "base_url": "https://api.xiaomimimo.com/v1",
+                    "model": "mimo-v2.5-pro",
+                },
+                [{"role": "user", "content": "Return JSON."}],
+                temperature=0,
+                timeout=120,
+                max_tokens=2000,
+            )
+        finally:
+            worker._legacy_worker.http_json = original_http_json
+
+        self.assertEqual(calls["url"], "https://api.xiaomimimo.com/v1/chat/completions")
+        self.assertEqual(calls["headers"]["api-key"], "test-key")
+        self.assertEqual(calls["body"]["reasoning_effort"], "low")
+        self.assertEqual(calls["body"]["thinking"], {"type": "disabled"})
+        self.assertEqual(calls["body"]["max_completion_tokens"], 2000)
+        self.assertNotIn("response_format", calls["body"])
+
     def test_ytdlp_node_runtime_enables_remote_ejs_components(self):
         original_which = worker.shutil.which
         try:

@@ -1782,6 +1782,17 @@ def is_mimo_config(config: dict[str, Any]) -> bool:
     return provider_name(config) in MIMO_PROVIDERS or "xiaomimimo.com" in base_url
 
 
+def is_qwen_config(config: dict[str, Any]) -> bool:
+    base_url = str(config.get("base_url") or "").lower()
+    model = str(config.get("model") or "").strip().lower()
+    return (
+        provider_name(config) in QWEN_TTS_PROVIDERS
+        or "dashscope" in base_url
+        or "qwencloud" in base_url
+        or model.startswith("qwen")
+    )
+
+
 def api_key_header(config: dict[str, Any]) -> dict[str, str]:
     api_key = str(config.get("api_key") or "").strip()
     if is_mimo_config(config):
@@ -1819,18 +1830,23 @@ def compatible_chat_completion(
     base_url = compatible_base_url(api)
     if not base_url:
         raise RuntimeError("MIMO / OpenAI-compatible 需要 Base URL。")
+    is_mimo = is_mimo_config(api)
+    is_qwen = is_qwen_config(api)
     body: dict[str, Any] = {
         "model": str(api.get("model") or "").strip(),
         "messages": messages,
         "temperature": temperature,
     }
-    if not is_mimo_config(api):
+    if not is_mimo:
         body["response_format"] = {"type": "json_object"}
     else:
         body["reasoning_effort"] = "low"
         body["thinking"] = {"type": "disabled"}
+    if is_qwen:
+        body["enable_thinking"] = False
+        body["stream"] = False
     if max_tokens is not None:
-        body["max_completion_tokens" if is_mimo_config(api) else "max_tokens"] = max_tokens
+        body["max_completion_tokens" if is_mimo else "max_tokens"] = max_tokens
     supports_response_retry = "response_format" in body
     try:
         return http_json(
@@ -1840,7 +1856,7 @@ def compatible_chat_completion(
             timeout=timeout,
         )
     except Exception as err:
-        if is_mimo_config(api):
+        if is_mimo:
             retry_body = dict(body)
             retry_body.pop("reasoning_effort", None)
             retry_body.pop("thinking", None)
@@ -1895,7 +1911,7 @@ def call_model(project: dict[str, Any], segments: list[dict[str, Any]]) -> dict[
 
     try:
         if provider in OPENAI_COMPATIBLE_PROVIDERS:
-            token_budget = 2200 if is_mimo_config(api) else 6000
+            token_budget = 2200 if is_mimo_config(api) else 4000 if is_qwen_config(api) else 6000
             response = compatible_chat_completion(
                 api,
                 [
@@ -1903,7 +1919,7 @@ def call_model(project: dict[str, Any], segments: list[dict[str, Any]]) -> dict[
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.3,
-                timeout=120 if is_mimo_config(api) else 60,
+                timeout=120 if (is_mimo_config(api) or is_qwen_config(api)) else 60,
                 max_tokens=token_budget,
             )
             content = response["choices"][0]["message"]["content"]
@@ -1948,13 +1964,31 @@ def call_model_batches(project: dict[str, Any], segments: list[dict[str, Any]], 
     if not segments:
         return None
     api = project.get("api_config") or {}
+    if (
+        api.get("provider", "local") == "local"
+        or not str(api.get("api_key", "")).strip()
+        or not str(api.get("model", "")).strip()
+    ):
+        return None
     if is_mimo_config(api):
         batch_size = 1
+    elif is_qwen_config(api):
+        batch_size = min(batch_size, 4)
     merged: list[dict[str, Any]] = []
     errors: list[str] = []
     any_called = False
+    total_batches = max(1, (len(segments) + batch_size - 1) // batch_size)
     for start in range(0, len(segments), batch_size):
         batch = segments[start : start + batch_size]
+        batch_index = start // batch_size + 1
+        provider_hint = "，thinking 已关闭" if (is_qwen_config(api) or is_mimo_config(api)) else ""
+        percent = min(82, 66 + int((batch_index - 1) / total_batches * 14))
+        emit_progress(
+            "generate",
+            "ai",
+            percent,
+            f"正在请求模型生成卡片：第 {batch_index}/{total_batches} 批{provider_hint}。",
+        )
         payload = call_model(project, batch)
         if payload is None:
             return None
@@ -2298,8 +2332,17 @@ def review_phrase_candidates_with_mimo(
     api = project.get("api_config") or {}
     reviews: dict[str, dict[str, Any]] = {}
     try:
+        total_batches = max(1, (len(segments) + batch_size - 1) // batch_size)
         for start in range(0, len(segments), batch_size):
             batch = segments[start : start + batch_size]
+            batch_index = start // batch_size + 1
+            percent = min(64, 58 + int((batch_index - 1) / total_batches * 5))
+            emit_progress(
+                "generate",
+                "phrase_review",
+                percent,
+                f"MIMO 正在评审词伙候选：第 {batch_index}/{total_batches} 批，thinking 已关闭。",
+            )
             prompt = build_phrase_review_prompt(project, batch)
             response = compatible_chat_completion(
                 api,
@@ -3505,6 +3548,7 @@ def call_document_model(project: dict[str, Any], segments: list[dict[str, Any]])
     prompt = build_document_prompt(project, segments)
     try:
         if provider in OPENAI_COMPATIBLE_PROVIDERS:
+            token_budget = 2200 if is_mimo_config(api) else 4000 if is_qwen_config(api) else 5000
             response = compatible_chat_completion(
                 api,
                 [
@@ -3512,8 +3556,8 @@ def call_document_model(project: dict[str, Any], segments: list[dict[str, Any]])
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.25,
-                timeout=120 if is_mimo_config(api) else 60,
-                max_tokens=2200 if is_mimo_config(api) else 5000,
+                timeout=120 if (is_mimo_config(api) or is_qwen_config(api)) else 60,
+                max_tokens=token_budget,
             )
             content = response["choices"][0]["message"]["content"]
             return extract_json_object(content)
