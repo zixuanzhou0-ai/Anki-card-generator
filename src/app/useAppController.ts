@@ -1139,9 +1139,8 @@ export function useAppController() {
       setStatus('浏览器预览模式不能导出 apkg，请运行 npm run tauri:dev。')
       return
     }
-    const exportTtsConfigError = validateTtsConfigForRequest(
-      resolveTtsConfig(request.api_config.tts_config, request.api_config),
-    )
+    const resolvedExportTtsConfig = resolveTtsConfig(request.api_config.tts_config, request.api_config)
+    const exportTtsConfigError = validateTtsConfigForRequest(resolvedExportTtsConfig)
     if (exportTtsConfigError) {
       setStatus(`导出前 TTS 配置检查失败：${exportTtsConfigError}`)
       return
@@ -1164,7 +1163,14 @@ export function useAppController() {
     )
     try {
       const exportPayload = {
-        project: { ...projectForExport, template_id: request.template_id, api_config: request.api_config },
+        project: {
+          ...projectForExport,
+          template_id: request.template_id,
+          api_config: {
+            ...request.api_config,
+            tts_config: resolvedExportTtsConfig,
+          },
+        },
         output_dir: outputDir,
       }
       const job = await startWorkerJob('export', exportPayload)

@@ -7212,13 +7212,14 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                 video_segment_count += 1
                 video_file_count += 2
                 original_audio_count += 1
-            try:
-                emit_progress("export", "tts", min(86, segment_percent + 4), f"正在处理音频：{segment_id}")
-                if synthesize_tts(project, segment, tts_out):
-                    media_files.append(str(tts_out))
-                    tts_by_segment[segment_id] = tts_name
-            except Exception as err:
-                warnings.append(f"{segment_id} TTS 失败：{err}")
+            if tts_requested and not is_document_project:
+                try:
+                    emit_progress("export", "tts", min(86, segment_percent + 4), f"正在生成整句朗读：{segment_id}")
+                    if synthesize_tts(project, segment, tts_out):
+                        media_files.append(str(tts_out))
+                        tts_by_segment[segment_id] = tts_name
+                except Exception as err:
+                    warnings.append(f"{segment_id} TTS 失败：{err}")
             cut_segments.add(segment_id)
 
         for card in enabled_cards:
