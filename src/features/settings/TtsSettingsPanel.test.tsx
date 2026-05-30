@@ -55,7 +55,7 @@ function renderPanel(overrides: Partial<ComponentProps<typeof TtsSettingsPanel>>
     mimoTtsModels: [{ label: 'MIMO V2.5 TTS', value: 'mimo-v2.5-tts' }],
     mimoTtsVoices: ['Mia', 'Chloe'],
     qwenTtsModels: [{ label: 'Qwen3 TTS Flash', value: 'qwen3-tts-flash' }],
-    qwenTtsVoices: ['Cherry', 'Serena'],
+    qwenTtsVoices: ['Jennifer', 'Aiden', 'Cherry', 'Serena'],
     secretPrefs,
     showAdvancedTts: false,
     tts,
@@ -98,7 +98,7 @@ describe('TtsSettingsPanel', () => {
       enabled: true,
       model: 'qwen3-tts-flash',
       provider: 'qwen',
-      voice: 'Cherry',
+      voice: 'Jennifer',
     })
   })
 
@@ -140,7 +140,7 @@ describe('TtsSettingsPanel', () => {
         enabled: true,
         model: 'qwen3-tts-flash',
         provider: 'qwen',
-        voice: 'Cherry',
+        voice: 'Jennifer',
       }),
     )
   })

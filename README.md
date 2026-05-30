@@ -75,7 +75,7 @@ flowchart TB
 
 ![卡片审核面板](docs/screenshots/card-review-panel.png)
 
-设置页集中管理文本模型、MIMO TTS 和本地环境检查；API Key 只在本机填写，不写入仓库：
+设置页集中管理文本模型、MIMO / Qwen / Gemini 等 TTS 和本地环境检查；API Key 只在本机填写，不写入仓库：
 
 ![设置页](docs/screenshots/settings-modal.png)
 
@@ -86,12 +86,19 @@ flowchart TB
 1. 解压 `AnkiCardGenerator-v0.9.2-beta-windows-portable.zip`。
 2. 右键 `scripts/setup_runtime.ps1`，用 PowerShell 运行；脚本会创建项目本地 `.venv`、安装 worker 依赖，并输出 `runtime_diagnostic.json`。
 3. 打开 `Anki Card Generator.exe`。
-4. 进入设置，点击“检查环境”，再填写自己的 MIMO API Key 并测试连接。
+4. 进入设置，点击“检查环境”，再填写自己的 MIMO、Qwen / DashScope 或其他模型 API Key 并测试连接。
 5. 用内置示例、本地视频 + SRT，或 YouTube URL 生成并导出 `.apkg`。
 
 如果 YouTube 触发 429、n challenge 或字幕接口失败，URL 面板可以切到“只用字幕生成”或“跳过视频切片”，先把卡片做出来。
 
 详细图文流程见 [用户指南](docs/USER_GUIDE.md)。开发和发布维护见 [架构说明](docs/ARCHITECTURE.md)，常见失败处理见 [故障排查](docs/TROUBLESHOOTING.md)。
+
+## TTS 音色建议
+
+- 英语学习卡优先使用视频原声；需要 AI 朗读时，MiMo V2.5 TTS 仍是当前更稳的英语选择。
+- Qwen3 TTS 已内置美语预设：`Jennifer` 为美语女声，`Aiden` 为美语男声。`Cherry` 仍可用，但更偏通用活泼女声。
+- Qwen3-TTS-Instruct-Flash 可做语速、情绪和朗读风格控制；Qwen3-TTS-VD 可先通过声音设计创建自定义 voice，再把返回的 voice id 填入设置页。
+- 审核页的 `0.75x` 只影响试听播放速度，不会改变导出到 Anki 的 MP3。
 
 ## 必需依赖
 
@@ -141,7 +148,7 @@ powershell -ExecutionPolicy Bypass -File scripts/package_portable.ps1 -ReleaseEx
 ## 隐私和密钥
 
 - 不要把真实 API Key 写进源码、README、issue 或 release note。
-- API Key 只应该由用户在本机设置页填写；默认不会把文本/TTS Key 写入 localStorage。只有用户显式勾选“记住本机 Key”时，才会保存到 Windows Credential Manager。
+- API Key 只应该由用户在本机设置页填写；默认不会把文本/TTS Key 写入 localStorage。只有用户显式勾选“记住本机 Key”时，才会保存到 Windows Credential Manager，或在系统凭据不可用时保存到本机 DPAPI 加密文件。
 - 使用第三方模型或 TTS 时，字幕、文档片段和生成字段会发送给对应服务商。
 - 生成的视频、音频、`.apkg`、项目缓存默认不会提交到 Git。
 

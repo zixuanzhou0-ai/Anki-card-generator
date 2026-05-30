@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import html
 import base64
@@ -58,6 +58,8 @@ for stream in (sys.stdin, sys.stdout, sys.stderr):
 MIMO_OPENAI_BASE_URL = "https://api.xiaomimimo.com/v1"
 MIMO_TOKEN_PLAN_SGP_BASE_URL = "https://token-plan-sgp.xiaomimimo.com/v1"
 QWEN_DASHSCOPE_CN_TTS_BASE_URL = "https://dashscope.aliyuncs.com/api/v1"
+QWEN_TTS_DEFAULT_MODEL = "qwen3-tts-flash"
+QWEN_TTS_DEFAULT_VOICE = "Jennifer"
 MIMO_PROVIDERS = {"mimo", "xiaomi-mimo"}
 QWEN_TTS_PROVIDERS = {"qwen", "dashscope", "aliyun-dashscope"}
 OPENAI_COMPATIBLE_PROVIDERS = {"openai-compatible", *MIMO_PROVIDERS}
@@ -2790,12 +2792,12 @@ def mimo_tts_audio(tts: dict[str, Any], text: str, language: str) -> bytes:
 
 
 def qwen_tts_audio(tts: dict[str, Any], text: str, language: str) -> bytes:
-    model = tts["model"] or "qwen3-tts-flash"
+    model = tts["model"] or QWEN_TTS_DEFAULT_MODEL
     body = {
         "model": model,
         "input": {
             "text": text,
-            "voice": tts.get("voice") or "Cherry",
+            "voice": tts.get("voice") or QWEN_TTS_DEFAULT_VOICE,
             "language_type": qwen_language_type(tts.get("language") or language),
         },
     }

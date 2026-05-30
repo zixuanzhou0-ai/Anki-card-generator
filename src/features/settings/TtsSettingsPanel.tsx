@@ -1,6 +1,7 @@
 import { CircleAlert, PlugZap } from 'lucide-react'
 
 import type { SecretPrefs, TtsConfig, TtsPreset, TtsProvider } from '../../domain/types'
+import { QWEN_TTS_DEFAULT_MODEL, QWEN_TTS_DEFAULT_VOICE } from '../../domain/ttsProviders'
 import { ConnectionTestCard } from './ConnectionTestCard'
 
 type ModelOption = {
@@ -71,8 +72,8 @@ export function TtsSettingsPanel({
       enabled: !tts.enabled,
       provider: !tts.enabled ? (tts.provider === 'disabled' ? 'qwen' : tts.provider) : 'disabled',
       base_url: !tts.enabled && tts.provider === 'disabled' ? 'https://dashscope.aliyuncs.com/api/v1' : tts.base_url,
-      model: !tts.enabled && !tts.model ? 'qwen3-tts-flash' : tts.model,
-      voice: !tts.enabled && !tts.voice ? 'Cherry' : tts.voice,
+      model: !tts.enabled && !tts.model ? QWEN_TTS_DEFAULT_MODEL : tts.model,
+      voice: !tts.enabled && !tts.voice ? QWEN_TTS_DEFAULT_VOICE : tts.voice,
     })
   }
 
@@ -98,13 +99,13 @@ export function TtsSettingsPanel({
         provider === 'mimo' && !tts.model
           ? 'mimo-v2.5-tts'
           : provider === 'qwen' && !tts.model
-            ? 'qwen3-tts-flash'
+            ? QWEN_TTS_DEFAULT_MODEL
             : tts.model,
       voice:
         provider === 'mimo'
           ? tts.voice || 'Mia'
           : provider === 'qwen'
-            ? tts.voice || 'Cherry'
+            ? tts.voice || QWEN_TTS_DEFAULT_VOICE
             : provider === 'grok'
               ? tts.voice || 'eve'
               : tts.voice,
@@ -279,7 +280,7 @@ export function TtsSettingsPanel({
               {tts.provider === 'mimo'
                 ? '官方要求模型 ID 小写：mimo-v2.5-tts、voicedesign、voiceclone、mimo-v2-tts。'
                 : tts.provider === 'qwen'
-                  ? '千问推荐 qwen3-tts-flash；需要语气/情绪控制时用 qwen3-tts-instruct-flash。'
+                  ? '英语卡推荐 qwen3-tts-flash + Jennifer/Aiden；需要语气控制时用 qwen3-tts-instruct-flash。'
                   : 'Grok TTS 当前不需要模型名，可留空；Gemini / Speech API 需要模型名。'}
             </small>
           </label>
@@ -292,7 +293,7 @@ export function TtsSettingsPanel({
                 tts.provider === 'mimo'
                   ? 'Mia / Chloe / Milo / Dean / mimo_default'
                   : tts.provider === 'qwen'
-                    ? 'Cherry / Serena / Ethan / Chelsie'
+                    ? 'Jennifer / Aiden / Serena / Cherry'
                     : tts.provider === 'grok'
                       ? 'eve / ara / leo / rex / sal'
                       : 'Kore / alloy'
@@ -311,7 +312,9 @@ export function TtsSettingsPanel({
                 <option key={voice} value={voice} />
               ))}
             </datalist>
-            <small>MIMO V2.5 内置声音可填 Mia、Chloe、Milo、Dean；千问常用 Cherry、Serena、Ethan、Chelsie。</small>
+            <small>
+              MIMO V2.5 内置声音可填 Mia、Chloe、Milo、Dean；千问英语卡优先试 Jennifer 或 Aiden。
+            </small>
           </label>
           {showAdvancedTts ? (
             <>

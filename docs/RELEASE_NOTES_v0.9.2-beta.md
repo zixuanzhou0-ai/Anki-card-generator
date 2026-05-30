@@ -14,6 +14,8 @@ This beta refresh focuses on the visible desktop experience and release assets.
 - Split the frontend entry into an app shell/controller and split option presets into domain modules.
 - Moved the Python worker entrypoint to a small command router and added schema metadata to worker responses.
 - Split document input into a default knowledge-absorption path and an opt-in language-reading path. Knowledge mode hides video-language controls such as CEFR level, listening cards, and phrase-card toggles.
+- Hardened TTS export so resolved provider settings are used during APKG export, including saved/reused TTS API keys.
+- Updated Qwen3 TTS presets for English cards: `Jennifer` is now the default American English female voice, `Aiden` is available as an American English male voice, and Qwen3 voice-design model IDs are exposed for advanced setup.
 
 ## Verified
 
@@ -29,3 +31,4 @@ This beta refresh focuses on the visible desktop experience and release assets.
 - YouTube import can still fail because of 429 limits, subtitle availability, region limits, or yt-dlp challenge changes.
 - The Windows installer does not include Python, FFmpeg, Node/Deno, or Anki. Use the portable package and run `scripts/setup_runtime.ps1` first.
 - Model and TTS calls send selected text to the configured third-party provider and may incur API costs.
+- TTS voice quality varies by provider and voice. For English learning cards, prefer original audio or MiMo V2.5 TTS; if using Qwen3 TTS, try `Jennifer` or `Aiden` before `Cherry`.

@@ -51,6 +51,17 @@ Common causes:
 
 You can disable TTS and still generate cards with original audio/video. TTS is only needed for extra sentence or phrase audio.
 
+## TTS Sounds Slow or Unnatural
+
+First switch the in-app preview speed to `1x`. The `0.75x` control only changes review-page playback and does not slow down the exported Anki MP3.
+
+For English cards:
+
+- Prefer original video audio when the source clip already has clear speech.
+- MiMo V2.5 TTS is currently the safer default for natural English learning audio.
+- Qwen3 TTS users should try `Jennifer` for American English female voice or `Aiden` for American English male voice before using `Cherry`.
+- Use `qwen3-tts-instruct-flash` only when you need explicit style, emotion, or pacing instructions.
+
 ## FFmpeg Missing or Media Slicing Fails
 
 Install FFmpeg and make sure it is available on PATH, then restart the app. If only the media step fails, export text cards first and revisit slicing later.

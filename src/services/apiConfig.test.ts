@@ -99,7 +99,7 @@ describe('validateServiceBaseUrl', () => {
     expect(resolved.api_key).toBe('sk-dashscope')
     expect(resolved.base_url).toBe('https://dashscope.aliyuncs.com/api/v1')
     expect(resolved.model).toBe('qwen3-tts-flash')
-    expect(resolved.voice).toBe('Cherry')
+    expect(resolved.voice).toBe('Jennifer')
   })
 
   it('allows local video generation to fall back when model API is not configured', () => {

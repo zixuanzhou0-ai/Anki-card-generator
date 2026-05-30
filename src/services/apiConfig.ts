@@ -1,5 +1,11 @@
-﻿import type { ApiConfig, TtsConfig } from '../domain/types'
-import { MIMO_OPENAI_BASE_URL, MIMO_TOKEN_PLAN_SGP_BASE_URL, QWEN_DASHSCOPE_CN_TTS_BASE_URL } from '../domain/options'
+import type { ApiConfig, TtsConfig } from '../domain/types'
+import {
+  MIMO_OPENAI_BASE_URL,
+  MIMO_TOKEN_PLAN_SGP_BASE_URL,
+  QWEN_DASHSCOPE_CN_TTS_BASE_URL,
+  QWEN_TTS_DEFAULT_MODEL,
+  QWEN_TTS_DEFAULT_VOICE,
+} from '../domain/options'
 import type { SourceMode } from '../domain/types'
 
 export function normalizeMimoModelId(value: string) {
@@ -111,8 +117,8 @@ export function resolveTtsConfig(tts: TtsConfig, api: ApiConfig): TtsConfig {
       ...tts,
       api_key: tts.api_key.trim() || (canReuseMainQwen ? api.api_key.trim() : ''),
       base_url: tts.base_url.trim() || QWEN_DASHSCOPE_CN_TTS_BASE_URL,
-      model: tts.model || 'qwen3-tts-flash',
-      voice: tts.voice || 'Cherry',
+      model: tts.model || QWEN_TTS_DEFAULT_MODEL,
+      voice: tts.voice || QWEN_TTS_DEFAULT_VOICE,
     }
   }
 

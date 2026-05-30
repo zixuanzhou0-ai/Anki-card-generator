@@ -19,6 +19,8 @@ YouTube URL 导入依赖 yt-dlp。失败原因可能包括：
 - MIMO / DeepSeek / OpenRouter / Claude / Gemini / xAI / 自定义兼容接口都属于第三方服务。
 - 使用模型评审或 TTS 时，字幕、文档片段和 TTS 文本会发送给对应服务商。
 - TTS 可能产生费用，且不同服务商的 voice、model、format 支持不完全一致。
+- TTS 音色质量会明显影响英语学习体验。当前英语卡更推荐 MiMo V2.5 TTS；Qwen3 TTS 建议先试 `Jennifer` 美语女声或 `Aiden` 美语男声。
+- 审核页的 `0.75x` 只是本地试听速度，不代表导出的 Anki 音频速度。
 
 ## 本地依赖
 

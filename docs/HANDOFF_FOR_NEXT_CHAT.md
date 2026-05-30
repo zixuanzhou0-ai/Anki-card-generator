@@ -9,7 +9,7 @@ Use this file when opening a fresh Codex / GPT review window for the Anki Card G
 - Active branch: `codex/complete-refactor-hardening`
 - Active PR: https://github.com/zixuanzhou0-ai/Anki-card-generator/pull/6
 - PR base: `main`
-- Current status when this handoff was written: local working tree was clean after pushing PR #6.
+- Current status when this handoff was written: PR #6 contains the document-study split plus local-video, API-key persistence, TTS export, and Qwen3 TTS voice hardening work. Local working tree should be clean after pushing the latest commit.
 
 Important: ask reviewers to inspect PR #6, not only `main`. The latest document-study work is on the PR branch.
 
@@ -26,6 +26,13 @@ PR #6 adds the first complete document-study split:
 - Language-reading document cards default to review instead of being treated as high-confidence export cards.
 - README, architecture docs, user guide, release notes, and screenshots were refreshed to explain the two learning paths.
 
+Recent hardening added after the initial document-study split:
+
+- Local video + SRT generation/export was tested end to end with real model API, real TTS, APKG verification, and Anki import.
+- TTS export now uses the resolved TTS configuration, so saved/reused provider keys are honored during APKG export.
+- API keys can be remembered locally through Windows Credential Manager or a DPAPI-encrypted local fallback when keyring is unavailable.
+- Qwen3 TTS defaults were changed from `Cherry` to `Jennifer` for English cards; `Aiden` is available as the American English male preset, and the Qwen3 voice-design model entry is exposed for advanced custom voices.
+
 ## Key Files
 
 Frontend domain and defaults:
@@ -37,9 +44,11 @@ Frontend domain and defaults:
 - `src/domain/learningFocus.ts`
 - `src/domain/options.ts`
 - `src/domain/demoProject.ts`
+- `src/domain/ttsProviders.ts`
 
 Frontend UI:
 
+- `src/features/settings/TtsSettingsPanel.tsx`
 - `src/features/learning/DocumentStudyPanel.tsx`
 - `src/features/app/InspectorPanel.tsx`
 - `src/features/source/SourceSetupPanel.tsx`
@@ -49,8 +58,11 @@ Frontend UI:
 
 Storage and tests:
 
+- `src/services/apiConfig.ts`
+- `src/services/apiConfig.test.ts`
 - `src/services/projectStorage.ts`
 - `src/services/projectStorage.test.ts`
+- `src/features/settings/TtsSettingsPanel.test.tsx`
 - `src/features/learning/DocumentStudyPanel.test.tsx`
 - `src/features/app/InspectorPanel.test.tsx`
 - `tests/ui-smoke.spec.ts`
@@ -65,6 +77,8 @@ Docs and screenshots:
 - `README.md`
 - `docs/ARCHITECTURE.md`
 - `docs/USER_GUIDE.md`
+- `docs/BETA_LIMITATIONS.md`
+- `docs/TROUBLESHOOTING.md`
 - `docs/RELEASE_NOTES_v0.9.2-beta.md`
 - `docs/screenshots/document-knowledge-review.png`
 - `docs/screenshots/settings-modal.png`
@@ -98,12 +112,21 @@ sk-..., tp-..., AIza..., Bearer ...
 
 No API-key-like secrets were found in changed files.
 
+Latest targeted checks for TTS hardening:
+
+```powershell
+npm run test:unit -- src/features/settings/TtsSettingsPanel.test.tsx src/services/apiConfig.test.ts
+python -m pytest tests/test_worker_quality.py -k qwen_tts_audio -q
+npm run build
+```
+
 ## Current Product Decisions
 
 - Keep the two-pane layout: left Inspector, right Workspace. Do not restore the old left Rail.
 - Keep document input independent from video-language learning.
 - Default document mode is knowledge absorption.
 - Language reading is opt-in under document input.
+- For Qwen3 TTS English cards, prefer `Jennifer` or `Aiden`; `Cherry` remains available but is no longer the default.
 - Do not add OCR, RAG, more providers, more templates, or multi-platform packaging until the beta core is steadier.
 - Do not change APKG field names casually; compatibility still matters.
 

@@ -3,6 +3,8 @@ import { MIMO_OPENAI_BASE_URL, MIMO_TOKEN_PLAN_SGP_BASE_URL } from './providers'
 
 export const QWEN_DASHSCOPE_CN_TTS_BASE_URL = 'https://dashscope.aliyuncs.com/api/v1'
 export const QWEN_DASHSCOPE_INTL_TTS_BASE_URL = 'https://dashscope-intl.aliyuncs.com/api/v1'
+export const QWEN_TTS_DEFAULT_MODEL = 'qwen3-tts-flash'
+export const QWEN_TTS_DEFAULT_VOICE = 'Jennifer'
 
 export const mimoTtsModels = [
   { value: 'mimo-v2.5-tts', label: 'MiMo-V2.5-TTS' },
@@ -28,11 +30,61 @@ export const mimoTtsVoices = [
 export const qwenTtsModels = [
   { value: 'qwen3-tts-flash', label: 'Qwen3-TTS-Flash' },
   { value: 'qwen3-tts-instruct-flash', label: 'Qwen3-TTS-Instruct-Flash' },
+  { value: 'qwen3-tts-vd-2026-01-26', label: 'Qwen3-TTS-VD Custom Voice' },
   { value: 'qwen-tts-latest', label: 'Qwen-TTS Latest' },
   { value: 'qwen-tts', label: 'Qwen-TTS' },
 ]
 
-export const qwenTtsVoices = ['Cherry', 'Serena', 'Ethan', 'Chelsie', 'Momo', 'Dylan', 'Jada', 'Sunny', 'Camila']
+export const qwenTtsVoices = [
+  'Jennifer',
+  'Aiden',
+  'Cherry',
+  'Serena',
+  'Ethan',
+  'Chelsie',
+  'Momo',
+  'Vivian',
+  'Moon',
+  'Maia',
+  'Kai',
+  'Nofish',
+  'Bella',
+  'Ryan',
+  'Katerina',
+  'Eldric Sage',
+  'Mia',
+  'Mochi',
+  'Bellona',
+  'Vincent',
+  'Bunny',
+  'Neil',
+  'Elias',
+  'Arthur',
+  'Nini',
+  'Seren',
+  'Pip',
+  'Stella',
+  'Bodega',
+  'Sonrisa',
+  'Alek',
+  'Dolce',
+  'Sohee',
+  'Ono Anna',
+  'Lenn',
+  'Emilien',
+  'Andre',
+  'Radio Gol',
+  'Jada',
+  'Dylan',
+  'Li',
+  'Marcus',
+  'Roy',
+  'Peter',
+  'Sunny',
+  'Eric',
+  'Rocky',
+  'Kiki',
+]
 
 export const ttsPresets: TtsPreset[] = [
   {
@@ -97,12 +149,22 @@ export const ttsPresets: TtsPreset[] = [
   },
   {
     id: 'qwen3-tts-flash-cn',
-    label: 'Qwen3 TTS',
+    label: 'Qwen3 TTS 美语女声',
     provider: 'qwen',
     base_url: QWEN_DASHSCOPE_CN_TTS_BASE_URL,
-    model: 'qwen3-tts-flash',
-    voice: 'Cherry',
-    note: '阿里云百炼北京地域 Qwen3-TTS；适合英语/中文卡片朗读，输出会自动转成 Anki mp3。',
+    model: QWEN_TTS_DEFAULT_MODEL,
+    voice: QWEN_TTS_DEFAULT_VOICE,
+    note: '阿里云百炼北京地域 Qwen3-TTS；Jennifer 是官方美语女声，更适合英语学习卡片。',
+    key_hint: '北京地域 DashScope / 百炼 API Key',
+  },
+  {
+    id: 'qwen3-tts-flash-aiden-cn',
+    label: 'Qwen3 TTS 美语男声',
+    provider: 'qwen',
+    base_url: QWEN_DASHSCOPE_CN_TTS_BASE_URL,
+    model: QWEN_TTS_DEFAULT_MODEL,
+    voice: 'Aiden',
+    note: '阿里云百炼北京地域 Qwen3-TTS；Aiden 是官方美语男声音色。',
     key_hint: '北京地域 DashScope / 百炼 API Key',
   },
   {
@@ -120,8 +182,8 @@ export const ttsPresets: TtsPreset[] = [
     label: 'Qwen3 TTS Intl',
     provider: 'qwen',
     base_url: QWEN_DASHSCOPE_INTL_TTS_BASE_URL,
-    model: 'qwen3-tts-flash',
-    voice: 'Cherry',
+    model: QWEN_TTS_DEFAULT_MODEL,
+    voice: QWEN_TTS_DEFAULT_VOICE,
     note: '新加坡/国际地域 Qwen3-TTS；需要使用对应地域的 DashScope Key。',
     key_hint: '国际地域 DashScope API Key',
   },
