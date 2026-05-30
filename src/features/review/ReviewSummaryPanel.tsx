@@ -20,6 +20,16 @@ type ReviewSummaryPanelProps = {
   onSegmentFilterChange: (filter: SegmentFilter) => void
 }
 
+function subtitleSourceLabel(project: Project) {
+  if (project.source_mode !== 'local') return ''
+  const sourceInfo = project.source_info
+  const source = sourceInfo && 'subtitle_source' in sourceInfo ? String(sourceInfo.subtitle_source || '').trim() : ''
+  if (source === 'manual') return '手动字幕'
+  if (source === 'auto_matched') return '自动匹配字幕'
+  if (source === 'embedded') return '内嵌字幕'
+  return source ? '字幕来源已记录' : ''
+}
+
 export function ReviewSummaryPanel({
   activeTemplateLabel,
   language,
@@ -35,6 +45,7 @@ export function ReviewSummaryPanel({
 }: ReviewSummaryPanelProps) {
   const isDocument = project.source_mode === 'document'
   const isReading = isDocument && project.document_study_mode === 'language_reading'
+  const localSubtitleSource = subtitleSourceLabel(project)
   const labels = isReading
     ? {
         score: '精读点质量',
@@ -85,8 +96,12 @@ export function ReviewSummaryPanel({
           <span>片段预算</span>
           <strong>{project.segments.length}</strong>
           <small>
-            {project.max_segments ? `${project.auto_max_segments ? '自动预算' : '预算'} ${project.max_segments} · ` : ''}
+            {project.max_segments
+              ? `${project.auto_max_segments ? '自动预算' : '预算'} ${project.max_segments} · `
+              : ''}
             {level} · {language} · {activeTemplateLabel}
+            {localSubtitleSource ? ` · ${localSubtitleSource}` : ''}
+            {project.source_mode === 'local' && project.skip_video_slicing ? ' · 字幕-only' : ''}
           </small>
         </div>
         <div className="metric-card">

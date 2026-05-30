@@ -630,7 +630,7 @@ export function useAppController() {
         ? '已切换到视频链接模式，请粘贴 YouTube 或视频 URL。'
         : mode === 'document'
           ? '已切换到文档资料模式，请选择 TXT、Markdown、DOCX、EPUB 或 PDF。'
-          : '已切换到本地视频模式，请选择视频和 SRT 字幕。',
+          : '已切换到本地视频模式，请选择视频；SRT 可留空并自动匹配或提取内嵌字幕。',
     )
   }
 

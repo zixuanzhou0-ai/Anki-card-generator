@@ -171,6 +171,24 @@ export function SourceSetupPanel({ request, onPatchRequest, onSelectPath, onSele
             </label>
           </div>
         </details>
+      ) : request.source_mode === 'local' ? (
+        <details className="compact-details inspector-fold local-options-details" open>
+          <summary>
+            <span>导出方式</span>
+            <strong>{request.skip_video_slicing ? '字幕-only' : '视频切片'}</strong>
+          </summary>
+          <div className="url-fallback-options" aria-label="本地视频导出方式">
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={request.skip_video_slicing}
+                onChange={() => onPatchRequest({ skip_video_slicing: !request.skip_video_slicing })}
+              />
+              <span>导出时跳过视频切片，只保留字幕和 TTS</span>
+            </label>
+            <p className="document-source-hint">视频过大、切片很慢或媒体失败时，可先用字幕-only 产出可复习卡。</p>
+          </div>
+        </details>
       ) : null}
     </div>
   )

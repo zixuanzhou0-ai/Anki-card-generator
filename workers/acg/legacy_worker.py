@@ -6906,9 +6906,8 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             phrase_text = re.sub(r"\s+", " ", str(card.get("phrase") or "").strip())
             phrase_tts_name = ""
             phrase_key = phrase_text.lower()
-            if phrase_text and phrase_key not in {"key expression", "n/a"}:
-                if tts_requested:
-                    expected_phrase_tts_keys.add(phrase_key)
+            if tts_requested and phrase_text and phrase_key not in {"key expression", "n/a"}:
+                expected_phrase_tts_keys.add(phrase_key)
                 if phrase_key in phrase_tts_by_phrase:
                     phrase_tts_name = phrase_tts_by_phrase[phrase_key]
                 else:
@@ -7019,11 +7018,18 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
     deck_name = str(payload.get("deck_name") or export_result.get("deck_name") or "").strip()
     media_dir = Path(str(payload.get("media_dir") or export_result.get("media_dir") or ""))
     anki_url = str(payload.get("anki_connect_url") or "http://127.0.0.1:8765").strip()
-    expected_manifest = export_result.get("media_manifest") if isinstance(export_result.get("media_manifest"), dict) else {}
-    if not expected_manifest and media_dir.exists():
+    media_summary = export_result.get("media_summary") if isinstance(export_result.get("media_summary"), dict) else {}
+    expected_media_files = media_summary.get("media_files")
+    try:
+        expected_media_files = int(expected_media_files) if expected_media_files is not None else None
+    except (TypeError, ValueError):
+        expected_media_files = None
+    manifest_provided = isinstance(export_result.get("media_manifest"), dict)
+    expected_manifest = export_result.get("media_manifest") if manifest_provided else {}
+    if not expected_manifest and media_dir.exists() and expected_media_files != 0:
         expected_manifest = media_manifest([str(path) for path in media_dir.iterdir() if path.is_file()])
 
-    if not expected_manifest:
+    if not expected_manifest and expected_media_files != 0:
         fail("缺少导出媒体清单，无法核验 Anki 媒体。")
 
     query = "tag:anki_card_generator_v10"

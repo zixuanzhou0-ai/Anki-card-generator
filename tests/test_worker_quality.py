@@ -195,11 +195,19 @@ class WorkerQualityTests(unittest.TestCase):
                 for card in segment["cards"]:
                     card["enabled"] = True
 
-            result = worker.handle_export({"project": project, "output_dir": str(output_dir)})
+            original_synthesize_tts = worker._legacy_worker.synthesize_tts
+            try:
+                worker._legacy_worker.synthesize_tts = lambda *args, **kwargs: self.fail(
+                    "TTS synthesis should not run when TTS is disabled"
+                )
+                result = worker.handle_export({"project": project, "output_dir": str(output_dir)})
+            finally:
+                worker._legacy_worker.synthesize_tts = original_synthesize_tts
 
             self.assertTrue(Path(result["apkg_path"]).exists())
             self.assertGreater(result["cards"], 0)
             self.assertEqual(result["media_summary"]["video_segments"], 0)
+            self.assertEqual(result["media_summary"]["phrase_tts_files"], 0)
             self.assertTrue(any("视频/原声切片失败" in warning for warning in result["warnings"]))
 
     def test_worker_fail_emits_machine_readable_error(self):
@@ -506,6 +514,52 @@ class WorkerQualityTests(unittest.TestCase):
 
         self.assertEqual(result["missing"], [])
         self.assertEqual(result["mismatched"][0]["file"], "deck_seg_0001.mp3")
+
+    def test_verify_anki_import_accepts_zero_media_exports(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            anki_dir = Path(temp_dir) / "anki_media"
+            anki_dir.mkdir()
+            original_anki_connect = worker._legacy_worker.anki_connect
+
+            def fake_anki_connect(action, params=None, url=""):
+                if action == "findCards":
+                    return [123]
+                if action == "cardsInfo":
+                    return [
+                        {
+                            "cardId": 123,
+                            "fields": {
+                                "Video": {"value": ""},
+                                "Audio": {"value": ""},
+                                "TtsAudio": {"value": ""},
+                                "PhraseTtsAudio": {"value": ""},
+                            },
+                        }
+                    ]
+                if action == "getMediaDirPath":
+                    return str(anki_dir)
+                raise AssertionError(action)
+
+            try:
+                worker._legacy_worker.anki_connect = fake_anki_connect
+                result = worker.handle_verify_anki_import(
+                    {
+                        "export_result": {
+                            "deck_name": "Zero Media Deck",
+                            "cards": 1,
+                            "media_manifest": {},
+                            "media_summary": {"media_files": 0},
+                            "media_dir": str(Path(temp_dir) / "export_media"),
+                        }
+                    }
+                )
+            finally:
+                worker._legacy_worker.anki_connect = original_anki_connect
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["media_count_expected"], 0)
+        self.assertEqual(result["media_count_checked"], 0)
+        self.assertEqual(result["card_count"], 1)
 
     def test_phrase_match_requires_all_phrase_words_in_compact_order(self):
         self.assertTrue(worker.phrase_in_text("I need to make sure we are ready.", "make sure"))

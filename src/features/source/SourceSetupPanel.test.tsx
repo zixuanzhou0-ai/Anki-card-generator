@@ -42,9 +42,21 @@ describe('SourceSetupPanel', () => {
 
     expect(screen.getByPlaceholderText('选择本地视频')).toBeVisible()
     expect(screen.getByPlaceholderText('选择 SRT 字幕')).toBeVisible()
-    expect(screen.getByText('可留空；生成时会自动匹配同目录 SRT/VTT，也会尝试提取 MKV/MP4 内嵌文字字幕。')).toBeVisible()
+    expect(
+      screen.getByText('可留空；生成时会自动匹配同目录 SRT/VTT，也会尝试提取 MKV/MP4 内嵌文字字幕。'),
+    ).toBeVisible()
+    expect(screen.getByText('视频过大、切片很慢或媒体失败时，可先用字幕-only 产出可复习卡。')).toBeVisible()
     expect(props.onSelectSourceMode).toHaveBeenCalledWith('url')
     expect(props.onSelectPath).toHaveBeenCalledWith('video')
+  })
+
+  it('patches local subtitle-only export mode', () => {
+    const onPatchRequest = vi.fn()
+    renderPanel({ onPatchRequest })
+
+    fireEvent.click(screen.getByLabelText(/导出时跳过视频切片/))
+
+    expect(onPatchRequest).toHaveBeenCalledWith({ skip_video_slicing: true })
   })
 
   it('patches URL source options', () => {
