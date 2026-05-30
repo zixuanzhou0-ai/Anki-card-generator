@@ -6,6 +6,7 @@ export type DocumentStudyMode = 'knowledge' | 'language_reading'
 export type DocumentAnswerLanguage = 'zh' | 'en' | 'bilingual'
 export type DocumentDepth = 'quick' | 'standard' | 'deep'
 export type DocumentAnswerLength = 'short' | 'medium' | 'long'
+export type StudyDepth = 'standard' | 'deep'
 export type TemplateId = 'immersive' | 'dictionary' | 'minimal'
 export type Provider = 'local' | 'mimo' | 'openai-compatible' | 'claude' | 'gemini'
 export type TtsProvider = 'disabled' | 'mimo' | 'qwen' | 'grok' | 'gemini' | 'openai-compatible'
@@ -193,6 +194,17 @@ export type QualityFunnel = {
   short_reason?: string
 }
 
+export type MaterialContext = {
+  summary?: string
+  topic?: string
+  scene?: string
+  speakers_or_author?: string
+  tone?: string
+  key_points?: string[]
+  learning_opportunities?: string[]
+  source?: 'ai' | 'heuristic' | string
+}
+
 export type WorkerFinishedEvent = {
   job_id: string
   command: WorkerCommand
@@ -235,6 +247,7 @@ export type GenerateRequest = {
   document_answer_language: DocumentAnswerLanguage
   document_depth: DocumentDepth
   document_answer_length: DocumentAnswerLength
+  study_depth: StudyDepth
   card_types: CardKind[]
   max_segments: number
   api_config: ApiConfig
@@ -255,6 +268,8 @@ export type Card = {
   phrase_card_focus?: string
   phrase_review_status?: PhraseReviewStatus
   phrase_type?: string
+  content_kind?: 'phrase' | 'vocabulary' | 'grammar' | 'listening' | 'knowledge' | string
+  source_evidence?: string
   knowledge_type?: DocumentFocus | string
   document_card_kind?: DocumentCardKind | string
   score_breakdown?: Record<string, number | string>
@@ -302,6 +317,8 @@ export type Segment = {
   phrase_review_status?: PhraseReviewStatus
   phrase_review_source?: string
   phrase_type?: string
+  content_kind?: 'phrase' | 'vocabulary' | 'grammar' | 'listening' | 'knowledge' | string
+  source_evidence?: string
   knowledge_type?: DocumentFocus | string
   document_card_kind?: DocumentCardKind | string
   score_breakdown?: Record<string, number | string>
@@ -353,6 +370,8 @@ export type Project = {
   document_answer_language?: DocumentAnswerLanguage
   document_depth?: DocumentDepth
   document_answer_length?: DocumentAnswerLength
+  study_depth?: StudyDepth
+  material_context?: MaterialContext | null
   card_types: CardKind[]
   max_segments?: number
   auto_max_segments?: boolean

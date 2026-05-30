@@ -7,7 +7,7 @@ export const languageFocusOptions: Array<{
   defaultOn: boolean
 }> = [
   { id: 'phrases', label: '词伙表达', note: '可迁移短语、搭配和口语块', defaultOn: true },
-  { id: 'vocabulary', label: '单词用法', note: '真实语境里的词义、搭配和用法', defaultOn: false },
+  { id: 'vocabulary', label: '单词用法', note: '真实语境里的词义、搭配和用法', defaultOn: true },
   { id: 'grammar', label: '语法框架', note: '句型、结构和可替换表达框架', defaultOn: false },
   { id: 'listening', label: '听力难点', note: '弱读、连读、语块和听音辨义', defaultOn: true },
 ]

@@ -20,14 +20,17 @@ Recommended actions:
 
 ## Generation Gets Stuck
 
-The progress message should show the current stage: subtitle parsing, candidate building, model review, card generation, media slicing, TTS, export, or verification.
+The progress message should show the current stage: subtitle parsing, material understanding, candidate building, model review, card generation, media slicing, TTS, export, or verification.
 
 If the UI stays on one stage for a long time:
 
 1. Click cancel.
 2. Retry with TTS disabled.
-3. Retry with video slicing disabled or subtitle-only mode.
-4. Use a shorter local SRT to confirm the model/API path works.
+3. Switch “理解深度” to “快速生成” to skip the extra material-context call.
+4. Retry with video slicing disabled or subtitle-only mode.
+5. Use a shorter local SRT to confirm the model/API path works.
+
+Reasoning models such as Qwen / DashScope or MiMo may spend longer in material understanding or candidate review. Their thinking output is preserved for the provider call but stripped before JSON parsing, so a longer wait is not automatically an error.
 
 ## API Test Fails
 
@@ -39,6 +42,10 @@ Check:
 - The key has enough quota.
 
 The app should never require a real key in source files, docs, logs, or release artifacts.
+
+## Cards Do Not Match The Current Video
+
+Use local video + the exact SRT file for that video, then regenerate with Deep Study enabled. The review dashboard should show a “素材理解” card; if its summary describes the wrong material, cancel and check that the selected source mode is still “本地视频” and the paths point to the current video/SRT. If the summary is correct but individual cards are weak, disable that card or switch off the irrelevant learning focus such as “单词用法” or “听力难点”.
 
 ## TTS Fails
 

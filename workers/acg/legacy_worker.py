@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import html
 import base64
@@ -326,15 +326,34 @@ LANGUAGE_FOCUS_RULES = {
     "grammar": "可以选择原句里的可替换句型、结构或语法框架；重点解释它怎么换场景复用，而不是讲抽象语法术语。",
     "listening": "只在弱读、连读、缩读、停顿切分或听音辨义明显时强化听力点；不要把所有句子都硬做听力卡。",
 }
+STUDY_DEPTHS = {"standard", "deep"}
+PHRASE_TYPE_CARD_LABELS = {
+    "spoken_phrase": "词伙卡",
+    "sentence_frame": "句型框架卡",
+    "collocation": "词伙卡",
+    "discourse_marker": "话语标记卡",
+    "listening_sentence": "听力卡",
+    "vocabulary_usage": "语境生词卡",
+    "grammar_pattern": "语法句型卡",
+}
+PHRASE_TYPE_CONTENT_KIND = {
+    "spoken_phrase": "phrase",
+    "sentence_frame": "grammar",
+    "collocation": "phrase",
+    "discourse_marker": "phrase",
+    "listening_sentence": "listening",
+    "vocabulary_usage": "vocabulary",
+    "grammar_pattern": "grammar",
+}
 
 
 def normalized_language_focus(payload: dict[str, Any]) -> list[str]:
     raw = payload.get("language_focus")
     if not isinstance(raw, list):
-        return ["phrases", "listening"]
+        return ["phrases", "vocabulary", "listening"]
     selected = [str(item) for item in raw if str(item) in LANGUAGE_FOCUS_ORDER]
     unique = list(dict.fromkeys(selected))
-    return unique or ["phrases", "listening"]
+    return unique or ["phrases", "vocabulary", "listening"]
 
 
 def normalized_document_reading_focus(payload: dict[str, Any]) -> list[str]:
@@ -351,6 +370,19 @@ def language_focus_instruction(payload: dict[str, Any]) -> str:
         "如果某个片段只有未选择的学习价值，优先降级为待审或跳过，不要为了数量硬凑。"
         f"{rules}"
     )
+
+
+def normalized_study_depth(payload: dict[str, Any]) -> str:
+    value = str(payload.get("study_depth") or "").strip()
+    return value if value in STUDY_DEPTHS else "deep"
+
+
+def card_label_for_phrase_type(phrase_type: str, fallback: str = "词伙卡") -> str:
+    return PHRASE_TYPE_CARD_LABELS.get(str(phrase_type or "").strip(), fallback)
+
+
+def content_kind_for_phrase_type(phrase_type: str, fallback: str = "phrase") -> str:
+    return PHRASE_TYPE_CONTENT_KIND.get(str(phrase_type or "").strip(), fallback)
 
 
 DOCUMENT_FOCUS_ORDER = ["concepts", "arguments", "terms", "examples"]
@@ -1409,7 +1441,7 @@ def choose_best_phrase(text: str, proposed: str, fallback: str, level: str, coll
 def repair_card_fields(card: dict[str, Any], segment: dict[str, Any], level: str) -> None:
     text = card.get("english") or segment.get("text", "")
     reviewed_phrase = str(segment.get("phrase") or "").strip()
-    if segment.get("phrase_review_source") == "mimo" and usable_phrase(text, reviewed_phrase):
+    if segment.get("phrase_review_source") in {"mimo", "ai"} and usable_phrase(text, reviewed_phrase):
         phrase = reviewed_phrase
     else:
         phrase = choose_best_phrase(text, card.get("phrase", ""), segment.get("phrase", ""), level)
@@ -1598,8 +1630,13 @@ def fallback_cards(segment: dict[str, Any], card_types: list[str], level: str) -
             "phrase_reject_reason": segment.get("phrase_reject_reason", ""),
             "phrase_card_focus": segment.get("phrase_card_focus", ""),
             "phrase_review_status": segment.get("phrase_review_status", ""),
+            "phrase_type": segment.get("phrase_type", ""),
+            "content_kind": segment.get("content_kind") or content_kind_for_phrase_type(str(segment.get("phrase_type") or "")),
+            "source_evidence": segment.get("source_evidence") or segment.get("text", ""),
             **fields,
         }
+        if card_type == "phrase" and card.get("phrase_type"):
+            card["type_label"] = card_label_for_phrase_type(str(card.get("phrase_type")), card["type_label"])
         card_quality_source = quality_source if card_type == "phrase" else "fallback"
         card["quality"] = assess_card_quality(card, segment, card_quality_source, level)
         card["enabled"] = card_quality_source == "curated_fallback" and card["quality"]["status"] == "recommended"
@@ -1612,6 +1649,7 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
     current_level = str(project.get("level", "B1"))
     collection_levels = collection_levels_from_payload(project, current_level)
     focus_instruction = language_focus_instruction(project)
+    material_context_instruction = material_context_for_prompt(project.get("material_context"))
     compact = [
         {
             "id": segment["id"],
@@ -1632,6 +1670,7 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
         "你是给中文母语者做英语 Anki 卡的资深老师。目标不是多写信息，而是让学习者翻面后立刻知道："
         "这句我该听懂什么、该记住哪个表达、以后怎么自己用。"
         "你不是字段填写器，而是英语学习卡片编辑老师：先判断学习价值，再决定是否制卡，最后自检这张卡是不是有明确训练动作。"
+        f"{material_context_instruction}"
         "制卡前请在心里回答四个问题：这句最值得学的是什么？它是词伙、句型、口语短句、语气表达还是听力句？"
         "中文学习者为什么容易忽略它？这张卡训练听懂、会用、会替换还是理解语气？如果回答不清楚，返回 cards: []。"
         f"{focus_instruction}"
@@ -1639,7 +1678,7 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
         "内容标准："
         "1) phrase 必须来自原句：词伙通常 2-6 个词；单词用法可以是 1 个核心词；语法框架可以是原句里的可替换结构。"
         "它不能是整句、半截词串、产品名、主题名或 working with 这种孤立泛表达。"
-        "如果候选里有 phrase_review_status 和 phrase_value_score，说明 MIMO 已经做过词伙评审；正式制卡必须优先使用 phrase_hint，"
+        "如果候选里有 phrase_review_status 和 phrase_value_score，说明 AI 已经做过候选评审；正式制卡必须优先使用 phrase_hint，"
         "除非你能从同一句 english 里找到更完整、更可迁移的替代表达。替代表达仍必须逐词出现在原句里。"
         "如果 phrase_hint 是 key expression，说明本地规则没有识别出词伙；请你从 english 中自己选择最值得学的完整表达。"
         "如果句子里确实没有可迁移表达，返回该片段 cards: []，不要硬凑。"
@@ -1671,6 +1710,9 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
         "每张卡必须写 card_role: primary|specialist、learning_goal、decision_reason。"
         "返回严格 JSON，不要 Markdown。JSON 结构："
         '{"segments":[{"id":"seg_0001","cards":[{"type":"listening|phrase|cloze",'
+        '"phrase_type":"spoken_phrase|sentence_frame|collocation|discourse_marker|listening_sentence|vocabulary_usage|grammar_pattern",'
+        '"content_kind":"phrase|vocabulary|grammar|listening",'
+        '"source_evidence":"这张卡来自原句和上下文的证据",'
         '"chinese":"中文意思","phrase":"重点词伙","definition":"释义","collocations":"搭配",'
         '"context":"语境","example":"例句","chinese_feel":"中文感","why":"为什么值得学",'
         '"difficulty":"A1 入门|A2 基础|B1 日常交流|B2 独立表达|C1 高阶表达|C2 接近母语",'
@@ -1685,6 +1727,143 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
         f"需要卡型：{', '.join(requested_types)}。"
         f"候选字幕：{json.dumps(compact, ensure_ascii=False)}"
     )
+
+
+def material_context_for_prompt(context: Any) -> str:
+    if not isinstance(context, dict) or not context:
+        return ""
+    useful = {
+        key: value
+        for key, value in context.items()
+        if key in {"summary", "topic", "scene", "speakers_or_author", "tone", "key_points", "learning_opportunities"}
+        and value not in (None, "", [])
+    }
+    if not useful:
+        return ""
+    return (
+        "全局素材理解（用于判断上下文，不要照抄成卡片）："
+        f"{json.dumps(useful, ensure_ascii=False)}。"
+        "请用它理解人物关系、主题、语气和上下文，再判断哪个学习点真正值得复习。"
+    )
+
+
+def heuristic_material_context(project: dict[str, Any], segments: list[dict[str, Any]]) -> dict[str, Any]:
+    title = str(project.get("title") or "").strip()
+    sample = " ".join(str(item.get("text") or "").strip() for item in segments[:8]).strip()
+    phrases = [
+        str(item.get("phrase") or "").strip()
+        for item in segments[:12]
+        if str(item.get("phrase") or "").strip().lower() not in {"", "key expression", "n/a"}
+    ]
+    return {
+        "summary": f"{title or '当前素材'}：系统根据字幕候选生成学习卡，需要以原句和时间轴为准。",
+        "scene": sample[:280],
+        "key_points": phrases[:6],
+        "learning_opportunities": [LANGUAGE_FOCUS_LABELS[item] for item in normalized_language_focus(project)],
+        "source": "heuristic",
+    }
+
+
+def build_material_context_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str:
+    compact = [
+        {
+            "id": item.get("id"),
+            "source_time": item.get("source_time"),
+            "english": item.get("text"),
+            "phrase_hint": item.get("phrase", ""),
+        }
+        for item in segments[:80]
+    ]
+    return (
+        "你是中文母语者的英语学习材料分析老师。请先理解这段视频/字幕素材到底在讲什么，"
+        "不要生成卡片内容。你的任务是给后续 Anki 制卡提供全局上下文：主题、场景、人物/说话者关系、"
+        "语气、关键转折、反复出现的表达，以及最值得挖的学习机会。"
+        f"{language_focus_instruction(project)}"
+        "请特别关注：哪些表达必须依赖上下文才懂；哪些单词在这个场景里有特殊用法；哪些句型有迁移价值；"
+        "哪些听力难点确实来自弱读/连读/缩读，而不是普通句子。"
+        "只返回严格 JSON，不要 Markdown。结构："
+        '{"material_context":{"summary":"这段素材的核心内容","topic":"主题",'
+        '"scene":"场景或论点脉络","speakers_or_author":"人物关系或作者视角","tone":"语气",'
+        '"key_points":["关键情节/论点"],"learning_opportunities":["值得制卡的语言机会"],"source":"ai"}}。'
+        f"素材标题：{project.get('title') or 'Untitled'}。"
+        f"候选字幕：{json.dumps(compact, ensure_ascii=False)}"
+    )
+
+
+def material_context_available(project: dict[str, Any]) -> bool:
+    api = project.get("api_config") or {}
+    return bool(
+        api.get("provider", "local") != "local"
+        and str(api.get("api_key") or "").strip()
+        and str(api.get("model") or "").strip()
+    )
+
+
+def call_material_context(project: dict[str, Any], segments: list[dict[str, Any]]) -> dict[str, Any]:
+    if normalized_study_depth(project) != "deep" or not segments:
+        return heuristic_material_context(project, segments)
+    if not material_context_available(project):
+        return heuristic_material_context(project, segments)
+
+    api = project.get("api_config") or {}
+    provider = api.get("provider", "local")
+    api_key = api.get("api_key", "").strip()
+    model = api.get("model", "").strip()
+    prompt = build_material_context_prompt(project, segments)
+    try:
+        if provider in OPENAI_COMPATIBLE_PROVIDERS:
+            response = compatible_chat_completion(
+                api,
+                [
+                    {"role": "system", "content": "Return only valid JSON."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.2,
+                timeout=120 if (is_mimo_config(api) or is_qwen_config(api)) else 60,
+                max_tokens=2200,
+                progress={
+                    "command": "generate",
+                    "stage": "context",
+                    "percent": 54,
+                    "message": "模型正在理解整段素材，thinking 已保留。",
+                },
+            )
+            payload = extract_json_object(chat_completion_content(response))
+        elif provider == "claude":
+            response = http_json(
+                anthropic_messages_url(api),
+                anthropic_headers(api, api_key),
+                {
+                    "model": model,
+                    "max_tokens": 2200,
+                    "temperature": 0.2,
+                    "system": "Return only valid JSON.",
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+                timeout=90,
+            )
+            payload = extract_json_object("".join(part.get("text", "") for part in response.get("content", [])))
+        elif provider == "gemini":
+            response = http_json(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
+                {},
+                {
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
+                },
+                timeout=90,
+            )
+            payload = extract_json_object(response["candidates"][0]["content"]["parts"][0]["text"])
+        else:
+            return heuristic_material_context(project, segments)
+        context = payload.get("material_context") if isinstance(payload, dict) else None
+        if isinstance(context, dict) and context:
+            return {**context, "source": context.get("source") or "ai"}
+    except Exception as err:
+        fallback = heuristic_material_context(project, segments)
+        fallback["warning"] = f"深度理解失败，已回退到本地上下文：{err}"
+        return fallback
+    return heuristic_material_context(project, segments)
 
 
 def strip_reasoning_text(text: str) -> str:
@@ -2149,7 +2328,7 @@ def call_model_batches(project: dict[str, Any], segments: list[dict[str, Any]], 
 def phrase_review_available(project: dict[str, Any]) -> bool:
     api = project.get("api_config") or {}
     return bool(
-        is_mimo_config(api)
+        api.get("provider", "local") in OPENAI_COMPATIBLE_PROVIDERS
         and provider_name(api) != "local"
         and str(api.get("api_key") or "").strip()
         and str(api.get("model") or "").strip()
@@ -2160,6 +2339,7 @@ def build_phrase_review_prompt(project: dict[str, Any], segments: list[dict[str,
     level = str(project.get("level", "B1"))
     collection_levels = collection_levels_from_payload(project, level)
     focus_instruction = language_focus_instruction(project)
+    material_context_instruction = material_context_for_prompt(project.get("material_context"))
     compact = [
         {
             "id": segment["id"],
@@ -2175,6 +2355,7 @@ def build_phrase_review_prompt(project: dict[str, Any], segments: list[dict[str,
         "不要生成卡片内容。目标是同时提高数量和质量：保留真实可用的口语表达，拒绝主题词、专有名词、"
         "半截词串、视频口播引入语和过基础表达。"
         "请像英语老师一样先判断学习动作：这个片段训练听懂、会用、会替换、理解语气，还是根本不值得制卡。"
+        f"{material_context_instruction}"
         f"{focus_instruction}"
         "判断标准："
         "1) phrase 必须来自 english 原句；词伙通常 2-6 个词，单词用法可以是 1 个核心词，语法框架可以是原句里的可替换结构。"
@@ -2256,7 +2437,7 @@ def skipped_review_segment(segment: dict[str, Any], status: str, reason: str, va
         "cards": [],
         "phrase_value_score": value_score,
         "phrase_review_status": status,
-        "phrase_review_source": "mimo",
+        "phrase_review_source": "ai",
         "phrase_decision_reason": "",
         "phrase_reject_reason": reason,
         "phrase_card_focus": "",
@@ -2283,10 +2464,12 @@ def apply_phrase_review_decisions(
                     **repaired,
                     "phrase_value_score": 3,
                     "phrase_review_status": "needs_review",
-                    "phrase_review_source": "mimo",
-                    "phrase_decision_reason": "MIMO 评审没有返回这个片段，保留为待审候选。",
+                    "phrase_review_source": "ai",
+                    "phrase_decision_reason": "AI 评审没有返回这个片段，保留为待审候选。",
                     "phrase_reject_reason": "",
                     "phrase_card_focus": "人工确认是否值得制卡。",
+                    "content_kind": content_kind_for_phrase_type(str(repaired.get("phrase_type") or "")),
+                    "source_evidence": repaired.get("text", ""),
                 }
             )
             continue
@@ -2306,7 +2489,7 @@ def apply_phrase_review_decisions(
                 skipped_review_segment(
                     segment,
                     "reject",
-                    reject_reason or reason or "MIMO 认为这个片段没有值得做卡的可迁移表达。",
+                    reject_reason or reason or "AI 认为这个片段没有值得做卡的可迁移表达。",
                     value_score,
                 )
             )
@@ -2316,7 +2499,7 @@ def apply_phrase_review_decisions(
                 skipped_review_segment(
                     segment,
                     "reject",
-                    reject_reason or "MIMO 推荐的词伙不在原句中，且本地没有可修复的完整词伙。",
+                    reject_reason or "AI 推荐的词伙不在原句中，且本地没有可修复的完整词伙。",
                     value_score,
                 )
             )
@@ -2333,11 +2516,13 @@ def apply_phrase_review_decisions(
                 "recommendation": min(5, max(1, value_score)),
                 "phrase_value_score": value_score,
                 "phrase_review_status": status,
-                "phrase_review_source": "mimo",
-                "phrase_decision_reason": reason or card_focus or "MIMO 认为这个表达值得制卡。",
+                "phrase_review_source": "ai",
+                "phrase_decision_reason": reason or card_focus or "AI 认为这个表达值得制卡。",
                 "phrase_reject_reason": "" if status == "recommended" else "词伙价值分为 3，默认进入待审。",
                 "phrase_card_focus": card_focus or "围绕这个表达的真实语境和迁移用法制卡。",
                 "phrase_type": phrase_type,
+                "content_kind": content_kind_for_phrase_type(phrase_type),
+                "source_evidence": segment.get("text", ""),
                 "score_breakdown": score_breakdown,
             }
         )
@@ -2385,10 +2570,12 @@ def ensure_min_review_candidates(
                 "cards": [],
                 "phrase_value_score": 3,
                 "phrase_review_status": "needs_review",
-                "phrase_review_source": "mimo",
-                "phrase_decision_reason": "MIMO 评审保留过少，系统保留这个本地高分候选供复核。",
+                "phrase_review_source": "ai",
+                "phrase_decision_reason": "AI 评审保留过少，系统保留这个本地高分候选供复核。",
                 "phrase_reject_reason": "待审候选默认不导出；请确认词伙值得学后再启用。",
                 "phrase_card_focus": "人工确认这句里是否有可迁移表达。",
+                "content_kind": content_kind_for_phrase_type(str(repaired.get("phrase_type") or "")),
+                "source_evidence": repaired.get("text", ""),
             }
         )
         kept_ids.add(segment_id)
@@ -2482,7 +2669,7 @@ def review_phrase_candidates_with_mimo(
                 "generate",
                 "phrase_review",
                 percent,
-                f"MIMO 正在评审词伙候选：第 {batch_index}/{total_batches} 批，thinking 已保留。",
+                f"AI 正在评审学习候选：第 {batch_index}/{total_batches} 批，thinking 已保留。",
             )
             prompt = build_phrase_review_prompt(project, batch)
             response = compatible_chat_completion(
@@ -2498,7 +2685,7 @@ def review_phrase_candidates_with_mimo(
                     "command": "generate",
                     "stage": "phrase_review",
                     "percent": percent,
-                    "message": "MIMO 保留 thinking 评审词伙候选",
+                    "message": "AI 保留 thinking 评审学习候选",
                 },
             )
             content = chat_completion_content(response)
@@ -2507,10 +2694,10 @@ def review_phrase_candidates_with_mimo(
                 if isinstance(item, dict) and item.get("id"):
                     reviews[str(item["id"])] = item
     except Exception as err:
-        return segments, [], f"MIMO 词伙评审失败，已回退到原有候选流程：{err}"
+        return segments, [], f"AI 学习候选评审失败，已回退到原有候选流程：{err}"
 
     if not reviews:
-        return segments, [], "MIMO 词伙评审没有返回可用 JSON，已回退到原有候选流程。"
+        return segments, [], "AI 学习候选评审没有返回可用 JSON，已回退到原有候选流程。"
 
     kept, skipped = apply_phrase_review_decisions(segments, reviews, project)
     kept, skipped = ensure_min_review_candidates(segments, kept, skipped, project)
@@ -3022,9 +3209,17 @@ def merge_ai_cards(
                     "phrase_card_focus",
                     "phrase_review_status",
                     "phrase_type",
+                    "content_kind",
+                    "source_evidence",
                 ]:
                     if ai_card.get(key):
                         card[key] = str(ai_card[key])
+                if card["type"] == "phrase":
+                    phrase_type = str(card.get("phrase_type") or segment.get("phrase_type") or "")
+                    if phrase_type:
+                        card["phrase_type"] = phrase_type
+                        card["content_kind"] = card.get("content_kind") or content_kind_for_phrase_type(phrase_type)
+                        card["type_label"] = card_label_for_phrase_type(phrase_type, card.get("type_label", "词伙卡"))
                 if ai_card is ai_template_card and card["type"] not in ai_cards_by_type:
                     card["teacher_note"] = (
                         card.get("teacher_note")
@@ -3038,9 +3233,17 @@ def merge_ai_cards(
                     "phrase_reject_reason",
                     "phrase_card_focus",
                     "phrase_review_status",
+                    "phrase_type",
+                    "content_kind",
+                    "source_evidence",
                 ]:
                     if segment.get(key) not in (None, ""):
                         card[key] = segment.get(key)
+                if card["type"] == "phrase":
+                    phrase_type = str(card.get("phrase_type") or "")
+                    if phrase_type:
+                        card["content_kind"] = card.get("content_kind") or content_kind_for_phrase_type(phrase_type)
+                        card["type_label"] = card_label_for_phrase_type(phrase_type, card.get("type_label", "词伙卡"))
                 card["quality"] = assess_card_quality(card, segment, "ai", level)
                 card["enabled"] = card["quality"]["status"] == "recommended"
                 cards.append(card)
@@ -3614,6 +3817,7 @@ def build_document_prompt(project: dict[str, Any], segments: list[dict[str, Any]
     focus_instruction = document_focus_instruction(project)
     style_instruction = document_style_instruction(project)
     study_mode = normalized_document_study_mode(project)
+    material_context_instruction = material_context_for_prompt(project.get("material_context"))
     compact = [
         {
             "id": segment["id"],
@@ -3634,6 +3838,7 @@ def build_document_prompt(project: dict[str, Any], segments: list[dict[str, Any]
         return (
             "你是中文母语者的英文文档精读老师和 Anki 卡片编辑老师。请从文档片段里抽取语言学习点，"
             "不是总结知识内容。重点是让学习者下次能读懂、会用或能辨认表达结构。"
+            f"{material_context_instruction}"
             "文档没有原声，禁止生成听力卡，禁止提到原声/TTS/视频切片。"
             f"本次语言精读目标：{focus_instruction}"
             f"{style_instruction}"
@@ -3659,6 +3864,7 @@ def build_document_prompt(project: dict[str, Any], segments: list[dict[str, Any]
     return (
         "你是中文母语者的读书笔记老师和 Anki 知识卡编辑老师。请把文档片段变成少而精的知识卡，"
         "不要把它当摘要任务。先判断这段到底值得记什么，再写卡片。"
+        f"{material_context_instruction}"
         f"{focus_instruction}"
         f"{style_instruction}"
         "制卡标准："
@@ -3761,6 +3967,8 @@ def fallback_document_card(segment: dict[str, Any], level: str, study_mode: str 
         "enabled": False,
         "document_card_kind": "language_reading" if is_reading else "knowledge",
         "knowledge_type": "terms" if is_reading else "concepts",
+        "content_kind": "phrase" if is_reading else "knowledge",
+        "source_evidence": excerpt,
         "english": segment.get("text", ""),
         "chinese": answer or ("请根据原文补充语言点理解。" if is_reading else "请根据原文补充核心答案。"),
         "phrase": phrase,
@@ -3864,6 +4072,8 @@ def merge_document_cards(
                     "difficulty",
                     "teacher_note",
                     "cloze",
+                    "content_kind",
+                    "source_evidence",
                 ]:
                     if ai_card.get(key):
                         card[key] = str(ai_card[key])
@@ -3915,11 +4125,17 @@ def handle_generate_document(payload: dict[str, Any]) -> dict[str, Any]:
             segment["source_time"] = f"文档精读点 {index}"
             title = segment.get("phrase") or f"精读点 {index}"
             segment["text"] = f"这段资料里值得精读的表达、词义或语法框架是什么：{title}"
+    emit_progress("generate", "context", 54, "正在理解整份文档，建立制卡上下文。")
+    material_context = call_material_context(payload, segments)
+    payload = {**payload, "material_context": material_context, "study_depth": normalized_study_depth(payload)}
+    context_warning = material_context.get("warning") if isinstance(material_context, dict) else None
     progress_label = "语言精读卡" if study_mode == "language_reading" else "文档知识卡"
     emit_progress("generate", "ai", 66, f"正在生成{progress_label}：{len(segments)} 个片段。")
     ai_payload = call_document_model(payload, segments)
     emit_progress("generate", "cards", 86, "正在整理文档卡字段。")
     segments, warning = merge_document_cards(segments, ai_payload, level, study_mode=study_mode)
+    if context_warning:
+        warning = f"{context_warning}；{warning}" if warning else str(context_warning)
 
     title = payload.get("title") or Path(document_path).stem
     try:
@@ -3949,6 +4165,8 @@ def handle_generate_document(payload: dict[str, Any]) -> dict[str, Any]:
         "document_answer_language": normalized_document_answer_language(payload),
         "document_depth": normalized_document_depth(payload),
         "document_answer_length": normalized_document_answer_length(payload),
+        "study_depth": normalized_study_depth(payload),
+        "material_context": material_context,
         "card_types": ["knowledge"],
         "max_segments": max_segments,
         "auto_max_segments": auto_segments,
@@ -4098,20 +4316,25 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         "segments",
         48,
         f"正在按时间轴筛选候选片段：字幕 {len(cues)} 条，片段预算 {max_segments}，"
-        f"{'准备 MIMO 词伙评审。' if review_enabled else '使用本地评分。'}",
+        f"{'准备 AI 学习候选评审。' if review_enabled else '使用本地评分。'}",
     )
     segments = build_segments(cues, segment_payload)
     candidate_segment_count = len(segments)
     if not segments:
         fail("没有筛选出合适片段。请检查 SRT，或放宽内容开关。")
 
+    emit_progress("generate", "context", 54, "正在理解整段素材，建立制卡上下文。")
+    material_context = call_material_context(payload, segments)
+    payload = {**payload, "material_context": material_context, "study_depth": normalized_study_depth(payload)}
+    context_warning = material_context.get("warning") if isinstance(material_context, dict) else None
+
     skipped_segments: list[dict[str, Any]] = []
     review_warning = None
     if review_enabled:
-        emit_progress("generate", "phrase_review", 58, f"MIMO 正在评审词伙候选：{len(segments)} 个片段。")
+        emit_progress("generate", "phrase_review", 58, f"AI 正在评审学习候选：{len(segments)} 个片段。")
         reviewed_segments, skipped_segments, review_warning = review_phrase_candidates_with_mimo(payload, segments)
         review_applied = any(
-            str(item.get("phrase_review_source") or "") == "mimo"
+            str(item.get("phrase_review_source") or "") in {"mimo", "ai"}
             for item in [*reviewed_segments, *skipped_segments]
         )
         if review_applied:
@@ -4128,6 +4351,8 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
     emit_progress("generate", "cards", 84, "正在整理卡片草稿。")
     segments, warning = merge_ai_cards(segments, ai_payload, card_types, level) if segments else ([], None)
     reviewed_keep_count = len(segments)
+    if context_warning:
+        warning = f"{context_warning}；{warning}" if warning else str(context_warning)
     if review_warning:
         warning = f"{review_warning}；{warning}" if warning else review_warning
     if skipped_segments:
@@ -4179,6 +4404,8 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         "template_id": payload.get("template_id", "immersive"),
         "content_toggles": payload.get("content_toggles", {}),
         "language_focus": normalized_language_focus(payload),
+        "study_depth": normalized_study_depth(payload),
+        "material_context": material_context,
         "card_types": card_types,
         "max_segments": max_segments,
         "auto_max_segments": auto_segments,

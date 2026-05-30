@@ -1236,6 +1236,51 @@ textarea:focus {
   padding-right: 28px;
 }
 
+.study-depth-toggle {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  min-width: 0;
+}
+
+.study-depth-toggle button {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  justify-items: start;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid rgba(60, 60, 67, 0.12);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.study-depth-toggle button.selected {
+  border-color: rgba(0, 122, 255, 0.38);
+  background: rgba(0, 122, 255, 0.1);
+  color: #07569f;
+}
+
+.study-depth-toggle strong,
+.study-depth-toggle small {
+  overflow: hidden;
+  max-width: 100%;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.study-depth-toggle strong {
+  font-size: 12px;
+}
+
+.study-depth-toggle small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
 .language-focus-panel,
 .document-focus-panel {
   border-color: rgba(29, 29, 31, 0.1);
@@ -1592,6 +1637,41 @@ textarea:focus {
 
 .review-dashboard::-webkit-scrollbar {
   display: none;
+}
+
+.material-context-card {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 4px;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(60, 60, 67, 0.09);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.material-context-card span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.material-context-card strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.material-context-card small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .quality-funnel-details {

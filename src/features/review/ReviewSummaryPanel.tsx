@@ -46,6 +46,8 @@ export function ReviewSummaryPanel({
   const isDocument = project.source_mode === 'document'
   const isReading = isDocument && project.document_study_mode === 'language_reading'
   const localSubtitleSource = subtitleSourceLabel(project)
+  const materialContext = project.material_context
+  const materialSummary = materialContext?.summary || materialContext?.topic || ''
   const labels = isReading
     ? {
         score: '精读点质量',
@@ -119,6 +121,16 @@ export function ReviewSummaryPanel({
           </small>
         </div>
       </div>
+
+      {materialSummary ? (
+        <div className="material-context-card" aria-label="素材理解">
+          <span>{project.study_depth === 'deep' ? '深度理解' : '素材理解'}</span>
+          <strong>{materialSummary}</strong>
+          {materialContext?.learning_opportunities?.length ? (
+            <small>{materialContext.learning_opportunities.slice(0, 4).join(' / ')}</small>
+          ) : null}
+        </div>
+      ) : null}
 
       <details className="quality-funnel-details">
         <summary>

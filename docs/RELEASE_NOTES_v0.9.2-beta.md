@@ -14,6 +14,9 @@ This beta refresh focuses on the visible desktop experience and release assets.
 - Split the frontend entry into an app shell/controller and split option presets into domain modules.
 - Moved the Python worker entrypoint to a small command router and added schema metadata to worker responses.
 - Split document input into a default knowledge-absorption path and an opt-in language-reading path. Knowledge mode hides video-language controls such as CEFR level, listening cards, and phrase-card toggles.
+- Added the first Deep Study pipeline: generation now stores a hidden `material_context` and feeds it into candidate review and card writing, so stronger thinking models can judge the whole material before producing cards.
+- Added contextual vocabulary cards. `vocabulary` is now part of the default video learning focus, and `vocabulary_usage` cards export with the `语境生词卡` label while keeping V10 APKG fields compatible.
+- Generalized candidate review language from MIMO-only phrase review toward OpenAI-compatible AI candidate review, including Qwen / DashScope-compatible reasoning models.
 - Hardened TTS export so resolved provider settings are used during APKG export, including saved/reused TTS API keys.
 - Updated Qwen3 TTS presets for English cards: `Jennifer` is now the default American English female voice, `Aiden` is available as an American English male voice, and Qwen3 voice-design model IDs are exposed for advanced setup.
 
@@ -32,3 +35,4 @@ This beta refresh focuses on the visible desktop experience and release assets.
 - The Windows installer does not include Python, FFmpeg, Node/Deno, or Anki. Use the portable package and run `scripts/setup_runtime.ps1` first.
 - Model and TTS calls send selected text to the configured third-party provider and may incur API costs.
 - TTS voice quality varies by provider and voice. For English learning cards, prefer original audio or MiMo V2.5 TTS; if using Qwen3 TTS, try `Jennifer` or `Aiden` before `Cherry`.
+- Deep Study can be slower and use more model tokens because it asks the model to understand the material before selecting cards. Use “快速生成” when validating a workflow quickly.

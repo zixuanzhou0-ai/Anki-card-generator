@@ -88,7 +88,7 @@ export function phraseTypeLabel(value: string | null | undefined) {
   if (type === 'collocation') return '自然搭配'
   if (type === 'discourse_marker') return '话语标记'
   if (type === 'listening_sentence') return '听力句'
-  if (type === 'vocabulary_usage') return '单词用法'
+  if (type === 'vocabulary_usage') return '语境生词'
   if (type === 'grammar_pattern') return '语法框架'
   return ''
 }

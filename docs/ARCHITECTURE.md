@@ -7,10 +7,11 @@ This document describes the `v0.9.2-beta` desktop architecture at the level need
 ```mermaid
 flowchart TB
   A["URL / local video + SRT"] --> B["Subtitle parsing and segment building"]
-  B --> C["Language candidate mining"]
-  C --> D["MIMO phrase/listening review"]
-  D --> E["Language card field generation"]
-  E --> F["Media slicing and optional TTS"]
+  B --> C["Deep Study material_context"]
+  C --> D["Language candidate mining"]
+  D --> E["AI candidate review"]
+  E --> F["Language card field generation"]
+  F --> O["Media slicing and optional TTS"]
 
   G["Document"] --> H{"Document study mode"}
   H --> I["knowledge: concepts, arguments, terms, examples"]
@@ -18,7 +19,7 @@ flowchart TB
   I --> K["Knowledge QA cards"]
   J --> L["Document reading review cards"]
 
-  F --> M["APKG packaging"]
+  O --> M["APKG packaging"]
   K --> M
   L --> M
   M --> N["APKG verification and Anki import"]
@@ -46,6 +47,14 @@ Document mode is intentionally separated from the video language-learning contro
 - `knowledge` is the default path and hides CEFR levels, listening cards, phrase cards, and language content toggles.
 - `language_reading` is opt-in and only exposes document reading settings for expressions, vocabulary, and grammar. It does not generate listening cards because documents do not have source audio.
 - The frontend persists document study fields on both `GenerateRequest` and `Project`, and old stored requests fall back to knowledge defaults.
+
+Video and URL language learning now have a material-understanding layer:
+
+- `study_depth` is stored on `GenerateRequest` and `Project`; the default is `deep`.
+- In deep mode, the worker builds a hidden `material_context` before candidate review. It captures the material summary, scene or argument flow, tone, key points, and learning opportunities.
+- Candidate review and card-generation prompts receive `material_context`, so Qwen / DashScope, MIMO, and other OpenAI-compatible models can use reasoning/thinking to judge context before writing cards.
+- `language_focus` defaults to `phrases + vocabulary + listening`. `vocabulary` produces contextual vocabulary cards through `phrase_type: "vocabulary_usage"` and the exported card label `语境生词卡`; it does not create isolated dictionary cards.
+- APKG field names stay V10-compatible. New identity is stored in project/card metadata such as `study_depth`, `material_context`, `phrase_type`, `content_kind`, and `source_evidence`.
 
 ## Tauri Boundary
 

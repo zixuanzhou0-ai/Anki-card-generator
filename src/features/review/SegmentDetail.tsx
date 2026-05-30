@@ -114,7 +114,7 @@ export function SegmentDetail({
           <strong>{segment.text}</strong>
         </div>
         <div>
-          <span className="label">{isReading ? '精读点' : isKnowledge ? '知识点' : '重点词伙'}</span>
+          <span className="label">{isReading ? '精读点' : isKnowledge ? '知识点' : '学习点'}</span>
           <strong>{segmentPhraseLabel(segment, documentStudyMode)}</strong>
         </div>
       </div>
@@ -143,7 +143,7 @@ export function SegmentDetail({
         segment.phrase_value_score !== undefined ? (
         <div className={`phrase-review-panel status-${segmentReviewStatus(segment)}`}>
           <div>
-            <span>AI 词伙评审</span>
+            <span>AI 学习候选评审</span>
             <strong>
               {segmentStatusLabel(segmentReviewStatus(segment))}
               {phraseValueScore(segment.phrase_value_score) !== null
@@ -207,6 +207,10 @@ function CardEditor({ card, documentStudyMode, motionDuration, prefersReducedMot
   const learningTarget = card.learning_target || card.learning_goal
   const whyItMatters = card.why_it_matters || card.why
   const howToUseIt = card.how_to_use_it || card.context
+  const cardTypeLabel =
+    phraseTypeLabel(card.phrase_type ?? segment.phrase_type) ||
+    (card.content_kind === 'vocabulary' ? '语境生词' : card.content_kind === 'grammar' ? '语法框架' : '词伙表达')
+  const editPointLabel = isReadingCard ? '精读点' : isKnowledgeCard ? '知识点' : cardTypeLabel === '语境生词' ? '语境生词' : '学习点'
 
   return (
     <motion.article
@@ -274,7 +278,7 @@ function CardEditor({ card, documentStudyMode, motionDuration, prefersReducedMot
         </div>
       ) : cardPhraseScore !== null || card.phrase_decision_reason || card.phrase_reject_reason || card.phrase_card_focus ? (
         <div className={`phrase-card-review status-${cardPhraseStatus}`}>
-          <span>词伙分{cardPhraseScore !== null ? ` ${cardPhraseScore}/5` : ''}</span>
+          <span>{cardTypeLabel}{cardPhraseScore !== null ? ` · ${cardPhraseScore}/5` : ''}</span>
           {card.phrase_card_focus ? <strong>训练点：{card.phrase_card_focus}</strong> : null}
           {whyItMatters ? <p>为什么值得学：{whyItMatters}</p> : null}
           {howToUseIt ? <p>怎么用：{howToUseIt}</p> : null}
@@ -293,7 +297,7 @@ function CardEditor({ card, documentStudyMode, motionDuration, prefersReducedMot
           />
         </label>
         <label>
-          {isReadingCard ? '精读点' : isKnowledgeCard ? '知识点' : '重点词伙'}
+          {editPointLabel}
           <textarea
             value={card.phrase}
             onChange={(event: ChangeEvent<HTMLTextAreaElement>) =>

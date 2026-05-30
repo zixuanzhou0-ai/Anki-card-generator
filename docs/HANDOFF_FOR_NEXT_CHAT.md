@@ -9,7 +9,7 @@ Use this file when opening a fresh Codex / GPT review window for the Anki Card G
 - Active branch: `codex/complete-refactor-hardening`
 - Active PR: https://github.com/zixuanzhou0-ai/Anki-card-generator/pull/6
 - PR base: `main`
-- Current status when this handoff was written: PR #6 contains the document-study split plus local-video, API-key persistence, TTS export, and Qwen3 TTS voice hardening work. Local working tree should be clean after pushing the latest commit.
+- Current status when this handoff was written: PR #6 contains the document-study split plus local-video, API-key persistence, TTS export, Qwen3 TTS voice hardening, and the first Deep Study / contextual vocabulary card pipeline. Local working tree should be clean after pushing the latest commit.
 
 Important: ask reviewers to inspect PR #6, not only `main`. The latest document-study work is on the PR branch.
 
@@ -32,6 +32,10 @@ Recent hardening added after the initial document-study split:
 - TTS export now uses the resolved TTS configuration, so saved/reused provider keys are honored during APKG export.
 - API keys can be remembered locally through Windows Credential Manager or a DPAPI-encrypted local fallback when keyring is unavailable.
 - Qwen3 TTS defaults were changed from `Cherry` to `Jennifer` for English cards; `Aiden` is available as the American English male preset, and the Qwen3 voice-design model entry is exposed for advanced custom voices.
+- Deep Study is now represented by `study_depth` on requests/projects. The default is `deep`; the UI also exposes `快速生成`.
+- The worker now builds and stores a hidden `material_context` before candidate review/card writing, so thinking models can use whole-material context before producing cards.
+- `language_focus` now defaults to `phrases + vocabulary + listening`. `vocabulary_usage` exports as `语境生词卡` while keeping V10 APKG fields compatible.
+- Candidate review is no longer worded as MIMO-only; OpenAI-compatible providers such as Qwen / DashScope can run the same AI candidate review path.
 
 ## Key Files
 
@@ -42,6 +46,7 @@ Frontend domain and defaults:
 - `src/domain/documentStudy.ts`
 - `src/domain/documentFocus.ts`
 - `src/domain/learningFocus.ts`
+- `src/domain/studyDepth.ts`
 - `src/domain/options.ts`
 - `src/domain/demoProject.ts`
 - `src/domain/ttsProviders.ts`
@@ -55,6 +60,7 @@ Frontend UI:
 - `src/features/generation/CardTemplatePanel.tsx`
 - `src/features/review/SegmentList.tsx`
 - `src/features/review/SegmentDetail.tsx`
+- `src/features/review/ReviewSummaryPanel.tsx`
 
 Storage and tests:
 
@@ -120,6 +126,14 @@ python -m pytest tests/test_worker_quality.py -k qwen_tts_audio -q
 npm run build
 ```
 
+Latest targeted checks for Deep Study / contextual vocabulary:
+
+```powershell
+python -m py_compile workers\acg\legacy_worker.py
+npm run test:unit -- src/features/learning/LearningSettingsPanel.test.tsx src/features/review/ReviewSummaryPanel.test.tsx src/features/review/SegmentDetail.test.tsx src/domain/demoProject.test.ts src/services/projectStorage.test.ts
+python -m pytest tests/test_worker_quality.py -q
+```
+
 ## Current Product Decisions
 
 - Keep the two-pane layout: left Inspector, right Workspace. Do not restore the old left Rail.
@@ -127,6 +141,9 @@ npm run build
 - Default document mode is knowledge absorption.
 - Language reading is opt-in under document input.
 - For Qwen3 TTS English cards, prefer `Jennifer` or `Aiden`; `Cherry` remains available but is no longer the default.
+- Use one responsive Anki template family rather than asking the user to choose desktop/mobile templates.
+- Do not create isolated dictionary vocabulary cards. Vocabulary cards must be contextual `语境生词卡` tied to an original sentence and scene.
+- Keep Deep Study on by default for model-backed generation, but allow `快速生成` for quick workflow checks.
 - Do not add OCR, RAG, more providers, more templates, or multi-platform packaging until the beta core is steadier.
 - Do not change APKG field names casually; compatibility still matters.
 
@@ -134,12 +151,12 @@ npm run build
 
 The next iteration should focus on the strongest remaining beta gaps:
 
-1. Separate language-card and knowledge-card Anki templates / note models.
-2. Add a real document generate + export + APKG verify smoke test.
-3. Add packaged portable zip smoke to catch release resource issues.
-4. Improve Anki card visual stability: no sentence clipping, no jumpy zoom between cards, clearer pending-review indicators.
-5. Continue simplifying the left Inspector with large sections and drawers.
-6. Make review dashboard labels source-aware: phrase-score language for video, knowledge-point language for documents.
+1. Run a real local video + SRT Deep Study generation using Qwen / DashScope and inspect whether `material_context` improves selected cards.
+2. Separate language-card and knowledge-card Anki templates / note models.
+3. Add a real document generate + export + APKG verify smoke test.
+4. Add packaged portable zip smoke to catch release resource issues.
+5. Improve Anki card visual stability: no sentence clipping, no jumpy zoom between cards, clearer pending-review indicators.
+6. Continue simplifying the left Inspector with large sections and drawers.
 7. Continue checking whether the lowered `1180 x 780` minimum window is sufficient across common Windows scaling settings.
 8. Continue extracting `workers/acg/legacy_worker.py` into real document, LLM, media, TTS, and Anki modules.
 
@@ -158,15 +175,17 @@ Please read docs/HANDOFF_FOR_NEXT_CHAT.md first, then inspect PR #6 and the loca
 
 Current shipped direction:
 - Video / URL = English context learning.
+- Video / URL now use Deep Study by default: understand material -> review candidates -> write cards.
+- Contextual vocabulary cards are in scope and labeled `语境生词卡`.
 - Document input = knowledge absorption by default.
 - Document input has optional language_reading mode.
 - Two-pane desktop layout stays; do not restore the left Rail.
 
 Next likely work:
-1. Separate language-card and knowledge-card Anki templates / note models.
-2. Add document generate/export/APKG verify smoke.
-3. Fix Anki template visual stability and pending-review cues.
-4. Continue simplifying the left Inspector with drawers.
+1. Real Deep Study local-video generation QA with Qwen / DashScope and APKG import.
+2. Separate language-card and knowledge-card Anki templates / note models.
+3. Add document generate/export/APKG verify smoke.
+4. Fix Anki template visual stability and pending-review cues.
 5. Prepare public-beta release reliability.
 
 Before editing, run:
@@ -184,6 +203,9 @@ Please review PR #6, not just main:
 https://github.com/zixuanzhou0-ai/Anki-card-generator/pull/6
 
 Focus on whether the document input path is now genuinely independent from video-language learning:
+- Deep Study material_context data flow
+- contextual vocabulary cards and labels
+- Qwen / DashScope candidate review behavior
 - document study types and defaults
 - DocumentStudyPanel UI behavior
 - localStorage migration

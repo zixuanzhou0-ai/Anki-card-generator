@@ -9,6 +9,7 @@ import {
   normalizeDocumentFocus,
   normalizeDocumentStudyMode,
   normalizeLanguageFocus,
+  normalizeStudyDepth,
   PROJECT_STORAGE_KEY,
   REQUEST_STORAGE_KEY,
   SECRET_PREFS_STORAGE_KEY,
@@ -85,6 +86,7 @@ export function loadSavedRequest(): GenerateRequest {
       document_answer_language: normalizeDocumentAnswerLanguage(saved.document_answer_language),
       document_depth: normalizeDocumentDepth(saved.document_depth),
       document_answer_length: normalizeDocumentAnswerLength(saved.document_answer_length),
+      study_depth: normalizeStudyDepth(saved.study_depth),
       api_config: {
         ...defaultRequest.api_config,
         ...savedApi,
@@ -124,6 +126,8 @@ export function loadSavedProject(): Project | null {
       document_answer_language: normalizeDocumentAnswerLanguage(saved.document_answer_language),
       document_depth: normalizeDocumentDepth(saved.document_depth),
       document_answer_length: normalizeDocumentAnswerLength(saved.document_answer_length),
+      study_depth: normalizeStudyDepth(saved.study_depth),
+      material_context: saved.material_context ?? null,
       segments: saved.segments.map((segment) => ({
         ...segment,
         cards: Array.isArray(segment.cards) ? segment.cards : [],

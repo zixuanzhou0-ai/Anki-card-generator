@@ -30,6 +30,7 @@ export function createDemoProject(request: GenerateRequest): Project {
           phrase: isReading ? 'it turns out' : 'spaced repetition',
           knowledge_type: isReading ? 'terms' : 'concepts',
           document_card_kind: isReading ? 'language_reading' : 'knowledge',
+          content_kind: isReading ? 'phrase' : 'knowledge',
           definition: isReading ? '一个引出“结果证明 / 后来发现”的阅读表达。' : '一种把复习安排在逐渐拉长的时间间隔中的学习方法。',
           collocations: isReading
             ? 'it turns out that; as it turns out; turned out to be'
@@ -71,6 +72,13 @@ export function createDemoProject(request: GenerateRequest): Project {
       document_answer_language: request.document_answer_language,
       document_depth: request.document_depth,
       document_answer_length: request.document_answer_length,
+      study_depth: request.study_depth,
+      material_context: {
+        summary: isReading ? '演示文档正在训练英文资料里的表达理解。' : '演示文档介绍间隔重复为什么能提升长期记忆。',
+        key_points: isReading ? ['识别引出结论的表达'] : ['间隔重复', '主动回忆', '复习间隔'],
+        learning_opportunities: isReading ? ['词伙表达', '单词用法', '语法框架'] : ['核心概念', '术语定义'],
+        source: 'heuristic',
+      },
       card_types: ['knowledge'],
       segments: [segment],
       warning: '浏览器预览模式：真实文档解析和 apkg 导出需要在 Tauri 桌面端运行。',
@@ -88,6 +96,8 @@ export function createDemoProject(request: GenerateRequest): Project {
       duration: 4.2,
       recommendation: 5,
       phrase: 'in the mood',
+      phrase_type: 'spoken_phrase',
+      content_kind: 'phrase',
       cards: [],
     },
     {
@@ -99,6 +109,8 @@ export function createDemoProject(request: GenerateRequest): Project {
       duration: 4.2,
       recommendation: 4,
       phrase: 'figure out',
+      phrase_type: 'vocabulary_usage',
+      content_kind: 'vocabulary',
       cards: [],
     },
   ]
@@ -110,7 +122,7 @@ export function createDemoProject(request: GenerateRequest): Project {
       return {
         id: `${segment.id}_${type}`,
         type,
-        type_label: label,
+        type_label: type === 'phrase' && segment.phrase_type === 'vocabulary_usage' ? '语境生词卡' : label,
         enabled: true,
         english: segment.text,
         chinese:
@@ -136,6 +148,12 @@ export function createDemoProject(request: GenerateRequest): Project {
         difficulty: levels.find((level) => level.id === request.level)?.label ?? request.level,
         teacher_note: `这句值得学，因为 ${segment.phrase} 是真实口语里的高频表达。`,
         cloze,
+        phrase_type: segment.phrase_type,
+        content_kind: segment.content_kind,
+        phrase_card_focus:
+          segment.content_kind === 'vocabulary'
+            ? '训练这个词在当前语境里的真实用法，而不是背词典义。'
+            : '训练可迁移表达和中文语感。',
         quality: {
           score: 86,
           status: 'recommended',
@@ -164,6 +182,15 @@ export function createDemoProject(request: GenerateRequest): Project {
     document_answer_language: request.document_answer_language,
     document_depth: request.document_depth,
     document_answer_length: request.document_answer_length,
+    study_depth: request.study_depth,
+    material_context: {
+      summary: '演示视频是朋友之间的自然对话，重点训练真实口语里的状态表达和处理问题的说法。',
+      scene: '轻松但带情绪的日常对话',
+      tone: '口语、自然、带一点犹豫',
+      key_points: ['表达当前状态', '推迟处理问题'],
+      learning_opportunities: ['词伙表达', '语境生词', '听力难点'],
+      source: 'heuristic',
+    },
     card_types: request.card_types,
     segments: sampleSegments,
     warning: '浏览器预览模式：真实视频切片和 apkg 导出需要在 Tauri 桌面端运行。',

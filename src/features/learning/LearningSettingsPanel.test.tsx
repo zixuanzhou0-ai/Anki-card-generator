@@ -27,14 +27,16 @@ function renderPanel(overrides: Partial<ComponentProps<typeof LearningSettingsPa
 }
 
 describe('LearningSettingsPanel', () => {
-  it('patches language and segment budget', () => {
+  it('patches language, study depth, and segment budget', () => {
     const onPatchRequest = vi.fn()
     renderPanel({ onPatchRequest, request: { ...defaultRequest, max_segments: 0 } })
 
     fireEvent.change(screen.getByLabelText('学习语言'), { target: { value: 'Français' } })
+    fireEvent.click(screen.getByRole('button', { name: /快速生成/ }))
     fireEvent.click(screen.getByRole('button', { name: '自动' }))
 
     expect(onPatchRequest).toHaveBeenCalledWith({ language: 'Français' })
+    expect(onPatchRequest).toHaveBeenCalledWith({ study_depth: 'standard' })
     expect(onPatchRequest).toHaveBeenCalledWith({ max_segments: 35 })
   })
 
@@ -67,7 +69,7 @@ describe('LearningSettingsPanel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /单词用法/ }))
 
-    expect(screen.getByText('词伙表达 / 听力难点')).toBeVisible()
+    expect(screen.getByText('词伙表达 / 单词用法 / 听力难点')).toBeVisible()
     expect(props.onToggleLanguageFocus).toHaveBeenCalledWith('vocabulary')
   })
 

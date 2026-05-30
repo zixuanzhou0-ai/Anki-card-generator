@@ -9,6 +9,7 @@ import {
 } from './documentStudy'
 import { defaultCollectionLevels } from './levels'
 import { defaultLanguageFocus } from './learningFocus'
+import { defaultStudyDepth } from './studyDepth'
 
 export const PROJECT_STORAGE_KEY = 'anki-card-generator:last-project'
 export const defaultToggles = contentOptions.reduce((result, item) => {
@@ -37,6 +38,7 @@ export const defaultRequest: GenerateRequest = {
   document_answer_language: defaultDocumentAnswerLanguage,
   document_depth: defaultDocumentDepth,
   document_answer_length: defaultDocumentAnswerLength,
+  study_depth: defaultStudyDepth,
   card_types: ['listening', 'phrase', 'cloze'],
   max_segments: 0,
   api_config: {

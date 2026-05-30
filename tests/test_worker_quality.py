@@ -1201,6 +1201,86 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("such a nice Monday morning", prompt)
         self.assertIn("talk about", prompt)
 
+    def test_default_language_focus_includes_contextual_vocabulary(self):
+        self.assertEqual(worker.normalized_language_focus({}), ["phrases", "vocabulary", "listening"])
+
+    def test_deep_material_context_is_injected_into_prompts(self):
+        project = {
+            "language": "English",
+            "level": "B1",
+            "language_focus": ["phrases", "vocabulary"],
+            "material_context": {
+                "summary": "Two friends are deciding whether to talk now or postpone a tense topic.",
+                "tone": "hesitant and conversational",
+                "learning_opportunities": ["语境生词", "词伙表达"],
+            },
+        }
+        segment = {
+            "id": "seg_0001",
+            "start": 0.0,
+            "end": 2.0,
+            "source_time": "00:00:00.000 - 00:00:02.000",
+            "text": "This is getting awkward.",
+            "phrase": "awkward",
+            "score": 3.4,
+            "recommendation": 3,
+        }
+
+        review_prompt = worker.build_phrase_review_prompt(project, [segment])
+        card_prompt = worker.build_prompt({**project, "card_types": ["phrase"]}, [segment])
+
+        self.assertIn("全局素材理解", review_prompt)
+        self.assertIn("hesitant and conversational", review_prompt)
+        self.assertIn("全局素材理解", card_prompt)
+        self.assertIn('"content_kind":"phrase|vocabulary|grammar|listening"', card_prompt)
+
+    def test_vocabulary_usage_cards_get_contextual_label(self):
+        segments = [
+            {
+                "id": "seg_0001",
+                "start": 0.0,
+                "end": 2.0,
+                "source_time": "00:00:00.000 - 00:00:02.000",
+                "text": "This is getting awkward.",
+                "phrase": "awkward",
+                "phrase_type": "vocabulary_usage",
+                "content_kind": "vocabulary",
+                "score": 3.4,
+                "recommendation": 4,
+            }
+        ]
+        ai_payload = {
+            "segments": [
+                {
+                    "id": "seg_0001",
+                    "cards": [
+                        {
+                            "type": "phrase",
+                            "phrase": "awkward",
+                            "phrase_type": "vocabulary_usage",
+                            "content_kind": "vocabulary",
+                            "chinese": "尴尬的",
+                            "definition": "在当前场景里表示气氛开始变得不自在。",
+                            "collocations": "get awkward / feel awkward",
+                            "context": "社交气氛变僵时使用。",
+                            "example": "The room got awkward after that comment.",
+                            "chinese_feel": "中文像“气氛有点尴尬”。",
+                            "why": "中国学习者常知道中文义，但不一定会说 get awkward。",
+                            "difficulty": "B1 日常交流",
+                            "teacher_note": "重点记 get awkward 这个场景用法。",
+                            "cloze": "This is getting ____.",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        merged, _ = worker.merge_ai_cards(segments, ai_payload, ["phrase"], "B1")
+
+        card = merged[0]["cards"][0]
+        self.assertEqual(card["type_label"], "语境生词卡")
+        self.assertEqual(card["content_kind"], "vocabulary")
+
     def test_phrase_review_skip_does_not_generate_candidate(self):
         segment = {
             "id": "seg_0001",

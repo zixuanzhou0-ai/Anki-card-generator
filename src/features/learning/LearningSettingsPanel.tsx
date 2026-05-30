@@ -1,7 +1,7 @@
 import { Languages } from 'lucide-react'
 
 import type { ContentToggles, GenerateRequest, LanguageFocus, Level } from '../../domain/types'
-import { languageFocusSummary, normalizeCollectionLevels } from '../../domain/options'
+import { languageFocusSummary, normalizeCollectionLevels, studyDepthOptions } from '../../domain/options'
 
 type LevelOption = {
   id: Level
@@ -65,6 +65,27 @@ export function LearningSettingsPanel({
         </div>
       </div>
       <div className="learning-core-card">
+        <div className="learning-setting-row">
+          <span>
+            <strong>理解深度</strong>
+            <small>深度理解会先读懂整段素材，再筛选词伙、生词和句型</small>
+          </span>
+          <div className="study-depth-toggle" aria-label="理解深度">
+            {studyDepthOptions.map((item) => (
+              <button
+                type="button"
+                key={item.id}
+                className={request.study_depth === item.id ? 'selected' : ''}
+                aria-pressed={request.study_depth === item.id}
+                title={item.note}
+                onClick={() => onPatchRequest({ study_depth: item.id })}
+              >
+                <strong>{item.label}</strong>
+                <small>{item.id === 'deep' ? '推荐' : '快'}</small>
+              </button>
+            ))}
+          </div>
+        </div>
         <label className="learning-setting-row">
           <span>
             <strong>学习语言</strong>
