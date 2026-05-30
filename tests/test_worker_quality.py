@@ -83,6 +83,30 @@ class WorkerQualityTests(unittest.TestCase):
 
         self.assertEqual(selected, english_subtitle)
 
+    def test_select_embedded_subtitle_stream_prefers_requested_language(self):
+        probe = {
+            "streams": [
+                {
+                    "index": 2,
+                    "codec_type": "subtitle",
+                    "codec_name": "subrip",
+                    "tags": {"language": "chi"},
+                    "disposition": {"default": 1},
+                },
+                {
+                    "index": 3,
+                    "codec_type": "subtitle",
+                    "codec_name": "subrip",
+                    "tags": {"language": "eng"},
+                    "disposition": {"default": 0},
+                },
+            ]
+        }
+
+        selected = worker.select_embedded_subtitle_stream(probe, "English")
+
+        self.assertEqual(selected["index"], 3)
+
     def test_local_generate_auto_discovers_subtitle_when_path_is_empty(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

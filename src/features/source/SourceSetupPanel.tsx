@@ -119,7 +119,7 @@ export function SourceSetupPanel({ request, onPatchRequest, onSelectPath, onSele
                   <Subtitles size={18} />
                 </button>
               </div>
-              <small>可留空；生成时会自动匹配视频同目录下的同名 SRT/VTT。</small>
+              <small>可留空；生成时会自动匹配同目录 SRT/VTT，也会尝试提取 MKV/MP4 内嵌文字字幕。</small>
             </label>
           </>
         )}

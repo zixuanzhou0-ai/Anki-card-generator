@@ -42,7 +42,7 @@ describe('SourceSetupPanel', () => {
 
     expect(screen.getByPlaceholderText('选择本地视频')).toBeVisible()
     expect(screen.getByPlaceholderText('选择 SRT 字幕')).toBeVisible()
-    expect(screen.getByText('可留空；生成时会自动匹配视频同目录下的同名 SRT/VTT。')).toBeVisible()
+    expect(screen.getByText('可留空；生成时会自动匹配同目录 SRT/VTT，也会尝试提取 MKV/MP4 内嵌文字字幕。')).toBeVisible()
     expect(props.onSelectSourceMode).toHaveBeenCalledWith('url')
     expect(props.onSelectPath).toHaveBeenCalledWith('video')
   })

@@ -3013,6 +3013,119 @@ def discover_local_subtitle(video_path: str, language: str = "English") -> Path 
     return selected
 
 
+TEXT_SUBTITLE_CODECS = {"subrip", "ass", "ssa", "webvtt", "mov_text"}
+
+
+def subtitle_language_aliases(language: str) -> set[str]:
+    lower = str(language or "").lower()
+    if any(value in lower for value in ["zh", "chinese", "中文", "汉语", "chi", "zho", "cmn"]):
+        return {"zh", "zho", "chi", "cmn", "chn", "chinese", "中文"}
+    if any(value in lower for value in ["fr", "french", "français"]):
+        return {"fr", "fra", "fre", "french"}
+    if any(value in lower for value in ["es", "spanish", "español"]):
+        return {"es", "spa", "spanish"}
+    if any(value in lower for value in ["ja", "japanese", "日本"]):
+        return {"ja", "jpn", "japanese"}
+    if any(value in lower for value in ["ko", "korean", "한국"]):
+        return {"ko", "kor", "korean"}
+    return {"en", "eng", "english", "en-us", "en-gb"}
+
+
+def run_ffprobe_json(video_path: Path) -> dict[str, Any] | None:
+    if not shutil.which("ffprobe"):
+        return None
+    completed = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_streams",
+            str(video_path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if completed.returncode != 0:
+        return None
+    try:
+        return json.loads(completed.stdout or "{}")
+    except json.JSONDecodeError:
+        return None
+
+
+def select_embedded_subtitle_stream(probe: dict[str, Any] | None, language: str) -> dict[str, Any] | None:
+    aliases = subtitle_language_aliases(language)
+    streams = [stream for stream in (probe or {}).get("streams", []) if stream.get("codec_type") == "subtitle"]
+    text_streams = [stream for stream in streams if str(stream.get("codec_name") or "").lower() in TEXT_SUBTITLE_CODECS]
+    if not text_streams:
+        return None
+
+    def score(stream: dict[str, Any]) -> tuple[int, int, int, int]:
+        tags = stream.get("tags") if isinstance(stream.get("tags"), dict) else {}
+        language_tag = str(tags.get("language") or "").strip().lower()
+        codec = str(stream.get("codec_name") or "").lower()
+        disposition = stream.get("disposition") if isinstance(stream.get("disposition"), dict) else {}
+        language_score = 0 if language_tag in aliases else 3 if language_tag in {"", "und", "unknown"} else 8
+        codec_score = 0 if codec == "subrip" else 1
+        forced_score = 2 if int(disposition.get("forced") or 0) else 0
+        default_score = 0 if int(disposition.get("default") or 0) else 1
+        return (language_score, forced_score, codec_score, default_score)
+
+    selected = sorted(text_streams, key=score)[0]
+    return selected if score(selected)[0] < 8 else None
+
+
+def extract_embedded_subtitle(video_path: str, language: str = "English") -> Path | None:
+    video = Path(clean_input_path(video_path))
+    if not video.exists() or not shutil.which("ffmpeg"):
+        return None
+
+    probe = run_ffprobe_json(video)
+    stream = select_embedded_subtitle_stream(probe, language)
+    if not stream:
+        return None
+
+    stream_index = stream.get("index")
+    if stream_index is None:
+        return None
+
+    fingerprint_source = f"{video.resolve()}|{video.stat().st_mtime_ns}|{video.stat().st_size}|{stream_index}"
+    fingerprint = hashlib.sha1(fingerprint_source.encode("utf-8", errors="ignore")).hexdigest()[:16]
+    output_dir = Path.cwd() / "projects" / "local_subtitles"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{safe_filename(video.stem)}_stream_{stream_index}_{fingerprint}.srt"
+    if output_path.exists() and output_path.stat().st_size > 0:
+        return output_path
+
+    completed = subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(video),
+            "-map",
+            f"0:{stream_index}",
+            "-c:s",
+            "srt",
+            str(output_path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if completed.returncode != 0 or not output_path.exists() or output_path.stat().st_size == 0:
+        output_path.unlink(missing_ok=True)
+        return None
+    return output_path
+
+
 def read_download_info(directory: Path) -> dict[str, Any]:
     info_files = sorted(directory.glob("*.info.json"))
     if not info_files:
@@ -3652,9 +3765,14 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         discovered_subtitle = discover_local_subtitle(video_path, payload.get("language", "English"))
         if discovered_subtitle:
             subtitle_path = str(discovered_subtitle)
+    if video_path and (not subtitle_path or not Path(subtitle_path).exists()):
+        emit_progress("generate", "subtitle", 30, "正在从视频内嵌字幕提取 SRT。")
+        embedded_subtitle = extract_embedded_subtitle(video_path, payload.get("language", "English"))
+        if embedded_subtitle:
+            subtitle_path = str(embedded_subtitle)
     if not subtitle_path or not Path(subtitle_path).exists():
         fail(
-            f"字幕文件不存在：{subtitle_path or '未选择'}。请手动选择 SRT，或把同名 .srt/.vtt 放在视频同目录。",
+            f"字幕文件不存在：{subtitle_path or '未选择'}。已尝试同目录 SRT/VTT 和视频内嵌文字字幕；请手动选择 SRT，或确认视频包含可提取的 SubRip/ASS/WebVTT 字幕。",
             error_code="LOCAL_SUBTITLE_MISSING",
             stage="subtitle",
             retryable=True,
