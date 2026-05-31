@@ -363,7 +363,7 @@ class WorkerQualityTests(unittest.TestCase):
             self.assertNotIn("整句 AI 朗读", template["qfmt"])
             self.assertNotIn("{{TtsAudio}}", template["qfmt"])
             self.assertIn("核心答案", template["afmt"])
-            self.assertIn("别这样用", template["afmt"])
+            self.assertIn("老师提醒", template["afmt"])
             self.assertIn("再造一句", template["afmt"])
 
     def test_worker_fail_emits_machine_readable_error(self):
@@ -1410,14 +1410,29 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("某个词在这句里是什么意思/怎么用", prompt)
 
     def test_v10_template_is_review_first_and_mobile_flowing(self):
-        self.assertIn("无字幕听辨", worker.FRONT_TEMPLATE)
-        self.assertIn("原声线索", worker.FRONT_TEMPLATE)
+        self.assertIn("{{#IsListening}}", worker.FRONT_TEMPLATE)
+        self.assertIn("{{^IsListening}}", worker.FRONT_TEMPLATE)
+        self.assertIn("原声", worker.FRONT_TEMPLATE)
         self.assertNotIn("整句 AI 朗读", worker.FRONT_TEMPLATE)
         self.assertIn("核心答案", worker.BACK_TEMPLATE)
-        self.assertIn("别这样用", worker.BACK_TEMPLATE)
+        self.assertIn("老师提醒", worker.BACK_TEMPLATE)
         self.assertIn("再造一句", worker.BACK_TEMPLATE)
         self.assertIn("overflow-y: auto !important", worker.CARD_CSS)
         self.assertIn("height: auto", worker.CARD_CSS)
+        self.assertNotIn("fitResponsiveText", worker.FRONT_TEMPLATE + worker.BACK_TEMPLATE)
+
+    def test_template_assets_split_by_project_kind(self):
+        language = worker.anki_template_assets("immersive", "video_language")
+        knowledge = worker.anki_template_assets("immersive", "document_knowledge")
+        reading = worker.anki_template_assets("immersive", "document_reading")
+
+        self.assertEqual(language[0], "视频语言 V10")
+        self.assertEqual(knowledge[0], "文档知识 V10")
+        self.assertEqual(reading[0], "文档精读 V10")
+        self.assertIn("听力原句", language[3])
+        self.assertIn("关键机制", knowledge[3])
+        self.assertIn("边界 / 易错", reading[3])
+        self.assertNotEqual(worker.anki_template_family("immersive", "video_language"), worker.anki_template_family("immersive", "document_knowledge"))
 
     def test_phrase_review_skip_does_not_generate_candidate(self):
         segment = {
@@ -2176,27 +2191,25 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertTrue(first.startswith("Deck_"))
 
     def test_card_template_uses_responsive_canvas_and_fit_text(self):
-        self.assertIn("--blue: #007aff", worker.CARD_CSS)
-        self.assertIn("--font-scale", worker.CARD_CSS)
+        self.assertIn(".review-card", worker.CARD_CSS)
         self.assertIn("overflow-y: auto !important", worker.CARD_CSS)
         self.assertIn("height: auto", worker.CARD_CSS)
         self.assertIn("grid-template-columns: repeat(auto-fit, minmax(220px, 1fr))", worker.CARD_CSS)
-        self.assertIn("data-fit", worker.BACK_TEMPLATE)
-        self.assertIn("fitResponsiveText", worker.BACK_TEMPLATE)
-        self.assertIn("fitAdaptiveCard", worker.BACK_TEMPLATE)
-        self.assertIn("hasHiddenOverflow", worker.BACK_TEMPLATE)
-        self.assertIn('data-fit-min="18" data-fit-max="44"', worker.BACK_TEMPLATE)
-        self.assertIn("audio-missing", worker.BACK_TEMPLATE)
-        self.assertIn("replay-audio-button", worker.BACK_TEMPLATE)
-        self.assertIn("playReplayAudio", worker.BACK_TEMPLATE)
-        self.assertIn("AI 朗读未生成", worker.BACK_TEMPLATE)
+        self.assertIn("media-strip", worker.BACK_TEMPLATE)
+        self.assertIn("audio-actions", worker.BACK_TEMPLATE)
+        self.assertNotIn("data-fit", worker.BACK_TEMPLATE)
+        self.assertNotIn("fitResponsiveText", worker.BACK_TEMPLATE)
+        self.assertNotIn("fitAdaptiveCard", worker.BACK_TEMPLATE)
+        self.assertNotIn("hasHiddenOverflow", worker.BACK_TEMPLATE)
+        self.assertNotIn("audio-missing", worker.BACK_TEMPLATE)
+        self.assertNotIn("AI 朗读未生成", worker.BACK_TEMPLATE)
         self.assertNotIn("scale.toFixed", worker.BACK_TEMPLATE)
         self.assertIn("核心答案", worker.BACK_TEMPLATE)
-        self.assertIn("别这样用", worker.BACK_TEMPLATE)
+        self.assertIn("老师提醒", worker.BACK_TEMPLATE)
         self.assertIn("怎么理解", worker.BACK_TEMPLATE)
-        self.assertIn("怎么用", worker.BACK_TEMPLATE)
+        self.assertIn("怎么迁移", worker.BACK_TEMPLATE)
         self.assertIn("再造一句", worker.BACK_TEMPLATE)
-        self.assertIn("learning-grid", worker.CARD_CSS)
+        self.assertIn("block-grid", worker.CARD_CSS)
         self.assertNotIn("@media (max-height: 980px)", worker.CARD_CSS)
 
 

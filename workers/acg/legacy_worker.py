@@ -7178,15 +7178,416 @@ MINIMAL_FRONT_TEMPLATE = FRONT_TEMPLATE
 MINIMAL_BACK_TEMPLATE = BACK_TEMPLATE
 
 
-def anki_template_assets(template_id: str) -> tuple[str, str, str, str]:
+# Final V10 visual layer. It keeps the established APKG field names, but routes
+# the same fields through source-aware layouts instead of one oversized shell.
+CARD_CSS = """
+.card {
+  margin: 0;
+  min-height: 100%;
+  padding: clamp(10px, 3vw, 18px);
+  background: #f5f5f7;
+  color: #1d1d1f;
+  font-family: "SF Pro Text", "Segoe UI", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
+  line-height: 1.5;
+  text-align: left;
+  letter-spacing: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+* { box-sizing: border-box; }
+html,
+body,
+#qa {
+  width: 100% !important;
+  min-height: 100% !important;
+  height: auto !important;
+  margin: 0 !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+}
+.review-card {
+  width: min(900px, calc(100vw - 18px));
+  margin: 0 auto;
+  border: 1px solid rgba(60, 60, 67, 0.13);
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+}
+.card-section {
+  padding: clamp(18px, 4vw, 34px);
+  border-top: 1px solid rgba(60, 60, 67, 0.12);
+}
+.card-section:first-child { border-top: 0; }
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  color: #6e6e73;
+  font-size: clamp(12px, 2.8vw, 14px);
+  font-weight: 800;
+}
+.tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 4px 10px;
+  border: 1px solid rgba(0, 122, 255, 0.18);
+  border-radius: 999px;
+  background: rgba(0, 122, 255, 0.08);
+  color: #0057d8;
+}
+.prompt {
+  margin: clamp(18px, 4vw, 32px) 0 0;
+  color: #111114;
+  font-size: clamp(28px, 7vw, 46px);
+  line-height: 1.14;
+  font-weight: 900;
+  overflow-wrap: anywhere;
+}
+.cue {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border-left: 4px solid #007aff;
+  border-radius: 10px;
+  background: rgba(0, 122, 255, 0.08);
+  color: #242426;
+  font-size: clamp(17px, 4vw, 23px);
+  font-weight: 720;
+  overflow-wrap: anywhere;
+}
+.answer {
+  margin: clamp(16px, 4vw, 26px) 0 0;
+  color: #0057d8;
+  font-size: clamp(31px, 8vw, 54px);
+  line-height: 1.08;
+  font-weight: 950;
+  overflow-wrap: anywhere;
+}
+.source {
+  margin-top: 12px;
+  color: #1d1d1f;
+  font-size: clamp(20px, 5vw, 34px);
+  line-height: 1.22;
+  font-weight: 850;
+  overflow-wrap: anywhere;
+}
+.subtle {
+  margin-top: 8px;
+  color: #6e6e73;
+  font-size: clamp(13px, 3vw, 16px);
+  font-weight: 760;
+}
+.media-panel {
+  padding: clamp(8px, 2.4vw, 14px);
+  background: #111114;
+}
+.media-panel video {
+  display: block;
+  width: 100%;
+  max-height: min(54vh, 520px);
+  border-radius: 10px;
+  background: #000;
+  object-fit: contain;
+}
+.media-strip {
+  margin-top: 16px;
+  padding: 10px;
+  border-radius: 12px;
+  background: #111114;
+}
+.media-strip video {
+  display: block;
+  width: 100%;
+  max-height: min(28vh, 240px);
+  border-radius: 8px;
+  background: #000;
+  object-fit: contain;
+}
+.audio-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-top: 16px;
+}
+.audio-item {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 1fr);
+  gap: 8px;
+  align-items: center;
+  max-width: 100%;
+  padding: 8px 10px;
+  border: 1px solid rgba(60, 60, 67, 0.12);
+  border-radius: 999px;
+  background: #f5f5f7;
+}
+.audio-item span {
+  color: #6e6e73;
+  font-size: 12px;
+  font-weight: 850;
+}
+audio {
+  width: min(360px, 64vw);
+  min-height: 32px;
+  color-scheme: light;
+}
+.answer-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+.phrase-audio {
+  display: inline-flex;
+  align-items: center;
+}
+.phrase-audio audio {
+  width: 160px;
+}
+.block-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+.info-block {
+  padding: 15px 16px;
+  border: 1px solid rgba(60, 60, 67, 0.12);
+  border-radius: 12px;
+  background: #fbfbfd;
+}
+.info-block strong {
+  display: block;
+  margin-bottom: 7px;
+  color: #6e6e73;
+  font-size: 13px;
+  font-weight: 880;
+}
+.info-block p {
+  margin: 0;
+  color: #242426;
+  font-size: clamp(15px, 3.6vw, 19px);
+  line-height: 1.46;
+  overflow-wrap: anywhere;
+}
+.info-block p + p { margin-top: 9px; }
+.english-note {
+  color: #0057d8 !important;
+  font-weight: 780;
+}
+.warning-block {
+  border-color: rgba(154, 106, 34, 0.22);
+  background: #fffaf0;
+}
+.knowledge-card .answer {
+  color: #1d1d1f;
+}
+.knowledge-card .tag {
+  border-color: rgba(52, 199, 89, 0.22);
+  background: rgba(52, 199, 89, 0.1);
+  color: #166534;
+}
+.reading-card .tag {
+  border-color: rgba(88, 86, 214, 0.22);
+  background: rgba(88, 86, 214, 0.1);
+  color: #4338ca;
+}
+@media (max-width: 560px) {
+  .card { padding: 6px; }
+  .review-card { width: calc(100vw - 10px); border-radius: 12px; }
+  .card-section { padding: 17px; }
+  .prompt { font-size: clamp(26px, 8vw, 36px); }
+  .answer { font-size: clamp(29px, 9vw, 42px); }
+  .audio-item {
+    width: 100%;
+    grid-template-columns: 1fr;
+    border-radius: 12px;
+  }
+  audio { width: 100%; }
+  .block-grid { grid-template-columns: 1fr; }
+}
+"""
+
+
+LANGUAGE_FRONT_TEMPLATE = """
+<div class="review-card language-card front">
+  {{#IsListening}}
+  {{#Video}}<div class="media-panel">{{Video}}</div>{{/Video}}
+  <section class="card-section">
+    <div class="meta"><span class="tag">{{CardType}}</span><span>{{SourceTime}}</span></div>
+    <h1 class="prompt">{{FrontPrompt}}</h1>
+    {{#Audio}}<div class="audio-actions"><div class="audio-item"><span>原声</span>{{Audio}}</div></div>{{/Audio}}
+  </section>
+  {{/IsListening}}
+  {{^IsListening}}
+  <section class="card-section">
+    <div class="meta"><span class="tag">{{CardType}}</span><span>{{SourceTime}}</span></div>
+    <h1 class="prompt">{{FrontPrompt}}</h1>
+    {{#FrontContent}}<div class="cue">{{FrontContent}}</div>{{/FrontContent}}
+    {{#Audio}}<div class="audio-actions"><div class="audio-item"><span>原声</span>{{Audio}}</div></div>{{/Audio}}
+    {{#Video}}<div class="media-strip">{{Video}}</div>{{/Video}}
+  </section>
+  {{/IsListening}}
+</div>
+"""
+
+
+LANGUAGE_BACK_TEMPLATE = """
+<div class="review-card language-card back">
+  <section class="card-section">
+    <div class="meta"><span class="tag">{{CardType}}</span><span>{{Difficulty}}</span></div>
+    <strong class="subtle">核心答案</strong>
+    {{#Answer}}<div class="answer-line"><h1 class="answer">{{Answer}}</h1>{{#PhraseTtsAudio}}<span class="phrase-audio">{{PhraseTtsAudio}}</span>{{/PhraseTtsAudio}}</div>{{/Answer}}
+  </section>
+  <section class="card-section">
+    <strong class="subtle">{{#IsListening}}听力原句{{/IsListening}}{{^IsListening}}英文原句{{/IsListening}}</strong>
+    <div class="source">{{English}}</div>
+    <div class="subtle">{{SourceTime}}</div>
+    {{#Cloze}}<div class="cue">{{Cloze}}</div>{{/Cloze}}
+    <div class="audio-actions">
+      {{#Audio}}<div class="audio-item"><span>原声</span>{{Audio}}</div>{{/Audio}}
+      {{#TtsAudio}}<div class="audio-item"><span>AI 朗读</span>{{TtsAudio}}</div>{{/TtsAudio}}
+    </div>
+    {{#Video}}<div class="media-strip">{{Video}}</div>{{/Video}}
+  </section>
+  <section class="card-section">
+    <div class="block-grid">
+      <div class="info-block"><strong>怎么理解</strong><p>{{Definition}}</p>{{#ChineseFeel}}<p>{{ChineseFeel}}</p>{{/ChineseFeel}}</div>
+      <div class="info-block"><strong>怎么迁移</strong><p class="english-note">{{Collocations}}</p>{{#Context}}<p>{{Context}}</p>{{/Context}}</div>
+      {{#TeacherNote}}<div class="info-block warning-block"><strong>老师提醒</strong><p>{{TeacherNote}}</p>{{#Why}}<p>{{Why}}</p>{{/Why}}</div>{{/TeacherNote}}
+      {{#Example}}<div class="info-block"><strong>再造一句</strong><p class="english-note">{{Example}}</p></div>{{/Example}}
+    </div>
+  </section>
+</div>
+"""
+
+
+KNOWLEDGE_FRONT_TEMPLATE = """
+<div class="review-card knowledge-card front">
+  <section class="card-section">
+    <div class="meta"><span class="tag">{{CardType}}</span><span>{{SourceTime}}</span></div>
+    <h1 class="prompt">{{FrontPrompt}}</h1>
+    {{#FrontContent}}<div class="cue">{{FrontContent}}</div>{{/FrontContent}}
+  </section>
+</div>
+"""
+
+
+KNOWLEDGE_BACK_TEMPLATE = """
+<div class="review-card knowledge-card back">
+  <section class="card-section">
+    <div class="meta"><span class="tag">{{CardType}}</span><span>{{Difficulty}}</span></div>
+    <strong class="subtle">核心答案</strong>
+    <h1 class="answer">{{Answer}}</h1>
+  </section>
+  <section class="card-section">
+    <strong class="subtle">正面问题</strong>
+    <div class="source">{{English}}</div>
+    <div class="subtle">{{SourceTime}}</div>
+  </section>
+  <section class="card-section">
+    <div class="block-grid">
+      <div class="info-block"><strong>关键机制</strong><p>{{Definition}}</p>{{#ChineseFeel}}<p>{{ChineseFeel}}</p>{{/ChineseFeel}}</div>
+      {{#Example}}<div class="info-block"><strong>例子</strong><p>{{Example}}</p></div>{{/Example}}
+      <div class="info-block warning-block"><strong>边界 / 易混点</strong>{{#TeacherNote}}<p>{{TeacherNote}}</p>{{/TeacherNote}}{{#Why}}<p>{{Why}}</p>{{/Why}}{{#Collocations}}<p>{{Collocations}}</p>{{/Collocations}}</div>
+    </div>
+  </section>
+</div>
+"""
+
+
+READING_FRONT_TEMPLATE = """
+<div class="review-card reading-card front">
+  <section class="card-section">
+    <div class="meta"><span class="tag">{{CardType}}</span><span>{{SourceTime}}</span></div>
+    <h1 class="prompt">{{FrontPrompt}}</h1>
+    {{#FrontContent}}<div class="cue">{{FrontContent}}</div>{{/FrontContent}}
+  </section>
+</div>
+"""
+
+
+READING_BACK_TEMPLATE = """
+<div class="review-card reading-card back">
+  <section class="card-section">
+    <div class="meta"><span class="tag">{{CardType}}</span><span>{{Difficulty}}</span></div>
+    <strong class="subtle">核心答案</strong>
+    <h1 class="answer">{{Answer}}</h1>
+  </section>
+  <section class="card-section">
+    <strong class="subtle">原文线索</strong>
+    <div class="source">{{English}}</div>
+    <div class="subtle">{{SourceTime}}</div>
+  </section>
+  <section class="card-section">
+    <div class="block-grid">
+      <div class="info-block"><strong>怎么理解</strong><p>{{Definition}}</p>{{#ChineseFeel}}<p>{{ChineseFeel}}</p>{{/ChineseFeel}}</div>
+      <div class="info-block"><strong>怎么用</strong><p class="english-note">{{Collocations}}</p>{{#Context}}<p>{{Context}}</p>{{/Context}}</div>
+      {{#TeacherNote}}<div class="info-block warning-block"><strong>边界 / 易错</strong><p>{{TeacherNote}}</p>{{#Why}}<p>{{Why}}</p>{{/Why}}</div>{{/TeacherNote}}
+      {{#Example}}<div class="info-block"><strong>再造一句</strong><p class="english-note">{{Example}}</p></div>{{/Example}}
+    </div>
+  </section>
+</div>
+"""
+
+
+MINIMAL_FRONT_TEMPLATE = """
+<div class="review-card minimal-card front">
+  <section class="card-section">
+    <div class="meta"><span class="tag">{{CardType}}</span><span>{{SourceTime}}</span></div>
+    <h1 class="prompt">{{FrontPrompt}}</h1>
+    {{#FrontContent}}<div class="cue">{{FrontContent}}</div>{{/FrontContent}}
+  </section>
+</div>
+"""
+
+
+MINIMAL_BACK_TEMPLATE = """
+<div class="review-card minimal-card back">
+  <section class="card-section">
+    <div class="meta"><span class="tag">{{CardType}}</span><span>{{Difficulty}}</span></div>
+    <h1 class="answer">{{Answer}}</h1>
+    <div class="source">{{English}}</div>
+  </section>
+  <section class="card-section">
+    <div class="block-grid">
+      <div class="info-block"><strong>怎么理解</strong><p>{{Definition}}</p></div>
+      <div class="info-block"><strong>怎么用 / 怎么记</strong><p>{{Collocations}}</p>{{#Example}}<p class="english-note">{{Example}}</p>{{/Example}}</div>
+    </div>
+  </section>
+</div>
+"""
+
+
+DICTIONARY_FRONT_TEMPLATE = MINIMAL_FRONT_TEMPLATE
+DICTIONARY_BACK_TEMPLATE = READING_BACK_TEMPLATE
+FRONT_TEMPLATE = LANGUAGE_FRONT_TEMPLATE
+BACK_TEMPLATE = LANGUAGE_BACK_TEMPLATE
+
+
+def anki_template_family(template_id: str, deck_kind_code: str) -> str:
     template_id = template_id if template_id in {"immersive", "dictionary", "minimal"} else "immersive"
+    deck_kind_code = str(deck_kind_code or "")
+    if deck_kind_code == "document_knowledge":
+        return "document-knowledge"
+    if deck_kind_code == "document_reading":
+        return "document-reading"
+    return f"language-{template_id}"
+
+
+def anki_template_assets(template_id: str, deck_kind_code: str = "video_language") -> tuple[str, str, str, str]:
+    template_id = template_id if template_id in {"immersive", "dictionary", "minimal"} else "immersive"
+    if deck_kind_code == "document_knowledge":
+        return "文档知识 V10", CARD_CSS, KNOWLEDGE_FRONT_TEMPLATE, KNOWLEDGE_BACK_TEMPLATE
+    if deck_kind_code == "document_reading":
+        return "文档精读 V10", CARD_CSS, READING_FRONT_TEMPLATE, READING_BACK_TEMPLATE
     if template_id == "dictionary":
         return "词典解释 V10", CARD_CSS, DICTIONARY_FRONT_TEMPLATE, DICTIONARY_BACK_TEMPLATE
-
     if template_id == "minimal":
         return "极简复习 V10", CARD_CSS, MINIMAL_FRONT_TEMPLATE, MINIMAL_BACK_TEMPLATE
-
-    return "沉浸语言 V10", CARD_CSS, FRONT_TEMPLATE, BACK_TEMPLATE
+    return "视频语言 V10", CARD_CSS, LANGUAGE_FRONT_TEMPLATE, LANGUAGE_BACK_TEMPLATE
 
 
 def safe_filename(value: str) -> str:
@@ -7555,9 +7956,10 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         deck_kind = "字幕语言卡" if skip_video_media else "视频语言卡"
     deck_name = f"{deck_kind}::{project.get('title', 'Untitled')}"
     template_id = project.get("template_id", "immersive")
-    template_label, template_css, front_template, back_template = anki_template_assets(template_id)
+    template_family = anki_template_family(template_id, deck_kind_code)
+    template_label, template_css, front_template, back_template = anki_template_assets(template_id, deck_kind_code)
     model = genanki.Model(
-        stable_id(f"anki-card-model-v10-{template_id}", 1000000000),
+        stable_id(f"anki-card-model-v10-{template_family}", 1000000000),
         f"Anki Card Generator V10 - {template_label}",
         fields=[
             {"name": "CardId"},

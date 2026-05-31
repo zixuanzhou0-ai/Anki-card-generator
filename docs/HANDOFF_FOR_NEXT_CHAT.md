@@ -36,6 +36,7 @@ Recent hardening added after the initial document-study split:
 - The worker now builds and stores a hidden `material_context` before candidate review/card writing, so thinking models can use whole-material context before producing cards.
 - `language_focus` now defaults to `phrases + vocabulary + listening`. `vocabulary_usage` exports as `语境生词卡` while keeping V10 APKG fields compatible.
 - Candidate review is no longer worded as MIMO-only; OpenAI-compatible providers such as Qwen / DashScope can run the same AI candidate review path.
+- V10 APKG visual templates are now split by export family: video/subtitle language cards, document knowledge cards, and document reading cards use different front/back HTML while keeping the existing field names. The templates no longer rely on JS overflow fitting and allow stable vertical scrolling.
 
 ## Key Files
 
@@ -152,10 +153,10 @@ python -m pytest tests/test_worker_quality.py -q
 The next iteration should focus on the strongest remaining beta gaps:
 
 1. Run a real local video + SRT Deep Study generation using Qwen / DashScope and inspect whether `material_context` improves selected cards.
-2. Separate language-card and knowledge-card Anki templates / note models.
+2. Continue visually tuning the split Anki template families with real Anki desktop/mobile screenshots.
 3. Add a real document generate + export + APKG verify smoke test.
 4. Add packaged portable zip smoke to catch release resource issues.
-5. Improve Anki card visual stability: no sentence clipping, no jumpy zoom between cards, clearer pending-review indicators.
+5. Improve pending-review indicators and mobile screenshots for the split Anki templates.
 6. Continue simplifying the left Inspector with large sections and drawers.
 7. Continue checking whether the lowered `1180 x 780` minimum window is sufficient across common Windows scaling settings.
 8. Continue extracting `workers/acg/legacy_worker.py` into real document, LLM, media, TTS, and Anki modules.
@@ -183,9 +184,9 @@ Current shipped direction:
 
 Next likely work:
 1. Real Deep Study local-video generation QA with Qwen / DashScope and APKG import.
-2. Separate language-card and knowledge-card Anki templates / note models.
+2. Continue visual QA on the split language / knowledge / document-reading Anki templates.
 3. Add document generate/export/APKG verify smoke.
-4. Fix Anki template visual stability and pending-review cues.
+4. Improve pending-review cues and mobile screenshots for the Anki templates.
 5. Prepare public-beta release reliability.
 
 Before editing, run:
