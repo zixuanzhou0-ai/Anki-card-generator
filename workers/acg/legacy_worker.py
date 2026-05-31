@@ -7908,6 +7908,14 @@ body,
   font-weight: 650;
   overflow-wrap: break-word;
 }
+.v11-source-translation {
+  margin: 10px 0 0;
+  color: #5f626b;
+  font-size: clamp(18px, 3.2vw, 24px);
+  line-height: 1.38;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
 .v11-info-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -9693,4 +9701,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
