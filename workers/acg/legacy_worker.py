@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import zlib
 from pathlib import Path
@@ -61,9 +62,16 @@ DEEPSEEK_OPENAI_BASE_URL = "https://api.deepseek.com"
 QWEN_DASHSCOPE_CN_TTS_BASE_URL = "https://dashscope.aliyuncs.com/api/v1"
 QWEN_TTS_DEFAULT_MODEL = "qwen3-tts-flash"
 QWEN_TTS_DEFAULT_VOICE = "Jennifer"
+GEMINI_VERTEX_TTS_GLOBAL_BASE_URL = "https://aiplatform.googleapis.com"
+GEMINI_VERTEX_TTS_DEFAULT_MODEL = "gemini-3.1-flash-tts-preview"
+GEMINI_VERTEX_TTS_DEFAULT_VOICE = "Kore"
 MIMO_PROVIDERS = {"mimo", "xiaomi-mimo"}
 QWEN_TTS_PROVIDERS = {"qwen", "dashscope", "aliyun-dashscope"}
+GEMINI_VERTEX_TTS_PROVIDERS = {"gemini-vertex", "vertex-gemini", "gemini-vertex-tts", "vertex-gemini-tts"}
 OPENAI_COMPATIBLE_PROVIDERS = {"openai-compatible", *MIMO_PROVIDERS}
+GEMINI_VERTEX_PROVIDERS = {"gemini-vertex", "vertex-gemini"}
+GEMINI_VERTEX_GLOBAL_BASE_URL = "https://aiplatform.googleapis.com"
+GEMINI_VERTEX_DEFAULT_MODEL = "gemini-3.1-pro-preview"
 DEEPSEEK_THINKING_MODELS = {"deepseek-v4-pro", "deepseek-v4-flash", "deepseek-reasoner"}
 
 
@@ -349,6 +357,55 @@ PHRASE_TYPE_CONTENT_KIND = {
     "vocabulary_usage": "vocabulary",
     "grammar_pattern": "grammar",
 }
+CANDIDATE_KIND_TO_PHRASE_TYPE = {
+    "expression": "spoken_phrase",
+    "contextual_vocab": "vocabulary_usage",
+    "grammar_pattern": "grammar_pattern",
+    "listening_feature": "listening_sentence",
+    "pragmatic_risk": "idiom",
+}
+PHRASE_TYPE_TO_CANDIDATE_KIND = {
+    "spoken_phrase": "expression",
+    "sentence_frame": "grammar_pattern",
+    "collocation": "expression",
+    "discourse_marker": "expression",
+    "idiom": "expression",
+    "listening_sentence": "listening_feature",
+    "vocabulary_usage": "contextual_vocab",
+    "grammar_pattern": "grammar_pattern",
+}
+LEARNING_POINT_SCHEMA_VERSION = 3
+TYPED_EXPRESSION_PATTERNS = [
+    (r"\brun\s+the\s+register\b", "collocation", "expression", 1.6, "服务业场景搭配：负责收银/操作收银机。"),
+    (r"\bhold\s+that\s+against\s+you\b", "idiom", "expression", 1.6, "把某事拿来责怪或记恨某人。"),
+    (r"\bflat\s+as\s+a\s+washboard\b", "idiom", "pragmatic_risk", 1.7, "夸张比喻，带身体评价和冒犯风险。"),
+    (r"\b(?:not\s+)?gonna\s+bite\s+you\b", "spoken_phrase", "expression", 1.2, "安抚别人别怕的口语句。"),
+    (r"\b(?:add|adds|added|adding)\s+ten\s+pounds\b", "collocation", "expression", 1.4, "镜头让人显胖的非字面表达。"),
+    (r"\bbounce\s+off\s+a\s+windshield\b", "collocation", "expression", 1.2, "撞到挡风玻璃后弹开的动作搭配。"),
+    (r"\b(?:placed?|put)\s+(?:me|you|him|her|us|them|someone|somebody|people|[a-z']+)\s+into\s+custody\b", "collocation", "expression", 1.3, "法律/警务语境里的拘押搭配。"),
+    (r"\bcould\s+use\s+a\s+hand\b", "spoken_phrase", "expression", 1.3, "表示需要帮忙的自然口语。"),
+    (r"\btake\s+a\s+rain\s+check\b", "idiom", "expression", 1.4, "委婉改天再约的习语。"),
+    (r"\bgetting\s+out\s+of\s+hand\b", "idiom", "expression", 1.4, "表示局面开始失控。"),
+    (r"\bbetween\s+you\s+and\s+me\b", "discourse_marker", "expression", 1.1, "引出私下说法的话语标记。"),
+    (r"\bno\s+offense,\s+but\b", "discourse_marker", "pragmatic_risk", 1.2, "带冒犯风险的缓冲开头。"),
+]
+CONTEXTUAL_VOCAB_PATTERNS = [
+    (r"\bregister\b", "register", 1.1, "register 在服务业语境里可指收银机/收银台。"),
+    (r"\bcustody\b", "custody", 1.0, "custody 在警务/法律语境里是羁押、拘留。"),
+    (r"\bcritique\b", "critique", 1.0, "critique 是对作品或文本做专业点评。"),
+    (r"\bfollowing\b", "following", 0.9, "following 在 I'm not following 里是跟上/听懂思路。"),
+    (r"\b(?:add|adds|added|adding)\b", "add", 0.8, "add 在镜头/效果语境里可表示让人看起来增加。"),
+]
+GRAMMAR_PATTERN_RULES = [
+    (r"\bi\s+seen\b", "I seen", 1.4, "非标准口语过去时，理解角色口音和方言色彩。"),
+    (r"^\s*ever\s+want\s+me\s+to\b", "Ever want me to...", 1.5, "句首省略 If you 的口语条件框架。"),
+    (r"\bit'?s\s+not\s+that\b.+\bit'?s\s+just\s+that\b", "It's not that..., it's just that...", 1.2, "解释原因时的可迁移框架。"),
+    (r"\bnot\s+because\b.+\bbut\s+because\b", "not because..., but because...", 1.2, "纠正原因或对比原因的句型框架。"),
+]
+LISTENING_FEATURE_RE = re.compile(
+    r"\b(?:i'm|you're|we're|they're|don't|can't|won't|let's|gonna|wanna|gotta|hafta|shoulda|coulda|woulda)\b(?:\s+[a-z']+){0,2}",
+    re.IGNORECASE,
+)
 
 
 def normalized_language_focus(payload: dict[str, Any]) -> list[str]:
@@ -399,6 +456,42 @@ def card_label_for_learning_card(phrase_type: str, content_kind: str, fallback: 
 
 def content_kind_for_phrase_type(phrase_type: str, fallback: str = "phrase") -> str:
     return PHRASE_TYPE_CONTENT_KIND.get(str(phrase_type or "").strip(), fallback)
+
+
+def candidate_kind_for_phrase_type(phrase_type: str, fallback: str = "expression") -> str:
+    return PHRASE_TYPE_TO_CANDIDATE_KIND.get(str(phrase_type or "").strip(), fallback)
+
+
+def phrase_type_for_candidate_kind(candidate_kind: str, fallback: str = "spoken_phrase") -> str:
+    return CANDIDATE_KIND_TO_PHRASE_TYPE.get(str(candidate_kind or "").strip(), fallback)
+
+
+def candidate_kind_for_segment(segment: dict[str, Any]) -> str:
+    explicit = str(segment.get("candidate_kind") or "").strip()
+    if explicit:
+        return explicit
+    content_kind = str(segment.get("content_kind") or "").strip()
+    if content_kind == "vocabulary":
+        return "contextual_vocab"
+    if content_kind == "grammar":
+        return "grammar_pattern"
+    if content_kind == "listening":
+        return "listening_feature"
+    return candidate_kind_for_phrase_type(str(segment.get("phrase_type") or ""), "expression")
+
+
+def candidate_kind_allowed_by_focus(candidate_kind: str, payload: dict[str, Any]) -> bool:
+    focus = set(normalized_language_focus(payload))
+    if candidate_kind in {"expression", "pragmatic_risk"}:
+        return "phrases" in focus
+    if candidate_kind == "contextual_vocab":
+        return "vocabulary" in focus
+    if candidate_kind == "listening_feature":
+        return "listening" in focus
+    if candidate_kind == "grammar_pattern":
+        # Spoken ellipsis/non-standard grammar often behaves like an expression.
+        return bool({"grammar", "phrases"} & focus)
+    return True
 
 
 DOCUMENT_FOCUS_ORDER = ["concepts", "arguments", "terms", "examples"]
@@ -903,6 +996,157 @@ def refine_segment_media_for_phrase(
     }
 
 
+def normalize_candidate_span(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip(" \t\r\n\"'“”‘’.,?!"))
+
+
+def expression_span_from_text(text: str, pattern: str) -> str:
+    match = re.search(pattern, text, re.IGNORECASE)
+    return normalize_candidate_span(match.group(0)) if match else ""
+
+
+def usable_learning_point_span(
+    text: str,
+    span: str,
+    candidate_kind: str = "expression",
+    phrase_type: str = "",
+) -> bool:
+    normalized = normalize_candidate_span(span)
+    if not normalized or normalized.lower() == "key expression":
+        return False
+    words = overlap_words(normalized)
+    if not words:
+        return False
+    if not phrase_in_text(text, normalized) and len(words) >= 2:
+        return False
+    kind = candidate_kind or candidate_kind_for_phrase_type(phrase_type)
+    if kind == "contextual_vocab":
+        return 1 <= len(words) <= 3
+    if kind in {"grammar_pattern", "listening_feature"}:
+        return len(words) <= 12
+    if kind in {"expression", "pragmatic_risk"} and phrase_type in {"collocation", "idiom", "spoken_phrase"}:
+        if 2 <= len(words) <= 7 and phrase_in_text(text, normalized):
+            if not is_non_transferable_phrase(normalized) and not is_low_value_standalone_phrase(normalized):
+                if words[0] not in COMMON_FUNCTION_STARTS or allows_function_start_phrase(normalized):
+                    return True
+    return usable_phrase(text, normalized)
+
+
+def typed_candidate_score(base_score: float, boost: float, kind: str) -> float:
+    if kind == "contextual_vocab":
+        return max(3.0, base_score + boost)
+    if kind == "grammar_pattern":
+        return max(3.2, base_score + boost)
+    if kind == "listening_feature":
+        return max(2.9, base_score + boost)
+    if kind == "pragmatic_risk":
+        return max(3.6, base_score + boost)
+    return max(3.0, base_score + boost)
+
+
+def typed_learning_point_candidates(
+    text: str,
+    phrase: str,
+    base_score: float,
+    level: str,
+    payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add_candidate(
+        span: str,
+        *,
+        candidate_kind: str,
+        phrase_type: str = "",
+        normalized_answer: str = "",
+        boost: float = 0.0,
+        focus: str = "",
+        source: str = "rule",
+    ) -> None:
+        if not candidate_kind_allowed_by_focus(candidate_kind, payload):
+            return
+        final_phrase_type = phrase_type or phrase_type_for_candidate_kind(candidate_kind)
+        answer = normalize_candidate_span(normalized_answer or span)
+        exact_span = normalize_candidate_span(span)
+        if not usable_learning_point_span(text, exact_span, candidate_kind, final_phrase_type):
+            return
+        key = (answer.lower(), candidate_kind)
+        if key in seen:
+            return
+        seen.add(key)
+        content_kind = content_kind_for_phrase_type(final_phrase_type, "phrase")
+        score = typed_candidate_score(base_score, boost, candidate_kind)
+        candidates.append(
+            {
+                "phrase": answer,
+                "exact_span": exact_span,
+                "normalized_answer": answer,
+                "answer_core": answer,
+                "candidate_kind": candidate_kind,
+                "phrase_type": final_phrase_type,
+                "content_kind": content_kind,
+                "candidate_source": source,
+                "learning_point_schema_version": LEARNING_POINT_SCHEMA_VERSION,
+                "phrase_card_focus": focus,
+                "source_evidence": text,
+                "score": score,
+                "recommendation": min(5, max(1, round(score))),
+            }
+        )
+
+    if phrase and usable_learning_point_span(text, phrase, "expression", ""):
+        add_candidate(phrase, candidate_kind="expression", boost=0.2, focus="训练原句里的可迁移自然表达。", source="local_phrase")
+
+    for pattern, phrase_type, kind, boost, focus in TYPED_EXPRESSION_PATTERNS:
+        span = expression_span_from_text(text, pattern)
+        if span:
+            add_candidate(span, candidate_kind=kind, phrase_type=phrase_type, boost=boost, focus=focus)
+
+    lower = text.lower()
+    for pattern, answer, boost, focus in CONTEXTUAL_VOCAB_PATTERNS:
+        if not re.search(pattern, lower, re.IGNORECASE):
+            continue
+        if answer == "register" and "run the register" not in lower:
+            continue
+        if answer == "add" and not re.search(r"\b(?:add|adds|added|adding)\s+ten\s+pounds\b", lower):
+            continue
+        exact = expression_span_from_text(text, pattern)
+        add_candidate(
+            exact or answer,
+            candidate_kind="contextual_vocab",
+            phrase_type="vocabulary_usage",
+            normalized_answer=answer,
+            boost=boost,
+            focus=focus,
+        )
+
+    for pattern, answer, boost, focus in GRAMMAR_PATTERN_RULES:
+        span = expression_span_from_text(text, pattern)
+        if span:
+            add_candidate(
+                span,
+                candidate_kind="grammar_pattern",
+                phrase_type="grammar_pattern",
+                normalized_answer=answer,
+                boost=boost,
+                focus=focus,
+            )
+
+    listening_match = LISTENING_FEATURE_RE.search(text)
+    if listening_match and has_listening_training_value(text):
+        add_candidate(
+            listening_match.group(0),
+            candidate_kind="listening_feature",
+            phrase_type="listening_sentence",
+            normalized_answer=normalize_candidate_span(listening_match.group(0)),
+            boost=0.4,
+            focus="训练弱读、缩读、连读或真实语速下的听辨。",
+        )
+
+    return sorted(candidates, key=lambda item: float(item.get("score") or 0), reverse=True)
+
+
 def review_candidate_mode(payload: dict[str, Any], max_segments: int, candidate_limit: int) -> bool:
     return bool(payload.get("_candidate_limit") and candidate_limit > max_segments)
 
@@ -951,7 +1195,9 @@ def build_segments(cues: list[Cue], payload: dict[str, Any]) -> list[dict[str, A
 
         terminal_count = len(re.findall(r"[.?!]+", text))
         min_duration = 1.4 if looks_complete_sentence(text) else 2.5
-        if min_duration <= duration <= max_duration and 4 <= len(words) <= max_words and terminal_count <= 1 and content_allowed(text, toggles):
+        normal_window = min_duration <= duration <= max_duration and 4 <= len(words) <= max_words
+        typed_window = 0.6 <= duration <= (8.8 if review_mode else 7.2) and 1 <= len(words) <= max(max_words, 30)
+        if typed_window and terminal_count <= 1 and content_allowed(text, toggles):
             if looks_like_video_intro(text):
                 i = max(j + 1, i + 1)
                 continue
@@ -964,14 +1210,20 @@ def build_segments(cues: list[Cue], payload: dict[str, Any]) -> list[dict[str, A
             score = score_text(text, level, toggles, collection_levels)
             phrase = find_phrase(text, level, collection_levels)
             phrase_is_usable = usable_phrase(text, phrase)
+            typed_candidates = typed_learning_point_candidates(text, phrase, score, level, payload)
             if phrase_is_usable and is_too_basic_for_level(phrase, level):
                 score -= 0.4 if review_mode else 2.2
+                typed_candidates = typed_learning_point_candidates(text, phrase, score, level, payload)
             if starts_like_fragment(text):
-                if not review_mode and not phrase_is_usable:
+                if not review_mode and not phrase_is_usable and not typed_candidates:
                     i = max(j + 1, i + 1)
                     continue
                 score -= 0.5
-            if score < min_context_score:
+                typed_candidates = typed_learning_point_candidates(text, phrase, score, level, payload)
+            if not normal_window and not typed_candidates:
+                i = max(j + 1, i + 1)
+                continue
+            if score < min_context_score and not typed_candidates:
                 i = max(j + 1, i + 1)
                 continue
             if not phrase_is_usable:
@@ -982,12 +1234,33 @@ def build_segments(cues: list[Cue], payload: dict[str, Any]) -> list[dict[str, A
                     score = max(min_candidate_score, score - 0.6)
                 else:
                     score -= 2.6
-                if score < min_candidate_score:
+                if score < min_candidate_score and not typed_candidates:
                     i = max(j + 1, i + 1)
                     continue
-            media_start, media_end = segment_media_bounds(start, end, text, phrase, review_mode)
-            candidates.append(
-                {
+            if not typed_candidates:
+                typed_candidates = [
+                    {
+                        "phrase": phrase,
+                        "exact_span": phrase,
+                        "normalized_answer": phrase,
+                        "answer_core": phrase if phrase != "key expression" else "",
+                        "candidate_kind": "expression",
+                        "phrase_type": "spoken_phrase",
+                        "content_kind": "phrase",
+                        "candidate_source": "legacy_phrase",
+                        "learning_point_schema_version": LEARNING_POINT_SCHEMA_VERSION,
+                        "phrase_card_focus": "围绕这个表达的真实语境和迁移用法制卡。",
+                        "source_evidence": text,
+                        "score": score,
+                        "recommendation": min(5, max(1, round(score))),
+                    }
+                ]
+            for typed in typed_candidates:
+                segment_phrase = str(typed.get("exact_span") or typed.get("phrase") or phrase)
+                media_start, media_end = segment_media_bounds(start, end, text, segment_phrase, review_mode)
+                candidate_score = float(typed.get("score") or score)
+                candidates.append(
+                    {
                     "id": f"seg_{len(candidates) + 1:04d}",
                     "start": round(start, 3),
                     "end": round(end, 3),
@@ -997,11 +1270,21 @@ def build_segments(cues: list[Cue], payload: dict[str, Any]) -> list[dict[str, A
                     "media_source_time": f"{fmt_time(media_start)} - {fmt_time(media_end)}",
                     "text": text,
                     "duration": round(duration, 2),
-                    "recommendation": min(5, max(1, round(score))),
-                    "phrase": phrase,
-                    "score": score,
+                    "recommendation": min(5, max(1, round(candidate_score))),
+                    "phrase": typed.get("phrase") or segment_phrase,
+                    "exact_span": typed.get("exact_span") or segment_phrase,
+                    "normalized_answer": typed.get("normalized_answer") or typed.get("phrase") or segment_phrase,
+                    "answer_core": typed.get("answer_core") or typed.get("normalized_answer") or typed.get("phrase") or segment_phrase,
+                    "candidate_kind": typed.get("candidate_kind") or "expression",
+                    "phrase_type": typed.get("phrase_type") or "spoken_phrase",
+                    "content_kind": typed.get("content_kind") or "phrase",
+                    "candidate_source": typed.get("candidate_source") or "rule",
+                    "learning_point_schema_version": typed.get("learning_point_schema_version") or LEARNING_POINT_SCHEMA_VERSION,
+                    "phrase_card_focus": typed.get("phrase_card_focus") or "",
+                    "source_evidence": typed.get("source_evidence") or text,
+                    "score": candidate_score,
                 }
-            )
+                )
 
         i = max(j + 1, i + 1)
 
@@ -1091,8 +1374,19 @@ def phrase_in_text(text: str, phrase: str) -> bool:
     return False
 
 
-def quality_issue_labels(card_type: str, text: str, phrase: str, cloze: str, source: str) -> tuple[int, list[str]]:
+def quality_issue_labels(
+    card_type: str,
+    text: str,
+    phrase: str,
+    cloze: str,
+    source: str,
+    content_kind: str = "",
+    candidate_kind: str = "",
+) -> tuple[int, list[str]]:
     is_listening = card_type == "listening"
+    is_vocab = content_kind == "vocabulary" or candidate_kind == "contextual_vocab"
+    is_grammar = content_kind == "grammar" or candidate_kind == "grammar_pattern"
+    is_expression_like = not is_listening and not is_vocab and not is_grammar
     if source == "ai":
         score = 92
     elif source == "curated_fallback":
@@ -1116,13 +1410,13 @@ def quality_issue_labels(card_type: str, text: str, phrase: str, cloze: str, sou
     if not is_listening and (not phrase or phrase == "key expression"):
         issues.append("缺少明确目标表达")
         score -= 28
-    if not is_listening and len(words) < 2:
+    if is_expression_like and len(words) < 2:
         issues.append("目标表达过短")
         score -= 14
-    if not is_listening and len(words) > 6:
+    if is_expression_like and len(words) > 6:
         issues.append("目标表达偏长")
         score -= 24
-    if not is_listening and len(words) >= max(4, len(text_words) - 1) and len(text_words) >= 5:
+    if is_expression_like and len(words) >= max(4, len(text_words) - 1) and len(text_words) >= 5:
         issues.append("目标表达像整句而不是词伙")
         score -= 28
     if len(text_words) > 15:
@@ -1138,10 +1432,10 @@ def quality_issue_labels(card_type: str, text: str, phrase: str, cloze: str, sou
         issues.append("原句像截断片段")
         score -= 18
     phrase_lower = phrase.lower()
-    if not is_listening and is_non_transferable_phrase(phrase_lower):
+    if is_expression_like and is_non_transferable_phrase(phrase_lower):
         issues.append("表达太像视频口播引入语")
         score -= 30
-    if not is_listening and is_low_value_standalone_phrase(phrase_lower):
+    if is_expression_like and is_low_value_standalone_phrase(phrase_lower):
         issues.append("目标表达太泛，学习价值低")
         score -= 26
     if looks_like_video_intro(text):
@@ -1177,16 +1471,16 @@ def quality_issue_labels(card_type: str, text: str, phrase: str, cloze: str, sou
             "how do you feel about",
         }
     )
-    if not is_listening and words and words[-1] in trailing_prepositions and not allows_trailing_preposition:
+    if is_expression_like and words and words[-1] in trailing_prepositions and not allows_trailing_preposition:
         issues.append("表达像半截词串")
         score -= 18
-    if not is_listening and words and words[0] in COMMON_FUNCTION_STARTS and not allows_function_start_phrase(phrase):
+    if is_expression_like and words and words[0] in COMMON_FUNCTION_STARTS and not allows_function_start_phrase(phrase):
         issues.append("表达可能从功能词开头")
         score -= 16
-    if not is_listening and words and words[0] == "about" and re.search(r"\babout\s+[A-Z0-9][A-Za-z0-9-]*", phrase):
+    if is_expression_like and words and words[0] == "about" and re.search(r"\babout\s+[A-Z0-9][A-Za-z0-9-]*", phrase):
         issues.append("表达像主题名而不是可迁移词伙")
         score -= 24
-    if not is_listening and phrase and not phrase_in_text(text, phrase):
+    if not is_listening and phrase and len(words) >= 2 and not phrase_in_text(text, phrase):
         issues.append("表达和原句不完全匹配")
         score -= 12
     if card_type == "cloze":
@@ -1240,6 +1534,7 @@ def quality_from_score(score: int, issues: list[str]) -> dict[str, Any]:
         "老师提示缺少具体用法",
         "释义太泛",
         "目标表达低于用户水平",
+        "核心答案包含解释而不是英文答案",
         "词伙评审拒绝",
         "词伙重复合并",
     }
@@ -1268,6 +1563,8 @@ def assess_card_quality(
         card.get("phrase", ""),
         card.get("cloze", ""),
         source,
+        str(card.get("content_kind") or ""),
+        str(card.get("candidate_kind") or ""),
     )
     text_fields = [
         card.get("english", ""),
@@ -1289,6 +1586,18 @@ def assess_card_quality(
     if any("???" in str(value) or "\ufffd" in str(value) for value in text_fields):
         issues.append("字段疑似乱码")
         score -= 36
+    answer_core = str(card.get("answer_core") or "").strip()
+    displayed_answer_core = answer_display_text(answer_core)
+    if (
+        not is_listening
+        and answer_core
+        and (
+            displayed_answer_core != clean_study_text(answer_core)
+            or not is_answer_expression_candidate(displayed_answer_core, card)
+        )
+    ):
+        issues.append("核心答案包含解释而不是英文答案")
+        score -= 32
     field_blob = "\n".join(str(value or "") for value in text_fields)
     if any(re.search(pattern, field_blob, flags=re.IGNORECASE) for pattern in TEMPLATE_NOISE_PATTERNS):
         issues.append("字段像模板废话")
@@ -1457,12 +1766,38 @@ def choose_best_phrase(text: str, proposed: str, fallback: str, level: str, coll
 def repair_card_fields(card: dict[str, Any], segment: dict[str, Any], level: str) -> None:
     text = card.get("english") or segment.get("text", "")
     reviewed_phrase = str(segment.get("phrase") or "").strip()
-    if segment.get("phrase_review_source") in {"mimo", "ai"} and usable_phrase(text, reviewed_phrase):
+    candidate_kind = str(card.get("candidate_kind") or segment.get("candidate_kind") or "")
+    phrase_type = str(card.get("phrase_type") or segment.get("phrase_type") or "")
+    if not candidate_kind:
+        candidate_kind = candidate_kind_for_phrase_type(phrase_type, candidate_kind_for_segment(segment))
+    preferred_phrase = (
+        str(card.get("normalized_answer") or "").strip()
+        or str(card.get("answer_core") or "").strip()
+        or str(card.get("phrase") or "").strip()
+        or str(segment.get("normalized_answer") or "").strip()
+        or reviewed_phrase
+    )
+    if usable_learning_point_span(text, preferred_phrase, candidate_kind, phrase_type):
+        phrase = normalize_candidate_span(preferred_phrase)
+    elif segment.get("phrase_review_source") in {"mimo", "ai"} and usable_learning_point_span(text, reviewed_phrase, candidate_kind, phrase_type):
         phrase = reviewed_phrase
+    elif candidate_kind in {"contextual_vocab", "grammar_pattern", "listening_feature"}:
+        phrase = normalize_candidate_span(reviewed_phrase or str(card.get("phrase") or ""))
     else:
         phrase = choose_best_phrase(text, card.get("phrase", ""), segment.get("phrase", ""), level)
     if phrase != card.get("phrase"):
         card["phrase"] = phrase
+    if candidate_kind:
+        card["candidate_kind"] = candidate_kind
+    if not str(card.get("exact_span") or "").strip():
+        card["exact_span"] = str(segment.get("exact_span") or phrase)
+    if not str(card.get("normalized_answer") or "").strip():
+        card["normalized_answer"] = str(segment.get("normalized_answer") or phrase)
+    sanitized_answer = answer_display_text(card.get("answer_core"))
+    if not is_answer_expression_candidate(sanitized_answer, card):
+        sanitized_answer = phrase if is_answer_expression_candidate(phrase, card) else ""
+    if sanitized_answer:
+        card["answer_core"] = sanitized_answer
     card["cloze"] = make_cloze(text, phrase)
 
 
@@ -1584,10 +1919,21 @@ def plan_card_types(segment: dict[str, Any], card_types: list[str], level: str) 
     requested = requested_card_types(card_types)
     phrase = re.sub(r"\s+", " ", str(segment.get("phrase") or "").strip())
     text = str(segment.get("text") or "")
+    candidate_kind = candidate_kind_for_segment(segment)
 
-    if "phrase" in requested and usable_phrase(text, phrase):
+    if candidate_kind == "listening_feature" and "listening" in requested:
+        primary = "listening"
+        reason = "这个片段的核心价值是听懂真实语速下的弱读、连读或缩读。"
+    elif "phrase" in requested and usable_learning_point_span(text, phrase, candidate_kind, str(segment.get("phrase_type") or "")):
         primary = "phrase"
-        reason = "这个片段的核心价值是把自然表达迁移到自己的口语里。"
+        if candidate_kind == "contextual_vocab":
+            reason = "这个片段的核心价值是掌握一个词在原句里的真实语境义。"
+        elif candidate_kind == "grammar_pattern":
+            reason = "这个片段的核心价值是掌握一个可迁移的语法/句法框架。"
+        elif candidate_kind == "pragmatic_risk":
+            reason = "这个片段的核心价值是理解表达的语气、边界和冒犯风险。"
+        else:
+            reason = "这个片段的核心价值是把自然表达迁移到自己的口语里。"
     elif "listening" in requested:
         primary = "listening"
         reason = "这个片段更适合先做听音辨句，表达本身不够适合作为主词伙。"
@@ -1662,9 +2008,14 @@ def fallback_cards(segment: dict[str, Any], card_types: list[str], level: str) -
             "phrase_review_status": segment.get("phrase_review_status", ""),
             "phrase_type": segment.get("phrase_type", ""),
             "content_kind": segment.get("content_kind") or content_kind_for_phrase_type(str(segment.get("phrase_type") or "")),
+            "candidate_kind": segment.get("candidate_kind") or candidate_kind_for_segment(segment),
+            "exact_span": segment.get("exact_span") or segment.get("phrase", ""),
+            "normalized_answer": segment.get("normalized_answer") or segment.get("phrase", ""),
+            "candidate_source": segment.get("candidate_source", ""),
+            "learning_point_schema_version": segment.get("learning_point_schema_version") or LEARNING_POINT_SCHEMA_VERSION,
             "source_evidence": segment.get("source_evidence") or segment.get("text", ""),
             "retrieval_prompt": "",
-            "answer_core": "",
+            "answer_core": segment.get("answer_core") or segment.get("normalized_answer") or segment.get("phrase", ""),
             "usage_boundary": "",
             "confusable_note": "",
             **fields,
@@ -1694,6 +2045,9 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
             "source_time": segment["source_time"],
             "english": segment["text"],
             "phrase_hint": segment["phrase"],
+            "exact_span": segment.get("exact_span", ""),
+            "normalized_answer": segment.get("normalized_answer", ""),
+            "candidate_kind": segment.get("candidate_kind", ""),
             "recommendation": segment["recommendation"],
             "phrase_value_score": segment.get("phrase_value_score"),
             "phrase_review_status": segment.get("phrase_review_status", ""),
@@ -1712,6 +2066,10 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
         "制卡前请在心里回答四个问题：这句最值得学的是什么？它是词伙、句型、口语短句、语气表达还是听力句？"
         "中文学习者为什么容易忽略它？这张卡训练听懂、会用、会替换还是理解语气？如果回答不清楚，返回 cards: []。"
         f"{focus_instruction}"
+        "候选现在是 typed learning point：candidate_kind 可能是 expression/contextual_vocab/grammar_pattern/listening_feature/pragmatic_risk。"
+        "制卡必须先尊重 candidate_kind 和 exact_span，再生成对应卡片；不要把所有候选都当词伙。"
+        "contextual_vocab 允许 answer_core 是一个英文单词；grammar_pattern 允许 answer_core 是句型框架；"
+        "listening_feature 的 answer_core 是要听辨的英文片段或原句，不是发音解释。"
         "请只为真正值得复习的片段生成卡；如果片段只是主题介绍、专有名词、技术名词堆叠或没有可迁移表达，返回该片段的 cards: []。"
         "内容标准："
         "1) phrase 必须来自原句：词伙通常 2-6 个词；单词用法可以是 1 个核心词；语法框架可以是原句里的可替换结构。"
@@ -1758,6 +2116,8 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
         "每张卡必须写 card_role: primary|specialist、learning_goal、decision_reason。"
         "返回严格 JSON，不要 Markdown。JSON 结构："
         '{"segments":[{"id":"seg_0001","cards":[{"type":"listening|phrase|cloze",'
+        '"candidate_kind":"expression|contextual_vocab|grammar_pattern|listening_feature|pragmatic_risk",'
+        '"exact_span":"逐词来自原句的片段","normalized_answer":"标准化英文答案",'
         '"phrase_type":"spoken_phrase|sentence_frame|collocation|discourse_marker|idiom|listening_sentence|vocabulary_usage|grammar_pattern",'
         '"content_kind":"phrase|vocabulary|grammar|listening",'
         '"source_evidence":"这张卡来自原句和上下文的证据",'
@@ -1842,11 +2202,7 @@ def build_material_context_prompt(project: dict[str, Any], segments: list[dict[s
 
 def material_context_available(project: dict[str, Any]) -> bool:
     api = project.get("api_config") or {}
-    return bool(
-        api.get("provider", "local") != "local"
-        and str(api.get("api_key") or "").strip()
-        and str(api.get("model") or "").strip()
-    )
+    return model_api_available(api)
 
 
 def call_material_context(project: dict[str, Any], segments: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1905,9 +2261,22 @@ def call_material_context(project: dict[str, Any], segments: list[dict[str, Any]
                 timeout=90,
             )
             payload = extract_json_object(response["candidates"][0]["content"]["parts"][0]["text"])
+        elif is_gemini_vertex_config(api):
+            content = gemini_vertex_generate_content(
+                api,
+                prompt,
+                temperature=0.2,
+                timeout=180 if is_gemini_vertex_thinking_config(api) else 90,
+                max_output_tokens=6000 if is_gemini_vertex_thinking_config(api) else 3000,
+            )
+            payload = extract_json_object(content)
         else:
             return heuristic_material_context(project, segments)
         context = payload.get("material_context") if isinstance(payload, dict) else None
+        if not isinstance(context, dict) and isinstance(payload, dict):
+            direct_context_keys = {"summary", "topic", "scene", "speakers_or_author", "tone", "key_points"}
+            if any(key in payload for key in direct_context_keys):
+                context = payload
         if isinstance(context, dict) and context:
             return {**context, "source": context.get("source") or "ai"}
     except Exception as err:
@@ -2142,8 +2511,26 @@ def is_deepseek_thinking_config(config: dict[str, Any]) -> bool:
     return is_deepseek_config(config) and model in DEEPSEEK_THINKING_MODELS
 
 
+def is_gemini_vertex_config(config: dict[str, Any]) -> bool:
+    return provider_name(config) in GEMINI_VERTEX_PROVIDERS
+
+
+def is_gemini_vertex_tts_config(config: dict[str, Any]) -> bool:
+    return provider_name(config) in GEMINI_VERTEX_TTS_PROVIDERS
+
+
+def is_gemini_vertex_thinking_config(config: dict[str, Any]) -> bool:
+    model = str(config.get("model") or "").strip().lower()
+    return is_gemini_vertex_config(config) and model.startswith("gemini-3.")
+
+
 def is_thinking_model_config(config: dict[str, Any]) -> bool:
-    return is_qwen_config(config) or is_mimo_config(config) or is_deepseek_thinking_config(config)
+    return (
+        is_qwen_config(config)
+        or is_mimo_config(config)
+        or is_deepseek_thinking_config(config)
+        or is_gemini_vertex_thinking_config(config)
+    )
 
 
 def thinking_budget(config: dict[str, Any], default_value: int = 800) -> int:
@@ -2167,6 +2554,152 @@ def api_key_header(config: dict[str, Any]) -> dict[str, str]:
     if is_mimo_config(config):
         return {"api-key": api_key}
     return {"Authorization": f"Bearer {api_key}"}
+
+
+def model_api_available(api: dict[str, Any]) -> bool:
+    provider = provider_name(api) or "local"
+    if provider == "local":
+        return False
+    if not str(api.get("model") or "").strip():
+        return False
+    if is_gemini_vertex_config(api):
+        return True
+    return bool(str(api.get("api_key") or "").strip())
+
+
+def hidden_subprocess_flags() -> dict[str, Any]:
+    if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {}
+
+
+def gcloud_executable() -> str:
+    found = shutil.which("gcloud") or shutil.which("gcloud.cmd")
+    if found:
+        return found
+    candidates = [
+        Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)"))
+        / "Google"
+        / "Cloud SDK"
+        / "google-cloud-sdk"
+        / "bin"
+        / "gcloud.cmd",
+        Path(os.environ.get("ProgramFiles", "C:/Program Files"))
+        / "Google"
+        / "Cloud SDK"
+        / "google-cloud-sdk"
+        / "bin"
+        / "gcloud.cmd",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    raise FileNotFoundError("gcloud")
+
+
+def gcloud_value(args: list[str], timeout: int = 30) -> str:
+    try:
+        result = subprocess.run(
+            [gcloud_executable(), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            check=True,
+            **hidden_subprocess_flags(),
+        )
+    except FileNotFoundError as err:
+        raise RuntimeError("Gemini Vertex 需要先安装 Google Cloud SDK，并确保 gcloud 在 PATH 中。") from err
+    except subprocess.CalledProcessError as err:
+        detail = (err.stderr or err.stdout or "").strip()
+        raise RuntimeError(f"gcloud 调用失败：{detail or err}") from err
+    value = result.stdout.strip()
+    if not value or value == "(unset)":
+        raise RuntimeError(f"gcloud {' '.join(args)} 没有返回可用值。")
+    return value
+
+
+def gemini_vertex_project(config: dict[str, Any]) -> str:
+    explicit = str(config.get("project") or config.get("project_id") or "").strip()
+    return explicit or gcloud_value(["config", "get-value", "core/project"])
+
+
+def gemini_vertex_location(config: dict[str, Any]) -> str:
+    explicit = str(config.get("location") or config.get("region") or "").strip()
+    if explicit:
+        return explicit
+    base_url = str(config.get("base_url") or "").strip().rstrip("/")
+    if base_url:
+        try:
+            host = urllib.parse.urlparse(base_url).hostname or ""
+        except ValueError:
+            host = ""
+        if host == "aiplatform.googleapis.com":
+            return "global"
+        suffix = "-aiplatform.googleapis.com"
+        if host.endswith(suffix):
+            return host[: -len(suffix)]
+    return "global"
+
+
+def gemini_vertex_base_url(location: str) -> str:
+    return GEMINI_VERTEX_GLOBAL_BASE_URL if location == "global" else f"https://{location}-aiplatform.googleapis.com"
+
+
+def gemini_content_text(response: dict[str, Any]) -> str:
+    texts: list[str] = []
+    for candidate in response.get("candidates", []) or []:
+        content = candidate.get("content") or {}
+        for part in content.get("parts", []) or []:
+            text = part.get("text")
+            if text:
+                texts.append(str(text))
+    return "\n".join(texts).strip()
+
+
+def gemini_vertex_generate_content(
+    config: dict[str, Any],
+    prompt: str,
+    *,
+    temperature: float = 0.2,
+    timeout: int = 180,
+    max_output_tokens: int = 12000,
+    response_mime_type: str = "application/json",
+) -> str:
+    model = str(config.get("model") or GEMINI_VERTEX_DEFAULT_MODEL).strip()
+    project = gemini_vertex_project(config)
+    location = gemini_vertex_location(config)
+    token = gcloud_value(["auth", "print-access-token"])
+    url = (
+        f"{gemini_vertex_base_url(location)}/v1/projects/{urllib.parse.quote(project, safe='')}"
+        f"/locations/{urllib.parse.quote(location, safe='')}/publishers/google/models/"
+        f"{urllib.parse.quote(model, safe='')}:generateContent"
+    )
+    generation_config: dict[str, Any] = {
+        "temperature": temperature,
+        "maxOutputTokens": max_output_tokens,
+    }
+    if response_mime_type:
+        generation_config["responseMimeType"] = response_mime_type
+    response = http_json(
+        url,
+        {"Authorization": f"Bearer {token}"},
+        {
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": generation_config,
+        },
+        timeout=timeout,
+    )
+    text = gemini_content_text(response)
+    if text:
+        return text
+    finish = ""
+    for candidate in response.get("candidates", []) or []:
+        finish = str(candidate.get("finishReason") or finish)
+    if finish == "MAX_TOKENS":
+        raise RuntimeError("Gemini Vertex 没有返回正文：输出预算被 thinking 消耗完，请提高 maxOutputTokens。")
+    raise RuntimeError(f"Gemini Vertex 没有返回可用正文：{finish or 'empty response'}")
 
 
 def anthropic_messages_url(config: dict[str, Any]) -> str:
@@ -2307,7 +2840,7 @@ def call_model(project: dict[str, Any], segments: list[dict[str, Any]]) -> dict[
     provider = api.get("provider", "local")
     api_key = api.get("api_key", "").strip()
     model = api.get("model", "").strip()
-    if provider == "local" or not api_key or not model:
+    if provider == "local" or not model or (not api_key and not is_gemini_vertex_config(api)):
         return None
 
     prompt = build_prompt(project, segments)
@@ -2363,6 +2896,16 @@ def call_model(project: dict[str, Any], segments: list[dict[str, Any]]) -> dict[
             )
             content = response["candidates"][0]["content"]["parts"][0]["text"]
             return extract_json_object(content)
+
+        if is_gemini_vertex_config(api):
+            content = gemini_vertex_generate_content(
+                api,
+                prompt,
+                temperature=0.3,
+                timeout=180 if is_gemini_vertex_thinking_config(api) else 120,
+                max_output_tokens=16000 if is_gemini_vertex_thinking_config(api) else 8000,
+            )
+            return extract_json_object(content)
     except Exception as err:
         return {"error": str(err)}
 
@@ -2375,12 +2918,14 @@ def call_model_batches(project: dict[str, Any], segments: list[dict[str, Any]], 
     api = project.get("api_config") or {}
     if (
         api.get("provider", "local") == "local"
-        or not str(api.get("api_key", "")).strip()
+        or (not str(api.get("api_key", "")).strip() and not is_gemini_vertex_config(api))
         or not str(api.get("model", "")).strip()
     ):
         return None
     if is_mimo_config(api):
         batch_size = 1
+    elif is_gemini_vertex_thinking_config(api):
+        batch_size = min(batch_size, 3)
     elif is_deepseek_thinking_config(api):
         batch_size = min(batch_size, 4)
     elif is_qwen_config(api):
@@ -2419,10 +2964,8 @@ def call_model_batches(project: dict[str, Any], segments: list[dict[str, Any]], 
 def phrase_review_available(project: dict[str, Any]) -> bool:
     api = project.get("api_config") or {}
     return bool(
-        api.get("provider", "local") in OPENAI_COMPATIBLE_PROVIDERS
-        and provider_name(api) != "local"
-        and str(api.get("api_key") or "").strip()
-        and str(api.get("model") or "").strip()
+        model_api_available(api)
+        and (api.get("provider", "local") in OPENAI_COMPATIBLE_PROVIDERS or is_gemini_vertex_config(api))
     )
 
 
@@ -2437,32 +2980,45 @@ def build_phrase_review_prompt(project: dict[str, Any], segments: list[dict[str,
             "source_time": segment["source_time"],
             "english": segment["text"],
             "local_phrase": segment.get("phrase", "key expression"),
+            "exact_span": segment.get("exact_span", ""),
+            "normalized_answer": segment.get("normalized_answer", ""),
+            "candidate_kind": segment.get("candidate_kind", ""),
+            "phrase_type": segment.get("phrase_type", ""),
+            "content_kind": segment.get("content_kind", ""),
+            "candidate_source": segment.get("candidate_source", ""),
+            "phrase_card_focus": segment.get("phrase_card_focus", ""),
             "local_score": round(float(segment.get("score", 0)), 2),
         }
         for segment in segments
     ]
     return (
-        "你是中文母语者的英语词伙筛选老师。请只判断这些字幕片段里是否有值得做 Anki 卡的可迁移表达，"
-        "不要生成卡片内容。目标是同时提高数量和质量：保留真实可用的口语表达，拒绝主题词、专有名词、"
+        "你是中文母语者的英语学习点评审老师。请判断这些 typed learning points 是否值得做 Anki 卡，"
+        "不要生成卡片内容。学习点可能是表达、语境生词、语法句法、听力难点或语气风险。目标是同时提高数量和质量："
+        "保留真实可用的学习点，拒绝主题词、专有名词、"
         "半截词串、视频口播引入语和过基础表达。"
         "请像英语老师一样先判断学习动作：这个片段训练听懂、会用、会替换、理解语气，还是根本不值得制卡。"
         f"{material_context_instruction}"
         f"{focus_instruction}"
         "判断标准："
-        "1) phrase 必须来自 english 原句；词伙通常 2-6 个词，单词用法可以是 1 个核心词，语法框架可以是原句里的可替换结构。"
-        "它必须完整、自然、可换场景复用。"
+        "1) exact_span 必须逐词来自 english 原句；normalized_answer/answer_core 必须是英文答案本体。"
+        "词伙通常 2-6 个词，单词用法可以是 1 个核心词，语法框架可以是原句里的可替换结构。它必须完整、自然、可换场景复用。"
         "2) keep 只给真正值得复习的表达；如果只是句子主题、名词堆叠、产品名、working with 这类泛短语，decision=skip。"
         "3) B1 或更高水平不要把 talk about、go home 这类 A1/A2 基础表达评为 keep，除非原句里有更具体的表达框架。"
         "4) value_score 用 1-5：5=非常值得学，4=推荐制卡，3=可待审，1-2=跳过。"
-        "5) phrase_type 从 spoken_phrase、sentence_frame、collocation、discourse_marker、idiom、listening_sentence、vocabulary_usage、grammar_pattern 中选一个。"
-        "6) score_breakdown 必须给 transferability、spoken_naturalness、level_fit、context_clarity 四项 1-5 分。"
+        "5) candidate_kind 从 expression、contextual_vocab、grammar_pattern、listening_feature、pragmatic_risk 中选一个。"
+        "phrase_type 从 spoken_phrase、sentence_frame、collocation、discourse_marker、idiom、listening_sentence、vocabulary_usage、grammar_pattern 中选一个。"
+        "6) score_breakdown 必须给 transferability、spoken_naturalness、level_fit、context_dependence、answer_clarity、card_uniqueness、learning_action、risk_boundary 八项 1-5 分。"
         "7) card_focus 用一句短中文说明这张卡应该训练什么；skip 时写 reject_reason。"
+        "8) answer_core 禁止包含中文、IPA、发音说明、语法解释或“X 是 Y”的说明；这些只能放到后续字段里。"
+        "9) 同一句最多 keep 2 个学习点，且训练动作必须明显不同；expression 和 contextual_vocab 可以共存，重复训练目标不能共存。"
         "好例子：Honestly, it's such a nice Monday morning. -> keep, phrase=such a nice, phrase_type=sentence_frame, card_focus=训练 such a nice + 名词表达自然赞叹。"
         "废例子：Today we are going to talk about AI models. -> skip, phrase=talk about, reject_reason=B1 用户太基础，而且只是视频引入。"
         "只返回严格 JSON，不要 Markdown。结构："
         '{"candidates":[{"id":"seg_0001","decision":"keep|skip","phrase":"原句里的词伙",'
+        '"candidate_kind":"expression|contextual_vocab|grammar_pattern|listening_feature|pragmatic_risk",'
+        '"exact_span":"逐词来自原句","normalized_answer":"英文标准答案","answer_core":"英文答案本体",'
         '"phrase_type":"spoken_phrase|sentence_frame|collocation|discourse_marker|idiom|listening_sentence|vocabulary_usage|grammar_pattern",'
-        '"value_score":1,"score_breakdown":{"transferability":1,"spoken_naturalness":1,"level_fit":1,"context_clarity":1},'
+        '"value_score":1,"score_breakdown":{"transferability":1,"spoken_naturalness":1,"level_fit":1,"context_dependence":1,"answer_clarity":1,"card_uniqueness":1,"learning_action":1,"risk_boundary":1},'
         '"reason":"推荐理由","card_focus":"训练重点","reject_reason":"跳过原因"}]}。'
         f"用户当前水平：{level}。允许收录难度范围：{', '.join(collection_levels)}。"
         f"候选字幕：{json.dumps(compact, ensure_ascii=False)}"
@@ -2487,6 +3043,8 @@ def review_phrase_choice(
     fallback: str,
     level: str,
     collection_levels: list[str] | None = None,
+    candidate_kind: str = "expression",
+    phrase_type: str = "",
 ) -> str:
     candidates = [proposed, fallback, find_phrase(text, level, collection_levels)]
     seen: set[str] = set()
@@ -2496,7 +3054,7 @@ def review_phrase_choice(
         if not normalized or key in seen or key == "key expression":
             continue
         seen.add(key)
-        if usable_phrase(text, normalized):
+        if usable_learning_point_span(text, normalized, candidate_kind, phrase_type):
             return normalized
     return ""
 
@@ -2506,12 +3064,16 @@ def repair_review_segment_phrase(
     level: str,
     collection_levels: list[str] | None = None,
 ) -> dict[str, Any] | None:
+    candidate_kind = candidate_kind_for_segment(segment)
+    phrase_type = str(segment.get("phrase_type") or phrase_type_for_candidate_kind(candidate_kind))
     phrase = review_phrase_choice(
         str(segment.get("text") or ""),
         str(segment.get("phrase") or ""),
         "",
         level,
         collection_levels,
+        candidate_kind,
+        phrase_type,
     )
     if not phrase:
         return None
@@ -2560,6 +3122,12 @@ def apply_phrase_review_decisions(
                     "phrase_reject_reason": "",
                     "phrase_card_focus": "人工确认是否值得制卡。",
                     "content_kind": content_kind_for_phrase_type(str(repaired.get("phrase_type") or "")),
+                    "candidate_kind": candidate_kind_for_segment(repaired),
+                    "exact_span": repaired.get("exact_span") or repaired.get("phrase", ""),
+                    "normalized_answer": repaired.get("normalized_answer") or repaired.get("phrase", ""),
+                    "answer_core": repaired.get("answer_core") or repaired.get("normalized_answer") or repaired.get("phrase", ""),
+                    "candidate_source": repaired.get("candidate_source", ""),
+                    "learning_point_schema_version": repaired.get("learning_point_schema_version") or LEARNING_POINT_SCHEMA_VERSION,
                     "source_evidence": repaired.get("text", ""),
                 }
             )
@@ -2568,12 +3136,28 @@ def apply_phrase_review_decisions(
         value_score = phrase_review_score(review.get("value_score"))
         decision = str(review.get("decision") or "").strip().lower()
         proposed = str(review.get("phrase") or "").strip()
+        exact_span = str(review.get("exact_span") or "").strip()
+        normalized_answer = str(review.get("normalized_answer") or "").strip()
+        answer_core = str(review.get("answer_core") or "").strip()
         reason = str(review.get("reason") or "").strip()
         reject_reason = str(review.get("reject_reason") or "").strip()
         card_focus = str(review.get("card_focus") or "").strip()
-        phrase_type = str(review.get("phrase_type") or "").strip()
+        candidate_kind = str(review.get("candidate_kind") or segment.get("candidate_kind") or "").strip()
+        phrase_type = str(review.get("phrase_type") or segment.get("phrase_type") or "").strip()
+        if not candidate_kind:
+            candidate_kind = candidate_kind_for_phrase_type(phrase_type, candidate_kind_for_segment(segment))
+        if not phrase_type:
+            phrase_type = phrase_type_for_candidate_kind(candidate_kind)
         score_breakdown = review.get("score_breakdown") if isinstance(review.get("score_breakdown"), dict) else {}
-        phrase = review_phrase_choice(segment["text"], proposed, segment.get("phrase", ""), level, collection_levels)
+        phrase = review_phrase_choice(
+            segment["text"],
+            normalized_answer or answer_core or exact_span or proposed,
+            segment.get("normalized_answer") or segment.get("answer_core") or segment.get("exact_span") or segment.get("phrase", ""),
+            level,
+            collection_levels,
+            candidate_kind,
+            phrase_type,
+        )
 
         if decision != "keep" or value_score < 3:
             skipped.append(
@@ -2604,6 +3188,10 @@ def apply_phrase_review_decisions(
             {
                 **refined_segment,
                 "phrase": phrase,
+                "exact_span": exact_span or segment.get("exact_span") or phrase,
+                "normalized_answer": normalized_answer or answer_core or phrase,
+                "answer_core": answer_core or normalized_answer or phrase,
+                "candidate_kind": candidate_kind,
                 "recommendation": min(5, max(1, value_score)),
                 "phrase_value_score": value_score,
                 "phrase_review_status": status,
@@ -2613,6 +3201,8 @@ def apply_phrase_review_decisions(
                 "phrase_card_focus": card_focus or "围绕这个表达的真实语境和迁移用法制卡。",
                 "phrase_type": phrase_type,
                 "content_kind": content_kind_for_phrase_type(phrase_type),
+                "candidate_source": segment.get("candidate_source", ""),
+                "learning_point_schema_version": LEARNING_POINT_SCHEMA_VERSION,
                 "source_evidence": segment.get("text", ""),
                 "score_breakdown": score_breakdown,
             }
@@ -2666,6 +3256,12 @@ def ensure_min_review_candidates(
                 "phrase_reject_reason": "待审候选默认不导出；请确认词伙值得学后再启用。",
                 "phrase_card_focus": "人工确认这句里是否有可迁移表达。",
                 "content_kind": content_kind_for_phrase_type(str(repaired.get("phrase_type") or "")),
+                "candidate_kind": candidate_kind_for_segment(repaired),
+                "exact_span": repaired.get("exact_span") or repaired.get("phrase", ""),
+                "normalized_answer": repaired.get("normalized_answer") or repaired.get("phrase", ""),
+                "answer_core": repaired.get("answer_core") or repaired.get("normalized_answer") or repaired.get("phrase", ""),
+                "candidate_source": repaired.get("candidate_source", ""),
+                "learning_point_schema_version": repaired.get("learning_point_schema_version") or LEARNING_POINT_SCHEMA_VERSION,
                 "source_evidence": repaired.get("text", ""),
             }
         )
@@ -2693,7 +3289,12 @@ def split_duplicate_phrase_segments(segments: list[dict[str, Any]], max_per_phra
     kept: list[dict[str, Any]] = []
     duplicates: list[dict[str, Any]] = []
     for segment in ranked:
-        key = normalized_phrase_key(segment.get("phrase", ""))
+        key_parts = [
+            normalized_phrase_key(segment.get("normalized_answer") or segment.get("phrase", "")),
+            str(segment.get("candidate_kind") or candidate_kind_for_segment(segment)),
+            re.sub(r"\s+", " ", str(segment.get("phrase_card_focus") or "").strip().lower())[:80],
+        ]
+        key = "::".join(part for part in key_parts if part)
         if key == "key expression":
             key = f"key expression::{segment.get('id', '')}"
         if not key:
@@ -2763,23 +3364,32 @@ def review_phrase_candidates_with_mimo(
                 f"AI 正在评审学习候选：第 {batch_index}/{total_batches} 批，thinking 已保留。",
             )
             prompt = build_phrase_review_prompt(project, batch)
-            response = compatible_chat_completion(
-                api,
-                [
-                    {"role": "system", "content": "Return only valid JSON."},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.1,
-                timeout=180 if is_thinking_model_config(api) else 120,
-                max_tokens=4500 if is_deepseek_thinking_config(api) else 3200,
-                progress={
-                    "command": "generate",
-                    "stage": "phrase_review",
-                    "percent": percent,
-                    "message": "AI 保留 thinking 评审学习候选",
-                },
-            )
-            content = chat_completion_content(response)
+            if is_gemini_vertex_config(api):
+                content = gemini_vertex_generate_content(
+                    api,
+                    prompt,
+                    temperature=0.1,
+                    timeout=180 if is_gemini_vertex_thinking_config(api) else 120,
+                    max_output_tokens=9000 if is_gemini_vertex_thinking_config(api) else 4500,
+                )
+            else:
+                response = compatible_chat_completion(
+                    api,
+                    [
+                        {"role": "system", "content": "Return only valid JSON."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.1,
+                    timeout=180 if is_thinking_model_config(api) else 120,
+                    max_tokens=4500 if is_deepseek_thinking_config(api) else 3200,
+                    progress={
+                        "command": "generate",
+                        "stage": "phrase_review",
+                        "percent": percent,
+                        "message": "AI 保留 thinking 评审学习候选",
+                    },
+                )
+                content = chat_completion_content(response)
             payload = extract_json_object(content or "")
             for item in payload.get("candidates", []):
                 if isinstance(item, dict) and item.get("id"):
@@ -2846,7 +3456,7 @@ def handle_test_api(payload: dict[str, Any]) -> dict[str, Any]:
             "latency_ms": 0,
         }
 
-    if not api_key:
+    if not api_key and not is_gemini_vertex_config(api):
         return {
             "ok": False,
             "provider": provider,
@@ -2908,6 +3518,15 @@ def handle_test_api(payload: dict[str, Any]) -> dict[str, Any]:
                 timeout=30,
             )
             content = response.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+
+        elif is_gemini_vertex_config(api):
+            content = gemini_vertex_generate_content(
+                api,
+                prompt,
+                temperature=0,
+                timeout=120 if is_gemini_vertex_thinking_config(api) else 45,
+                max_output_tokens=2500 if is_gemini_vertex_thinking_config(api) else 1000,
+            )
 
         else:
             return {
@@ -2973,14 +3592,22 @@ def normalized_tts_config(project_or_payload: dict[str, Any]) -> dict[str, Any]:
         if not base_url:
             base_url = QWEN_DASHSCOPE_CN_TTS_BASE_URL
 
+    if provider in GEMINI_VERTEX_TTS_PROVIDERS and not base_url:
+        base_url = GEMINI_VERTEX_TTS_GLOBAL_BASE_URL
+
     return {
         "enabled": bool(tts.get("enabled", False)),
         "provider": provider,
         "base_url": base_url,
         "api_key": api_key,
-        "model": str(tts.get("model") or "").strip(),
-        "voice": str(tts.get("voice") or legacy_model or "").strip(),
-        "language": str(tts.get("language") or "auto").strip() or "auto",
+        "model": str(
+            tts.get("model") or (GEMINI_VERTEX_TTS_DEFAULT_MODEL if provider in GEMINI_VERTEX_TTS_PROVIDERS else "")
+        ).strip(),
+        "voice": str(
+            tts.get("voice") or legacy_model or (GEMINI_VERTEX_TTS_DEFAULT_VOICE if provider in GEMINI_VERTEX_TTS_PROVIDERS else "")
+        ).strip(),
+        "language": str(tts.get("language") or ("en-US" if provider in GEMINI_VERTEX_TTS_PROVIDERS else "auto")).strip()
+        or "auto",
         "sample_rate": int(tts.get("sample_rate") or 24000),
         "bit_rate": int(tts.get("bit_rate") or 128000),
     }
@@ -2999,6 +3626,68 @@ def qwen_tts_endpoint(base_url: str) -> str:
     if base.endswith("/services/aigc/multimodal-generation/generation"):
         return base
     return f"{base}/services/aigc/multimodal-generation/generation"
+
+
+def gemini_vertex_tts_location(config: dict[str, Any]) -> str:
+    explicit = str(config.get("location") or config.get("region") or "").strip()
+    if explicit:
+        return explicit
+    base_url = str(config.get("base_url") or "").strip().rstrip("/")
+    if base_url:
+        try:
+            host = urllib.parse.urlparse(base_url).hostname or ""
+        except ValueError:
+            host = ""
+        if host == "aiplatform.googleapis.com":
+            return "global"
+        suffix = "-aiplatform.googleapis.com"
+        if host.endswith(suffix):
+            return host[: -len(suffix)]
+    return "global"
+
+
+def gemini_vertex_tts_base_url(config: dict[str, Any], location: str) -> str:
+    base_url = str(config.get("base_url") or "").strip().rstrip("/")
+    if base_url:
+        return base_url
+    return GEMINI_VERTEX_TTS_GLOBAL_BASE_URL if location == "global" else f"https://{location}-aiplatform.googleapis.com"
+
+
+def gemini_vertex_tts_endpoint(config: dict[str, Any]) -> str:
+    model = str(config.get("model") or GEMINI_VERTEX_TTS_DEFAULT_MODEL).strip()
+    project = gemini_vertex_project(config)
+    location = gemini_vertex_tts_location(config)
+    base_url = gemini_vertex_tts_base_url(config, location)
+    return (
+        f"{base_url}/v1beta1/projects/{urllib.parse.quote(project, safe='')}"
+        f"/locations/{urllib.parse.quote(location, safe='')}/publishers/google/models/"
+        f"{urllib.parse.quote(model, safe='')}:generateContent"
+    )
+
+
+def wav_from_pcm_s16le(pcm: bytes, sample_rate: int = 24000, channels: int = 1) -> bytes:
+    sample_width = 2
+    data_size = len(pcm)
+    byte_rate = sample_rate * channels * sample_width
+    block_align = channels * sample_width
+    return b"".join(
+        [
+            b"RIFF",
+            (36 + data_size).to_bytes(4, "little"),
+            b"WAVE",
+            b"fmt ",
+            (16).to_bytes(4, "little"),
+            (1).to_bytes(2, "little"),
+            channels.to_bytes(2, "little"),
+            sample_rate.to_bytes(4, "little"),
+            byte_rate.to_bytes(4, "little"),
+            block_align.to_bytes(2, "little"),
+            (sample_width * 8).to_bytes(2, "little"),
+            b"data",
+            data_size.to_bytes(4, "little"),
+            pcm,
+        ]
+    )
 
 
 def qwen_language_type(language: str) -> str:
@@ -3026,6 +3715,28 @@ def qwen_language_type(language: str) -> str:
     if lower.startswith("ru") or "russian" in lower:
         return "Russian"
     return "Auto"
+
+
+def gemini_vertex_tts_language_code(language: str) -> str:
+    lower = str(language or "").strip().lower()
+    if lower in {"", "auto"}:
+        return "en-US"
+    if lower in {"en", "english", "english (united states)", "us english", "american english"}:
+        return "en-US"
+    if lower in {"zh", "chinese", "mandarin", "中文", "普通话"}:
+        return "cmn-CN"
+    if re.fullmatch(r"[a-z]{2,3}-[a-z0-9]{2,4}", lower):
+        left, right = lower.split("-", 1)
+        return f"{left}-{right.upper()}"
+    return language
+
+
+def clean_tts_input_text(value: Any) -> str:
+    text = clean_study_text(value)
+    text = re.sub(r"\s+", " ", text).strip(" \t\r\n\"“”")
+    if not text:
+        raise RuntimeError("TTS 文本为空，无法生成音频。")
+    return text
 
 
 def mimo_tts_audio(tts: dict[str, Any], text: str, language: str) -> bytes:
@@ -3102,9 +3813,49 @@ def qwen_tts_audio(tts: dict[str, Any], text: str, language: str) -> bytes:
     raise RuntimeError("Qwen TTS 没有返回 output.audio.url 或 output.audio.data。请检查模型、voice、地域和 API Key。")
 
 
+def gemini_vertex_tts_audio(tts: dict[str, Any], text: str, language: str) -> bytes:
+    model = str(tts.get("model") or GEMINI_VERTEX_TTS_DEFAULT_MODEL).strip()
+    if not model:
+        raise RuntimeError("Gemini Vertex TTS 需要模型名。")
+    project = gemini_vertex_project(tts)
+    token = gcloud_value(["auth", "print-access-token"])
+    speech_text = clean_tts_input_text(text)
+    body = {
+        "contents": {
+            "role": "user",
+            "parts": {"text": speech_text},
+        },
+        "generation_config": {
+            "speech_config": {
+                "language_code": gemini_vertex_tts_language_code(tts.get("language") or language),
+                "voice_config": {
+                    "prebuilt_voice_config": {
+                        "voice_name": str(tts.get("voice") or GEMINI_VERTEX_TTS_DEFAULT_VOICE).strip(),
+                    }
+                },
+            }
+        },
+    }
+    response = http_json(
+        gemini_vertex_tts_endpoint({**tts, "model": model, "project": project}),
+        {"Authorization": f"Bearer {token}", "x-goog-user-project": project},
+        body,
+        timeout=120,
+    )
+    for candidate in response.get("candidates", []) or []:
+        content = candidate.get("content") or {}
+        for part in content.get("parts", []) or []:
+            inline = part.get("inlineData") or part.get("inline_data") or {}
+            data = inline.get("data")
+            if data:
+                return wav_from_pcm_s16le(base64.b64decode(data), sample_rate=int(tts.get("sample_rate") or 24000))
+    raise RuntimeError("Gemini Vertex TTS 没有返回 inlineData 音频。请检查 Vertex AI 权限、模型、区域和 voice。")
+
+
 def call_tts_audio(tts: dict[str, Any], text: str, language: str) -> bytes:
     provider = tts["provider"]
     api_key = tts["api_key"]
+    text = clean_tts_input_text(text)
     if provider in {"grok", "xai"}:
         return http_binary(
             grok_tts_endpoint(tts["base_url"]),
@@ -3126,6 +3877,9 @@ def call_tts_audio(tts: dict[str, Any], text: str, language: str) -> bytes:
 
     if provider in QWEN_TTS_PROVIDERS:
         return qwen_tts_audio(tts, text, language)
+
+    if is_gemini_vertex_tts_config(tts):
+        return gemini_vertex_tts_audio(tts, text, language)
 
     if provider in OPENAI_COMPATIBLE_PROVIDERS:
         return http_binary(
@@ -3155,7 +3909,7 @@ def handle_test_tts(payload: dict[str, Any]) -> dict[str, Any]:
             "voice": tts["voice"],
             "message": "TTS 当前是关闭状态。",
         }
-    if not tts["api_key"]:
+    if not tts["api_key"] and not is_gemini_vertex_tts_config(tts):
         return {
             "ok": False,
             "provider": tts["provider"],
@@ -3197,6 +3951,14 @@ def handle_test_tts(payload: dict[str, Any]) -> dict[str, Any]:
             data = response["candidates"][0]["content"]["parts"][0]["inlineData"]["data"]
             audio_size = len(base64.b64decode(data))
         else:
+            if is_gemini_vertex_tts_config(tts) and not tts["model"]:
+                return {
+                    "ok": False,
+                    "provider": tts["provider"],
+                    "model": tts["model"],
+                    "voice": tts["voice"],
+                    "message": "Gemini Vertex TTS 需要模型名。",
+                }
             if tts["provider"] in OPENAI_COMPATIBLE_PROVIDERS and (not compatible_base_url(tts) or not tts["model"]):
                 return {
                     "ok": False,
@@ -3301,6 +4063,11 @@ def merge_ai_cards(
                     "phrase_review_status",
                     "phrase_type",
                     "content_kind",
+                    "candidate_kind",
+                    "exact_span",
+                    "normalized_answer",
+                    "candidate_source",
+                    "learning_point_schema_version",
                     "source_evidence",
                     "retrieval_prompt",
                     "answer_core",
@@ -3334,6 +4101,11 @@ def merge_ai_cards(
                     "phrase_review_status",
                     "phrase_type",
                     "content_kind",
+                    "candidate_kind",
+                    "exact_span",
+                    "normalized_answer",
+                    "candidate_source",
+                    "learning_point_schema_version",
                     "source_evidence",
                 ]:
                     if segment.get(key) not in (None, ""):
@@ -3368,6 +4140,7 @@ def yt_dlp_base_command() -> list[str] | None:
         text=True,
         encoding="utf-8",
         errors="replace",
+        **hidden_subprocess_flags(),
     )
     if completed.returncode == 0:
         return [sys.executable, "-m", "yt_dlp"]
@@ -3636,6 +4409,7 @@ def run_ffprobe_json(video_path: Path) -> dict[str, Any] | None:
         text=True,
         encoding="utf-8",
         errors="replace",
+        **hidden_subprocess_flags(),
     )
     if completed.returncode != 0:
         return None
@@ -3998,7 +4772,7 @@ def call_document_model(project: dict[str, Any], segments: list[dict[str, Any]])
     provider = api.get("provider", "local")
     api_key = api.get("api_key", "").strip()
     model = api.get("model", "").strip()
-    if provider == "local" or not api_key or not model:
+    if provider == "local" or not model or (not api_key and not is_gemini_vertex_config(api)):
         return None
 
     prompt = build_document_prompt(project, segments)
@@ -4052,6 +4826,16 @@ def call_document_model(project: dict[str, Any], segments: list[dict[str, Any]])
                 },
             )
             content = response["candidates"][0]["content"]["parts"][0]["text"]
+            return extract_json_object(content)
+
+        if is_gemini_vertex_config(api):
+            content = gemini_vertex_generate_content(
+                api,
+                prompt,
+                temperature=0.25,
+                timeout=180 if is_gemini_vertex_thinking_config(api) else 120,
+                max_output_tokens=14000 if is_gemini_vertex_thinking_config(api) else 7000,
+            )
             return extract_json_object(content)
     except Exception as err:
         return {"error": str(err)}
@@ -7908,14 +8692,6 @@ body,
   font-weight: 650;
   overflow-wrap: break-word;
 }
-.v11-source-translation {
-  margin: 10px 0 0;
-  color: #5f626b;
-  font-size: clamp(18px, 3.2vw, 24px);
-  line-height: 1.38;
-  font-weight: 650;
-  overflow-wrap: anywhere;
-}
 .v11-info-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -8874,6 +9650,19 @@ def card_front_fields(card: dict[str, Any], *, repetition_mode: bool = False) ->
     }
 
 
+def card_phrase_tts_text(card: dict[str, Any], front_fields: dict[str, str]) -> str:
+    candidates = [
+        front_fields.get("answer"),
+        card.get("answer_core"),
+        card.get("phrase"),
+    ]
+    for value in candidates:
+        text = answer_display_text(value)
+        if is_answer_expression_candidate(text, card):
+            return clean_tts_input_text(text)
+    return ""
+
+
 def language_code(language: str) -> str:
     lower = language.lower()
     if "fr" in lower:
@@ -8883,6 +9672,34 @@ def language_code(language: str) -> str:
     if "ja" in lower or "日本" in language:
         return "ja"
     return "en"
+
+
+def transcode_wav_file_to_mp3(wav_path: Path, output_path: Path, label: str) -> None:
+    if not shutil.which("ffmpeg"):
+        wav_path.unlink(missing_ok=True)
+        raise RuntimeError(f"找不到 ffmpeg，无法把 {label} 返回的音频转成 Anki 用的 mp3。")
+    completed = subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(wav_path),
+            "-acodec",
+            "libmp3lame",
+            "-q:a",
+            "5",
+            str(output_path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        **hidden_subprocess_flags(),
+    )
+    wav_path.unlink(missing_ok=True)
+    if completed.returncode != 0:
+        raise RuntimeError(f"{label} 音频转码失败：{completed.stderr[-800:]}")
 
 
 def synthesize_tts(
@@ -8895,7 +9712,7 @@ def synthesize_tts(
     if not tts["enabled"] or tts["provider"] == "disabled":
         return False
 
-    if not tts["api_key"]:
+    if not tts["api_key"] and not is_gemini_vertex_tts_config(tts):
         return False
 
     provider = tts["provider"]
@@ -8914,30 +9731,7 @@ def synthesize_tts(
         wav_path = output_path.with_suffix(".mimo.wav")
         audio = call_tts_audio(tts, text, language_code(project.get("language", "English")))
         wav_path.write_bytes(audio)
-        if not shutil.which("ffmpeg"):
-            wav_path.unlink(missing_ok=True)
-            raise RuntimeError("找不到 ffmpeg，无法把 MIMO 返回的 wav 转成 Anki 用的 mp3。")
-        completed = subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-i",
-                str(wav_path),
-                "-acodec",
-                "libmp3lame",
-                "-q:a",
-                "5",
-                str(output_path),
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        wav_path.unlink(missing_ok=True)
-        if completed.returncode != 0:
-            raise RuntimeError(f"MIMO TTS 音频转码失败：{completed.stderr[-800:]}")
+        transcode_wav_file_to_mp3(wav_path, output_path, "MIMO TTS")
         return True
 
     if provider in QWEN_TTS_PROVIDERS:
@@ -8946,30 +9740,16 @@ def synthesize_tts(
         wav_path = output_path.with_suffix(".qwen.wav")
         audio = call_tts_audio(tts, text, project.get("language", "English"))
         wav_path.write_bytes(audio)
-        if not shutil.which("ffmpeg"):
-            wav_path.unlink(missing_ok=True)
-            raise RuntimeError("找不到 ffmpeg，无法把 Qwen TTS 返回的音频转成 Anki 用的 mp3。")
-        completed = subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-i",
-                str(wav_path),
-                "-acodec",
-                "libmp3lame",
-                "-q:a",
-                "5",
-                str(output_path),
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        wav_path.unlink(missing_ok=True)
-        if completed.returncode != 0:
-            raise RuntimeError(f"Qwen TTS 音频转码失败：{completed.stderr[-800:]}")
+        transcode_wav_file_to_mp3(wav_path, output_path, "Qwen TTS")
+        return True
+
+    if is_gemini_vertex_tts_config(tts):
+        if not tts["model"]:
+            return False
+        wav_path = output_path.with_suffix(".gemini_vertex.wav")
+        audio = call_tts_audio(tts, text, project.get("language", "English"))
+        wav_path.write_bytes(audio)
+        transcode_wav_file_to_mp3(wav_path, output_path, "Gemini Vertex TTS")
         return True
 
     if provider in OPENAI_COMPATIBLE_PROVIDERS:
@@ -9133,11 +9913,13 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             warnings.append("本次导出为字幕-only / 跳过视频切片模式，APKG 不包含视频片段和原声音频。")
         if not tts_requested:
             warnings.append("TTS 当前未启用，本次导出不会生成整句 AI 朗读和表达小喇叭。")
-        elif not tts_config["api_key"]:
+        elif not tts_config["api_key"] and not is_gemini_vertex_tts_config(tts_config):
             warnings.append("TTS 已启用但缺少 API Key，本次导出不会生成 MIMO / AI 朗读音频。")
-        elif (tts_config["provider"] in OPENAI_COMPATIBLE_PROVIDERS or tts_config["provider"] in QWEN_TTS_PROVIDERS) and (
-            not compatible_base_url(tts_config) or not tts_config["model"]
-        ):
+        elif (
+            tts_config["provider"] in OPENAI_COMPATIBLE_PROVIDERS
+            or tts_config["provider"] in QWEN_TTS_PROVIDERS
+            or is_gemini_vertex_tts_config(tts_config)
+        ) and (not compatible_base_url(tts_config) or not tts_config["model"]):
             warnings.append("TTS 已启用但缺少 Base URL 或模型名，本次导出不会生成 AI 朗读音频。")
 
     for index, segment in enumerate(export_segments):
@@ -9330,7 +10112,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             front_fields = card_front_fields(card, repetition_mode=use_v11_template)
             template_labels = card_template_labels(card, deck_kind_code)
             export_card_id = f"{project_card_prefix}_{card.get('id', '')}"
-            phrase_text = clean_study_text(card.get("phrase"))
+            phrase_text = card_phrase_tts_text(card, front_fields)
             phrase_tts_name = ""
             phrase_key = phrase_text.lower()
             if tts_requested and phrase_text and phrase_key not in {"key expression", "n/a"}:
@@ -9701,3 +10483,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

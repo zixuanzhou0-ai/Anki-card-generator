@@ -56,6 +56,15 @@ describe('review quality helpers', () => {
     expect(segmentMatchesFilter(segment, 'reject')).toBe(false)
   })
 
+  it('lets rejected card quality override a conflicting recommended segment status', () => {
+    const rejected = { ...baseCard, quality: { score: 16, status: 'reject' as const, issues: ['too formal'] } }
+    const segment = { ...baseSegment, phrase_review_status: 'recommended', cards: [rejected] }
+
+    expect(segmentReviewStatus(segment)).toBe('reject')
+    expect(segmentMatchesFilter(segment, 'recommended')).toBe(false)
+    expect(segmentMatchesFilter(segment, 'reject')).toBe(true)
+  })
+
   it('selects only recommended cards in recommended mode', () => {
     const recommended = { ...baseCard, quality: { score: 90, status: 'recommended' as const, issues: [] } }
     const rejected = { ...baseCard, id: 'card-2', quality: { score: 20, status: 'reject' as const, issues: [] } }

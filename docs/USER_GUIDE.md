@@ -42,18 +42,20 @@ flowchart TB
 - MIMO Token Plan SGP，或
 - MIMO Public V2.5 Pro
 - DeepSeek V4 Pro / DeepSeek V4 Flash，或
+- Gemini Vertex：`gemini-3.1-pro-preview`，或
 - Qwen / DashScope 兼容接口，或
 - 其他 OpenAI-compatible 服务商
 
-填写自己的 API Key。DeepSeek V4 的 Base URL 使用 `https://api.deepseek.com`，模型名填真实 ID：`deepseek-v4-pro` 或 `deepseek-v4-flash`。TTS 在“语音模型”中单独配置；如果文本模型已经填了 MIMO 或 Qwen / DashScope Key，TTS 可以复用。
+填写自己的 API Key。DeepSeek V4 的 Base URL 使用 `https://api.deepseek.com`，模型名填真实 ID：`deepseek-v4-pro` 或 `deepseek-v4-flash`。Gemini Vertex 使用本机 `gcloud` 登录，不需要在应用里粘贴 OAuth token；默认 global 端点是 `https://aiplatform.googleapis.com`，当前可用模型优先填 `gemini-3.1-pro-preview`。TTS 在“语音模型”中单独配置；如果文本模型已经填了 MIMO 或 Qwen / DashScope Key，TTS 可以复用。
 
-DeepSeek V4 / Qwen / MIMO 这类模型会先 thinking 再输出最终 JSON。应用会流式接收 thinking 进度，保留模型思考能力，但只把最终 JSON 用于制卡，避免进度长时间停住或把 thinking 文本混进卡片字段。
+DeepSeek V4 / Qwen / MIMO / Gemini Vertex 这类模型会先 thinking 再输出最终 JSON。应用会保留模型思考能力，但只把最终 JSON 用于制卡，避免进度长时间停住或把 thinking 文本混进卡片字段。
 
 英语卡片的 TTS 建议：
 
 - 优先用视频原声；AI TTS 主要用于额外整句朗读和表达小喇叭。
 - MiMo V2.5 TTS 当前更适合自然英语学习卡。
 - Qwen3 TTS 推荐先试 `Jennifer` 美语女声或 `Aiden` 美语男声；`Cherry` 支持英语，但不是最推荐的英语学习默认音色。
+- Google 最新 Gemini-TTS 可选 `Gemini 3.1 TTS Vertex`，默认模型 `gemini-3.1-flash-tts-preview`，Base URL `https://aiplatform.googleapis.com`，使用本机 `gcloud` / Vertex AI 授权，不需要填写 TTS API Key。
 - 需要控制语速、情绪或朗读风格时，用 `qwen3-tts-instruct-flash`；需要自定义角色音色时，先用 Qwen3 声音设计创建 voice id，再填入“声音 / voice_id”。
 
 ## 4. 从 YouTube 生成卡片
@@ -132,6 +134,7 @@ python -m pip install --upgrade -r workers/requirements.txt
 - API Key 是否可用。
 - MIMO Token Plan Key 是否使用 SGP Base URL。
 - Qwen / DashScope TTS 是否使用对应地域的 Base URL。
+- Gemini Vertex TTS 是否已经 `gcloud auth login`、`gcloud config set project <project-id>`，并在 Google Cloud 项目中启用 Vertex AI。
 
 如果只是听感不自然，先把审核页试听速度切到 `1x` 再判断；`0.75x` 只影响软件内试听，不会写入导出的 Anki MP3。Qwen3 英语音色建议优先试 `Jennifer` 或 `Aiden`。
 

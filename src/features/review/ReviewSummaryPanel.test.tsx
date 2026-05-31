@@ -60,11 +60,13 @@ describe('ReviewSummaryPanel', () => {
     )
 
     expect(screen.getByText('3/4')).toBeInTheDocument()
-    expect(screen.getByText('推荐保留')).toBeInTheDocument()
+    expect(screen.getByText('推荐卡片')).toBeInTheDocument()
+    expect(screen.getAllByText('候选片段').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('已拒绝片段').length).toBeGreaterThan(0)
     expect(screen.getByText('平均词伙评分')).toBeInTheDocument()
     expect(screen.getByText('字幕句')).toBeInTheDocument()
     expect(screen.getByText(/自动匹配字幕/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /待审1/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /待审片段1/ })).toBeInTheDocument()
   })
 
   it('uses document knowledge labels instead of subtitle phrase labels', () => {

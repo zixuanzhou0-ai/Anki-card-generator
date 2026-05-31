@@ -116,6 +116,36 @@ describe('ApiSettingsPanel', () => {
     )
   })
 
+  it('patches Gemini Vertex defaults when switching to the Vertex provider', () => {
+    const onPatchApi = vi.fn()
+    renderPanel({ onPatchApi })
+
+    fireEvent.change(screen.getByLabelText(/Provider/), { target: { value: 'gemini-vertex' } })
+
+    expect(onPatchApi).toHaveBeenCalledWith(
+      expect.objectContaining({
+        base_url: 'https://aiplatform.googleapis.com',
+        model: 'gemini-3.1-pro-preview',
+        provider: 'gemini-vertex',
+      }),
+    )
+  })
+
+  it('patches Gemini Vertex defaults from the model-row shortcut', () => {
+    const onPatchApi = vi.fn()
+    renderPanel({ onPatchApi })
+
+    fireEvent.click(screen.getByRole('button', { name: /Vertex AI/ }))
+
+    expect(onPatchApi).toHaveBeenCalledWith(
+      expect.objectContaining({
+        base_url: 'https://aiplatform.googleapis.com',
+        model: 'gemini-3.1-pro-preview',
+        provider: 'gemini-vertex',
+      }),
+    )
+  })
+
   it('toggles capabilities and remember-key preference', () => {
     const onPatchApi = vi.fn()
     const onToggleRememberModelKey = vi.fn()

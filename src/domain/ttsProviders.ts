@@ -5,6 +5,9 @@ export const QWEN_DASHSCOPE_CN_TTS_BASE_URL = 'https://dashscope.aliyuncs.com/ap
 export const QWEN_DASHSCOPE_INTL_TTS_BASE_URL = 'https://dashscope-intl.aliyuncs.com/api/v1'
 export const QWEN_TTS_DEFAULT_MODEL = 'qwen3-tts-flash'
 export const QWEN_TTS_DEFAULT_VOICE = 'Jennifer'
+export const GEMINI_VERTEX_TTS_GLOBAL_BASE_URL = 'https://aiplatform.googleapis.com'
+export const GEMINI_VERTEX_TTS_DEFAULT_MODEL = 'gemini-3.1-flash-tts-preview'
+export const GEMINI_VERTEX_TTS_DEFAULT_VOICE = 'Kore'
 
 export const mimoTtsModels = [
   { value: 'mimo-v2.5-tts', label: 'MiMo-V2.5-TTS' },
@@ -33,6 +36,13 @@ export const qwenTtsModels = [
   { value: 'qwen3-tts-vd-2026-01-26', label: 'Qwen3-TTS-VD Custom Voice' },
   { value: 'qwen-tts-latest', label: 'Qwen-TTS Latest' },
   { value: 'qwen-tts', label: 'Qwen-TTS' },
+]
+
+export const geminiVertexTtsModels = [
+  { value: 'gemini-3.1-flash-tts-preview', label: 'Gemini 3.1 Flash TTS Preview' },
+  { value: 'gemini-2.5-flash-tts', label: 'Gemini 2.5 Flash TTS' },
+  { value: 'gemini-2.5-pro-tts', label: 'Gemini 2.5 Pro TTS' },
+  { value: 'gemini-2.5-flash-lite-preview-tts', label: 'Gemini 2.5 Flash Lite TTS Preview' },
 ]
 
 export const qwenTtsVoices = [
@@ -84,6 +94,39 @@ export const qwenTtsVoices = [
   'Eric',
   'Rocky',
   'Kiki',
+]
+
+export const geminiVertexTtsVoices = [
+  'Kore',
+  'Aoede',
+  'Puck',
+  'Charon',
+  'Fenrir',
+  'Leda',
+  'Orus',
+  'Zephyr',
+  'Callirrhoe',
+  'Autonoe',
+  'Enceladus',
+  'Iapetus',
+  'Umbriel',
+  'Algieba',
+  'Despina',
+  'Erinome',
+  'Algenib',
+  'Rasalgethi',
+  'Laomedeia',
+  'Achernar',
+  'Alnilam',
+  'Schedar',
+  'Gacrux',
+  'Pulcherrima',
+  'Achird',
+  'Zubenelgenubi',
+  'Vindemiatrix',
+  'Sadachbia',
+  'Sadaltager',
+  'Sulafat',
 ]
 
 export const ttsPresets: TtsPreset[] = [
@@ -218,6 +261,16 @@ export const ttsPresets: TtsPreset[] = [
     key_hint: 'Gemini API Key',
   },
   {
+    id: 'gemini-31-flash-tts-vertex',
+    label: 'Gemini 3.1 TTS Vertex',
+    provider: 'gemini-vertex',
+    base_url: GEMINI_VERTEX_TTS_GLOBAL_BASE_URL,
+    model: GEMINI_VERTEX_TTS_DEFAULT_MODEL,
+    voice: GEMINI_VERTEX_TTS_DEFAULT_VOICE,
+    note: 'Google Cloud 最新 Gemini-TTS；走 Vertex AI + 本机 gcloud 登录，不需要粘贴 TTS API Key。',
+    key_hint: '本机 gcloud / Vertex AI 项目',
+  },
+  {
     id: 'openai-speech',
     label: 'OpenAI-compatible Speech',
     provider: 'openai-compatible',
@@ -229,7 +282,12 @@ export const ttsPresets: TtsPreset[] = [
   },
 ]
 
-export const featuredTtsPresetIds = new Set(['disabled', 'qwen3-tts-flash-cn', 'mimo-token-plan-sgp-tts', 'gemini-tts'])
+export const featuredTtsPresetIds = new Set([
+  'disabled',
+  'qwen3-tts-flash-cn',
+  'mimo-token-plan-sgp-tts',
+  'gemini-31-flash-tts-vertex',
+])
 
 export const featuredTtsPresets = ttsPresets.filter((preset) => featuredTtsPresetIds.has(preset.id))
 export const advancedTtsPresets = ttsPresets.filter((preset) => !featuredTtsPresetIds.has(preset.id))

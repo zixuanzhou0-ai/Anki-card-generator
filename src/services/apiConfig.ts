@@ -2,6 +2,11 @@ import type { ApiConfig, TtsConfig } from '../domain/types'
 import {
   DEEPSEEK_DEFAULT_MODEL,
   DEEPSEEK_OPENAI_BASE_URL,
+  GEMINI_VERTEX_DEFAULT_MODEL,
+  GEMINI_VERTEX_GLOBAL_BASE_URL,
+  GEMINI_VERTEX_TTS_DEFAULT_MODEL,
+  GEMINI_VERTEX_TTS_DEFAULT_VOICE,
+  GEMINI_VERTEX_TTS_GLOBAL_BASE_URL,
   MIMO_OPENAI_BASE_URL,
   MIMO_TOKEN_PLAN_SGP_BASE_URL,
   QWEN_DASHSCOPE_CN_TTS_BASE_URL,
@@ -83,8 +88,13 @@ export function validateServiceBaseUrl(value: string, label = 'Base URL'): strin
 
 export function validateApiConfigForRequest(api: ApiConfig): string | null {
   if (api.provider === 'local') return null
-  if (!api.api_key.trim()) return '还没有填写 API Key。'
+  if (api.provider !== 'gemini-vertex' && !api.api_key.trim()) return '还没有填写 API Key。'
   if (!api.model.trim()) return '还没有填写模型名。'
+  if (api.provider === 'gemini-vertex') {
+    return api.base_url.trim() ? validateServiceBaseUrl(api.base_url, 'Vertex AI Base URL') : null
+  }
+  if (api.provider === 'gemini') return null
+  if (api.provider === 'claude' && !api.base_url.trim()) return null
   if (isMimoApiConfig(api) && isMimoTokenPlanBase(api.base_url) && !isMimoTokenPlanKey(api.api_key)) {
     return 'MIMO Token Plan Base URL 需要 tp- 开头的 Token Plan Key。当前 Key 更像 DashScope / OpenAI-compatible Key，请切换到 Qwen/DashScope 预设，或改用匹配的 MIMO Key。'
   }
@@ -120,6 +130,15 @@ export function resolveGenerateApiConfig(api: ApiConfig, sourceMode: SourceMode)
 export function normalizeApiConfigForRequest(api: ApiConfig): ApiConfig {
   if (api.provider === 'claude' || api.provider === 'gemini' || api.provider === 'local') return api
 
+  if (api.provider === 'gemini-vertex') {
+    return {
+      ...api,
+      base_url: api.base_url.trim() || GEMINI_VERTEX_GLOBAL_BASE_URL,
+      model: api.model.trim() || GEMINI_VERTEX_DEFAULT_MODEL,
+      capabilities: Array.from(new Set([...(api.capabilities ?? []), 'structured_json', 'long_context'])),
+    }
+  }
+
   if (isDeepSeekApiConfig(api) || (api.provider === 'openai-compatible' && !api.base_url.trim() && !api.model.trim())) {
     return {
       ...api,
@@ -152,9 +171,12 @@ export function normalizeApiConfigForRequest(api: ApiConfig): ApiConfig {
 
 export function validateTtsConfigForRequest(tts: TtsConfig): string | null {
   if (!tts.enabled || tts.provider === 'disabled') return null
-  if (!tts.api_key.trim()) return '还没有填写 TTS API Key。'
+  if (tts.provider !== 'gemini-vertex' && !tts.api_key.trim()) return '还没有填写 TTS API Key。'
   if (tts.provider !== 'grok' && !tts.model.trim()) return '还没有填写 TTS 模型。'
   if (!tts.voice.trim()) return '还没有填写 TTS voice。'
+  if (tts.provider === 'gemini-vertex') {
+    return tts.base_url.trim() ? validateServiceBaseUrl(tts.base_url, 'Vertex TTS Base URL') : null
+  }
   if (tts.provider === 'gemini' && !tts.base_url.trim()) return null
   if (tts.provider === 'mimo' && isMimoTokenPlanBase(tts.base_url) && !isMimoTokenPlanKey(tts.api_key)) {
     return 'MIMO Token Plan TTS Base URL 需要 tp- 开头的 Token Plan Key。当前 Key 更像 DashScope / OpenAI-compatible Key，请切换到 Qwen3 TTS 预设，或改用匹配的 MIMO TTS Key。'
@@ -163,6 +185,17 @@ export function validateTtsConfigForRequest(tts: TtsConfig): string | null {
 }
 
 export function resolveTtsConfig(tts: TtsConfig, api: ApiConfig): TtsConfig {
+  if (tts.provider === 'gemini-vertex') {
+    return {
+      ...tts,
+      api_key: '',
+      base_url: tts.base_url.trim() || GEMINI_VERTEX_TTS_GLOBAL_BASE_URL,
+      model: tts.model.trim() || GEMINI_VERTEX_TTS_DEFAULT_MODEL,
+      voice: tts.voice.trim() || GEMINI_VERTEX_TTS_DEFAULT_VOICE,
+      language: tts.language.trim() || 'en-US',
+    }
+  }
+
   if (tts.provider === 'qwen') {
     const canReuseMainQwen = isQwenApiConfig(api) && api.api_key.trim()
     return {

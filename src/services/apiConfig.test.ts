@@ -112,6 +112,31 @@ describe('validateServiceBaseUrl', () => {
     expect(normalized.model).toBe('deepseek-v4-pro')
   })
 
+  it('allows Gemini Vertex requests to use local gcloud auth without an API key', () => {
+    const normalized = normalizeApiConfigForRequest({
+      provider: 'gemini-vertex',
+      base_url: '',
+      api_key: '',
+      model: '',
+      capabilities: ['structured_json'],
+      tts_config: {
+        enabled: false,
+        provider: 'disabled',
+        base_url: '',
+        api_key: '',
+        model: '',
+        voice: '',
+        language: 'auto',
+        sample_rate: 24000,
+        bit_rate: 128000,
+      },
+    })
+
+    expect(normalized.base_url).toBe('https://aiplatform.googleapis.com')
+    expect(normalized.model).toBe('gemini-3.1-pro-preview')
+    expect(validateApiConfigForRequest(normalized)).toBeNull()
+  })
+
   it('rejects DashScope-shaped keys on MIMO Token Plan endpoints before a network request', () => {
     const apiMessage = validateApiConfigForRequest({
       provider: 'mimo',
@@ -188,6 +213,47 @@ describe('validateServiceBaseUrl', () => {
     expect(resolved.base_url).toBe('https://dashscope.aliyuncs.com/api/v1')
     expect(resolved.model).toBe('qwen3-tts-flash')
     expect(resolved.voice).toBe('Jennifer')
+  })
+
+  it('allows Gemini Vertex TTS to use local gcloud auth without an API key', () => {
+    const resolved = resolveTtsConfig(
+      {
+        enabled: true,
+        provider: 'gemini-vertex',
+        base_url: '',
+        api_key: 'stale-key-should-not-be-used',
+        model: '',
+        voice: '',
+        language: '',
+        sample_rate: 24000,
+        bit_rate: 128000,
+      },
+      {
+        provider: 'gemini-vertex',
+        base_url: 'https://aiplatform.googleapis.com',
+        api_key: '',
+        model: 'gemini-3.1-pro-preview',
+        capabilities: ['structured_json'],
+        tts_config: {
+          enabled: false,
+          provider: 'disabled',
+          base_url: '',
+          api_key: '',
+          model: '',
+          voice: '',
+          language: 'auto',
+          sample_rate: 24000,
+          bit_rate: 128000,
+        },
+      },
+    )
+
+    expect(resolved.api_key).toBe('')
+    expect(resolved.base_url).toBe('https://aiplatform.googleapis.com')
+    expect(resolved.model).toBe('gemini-3.1-flash-tts-preview')
+    expect(resolved.voice).toBe('Kore')
+    expect(resolved.language).toBe('en-US')
+    expect(validateTtsConfigForRequest(resolved)).toBeNull()
   })
 
   it('allows local video generation to fall back when model API is not configured', () => {

@@ -144,4 +144,36 @@ describe('TtsSettingsPanel', () => {
       }),
     )
   })
+
+  it('patches Gemini Vertex TTS provider defaults without an API key', () => {
+    const onPatchTts = vi.fn()
+    renderPanel({ onPatchTts, tts: { ...enabledTts, provider: 'mimo', api_key: 'sk-old', model: '', voice: '' } })
+
+    fireEvent.change(screen.getByLabelText(/语音服务/), { target: { value: 'gemini-vertex' } })
+
+    expect(onPatchTts).toHaveBeenCalledWith(
+      expect.objectContaining({
+        base_url: 'https://aiplatform.googleapis.com',
+        enabled: true,
+        model: 'gemini-3.1-flash-tts-preview',
+        provider: 'gemini-vertex',
+        voice: 'Kore',
+      }),
+    )
+  })
+
+  it('explains that Gemini Vertex TTS uses local gcloud auth', () => {
+    renderPanel({
+      tts: {
+        ...enabledTts,
+        api_key: '',
+        base_url: 'https://aiplatform.googleapis.com',
+        model: 'gemini-3.1-flash-tts-preview',
+        provider: 'gemini-vertex',
+        voice: 'Kore',
+      },
+    })
+
+    expect(screen.getByText(/Vertex TTS 使用本机 gcloud OAuth token/)).toBeInTheDocument()
+  })
 })

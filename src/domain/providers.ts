@@ -8,6 +8,8 @@ export const QWEN_DASHSCOPE_CN_COMPATIBLE_BASE_URL = 'https://dashscope.aliyuncs
 export const QWEN_DASHSCOPE_INTL_COMPATIBLE_BASE_URL = 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1'
 export const DEEPSEEK_OPENAI_BASE_URL = 'https://api.deepseek.com'
 export const DEEPSEEK_DEFAULT_MODEL = 'deepseek-v4-pro'
+export const GEMINI_VERTEX_GLOBAL_BASE_URL = 'https://aiplatform.googleapis.com'
+export const GEMINI_VERTEX_DEFAULT_MODEL = 'gemini-3.1-pro-preview'
 
 export const mimoTextModels = [
   { value: 'mimo-v2.5-pro', label: 'MiMo-V2.5-Pro' },
@@ -28,6 +30,13 @@ export const qwenTextModels = [
 export const deepseekTextModels = [
   { value: DEEPSEEK_DEFAULT_MODEL, label: 'DeepSeek V4 Pro' },
   { value: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
+]
+
+export const geminiVertexTextModels = [
+  { value: GEMINI_VERTEX_DEFAULT_MODEL, label: 'Gemini 3.1 Pro Preview' },
+  { value: 'gemini-3.1-pro', label: 'Gemini 3.1 Pro' },
+  { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+  { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
 ]
 
 export const capabilityLabels = ['structured_json', 'long_context', 'tts', 'asr', 'vision', 'omni', 'cheap_batch']
@@ -102,6 +111,16 @@ export const apiPresets: ApiPreset[] = [
     capabilities: ['structured_json', 'long_context'],
     note: '套餐用户可用；如果控制台给了新加坡/欧洲专属端点，直接改 Base URL。',
     key_hint: 'Token Plan Key，通常是 tp-...',
+  },
+  {
+    id: 'gemini-31-pro-preview-vertex',
+    label: 'Gemini 3.1 Pro Preview Vertex',
+    provider: 'gemini-vertex',
+    base_url: GEMINI_VERTEX_GLOBAL_BASE_URL,
+    model: GEMINI_VERTEX_DEFAULT_MODEL,
+    capabilities: ['structured_json', 'long_context'],
+    note: '使用本机 gcloud 登录的 Vertex AI；当前项目实测 global 端点可调用，thinking 会保留。',
+    key_hint: '不需要 API Key，先运行 gcloud auth login / 设置项目',
   },
   {
     id: 'deepseek-v4-pro',

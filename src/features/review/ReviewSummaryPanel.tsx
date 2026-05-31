@@ -85,17 +85,17 @@ export function ReviewSummaryPanel({
     <>
       <div className="review-dashboard" aria-label="生成审核概览">
         <div className="metric-card primary">
-          <span>有效卡片</span>
+          <span>已选 / 可导出卡片</span>
           <strong>{`${selectedCardCount}/${qualityCounts.total}`}</strong>
           <small>当前勾选后会进入导出</small>
         </div>
         <div className="metric-card">
-          <span>推荐保留</span>
+          <span>推荐卡片</span>
           <strong>{qualityCounts.recommended}</strong>
-          <small>{`${qualityCounts.review} 张待审 · ${qualityCounts.rejected} 张建议删除`}</small>
+          <small>{`${qualityCounts.review} 张待审卡 · ${qualityCounts.rejected} 张建议删除`}</small>
         </div>
         <div className="metric-card">
-          <span>片段预算</span>
+          <span>候选片段</span>
           <strong>{project.segments.length}</strong>
           <small>
             {project.max_segments
@@ -112,7 +112,7 @@ export function ReviewSummaryPanel({
           <small>{`${labels.candidate} ${qualityDiagnostics.candidates} · ${labels.duplicate} ${qualityDiagnostics.duplicate}`}</small>
         </div>
         <div className="metric-card">
-          <span>拒绝原因</span>
+          <span>已拒绝片段</span>
           <strong>{qualityDiagnostics.rejectedSegments}</strong>
           <small>
             {qualityDiagnostics.shortReason ||
@@ -138,7 +138,7 @@ export function ReviewSummaryPanel({
             <Sparkles size={14} />
             {labels.pipeline}
           </span>
-          <strong>{`${labels.candidate} ${qualityFunnel.candidate_segments ?? '-'} · ${labels.recommended} ${
+          <strong>{`${labels.candidate} ${qualityFunnel.candidate_segments ?? '-'} · 可导出${labels.recommended} ${
             qualityFunnel.recommended_cards ?? '-'
           }`}</strong>
         </summary>

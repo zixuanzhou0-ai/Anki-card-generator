@@ -17,11 +17,11 @@ export function qualityClass(card: Card) {
 }
 
 export const segmentFilterOptions: Array<{ id: SegmentFilter; label: string }> = [
-  { id: 'all', label: '全部' },
-  { id: 'recommended', label: '推荐' },
-  { id: 'needs_review', label: '待审' },
-  { id: 'reject', label: '已拒绝' },
-  { id: 'duplicate', label: '重复合并' },
+  { id: 'all', label: '全部片段' },
+  { id: 'recommended', label: '推荐片段' },
+  { id: 'needs_review', label: '待审片段' },
+  { id: 'reject', label: '已拒绝片段' },
+  { id: 'duplicate', label: '重复片段' },
 ]
 
 export function phraseValueScore(value: number | string | null | undefined) {
@@ -138,6 +138,7 @@ export function segmentTrainingFocus(segment: Segment, documentStudyMode?: Docum
 
 export function segmentReviewStatus(segment: Segment): SegmentFilter | 'unreviewed' {
   const status = String(segment.phrase_review_status ?? '').trim()
+  if (segment.cards.length > 0 && segment.cards.every((card) => card.quality?.status === 'reject')) return 'reject'
   if (status === 'recommended' || status === 'needs_review' || status === 'reject' || status === 'duplicate') {
     return status
   }

@@ -47,6 +47,7 @@ import {
   deepseekTextModels,
   featuredApiPresets,
   featuredTtsPresets,
+  geminiVertexTextModels,
   languageFocusOptions,
   levelOrder,
   levels,
@@ -271,7 +272,7 @@ export function useAppController() {
     ? '正在生成一小段测试音频，用来确认 Key、语音和接口可用。'
     : (ttsTestResult?.message ??
       (tts.enabled
-        ? 'MIMO / Grok / Gemini / Speech API 都在这里单独测试，和上面的文本模型测试互不影响。'
+        ? 'MIMO / Grok / Gemini / Vertex TTS / Speech API 都在这里单独测试，和上面的文本模型测试互不影响。'
         : '关闭时不会生成 AI 朗读，只会把视频原声音频放进卡片。'))
   const ttsTestMeta = ttsTestResult
     ? `${ttsTestResult.provider} · ${ttsTestResult.model || '无模型名'} · ${ttsTestResult.voice || '无 voice'}${
@@ -716,17 +717,23 @@ export function useAppController() {
       preset.provider === 'mimo' && isMimoApiConfig(request.api_config) && request.api_config.api_key.trim()
     const shouldReuseMainQwenKey =
       preset.provider === 'qwen' && isQwenApiConfig(request.api_config) && request.api_config.api_key.trim()
+    const usesLocalVertexAuth = preset.provider === 'gemini-vertex'
     patchTts({
       enabled: preset.provider !== 'disabled',
       provider: preset.provider,
       base_url: preset.base_url,
       model: preset.model,
       voice: preset.voice,
-      api_key: shouldReuseMainMimoKey || shouldReuseMainQwenKey ? '' : request.api_config.tts_config.api_key,
+      api_key:
+        shouldReuseMainMimoKey || shouldReuseMainQwenKey || usesLocalVertexAuth
+          ? ''
+          : request.api_config.tts_config.api_key,
     })
     setStatus(
       preset.provider === 'disabled'
         ? '已关闭 TTS，导出时只使用视频原声音频。'
+        : usesLocalVertexAuth
+          ? `已套用 ${preset.label}，会使用本机 gcloud / Vertex AI 授权；建议先测试 TTS。`
         : shouldReuseMainMimoKey || shouldReuseMainQwenKey
           ? `已套用 ${preset.label}，会复用上方同服务商 API Key；建议先测试 TTS。`
           : `已套用 ${preset.label}，请填写对应 API Key 后测试 TTS。`,
@@ -930,6 +937,10 @@ export function useAppController() {
     }
     if (currentTts.provider === 'gemini' && !currentTts.model.trim()) {
       failBeforeRequest('Gemini TTS 需要填写 TTS 模型名。')
+      return
+    }
+    if (currentTts.provider === 'gemini-vertex' && !currentTts.model.trim()) {
+      failBeforeRequest('Gemini Vertex TTS 需要填写 TTS 模型名。')
       return
     }
     if (
@@ -1396,6 +1407,7 @@ export function useAppController() {
     exportApkg,
     featuredApiPresets,
     featuredTtsPresets,
+    geminiVertexTextModels,
     generate,
     handleTopbarDoubleClick,
     handleWorkerErrorAction,

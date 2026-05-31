@@ -1,3 +1,4 @@
+import base64
 import importlib.util
 import io
 import json
@@ -163,6 +164,102 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(calls["timeout"], 180)
         self.assertEqual(response["choices"][0]["message"]["content"], '{"segments":[]}')
         self.assertEqual(response["choices"][0]["message"]["reasoning_content"], "think")
+
+    def test_gemini_vertex_generate_content_uses_gcloud_auth_and_global_endpoint(self):
+        calls = {}
+        original_http_json = worker._legacy_worker.http_json
+        original_gcloud_value = worker._legacy_worker.gcloud_value
+
+        def fake_gcloud_value(args, timeout=30):
+            calls.setdefault("gcloud", []).append(args)
+            if args == ["config", "get-value", "core/project"]:
+                return "project-test"
+            if args == ["auth", "print-access-token"]:
+                return "ya29.test-token"
+            return ""
+
+        def fake_http_json(url, headers, body, timeout=60):
+            calls["url"] = url
+            calls["headers"] = headers
+            calls["body"] = body
+            calls["timeout"] = timeout
+            return {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {"text": '{"segments":[]}'},
+                            ]
+                        },
+                        "finishReason": "STOP",
+                    }
+                ]
+            }
+
+        try:
+            worker._legacy_worker.gcloud_value = fake_gcloud_value
+            worker._legacy_worker.http_json = fake_http_json
+            content = worker.gemini_vertex_generate_content(
+                {
+                    "provider": "gemini-vertex",
+                    "base_url": "https://aiplatform.googleapis.com",
+                    "model": "gemini-3.1-pro-preview",
+                },
+                "Return JSON.",
+                temperature=0,
+                timeout=180,
+                max_output_tokens=16000,
+            )
+        finally:
+            worker._legacy_worker.http_json = original_http_json
+            worker._legacy_worker.gcloud_value = original_gcloud_value
+
+        self.assertEqual(
+            calls["url"],
+            "https://aiplatform.googleapis.com/v1/projects/project-test/locations/global/"
+            "publishers/google/models/gemini-3.1-pro-preview:generateContent",
+        )
+        self.assertEqual(calls["headers"]["Authorization"], "Bearer ya29.test-token")
+        self.assertEqual(calls["body"]["generationConfig"]["responseMimeType"], "application/json")
+        self.assertEqual(calls["body"]["generationConfig"]["maxOutputTokens"], 16000)
+        self.assertEqual(calls["body"]["generationConfig"]["temperature"], 0)
+        self.assertEqual(calls["timeout"], 180)
+        self.assertEqual(content, '{"segments":[]}')
+
+    def test_material_context_accepts_direct_gemini_vertex_context_payload(self):
+        original_generate = worker._legacy_worker.gemini_vertex_generate_content
+
+        def fake_generate(*args, **kwargs):
+            return '{"summary":"AI scene read","scene":"car wash counter","key_points":["register"]}'
+
+        try:
+            worker._legacy_worker.gemini_vertex_generate_content = fake_generate
+            context = worker.call_material_context(
+                {
+                    "study_depth": "deep",
+                    "title": "clip",
+                    "language": "English",
+                    "api_config": {
+                        "provider": "gemini-vertex",
+                        "base_url": "https://aiplatform.googleapis.com",
+                        "model": "gemini-3.1-pro-preview",
+                    },
+                },
+                [
+                    {
+                        "id": "seg_001",
+                        "start": 1.0,
+                        "end": 3.0,
+                        "text": "I'm gonna run the register.",
+                    }
+                ],
+            )
+        finally:
+            worker._legacy_worker.gemini_vertex_generate_content = original_generate
+
+        self.assertEqual(context["source"], "ai")
+        self.assertEqual(context["summary"], "AI scene read")
+        self.assertEqual(context["scene"], "car wash counter")
 
     def test_extract_json_object_ignores_reasoning_blocks(self):
         payload = worker.extract_json_object(
@@ -420,6 +517,83 @@ class WorkerQualityTests(unittest.TestCase):
             self.assertIn("CardVisualRole", field_names)
             self.assertIn("FrontKicker", field_names)
             self.assertIn("SourceLabel", field_names)
+
+    def test_export_phrase_tts_matches_visible_answer_for_repetition_cards(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "out"
+            output_dir.mkdir()
+            project = {
+                "id": "tts-visible-answer",
+                "title": "tts visible answer",
+                "source_mode": "local",
+                "video_path": "",
+                "subtitle_path": "",
+                "language": "English",
+                "level": "B1",
+                "template_id": "immersive_v11",
+                "skip_video_slicing": True,
+                "api_config": {
+                    "provider": "local",
+                    "tts_config": {
+                        "enabled": True,
+                        "provider": "openai-compatible",
+                        "base_url": "https://api.example.com/v1",
+                        "api_key": "sk-test",
+                        "model": "tts-test",
+                        "voice": "alloy",
+                        "language": "en-US",
+                        "sample_rate": 24000,
+                        "bit_rate": 128000,
+                    },
+                },
+                "segments": [
+                    {
+                        "id": "seg_ever",
+                        "start": 1851.82,
+                        "end": 1854.45,
+                        "source_time": "00:30:51.820 - 00:30:54.450",
+                        "text": "Ever want me to read anything, I could critique it for you.",
+                        "cards": [
+                            {
+                                "id": "seg_ever_listening",
+                                "type": "listening",
+                                "type_label": "听力卡",
+                                "enabled": True,
+                                "english": "Ever want me to read anything, I could critique it for you.",
+                                "chinese": "如果你什么时候想让我读点什么，我可以帮你点评。",
+                                "phrase": "critique it",
+                                "answer_core": "Ever want me to",
+                                "definition": "句首省略 If you。",
+                                "teacher_note": "不要误以为是疑问句。",
+                            }
+                        ],
+                    }
+                ],
+            }
+            captured: list[str | None] = []
+            original_synthesize_tts = worker._legacy_worker.synthesize_tts
+
+            def fake_synthesize_tts(project_arg, segment_arg, output_path, text_override=None):
+                captured.append(text_override)
+                Path(output_path).write_bytes(b"ID3")
+                return True
+
+            try:
+                worker._legacy_worker.synthesize_tts = fake_synthesize_tts
+                result = worker.handle_export({"project": project, "output_dir": str(output_dir)})
+            finally:
+                worker._legacy_worker.synthesize_tts = original_synthesize_tts
+
+            self.assertTrue(Path(result["apkg_path"]).exists())
+            self.assertEqual(captured[0], None)
+            self.assertEqual(captured[1], "Ever want me to")
+            self.assertNotIn("critique it", captured)
+            self.assertEqual(result["media_summary"]["phrase_tts_files"], 1)
 
     def test_worker_fail_emits_machine_readable_error(self):
         from acg.protocol import ERROR_PREFIX, fail
@@ -819,6 +993,74 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(calls["body"]["input"]["language_type"], "English")
         self.assertEqual(calls["download_url"], "https://example.com/audio.wav")
 
+    def test_gemini_vertex_tts_audio_uses_gcloud_auth_and_vertex_endpoint(self):
+        calls = {}
+        original_http_json = worker._legacy_worker.http_json
+        original_gcloud_value = worker._legacy_worker.gcloud_value
+
+        def fake_gcloud_value(args, timeout=30):
+            calls.setdefault("gcloud", []).append(args)
+            if args == ["config", "get-value", "core/project"]:
+                return "project-test"
+            if args == ["auth", "print-access-token"]:
+                return "ya29.test-token"
+            return ""
+
+        def fake_http_json(url, headers, body, timeout=60):
+            calls["url"] = url
+            calls["headers"] = headers
+            calls["body"] = body
+            calls["timeout"] = timeout
+            return {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "inlineData": {
+                                        "data": base64.b64encode(b"\x00\x00\x01\x00").decode("ascii")
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+
+        try:
+            worker._legacy_worker.gcloud_value = fake_gcloud_value
+            worker._legacy_worker.http_json = fake_http_json
+            audio = worker.call_tts_audio(
+                {
+                    "provider": "gemini-vertex",
+                    "base_url": "https://aiplatform.googleapis.com",
+                    "api_key": "",
+                    "model": "gemini-3.1-flash-tts-preview",
+                    "voice": "Kore",
+                    "language": "en-US",
+                    "sample_rate": 24000,
+                    "bit_rate": 128000,
+                },
+                "This is a local video card.",
+                "English",
+            )
+        finally:
+            worker._legacy_worker.http_json = original_http_json
+            worker._legacy_worker.gcloud_value = original_gcloud_value
+
+        self.assertTrue(audio.startswith(b"RIFF"))
+        self.assertIn(b"WAVE", audio)
+        self.assertEqual(
+            calls["url"],
+            "https://aiplatform.googleapis.com/v1beta1/projects/project-test/locations/global/publishers/google/models/gemini-3.1-flash-tts-preview:generateContent",
+        )
+        self.assertEqual(calls["headers"]["Authorization"], "Bearer ya29.test-token")
+        self.assertEqual(calls["headers"]["x-goog-user-project"], "project-test")
+        speech_config = calls["body"]["generation_config"]["speech_config"]
+        self.assertEqual(speech_config["language_code"], "en-US")
+        self.assertEqual(speech_config["voice_config"]["prebuilt_voice_config"]["voice_name"], "Kore")
+        self.assertEqual(calls["body"]["contents"]["parts"]["text"], "This is a local video card.")
+
     def test_phrase_match_requires_all_phrase_words_in_compact_order(self):
         self.assertTrue(worker.phrase_in_text("I need to make sure we are ready.", "make sure"))
         self.assertFalse(worker.phrase_in_text("I need to make sure we are ready.", "make ready"))
@@ -1043,6 +1285,43 @@ class WorkerQualityTests(unittest.TestCase):
         )
 
         self.assertEqual(segments, [])
+
+    def test_segment_builder_recalls_typed_learning_points(self):
+        cues = [
+            worker.Cue(1, 0.0, 2.5, "I'm gonna run the register."),
+            worker.Cue(2, 3.0, 5.5, "I mean you're flat as a washboard."),
+            worker.Cue(3, 6.0, 8.5, "I seen one of those bounce off a windshield one time."),
+            worker.Cue(4, 9.0, 11.5, "Ever want me to read anything, I could critique it for you."),
+        ]
+
+        segments = worker.build_segments(
+            cues,
+            {
+                "level": "C1",
+                "max_segments": 30,
+                "_candidate_limit": 60,
+                "language_focus": ["phrases", "vocabulary", "grammar", "listening"],
+                "content_toggles": {
+                    "daily": True,
+                    "slang": True,
+                    "sarcasm": True,
+                    "business": True,
+                    "culture": True,
+                    "profanity": False,
+                    "romance": False,
+                    "rare": False,
+                },
+            },
+        )
+
+        found = {(segment["candidate_kind"], segment["phrase"]) for segment in segments}
+        self.assertIn(("expression", "run the register"), found)
+        self.assertIn(("contextual_vocab", "register"), found)
+        self.assertIn(("pragmatic_risk", "flat as a washboard"), found)
+        self.assertIn(("grammar_pattern", "I seen"), found)
+        self.assertIn(("expression", "bounce off a windshield"), found)
+        self.assertIn(("grammar_pattern", "Ever want me to"), found)
+        self.assertIn(("contextual_vocab", "critique"), found)
 
     def test_segment_builder_keeps_rolling_vlog_candidates_for_review(self):
         cues = [
@@ -1485,6 +1764,19 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(worker.v11_meaning_text(card), "从挡风玻璃上弹开")
         self.assertEqual(worker.v11_source_translation_text(card), "我见过那玩意儿从挡风玻璃上弹开。")
 
+    def test_phrase_tts_uses_visible_answer_not_internal_phrase_field(self):
+        card = {
+            "type": "listening",
+            "english": "Ever want me to read anything, I could critique it for you.",
+            "phrase": "critique it",
+            "answer_core": "Ever want me to",
+            "chinese": "如果你什么时候想让我读点什么，我可以帮你点评。",
+        }
+        front_fields = worker.card_front_fields(card, repetition_mode=True)
+
+        self.assertEqual(front_fields["answer"], "Ever want me to")
+        self.assertEqual(worker.card_phrase_tts_text(card, front_fields), "Ever want me to")
+
     def test_merge_ai_cards_preserves_boundary_fields_for_back_template(self):
         segments = [
             {
@@ -1532,7 +1824,7 @@ class WorkerQualityTests(unittest.TestCase):
         merged, _ = worker.merge_ai_cards(segments, ai_payload, ["phrase"], "C1")
         card = merged[0]["cards"][0]
 
-        self.assertEqual(card["answer_core"], "flat as a washboard = 平得像搓衣板")
+        self.assertEqual(card["answer_core"], "flat as a washboard")
         self.assertIn("调侃外貌或身材，可能冒犯", card["teacher_note"])
         self.assertIn("不要当成中性夸奖", card["teacher_note"])
         self.assertIn("平得像搓衣板", worker.card_front_fields(card)["front_prompt"])
@@ -1562,6 +1854,7 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("usage_boundary", prompt)
         self.assertIn("confusable_note", prompt)
         self.assertIn("这句里表示某个中文意思的自然表达是什么", prompt)
+        self.assertIn("typed learning point", prompt)
         self.assertIn("某个词在这句里是什么意思/怎么用", prompt)
 
     def test_v10_template_is_review_first_and_mobile_flowing(self):
@@ -2081,6 +2374,31 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("中文意思不是中文", quality["issues"])
         self.assertIn("老师提示和学习理由重复", quality["issues"])
         self.assertIn("释义太泛", quality["issues"])
+
+    def test_contextual_vocab_allows_one_word_answer_but_rejects_explanatory_answer_core(self):
+        good_card = {
+            "type": "phrase",
+            "english": "I'm gonna run the register.",
+            "phrase": "register",
+            "answer_core": "register",
+            "phrase_type": "vocabulary_usage",
+            "content_kind": "vocabulary",
+            "candidate_kind": "contextual_vocab",
+            "chinese": "收银机 / 收银台",
+            "definition": "register 在这句里指店里的收银机，不是注册。",
+            "collocations": "run the register / work the register",
+            "context": "服务业工作分工时使用。",
+            "example": "Can you watch the register for a minute?",
+            "teacher_note": "看到 run the register 时，先理解成负责看收银台。",
+            "learning_goal": "训练 register 的服务业语境义。",
+        }
+        bad_card = {**good_card, "answer_core": "register = 收银机"}
+
+        good_quality = worker.assess_card_quality(good_card, {"text": good_card["english"]}, "ai", "C1")
+        bad_quality = worker.assess_card_quality(bad_card, {"text": bad_card["english"]}, "ai", "C1")
+
+        self.assertNotIn("目标表达过短", good_quality["issues"])
+        self.assertIn("核心答案包含解释而不是英文答案", bad_quality["issues"])
 
     def test_quality_downgrades_generic_teacher_note_and_definition(self):
         card = {

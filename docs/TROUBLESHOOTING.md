@@ -30,7 +30,7 @@ If the UI stays on one stage for a long time:
 4. Retry with video slicing disabled or subtitle-only mode.
 5. Use a shorter local SRT to confirm the model/API path works.
 
-Reasoning models such as DeepSeek V4, Qwen / DashScope, or MiMo may spend longer in material understanding or candidate review. The app streams their `reasoning_content` / thinking deltas for progress updates, then strips thinking before JSON parsing, so a longer wait is not automatically an error. If progress stays at the same percent but the message says “正在思考” and the thinking character count is increasing, the model is still working.
+Reasoning models such as DeepSeek V4, Qwen / DashScope, MiMo, or Gemini Vertex may spend longer in material understanding or candidate review. The app keeps the reasoning path alive and strips thinking before JSON parsing, so a longer wait is not automatically an error. If progress stays at the same percent but the message says “thinking 已保留”, the model is still working.
 
 ## API Test Fails
 
@@ -46,6 +46,21 @@ DeepSeek V4 presets use:
 - Base URL: `https://api.deepseek.com`
 - Pro model: `deepseek-v4-pro`
 - Flash model: `deepseek-v4-flash`
+
+Gemini Vertex uses local `gcloud` auth instead of an API key:
+
+- Install Google Cloud SDK and sign in with `gcloud auth login`.
+- Set the project with `gcloud config set project <project-id>`.
+- Use provider `Gemini Vertex`, Base URL `https://aiplatform.googleapis.com`, and model `gemini-3.1-pro-preview`.
+- If `gemini-3.1-pro` returns 404, use the preview model that is enabled in the current Vertex project.
+
+Gemini Vertex TTS uses the same local `gcloud` auth path:
+
+- In TTS settings, choose `Gemini 3.1 TTS Vertex`.
+- Use Base URL `https://aiplatform.googleapis.com`, model `gemini-3.1-flash-tts-preview`, and a voice such as `Kore`, `Aoede`, `Puck`, or `Charon`.
+- Leave the TTS API Key empty. The app calls Vertex AI with a short-lived `gcloud auth print-access-token` token.
+- If you need a regional endpoint, use an `aiplatform.googleapis.com` regional base such as `https://us-central1-aiplatform.googleapis.com`.
+- The Vertex response is raw 24 kHz PCM, so FFmpeg must be available to convert it into the MP3 files Anki imports.
 
 The app should never require a real key in source files, docs, logs, or release artifacts.
 
@@ -73,6 +88,7 @@ For English cards:
 - Prefer original video audio when the source clip already has clear speech.
 - MiMo V2.5 TTS is currently the safer default for natural English learning audio.
 - Qwen3 TTS users should try `Jennifer` for American English female voice or `Aiden` for American English male voice before using `Cherry`.
+- Gemini Vertex TTS users should start with `Kore`, `Aoede`, `Puck`, or `Charon`, then compare with the original video audio before making it the default for a deck.
 - Use `qwen3-tts-instruct-flash` only when you need explicit style, emotion, or pacing instructions.
 
 ## FFmpeg Missing or Media Slicing Fails

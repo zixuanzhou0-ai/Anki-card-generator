@@ -1,7 +1,15 @@
 import { CircleAlert, PlugZap } from 'lucide-react'
 
 import type { SecretPrefs, TtsConfig, TtsPreset, TtsProvider } from '../../domain/types'
-import { QWEN_TTS_DEFAULT_MODEL, QWEN_TTS_DEFAULT_VOICE } from '../../domain/ttsProviders'
+import {
+  GEMINI_VERTEX_TTS_DEFAULT_MODEL,
+  GEMINI_VERTEX_TTS_DEFAULT_VOICE,
+  GEMINI_VERTEX_TTS_GLOBAL_BASE_URL,
+  geminiVertexTtsModels,
+  geminiVertexTtsVoices,
+  QWEN_TTS_DEFAULT_MODEL,
+  QWEN_TTS_DEFAULT_VOICE,
+} from '../../domain/ttsProviders'
 import { ConnectionTestCard } from './ConnectionTestCard'
 
 type ModelOption = {
@@ -92,6 +100,10 @@ export function TtsSettingsPanel({
               : 'https://dashscope.aliyuncs.com/api/v1'
             : provider === 'grok'
               ? 'https://api.x.ai/v1'
+              : provider === 'gemini-vertex'
+                ? tts.base_url.includes('aiplatform.googleapis.com')
+                  ? tts.base_url
+                  : GEMINI_VERTEX_TTS_GLOBAL_BASE_URL
               : provider === 'openai-compatible'
                 ? tts.base_url || 'https://api.openai.com/v1'
                 : tts.base_url,
@@ -100,7 +112,9 @@ export function TtsSettingsPanel({
           ? 'mimo-v2.5-tts'
           : provider === 'qwen' && !tts.model
             ? QWEN_TTS_DEFAULT_MODEL
-            : tts.model,
+            : provider === 'gemini-vertex'
+              ? tts.model || GEMINI_VERTEX_TTS_DEFAULT_MODEL
+              : tts.model,
       voice:
         provider === 'mimo'
           ? tts.voice || 'Mia'
@@ -108,6 +122,8 @@ export function TtsSettingsPanel({
             ? tts.voice || QWEN_TTS_DEFAULT_VOICE
             : provider === 'grok'
               ? tts.voice || 'eve'
+              : provider === 'gemini-vertex'
+                ? tts.voice || GEMINI_VERTEX_TTS_DEFAULT_VOICE
               : tts.voice,
     })
   }
@@ -203,6 +219,7 @@ export function TtsSettingsPanel({
               <option value="qwen">Qwen / 千问 TTS</option>
               <option value="grok">Grok / xAI TTS</option>
               <option value="gemini">Gemini TTS</option>
+              <option value="gemini-vertex">Gemini Vertex TTS</option>
               <option value="openai-compatible">OpenAI-compatible Speech</option>
             </select>
             <small>这里选择语音服务商，不影响上面的文本模型 Provider。</small>
@@ -217,6 +234,8 @@ export function TtsSettingsPanel({
                   ? mimoOpenAiBaseUrl
                   : tts.provider === 'qwen'
                     ? 'https://dashscope.aliyuncs.com/api/v1'
+                    : tts.provider === 'gemini-vertex'
+                      ? GEMINI_VERTEX_TTS_GLOBAL_BASE_URL
                     : 'https://api.x.ai/v1'
               }
             />
@@ -225,7 +244,9 @@ export function TtsSettingsPanel({
                 ? `MIMO 默认 ${mimoOpenAiBaseUrl}；你的 tp-... 套餐 Key 优先用 ${mimoTokenPlanSgpBaseUrl}。`
                 : tts.provider === 'qwen'
                   ? '千问 TTS 默认北京地域 https://dashscope.aliyuncs.com/api/v1；新加坡改成 intl 端点。'
-                  : 'Grok 默认 https://api.x.ai/v1；Gemini 可留空。'}
+                  : tts.provider === 'gemini-vertex'
+                    ? 'Vertex Gemini-TTS 默认 global 端点；如需指定区域可填 https://us-central1-aiplatform.googleapis.com。'
+                    : 'Grok 默认 https://api.x.ai/v1；Gemini API Key 版可留空。'}
             </small>
           </label>
           <label className="field">
@@ -235,10 +256,20 @@ export function TtsSettingsPanel({
               value={tts.api_key}
               onChange={(event) => onPatchTts({ api_key: event.target.value })}
               placeholder={
-                tts.provider === 'mimo' ? 'sk-... / tp-...' : tts.provider === 'qwen' ? 'sk-...' : 'xai-... / AIza...'
+                tts.provider === 'mimo'
+                  ? 'sk-... / tp-...'
+                  : tts.provider === 'qwen'
+                    ? 'sk-...'
+                    : tts.provider === 'gemini-vertex'
+                      ? '本机 gcloud 登录，无需填写'
+                      : 'xai-... / AIza...'
               }
             />
-            <small>MIMO / 千问 TTS 可留空并复用上方同服务商 Key；记住后保存到本机系统凭据 / DPAPI。</small>
+            <small>
+              {tts.provider === 'gemini-vertex'
+                ? 'Vertex TTS 使用本机 gcloud OAuth token，不会把 Google token 保存到应用配置里。'
+                : 'MIMO / 千问 TTS 可留空并复用上方同服务商 Key；记住后保存到本机系统凭据 / DPAPI。'}
+            </small>
           </label>
           <label className="toggle secret-toggle">
             <input type="checkbox" checked={secretPrefs.rememberTtsKey} onChange={onToggleRememberTtsKey} />
@@ -256,11 +287,19 @@ export function TtsSettingsPanel({
                     ? 'qwen3-tts-flash'
                     : tts.provider === 'grok'
                       ? '留空即可，Grok TTS 不需要模型名'
-                      : tts.provider === 'gemini'
-                        ? 'gemini-2.5-flash-preview-tts'
-                        : 'gpt-4o-mini-tts'
+                    : tts.provider === 'gemini'
+                      ? 'gemini-2.5-flash-preview-tts'
+                      : tts.provider === 'gemini-vertex'
+                        ? GEMINI_VERTEX_TTS_DEFAULT_MODEL
+                      : 'gpt-4o-mini-tts'
               }
-              list={tts.provider === 'qwen' ? 'qwen-tts-models' : 'mimo-tts-models'}
+              list={
+                tts.provider === 'qwen'
+                  ? 'qwen-tts-models'
+                  : tts.provider === 'gemini-vertex'
+                    ? 'gemini-vertex-tts-models'
+                    : 'mimo-tts-models'
+              }
             />
             <datalist id="mimo-tts-models">
               {mimoTtsModels.map((model) => (
@@ -276,12 +315,21 @@ export function TtsSettingsPanel({
                 </option>
               ))}
             </datalist>
+            <datalist id="gemini-vertex-tts-models">
+              {geminiVertexTtsModels.map((model) => (
+                <option key={model.value} value={model.value}>
+                  {model.label}
+                </option>
+              ))}
+            </datalist>
             <small>
               {tts.provider === 'mimo'
                 ? '官方要求模型 ID 小写：mimo-v2.5-tts、voicedesign、voiceclone、mimo-v2-tts。'
                 : tts.provider === 'qwen'
                   ? '英语卡推荐 qwen3-tts-flash + Jennifer/Aiden；需要语气控制时用 qwen3-tts-instruct-flash。'
-                  : 'Grok TTS 当前不需要模型名，可留空；Gemini / Speech API 需要模型名。'}
+                  : tts.provider === 'gemini-vertex'
+                    ? 'Google Cloud 最新预览模型默认 gemini-3.1-flash-tts-preview；也可试 2.5 Pro/Flash 系列。'
+                    : 'Grok TTS 当前不需要模型名，可留空；Gemini / Speech API 需要模型名。'}
             </small>
           </label>
           <label className="field">
@@ -296,10 +344,18 @@ export function TtsSettingsPanel({
                     ? 'Jennifer / Aiden / Serena / Cherry'
                     : tts.provider === 'grok'
                       ? 'eve / ara / leo / rex / sal'
-                      : 'Kore / alloy'
+                      : tts.provider === 'gemini-vertex'
+                        ? 'Kore / Aoede / Puck / Charon'
+                        : 'Kore / alloy'
               }
               list={
-                tts.provider === 'mimo' ? 'mimo-tts-voices' : tts.provider === 'qwen' ? 'qwen-tts-voices' : undefined
+                tts.provider === 'mimo'
+                  ? 'mimo-tts-voices'
+                  : tts.provider === 'qwen'
+                    ? 'qwen-tts-voices'
+                    : tts.provider === 'gemini-vertex'
+                      ? 'gemini-vertex-tts-voices'
+                      : undefined
               }
             />
             <datalist id="mimo-tts-voices">
@@ -312,8 +368,15 @@ export function TtsSettingsPanel({
                 <option key={voice} value={voice} />
               ))}
             </datalist>
+            <datalist id="gemini-vertex-tts-voices">
+              {geminiVertexTtsVoices.map((voice) => (
+                <option key={voice} value={voice} />
+              ))}
+            </datalist>
             <small>
-              MIMO V2.5 内置声音可填 Mia、Chloe、Milo、Dean；千问英语卡优先试 Jennifer 或 Aiden。
+              {tts.provider === 'gemini-vertex'
+                ? 'Gemini Vertex TTS 可先试 Kore、Aoede、Puck、Charon；英语卡建议 Language 填 en-US。'
+                : 'MIMO V2.5 内置声音可填 Mia、Chloe、Milo、Dean；千问英语卡优先试 Jennifer 或 Aiden。'}
             </small>
           </label>
           {showAdvancedTts ? (

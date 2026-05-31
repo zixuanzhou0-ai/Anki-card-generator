@@ -1,7 +1,12 @@
-import { Boxes, CircleAlert, KeyRound, PlugZap } from 'lucide-react'
+import { Boxes, CircleAlert, Cloud, KeyRound, PlugZap } from 'lucide-react'
 
 import type { ApiConfig, ApiPreset, Provider, SecretPrefs } from '../../domain/types'
-import { DEEPSEEK_DEFAULT_MODEL, DEEPSEEK_OPENAI_BASE_URL } from '../../domain/options'
+import {
+  DEEPSEEK_DEFAULT_MODEL,
+  DEEPSEEK_OPENAI_BASE_URL,
+  GEMINI_VERTEX_DEFAULT_MODEL,
+  GEMINI_VERTEX_GLOBAL_BASE_URL,
+} from '../../domain/options'
 import { ConnectionTestCard } from './ConnectionTestCard'
 
 type ModelOption = {
@@ -64,6 +69,7 @@ export function ApiSettingsPanel({
     apiConfig.provider === preset.provider && apiConfig.base_url === preset.base_url && apiConfig.model === preset.model
 
   const handleProviderChange = (provider: Provider) => {
+    const useVertexDefaults = provider === 'gemini-vertex'
     const useDeepSeekDefaults =
       provider === 'openai-compatible' &&
       (apiConfig.provider === 'local' ||
@@ -75,19 +81,32 @@ export function ApiSettingsPanel({
       base_url:
         provider === 'mimo'
           ? apiConfig.base_url || mimoOpenAiBaseUrl
+          : useVertexDefaults
+            ? GEMINI_VERTEX_GLOBAL_BASE_URL
           : useDeepSeekDefaults
             ? DEEPSEEK_OPENAI_BASE_URL
             : apiConfig.base_url,
       model:
         provider === 'mimo' && !apiConfig.model
           ? 'mimo-v2.5-pro'
+          : useVertexDefaults
+            ? GEMINI_VERTEX_DEFAULT_MODEL
           : useDeepSeekDefaults
             ? DEEPSEEK_DEFAULT_MODEL
             : apiConfig.model,
       capabilities:
-        provider === 'mimo' || useDeepSeekDefaults
+        provider === 'mimo' || useDeepSeekDefaults || useVertexDefaults
           ? Array.from(new Set([...apiConfig.capabilities, 'structured_json', 'long_context']))
           : apiConfig.capabilities,
+    })
+  }
+
+  const useGeminiVertex = () => {
+    onPatchApi({
+      provider: 'gemini-vertex',
+      base_url: GEMINI_VERTEX_GLOBAL_BASE_URL,
+      model: GEMINI_VERTEX_DEFAULT_MODEL,
+      capabilities: Array.from(new Set([...apiConfig.capabilities, 'structured_json', 'long_context'])),
     })
   }
 
@@ -175,32 +194,59 @@ export function ApiSettingsPanel({
             <option value="openai-compatible">OpenAI-compatible</option>
             <option value="claude">Claude 原生</option>
             <option value="gemini">Gemini 原生</option>
+            <option value="gemini-vertex">Gemini Vertex</option>
           </select>
-          <small>MIMO 已有独立选项；其他兼容 OpenAI API 的服务商选 OpenAI-compatible。</small>
+          <small>MIMO 已有独立选项；Vertex 使用本机 gcloud 登录，其他兼容 OpenAI API 的服务商选 OpenAI-compatible。</small>
         </label>
         <label className="field">
           <span>Base URL</span>
           <input
             value={apiConfig.base_url}
             onChange={(event) => onPatchApi({ base_url: event.target.value })}
-            placeholder={apiConfig.provider === 'mimo' ? mimoOpenAiBaseUrl : 'https://api.deepseek.com'}
+            placeholder={
+              apiConfig.provider === 'mimo'
+                ? mimoOpenAiBaseUrl
+                : apiConfig.provider === 'gemini-vertex'
+                  ? GEMINI_VERTEX_GLOBAL_BASE_URL
+                  : 'https://api.deepseek.com'
+            }
           />
           <small>
             {apiConfig.provider === 'mimo'
               ? `默认 ${mimoOpenAiBaseUrl}；Token Plan 可改成控制台专属端点。`
+              : apiConfig.provider === 'gemini-vertex'
+                ? 'Vertex global 端点用 https://aiplatform.googleapis.com；区域端点可填 https://us-central1-aiplatform.googleapis.com。'
               : apiConfig.provider === 'claude' && apiConfig.base_url
                 ? '当前使用 Anthropic-compatible 自定义端点；通常会自动请求 /v1/messages。'
                 : 'OpenAI-compatible 必填；Claude / Gemini 原生模式不用填。'}
           </small>
         </label>
-        <label className="field">
+        <div className="field model-field">
           <span>Model</span>
-          <input
-            value={apiConfig.model}
-            onChange={(event) => onPatchApi({ model: event.target.value })}
-            list="mimo-text-models"
-            placeholder={apiConfig.provider === 'mimo' ? 'mimo-v2.5-pro' : 'deepseek-v4-pro'}
-          />
+          <div className="model-input-row">
+            <input
+              aria-label="Model"
+              value={apiConfig.model}
+              onChange={(event) => onPatchApi({ model: event.target.value })}
+              list="mimo-text-models"
+              placeholder={
+                apiConfig.provider === 'mimo'
+                  ? 'mimo-v2.5-pro'
+                  : apiConfig.provider === 'gemini-vertex'
+                    ? GEMINI_VERTEX_DEFAULT_MODEL
+                    : 'deepseek-v4-pro'
+              }
+            />
+            <button
+              type="button"
+              className={`model-provider-chip ${apiConfig.provider === 'gemini-vertex' ? 'selected' : ''}`}
+              title="使用本机 gcloud 登录调用 Vertex AI"
+              onClick={useGeminiVertex}
+            >
+              <Cloud size={15} />
+              Vertex AI
+            </button>
+          </div>
           <datalist id="mimo-text-models">
             {mimoTextModels.map((model) => (
               <option key={model.value} value={model.value}>
@@ -211,18 +257,24 @@ export function ApiSettingsPanel({
           <small>
             {apiConfig.provider === 'mimo'
               ? '官方要求模型 ID 小写：mimo-v2.5-pro、mimo-v2.5、mimo-v2-pro、mimo-v2-omni。'
+              : apiConfig.provider === 'gemini-vertex'
+                ? '填 Vertex publisher model ID；当前 global 端点已实测 gemini-3.1-pro-preview 可用。'
               : '填模型 ID，不是产品名。比如 deepseek-v4-pro、deepseek-v4-flash、qwen3.7-max。'}
           </small>
-        </label>
+        </div>
         <label className="field">
           <span>API Key</span>
           <input
             type="password"
             value={apiConfig.api_key}
             onChange={(event) => onPatchApi({ api_key: event.target.value })}
-            placeholder={apiConfig.provider === 'mimo' ? 'sk-... / tp-...' : 'sk-...'}
+            placeholder={apiConfig.provider === 'gemini-vertex' ? '使用本机 gcloud，不需要填写' : apiConfig.provider === 'mimo' ? 'sk-... / tp-...' : 'sk-...'}
           />
-          <small>只用于字幕理解和卡片解释生成；记住后保存到本机系统凭据 / DPAPI，不写入明文缓存。</small>
+          <small>
+            {apiConfig.provider === 'gemini-vertex'
+              ? 'Vertex 模式通过 gcloud auth print-access-token 静默授权，不保存 OAuth token。'
+              : '只用于字幕理解和卡片解释生成；记住后保存到本机系统凭据 / DPAPI，不写入明文缓存。'}
+          </small>
         </label>
         <label className="toggle secret-toggle">
           <input type="checkbox" checked={secretPrefs.rememberModelKey} onChange={onToggleRememberModelKey} />
