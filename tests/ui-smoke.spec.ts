@@ -70,8 +70,9 @@ test('desktop workflow shell supports simplified settings, URL mode, document mo
   await expect(page.getByText('拒绝原因')).toBeVisible()
 
   await page.locator('.preference-details summary').click()
-  await expect(page.getByRole('button', { name: /词典解释/ })).toBeDisabled()
-  await expect(page.getByRole('button', { name: /极简复习/ })).toBeDisabled()
+  await expect(page.getByRole('button', { name: /沉浸复读 V11/ })).toBeVisible()
+  await expect(page.getByRole('button', { name: /词典解释/ })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: /极简复习/ })).toHaveCount(0)
   await expect(page.locator('.preview-panel.template-immersive_v11')).toBeVisible()
 
   await page.getByRole('button', { name: '本段停用' }).click()
