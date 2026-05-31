@@ -1372,11 +1372,34 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertTrue(worker.contains_internal_placeholder(card["definition"]))
         self.assertEqual(worker.clean_study_text(card["collocations"]), "")
         self.assertIn("run the register", worker.v11_definition_text(card))
-        self.assertIn("换一个相似场景", worker.v11_migration_text(card))
-        self.assertIn("不要只背中文翻译", worker.v11_teacher_note_text(card))
+        self.assertIn("换法：换一个相似场景", worker.v11_migration_text(card))
+        self.assertIn("提醒：不要只背中文翻译", worker.v11_teacher_note_text(card))
 
         sensitive = {"phrase": "flat as a washboard", "english": "I mean you're flat as a washboard."}
-        self.assertIn("可能冒犯", worker.v11_teacher_note_text(sensitive))
+        self.assertIn("边界：这是调侃外貌或身材的说法，可能冒犯", worker.v11_teacher_note_text(sensitive))
+
+    def test_v11_back_fields_are_labeled_and_deduped(self):
+        card = {
+            "type": "phrase",
+            "phrase": "run the register",
+            "english": "I'm gonna run the register.",
+            "definition": "表示负责收银或操作收银机。",
+            "chinese_feel": "表示负责收银或操作收银机。",
+            "how_to_use_it": "在工作分工时说 I'll run the register.",
+            "replacement_examples": "run the front desk / run the bar",
+            "example": "Can you run the register for ten minutes?",
+            "usage_boundary": "只用于工作职责，不是“买单”。",
+            "confusable_note": "register 这里不是“登记”。",
+            "why_it_matters": "能把 cashier 变成更自然的动作表达。",
+        }
+
+        self.assertEqual(worker.v11_definition_text(card), "表示负责收银或操作收银机")
+        self.assertIn("换法：在工作分工时说", worker.v11_migration_text(card))
+        self.assertIn("替换：run the front desk", worker.v11_migration_text(card))
+        self.assertIn("例句：Can you run the register", worker.v11_migration_text(card))
+        self.assertIn("边界：只用于工作职责", worker.v11_teacher_note_text(card))
+        self.assertIn("易错：register 这里不是", worker.v11_teacher_note_text(card))
+        self.assertIn("价值：能把 cashier", worker.v11_teacher_note_text(card))
 
     def test_merge_ai_cards_preserves_boundary_fields_for_back_template(self):
         segments = [
@@ -1505,7 +1528,9 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("toggleV11Video", v11[2] + v11[3])
         self.assertIn("点画面开始复读", v11[2] + v11[3])
         self.assertIn("复读循环中", v11[2] + v11[3])
-        self.assertIn("慢读", v11[2])
+        self.assertIn("只听原声", v11[2] + v11[3])
+        self.assertIn("慢读跟读", v11[2] + v11[3])
+        self.assertIn("white-space: pre-line", v11[1])
         self.assertNotIn("<audio controls", v11[2] + v11[3])
         self.assertEqual(language[0], "视频语言 V10")
         self.assertEqual(knowledge[0], "文档知识 V10")

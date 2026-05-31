@@ -1729,10 +1729,12 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
         "7) teacher_note 要按卡型聚焦：listening 说听力注意点；phrase 说怎么迁移使用；cloze 说挖空答案为什么是它。"
         "8) 每张卡还必须给学习动作字段：learning_target=这张卡训练什么；why_it_matters=为什么值得学；"
         "how_to_use_it=下次怎么换场景使用；natural_chinese=自然中文理解；replacement_examples=1-2 个可替换例子；"
-        "avoid_reason=不值得制卡时的原因。"
+        "avoid_reason=不值得制卡时的原因。how_to_use_it 和 replacement_examples 必须是可以直接放进卡片背面的自然内容，"
+        "不要写 natural object、complete sentence、use X in a sentence 这种占位说明。"
         "9) 每张卡必须给复习字段：retrieval_prompt=正面明确回忆题，不能写“判断最值得学”；"
         "answer_core=翻面第一眼核对的核心答案；usage_boundary=什么时候能用/不能用，尤其是调侃、冒犯、正式度；"
-        "confusable_note=中文学习者最容易误解或误用的点。"
+        "confusable_note=中文学习者最容易误解或误用的点。usage_boundary 和 confusable_note 要具体到这句的语气、对象、场景，"
+        "不要写“注意语境”“很常见”这类空话。"
         "表达卡 retrieval_prompt 要问“这句里表示某个中文意思的自然表达是什么？”；"
         "语境生词卡要问“某个词在这句里是什么意思/怎么用？”，禁止做脱离原句的词典卡。"
         "好卡样例：english=Honestly, it's such a nice Monday morning. phrase=such a nice；"
@@ -7698,6 +7700,7 @@ body,
   pointer-events: none;
 }
 .v11-video-stage:hover .v11-video-toggle,
+.v11-video-stage.is-sound-on .v11-video-toggle,
 .v11-video-stage.is-paused .v11-video-toggle {
   opacity: 1;
 }
@@ -7879,6 +7882,7 @@ body,
   font-size: clamp(16px, 3vw, 20px);
   line-height: 1.55;
   overflow-wrap: anywhere;
+  white-space: pre-line;
 }
 .v11-info-block p + p {
   margin-top: 8px;
@@ -8069,8 +8073,8 @@ LANGUAGE_FRONT_TEMPLATE_V11 = """
   </section>
   {{/Video}}
   <section class="v11-sound-actions">
-    {{#Audio}}<span class="v11-media-source audio-original">{{Audio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-original')"><span class="v11-play">▶</span><span>原声</span></button>{{/Audio}}
-    {{#TtsAudio}}<span class="v11-media-source audio-slow">{{TtsAudio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-slow')"><span class="v11-play">▶</span><span>慢读</span></button>{{/TtsAudio}}
+    {{#Audio}}<span class="v11-media-source audio-original">{{Audio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-original')"><span class="v11-play">▶</span><span>只听原声</span></button>{{/Audio}}
+    {{#TtsAudio}}<span class="v11-media-source audio-slow">{{TtsAudio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-slow')"><span class="v11-play">▶</span><span>慢读跟读</span></button>{{/TtsAudio}}
   </section>
 </div>
 """ + V11_CARD_SCRIPT
@@ -8095,8 +8099,8 @@ LANGUAGE_BACK_TEMPLATE_V11 = """
       <div class="v11-label">原句</div>
       <p class="v11-source">{{English}}</p>
       <div class="v11-sound-actions is-left">
-        {{#Audio}}<span class="v11-media-source audio-original">{{Audio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-original')"><span class="v11-play">▶</span><span>原声</span></button>{{/Audio}}
-        {{#TtsAudio}}<span class="v11-media-source audio-slow">{{TtsAudio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-slow')"><span class="v11-play">▶</span><span>慢读</span></button>{{/TtsAudio}}
+        {{#Audio}}<span class="v11-media-source audio-original">{{Audio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-original')"><span class="v11-play">▶</span><span>只听原声</span></button>{{/Audio}}
+        {{#TtsAudio}}<span class="v11-media-source audio-slow">{{TtsAudio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-slow')"><span class="v11-play">▶</span><span>慢读跟读</span></button>{{/TtsAudio}}
       </div>
     </div>
     {{#Video}}
@@ -8344,6 +8348,34 @@ def _normalized_study_compare(value: Any) -> str:
     return re.sub(r"[\s\W_]+", "", text, flags=re.UNICODE)
 
 
+def _study_lines(*values: Any) -> list[str]:
+    lines: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = clean_study_text(value)
+        if not text:
+            continue
+        for raw_line in re.split(r"[\n\r]+", text):
+            line = raw_line.strip(" \t；;。")
+            if not line:
+                continue
+            marker = _normalized_study_compare(line)
+            if not marker or marker in seen:
+                continue
+            seen.add(marker)
+            lines.append(line)
+    return lines
+
+
+def _labeled_study_line(label: str, value: Any) -> str:
+    text = clean_study_text(value)
+    if not text:
+        return ""
+    if re.match(r"^\s*(理解|换法|替换|例句|边界|易错|价值|语气|提醒|注意)[:：]", text):
+        return text
+    return f"{label}：{text}"
+
+
 def _new_example_for_card(card: dict[str, Any]) -> str:
     example = clean_study_text(card.get("example"))
     if not example:
@@ -8356,8 +8388,9 @@ def _new_example_for_card(card: dict[str, Any]) -> str:
 def v11_definition_text(card: dict[str, Any]) -> str:
     definition = clean_study_text(card.get("definition"))
     chinese_feel = clean_study_text(card.get("chinese_feel"))
-    if definition:
-        return definition if not chinese_feel else f"{definition}\n{chinese_feel}"
+    lines = _study_lines(definition, chinese_feel)
+    if lines:
+        return "\n".join(lines[:2])
     phrase = card_answer_core(card)
     chinese = card_chinese_core(card)
     if phrase and chinese:
@@ -8369,31 +8402,44 @@ def v11_definition_text(card: dict[str, Any]) -> str:
 
 def v11_migration_text(card: dict[str, Any]) -> str:
     how_to_use = clean_study_text(card.get("how_to_use_it"))
+    replacement = clean_study_text(card.get("replacement_examples"))
     collocations = clean_study_text(card.get("collocations"))
     example = _new_example_for_card(card)
-    parts = [part for part in [how_to_use, collocations, example] if part]
+    parts = _study_lines(
+        _labeled_study_line("换法", how_to_use),
+        _labeled_study_line("替换", replacement or collocations),
+        _labeled_study_line("例句", example),
+    )
     if parts:
-        return "\n".join(parts)
+        return "\n".join(parts[:3])
     phrase = card_answer_core(card)
     if phrase:
-        return f"换一个相似场景，用 {phrase} 造一句自己的句子；先确认语气、对象和场景合适。"
-    return "换一个相似场景，用自己的话复述这句，再核对是否自然。"
+        return f"换法：换一个相似场景，用 {phrase} 造一句自己的句子；先确认语气、对象和场景合适。"
+    return "换法：换一个相似场景，用自己的话复述这句，再核对是否自然。"
 
 
 def v11_teacher_note_text(card: dict[str, Any]) -> str:
-    teacher_note = clean_study_text(card.get("usage_boundary") or card.get("teacher_note"))
+    usage = clean_study_text(card.get("usage_boundary"))
+    teacher_note = clean_study_text(card.get("teacher_note"))
     confusable = clean_study_text(card.get("confusable_note"))
     why = clean_study_text(card.get("why_it_matters") or card.get("why"))
-    parts = [part for part in [teacher_note, confusable, why] if part]
-    if parts:
-        return "\n".join(parts)
     phrase = card_answer_core(card)
     phrase_lower = phrase.lower()
+    special_boundary = ""
     if "flat as a washboard" in phrase_lower:
-        return "这是调侃外貌或身材的说法，可能冒犯；适合理解台词，不建议随便对人使用。"
+        special_boundary = "边界：这是调侃外貌或身材的说法，可能冒犯；适合理解台词，不建议随便对人使用。"
+    parts = _study_lines(
+        _labeled_study_line("边界", usage),
+        special_boundary,
+        _labeled_study_line("易错", confusable),
+        _labeled_study_line("提醒", teacher_note),
+        _labeled_study_line("价值", why),
+    )
+    if parts:
+        return "\n".join(parts[:3])
     if phrase:
-        return f"不要只背中文翻译；复习时先听语气，再判断 {phrase} 在这句话里承担的意思。"
-    return "不要只背翻译；先听语气和节奏，再确认这句话在当前场景里的真实作用。"
+        return f"提醒：不要只背中文翻译；复习时先听语气，再判断 {phrase} 在这句话里承担的意思。"
+    return "提醒：不要只背翻译；先听语气和节奏，再确认这句话在当前场景里的真实作用。"
 
 
 def card_visual_role(card: dict[str, Any], deck_kind_code: str = "") -> str:
