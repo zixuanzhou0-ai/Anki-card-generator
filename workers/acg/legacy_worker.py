@@ -1721,14 +1721,15 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
         "如果用户水平是 B1 或更高，不要把 talk about 这类 A1/A2 基础短语当作重点；没有更具体表达就返回 cards: []。"
         "优先真实生活中可复用的短句、句型和口语框架，例如 it feels like、it turns out、what happens next、in the mood for、"
         "at some point、not because..., but because...、the thing is、I see what you mean、such a nice...。"
-        "2) chinese 要翻译原句核心意思，中文必须自然，不能写“中文里更接近自然顺口的一句话”这类空话。"
-        "3) definition 要直接解释这个 phrase 的实际用法，面向学习者，不要词典腔，不要模板句。"
-        "4) collocations 只能给自然搭配或句型框架，用 ' / ' 分隔；不要编造不自然搭配，比如 not really + 任意 phrase。"
+        "2) chinese 写 phrase 或单词在这句里的核心中文义，适合放在答案下方，例如“负责收银 / 操作收银机”；"
+        "natural_chinese 写整句自然中文译文，例如“I’m gonna run the register.”=>“我来负责收银。”。"
+        "3) definition 要写“怎么用”：这个表达通常用在什么动作/场景/对象上，面向学习者，不要词典腔，不要模板句。"
+        "4) collocations 只能给自然搭配、句型框架或 1-2 个可直接模仿的新句子，用 ' / ' 分隔；不要编造不自然搭配，比如 not really + 任意 phrase。"
         "5) example 必须是新的短例句，不能照抄原句。"
         "6) context 说明什么场景会用；chinese_feel 说明中文语感；why 说明为什么值得学。每项 1 句即可。"
         "7) teacher_note 要按卡型聚焦：listening 说听力注意点；phrase 说怎么迁移使用；cloze 说挖空答案为什么是它。"
         "8) 每张卡还必须给学习动作字段：learning_target=这张卡训练什么；why_it_matters=为什么值得学；"
-        "how_to_use_it=下次怎么换场景使用；natural_chinese=自然中文理解；replacement_examples=1-2 个可替换例子；"
+        "how_to_use_it=下次怎么换场景使用；natural_chinese=原句自然中文译文；replacement_examples=1-2 个可替换例子；"
         "avoid_reason=不值得制卡时的原因。how_to_use_it 和 replacement_examples 必须是可以直接放进卡片背面的自然内容，"
         "不要写 natural object、complete sentence、use X in a sentence 这种占位说明。"
         "9) 每张卡必须给复习字段：retrieval_prompt=正面明确回忆题，不能写“判断最值得学”；"
@@ -7836,6 +7837,14 @@ body,
   font-weight: 850;
   overflow-wrap: anywhere;
 }
+.v11-source-translation {
+  margin: 10px 0 0;
+  color: #5f626b;
+  font-size: clamp(18px, 3.2vw, 24px);
+  line-height: 1.38;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
 .v11-info-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -7869,12 +7878,12 @@ body,
   color: #0066df;
 }
 .v11-info-block:nth-child(2) .v11-icon {
-  background: rgba(52, 199, 89, 0.13);
-  color: #16833a;
+  background: rgba(255, 149, 0, 0.14);
+  color: #9d5b00;
 }
 .v11-info-block:nth-child(3) .v11-icon {
-  background: rgba(88, 86, 214, 0.12);
-  color: #5a38c7;
+  background: rgba(52, 199, 89, 0.13);
+  color: #16833a;
 }
 .v11-info-block p {
   margin: 0;
@@ -8089,7 +8098,7 @@ LANGUAGE_BACK_TEMPLATE_V11 = """
   <section class="v11-answer-layout">
     <div class="v11-answer-main">
       <div class="v11-time">{{SourceTime}}</div>
-      <div class="v11-label">核心表达</div>
+      <div class="v11-label">表达 / 词义</div>
       <div class="v11-phrase-line">
         <h1 class="v11-answer-title">{{Answer}}</h1>
         {{#PhraseTtsAudio}}<span class="v11-media-source audio-phrase">{{PhraseTtsAudio}}</span><button class="v11-speaker" onclick="playV11Audio(this, '.audio-phrase')" aria-label="播放表达发音">▶</button>{{/PhraseTtsAudio}}
@@ -8098,6 +8107,7 @@ LANGUAGE_BACK_TEMPLATE_V11 = """
       <hr class="v11-divider">
       <div class="v11-label">原句</div>
       <p class="v11-source">{{English}}</p>
+      {{#Context}}<p class="v11-source-translation">{{Context}}</p>{{/Context}}
       <div class="v11-sound-actions is-left">
         {{#Audio}}<span class="v11-media-source audio-original">{{Audio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-original')"><span class="v11-play">▶</span><span>只听原声</span></button>{{/Audio}}
         {{#TtsAudio}}<span class="v11-media-source audio-slow">{{TtsAudio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-slow')"><span class="v11-play">▶</span><span>慢读跟读</span></button>{{/TtsAudio}}
@@ -8113,9 +8123,9 @@ LANGUAGE_BACK_TEMPLATE_V11 = """
     {{/Video}}
   </section>
   <section class="v11-info-grid">
-    {{#Definition}}<div class="v11-info-block"><div class="v11-info-head"><span class="v11-icon">?</span><strong>怎么理解</strong></div><p>{{Definition}}</p></div>{{/Definition}}
-    <div class="v11-info-block"><div class="v11-info-head"><span class="v11-icon">↔</span><strong>怎么迁移</strong></div>{{#Collocations}}<p>{{Collocations}}</p>{{/Collocations}}</div>
-    {{#TeacherNote}}<div class="v11-info-block"><div class="v11-info-head"><span class="v11-icon">!</span><strong>老师提醒</strong></div><p>{{TeacherNote}}</p></div>{{/TeacherNote}}
+    {{#Definition}}<div class="v11-info-block"><div class="v11-info-head"><span class="v11-icon">?</span><strong>怎么用</strong></div><p>{{Definition}}</p></div>{{/Definition}}
+    {{#TeacherNote}}<div class="v11-info-block"><div class="v11-info-head"><span class="v11-icon">!</span><strong>别误用</strong></div><p>{{TeacherNote}}</p></div>{{/TeacherNote}}
+    {{#Collocations}}<div class="v11-info-block"><div class="v11-info-head"><span class="v11-icon">↔</span><strong>自己造句</strong></div><p>{{Collocations}}</p></div>{{/Collocations}}
   </section>
 </div>
 """ + V11_CARD_SCRIPT
@@ -8385,61 +8395,178 @@ def _new_example_for_card(card: dict[str, Any]) -> str:
     return example
 
 
+V11_EXPRESSION_FALLBACKS = {
+    "run the register": {
+        "meaning": "负责收银 / 操作收银机",
+        "source_translations": {
+            "i'm gonna run the register": "我来负责收银。",
+        },
+        "usage": "在店铺、餐厅等工作分工里说，表示某人负责看收银台、操作收银机。",
+        "misuse": "不要理解成“运行登记表”。register 在这里是“收银机/收银台”，run 是“负责操作”。",
+        "self_sentence": "I’ll run the register for a while. / Can you run the register today?",
+    },
+    "flat as a washboard": {
+        "meaning": "平得像搓衣板；夸张地形容很平",
+        "source_translations": {
+            "i mean you're flat as a washboard": "我是说，你平得像个搓衣板。",
+        },
+        "usage": "用来夸张地形容表面或身材很平，通常带调侃或刻薄语气。",
+        "misuse": "这是调侃外貌或身材的说法，可能冒犯；适合理解台词，不建议随便对人使用。",
+        "self_sentence": "The floor was flat as a washboard. / Don’t use it to describe someone’s body unless you mean to sound rude.",
+    },
+}
+
+
+GENERIC_V11_STUDY_PATTERNS = (
+    "先抓住",
+    "再回看上下文",
+    "换一个相似场景",
+    "用自己的话复述",
+    "先确认语气",
+    "不要只背中文翻译",
+    "复习时先听语气",
+    "注意语境",
+    "很常见",
+    "本句目标表达",
+    "fallback",
+    "natural object",
+    "complete sentence",
+)
+
+
+def _v11_lookup_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9']+", " ", str(value or "").lower()).strip()
+
+
+def _v11_fallback(card: dict[str, Any]) -> dict[str, Any]:
+    phrase = clean_study_text(card.get("phrase")) or card_answer_core(card)
+    return V11_EXPRESSION_FALLBACKS.get(phrase_guide_key(phrase), {})
+
+
+def _v11_guide(card: dict[str, Any]) -> dict[str, Any]:
+    phrase = clean_study_text(card.get("phrase")) or card_answer_core(card)
+    return PHRASE_GUIDES.get(phrase_guide_key(phrase), {})
+
+
+def _strip_study_label(value: Any) -> str:
+    text = clean_study_text(value).strip()
+    return re.sub(
+        r"^\s*(理解|怎么用|用法|换法|替换|例句|边界|易错|价值|语气|提醒|注意|误用|释义|意思)[:：]\s*",
+        "",
+        text,
+    ).strip()
+
+
+def _specific_v11_text(value: Any) -> str:
+    text = _strip_study_label(value)
+    if not text:
+        return ""
+    lowered = text.lower()
+    if any(pattern in text or pattern.lower() in lowered for pattern in GENERIC_V11_STUDY_PATTERNS):
+        return ""
+    return text
+
+
+def _v11_sentence_translation_fallback(card: dict[str, Any]) -> str:
+    fallback = _v11_fallback(card)
+    english_key = _v11_lookup_key(card.get("english"))
+    translations = fallback.get("source_translations")
+    if isinstance(translations, dict) and english_key:
+        return clean_study_text(translations.get(english_key))
+    return clean_study_text(fallback.get("source_translation"))
+
+
+def v11_meaning_text(card: dict[str, Any]) -> str:
+    guide = _v11_guide(card)
+    fallback = _v11_fallback(card)
+    for candidate in (
+        card.get("chinese"),
+        card.get("answer_chinese"),
+        card.get("meaning"),
+        guide.get("chinese"),
+        fallback.get("meaning"),
+        card.get("chinese_feel"),
+        card.get("definition"),
+        card.get("natural_chinese"),
+    ):
+        text = _specific_v11_text(candidate)
+        if text and has_cjk(text):
+            return text.strip("。；; ")
+    return ""
+
+
+def v11_source_translation_text(card: dict[str, Any]) -> str:
+    meaning_marker = _normalized_study_compare(v11_meaning_text(card))
+    for candidate in (
+        card.get("source_chinese"),
+        card.get("sentence_chinese"),
+        card.get("original_chinese"),
+        card.get("natural_chinese"),
+        card.get("full_chinese"),
+    ):
+        text = _specific_v11_text(candidate)
+        if text and has_cjk(text) and _normalized_study_compare(text) != meaning_marker:
+            return text.strip("；; ")
+    fallback = _v11_sentence_translation_fallback(card)
+    if fallback:
+        return fallback
+    text = _specific_v11_text(card.get("chinese"))
+    if text and has_cjk(text) and _normalized_study_compare(text) != meaning_marker:
+        return text.strip("；; ")
+    return ""
+
+
+def v11_usage_text(card: dict[str, Any]) -> str:
+    guide = _v11_guide(card)
+    fallback = _v11_fallback(card)
+    lines = _study_lines(
+        _specific_v11_text(card.get("how_to_use_it")),
+        _specific_v11_text(card.get("definition")),
+        _specific_v11_text(guide.get("definition")),
+        _specific_v11_text(fallback.get("usage")),
+    )
+    return "\n".join(lines[:2])
+
+
+def v11_self_sentence_text(card: dict[str, Any]) -> str:
+    guide = _v11_guide(card)
+    fallback = _v11_fallback(card)
+    lines = _study_lines(
+        _specific_v11_text(card.get("replacement_examples")),
+        _specific_v11_text(_new_example_for_card(card)),
+        _specific_v11_text(card.get("collocations")),
+        _specific_v11_text(guide.get("example")),
+        _specific_v11_text(fallback.get("self_sentence")),
+    )
+    return "\n".join(lines[:3])
+
+
+def v11_misuse_text(card: dict[str, Any]) -> str:
+    fallback = _v11_fallback(card)
+    phrase = card_answer_core(card).lower()
+    special_boundary = ""
+    if "flat as a washboard" in phrase:
+        special_boundary = V11_EXPRESSION_FALLBACKS["flat as a washboard"]["misuse"]
+    lines = _study_lines(
+        _specific_v11_text(card.get("usage_boundary")),
+        special_boundary,
+        _specific_v11_text(card.get("confusable_note")),
+        _specific_v11_text(card.get("teacher_note")),
+        _specific_v11_text(fallback.get("misuse")),
+    )
+    return "\n".join(lines[:3])
+
+
 def v11_definition_text(card: dict[str, Any]) -> str:
-    definition = clean_study_text(card.get("definition"))
-    chinese_feel = clean_study_text(card.get("chinese_feel"))
-    lines = _study_lines(definition, chinese_feel)
-    if lines:
-        return "\n".join(lines[:2])
-    phrase = card_answer_core(card)
-    chinese = card_chinese_core(card)
-    if phrase and chinese:
-        return f"{phrase} 在这句里表达“{chinese}”，先按原句语境理解，再记中文意思。"
-    if phrase:
-        return f"先抓住 {phrase} 在原句里的作用，再回看上下文确认语气和对象。"
-    return "先按原句语境理解这张卡的核心表达，再核对下面的原句。"
+    return v11_usage_text(card)
 
 
 def v11_migration_text(card: dict[str, Any]) -> str:
-    how_to_use = clean_study_text(card.get("how_to_use_it"))
-    replacement = clean_study_text(card.get("replacement_examples"))
-    collocations = clean_study_text(card.get("collocations"))
-    example = _new_example_for_card(card)
-    parts = _study_lines(
-        _labeled_study_line("换法", how_to_use),
-        _labeled_study_line("替换", replacement or collocations),
-        _labeled_study_line("例句", example),
-    )
-    if parts:
-        return "\n".join(parts[:3])
-    phrase = card_answer_core(card)
-    if phrase:
-        return f"换法：换一个相似场景，用 {phrase} 造一句自己的句子；先确认语气、对象和场景合适。"
-    return "换法：换一个相似场景，用自己的话复述这句，再核对是否自然。"
+    return v11_self_sentence_text(card)
 
 
 def v11_teacher_note_text(card: dict[str, Any]) -> str:
-    usage = clean_study_text(card.get("usage_boundary"))
-    teacher_note = clean_study_text(card.get("teacher_note"))
-    confusable = clean_study_text(card.get("confusable_note"))
-    why = clean_study_text(card.get("why_it_matters") or card.get("why"))
-    phrase = card_answer_core(card)
-    phrase_lower = phrase.lower()
-    special_boundary = ""
-    if "flat as a washboard" in phrase_lower:
-        special_boundary = "边界：这是调侃外貌或身材的说法，可能冒犯；适合理解台词，不建议随便对人使用。"
-    parts = _study_lines(
-        _labeled_study_line("边界", usage),
-        special_boundary,
-        _labeled_study_line("易错", confusable),
-        _labeled_study_line("提醒", teacher_note),
-        _labeled_study_line("价值", why),
-    )
-    if parts:
-        return "\n".join(parts[:3])
-    if phrase:
-        return f"提醒：不要只背中文翻译；复习时先听语气，再判断 {phrase} 在这句话里承担的意思。"
-    return "提醒：不要只背翻译；先听语气和节奏，再确认这句话在当前场景里的真实作用。"
+    return v11_misuse_text(card)
 
 
 def card_visual_role(card: dict[str, Any], deck_kind_code: str = "") -> str:
@@ -9040,9 +9167,11 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     except Exception as err:
                         phrase_tts_name = ""
                         warnings.append(f"{segment_id} 表达 TTS 失败：{err}")
-            definition_field = v11_definition_text(card) if use_v11_template else card.get("definition", "")
-            collocations_field = v11_migration_text(card) if use_v11_template else card.get("collocations", "")
-            teacher_note_field = v11_teacher_note_text(card) if use_v11_template else card.get("teacher_note", "")
+            meaning_field = v11_meaning_text(card) if use_v11_template else card_chinese_core(card)
+            definition_field = v11_usage_text(card) if use_v11_template else card.get("definition", "")
+            collocations_field = v11_self_sentence_text(card) if use_v11_template else card.get("collocations", "")
+            context_field = v11_source_translation_text(card) if use_v11_template else card.get("context", "")
+            teacher_note_field = v11_misuse_text(card) if use_v11_template else card.get("teacher_note", "")
             note = genanki.Note(
                 model=model,
                 fields=[
@@ -9057,11 +9186,11 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     anki_study_text(front_fields["front_content"]),
                     anki_study_text(front_fields["answer"]),
                     anki_study_text(card.get("english", "")),
-                    anki_study_text(card_chinese_core(card)),
+                    anki_study_text(meaning_field),
                     anki_study_text(card.get("phrase", "")),
                     anki_study_text(definition_field),
                     anki_study_text(collocations_field),
-                    anki_study_text(card.get("context", "")),
+                    anki_study_text(context_field),
                     anki_study_text(card.get("example", "")),
                     anki_study_text(card.get("chinese_feel", "")),
                     anki_study_text(card.get("why", "")),

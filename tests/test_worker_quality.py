@@ -368,8 +368,9 @@ class WorkerQualityTests(unittest.TestCase):
             self.assertIn("点画面开始复读", template["qfmt"])
             self.assertIn("复读循环中", template["qfmt"])
             self.assertIn("video.muted = false", template["qfmt"])
-            self.assertIn("核心表达", template["afmt"])
-            self.assertIn("老师提醒", template["afmt"])
+            self.assertIn("表达 / 词义", template["afmt"])
+            self.assertIn("原句</div>", template["afmt"])
+            self.assertIn("别误用", template["afmt"])
             self.assertNotIn("<audio controls", template["qfmt"] + template["afmt"])
             self.assertIn("CardLayout", field_names)
             self.assertIn("CardVisualRole", field_names)
@@ -1371,12 +1372,14 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertNotIn("待精修", fields["front_prompt"] + fields["front_content"] + fields["answer"])
         self.assertTrue(worker.contains_internal_placeholder(card["definition"]))
         self.assertEqual(worker.clean_study_text(card["collocations"]), "")
-        self.assertIn("run the register", worker.v11_definition_text(card))
-        self.assertIn("换法：换一个相似场景", worker.v11_migration_text(card))
-        self.assertIn("提醒：不要只背中文翻译", worker.v11_teacher_note_text(card))
+        self.assertEqual(worker.v11_meaning_text(card), "负责收银 / 操作收银机")
+        self.assertIn("负责看收银台", worker.v11_usage_text(card))
+        self.assertIn("Can you run the register today", worker.v11_self_sentence_text(card))
+        self.assertIn("register 在这里是", worker.v11_misuse_text(card))
 
         sensitive = {"phrase": "flat as a washboard", "english": "I mean you're flat as a washboard."}
-        self.assertIn("边界：这是调侃外貌或身材的说法，可能冒犯", worker.v11_teacher_note_text(sensitive))
+        self.assertIn("可能冒犯", worker.v11_misuse_text(sensitive))
+        self.assertEqual(worker.v11_source_translation_text(sensitive), "我是说，你平得像个搓衣板。")
 
     def test_v11_back_fields_are_labeled_and_deduped(self):
         card = {
@@ -1393,13 +1396,13 @@ class WorkerQualityTests(unittest.TestCase):
             "why_it_matters": "能把 cashier 变成更自然的动作表达。",
         }
 
-        self.assertEqual(worker.v11_definition_text(card), "表示负责收银或操作收银机")
-        self.assertIn("换法：在工作分工时说", worker.v11_migration_text(card))
-        self.assertIn("替换：run the front desk", worker.v11_migration_text(card))
-        self.assertIn("例句：Can you run the register", worker.v11_migration_text(card))
-        self.assertIn("边界：只用于工作职责", worker.v11_teacher_note_text(card))
-        self.assertIn("易错：register 这里不是", worker.v11_teacher_note_text(card))
-        self.assertIn("价值：能把 cashier", worker.v11_teacher_note_text(card))
+        self.assertEqual(worker.v11_meaning_text(card), "负责收银 / 操作收银机")
+        self.assertEqual(worker.v11_source_translation_text(card), "我来负责收银。")
+        self.assertIn("在工作分工时说", worker.v11_usage_text(card))
+        self.assertIn("run the front desk", worker.v11_self_sentence_text(card))
+        self.assertIn("Can you run the register", worker.v11_self_sentence_text(card))
+        self.assertIn("只用于工作职责", worker.v11_misuse_text(card))
+        self.assertIn("register 这里不是", worker.v11_misuse_text(card))
 
     def test_merge_ai_cards_preserves_boundary_fields_for_back_template(self):
         segments = [
@@ -1530,6 +1533,14 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("复读循环中", v11[2] + v11[3])
         self.assertIn("只听原声", v11[2] + v11[3])
         self.assertIn("慢读跟读", v11[2] + v11[3])
+        self.assertIn("表达 / 词义", v11[3])
+        self.assertIn("{{#Context}}<p class=\"v11-source-translation\">{{Context}}</p>{{/Context}}", v11[3])
+        self.assertIn("怎么用", v11[3])
+        self.assertIn("别误用", v11[3])
+        self.assertIn("自己造句", v11[3])
+        self.assertNotIn("怎么理解", v11[3])
+        self.assertNotIn("怎么迁移", v11[3])
+        self.assertNotIn("老师提醒", v11[3])
         self.assertIn("white-space: pre-line", v11[1])
         self.assertNotIn("<audio controls", v11[2] + v11[3])
         self.assertEqual(language[0], "视频语言 V10")

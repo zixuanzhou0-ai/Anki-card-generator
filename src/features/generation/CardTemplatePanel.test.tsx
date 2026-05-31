@@ -10,12 +10,12 @@ afterEach(() => cleanup())
 
 function renderPanel(overrides: Partial<ComponentProps<typeof CardTemplatePanel>> = {}) {
   const props: ComponentProps<typeof CardTemplatePanel> = {
-    activeTemplateLabel: '沉浸语言 V10',
+    activeTemplateLabel: '沉浸复读 V11',
     cardOptions,
     cardTypes: ['listening', 'phrase'],
     documentStudyMode: 'knowledge',
     sourceMode: 'local',
-    templateId: 'immersive',
+    templateId: 'immersive_v11',
     templateOptions,
     onSelectTemplate: vi.fn(),
     onToggleCardType: vi.fn(),
@@ -26,16 +26,17 @@ function renderPanel(overrides: Partial<ComponentProps<typeof CardTemplatePanel>
 }
 
 describe('CardTemplatePanel', () => {
-  it('toggles card types and selects unlocked templates', () => {
+  it('toggles card types and shows the single active template', () => {
     const props = renderPanel()
 
     fireEvent.click(screen.getByText('卡片和模板'))
     fireEvent.click(screen.getByRole('button', { name: /填空卡/ }))
-    fireEvent.click(screen.getByRole('button', { name: /沉浸语言 V10/ }))
+    fireEvent.click(screen.getByRole('button', { name: /沉浸复读 V11/ }))
 
-    expect(screen.getByText('2 类 · 沉浸语言 V10')).toBeVisible()
+    expect(screen.getByText('2 类 · 沉浸复读 V11')).toBeVisible()
     expect(props.onToggleCardType).toHaveBeenCalledWith('cloze')
-    expect(props.onSelectTemplate).toHaveBeenCalledWith('immersive')
+    expect(props.onSelectTemplate).toHaveBeenCalledWith('immersive_v11')
+    expect(screen.queryByText('沉浸语言 V10')).not.toBeInTheDocument()
   })
 
   it('renders document mode as knowledge card only', () => {
@@ -56,13 +57,13 @@ describe('CardTemplatePanel', () => {
     expect(screen.getByText('从文档里提取表达、词汇或语法点；不生成听力卡，默认进入待审。')).toBeVisible()
   })
 
-  it('does not select locked templates', () => {
+  it('does not show parked legacy templates', () => {
     const props = renderPanel()
 
     fireEvent.click(screen.getByText('卡片和模板'))
-    fireEvent.click(screen.getByRole('button', { name: /词典解释/ }))
 
-    expect(screen.getByRole('button', { name: /词典解释/ })).toBeDisabled()
+    expect(screen.queryByText('词典解释')).not.toBeInTheDocument()
+    expect(screen.queryByText('极简复习')).not.toBeInTheDocument()
     expect(props.onSelectTemplate).not.toHaveBeenCalledWith('dictionary')
   })
 })

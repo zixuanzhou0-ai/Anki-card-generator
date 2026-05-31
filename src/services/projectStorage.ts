@@ -69,6 +69,7 @@ export function loadSavedRequest(): GenerateRequest {
     return stripRequestSecrets(normalizeSavedMimoConfig({
       ...defaultRequest,
       ...saved,
+      template_id: 'immersive_v11',
       url_import_mode: (saved.url_import_mode ?? defaultRequest.url_import_mode) as UrlImportMode,
       url_auto_subtitle_fallback: saved.url_auto_subtitle_fallback ?? defaultRequest.url_auto_subtitle_fallback,
       skip_video_slicing: saved.skip_video_slicing ?? defaultRequest.skip_video_slicing,
@@ -115,7 +116,7 @@ export function loadSavedProject(): Project | null {
     const documentStudyMode = normalizeDocumentStudyMode(saved.document_study_mode)
     return {
       ...saved,
-      template_id: saved.template_id ?? 'immersive_v11',
+      template_id: 'immersive_v11',
       source_mode: saved.source_mode ?? 'local',
       language_focus:
         documentStudyMode === 'language_reading'
