@@ -7239,6 +7239,14 @@ body,
   background: rgba(0, 122, 255, 0.08);
   color: #0057d8;
 }
+.layout-cloze .tag {
+  border-color: rgba(255, 159, 10, 0.26);
+  background: rgba(255, 159, 10, 0.10);
+  color: #9a5b00;
+}
+.layout-listening .media-strip {
+  max-height: none;
+}
 .prompt {
   margin: clamp(18px, 4vw, 32px) 0 0;
   color: #111114;
@@ -7412,11 +7420,12 @@ audio {
 
 
 LANGUAGE_FRONT_TEMPLATE = """
-<div class="review-card language-card front">
+<div class="review-card language-card front layout-{{CardLayout}}">
   {{#IsListening}}
   {{#Video}}<div class="media-panel">{{Video}}</div>{{/Video}}
   <section class="card-section">
     <div class="meta"><span class="tag">{{CardType}}</span><span>{{SourceTime}}</span></div>
+    <div class="subtle">{{FrontKicker}}</div>
     <h1 class="prompt">{{FrontPrompt}}</h1>
     {{#Audio}}<div class="audio-actions"><div class="audio-item"><span>原声</span>{{Audio}}</div></div>{{/Audio}}
   </section>
@@ -7424,6 +7433,7 @@ LANGUAGE_FRONT_TEMPLATE = """
   {{^IsListening}}
   <section class="card-section">
     <div class="meta"><span class="tag">{{CardType}}</span><span>{{SourceTime}}</span></div>
+    <div class="subtle">{{FrontKicker}}</div>
     <h1 class="prompt">{{FrontPrompt}}</h1>
     {{#FrontContent}}<div class="cue">{{FrontContent}}</div>{{/FrontContent}}
     {{#Audio}}<div class="audio-actions"><div class="audio-item"><span>原声</span>{{Audio}}</div></div>{{/Audio}}
@@ -7435,14 +7445,14 @@ LANGUAGE_FRONT_TEMPLATE = """
 
 
 LANGUAGE_BACK_TEMPLATE = """
-<div class="review-card language-card back">
+<div class="review-card language-card back layout-{{CardLayout}}">
   <section class="card-section">
     <div class="meta"><span class="tag">{{CardType}}</span><span>{{Difficulty}}</span></div>
     <strong class="subtle">核心答案</strong>
     {{#Answer}}<div class="answer-line"><h1 class="answer">{{Answer}}</h1>{{#PhraseTtsAudio}}<span class="phrase-audio">{{PhraseTtsAudio}}</span>{{/PhraseTtsAudio}}</div>{{/Answer}}
   </section>
   <section class="card-section">
-    <strong class="subtle">{{#IsListening}}听力原句{{/IsListening}}{{^IsListening}}英文原句{{/IsListening}}</strong>
+    <strong class="subtle">{{SourceLabel}}</strong>
     <div class="source">{{English}}</div>
     <div class="subtle">{{SourceTime}}</div>
     {{#Cloze}}<div class="cue">{{Cloze}}</div>{{/Cloze}}
@@ -7454,8 +7464,8 @@ LANGUAGE_BACK_TEMPLATE = """
   </section>
   <section class="card-section">
     <div class="block-grid">
-      <div class="info-block"><strong>怎么理解</strong><p>{{Definition}}</p>{{#ChineseFeel}}<p>{{ChineseFeel}}</p>{{/ChineseFeel}}</div>
-      <div class="info-block"><strong>怎么迁移</strong><p class="english-note">{{Collocations}}</p>{{#Context}}<p>{{Context}}</p>{{/Context}}</div>
+      <div class="info-block"><strong>{{UnderstandLabel}}</strong><p>{{Definition}}</p>{{#ChineseFeel}}<p>{{ChineseFeel}}</p>{{/ChineseFeel}}</div>
+      <div class="info-block"><strong>{{UseLabel}}</strong><p class="english-note">{{Collocations}}</p>{{#Context}}<p>{{Context}}</p>{{/Context}}</div>
       {{#TeacherNote}}<div class="info-block warning-block"><strong>老师提醒</strong><p>{{TeacherNote}}</p>{{#Why}}<p>{{Why}}</p>{{/Why}}</div>{{/TeacherNote}}
       {{#Example}}<div class="info-block"><strong>再造一句</strong><p class="english-note">{{Example}}</p></div>{{/Example}}
     </div>
@@ -7465,9 +7475,10 @@ LANGUAGE_BACK_TEMPLATE = """
 
 
 KNOWLEDGE_FRONT_TEMPLATE = """
-<div class="review-card knowledge-card front">
+<div class="review-card knowledge-card front layout-{{CardLayout}}">
   <section class="card-section">
     <div class="meta"><span class="tag">{{CardType}}</span><span>{{SourceTime}}</span></div>
+    <div class="subtle">{{FrontKicker}}</div>
     <h1 class="prompt">{{FrontPrompt}}</h1>
     {{#FrontContent}}<div class="cue">{{FrontContent}}</div>{{/FrontContent}}
   </section>
@@ -7476,20 +7487,20 @@ KNOWLEDGE_FRONT_TEMPLATE = """
 
 
 KNOWLEDGE_BACK_TEMPLATE = """
-<div class="review-card knowledge-card back">
+<div class="review-card knowledge-card back layout-{{CardLayout}}">
   <section class="card-section">
     <div class="meta"><span class="tag">{{CardType}}</span><span>{{Difficulty}}</span></div>
     <strong class="subtle">核心答案</strong>
     <h1 class="answer">{{Answer}}</h1>
   </section>
   <section class="card-section">
-    <strong class="subtle">正面问题</strong>
+    <strong class="subtle">{{SourceLabel}}</strong>
     <div class="source">{{English}}</div>
     <div class="subtle">{{SourceTime}}</div>
   </section>
   <section class="card-section">
     <div class="block-grid">
-      <div class="info-block"><strong>关键机制</strong><p>{{Definition}}</p>{{#ChineseFeel}}<p>{{ChineseFeel}}</p>{{/ChineseFeel}}</div>
+      <div class="info-block"><strong>{{UnderstandLabel}}</strong><p>{{Definition}}</p>{{#ChineseFeel}}<p>{{ChineseFeel}}</p>{{/ChineseFeel}}</div>
       {{#Example}}<div class="info-block"><strong>例子</strong><p>{{Example}}</p></div>{{/Example}}
       <div class="info-block warning-block"><strong>边界 / 易混点</strong>{{#TeacherNote}}<p>{{TeacherNote}}</p>{{/TeacherNote}}{{#Why}}<p>{{Why}}</p>{{/Why}}{{#Collocations}}<p>{{Collocations}}</p>{{/Collocations}}</div>
     </div>
@@ -7499,9 +7510,10 @@ KNOWLEDGE_BACK_TEMPLATE = """
 
 
 READING_FRONT_TEMPLATE = """
-<div class="review-card reading-card front">
+<div class="review-card reading-card front layout-{{CardLayout}}">
   <section class="card-section">
     <div class="meta"><span class="tag">{{CardType}}</span><span>{{SourceTime}}</span></div>
+    <div class="subtle">{{FrontKicker}}</div>
     <h1 class="prompt">{{FrontPrompt}}</h1>
     {{#FrontContent}}<div class="cue">{{FrontContent}}</div>{{/FrontContent}}
   </section>
@@ -7510,21 +7522,21 @@ READING_FRONT_TEMPLATE = """
 
 
 READING_BACK_TEMPLATE = """
-<div class="review-card reading-card back">
+<div class="review-card reading-card back layout-{{CardLayout}}">
   <section class="card-section">
     <div class="meta"><span class="tag">{{CardType}}</span><span>{{Difficulty}}</span></div>
     <strong class="subtle">核心答案</strong>
     <h1 class="answer">{{Answer}}</h1>
   </section>
   <section class="card-section">
-    <strong class="subtle">原文线索</strong>
+    <strong class="subtle">{{SourceLabel}}</strong>
     <div class="source">{{English}}</div>
     <div class="subtle">{{SourceTime}}</div>
   </section>
   <section class="card-section">
     <div class="block-grid">
-      <div class="info-block"><strong>怎么理解</strong><p>{{Definition}}</p>{{#ChineseFeel}}<p>{{ChineseFeel}}</p>{{/ChineseFeel}}</div>
-      <div class="info-block"><strong>怎么用</strong><p class="english-note">{{Collocations}}</p>{{#Context}}<p>{{Context}}</p>{{/Context}}</div>
+      <div class="info-block"><strong>{{UnderstandLabel}}</strong><p>{{Definition}}</p>{{#ChineseFeel}}<p>{{ChineseFeel}}</p>{{/ChineseFeel}}</div>
+      <div class="info-block"><strong>{{UseLabel}}</strong><p class="english-note">{{Collocations}}</p>{{#Context}}<p>{{Context}}</p>{{/Context}}</div>
       {{#TeacherNote}}<div class="info-block warning-block"><strong>边界 / 易错</strong><p>{{TeacherNote}}</p>{{#Why}}<p>{{Why}}</p>{{/Why}}</div>{{/TeacherNote}}
       {{#Example}}<div class="info-block"><strong>再造一句</strong><p class="english-note">{{Example}}</p></div>{{/Example}}
     </div>
@@ -7534,9 +7546,10 @@ READING_BACK_TEMPLATE = """
 
 
 MINIMAL_FRONT_TEMPLATE = """
-<div class="review-card minimal-card front">
+<div class="review-card minimal-card front layout-{{CardLayout}}">
   <section class="card-section">
     <div class="meta"><span class="tag">{{CardType}}</span><span>{{SourceTime}}</span></div>
+    <div class="subtle">{{FrontKicker}}</div>
     <h1 class="prompt">{{FrontPrompt}}</h1>
     {{#FrontContent}}<div class="cue">{{FrontContent}}</div>{{/FrontContent}}
   </section>
@@ -7545,7 +7558,7 @@ MINIMAL_FRONT_TEMPLATE = """
 
 
 MINIMAL_BACK_TEMPLATE = """
-<div class="review-card minimal-card back">
+<div class="review-card minimal-card back layout-{{CardLayout}}">
   <section class="card-section">
     <div class="meta"><span class="tag">{{CardType}}</span><span>{{Difficulty}}</span></div>
     <h1 class="answer">{{Answer}}</h1>
@@ -7720,6 +7733,74 @@ def card_answer_core(card: dict[str, Any]) -> str:
     if phrase and chinese:
         return f"{phrase} = {chinese}"
     return phrase or chinese or str(card.get("english") or "").strip()
+
+
+def card_visual_role(card: dict[str, Any], deck_kind_code: str = "") -> str:
+    if deck_kind_code == "document_knowledge":
+        return "knowledge"
+    if deck_kind_code == "document_reading":
+        return "document_reading"
+    card_type = str(card.get("type") or "").strip()
+    if card_type == "listening":
+        return "listening"
+    if card_type == "cloze":
+        return "cloze"
+    if card_type == "knowledge":
+        return "knowledge"
+    if is_contextual_vocabulary_card(card):
+        return "vocabulary"
+    return "phrase"
+
+
+def card_template_labels(card: dict[str, Any], deck_kind_code: str = "") -> dict[str, str]:
+    role = card_visual_role(card, deck_kind_code)
+    if role == "listening":
+        return {
+            "card_layout": "listening",
+            "front_kicker": "只听一遍，先复述完整句。",
+            "source_label": "听力原句",
+            "understand_label": "听错点",
+            "use_label": "关键表达",
+        }
+    if role == "cloze":
+        return {
+            "card_layout": "cloze",
+            "front_kicker": "根据语气补出关键表达。",
+            "source_label": "原句",
+            "understand_label": "为什么这样填",
+            "use_label": "可替换框架",
+        }
+    if role == "vocabulary":
+        return {
+            "card_layout": "vocabulary",
+            "front_kicker": "按原句场景解释这个词。",
+            "source_label": "原句",
+            "understand_label": "此处词义",
+            "use_label": "搭配 / 易混义",
+        }
+    if role == "knowledge":
+        return {
+            "card_layout": "knowledge",
+            "front_kicker": "先用自己的话回答。",
+            "source_label": "正面问题",
+            "understand_label": "关键机制",
+            "use_label": "相关概念",
+        }
+    if role == "document_reading":
+        return {
+            "card_layout": "document_reading",
+            "front_kicker": "先解释原文里的语言点。",
+            "source_label": "原文线索",
+            "understand_label": "怎么理解",
+            "use_label": "怎么用",
+        }
+    return {
+        "card_layout": "phrase",
+        "front_kicker": "根据中文语境回忆自然表达。",
+        "source_label": "英文原句",
+        "understand_label": "怎么理解",
+        "use_label": "怎么迁移",
+    }
 
 
 def card_front_fields(card: dict[str, Any]) -> dict[str, str]:
@@ -7985,6 +8066,11 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             {"name": "SourceTime"},
             {"name": "TeacherNote"},
             {"name": "Cloze"},
+            {"name": "CardLayout"},
+            {"name": "FrontKicker"},
+            {"name": "SourceLabel"},
+            {"name": "UnderstandLabel"},
+            {"name": "UseLabel"},
         ],
         templates=[
             {
@@ -8216,6 +8302,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
 
         for card in enabled_cards:
             front_fields = card_front_fields(card)
+            template_labels = card_template_labels(card, deck_kind_code)
             export_card_id = f"{project_card_prefix}_{card.get('id', '')}"
             phrase_text = re.sub(r"\s+", " ", str(card.get("phrase") or "").strip())
             phrase_tts_name = ""
@@ -8263,6 +8350,11 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     anki_text(segment.get("source_time", "")),
                     anki_text(card.get("teacher_note", "")),
                     anki_text(card.get("cloze", "")),
+                    anki_text(template_labels["card_layout"]),
+                    anki_text(template_labels["front_kicker"]),
+                    anki_text(template_labels["source_label"]),
+                    anki_text(template_labels["understand_label"]),
+                    anki_text(template_labels["use_label"]),
                 ],
                 tags=[
                     "anki_card_generator_v10",
@@ -8270,6 +8362,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     project.get("level", "B1"),
                     template_id,
                     card.get("type", "card"),
+                    template_labels["card_layout"],
                 ],
             )
             deck.add_note(note)

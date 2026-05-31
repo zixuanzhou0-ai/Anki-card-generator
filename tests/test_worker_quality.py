@@ -359,12 +359,16 @@ class WorkerQualityTests(unittest.TestCase):
                 connection.close()
             model = next(iter(json.loads(models_json).values()))
             template = model["tmpls"][0]
+            field_names = [field["name"] for field in model["flds"]]
 
             self.assertNotIn("整句 AI 朗读", template["qfmt"])
             self.assertNotIn("{{TtsAudio}}", template["qfmt"])
             self.assertIn("核心答案", template["afmt"])
             self.assertIn("老师提醒", template["afmt"])
             self.assertIn("再造一句", template["afmt"])
+            self.assertIn("CardLayout", field_names)
+            self.assertIn("FrontKicker", field_names)
+            self.assertIn("SourceLabel", field_names)
 
     def test_worker_fail_emits_machine_readable_error(self):
         from acg.protocol import ERROR_PREFIX, fail
@@ -1417,9 +1421,34 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("核心答案", worker.BACK_TEMPLATE)
         self.assertIn("老师提醒", worker.BACK_TEMPLATE)
         self.assertIn("再造一句", worker.BACK_TEMPLATE)
+        self.assertIn("layout-{{CardLayout}}", worker.FRONT_TEMPLATE)
+        self.assertIn("{{FrontKicker}}", worker.FRONT_TEMPLATE)
+        self.assertIn("{{SourceLabel}}", worker.BACK_TEMPLATE)
+        self.assertIn("{{UnderstandLabel}}", worker.BACK_TEMPLATE)
+        self.assertIn("{{UseLabel}}", worker.BACK_TEMPLATE)
         self.assertIn("overflow-y: auto !important", worker.CARD_CSS)
         self.assertIn("height: auto", worker.CARD_CSS)
         self.assertNotIn("fitResponsiveText", worker.FRONT_TEMPLATE + worker.BACK_TEMPLATE)
+
+    def test_card_template_labels_are_source_aware(self):
+        listening = worker.card_template_labels({"type": "listening"}, "video_language")
+        phrase = worker.card_template_labels({"type": "phrase", "phrase_type": "collocation"}, "video_language")
+        cloze = worker.card_template_labels({"type": "cloze"}, "video_language")
+        vocab = worker.card_template_labels(
+            {"type": "phrase", "phrase_type": "vocabulary_usage", "content_kind": "vocabulary"},
+            "video_language",
+        )
+        knowledge = worker.card_template_labels({"type": "knowledge"}, "document_knowledge")
+        reading = worker.card_template_labels({"type": "phrase"}, "document_reading")
+
+        self.assertEqual(listening["card_layout"], "listening")
+        self.assertEqual(listening["source_label"], "听力原句")
+        self.assertEqual(phrase["card_layout"], "phrase")
+        self.assertEqual(cloze["card_layout"], "cloze")
+        self.assertEqual(vocab["card_layout"], "vocabulary")
+        self.assertEqual(vocab["understand_label"], "此处词义")
+        self.assertEqual(knowledge["understand_label"], "关键机制")
+        self.assertEqual(reading["card_layout"], "document_reading")
 
     def test_template_assets_split_by_project_kind(self):
         language = worker.anki_template_assets("immersive", "video_language")
@@ -1429,8 +1458,8 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(language[0], "视频语言 V10")
         self.assertEqual(knowledge[0], "文档知识 V10")
         self.assertEqual(reading[0], "文档精读 V10")
-        self.assertIn("听力原句", language[3])
-        self.assertIn("关键机制", knowledge[3])
+        self.assertIn("{{SourceLabel}}", language[3])
+        self.assertIn("{{UnderstandLabel}}", knowledge[3])
         self.assertIn("边界 / 易错", reading[3])
         self.assertNotEqual(worker.anki_template_family("immersive", "video_language"), worker.anki_template_family("immersive", "document_knowledge"))
 
@@ -2206,8 +2235,8 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertNotIn("scale.toFixed", worker.BACK_TEMPLATE)
         self.assertIn("核心答案", worker.BACK_TEMPLATE)
         self.assertIn("老师提醒", worker.BACK_TEMPLATE)
-        self.assertIn("怎么理解", worker.BACK_TEMPLATE)
-        self.assertIn("怎么迁移", worker.BACK_TEMPLATE)
+        self.assertIn("{{UnderstandLabel}}", worker.BACK_TEMPLATE)
+        self.assertIn("{{UseLabel}}", worker.BACK_TEMPLATE)
         self.assertIn("再造一句", worker.BACK_TEMPLATE)
         self.assertIn("block-grid", worker.CARD_CSS)
         self.assertNotIn("@media (max-height: 980px)", worker.CARD_CSS)
