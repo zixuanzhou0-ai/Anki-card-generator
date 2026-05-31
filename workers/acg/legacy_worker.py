@@ -7715,6 +7715,20 @@ body,
   font-size: 13px;
   font-weight: 760;
 }
+.v11-video-cue {
+  position: absolute;
+  left: 14px;
+  bottom: 12px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.5);
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 760;
+}
+.v11-video-stage.is-sound-on .v11-video-cue {
+  background: rgba(0, 102, 204, 0.86);
+}
 .v11-sound-actions {
   display: flex;
   flex-wrap: wrap;
@@ -7950,35 +7964,96 @@ V11_CARD_SCRIPT = """
         try { node.currentTime = 0; } catch (error) {}
       }
     });
+    document.querySelectorAll(".v11-video-stage video").forEach(function(node) {
+      node.pause();
+      node.muted = true;
+      node.loop = true;
+      var stage = node.closest(".v11-video-stage");
+      if (stage) {
+        setV11VideoState(stage, "muted");
+      }
+    });
     try { audio.currentTime = 0; } catch (error) {}
     audio.playbackRate = 1;
     var playResult = audio.play();
     if (playResult && playResult.catch) playResult.catch(function() {});
   };
 
+  function setV11VideoState(stage, state) {
+    var cue = stage.querySelector(".v11-video-cue");
+    var toggle = stage.querySelector(".v11-video-toggle");
+    stage.classList.toggle("is-muted-preview", state === "muted");
+    stage.classList.toggle("is-sound-on", state === "sound");
+    stage.classList.toggle("is-paused", state === "paused");
+    if (cue) {
+      cue.textContent = state === "sound" ? "原视频播放中" : (state === "paused" ? "已暂停" : "点画面听原视频");
+    }
+    if (toggle) {
+      toggle.textContent = state === "sound" ? "II" : "▶";
+    }
+  }
+
+  function pauseOtherMedia(activeVideo) {
+    document.querySelectorAll("audio").forEach(function(node) {
+      node.pause();
+      try { node.currentTime = 0; } catch (error) {}
+    });
+    document.querySelectorAll(".v11-video-stage video").forEach(function(node) {
+      if (node !== activeVideo) {
+        node.pause();
+        node.muted = true;
+        node.loop = true;
+        var stage = node.closest(".v11-video-stage");
+        if (stage) {
+          setV11VideoState(stage, "muted");
+        }
+      }
+    });
+  }
+
   window.toggleV11Video = function(stage) {
     if (!stage) return;
     var video = stage.querySelector("video");
     if (!video) return;
-    if (video.paused) {
+    if (video.paused || video.muted) {
+      pauseOtherMedia(video);
+      if (video.muted) {
+        try { video.currentTime = 0; } catch (error) {}
+      }
+      video.loop = false;
+      video.muted = false;
+      video.volume = 1;
       var playResult = video.play();
       if (playResult && playResult.catch) playResult.catch(function() {});
-      stage.classList.remove("is-paused");
+      setV11VideoState(stage, "sound");
     } else {
       video.pause();
-      stage.classList.add("is-paused");
+      setV11VideoState(stage, "paused");
     }
   };
 
   function setupV11Videos() {
-    document.querySelectorAll(".v11-front .v11-video-stage").forEach(function(stage) {
+    document.querySelectorAll(".v11-video-stage").forEach(function(stage) {
       var video = stage.querySelector("video");
       if (!video) return;
-      video.loop = true;
       video.muted = true;
       video.playsInline = true;
-      var playResult = video.play();
-      if (playResult && playResult.catch) playResult.catch(function() {});
+      setV11VideoState(stage, "muted");
+      video.addEventListener("ended", function() {
+        video.muted = true;
+        video.loop = true;
+        try { video.currentTime = 0; } catch (error) {}
+        setV11VideoState(stage, "muted");
+        if (stage.closest(".v11-front")) {
+          var replay = video.play();
+          if (replay && replay.catch) replay.catch(function() {});
+        }
+      });
+      if (stage.closest(".v11-front")) {
+        video.loop = true;
+        var playResult = video.play();
+        if (playResult && playResult.catch) playResult.catch(function() {});
+      }
     });
   }
 
@@ -8006,6 +8081,7 @@ LANGUAGE_FRONT_TEMPLATE_V11 = """
   <section class="v11-video-stage" onclick="toggleV11Video(this)">
     {{Video}}
     <span class="v11-video-toggle">▶</span>
+    <span class="v11-video-cue">点画面听原视频</span>
   </section>
   {{/Video}}
   <section class="v11-sound-actions">
@@ -8043,6 +8119,7 @@ LANGUAGE_BACK_TEMPLATE_V11 = """
     <div class="v11-video-stage" onclick="toggleV11Video(this)">
       {{Video}}
       <span class="v11-video-toggle">▶</span>
+      <span class="v11-video-cue">点画面听原视频</span>
       <span class="v11-video-time">{{SourceTime}}</span>
     </div>
     {{/Video}}
