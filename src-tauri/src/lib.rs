@@ -35,6 +35,13 @@ const ALLOWED_SECRET_KEYS: &[&str] = &["model_api_key", "tts_api_key"];
 const MIN_WINDOW_WIDTH: f64 = 1180.0;
 const MIN_WINDOW_HEIGHT: f64 = 780.0;
 
+fn hide_console_window(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+}
+
 #[derive(Clone, Default)]
 struct WorkerJobs {
     jobs: Arc<Mutex<HashMap<String, RunningJob>>>,
@@ -342,8 +349,7 @@ fn build_worker_command(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    #[cfg(windows)]
-    worker_command.creation_flags(CREATE_NO_WINDOW);
+    hide_console_window(&mut worker_command);
 
     worker_command
 }
@@ -454,7 +460,7 @@ fn kill_process_tree(pid: u32) -> Result<(), String> {
     {
         let mut command = Command::new("taskkill");
         command.args(["/PID", &pid.to_string(), "/T", "/F"]);
-        command.creation_flags(CREATE_NO_WINDOW);
+        hide_console_window(&mut command);
         let _ = command
             .status()
             .map_err(|err| format!("无法取消任务进程：{err}"))?;
@@ -1038,8 +1044,10 @@ fn open_anki_import(apkg_path: String) -> Result<(), String> {
     }
 
     let anki = find_anki()?;
-    Command::new(anki)
-        .arg(apkg)
+    let mut command = Command::new(anki);
+    command.arg(apkg);
+    hide_console_window(&mut command);
+    command
         .spawn()
         .map_err(|err| format!("无法启动 Anki：{err}"))?;
     Ok(())
@@ -1062,8 +1070,10 @@ fn reveal_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
         } else {
             target.display().to_string()
         };
-        Command::new("explorer")
-            .arg(arg)
+        let mut command = Command::new("explorer");
+        command.arg(arg);
+        hide_console_window(&mut command);
+        command
             .spawn()
             .map_err(|err| format!("无法打开资源管理器：{err}"))?;
     }
