@@ -1404,6 +1404,24 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("只用于工作职责", worker.v11_misuse_text(card))
         self.assertIn("register 这里不是", worker.v11_misuse_text(card))
 
+    def test_v11_long_answer_strips_listening_note_for_layout(self):
+        card = {
+            "type": "phrase",
+            "phrase": "hold that against you",
+            "english": "But we're not gonna hold that against you.",
+            "chinese": "因此对你有看法；记你的仇",
+            "natural_chinese": "我们不会因为这事儿对你有意见。",
+            "answer_core": "hold that against you（听力中常连读为 hold tha-tagainst you）",
+        }
+
+        fields = worker.card_front_fields(card, repetition_mode=True)
+
+        self.assertEqual(worker.card_answer_core(card), "hold that against you")
+        self.assertEqual(fields["answer"], "hold that against you")
+        self.assertEqual(worker.v11_answer_note_text(card), "听感：听力中常连读为 hold tha-tagainst you")
+        self.assertEqual(worker.v11_meaning_text(card), "因此对你有看法；记你的仇")
+        self.assertEqual(worker.v11_source_translation_text(card), "我们不会因为这事儿对你有意见。")
+
     def test_merge_ai_cards_preserves_boundary_fields_for_back_template(self):
         segments = [
             {
@@ -1541,6 +1559,10 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertNotIn("怎么理解", v11[3])
         self.assertNotIn("怎么迁移", v11[3])
         self.assertNotIn("老师提醒", v11[3])
+        self.assertIn("v11-answer-title.is-long", v11[1])
+        self.assertIn("setupV11TextSizing", v11[2] + v11[3])
+        self.assertIn("{{#ChineseFeel}}<p class=\"v11-answer-note\">{{ChineseFeel}}</p>{{/ChineseFeel}}", v11[3])
+        self.assertNotIn("overflow-wrap: anywhere", v11[1])
         self.assertIn("white-space: pre-line", v11[1])
         self.assertNotIn("<audio controls", v11[2] + v11[3])
         self.assertEqual(language[0], "视频语言 V10")

@@ -7652,7 +7652,8 @@ body,
   font-size: clamp(38px, 6vw, 68px);
   line-height: 1.08;
   font-weight: 900;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 .v11-front-copy p {
   margin: 10px 0 0;
@@ -7780,9 +7781,9 @@ body,
 }
 .v11-answer-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.9fr);
-  gap: clamp(28px, 5vw, 48px);
-  align-items: center;
+  grid-template-columns: minmax(0, 1.18fr) minmax(280px, 0.82fr);
+  gap: clamp(24px, 4vw, 42px);
+  align-items: start;
   margin-top: clamp(28px, 5vw, 42px);
 }
 .v11-label {
@@ -7801,10 +7802,19 @@ body,
 .v11-answer-title {
   margin: 0;
   color: #050506;
-  font-size: clamp(44px, 7vw, 78px);
-  line-height: 1.02;
-  font-weight: 930;
-  overflow-wrap: anywhere;
+  font-size: clamp(40px, 6.2vw, 72px);
+  line-height: 1.06;
+  font-weight: 910;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+.v11-answer-title.is-long {
+  font-size: clamp(34px, 5.1vw, 58px);
+  line-height: 1.1;
+}
+.v11-answer-title.is-very-long {
+  font-size: clamp(30px, 4.4vw, 48px);
+  line-height: 1.14;
 }
 .v11-speaker {
   display: inline-grid;
@@ -7819,10 +7829,18 @@ body,
 .v11-chinese-core {
   margin: 8px 0 0;
   color: #0066df;
-  font-size: clamp(22px, 4vw, 30px);
+  font-size: clamp(20px, 3.4vw, 27px);
   line-height: 1.3;
   font-weight: 820;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
+}
+.v11-answer-note {
+  margin: 8px 0 0;
+  color: #6e6e73;
+  font-size: clamp(15px, 2.7vw, 18px);
+  line-height: 1.45;
+  font-weight: 650;
+  overflow-wrap: break-word;
 }
 .v11-divider {
   margin: clamp(20px, 4vw, 28px) 0;
@@ -7832,10 +7850,10 @@ body,
 .v11-source {
   margin: 8px 0 0;
   color: #111114;
-  font-size: clamp(25px, 4.5vw, 40px);
-  line-height: 1.18;
+  font-size: clamp(23px, 3.9vw, 34px);
+  line-height: 1.22;
   font-weight: 850;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 .v11-source-translation {
   margin: 10px 0 0;
@@ -7843,7 +7861,7 @@ body,
   font-size: clamp(18px, 3.2vw, 24px);
   line-height: 1.38;
   font-weight: 650;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 .v11-info-grid {
   display: grid;
@@ -7890,7 +7908,7 @@ body,
   color: #5f626b;
   font-size: clamp(16px, 3vw, 20px);
   line-height: 1.55;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
   white-space: pre-line;
 }
 .v11-info-block p + p {
@@ -7900,8 +7918,8 @@ body,
   .card { padding: 8px; }
   .v11-card {
     width: calc(100vw - 16px);
-    padding: 24px;
-    border-radius: 24px;
+    padding: clamp(18px, 5vw, 24px);
+    border-radius: 22px;
   }
   .v11-front-copy h1 {
     font-size: clamp(38px, 11vw, 58px);
@@ -7943,10 +7961,22 @@ body,
     aspect-ratio: 16 / 9;
   }
   .v11-answer-title {
-    font-size: clamp(42px, 13vw, 66px);
+    font-size: clamp(34px, 10vw, 48px);
+    line-height: 1.08;
+  }
+  .v11-answer-title.is-long {
+    font-size: clamp(29px, 8.2vw, 38px);
+    line-height: 1.12;
+  }
+  .v11-answer-title.is-very-long {
+    font-size: clamp(24px, 7vw, 32px);
+    line-height: 1.18;
+  }
+  .v11-chinese-core {
+    font-size: clamp(18px, 5.2vw, 23px);
   }
   .v11-source {
-    font-size: clamp(25px, 7vw, 34px);
+    font-size: clamp(22px, 6vw, 30px);
   }
   .v11-info-grid {
     grid-template-columns: 1fr;
@@ -8054,10 +8084,27 @@ V11_CARD_SCRIPT = """
     });
   }
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", setupV11Videos);
-  } else {
+  function setupV11TextSizing() {
+    document.querySelectorAll(".v11-answer-title").forEach(function(title) {
+      var text = (title.textContent || "").trim();
+      var words = text.split(/\\s+/).filter(Boolean).length;
+      if (text.length >= 38 || words >= 6) {
+        title.classList.add("is-very-long");
+      } else if (text.length >= 24 || words >= 4) {
+        title.classList.add("is-long");
+      }
+    });
+  }
+
+  function setupV11Card() {
     setupV11Videos();
+    setupV11TextSizing();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", setupV11Card);
+  } else {
+    setupV11Card();
   }
 })();
 </script>
@@ -8104,6 +8151,7 @@ LANGUAGE_BACK_TEMPLATE_V11 = """
         {{#PhraseTtsAudio}}<span class="v11-media-source audio-phrase">{{PhraseTtsAudio}}</span><button class="v11-speaker" onclick="playV11Audio(this, '.audio-phrase')" aria-label="播放表达发音">▶</button>{{/PhraseTtsAudio}}
       </div>
       {{#Chinese}}<p class="v11-chinese-core">{{Chinese}}</p>{{/Chinese}}
+      {{#ChineseFeel}}<p class="v11-answer-note">{{ChineseFeel}}</p>{{/ChineseFeel}}
       <hr class="v11-divider">
       <div class="v11-label">原句</div>
       <p class="v11-source">{{English}}</p>
@@ -8336,11 +8384,41 @@ def is_contextual_vocabulary_card(card: dict[str, Any]) -> bool:
     )
 
 
+ANSWER_COMMENTARY_RE = re.compile(
+    r"\s*[\(（]([^()（）]*(?:听力|连读|弱读|缩读|读作|读为|发音|音变|pronunciation|sounds like)[^()（）]*)[\)）]\s*",
+    re.IGNORECASE,
+)
+
+
+def answer_display_text(value: Any) -> str:
+    text = clean_study_text(value)
+    if not text:
+        return ""
+    text = ANSWER_COMMENTARY_RE.sub(" ", text)
+    equal_match = re.match(r"^\s*([^=＝:：]+?)\s*[=＝]\s*(.+)$", text)
+    if equal_match and re.search(r"[A-Za-z]", equal_match.group(1)) and has_cjk(equal_match.group(2)):
+        text = equal_match.group(1)
+    text = re.sub(r"\s+", " ", text).strip(" \t\r\n。；;")
+    return text
+
+
+def answer_commentary_text(value: Any) -> str:
+    text = clean_study_text(value)
+    if not text:
+        return ""
+    notes = [match.group(1).strip(" \t\r\n。；;") for match in ANSWER_COMMENTARY_RE.finditer(text)]
+    notes = [note for note in notes if note]
+    if not notes:
+        return ""
+    note = "；".join(dict.fromkeys(notes))
+    return note if note.startswith(("听感", "发音", "连读", "弱读", "缩读")) else f"听感：{note}"
+
+
 def card_answer_core(card: dict[str, Any]) -> str:
-    explicit = clean_study_text(card.get("answer_core"))
+    explicit = answer_display_text(card.get("answer_core"))
     if explicit:
         return explicit
-    phrase = clean_study_text(card.get("phrase"))
+    phrase = answer_display_text(card.get("phrase"))
     chinese = clean_study_text(card.get("natural_chinese") or card.get("chinese") or "")
     return phrase or chinese or clean_study_text(card.get("english"))
 
@@ -8493,6 +8571,10 @@ def v11_meaning_text(card: dict[str, Any]) -> str:
         if text and has_cjk(text):
             return text.strip("。；; ")
     return ""
+
+
+def v11_answer_note_text(card: dict[str, Any]) -> str:
+    return answer_commentary_text(card.get("answer_core")) or answer_commentary_text(card.get("phrase"))
 
 
 def v11_source_translation_text(card: dict[str, Any]) -> str:
@@ -9172,6 +9254,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             collocations_field = v11_self_sentence_text(card) if use_v11_template else card.get("collocations", "")
             context_field = v11_source_translation_text(card) if use_v11_template else card.get("context", "")
             teacher_note_field = v11_misuse_text(card) if use_v11_template else card.get("teacher_note", "")
+            chinese_feel_field = v11_answer_note_text(card) if use_v11_template else card.get("chinese_feel", "")
             note = genanki.Note(
                 model=model,
                 fields=[
@@ -9192,7 +9275,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     anki_study_text(collocations_field),
                     anki_study_text(context_field),
                     anki_study_text(card.get("example", "")),
-                    anki_study_text(card.get("chinese_feel", "")),
+                    anki_study_text(chinese_feel_field),
                     anki_study_text(card.get("why", "")),
                     anki_study_text(card.get("difficulty", "")),
                     anki_text(segment.get("source_time", "")),
