@@ -1,5 +1,7 @@
 import type { ApiConfig, TtsConfig } from '../domain/types'
 import {
+  DEEPSEEK_DEFAULT_MODEL,
+  DEEPSEEK_OPENAI_BASE_URL,
   MIMO_OPENAI_BASE_URL,
   MIMO_TOKEN_PLAN_SGP_BASE_URL,
   QWEN_DASHSCOPE_CN_TTS_BASE_URL,
@@ -11,6 +13,30 @@ import type { SourceMode } from '../domain/types'
 export function normalizeMimoModelId(value: string) {
   const trimmed = value.trim()
   return trimmed.toLowerCase().startsWith('mimo-') ? trimmed.toLowerCase() : trimmed
+}
+
+export function normalizeDeepSeekModelId(value: string) {
+  const normalized = value.trim().toLowerCase().replace(/\s+/g, '-')
+  if (!normalized) return DEEPSEEK_DEFAULT_MODEL
+  if (
+    normalized === 'deepseek-v4' ||
+    normalized === 'deepseek-v4-pro' ||
+    normalized === 'deepseek-v4pro' ||
+    normalized === 'deepseek-v-4-pro'
+  ) {
+    return DEEPSEEK_DEFAULT_MODEL
+  }
+  if (
+    normalized === 'deepseek-v4-flash' ||
+    normalized === 'deepseek-v4flash' ||
+    normalized === 'deepseek-v-4-flash'
+  ) {
+    return 'deepseek-v4-flash'
+  }
+  if (normalized === 'deepseek-chat' || normalized === 'deepseek-reasoner') {
+    return DEEPSEEK_DEFAULT_MODEL
+  }
+  return value.trim()
 }
 
 export function isMimoTokenPlanKey(value: string) {
@@ -28,6 +54,12 @@ export function isMimoApiConfig(api: ApiConfig) {
 export function isQwenApiConfig(api: ApiConfig) {
   const baseUrl = api.base_url.toLowerCase()
   return api.provider === 'openai-compatible' && (baseUrl.includes('dashscope') || baseUrl.includes('qwencloud'))
+}
+
+export function isDeepSeekApiConfig(api: ApiConfig) {
+  const baseUrl = api.base_url.toLowerCase()
+  const model = api.model.trim().toLowerCase()
+  return api.provider === 'openai-compatible' && (baseUrl.includes('deepseek.com') || model.startsWith('deepseek-'))
 }
 
 export function validateServiceBaseUrl(value: string, label = 'Base URL'): string | null {
@@ -86,22 +118,36 @@ export function resolveGenerateApiConfig(api: ApiConfig, sourceMode: SourceMode)
 }
 
 export function normalizeApiConfigForRequest(api: ApiConfig): ApiConfig {
-  if (!isMimoApiConfig(api) || api.provider === 'claude') return api
+  if (api.provider === 'claude' || api.provider === 'gemini' || api.provider === 'local') return api
 
-  const apiKey = api.api_key.trim()
-  let baseUrl = api.base_url.trim()
-  if (!baseUrl) {
-    baseUrl = isMimoTokenPlanKey(apiKey) ? MIMO_TOKEN_PLAN_SGP_BASE_URL : MIMO_OPENAI_BASE_URL
-  }
-  if (isMimoTokenPlanKey(apiKey) && !isMimoTokenPlanBase(baseUrl)) {
-    baseUrl = MIMO_TOKEN_PLAN_SGP_BASE_URL
+  if (isDeepSeekApiConfig(api) || (api.provider === 'openai-compatible' && !api.base_url.trim() && !api.model.trim())) {
+    return {
+      ...api,
+      base_url: api.base_url.toLowerCase().includes('deepseek.com')
+        ? DEEPSEEK_OPENAI_BASE_URL
+        : api.base_url.trim() || DEEPSEEK_OPENAI_BASE_URL,
+      model: normalizeDeepSeekModelId(api.model),
+    }
   }
 
-  return {
-    ...api,
-    base_url: baseUrl,
-    model: normalizeMimoModelId(api.model || 'mimo-v2.5-pro'),
+  if (isMimoApiConfig(api)) {
+    const apiKey = api.api_key.trim()
+    let baseUrl = api.base_url.trim()
+    if (!baseUrl) {
+      baseUrl = isMimoTokenPlanKey(apiKey) ? MIMO_TOKEN_PLAN_SGP_BASE_URL : MIMO_OPENAI_BASE_URL
+    }
+    if (isMimoTokenPlanKey(apiKey) && !isMimoTokenPlanBase(baseUrl)) {
+      baseUrl = MIMO_TOKEN_PLAN_SGP_BASE_URL
+    }
+
+    return {
+      ...api,
+      base_url: baseUrl,
+      model: normalizeMimoModelId(api.model || 'mimo-v2.5-pro'),
+    }
   }
+
+  return api
 }
 
 export function validateTtsConfigForRequest(tts: TtsConfig): string | null {

@@ -1,6 +1,7 @@
 import { Boxes, CircleAlert, KeyRound, PlugZap } from 'lucide-react'
 
 import type { ApiConfig, ApiPreset, Provider, SecretPrefs } from '../../domain/types'
+import { DEEPSEEK_DEFAULT_MODEL, DEEPSEEK_OPENAI_BASE_URL } from '../../domain/options'
 import { ConnectionTestCard } from './ConnectionTestCard'
 
 type ModelOption = {
@@ -63,12 +64,28 @@ export function ApiSettingsPanel({
     apiConfig.provider === preset.provider && apiConfig.base_url === preset.base_url && apiConfig.model === preset.model
 
   const handleProviderChange = (provider: Provider) => {
+    const useDeepSeekDefaults =
+      provider === 'openai-compatible' &&
+      (apiConfig.provider === 'local' ||
+        apiConfig.provider === 'mimo' ||
+        !apiConfig.base_url.trim() ||
+        !apiConfig.model.trim())
     onPatchApi({
       provider,
-      base_url: provider === 'mimo' ? apiConfig.base_url || mimoOpenAiBaseUrl : apiConfig.base_url,
-      model: provider === 'mimo' && !apiConfig.model ? 'mimo-v2.5-pro' : apiConfig.model,
-      capabilities:
+      base_url:
         provider === 'mimo'
+          ? apiConfig.base_url || mimoOpenAiBaseUrl
+          : useDeepSeekDefaults
+            ? DEEPSEEK_OPENAI_BASE_URL
+            : apiConfig.base_url,
+      model:
+        provider === 'mimo' && !apiConfig.model
+          ? 'mimo-v2.5-pro'
+          : useDeepSeekDefaults
+            ? DEEPSEEK_DEFAULT_MODEL
+            : apiConfig.model,
+      capabilities:
+        provider === 'mimo' || useDeepSeekDefaults
           ? Array.from(new Set([...apiConfig.capabilities, 'structured_json', 'long_context']))
           : apiConfig.capabilities,
     })

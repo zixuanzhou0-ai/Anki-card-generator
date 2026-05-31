@@ -1,5 +1,7 @@
-﻿import type { ApiConfig, GenerateRequest, Level, Project, SecretPrefs, TtsConfig, TtsProvider, UrlImportMode } from '../domain/types'
+import type { ApiConfig, GenerateRequest, Level, Project, SecretPrefs, TtsConfig, TtsProvider, UrlImportMode } from '../domain/types'
 import {
+  DEEPSEEK_DEFAULT_MODEL,
+  DEEPSEEK_OPENAI_BASE_URL,
   defaultRequest,
   documentReadingFocusOptions,
   normalizeDocumentAnswerLanguage,
@@ -14,20 +16,39 @@ import {
   REQUEST_STORAGE_KEY,
   SECRET_PREFS_STORAGE_KEY,
 } from '../domain/options'
-import { normalizeMimoModelId } from './apiConfig'
+import { normalizeDeepSeekModelId, normalizeMimoModelId } from './apiConfig'
 import { isTauriRuntime } from './runtime'
 
-export function normalizeSavedMimoConfig(saved: GenerateRequest): GenerateRequest {
+export function normalizeSavedApiConfig(saved: GenerateRequest): GenerateRequest {
   const apiBase = saved.api_config.base_url.toLowerCase()
+  const apiModel = saved.api_config.model.trim().toLowerCase()
   const isMimoText = saved.api_config.provider === 'mimo' || apiBase.includes('xiaomimimo.com')
+  const isDeepSeekText =
+    saved.api_config.provider === 'local' ||
+    apiBase.includes('deepseek.com') ||
+    apiModel.startsWith('deepseek-') ||
+    (saved.api_config.provider === 'openai-compatible' &&
+      (!saved.api_config.base_url.trim() || !saved.api_config.model.trim()))
   const ttsBase = saved.api_config.tts_config.base_url.toLowerCase()
   const isMimoTts = saved.api_config.tts_config.provider === 'mimo' || ttsBase.includes('xiaomimimo.com')
+  const deepSeekModel = normalizeDeepSeekModelId(saved.api_config.model)
 
   return {
     ...saved,
     api_config: {
       ...saved.api_config,
-      model: isMimoText ? normalizeMimoModelId(saved.api_config.model) : saved.api_config.model,
+      provider: isDeepSeekText ? 'openai-compatible' : saved.api_config.provider,
+      base_url: isDeepSeekText ? DEEPSEEK_OPENAI_BASE_URL : saved.api_config.base_url,
+      model: isDeepSeekText
+        ? deepSeekModel.toLowerCase().startsWith('deepseek-')
+          ? deepSeekModel
+          : DEEPSEEK_DEFAULT_MODEL
+        : isMimoText
+          ? normalizeMimoModelId(saved.api_config.model)
+          : saved.api_config.model,
+      capabilities: isDeepSeekText
+        ? Array.from(new Set([...(saved.api_config.capabilities ?? []), 'structured_json', 'long_context']))
+        : saved.api_config.capabilities,
       tts_config: {
         ...saved.api_config.tts_config,
         model: isMimoTts ? normalizeMimoModelId(saved.api_config.tts_config.model) : saved.api_config.tts_config.model,
@@ -35,6 +56,8 @@ export function normalizeSavedMimoConfig(saved: GenerateRequest): GenerateReques
     },
   }
 }
+
+export const normalizeSavedMimoConfig = normalizeSavedApiConfig
 
 export function stripRequestSecrets(request: GenerateRequest): GenerateRequest {
   return {
@@ -66,7 +89,7 @@ export function loadSavedRequest(): GenerateRequest {
     const legacyTtsProvider = savedApi.tts_provider?.trim()
     const legacyTtsModel = savedApi.tts_model?.trim()
     const documentStudyMode = normalizeDocumentStudyMode(saved.document_study_mode)
-    return stripRequestSecrets(normalizeSavedMimoConfig({
+    return stripRequestSecrets(normalizeSavedApiConfig({
       ...defaultRequest,
       ...saved,
       template_id: 'immersive_v11',

@@ -101,6 +101,21 @@ describe('ApiSettingsPanel', () => {
     )
   })
 
+  it('patches DeepSeek V4 defaults when switching to OpenAI-compatible from empty local config', () => {
+    const onPatchApi = vi.fn()
+    renderPanel({ onPatchApi })
+
+    fireEvent.change(screen.getByLabelText(/Provider/), { target: { value: 'openai-compatible' } })
+
+    expect(onPatchApi).toHaveBeenCalledWith(
+      expect.objectContaining({
+        base_url: 'https://api.deepseek.com',
+        model: 'deepseek-v4-pro',
+        provider: 'openai-compatible',
+      }),
+    )
+  })
+
   it('toggles capabilities and remember-key preference', () => {
     const onPatchApi = vi.fn()
     const onToggleRememberModelKey = vi.fn()

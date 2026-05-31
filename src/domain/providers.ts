@@ -7,6 +7,7 @@ export const MIMO_TOKEN_PLAN_SGP_ANTHROPIC_BASE_URL = 'https://token-plan-sgp.xi
 export const QWEN_DASHSCOPE_CN_COMPATIBLE_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
 export const QWEN_DASHSCOPE_INTL_COMPATIBLE_BASE_URL = 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1'
 export const DEEPSEEK_OPENAI_BASE_URL = 'https://api.deepseek.com'
+export const DEEPSEEK_DEFAULT_MODEL = 'deepseek-v4-pro'
 
 export const mimoTextModels = [
   { value: 'mimo-v2.5-pro', label: 'MiMo-V2.5-Pro' },
@@ -25,7 +26,7 @@ export const qwenTextModels = [
 ]
 
 export const deepseekTextModels = [
-  { value: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' },
+  { value: DEEPSEEK_DEFAULT_MODEL, label: 'DeepSeek V4 Pro' },
   { value: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
 ]
 
@@ -107,7 +108,7 @@ export const apiPresets: ApiPreset[] = [
     label: 'DeepSeek V4 Pro',
     provider: 'openai-compatible',
     base_url: DEEPSEEK_OPENAI_BASE_URL,
-    model: 'deepseek-v4-pro',
+    model: DEEPSEEK_DEFAULT_MODEL,
     capabilities: ['structured_json', 'long_context'],
     note: 'DeepSeek 当前旗舰模型；默认保留 Thinking，适合高质量筛选、上下文理解和解释生成。',
     key_hint: 'DeepSeek 控制台里的 API Key',

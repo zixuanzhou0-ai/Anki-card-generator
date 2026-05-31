@@ -68,6 +68,49 @@ describe('projectStorage document focus migration', () => {
     expect(loadSavedRequest().language_focus).toEqual(['phrases', 'grammar'])
   })
 
+  it('migrates legacy empty model config to filled DeepSeek V4 Pro settings', () => {
+    window.localStorage.setItem(
+      REQUEST_STORAGE_KEY,
+      JSON.stringify({
+        api_config: {
+          provider: 'local',
+          base_url: '',
+          api_key: 'should-be-stripped',
+          model: '',
+          capabilities: [],
+          tts_config: defaultRequest.api_config.tts_config,
+        },
+      }),
+    )
+
+    const request = loadSavedRequest()
+    expect(request.api_config.provider).toBe('openai-compatible')
+    expect(request.api_config.base_url).toBe('https://api.deepseek.com')
+    expect(request.api_config.model).toBe('deepseek-v4-pro')
+    expect(request.api_config.capabilities).toEqual(['structured_json', 'long_context'])
+    expect(request.api_config.api_key).toBe('')
+  })
+
+  it('migrates old DeepSeek chat settings to official V4 Pro settings', () => {
+    window.localStorage.setItem(
+      REQUEST_STORAGE_KEY,
+      JSON.stringify({
+        api_config: {
+          provider: 'openai-compatible',
+          base_url: 'https://api.deepseek.com/v1',
+          api_key: '',
+          model: 'deepseek-chat',
+          capabilities: ['structured_json'],
+          tts_config: defaultRequest.api_config.tts_config,
+        },
+      }),
+    )
+
+    const request = loadSavedRequest()
+    expect(request.api_config.base_url).toBe('https://api.deepseek.com')
+    expect(request.api_config.model).toBe('deepseek-v4-pro')
+  })
+
   it('preserves document source info and cleans reading focus on saved projects', () => {
     window.localStorage.setItem(
       PROJECT_STORAGE_KEY,

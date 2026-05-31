@@ -64,6 +64,54 @@ describe('validateServiceBaseUrl', () => {
     expect(normalized.model).toBe('mimo-v2.5-pro')
   })
 
+  it('fills empty OpenAI-compatible config with DeepSeek V4 Pro defaults before requests', () => {
+    const normalized = normalizeApiConfigForRequest({
+      provider: 'openai-compatible',
+      base_url: '',
+      api_key: 'sk-deepseek',
+      model: '',
+      capabilities: ['structured_json'],
+      tts_config: {
+        enabled: false,
+        provider: 'disabled',
+        base_url: '',
+        api_key: '',
+        model: '',
+        voice: '',
+        language: 'auto',
+        sample_rate: 24000,
+        bit_rate: 128000,
+      },
+    })
+
+    expect(normalized.base_url).toBe('https://api.deepseek.com')
+    expect(normalized.model).toBe('deepseek-v4-pro')
+  })
+
+  it('migrates legacy DeepSeek model names to DeepSeek V4 Pro', () => {
+    const normalized = normalizeApiConfigForRequest({
+      provider: 'openai-compatible',
+      base_url: 'https://api.deepseek.com/v1',
+      api_key: 'sk-deepseek',
+      model: 'deepseek-chat',
+      capabilities: ['structured_json'],
+      tts_config: {
+        enabled: false,
+        provider: 'disabled',
+        base_url: '',
+        api_key: '',
+        model: '',
+        voice: '',
+        language: 'auto',
+        sample_rate: 24000,
+        bit_rate: 128000,
+      },
+    })
+
+    expect(normalized.base_url).toBe('https://api.deepseek.com')
+    expect(normalized.model).toBe('deepseek-v4-pro')
+  })
+
   it('rejects DashScope-shaped keys on MIMO Token Plan endpoints before a network request', () => {
     const apiMessage = validateApiConfigForRequest({
       provider: 'mimo',
