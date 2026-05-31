@@ -30,7 +30,7 @@ If the UI stays on one stage for a long time:
 4. Retry with video slicing disabled or subtitle-only mode.
 5. Use a shorter local SRT to confirm the model/API path works.
 
-Reasoning models such as Qwen / DashScope or MiMo may spend longer in material understanding or candidate review. Their thinking output is preserved for the provider call but stripped before JSON parsing, so a longer wait is not automatically an error.
+Reasoning models such as DeepSeek V4, Qwen / DashScope, or MiMo may spend longer in material understanding or candidate review. The app streams their `reasoning_content` / thinking deltas for progress updates, then strips thinking before JSON parsing, so a longer wait is not automatically an error. If progress stays at the same percent but the message says “正在思考” and the thinking character count is increasing, the model is still working.
 
 ## API Test Fails
 
@@ -40,6 +40,12 @@ Check:
 - Base URL is correct.
 - Model name is lowercase when the provider requires it.
 - The key has enough quota.
+
+DeepSeek V4 presets use:
+
+- Base URL: `https://api.deepseek.com`
+- Pro model: `deepseek-v4-pro`
+- Flash model: `deepseek-v4-flash`
 
 The app should never require a real key in source files, docs, logs, or release artifacts.
 

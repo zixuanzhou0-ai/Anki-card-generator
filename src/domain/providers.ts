@@ -6,6 +6,7 @@ export const MIMO_TOKEN_PLAN_SGP_BASE_URL = 'https://token-plan-sgp.xiaomimimo.c
 export const MIMO_TOKEN_PLAN_SGP_ANTHROPIC_BASE_URL = 'https://token-plan-sgp.xiaomimimo.com/anthropic'
 export const QWEN_DASHSCOPE_CN_COMPATIBLE_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
 export const QWEN_DASHSCOPE_INTL_COMPATIBLE_BASE_URL = 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1'
+export const DEEPSEEK_OPENAI_BASE_URL = 'https://api.deepseek.com'
 
 export const mimoTextModels = [
   { value: 'mimo-v2.5-pro', label: 'MiMo-V2.5-Pro' },
@@ -21,6 +22,11 @@ export const qwenTextModels = [
   { value: 'qwen-plus', label: 'Qwen Plus' },
   { value: 'qwen-max', label: 'Qwen Max' },
   { value: 'qwen-flash', label: 'Qwen Flash' },
+]
+
+export const deepseekTextModels = [
+  { value: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' },
+  { value: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
 ]
 
 export const capabilityLabels = ['structured_json', 'long_context', 'tts', 'asr', 'vision', 'omni', 'cheap_batch']
@@ -97,13 +103,23 @@ export const apiPresets: ApiPreset[] = [
     key_hint: 'Token Plan Key，通常是 tp-...',
   },
   {
-    id: 'deepseek',
-    label: 'DeepSeek',
+    id: 'deepseek-v4-pro',
+    label: 'DeepSeek V4 Pro',
     provider: 'openai-compatible',
-    base_url: 'https://api.deepseek.com/v1',
-    model: 'deepseek-chat',
+    base_url: DEEPSEEK_OPENAI_BASE_URL,
+    model: 'deepseek-v4-pro',
+    capabilities: ['structured_json', 'long_context'],
+    note: 'DeepSeek 当前旗舰模型；默认保留 Thinking，适合高质量筛选、上下文理解和解释生成。',
+    key_hint: 'DeepSeek 控制台里的 API Key',
+  },
+  {
+    id: 'deepseek-v4-flash',
+    label: 'DeepSeek V4 Flash',
+    provider: 'openai-compatible',
+    base_url: DEEPSEEK_OPENAI_BASE_URL,
+    model: 'deepseek-v4-flash',
     capabilities: ['structured_json', 'long_context', 'cheap_batch'],
-    note: '推荐作为入门默认项：成本友好，适合批量生成解释草稿。',
+    note: 'DeepSeek V4 快速低成本模型；适合批量字幕生成，Thinking 同样会被流式处理。',
     key_hint: 'DeepSeek 控制台里的 API Key',
   },
   {
@@ -208,7 +224,13 @@ export const apiPresets: ApiPreset[] = [
   },
 ]
 
-export const featuredApiPresetIds = new Set(['mimo-token-plan-sgp', 'qwen37-max-cn', 'deepseek', 'custom-compatible'])
+export const featuredApiPresetIds = new Set([
+  'mimo-token-plan-sgp',
+  'qwen37-max-cn',
+  'deepseek-v4-pro',
+  'deepseek-v4-flash',
+  'custom-compatible',
+])
 
 export const featuredApiPresets = apiPresets.filter((preset) => featuredApiPresetIds.has(preset.id))
 export const advancedApiPresets = apiPresets.filter((preset) => !featuredApiPresetIds.has(preset.id))

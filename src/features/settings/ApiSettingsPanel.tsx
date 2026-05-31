@@ -101,10 +101,9 @@ export function ApiSettingsPanel({
         <div className="settings-callout">
           <PlugZap size={18} />
           <div>
-            <strong>你现在用 MIMO，可以直接选 MIMO V2.5 Pro。</strong>
+            <strong>强模型优先选 DeepSeek V4 Pro、Qwen3.7 Max 或 MIMO V2.5 Pro。</strong>
             <p>
-              Token Plan 用户优先选 MIMO Token Plan SGP。程序会按官方要求自动使用 api-key 请求头、 小写模型 ID 和更大的
-              max_completion_tokens；填好 Key 后先点“测试连接”。
+              DeepSeek V4 / Qwen / MIMO 这类 Thinking 模型会流式接收推理过程并只解析最终 JSON；填好 Key 后先点“测试连接”。
             </p>
           </div>
         </div>
@@ -167,7 +166,7 @@ export function ApiSettingsPanel({
           <input
             value={apiConfig.base_url}
             onChange={(event) => onPatchApi({ base_url: event.target.value })}
-            placeholder={apiConfig.provider === 'mimo' ? mimoOpenAiBaseUrl : 'https://api.deepseek.com/v1'}
+            placeholder={apiConfig.provider === 'mimo' ? mimoOpenAiBaseUrl : 'https://api.deepseek.com'}
           />
           <small>
             {apiConfig.provider === 'mimo'
@@ -183,7 +182,7 @@ export function ApiSettingsPanel({
             value={apiConfig.model}
             onChange={(event) => onPatchApi({ model: event.target.value })}
             list="mimo-text-models"
-            placeholder={apiConfig.provider === 'mimo' ? 'mimo-v2.5-pro' : 'deepseek-chat'}
+            placeholder={apiConfig.provider === 'mimo' ? 'mimo-v2.5-pro' : 'deepseek-v4-pro'}
           />
           <datalist id="mimo-text-models">
             {mimoTextModels.map((model) => (
@@ -195,7 +194,7 @@ export function ApiSettingsPanel({
           <small>
             {apiConfig.provider === 'mimo'
               ? '官方要求模型 ID 小写：mimo-v2.5-pro、mimo-v2.5、mimo-v2-pro、mimo-v2-omni。'
-              : '填模型 ID，不是产品名。比如 deepseek-chat、qwen3.7-max、qwen3.6-plus。'}
+              : '填模型 ID，不是产品名。比如 deepseek-v4-pro、deepseek-v4-flash、qwen3.7-max。'}
           </small>
         </label>
         <label className="field">
@@ -254,7 +253,7 @@ export function ApiSettingsPanel({
         <div>
           <CircleAlert size={18} />
           <strong>测试失败常见原因</strong>
-          <p>Key 填错、模型名不存在、Base URL 少了 /v1、余额不足、服务商网络不可达。</p>
+          <p>Key 填错、模型名不存在、Base URL 和地域不匹配、余额不足、服务商网络不可达。</p>
         </div>
       </div>
     </section>

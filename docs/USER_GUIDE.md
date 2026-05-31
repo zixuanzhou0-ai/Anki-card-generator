@@ -41,10 +41,13 @@ flowchart TB
 
 - MIMO Token Plan SGP，或
 - MIMO Public V2.5 Pro
+- DeepSeek V4 Pro / DeepSeek V4 Flash，或
 - Qwen / DashScope 兼容接口，或
 - 其他 OpenAI-compatible 服务商
 
-填写自己的 API Key。TTS 在“语音模型”中单独配置；如果文本模型已经填了 MIMO 或 Qwen / DashScope Key，TTS 可以复用。
+填写自己的 API Key。DeepSeek V4 的 Base URL 使用 `https://api.deepseek.com`，模型名填真实 ID：`deepseek-v4-pro` 或 `deepseek-v4-flash`。TTS 在“语音模型”中单独配置；如果文本模型已经填了 MIMO 或 Qwen / DashScope Key，TTS 可以复用。
+
+DeepSeek V4 / Qwen / MIMO 这类模型会先 thinking 再输出最终 JSON。应用会流式接收 thinking 进度，保留模型思考能力，但只把最终 JSON 用于制卡，避免进度长时间停住或把 thinking 文本混进卡片字段。
 
 英语卡片的 TTS 建议：
 

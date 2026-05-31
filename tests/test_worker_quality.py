@@ -120,6 +120,50 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(response["choices"][0]["message"]["content"], '{"segments":[]}')
         self.assertEqual(response["choices"][0]["message"]["reasoning_content"], "reason")
 
+    def test_deepseek_v4_compatible_chat_completion_streams_reasoning(self):
+        calls = {}
+        original_http_sse_json_events = worker._legacy_worker.http_sse_json_events
+
+        def fake_http_sse_json_events(url, headers, body, timeout=120):
+            calls["url"] = url
+            calls["headers"] = headers
+            calls["body"] = body
+            calls["timeout"] = timeout
+            return [
+                {"choices": [{"delta": {"reasoning_content": "think"}, "finish_reason": None}]},
+                {"choices": [{"delta": {"content": '{"segments":[]}'}, "finish_reason": "stop"}]},
+            ]
+
+        try:
+            worker._legacy_worker.http_sse_json_events = fake_http_sse_json_events
+            response = worker.compatible_chat_completion(
+                {
+                    "provider": "openai-compatible",
+                    "api_key": "sk-deepseek",
+                    "base_url": "https://api.deepseek.com",
+                    "model": "deepseek-v4-pro",
+                },
+                [{"role": "user", "content": "Return JSON."}],
+                temperature=0,
+                timeout=180,
+                max_tokens=8000,
+            )
+        finally:
+            worker._legacy_worker.http_sse_json_events = original_http_sse_json_events
+
+        self.assertEqual(calls["url"], "https://api.deepseek.com/chat/completions")
+        self.assertEqual(calls["headers"]["Authorization"], "Bearer sk-deepseek")
+        self.assertEqual(calls["body"]["response_format"], {"type": "json_object"})
+        self.assertEqual(calls["body"]["thinking"], {"type": "enabled"})
+        self.assertEqual(calls["body"]["reasoning_effort"], "high")
+        self.assertTrue(calls["body"]["stream"])
+        self.assertEqual(calls["body"]["stream_options"], {"include_usage": True})
+        self.assertEqual(calls["body"]["max_tokens"], 8000)
+        self.assertNotIn("enable_thinking", calls["body"])
+        self.assertEqual(calls["timeout"], 180)
+        self.assertEqual(response["choices"][0]["message"]["content"], '{"segments":[]}')
+        self.assertEqual(response["choices"][0]["message"]["reasoning_content"], "think")
+
     def test_extract_json_object_ignores_reasoning_blocks(self):
         payload = worker.extract_json_object(
             '<think>{"noise": true}</think>\n模型最终答案：\n```json\n{"segments":[]}\n```'

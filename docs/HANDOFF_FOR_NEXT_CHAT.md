@@ -35,7 +35,8 @@ Recent hardening added after the initial document-study split:
 - Deep Study is now represented by `study_depth` on requests/projects. The default is `deep`; the UI also exposes `快速生成`.
 - The worker now builds and stores a hidden `material_context` before candidate review/card writing, so thinking models can use whole-material context before producing cards.
 - `language_focus` now defaults to `phrases + vocabulary + listening`. `vocabulary_usage` exports as `语境生词卡` while keeping V10 APKG fields compatible.
-- Candidate review is no longer worded as MIMO-only; OpenAI-compatible providers such as Qwen / DashScope can run the same AI candidate review path.
+- Candidate review is no longer worded as MIMO-only; OpenAI-compatible providers such as DeepSeek V4 and Qwen / DashScope can run the same AI candidate review path.
+- DeepSeek V4 Pro / Flash presets were added with official model IDs `deepseek-v4-pro` and `deepseek-v4-flash`. The worker now treats DeepSeek V4 as a thinking model: streaming `reasoning_content` keeps progress alive while final JSON parsing ignores thinking text.
 - V10 APKG visual templates are now split by export family: video/subtitle language cards, document knowledge cards, and document reading cards use different front/back HTML while keeping the existing field names. The templates no longer rely on JS overflow fitting and allow stable vertical scrolling.
 - Video/subtitle language cards now default to `immersive_v11` / `沉浸复读 V11`: front side is shadowing-first with autoplaying muted loop video and custom `原声` / `慢读` buttons; back side shows core expression, Chinese intuition, source sentence, phrase TTS, compact replay video, and explanation blocks. `immersive` remains as the old V10 fallback option.
 

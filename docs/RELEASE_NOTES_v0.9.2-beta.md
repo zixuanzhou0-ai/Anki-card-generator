@@ -18,6 +18,7 @@ This beta refresh focuses on the visible desktop experience and release assets.
 - Added contextual vocabulary cards. `vocabulary` is now part of the default video learning focus, and `vocabulary_usage` cards export with the `语境生词卡` label while keeping V10 APKG fields compatible.
 - Added the default `沉浸复读 V11` Anki template for video/subtitle cards. The front is now a focused shadowing card with autoplaying muted loop video and custom `原声` / `慢读` buttons; the back prioritizes core expression, Chinese intuition, source sentence, phrase TTS, and compact explanation blocks while preserving compatible fields.
 - Generalized candidate review language from MIMO-only phrase review toward OpenAI-compatible AI candidate review, including Qwen / DashScope-compatible reasoning models.
+- Added DeepSeek V4 Pro and DeepSeek V4 Flash presets. DeepSeek V4 thinking output is streamed as progress and stripped before JSON parsing, so the model can keep reasoning without stalling generation at an unchanged percent.
 - Hardened TTS export so resolved provider settings are used during APKG export, including saved/reused TTS API keys.
 - Updated Qwen3 TTS presets for English cards: `Jennifer` is now the default American English female voice, `Aiden` is available as an American English male voice, and Qwen3 voice-design model IDs are exposed for advanced setup.
 

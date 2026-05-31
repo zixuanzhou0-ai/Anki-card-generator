@@ -9,6 +9,7 @@ import {
 } from './documentStudy'
 import { defaultCollectionLevels } from './levels'
 import { defaultLanguageFocus } from './learningFocus'
+import { DEEPSEEK_OPENAI_BASE_URL } from './providers'
 import { defaultStudyDepth } from './studyDepth'
 
 export const PROJECT_STORAGE_KEY = 'anki-card-generator:last-project'
@@ -43,9 +44,9 @@ export const defaultRequest: GenerateRequest = {
   max_segments: 0,
   api_config: {
     provider: 'openai-compatible',
-    base_url: 'https://api.deepseek.com/v1',
+    base_url: DEEPSEEK_OPENAI_BASE_URL,
     api_key: '',
-    model: 'deepseek-chat',
+    model: 'deepseek-v4-flash',
     capabilities: ['structured_json', 'long_context'],
     tts_config: {
       enabled: false,

@@ -57,12 +57,14 @@ for stream in (sys.stdin, sys.stdout, sys.stderr):
 
 MIMO_OPENAI_BASE_URL = "https://api.xiaomimimo.com/v1"
 MIMO_TOKEN_PLAN_SGP_BASE_URL = "https://token-plan-sgp.xiaomimimo.com/v1"
+DEEPSEEK_OPENAI_BASE_URL = "https://api.deepseek.com"
 QWEN_DASHSCOPE_CN_TTS_BASE_URL = "https://dashscope.aliyuncs.com/api/v1"
 QWEN_TTS_DEFAULT_MODEL = "qwen3-tts-flash"
 QWEN_TTS_DEFAULT_VOICE = "Jennifer"
 MIMO_PROVIDERS = {"mimo", "xiaomi-mimo"}
 QWEN_TTS_PROVIDERS = {"qwen", "dashscope", "aliyun-dashscope"}
 OPENAI_COMPATIBLE_PROVIDERS = {"openai-compatible", *MIMO_PROVIDERS}
+DEEPSEEK_THINKING_MODELS = {"deepseek-v4-pro", "deepseek-v4-flash", "deepseek-reasoner"}
 
 
 def overlap_words(value: str) -> list[str]:
@@ -1860,6 +1862,7 @@ def call_material_context(project: dict[str, Any], segments: list[dict[str, Any]
     prompt = build_material_context_prompt(project, segments)
     try:
         if provider in OPENAI_COMPATIBLE_PROVIDERS:
+            token_budget = 3000 if is_deepseek_thinking_config(api) else 2200
             response = compatible_chat_completion(
                 api,
                 [
@@ -1867,8 +1870,8 @@ def call_material_context(project: dict[str, Any], segments: list[dict[str, Any]
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.2,
-                timeout=120 if (is_mimo_config(api) or is_qwen_config(api)) else 60,
-                max_tokens=2200,
+                timeout=180 if is_thinking_model_config(api) else 60,
+                max_tokens=token_budget,
                 progress={
                     "command": "generate",
                     "stage": "context",
@@ -2101,6 +2104,8 @@ def compatible_base_url(config: dict[str, Any], default_url: str = "") -> str:
         return MIMO_TOKEN_PLAN_SGP_BASE_URL
     if base_url:
         return base_url
+    if is_deepseek_config(config):
+        return DEEPSEEK_OPENAI_BASE_URL
     if provider in MIMO_PROVIDERS:
         return MIMO_TOKEN_PLAN_SGP_BASE_URL if api_key.startswith("tp-") else MIMO_OPENAI_BASE_URL
     return default_url.rstrip("/")
@@ -2126,6 +2131,21 @@ def is_qwen_config(config: dict[str, Any]) -> bool:
     )
 
 
+def is_deepseek_config(config: dict[str, Any]) -> bool:
+    base_url = str(config.get("base_url") or "").lower()
+    model = str(config.get("model") or "").strip().lower()
+    return "deepseek.com" in base_url or model.startswith("deepseek-")
+
+
+def is_deepseek_thinking_config(config: dict[str, Any]) -> bool:
+    model = str(config.get("model") or "").strip().lower()
+    return is_deepseek_config(config) and model in DEEPSEEK_THINKING_MODELS
+
+
+def is_thinking_model_config(config: dict[str, Any]) -> bool:
+    return is_qwen_config(config) or is_mimo_config(config) or is_deepseek_thinking_config(config)
+
+
 def thinking_budget(config: dict[str, Any], default_value: int = 800) -> int:
     for key in ("thinking_budget", "reasoning_budget"):
         value = config.get(key)
@@ -2139,7 +2159,7 @@ def thinking_budget(config: dict[str, Any], default_value: int = 800) -> int:
 
 
 def should_stream_reasoning(config: dict[str, Any]) -> bool:
-    return is_qwen_config(config) or is_mimo_config(config)
+    return is_thinking_model_config(config)
 
 
 def api_key_header(config: dict[str, Any]) -> dict[str, str]:
@@ -2182,6 +2202,7 @@ def compatible_chat_completion(
         raise RuntimeError("MIMO / OpenAI-compatible 需要 Base URL。")
     is_mimo = is_mimo_config(api)
     is_qwen = is_qwen_config(api)
+    is_deepseek_thinking = is_deepseek_thinking_config(api)
     body: dict[str, Any] = {
         "model": str(api.get("model") or "").strip(),
         "messages": messages,
@@ -2193,6 +2214,9 @@ def compatible_chat_completion(
     else:
         body["reasoning_effort"] = "low"
         body["thinking"] = {"type": "enabled"}
+    if is_deepseek_thinking:
+        body["thinking"] = {"type": "enabled"}
+        body["reasoning_effort"] = str(api.get("reasoning_effort") or "high")
     if is_qwen:
         body["enable_thinking"] = True
         body["thinking_budget"] = thinking_budget(api)
@@ -2242,6 +2266,23 @@ def compatible_chat_completion(
                             f"{err}; 保留 MIMO thinking 重试失败：{retry_err}; 改用 max_tokens 重试仍失败：{token_retry_err}"
                         ) from token_retry_err
                 raise RuntimeError(f"{err}; 保留 MIMO thinking 重试仍失败：{retry_err}") from retry_err
+        if stream_reasoning:
+            retry_body = dict(body)
+            retry_body["stream"] = False
+            retry_body.pop("stream_options", None)
+            try:
+                return send(retry_body)
+            except Exception as stream_retry_err:
+                if supports_response_retry:
+                    retry_body.pop("response_format", None)
+                    try:
+                        return send(retry_body)
+                    except Exception as response_retry_err:
+                        raise RuntimeError(
+                            f"{err}; 去掉流式 thinking 重试失败：{stream_retry_err}; "
+                            f"去掉 response_format 重试仍失败：{response_retry_err}"
+                        ) from response_retry_err
+                raise RuntimeError(f"{err}; 去掉流式 thinking 重试失败：{stream_retry_err}") from stream_retry_err
         # Some OpenAI-compatible providers, including Token Plan gateways, may not support
         # response_format even when they can reliably return JSON from the prompt.
         if not supports_response_retry:
@@ -2273,7 +2314,7 @@ def call_model(project: dict[str, Any], segments: list[dict[str, Any]]) -> dict[
 
     try:
         if provider in OPENAI_COMPATIBLE_PROVIDERS:
-            token_budget = 2200 if is_mimo_config(api) else 4000 if is_qwen_config(api) else 6000
+            token_budget = 2200 if is_mimo_config(api) else 8000 if is_deepseek_thinking_config(api) else 4000 if is_qwen_config(api) else 6000
             response = compatible_chat_completion(
                 api,
                 [
@@ -2281,7 +2322,7 @@ def call_model(project: dict[str, Any], segments: list[dict[str, Any]]) -> dict[
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.3,
-                timeout=120 if (is_mimo_config(api) or is_qwen_config(api)) else 60,
+                timeout=180 if is_thinking_model_config(api) else 60,
                 max_tokens=token_budget,
                 progress={
                     "command": "generate",
@@ -2340,6 +2381,8 @@ def call_model_batches(project: dict[str, Any], segments: list[dict[str, Any]], 
         return None
     if is_mimo_config(api):
         batch_size = 1
+    elif is_deepseek_thinking_config(api):
+        batch_size = min(batch_size, 4)
     elif is_qwen_config(api):
         batch_size = min(batch_size, 4)
     merged: list[dict[str, Any]] = []
@@ -2349,7 +2392,7 @@ def call_model_batches(project: dict[str, Any], segments: list[dict[str, Any]], 
     for start in range(0, len(segments), batch_size):
         batch = segments[start : start + batch_size]
         batch_index = start // batch_size + 1
-        provider_hint = "，thinking 已保留" if (is_qwen_config(api) or is_mimo_config(api)) else ""
+        provider_hint = "，thinking 已保留" if is_thinking_model_config(api) else ""
         percent = min(82, 66 + int((batch_index - 1) / total_batches * 14))
         emit_progress(
             "generate",
@@ -2727,8 +2770,8 @@ def review_phrase_candidates_with_mimo(
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.1,
-                timeout=120,
-                max_tokens=3200,
+                timeout=180 if is_thinking_model_config(api) else 120,
+                max_tokens=4500 if is_deepseek_thinking_config(api) else 3200,
                 progress={
                     "command": "generate",
                     "stage": "phrase_review",
@@ -2828,8 +2871,8 @@ def handle_test_api(payload: dict[str, Any]) -> dict[str, Any]:
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0,
-                timeout=30,
-                max_tokens=2000 if is_mimo_config(api) else 800,
+                timeout=90 if is_thinking_model_config(api) else 30,
+                max_tokens=2000 if (is_mimo_config(api) or is_deepseek_thinking_config(api)) else 800,
             )
             content = chat_completion_content(response)
             if content is None:
@@ -3961,7 +4004,7 @@ def call_document_model(project: dict[str, Any], segments: list[dict[str, Any]])
     prompt = build_document_prompt(project, segments)
     try:
         if provider in OPENAI_COMPATIBLE_PROVIDERS:
-            token_budget = 2200 if is_mimo_config(api) else 4000 if is_qwen_config(api) else 5000
+            token_budget = 2200 if is_mimo_config(api) else 7000 if is_deepseek_thinking_config(api) else 4000 if is_qwen_config(api) else 5000
             response = compatible_chat_completion(
                 api,
                 [
@@ -3969,7 +4012,7 @@ def call_document_model(project: dict[str, Any], segments: list[dict[str, Any]])
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.25,
-                timeout=120 if (is_mimo_config(api) or is_qwen_config(api)) else 60,
+                timeout=180 if is_thinking_model_config(api) else 60,
                 max_tokens=token_budget,
                 progress={
                     "command": "generate",
