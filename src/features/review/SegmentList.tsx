@@ -3,6 +3,7 @@ import { motion } from 'motion/react'
 
 import type { DocumentStudyMode, Segment } from '../../domain/types'
 import {
+  candidateKindLabel,
   isDocumentReadingSegment,
   isKnowledgeSegment,
   phraseValueScore,
@@ -42,6 +43,7 @@ export function SegmentList({
         const partiallyEnabled = enabledCards > 0 && enabledCards < totalCards
         const phraseTitle = segmentPhraseTitle(segment, documentStudyMode)
         const trainingFocus = segmentTrainingFocus(segment, documentStudyMode)
+        const kindLabel = candidateKindLabel(segment.candidate_kind)
         const isReading = isDocumentReadingSegment(segment, documentStudyMode)
         const isKnowledge = isKnowledgeSegment(segment)
         const primaryCard = segment.cards[0]
@@ -88,6 +90,7 @@ export function SegmentList({
                   {score !== null ? ` · ${score}/5` : ''}
                 </em>
               </span>
+              {kindLabel ? <span className={`kind-chip kind-${segment.candidate_kind}`}>{kindLabel}</span> : null}
               <strong>{phraseTitle}</strong>
               <small>
                 {enabledCards}/{totalCards} 张已选 · 推荐 {segment.recommendation}/5

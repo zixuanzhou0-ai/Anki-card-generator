@@ -93,6 +93,16 @@ export function phraseTypeLabel(value: string | null | undefined) {
   return ''
 }
 
+export function candidateKindLabel(value: string | null | undefined) {
+  const type = String(value ?? '').trim()
+  if (type === 'expression') return '表达'
+  if (type === 'contextual_vocab') return '语境生词'
+  if (type === 'grammar_pattern') return '语法框架'
+  if (type === 'listening_feature') return '听力难点'
+  if (type === 'pragmatic_risk') return '语气 / 风险'
+  return type
+}
+
 export function knowledgeTypeLabel(value: DocumentFocus | string | null | undefined) {
   const type = String(value ?? '').trim()
   if (type === 'concepts') return '概念卡'

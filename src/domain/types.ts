@@ -22,6 +22,14 @@ export type UrlImportMode = 'video' | 'subtitles'
 export type SettingsTab = 'api' | 'tts' | 'env'
 export type SegmentFilter = 'all' | 'recommended' | 'needs_review' | 'reject' | 'duplicate'
 export type PhraseReviewStatus = 'recommended' | 'needs_review' | 'reject' | 'duplicate' | 'unreviewed' | string
+export type CandidateKind =
+  | 'expression'
+  | 'contextual_vocab'
+  | 'grammar_pattern'
+  | 'listening_feature'
+  | 'pragmatic_risk'
+  | string
+export type LearningContentKind = 'phrase' | 'vocabulary' | 'grammar' | 'listening' | 'knowledge' | string
 export type DocumentCardKind = 'knowledge' | 'language_reading'
 export type ResizeDirection =
   | 'East'
@@ -275,7 +283,12 @@ export type Card = {
   phrase_card_focus?: string
   phrase_review_status?: PhraseReviewStatus
   phrase_type?: string
-  content_kind?: 'phrase' | 'vocabulary' | 'grammar' | 'listening' | 'knowledge' | string
+  candidate_kind?: CandidateKind
+  exact_span?: string
+  normalized_answer?: string
+  candidate_source?: string
+  learning_point_schema_version?: number
+  content_kind?: LearningContentKind
   source_evidence?: string
   knowledge_type?: DocumentFocus | string
   document_card_kind?: DocumentCardKind | string
@@ -328,7 +341,14 @@ export type Segment = {
   phrase_review_status?: PhraseReviewStatus
   phrase_review_source?: string
   phrase_type?: string
-  content_kind?: 'phrase' | 'vocabulary' | 'grammar' | 'listening' | 'knowledge' | string
+  candidate_kind?: CandidateKind
+  exact_span?: string
+  normalized_answer?: string
+  answer_core?: string
+  candidate_source?: string
+  learning_point_schema_version?: number
+  source_segment_id?: string
+  content_kind?: LearningContentKind
   source_evidence?: string
   knowledge_type?: DocumentFocus | string
   document_card_kind?: DocumentCardKind | string

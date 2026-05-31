@@ -4,6 +4,7 @@ import { Play } from 'lucide-react'
 
 import type { Card, DocumentStudyMode, Segment, SegmentFilter } from '../../domain/types'
 import {
+  candidateKindLabel,
   isDocumentReadingSegment,
   isKnowledgeSegment,
   knowledgeTypeLabel,
@@ -152,7 +153,10 @@ export function SegmentDetail({
             </strong>
           </div>
           <p>训练点：{segmentTrainingFocus(segment)}</p>
+          {candidateKindLabel(segment.candidate_kind) ? <p>候选类型：{candidateKindLabel(segment.candidate_kind)}</p> : null}
           {segment.phrase_type ? <p>表达类型：{phraseTypeLabel(segment.phrase_type) || segment.phrase_type}</p> : null}
+          {segment.exact_span ? <p>原文 span：{segment.exact_span}</p> : null}
+          {segment.answer_core ? <p>核心答案：{segment.answer_core}</p> : null}
           {segment.phrase_decision_reason ? <p>推荐理由：{segment.phrase_decision_reason}</p> : null}
           {segment.phrase_reject_reason ? <p>拒绝 / 修复提示：{segment.phrase_reject_reason}</p> : null}
         </div>
@@ -207,7 +211,9 @@ function CardEditor({ card, documentStudyMode, motionDuration, prefersReducedMot
   const learningTarget = card.learning_target || card.learning_goal
   const whyItMatters = card.why_it_matters || card.why
   const howToUseIt = card.how_to_use_it || card.context
+  const candidateLabel = candidateKindLabel(card.candidate_kind ?? segment.candidate_kind)
   const cardTypeLabel =
+    candidateLabel ||
     phraseTypeLabel(card.phrase_type ?? segment.phrase_type) ||
     (card.content_kind === 'vocabulary' ? '语境生词' : card.content_kind === 'grammar' ? '语法框架' : '自然表达')
   const editPointLabel = isReadingCard ? '精读点' : isKnowledgeCard ? '知识点' : cardTypeLabel === '语境生词' ? '语境生词' : '学习点'
@@ -231,6 +237,7 @@ function CardEditor({ card, documentStudyMode, motionDuration, prefersReducedMot
           <span>{card.type_label}</span>
         </label>
         <div className="card-meta-row">
+          {candidateLabel ? <span className={`kind-chip kind-${card.candidate_kind ?? segment.candidate_kind}`}>{candidateLabel}</span> : null}
           <span className="difficulty">{card.difficulty}</span>
           <span className={`quality-badge ${qualityClass(card)}`}>
             {qualityLabel(card)}
@@ -279,6 +286,13 @@ function CardEditor({ card, documentStudyMode, motionDuration, prefersReducedMot
       ) : cardPhraseScore !== null || card.phrase_decision_reason || card.phrase_reject_reason || card.phrase_card_focus ? (
         <div className={`phrase-card-review status-${cardPhraseStatus}`}>
           <span>{cardTypeLabel}{cardPhraseScore !== null ? ` · ${cardPhraseScore}/5` : ''}</span>
+          {card.exact_span || segment.exact_span || card.answer_core ? (
+            <p>
+              {[card.exact_span || segment.exact_span ? `span：${card.exact_span || segment.exact_span}` : '', card.answer_core ? `答案：${card.answer_core}` : '']
+                .filter(Boolean)
+                .join(' · ')}
+            </p>
+          ) : null}
           {card.phrase_card_focus ? <strong>训练点：{card.phrase_card_focus}</strong> : null}
           {whyItMatters ? <p>为什么值得学：{whyItMatters}</p> : null}
           {howToUseIt ? <p>怎么用：{howToUseIt}</p> : null}

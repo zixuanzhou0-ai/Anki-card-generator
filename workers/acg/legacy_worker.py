@@ -1044,6 +1044,11 @@ def typed_candidate_score(base_score: float, boost: float, kind: str) -> float:
     return max(3.0, base_score + boost)
 
 
+def source_segment_key(start: float, end: float, text: str) -> str:
+    normalized_text = re.sub(r"\s+", " ", str(text or "").strip().lower())[:96]
+    return f"src_{stable_id(f'{start:.3f}:{end:.3f}:{normalized_text}') & 0xFFFFFFFF:08x}"
+
+
 def typed_learning_point_candidates(
     text: str,
     phrase: str,
@@ -1259,9 +1264,11 @@ def build_segments(cues: list[Cue], payload: dict[str, Any]) -> list[dict[str, A
                 segment_phrase = str(typed.get("exact_span") or typed.get("phrase") or phrase)
                 media_start, media_end = segment_media_bounds(start, end, text, segment_phrase, review_mode)
                 candidate_score = float(typed.get("score") or score)
+                source_id = source_segment_key(start, end, text)
                 candidates.append(
                     {
                     "id": f"seg_{len(candidates) + 1:04d}",
+                    "source_segment_id": source_id,
                     "start": round(start, 3),
                     "end": round(end, 3),
                     "source_time": f"{fmt_time(start)} - {fmt_time(end)}",
@@ -3097,6 +3104,69 @@ def skipped_review_segment(segment: dict[str, Any], status: str, reason: str, va
     }
 
 
+def _score_breakdown_value(score_breakdown: dict[str, Any], key: str) -> int | None:
+    if key not in score_breakdown:
+        return None
+    try:
+        return int(round(float(score_breakdown.get(key))))
+    except (TypeError, ValueError):
+        return None
+
+
+def validate_review_learning_point(
+    review: dict[str, Any],
+    segment: dict[str, Any],
+    phrase: str,
+    candidate_kind: str,
+    phrase_type: str,
+    score_breakdown: dict[str, Any],
+) -> tuple[bool, str, dict[str, str]]:
+    text = str(segment.get("text") or "")
+    final_kind = candidate_kind or candidate_kind_for_segment(segment)
+    final_phrase_type = phrase_type or phrase_type_for_candidate_kind(final_kind)
+    exact_span = normalize_candidate_span(review.get("exact_span") or segment.get("exact_span") or phrase)
+    normalized_answer = normalize_candidate_span(
+        review.get("normalized_answer") or review.get("answer_core") or phrase or segment.get("normalized_answer")
+    )
+    raw_answer_core = str(review.get("answer_core") or normalized_answer or phrase).strip()
+    answer_core = answer_display_text(raw_answer_core)
+
+    if not exact_span:
+        return False, "AI 评审缺少 exact_span，无法确认学习点来自原句。", {}
+    if not phrase_in_text(text, exact_span):
+        return False, "AI 评审 exact_span 不在原句中。", {}
+    if not answer_core:
+        return False, "AI 评审缺少英文答案本体 answer_core。", {}
+    if answer_core != clean_study_text(raw_answer_core):
+        return False, "AI 评审 answer_core 包含中文释义、发音或解释，不能作为核心答案。", {}
+    fake_card = {
+        "type": "listening" if final_kind == "listening_feature" else "phrase",
+        "english": text,
+        "phrase": normalized_answer or phrase,
+        "answer_core": answer_core,
+        "candidate_kind": final_kind,
+        "phrase_type": final_phrase_type,
+        "content_kind": content_kind_for_phrase_type(final_phrase_type),
+    }
+    if not is_answer_expression_candidate(answer_core, fake_card):
+        return False, "AI 评审 answer_core 不是纯英文学习答案本体。", {}
+    if not usable_learning_point_span(text, exact_span, final_kind, final_phrase_type):
+        return False, "AI 评审 exact_span 不适合作为该类型学习点。", {}
+    for key, label in (("answer_clarity", "答案清晰度"), ("learning_action", "学习动作")):
+        value = _score_breakdown_value(score_breakdown, key)
+        if value is not None and value < 3:
+            return False, f"AI 评审{label}低于 3 分。", {}
+
+    return True, "", {
+        "exact_span": exact_span,
+        "normalized_answer": normalized_answer or answer_core,
+        "answer_core": answer_core,
+        "candidate_kind": final_kind,
+        "phrase_type": final_phrase_type,
+        "content_kind": content_kind_for_phrase_type(final_phrase_type),
+    }
+
+
 def apply_phrase_review_decisions(
     segments: list[dict[str, Any]],
     reviews: dict[str, dict[str, Any]],
@@ -3112,9 +3182,14 @@ def apply_phrase_review_decisions(
         if not review:
             repaired = repair_review_segment_phrase(segment, level, collection_levels) or segment
             repaired = refine_segment_media_for_phrase(repaired, str(repaired.get("phrase") or ""))
+            source_id = str(
+                repaired.get("source_segment_id")
+                or source_segment_key(float(repaired.get("start") or 0), float(repaired.get("end") or 0), str(repaired.get("text") or ""))
+            )
             kept.append(
                 {
                     **repaired,
+                    "source_segment_id": source_id,
                     "phrase_value_score": 3,
                     "phrase_review_status": "needs_review",
                     "phrase_review_source": "ai",
@@ -3182,16 +3257,40 @@ def apply_phrase_review_decisions(
         if is_too_basic_for_level(phrase, level):
             value_score = min(value_score, 3)
 
+        ok, validation_reason, normalized_fields = validate_review_learning_point(
+            review,
+            segment,
+            phrase,
+            candidate_kind,
+            phrase_type,
+            score_breakdown,
+        )
+        if not ok:
+            skipped.append(
+                skipped_review_segment(
+                    segment,
+                    "reject",
+                    reject_reason or validation_reason,
+                    value_score,
+                )
+            )
+            continue
+
         status = "recommended" if value_score >= 4 else "needs_review"
         refined_segment = refine_segment_media_for_phrase(segment, phrase)
+        source_id = str(
+            refined_segment.get("source_segment_id")
+            or source_segment_key(float(refined_segment.get("start") or 0), float(refined_segment.get("end") or 0), str(refined_segment.get("text") or ""))
+        )
         kept.append(
             {
                 **refined_segment,
+                "source_segment_id": source_id,
                 "phrase": phrase,
-                "exact_span": exact_span or segment.get("exact_span") or phrase,
-                "normalized_answer": normalized_answer or answer_core or phrase,
-                "answer_core": answer_core or normalized_answer or phrase,
-                "candidate_kind": candidate_kind,
+                "exact_span": normalized_fields["exact_span"],
+                "normalized_answer": normalized_fields["normalized_answer"],
+                "answer_core": normalized_fields["answer_core"],
+                "candidate_kind": normalized_fields["candidate_kind"],
                 "recommendation": min(5, max(1, value_score)),
                 "phrase_value_score": value_score,
                 "phrase_review_status": status,
@@ -3199,8 +3298,8 @@ def apply_phrase_review_decisions(
                 "phrase_decision_reason": reason or card_focus or "AI 认为这个表达值得制卡。",
                 "phrase_reject_reason": "" if status == "recommended" else "词伙价值分为 3，默认进入待审。",
                 "phrase_card_focus": card_focus or "围绕这个表达的真实语境和迁移用法制卡。",
-                "phrase_type": phrase_type,
-                "content_kind": content_kind_for_phrase_type(phrase_type),
+                "phrase_type": normalized_fields["phrase_type"],
+                "content_kind": normalized_fields["content_kind"],
                 "candidate_source": segment.get("candidate_source", ""),
                 "learning_point_schema_version": LEARNING_POINT_SCHEMA_VERSION,
                 "source_evidence": segment.get("text", ""),
@@ -3216,6 +3315,7 @@ def ensure_min_review_candidates(
     kept: list[dict[str, Any]],
     skipped: list[dict[str, Any]],
     project: dict[str, Any],
+    rejected_ids: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     max_segments = resolved_max_segments(project)
     min_count = min(len(original_segments), max_segments, max(8, min(18, round(max_segments * 0.45))))
@@ -3235,7 +3335,7 @@ def ensure_min_review_candidates(
     )
     for segment in ranked:
         segment_id = str(segment.get("id"))
-        if segment_id in kept_ids:
+        if segment_id in kept_ids or (rejected_ids and segment_id in rejected_ids):
             continue
         repaired = repair_review_segment_phrase(
             segment,
@@ -3245,9 +3345,14 @@ def ensure_min_review_candidates(
         if not repaired:
             continue
         repaired = refine_segment_media_for_phrase(repaired, str(repaired.get("phrase") or ""))
+        source_id = str(
+            repaired.get("source_segment_id")
+            or source_segment_key(float(repaired.get("start") or 0), float(repaired.get("end") or 0), str(repaired.get("text") or ""))
+        )
         kept.append(
             {
                 **repaired,
+                "source_segment_id": source_id,
                 "cards": [],
                 "phrase_value_score": 3,
                 "phrase_review_status": "needs_review",
@@ -3273,6 +3378,92 @@ def ensure_min_review_candidates(
     if promoted_ids:
         skipped = [item for item in skipped if str(item.get("id")) not in promoted_ids]
     return kept, skipped
+
+
+def learning_point_source_key(segment: dict[str, Any]) -> str:
+    explicit = str(segment.get("source_segment_id") or "").strip()
+    if explicit:
+        return explicit
+    return source_segment_key(
+        float(segment.get("start") or 0),
+        float(segment.get("end") or 0),
+        str(segment.get("text") or ""),
+    )
+
+
+def candidate_kind_priority(segment: dict[str, Any]) -> int:
+    priority = {
+        "pragmatic_risk": 5,
+        "grammar_pattern": 4,
+        "expression": 3,
+        "contextual_vocab": 2,
+        "listening_feature": 1,
+    }
+    return priority.get(str(segment.get("candidate_kind") or ""), 0)
+
+
+def learning_actions_overlap(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    if str(left.get("candidate_kind") or "") != str(right.get("candidate_kind") or ""):
+        return False
+    left_answer = normalized_phrase_key(str(left.get("normalized_answer") or left.get("phrase") or ""))
+    right_answer = normalized_phrase_key(str(right.get("normalized_answer") or right.get("phrase") or ""))
+    if left_answer and right_answer and (left_answer == right_answer or phrase_in_text(left_answer, right_answer) or phrase_in_text(right_answer, left_answer)):
+        return True
+    left_focus = str(left.get("phrase_card_focus") or "")
+    right_focus = str(right.get("phrase_card_focus") or "")
+    return bool(left_focus and right_focus and word_overlap_ratio(left_focus, right_focus) >= 0.62)
+
+
+def enforce_max_learning_points_per_source(
+    segments: list[dict[str, Any]],
+    max_per_source: int = 2,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for segment in segments:
+        grouped.setdefault(learning_point_source_key(segment), []).append(segment)
+
+    kept: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    for items in grouped.values():
+        ranked = sorted(
+            items,
+            key=lambda item: (
+                int(item.get("phrase_value_score") or 0),
+                float(item.get("score") or 0),
+                candidate_kind_priority(item),
+                -float(item.get("start") or 0),
+            ),
+            reverse=True,
+        )
+        selected: list[dict[str, Any]] = []
+        for item in ranked:
+            if any(learning_actions_overlap(item, existing) for existing in selected):
+                rejected.append(
+                    skipped_review_segment(
+                        item,
+                        "duplicate",
+                        "同一句已有训练动作相近的学习点，已合并为重复候选。",
+                        phrase_review_score(item.get("phrase_value_score")),
+                    )
+                )
+                continue
+            if len(selected) < max_per_source:
+                selected.append(item)
+            else:
+                rejected.append(
+                    skipped_review_segment(
+                        item,
+                        "reject",
+                        "同一句学习点预算已满，只保留最清晰的 0-2 个。",
+                        phrase_review_score(item.get("phrase_value_score")),
+                    )
+                )
+        kept.extend(selected)
+
+    return sorted(kept, key=lambda item: (float(item.get("start") or 0), str(item.get("id") or ""))), sorted(
+        rejected,
+        key=lambda item: (float(item.get("start") or 0), str(item.get("id") or "")),
+    )
 
 
 def split_duplicate_phrase_segments(segments: list[dict[str, Any]], max_per_phrase: int = 2) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -3401,11 +3592,13 @@ def review_phrase_candidates_with_mimo(
         return segments, [], "AI 学习候选评审没有返回可用 JSON，已回退到原有候选流程。"
 
     kept, skipped = apply_phrase_review_decisions(segments, reviews, project)
-    kept, skipped = ensure_min_review_candidates(segments, kept, skipped, project)
+    rejected_ids = {str(item.get("id")) for item in skipped if str(item.get("phrase_review_status") or "") == "reject"}
+    kept, skipped = ensure_min_review_candidates(segments, kept, skipped, project, rejected_ids)
+    kept, source_overflow = enforce_max_learning_points_per_source(kept, 2)
     kept, duplicates = split_duplicate_phrase_segments(kept)
     max_segments = resolved_max_segments(project)
     kept, overflow = limit_reviewed_segments(kept, max_segments)
-    skipped = [*skipped, *duplicates, *overflow]
+    skipped = [*skipped, *source_overflow, *duplicates, *overflow]
     return kept, sorted(skipped, key=lambda item: item["start"]), None
 
 
@@ -10212,11 +10405,14 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     package.write_to_file(str(apkg_path))
 
     emit_progress("export", "done", 100, f"导出完成：{exported_cards} 张卡。")
+    anki_tag = f"anki_card_generator_{template_version.lower()}"
     return {
         "apkg_path": str(apkg_path),
         "media_dir": str(media_dir),
         "deck_name": deck_name,
         "deck_kind": deck_kind_code,
+        "template_version": template_version,
+        "anki_tag": anki_tag,
         "media_prefix": media_prefix,
         "media_manifest": exported_media_manifest,
         "cards": exported_cards,
@@ -10254,7 +10450,11 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
     if not expected_manifest and expected_media_files != 0:
         fail("缺少导出媒体清单，无法核验 Anki 媒体。")
 
-    query = "tag:anki_card_generator_v10"
+    anki_tag = str(payload.get("anki_tag") or export_result.get("anki_tag") or "").strip()
+    if not anki_tag:
+        template_version = str(payload.get("template_version") or export_result.get("template_version") or "").strip().lower()
+        anki_tag = f"anki_card_generator_{template_version}" if template_version else "anki_card_generator_v10"
+    query = f"tag:{anki_tag}"
     if deck_name:
         query = f'deck:"{deck_name}" {query}'
 

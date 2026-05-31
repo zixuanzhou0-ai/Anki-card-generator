@@ -946,6 +946,56 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(result["media_count_checked"], 0)
         self.assertEqual(result["card_count"], 1)
 
+    def test_verify_anki_import_uses_exported_template_tag(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            anki_dir = Path(temp_dir) / "anki_media"
+            anki_dir.mkdir()
+            original_anki_connect = worker._legacy_worker.anki_connect
+
+            def fake_anki_connect(action, params=None, url=""):
+                calls.append((action, params or {}))
+                if action == "findCards":
+                    return [123]
+                if action == "cardsInfo":
+                    return [
+                        {
+                            "cardId": 123,
+                            "fields": {
+                                "Video": {"value": ""},
+                                "Audio": {"value": ""},
+                                "TtsAudio": {"value": ""},
+                                "PhraseTtsAudio": {"value": ""},
+                            },
+                        }
+                    ]
+                if action == "getMediaDirPath":
+                    return str(anki_dir)
+                raise AssertionError(action)
+
+            try:
+                worker._legacy_worker.anki_connect = fake_anki_connect
+                result = worker.handle_verify_anki_import(
+                    {
+                        "export_result": {
+                            "deck_name": "V11 Deck",
+                            "cards": 1,
+                            "template_version": "V11",
+                            "anki_tag": "anki_card_generator_v11",
+                            "media_manifest": {},
+                            "media_summary": {"media_files": 0},
+                            "media_dir": str(Path(temp_dir) / "export_media"),
+                        }
+                    }
+                )
+            finally:
+                worker._legacy_worker.anki_connect = original_anki_connect
+
+        self.assertTrue(result["ok"])
+        find_query = next(params["query"] for action, params in calls if action == "findCards")
+        self.assertIn("tag:anki_card_generator_v11", find_query)
+        self.assertNotIn("tag:anki_card_generator_v10", find_query)
+
     def test_qwen_tts_audio_uses_dashscope_generation_endpoint(self):
         calls = {}
         original_http_json = worker._legacy_worker.http_json
@@ -1322,6 +1372,12 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn(("expression", "bounce off a windshield"), found)
         self.assertIn(("grammar_pattern", "Ever want me to"), found)
         self.assertIn(("contextual_vocab", "critique"), found)
+        run_source_ids = {
+            segment["source_segment_id"]
+            for segment in segments
+            if segment["text"] == "I'm gonna run the register."
+        }
+        self.assertEqual(len(run_source_ids), 1)
 
     def test_segment_builder_keeps_rolling_vlog_candidates_for_review(self):
         cues = [
@@ -1526,6 +1582,72 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertGreater(kept[0]["media_start"], 100.0)
         self.assertLess(kept[0]["media_end"], 112.18)
         self.assertLessEqual(kept[0]["media_end"] - kept[0]["media_start"], 6.25)
+
+    def test_phrase_review_rejects_explanatory_answer_core(self):
+        segment = {
+            "id": "seg_0001",
+            "start": 0.0,
+            "end": 2.0,
+            "source_time": "00:00:00.000 - 00:00:02.000",
+            "text": "I'm gonna run the register.",
+            "phrase": "run the register",
+            "candidate_kind": "expression",
+            "phrase_type": "spoken_phrase",
+            "score": 4.2,
+            "recommendation": 5,
+        }
+        reviews = {
+            "seg_0001": {
+                "decision": "keep",
+                "phrase": "run the register",
+                "exact_span": "run the register",
+                "normalized_answer": "run the register",
+                "answer_core": "run the register = 负责收银",
+                "candidate_kind": "expression",
+                "phrase_type": "spoken_phrase",
+                "value_score": 5,
+                "reason": "很自然的工作场景表达。",
+            }
+        }
+
+        kept, skipped = worker.apply_phrase_review_decisions([segment], reviews, {"level": "B1"})
+
+        self.assertEqual(kept, [])
+        self.assertEqual(skipped[0]["phrase_review_status"], "reject")
+        self.assertIn("answer_core", skipped[0]["phrase_reject_reason"])
+
+    def test_phrase_review_rejects_exact_span_outside_source_sentence(self):
+        segment = {
+            "id": "seg_0001",
+            "start": 0.0,
+            "end": 2.0,
+            "source_time": "00:00:00.000 - 00:00:02.000",
+            "text": "I'm gonna run the register.",
+            "phrase": "run the register",
+            "candidate_kind": "expression",
+            "phrase_type": "spoken_phrase",
+            "score": 4.2,
+            "recommendation": 5,
+        }
+        reviews = {
+            "seg_0001": {
+                "decision": "keep",
+                "phrase": "run the front desk",
+                "exact_span": "run the front desk",
+                "normalized_answer": "run the front desk",
+                "answer_core": "run the front desk",
+                "candidate_kind": "expression",
+                "phrase_type": "spoken_phrase",
+                "value_score": 5,
+                "reason": "AI 幻觉了另一个表达。",
+            }
+        }
+
+        kept, skipped = worker.apply_phrase_review_decisions([segment], reviews, {"level": "B1"})
+
+        self.assertEqual(kept, [])
+        self.assertEqual(skipped[0]["phrase_review_status"], "reject")
+        self.assertIn("不在原句", skipped[0]["phrase_reject_reason"])
 
     def test_phrase_review_prompt_requests_teacher_level_judgement(self):
         prompt = worker.build_phrase_review_prompt(
@@ -1998,6 +2120,88 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in duplicates], ["seg_0003"])
         self.assertEqual(duplicates[0]["phrase_review_status"], "duplicate")
 
+    def test_same_source_sentence_keeps_at_most_two_learning_points(self):
+        source_id = "src_same_sentence"
+        segments = [
+            {
+                "id": "seg_0001",
+                "source_segment_id": source_id,
+                "start": 0.0,
+                "end": 2.5,
+                "text": "I'm gonna run the register.",
+                "phrase": "run the register",
+                "normalized_answer": "run the register",
+                "candidate_kind": "expression",
+                "score": 4.8,
+                "phrase_value_score": 5,
+            },
+            {
+                "id": "seg_0002",
+                "source_segment_id": source_id,
+                "start": 0.0,
+                "end": 2.5,
+                "text": "I'm gonna run the register.",
+                "phrase": "register",
+                "normalized_answer": "register",
+                "candidate_kind": "contextual_vocab",
+                "score": 4.2,
+                "phrase_value_score": 4,
+            },
+            {
+                "id": "seg_0003",
+                "source_segment_id": source_id,
+                "start": 0.0,
+                "end": 2.5,
+                "text": "I'm gonna run the register.",
+                "phrase": "gonna",
+                "normalized_answer": "gonna",
+                "candidate_kind": "listening_feature",
+                "score": 3.9,
+                "phrase_value_score": 4,
+            },
+        ]
+
+        kept, rejected = worker.enforce_max_learning_points_per_source(segments, 2)
+
+        self.assertEqual(len(kept), 2)
+        self.assertEqual({item["id"] for item in kept}, {"seg_0001", "seg_0002"})
+        self.assertEqual([item["id"] for item in rejected], ["seg_0003"])
+        self.assertEqual(rejected[0]["phrase_review_status"], "reject")
+        self.assertIn("预算已满", rejected[0]["phrase_reject_reason"])
+
+    def test_min_review_promotion_does_not_revive_ai_rejected_candidates(self):
+        rejected_id = "seg_0001"
+        original_segments = [
+            {
+                "id": rejected_id,
+                "start": 0.0,
+                "end": 2.0,
+                "text": "I'm gonna run the register.",
+                "phrase": "run the register",
+                "candidate_kind": "expression",
+                "score": 5,
+            }
+        ]
+        skipped = [
+            worker.skipped_review_segment(
+                original_segments[0],
+                "reject",
+                "AI 评审认为 answer_core 不合格。",
+                5,
+            )
+        ]
+
+        kept, updated_skipped = worker.ensure_min_review_candidates(
+            original_segments,
+            [],
+            skipped,
+            {"level": "B1", "max_segments": 20},
+            {rejected_id},
+        )
+
+        self.assertEqual(kept, [])
+        self.assertEqual(updated_skipped, skipped)
+
     def test_review_failure_falls_back_to_original_segments(self):
         segment = {
             "id": "seg_0001",
@@ -2132,7 +2336,7 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertTrue(all(item["phrase_review_status"] == "recommended" for item in kept))
         self.assertTrue(all(item["phrase_review_status"] == "reject" for item in skipped))
 
-    def test_mimo_review_over_strict_result_promotes_local_candidates_to_review(self):
+    def test_mimo_review_over_strict_result_does_not_revive_rejected_candidates(self):
         segments = [
             {
                 "id": f"seg_{index:04d}",
@@ -2210,11 +2414,11 @@ class WorkerQualityTests(unittest.TestCase):
             worker.compatible_chat_completion = original_chat
 
         self.assertIsNone(warning)
-        self.assertGreaterEqual(len(kept), 8)
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(len(skipped), len(segments) - 1)
         self.assertEqual(kept[0]["phrase_review_status"], "recommended")
-        self.assertTrue(any(item["phrase_review_status"] == "needs_review" for item in kept))
+        self.assertTrue(all(item["phrase_review_status"] == "reject" for item in skipped))
         self.assertNotIn("key expression", [item["phrase"] for item in kept])
-        self.assertLess(len(skipped), len(segments) - 1)
 
     def test_score_three_review_card_is_not_enabled_by_default(self):
         segments = [
