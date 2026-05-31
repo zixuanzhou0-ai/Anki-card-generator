@@ -7966,11 +7966,10 @@ V11_CARD_SCRIPT = """
     });
     document.querySelectorAll(".v11-video-stage video").forEach(function(node) {
       node.pause();
-      node.muted = true;
-      node.loop = true;
+      node.muted = false;
       var stage = node.closest(".v11-video-stage");
       if (stage) {
-        setV11VideoState(stage, "muted");
+        setV11VideoState(stage, "ready");
       }
     });
     try { audio.currentTime = 0; } catch (error) {}
@@ -7982,11 +7981,11 @@ V11_CARD_SCRIPT = """
   function setV11VideoState(stage, state) {
     var cue = stage.querySelector(".v11-video-cue");
     var toggle = stage.querySelector(".v11-video-toggle");
-    stage.classList.toggle("is-muted-preview", state === "muted");
+    stage.classList.toggle("is-muted-preview", state === "ready");
     stage.classList.toggle("is-sound-on", state === "sound");
     stage.classList.toggle("is-paused", state === "paused");
     if (cue) {
-      cue.textContent = state === "sound" ? "原视频播放中" : (state === "paused" ? "已暂停" : "点画面听原视频");
+      cue.textContent = state === "sound" ? "复读循环中" : (state === "paused" ? "已暂停" : "点画面开始复读");
     }
     if (toggle) {
       toggle.textContent = state === "sound" ? "II" : "▶";
@@ -8001,11 +8000,10 @@ V11_CARD_SCRIPT = """
     document.querySelectorAll(".v11-video-stage video").forEach(function(node) {
       if (node !== activeVideo) {
         node.pause();
-        node.muted = true;
-        node.loop = true;
+        node.muted = false;
         var stage = node.closest(".v11-video-stage");
         if (stage) {
-          setV11VideoState(stage, "muted");
+          setV11VideoState(stage, "ready");
         }
       }
     });
@@ -8015,12 +8013,12 @@ V11_CARD_SCRIPT = """
     if (!stage) return;
     var video = stage.querySelector("video");
     if (!video) return;
-    if (video.paused || video.muted) {
+    if (video.paused) {
       pauseOtherMedia(video);
-      if (video.muted) {
+      if (video.currentTime >= Math.max(0, video.duration - 0.1)) {
         try { video.currentTime = 0; } catch (error) {}
       }
-      video.loop = false;
+      video.loop = true;
       video.muted = false;
       video.volume = 1;
       var playResult = video.play();
@@ -8036,24 +8034,10 @@ V11_CARD_SCRIPT = """
     document.querySelectorAll(".v11-video-stage").forEach(function(stage) {
       var video = stage.querySelector("video");
       if (!video) return;
-      video.muted = true;
+      video.loop = true;
+      video.muted = false;
       video.playsInline = true;
-      setV11VideoState(stage, "muted");
-      video.addEventListener("ended", function() {
-        video.muted = true;
-        video.loop = true;
-        try { video.currentTime = 0; } catch (error) {}
-        setV11VideoState(stage, "muted");
-        if (stage.closest(".v11-front")) {
-          var replay = video.play();
-          if (replay && replay.catch) replay.catch(function() {});
-        }
-      });
-      if (stage.closest(".v11-front")) {
-        video.loop = true;
-        var playResult = video.play();
-        if (playResult && playResult.catch) playResult.catch(function() {});
-      }
+      setV11VideoState(stage, "ready");
     });
   }
 
@@ -8081,7 +8065,7 @@ LANGUAGE_FRONT_TEMPLATE_V11 = """
   <section class="v11-video-stage" onclick="toggleV11Video(this)">
     {{Video}}
     <span class="v11-video-toggle">▶</span>
-    <span class="v11-video-cue">点画面听原视频</span>
+    <span class="v11-video-cue">点画面开始复读</span>
   </section>
   {{/Video}}
   <section class="v11-sound-actions">
@@ -8119,15 +8103,15 @@ LANGUAGE_BACK_TEMPLATE_V11 = """
     <div class="v11-video-stage" onclick="toggleV11Video(this)">
       {{Video}}
       <span class="v11-video-toggle">▶</span>
-      <span class="v11-video-cue">点画面听原视频</span>
+      <span class="v11-video-cue">点画面开始复读</span>
       <span class="v11-video-time">{{SourceTime}}</span>
     </div>
     {{/Video}}
   </section>
   <section class="v11-info-grid">
-    {{#Definition}}<div class="v11-info-block"><div class="v11-info-head"><span class="v11-icon">?</span><strong>怎么理解</strong></div><p>{{Definition}}</p>{{#ChineseFeel}}<p>{{ChineseFeel}}</p>{{/ChineseFeel}}</div>{{/Definition}}
-    <div class="v11-info-block"><div class="v11-info-head"><span class="v11-icon">↔</span><strong>怎么迁移</strong></div>{{#Collocations}}<p>{{Collocations}}</p>{{/Collocations}}{{#Example}}<p>{{Example}}</p>{{/Example}}</div>
-    {{#TeacherNote}}<div class="v11-info-block"><div class="v11-info-head"><span class="v11-icon">!</span><strong>老师提醒</strong></div><p>{{TeacherNote}}</p>{{#Why}}<p>{{Why}}</p>{{/Why}}</div>{{/TeacherNote}}
+    {{#Definition}}<div class="v11-info-block"><div class="v11-info-head"><span class="v11-icon">?</span><strong>怎么理解</strong></div><p>{{Definition}}</p></div>{{/Definition}}
+    <div class="v11-info-block"><div class="v11-info-head"><span class="v11-icon">↔</span><strong>怎么迁移</strong></div>{{#Collocations}}<p>{{Collocations}}</p>{{/Collocations}}</div>
+    {{#TeacherNote}}<div class="v11-info-block"><div class="v11-info-head"><span class="v11-icon">!</span><strong>老师提醒</strong></div><p>{{TeacherNote}}</p></div>{{/TeacherNote}}
   </section>
 </div>
 """ + V11_CARD_SCRIPT
@@ -8301,12 +8285,15 @@ INTERNAL_PLACEHOLDER_PATTERNS = (
     "只保证结构完整",
     "不建议直接作为正式学习内容",
     "当作本句目标表达",
+    "natural object",
+    "complete sentence",
 )
 
 
 def contains_internal_placeholder(value: Any) -> bool:
     text = str(value or "")
-    return any(pattern in text for pattern in INTERNAL_PLACEHOLDER_PATTERNS)
+    text_lower = text.lower()
+    return any(pattern in text or pattern.lower() in text_lower for pattern in INTERNAL_PLACEHOLDER_PATTERNS)
 
 
 def clean_study_text(value: Any) -> str:
@@ -8350,6 +8337,63 @@ def card_chinese_core(card: dict[str, Any]) -> str:
         or clean_study_text(card.get("chinese"))
         or clean_study_text(card.get("chinese_feel"))
     )
+
+
+def _normalized_study_compare(value: Any) -> str:
+    text = clean_study_text(value).lower()
+    return re.sub(r"[\s\W_]+", "", text, flags=re.UNICODE)
+
+
+def _new_example_for_card(card: dict[str, Any]) -> str:
+    example = clean_study_text(card.get("example"))
+    if not example:
+        return ""
+    if _normalized_study_compare(example) == _normalized_study_compare(card.get("english")):
+        return ""
+    return example
+
+
+def v11_definition_text(card: dict[str, Any]) -> str:
+    definition = clean_study_text(card.get("definition"))
+    chinese_feel = clean_study_text(card.get("chinese_feel"))
+    if definition:
+        return definition if not chinese_feel else f"{definition}\n{chinese_feel}"
+    phrase = card_answer_core(card)
+    chinese = card_chinese_core(card)
+    if phrase and chinese:
+        return f"{phrase} 在这句里表达“{chinese}”，先按原句语境理解，再记中文意思。"
+    if phrase:
+        return f"先抓住 {phrase} 在原句里的作用，再回看上下文确认语气和对象。"
+    return "先按原句语境理解这张卡的核心表达，再核对下面的原句。"
+
+
+def v11_migration_text(card: dict[str, Any]) -> str:
+    how_to_use = clean_study_text(card.get("how_to_use_it"))
+    collocations = clean_study_text(card.get("collocations"))
+    example = _new_example_for_card(card)
+    parts = [part for part in [how_to_use, collocations, example] if part]
+    if parts:
+        return "\n".join(parts)
+    phrase = card_answer_core(card)
+    if phrase:
+        return f"换一个相似场景，用 {phrase} 造一句自己的句子；先确认语气、对象和场景合适。"
+    return "换一个相似场景，用自己的话复述这句，再核对是否自然。"
+
+
+def v11_teacher_note_text(card: dict[str, Any]) -> str:
+    teacher_note = clean_study_text(card.get("usage_boundary") or card.get("teacher_note"))
+    confusable = clean_study_text(card.get("confusable_note"))
+    why = clean_study_text(card.get("why_it_matters") or card.get("why"))
+    parts = [part for part in [teacher_note, confusable, why] if part]
+    if parts:
+        return "\n".join(parts)
+    phrase = card_answer_core(card)
+    phrase_lower = phrase.lower()
+    if "flat as a washboard" in phrase_lower:
+        return "这是调侃外貌或身材的说法，可能冒犯；适合理解台词，不建议随便对人使用。"
+    if phrase:
+        return f"不要只背中文翻译；复习时先听语气，再判断 {phrase} 在这句话里承担的意思。"
+    return "不要只背翻译；先听语气和节奏，再确认这句话在当前场景里的真实作用。"
 
 
 def card_visual_role(card: dict[str, Any], deck_kind_code: str = "") -> str:
@@ -8950,12 +8994,15 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     except Exception as err:
                         phrase_tts_name = ""
                         warnings.append(f"{segment_id} 表达 TTS 失败：{err}")
+            definition_field = v11_definition_text(card) if use_v11_template else card.get("definition", "")
+            collocations_field = v11_migration_text(card) if use_v11_template else card.get("collocations", "")
+            teacher_note_field = v11_teacher_note_text(card) if use_v11_template else card.get("teacher_note", "")
             note = genanki.Note(
                 model=model,
                 fields=[
                     anki_text(export_card_id),
                     anki_study_text(card.get("type_label", card.get("type", ""))),
-                    anki_video_html(video_webm_name, video_mp4_name, poster_name, controls=not use_v11_template, muted=use_v11_template),
+                    anki_video_html(video_webm_name, video_mp4_name, poster_name, controls=not use_v11_template, muted=False),
                     anki_audio_html(audio_name, controls=not use_v11_template, role="original"),
                     anki_audio_html(tts_by_segment.get(segment_id, ""), controls=not use_v11_template, role="slow"),
                     anki_audio_html(phrase_tts_name, controls=not use_v11_template, role="phrase"),
@@ -8966,15 +9013,15 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     anki_study_text(card.get("english", "")),
                     anki_study_text(card_chinese_core(card)),
                     anki_study_text(card.get("phrase", "")),
-                    anki_study_text(card.get("definition", "")),
-                    anki_study_text(card.get("collocations", "")),
+                    anki_study_text(definition_field),
+                    anki_study_text(collocations_field),
                     anki_study_text(card.get("context", "")),
                     anki_study_text(card.get("example", "")),
                     anki_study_text(card.get("chinese_feel", "")),
                     anki_study_text(card.get("why", "")),
                     anki_study_text(card.get("difficulty", "")),
                     anki_text(segment.get("source_time", "")),
-                    anki_study_text(card.get("teacher_note", "")),
+                    anki_study_text(teacher_note_field),
                     anki_study_text(card.get("cloze", "")),
                     anki_text(template_labels["card_layout"]),
                     anki_text("repetition" if use_v11_template else template_labels["card_layout"]),

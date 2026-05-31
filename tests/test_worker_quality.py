@@ -365,7 +365,8 @@ class WorkerQualityTests(unittest.TestCase):
             self.assertIn("v11-front-copy", template["qfmt"])
             self.assertIn("{{FrontPrompt}}", template["qfmt"])
             self.assertIn("慢读", template["qfmt"])
-            self.assertIn("点画面听原视频", template["qfmt"])
+            self.assertIn("点画面开始复读", template["qfmt"])
+            self.assertIn("复读循环中", template["qfmt"])
             self.assertIn("video.muted = false", template["qfmt"])
             self.assertIn("核心表达", template["afmt"])
             self.assertIn("老师提醒", template["afmt"])
@@ -1358,6 +1359,7 @@ class WorkerQualityTests(unittest.TestCase):
             "chinese": "待精修：先把 run the register 当作本句目标表达。",
             "natural_chinese": "正式导出前需要 AI 精修。",
             "definition": "本地 fallback 只保证结构完整。",
+            "collocations": "run the register + natural object / use run the register in a complete sentence",
             "teacher_note": "不建议直接作为正式学习内容。",
         }
 
@@ -1368,6 +1370,13 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(fields["answer"], "run the register")
         self.assertNotIn("待精修", fields["front_prompt"] + fields["front_content"] + fields["answer"])
         self.assertTrue(worker.contains_internal_placeholder(card["definition"]))
+        self.assertEqual(worker.clean_study_text(card["collocations"]), "")
+        self.assertIn("run the register", worker.v11_definition_text(card))
+        self.assertIn("换一个相似场景", worker.v11_migration_text(card))
+        self.assertIn("不要只背中文翻译", worker.v11_teacher_note_text(card))
+
+        sensitive = {"phrase": "flat as a washboard", "english": "I mean you're flat as a washboard."}
+        self.assertIn("可能冒犯", worker.v11_teacher_note_text(sensitive))
 
     def test_merge_ai_cards_preserves_boundary_fields_for_back_template(self):
         segments = [
@@ -1494,8 +1503,8 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("v11-video-stage", v11[2])
         self.assertIn("playV11Audio", v11[2] + v11[3])
         self.assertIn("toggleV11Video", v11[2] + v11[3])
-        self.assertIn("点画面听原视频", v11[2] + v11[3])
-        self.assertIn("原视频播放中", v11[2] + v11[3])
+        self.assertIn("点画面开始复读", v11[2] + v11[3])
+        self.assertIn("复读循环中", v11[2] + v11[3])
         self.assertIn("慢读", v11[2])
         self.assertNotIn("<audio controls", v11[2] + v11[3])
         self.assertEqual(language[0], "视频语言 V10")
