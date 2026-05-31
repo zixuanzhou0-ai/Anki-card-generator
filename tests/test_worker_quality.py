@@ -347,6 +347,25 @@ class WorkerQualityTests(unittest.TestCase):
             self.assertEqual(result["media_summary"]["phrase_tts_files"], 0)
             self.assertTrue(any("视频/原声切片失败" in warning for warning in result["warnings"]))
 
+            import sqlite3
+            import zipfile
+
+            with zipfile.ZipFile(result["apkg_path"]) as apkg:
+                apkg.extract("collection.anki2", root)
+            connection = sqlite3.connect(root / "collection.anki2")
+            try:
+                models_json = connection.execute("select models from col").fetchone()[0]
+            finally:
+                connection.close()
+            model = next(iter(json.loads(models_json).values()))
+            template = model["tmpls"][0]
+
+            self.assertNotIn("整句 AI 朗读", template["qfmt"])
+            self.assertNotIn("{{TtsAudio}}", template["qfmt"])
+            self.assertIn("核心答案", template["afmt"])
+            self.assertIn("别这样用", template["afmt"])
+            self.assertIn("再造一句", template["afmt"])
+
     def test_worker_fail_emits_machine_readable_error(self):
         from acg.protocol import ERROR_PREFIX, fail
 
@@ -1281,6 +1300,125 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(card["type_label"], "语境生词卡")
         self.assertEqual(card["content_kind"], "vocabulary")
 
+    def test_card_front_fields_use_retrieval_prompts_by_card_kind(self):
+        expression = worker.card_front_fields(
+            {
+                "type": "phrase",
+                "phrase": "run the register",
+                "chinese": "负责收银",
+                "natural_chinese": "负责收银",
+                "phrase_type": "collocation",
+                "content_kind": "phrase",
+            }
+        )
+        vocabulary = worker.card_front_fields(
+            {
+                "type": "phrase",
+                "phrase": "register",
+                "chinese": "收银机",
+                "natural_chinese": "收银机",
+                "phrase_type": "vocabulary_usage",
+                "content_kind": "vocabulary",
+            }
+        )
+
+        self.assertIn("负责收银", expression["front_prompt"])
+        self.assertIn("自然表达是什么", expression["front_prompt"])
+        self.assertNotIn("判断这句最值得学", expression["front_prompt"])
+        self.assertEqual(expression["answer"], "run the register = 负责收银")
+        self.assertEqual(vocabulary["front_prompt"], "“register”在这句里是什么意思？")
+        self.assertEqual(vocabulary["answer"], "register = 收银机")
+        self.assertEqual(worker.card_label_for_learning_card("", "vocabulary"), "语境生词卡")
+        self.assertEqual(worker.card_label_for_learning_card("idiom", "phrase"), "表达卡")
+
+    def test_merge_ai_cards_preserves_boundary_fields_for_back_template(self):
+        segments = [
+            {
+                "id": "seg_0001",
+                "start": 0.0,
+                "end": 2.0,
+                "source_time": "00:00:00.000 - 00:00:02.000",
+                "text": "I mean you're flat as a washboard.",
+                "phrase": "flat as a washboard",
+                "score": 4.2,
+                "recommendation": 5,
+            }
+        ]
+        ai_payload = {
+            "segments": [
+                {
+                    "id": "seg_0001",
+                    "cards": [
+                        {
+                            "type": "phrase",
+                            "phrase": "flat as a washboard",
+                            "phrase_type": "idiom",
+                            "content_kind": "phrase",
+                            "english": "I mean you're flat as a washboard.",
+                            "chinese": "你平得像个搓衣板。",
+                            "definition": "夸张地说某人身体或表面很平。",
+                            "collocations": "flat as a pancake / flat as a board",
+                            "context": "非正式调侃里使用。",
+                            "example": "After the diet joke, he said he was flat as a washboard.",
+                            "chinese_feel": "画面感很强的调侃。",
+                            "why": "能提醒学习者注意美剧里的夸张比喻。",
+                            "difficulty": "C1 高阶表达",
+                            "teacher_note": "语气偏调侃。",
+                            "cloze": "You're ____.",
+                            "retrieval_prompt": "这句里表示“平得像搓衣板”的夸张表达是什么？",
+                            "answer_core": "flat as a washboard = 平得像搓衣板",
+                            "usage_boundary": "调侃外貌或身材，可能冒犯；只适合很熟的人之间。",
+                            "confusable_note": "不要当成中性夸奖，也不要用于正式场合。",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        merged, _ = worker.merge_ai_cards(segments, ai_payload, ["phrase"], "C1")
+        card = merged[0]["cards"][0]
+
+        self.assertEqual(card["answer_core"], "flat as a washboard = 平得像搓衣板")
+        self.assertIn("调侃外貌或身材，可能冒犯", card["teacher_note"])
+        self.assertIn("不要当成中性夸奖", card["teacher_note"])
+        self.assertIn("平得像搓衣板", worker.card_front_fields(card)["front_prompt"])
+
+    def test_prompt_requests_retrieval_and_boundary_fields(self):
+        prompt = worker.build_prompt(
+            {
+                "language": "English",
+                "level": "B1",
+                "collection_levels": ["B1", "B2"],
+                "card_types": ["phrase"],
+            },
+            [
+                {
+                    "id": "seg_0001",
+                    "text": "I'm gonna run the register.",
+                    "phrase": "run the register",
+                    "source_time": "00:00:01.000 - 00:00:03.000",
+                    "recommendation": 5,
+                }
+            ],
+        )
+
+        self.assertIn("retrieval_prompt", prompt)
+        self.assertIn("answer_core", prompt)
+        self.assertIn("usage_boundary", prompt)
+        self.assertIn("confusable_note", prompt)
+        self.assertIn("这句里表示某个中文意思的自然表达是什么", prompt)
+        self.assertIn("某个词在这句里是什么意思/怎么用", prompt)
+
+    def test_v10_template_is_review_first_and_mobile_flowing(self):
+        self.assertIn("无字幕听辨", worker.FRONT_TEMPLATE)
+        self.assertIn("原声线索", worker.FRONT_TEMPLATE)
+        self.assertNotIn("整句 AI 朗读", worker.FRONT_TEMPLATE)
+        self.assertIn("核心答案", worker.BACK_TEMPLATE)
+        self.assertIn("别这样用", worker.BACK_TEMPLATE)
+        self.assertIn("再造一句", worker.BACK_TEMPLATE)
+        self.assertIn("overflow-y: auto !important", worker.CARD_CSS)
+        self.assertIn("height: auto", worker.CARD_CSS)
+
     def test_phrase_review_skip_does_not_generate_candidate(self):
         segment = {
             "id": "seg_0001",
@@ -1805,7 +1943,7 @@ class WorkerQualityTests(unittest.TestCase):
 
         self.assertEqual(len(cards), 1)
         self.assertEqual(cards[0]["type"], "phrase")
-        self.assertEqual(cards[0]["type_label"], "沉浸主卡")
+        self.assertEqual(cards[0]["type_label"], "表达卡")
         self.assertEqual(cards[0]["card_role"], "primary")
 
     def test_card_planner_does_not_make_cloze_just_because_guide_exists(self):
@@ -2038,9 +2176,11 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertTrue(first.startswith("Deck_"))
 
     def test_card_template_uses_responsive_canvas_and_fit_text(self):
-        self.assertIn("height: min(1500px, 91vh)", worker.CARD_CSS)
         self.assertIn("--blue: #007aff", worker.CARD_CSS)
         self.assertIn("--font-scale", worker.CARD_CSS)
+        self.assertIn("overflow-y: auto !important", worker.CARD_CSS)
+        self.assertIn("height: auto", worker.CARD_CSS)
+        self.assertIn("grid-template-columns: repeat(auto-fit, minmax(220px, 1fr))", worker.CARD_CSS)
         self.assertIn("data-fit", worker.BACK_TEMPLATE)
         self.assertIn("fitResponsiveText", worker.BACK_TEMPLATE)
         self.assertIn("fitAdaptiveCard", worker.BACK_TEMPLATE)
@@ -2050,11 +2190,12 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("replay-audio-button", worker.BACK_TEMPLATE)
         self.assertIn("playReplayAudio", worker.BACK_TEMPLATE)
         self.assertIn("AI 朗读未生成", worker.BACK_TEMPLATE)
-        self.assertIn("grid-template-rows: minmax(260px, 38%) auto auto minmax(0, 1fr)", worker.CARD_CSS)
         self.assertNotIn("scale.toFixed", worker.BACK_TEMPLATE)
-        self.assertIn('class="teacher" data-fit', worker.BACK_TEMPLATE)
+        self.assertIn("核心答案", worker.BACK_TEMPLATE)
+        self.assertIn("别这样用", worker.BACK_TEMPLATE)
         self.assertIn("怎么理解", worker.BACK_TEMPLATE)
         self.assertIn("怎么用", worker.BACK_TEMPLATE)
+        self.assertIn("再造一句", worker.BACK_TEMPLATE)
         self.assertIn("learning-grid", worker.CARD_CSS)
         self.assertNotIn("@media (max-height: 980px)", worker.CARD_CSS)
 

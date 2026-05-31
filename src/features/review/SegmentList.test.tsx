@@ -23,7 +23,7 @@ const segment: Segment = {
       phrase: 'figure out',
       teacher_note: '',
       type: 'phrase',
-      type_label: '词伙卡',
+      type_label: '表达卡',
       why: '',
     },
   ],

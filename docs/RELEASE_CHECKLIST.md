@@ -48,7 +48,7 @@ GitHub Actions 必须是绿色；如果 CI 因外部服务故障失败，release
 6. 用短视频或 YouTube URL 生成卡片。
 7. 导出 `.apkg`。
 8. 导入 Anki。
-9. 检查视频、原声、TTS、词伙 TTS 是否正常。
+9. 检查视频、原声、TTS、表达 TTS 是否正常。
 10. 删除测试缓存和 `.apkg`，确认没有 API Key 或私人素材进入 release 目录。
 
 ## GitHub Release 内容

@@ -289,6 +289,10 @@ export type Card = {
   why_it_matters?: string
   how_to_use_it?: string
   natural_chinese?: string
+  retrieval_prompt?: string
+  answer_core?: string
+  usage_boundary?: string
+  confusable_note?: string
   replacement_examples?: string | string[]
   avoid_reason?: string
   quality?: {

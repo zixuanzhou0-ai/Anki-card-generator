@@ -26,4 +26,4 @@
 2. 本地视频 + SRT 生成并导出。
 3. YouTube vlog 生成并导出。
 4. 讲解类 YouTube 视频生成并导出。
-5. Anki 导入后检查视频、原声、TTS、词伙 TTS。
+5. Anki 导入后检查视频、原声、TTS、表达 TTS。

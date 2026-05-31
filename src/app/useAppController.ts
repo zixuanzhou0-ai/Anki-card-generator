@@ -440,7 +440,7 @@ export function useAppController() {
     setLastExport(result)
     setAnkiVerifyResult(null)
     const mediaHint = result.media_summary
-      ? `媒体约 ${result.media_summary.media_mb} MB，视频 ${result.media_summary.video_segments} 段，词伙 TTS ${result.media_summary.phrase_tts_files} 条。`
+      ? `媒体约 ${result.media_summary.media_mb} MB，视频 ${result.media_summary.video_segments} 段，表达 TTS ${result.media_summary.phrase_tts_files} 条。`
       : ''
     setStatus(`导出完成：${result.cards} 张卡，${result.segments} 个片段。${mediaHint} ${result.apkg_path}`)
   }

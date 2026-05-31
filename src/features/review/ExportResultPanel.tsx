@@ -29,7 +29,7 @@ export function ExportResultPanel({
             <span>视频 {lastExport.media_summary.video_segments} 段</span>
             <span>原声 {lastExport.media_summary.original_audio_files} 条</span>
             <span>整句 TTS {lastExport.media_summary.sentence_tts_files} 条</span>
-            <span>词伙 TTS {lastExport.media_summary.phrase_tts_files} 条</span>
+            <span>表达 TTS {lastExport.media_summary.phrase_tts_files} 条</span>
             <span>{lastExport.media_summary.media_mb} MB</span>
           </div>
         ) : null}

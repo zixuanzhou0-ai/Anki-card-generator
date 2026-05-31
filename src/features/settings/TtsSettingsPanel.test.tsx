@@ -91,7 +91,7 @@ describe('TtsSettingsPanel', () => {
     const onPatchTts = vi.fn()
     renderPanel({ onPatchTts })
 
-    fireEvent.click(screen.getByLabelText(/导出时生成整句和词伙 TTS/))
+    fireEvent.click(screen.getByLabelText(/导出时生成整句和表达 TTS/))
 
     expect(onPatchTts).toHaveBeenCalledWith({
       base_url: 'https://dashscope.aliyuncs.com/api/v1',

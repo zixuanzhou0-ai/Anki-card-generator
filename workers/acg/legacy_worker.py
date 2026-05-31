@@ -322,25 +322,27 @@ LANGUAGE_FOCUS_LABELS = {
 }
 LANGUAGE_FOCUS_RULES = {
     "phrases": "优先选择可迁移的词伙、搭配、口语块和话语标记；phrase 必须来自原句且不能是整句。",
-    "vocabulary": "可以选择原句里的一个核心单词或短搭配，但必须训练真实语境里的词义、搭配或用法，不做词典式单词卡。",
+    "vocabulary": "可以选择原句里的一个核心单词或短搭配，但必须训练真实语境里的词义、搭配或用法，不做脱离原句的词典式生词卡。",
     "grammar": "可以选择原句里的可替换句型、结构或语法框架；重点解释它怎么换场景复用，而不是讲抽象语法术语。",
     "listening": "只在弱读、连读、缩读、停顿切分或听音辨义明显时强化听力点；不要把所有句子都硬做听力卡。",
 }
 STUDY_DEPTHS = {"standard", "deep"}
 PHRASE_TYPE_CARD_LABELS = {
-    "spoken_phrase": "词伙卡",
-    "sentence_frame": "句型框架卡",
-    "collocation": "词伙卡",
-    "discourse_marker": "话语标记卡",
+    "spoken_phrase": "表达卡",
+    "sentence_frame": "表达卡",
+    "collocation": "表达卡",
+    "discourse_marker": "表达卡",
+    "idiom": "表达卡",
     "listening_sentence": "听力卡",
     "vocabulary_usage": "语境生词卡",
-    "grammar_pattern": "语法句型卡",
+    "grammar_pattern": "表达卡",
 }
 PHRASE_TYPE_CONTENT_KIND = {
     "spoken_phrase": "phrase",
     "sentence_frame": "grammar",
     "collocation": "phrase",
     "discourse_marker": "phrase",
+    "idiom": "phrase",
     "listening_sentence": "listening",
     "vocabulary_usage": "vocabulary",
     "grammar_pattern": "grammar",
@@ -377,8 +379,20 @@ def normalized_study_depth(payload: dict[str, Any]) -> str:
     return value if value in STUDY_DEPTHS else "deep"
 
 
-def card_label_for_phrase_type(phrase_type: str, fallback: str = "词伙卡") -> str:
+def card_label_for_phrase_type(phrase_type: str, fallback: str = "表达卡") -> str:
     return PHRASE_TYPE_CARD_LABELS.get(str(phrase_type or "").strip(), fallback)
+
+
+def card_label_for_learning_card(phrase_type: str, content_kind: str, fallback: str = "表达卡") -> str:
+    normalized_type = str(phrase_type or "").strip()
+    if normalized_type in PHRASE_TYPE_CARD_LABELS:
+        return PHRASE_TYPE_CARD_LABELS[normalized_type]
+    normalized_kind = str(content_kind or "").strip()
+    if normalized_kind == "vocabulary":
+        return "语境生词卡"
+    if normalized_kind == "listening":
+        return "听力卡"
+    return fallback
 
 
 def content_kind_for_phrase_type(phrase_type: str, fallback: str = "phrase") -> str:
@@ -998,7 +1012,7 @@ def fallback_phrase_fields(text: str, phrase: str, level: str) -> dict[str, str]
         return {
             "phrase": "",
             "chinese": "本地待审：这句需要先确认真正值得学习的表达。",
-            "definition": "系统没有在原句中找到稳定、完整、可迁移的词伙；建议用作听力待审，不要直接导出为词伙卡。",
+            "definition": "系统没有在原句中找到稳定、完整、可迁移的表达；建议用作听力待审，不要直接导出为表达卡。",
             "collocations": "",
             "context": "适合人工复核是否有听力难点或隐藏表达。",
             "example": text,
@@ -1116,7 +1130,7 @@ def quality_issue_labels(card_type: str, text: str, phrase: str, cloze: str, sou
         issues.append("词伙任务原句太长")
         score -= 22
     if len(text_words) > 20:
-        issues.append("原句太长，不适合做精品词伙卡")
+        issues.append("原句太长，不适合做表达卡")
         score -= 18
     if starts_like_fragment(text):
         issues.append("原句像截断片段")
@@ -1457,6 +1471,8 @@ def normalize_learning_action_fields(card: dict[str, Any]) -> None:
     natural_chinese = normalized_action_text(card.get("natural_chinese"))
     replacement_examples = normalized_action_text(card.get("replacement_examples"))
     avoid_reason = normalized_action_text(card.get("avoid_reason"))
+    usage_boundary = normalized_action_text(card.get("usage_boundary"))
+    confusable_note = normalized_action_text(card.get("confusable_note"))
 
     if natural_chinese and (not str(card.get("chinese") or "").strip() or not has_cjk(str(card.get("chinese") or ""))):
         card["chinese"] = natural_chinese
@@ -1497,6 +1513,18 @@ def normalize_learning_action_fields(card: dict[str, Any]) -> None:
     teacher_note = str(card.get("teacher_note") or "").strip()
     if (not teacher_note or has_generic_teacher_note(teacher_note)) and how_to_use_it:
         card["teacher_note"] = how_to_use_it
+        teacher_note = str(card.get("teacher_note") or "").strip()
+    extra_notes = []
+    if usage_boundary:
+        extra_notes.append(f"使用边界：{usage_boundary}")
+    if confusable_note:
+        extra_notes.append(f"易错提醒：{confusable_note}")
+    if extra_notes:
+        merged_note = "；".join(extra_notes)
+        if teacher_note and merged_note not in teacher_note:
+            card["teacher_note"] = f"{teacher_note}；{merged_note}"
+        elif not teacher_note:
+            card["teacher_note"] = merged_note
     if has_generic_definition(str(card.get("definition", ""))) and learning_target:
         card["definition"] = learning_target
 
@@ -1580,7 +1608,7 @@ def plan_card_types(segment: dict[str, Any], card_types: list[str], level: str) 
         else:
             skipped["cloze"] = "表达偏基础或输出价值不足，不单独做填空卡。"
     if "phrase" in requested and primary != "phrase":
-        skipped["phrase"] = "没有稳定、完整、可迁移的词伙，不单独做词伙卡。"
+        skipped["phrase"] = "没有稳定、完整、可迁移的表达，不单独做表达卡。"
 
     # Default to one card. Allow only one genuinely different specialist card.
     if optional:
@@ -1633,10 +1661,18 @@ def fallback_cards(segment: dict[str, Any], card_types: list[str], level: str) -
             "phrase_type": segment.get("phrase_type", ""),
             "content_kind": segment.get("content_kind") or content_kind_for_phrase_type(str(segment.get("phrase_type") or "")),
             "source_evidence": segment.get("source_evidence") or segment.get("text", ""),
+            "retrieval_prompt": "",
+            "answer_core": "",
+            "usage_boundary": "",
+            "confusable_note": "",
             **fields,
         }
-        if card_type == "phrase" and card.get("phrase_type"):
-            card["type_label"] = card_label_for_phrase_type(str(card.get("phrase_type")), card["type_label"])
+        if card_type == "phrase":
+            card["type_label"] = card_label_for_learning_card(
+                str(card.get("phrase_type") or ""),
+                str(card.get("content_kind") or ""),
+                card["type_label"],
+            )
         card_quality_source = quality_source if card_type == "phrase" else "fallback"
         card["quality"] = assess_card_quality(card, segment, card_quality_source, level)
         card["enabled"] = card_quality_source == "curated_fallback" and card["quality"]["status"] == "recommended"
@@ -1694,11 +1730,16 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
         "8) 每张卡还必须给学习动作字段：learning_target=这张卡训练什么；why_it_matters=为什么值得学；"
         "how_to_use_it=下次怎么换场景使用；natural_chinese=自然中文理解；replacement_examples=1-2 个可替换例子；"
         "avoid_reason=不值得制卡时的原因。"
+        "9) 每张卡必须给复习字段：retrieval_prompt=正面明确回忆题，不能写“判断最值得学”；"
+        "answer_core=翻面第一眼核对的核心答案；usage_boundary=什么时候能用/不能用，尤其是调侃、冒犯、正式度；"
+        "confusable_note=中文学习者最容易误解或误用的点。"
+        "表达卡 retrieval_prompt 要问“这句里表示某个中文意思的自然表达是什么？”；"
+        "语境生词卡要问“某个词在这句里是什么意思/怎么用？”，禁止做脱离原句的词典卡。"
         "好卡样例：english=Honestly, it's such a nice Monday morning. phrase=such a nice；"
         "learning_target=训练 such a nice + 名词来表达自然赞叹；how_to_use_it=such a nice day / such a nice place；"
         "teacher_note=下次想夸天气、地方或体验时，用 such a nice + 名词，比 very nice 更像真实口语。"
         "废卡样例：english=Today we are going to talk about AI models. phrase=talk about；B1 用户不推荐，因为太基础且不是真正值得学的内容。"
-        "重复卡样例：同一句同时生成听力卡、词伙卡、填空卡但训练点一样时，只保留一张沉浸主卡。"
+        "重复卡样例：同一句同时生成听力卡、表达卡、填空卡但训练点一样时，只保留一张表达卡。"
         "卡片规划规则：默认每个片段只生成 1 张主卡，不要机械生成三张。"
         "只有当训练目标明显不同，才额外生成 1 张专项卡；同一片段最多 2 张卡。"
         "phrase 作为默认主卡，整合听力、语义、中文感、例句和挖空答案；"
@@ -1710,17 +1751,19 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
         "每张卡必须写 card_role: primary|specialist、learning_goal、decision_reason。"
         "返回严格 JSON，不要 Markdown。JSON 结构："
         '{"segments":[{"id":"seg_0001","cards":[{"type":"listening|phrase|cloze",'
-        '"phrase_type":"spoken_phrase|sentence_frame|collocation|discourse_marker|listening_sentence|vocabulary_usage|grammar_pattern",'
+        '"phrase_type":"spoken_phrase|sentence_frame|collocation|discourse_marker|idiom|listening_sentence|vocabulary_usage|grammar_pattern",'
         '"content_kind":"phrase|vocabulary|grammar|listening",'
         '"source_evidence":"这张卡来自原句和上下文的证据",'
-        '"chinese":"中文意思","phrase":"重点词伙","definition":"释义","collocations":"搭配",'
+        '"chinese":"中文意思","phrase":"重点表达或生词","definition":"释义","collocations":"搭配",'
         '"context":"语境","example":"例句","chinese_feel":"中文感","why":"为什么值得学",'
         '"difficulty":"A1 入门|A2 基础|B1 日常交流|B2 独立表达|C1 高阶表达|C2 接近母语",'
         '"teacher_note":"一句老师评语","cloze":"挖空句","card_role":"primary|specialist",'
         '"learning_goal":"这张卡训练什么","decision_reason":"为什么生成这张卡",'
         '"learning_target":"这张卡训练什么","why_it_matters":"为什么值得学",'
         '"how_to_use_it":"下次怎么换场景使用","natural_chinese":"自然中文理解",'
-        '"replacement_examples":"1-2 个可替换例子","avoid_reason":"不值得制卡时的原因"}]}]}。'
+        '"replacement_examples":"1-2 个可替换例子","avoid_reason":"不值得制卡时的原因",'
+        '"retrieval_prompt":"正面明确回忆题","answer_core":"核心答案",'
+        '"usage_boundary":"使用边界/语气风险","confusable_note":"易错提醒"}]}]}。'
         f"学习语言：{project.get('language', 'English')}。"
         f"用户当前水平：{current_level}，解释深度和中文提示按这个水平写。"
         f"允许收录难度范围：{', '.join(collection_levels)}；可以收录这些等级里的高频表达，但不要因为简单就写废话。"
@@ -2363,14 +2406,14 @@ def build_phrase_review_prompt(project: dict[str, Any], segments: list[dict[str,
         "2) keep 只给真正值得复习的表达；如果只是句子主题、名词堆叠、产品名、working with 这类泛短语，decision=skip。"
         "3) B1 或更高水平不要把 talk about、go home 这类 A1/A2 基础表达评为 keep，除非原句里有更具体的表达框架。"
         "4) value_score 用 1-5：5=非常值得学，4=推荐制卡，3=可待审，1-2=跳过。"
-        "5) phrase_type 从 spoken_phrase、sentence_frame、collocation、discourse_marker、listening_sentence、vocabulary_usage、grammar_pattern 中选一个。"
+        "5) phrase_type 从 spoken_phrase、sentence_frame、collocation、discourse_marker、idiom、listening_sentence、vocabulary_usage、grammar_pattern 中选一个。"
         "6) score_breakdown 必须给 transferability、spoken_naturalness、level_fit、context_clarity 四项 1-5 分。"
         "7) card_focus 用一句短中文说明这张卡应该训练什么；skip 时写 reject_reason。"
         "好例子：Honestly, it's such a nice Monday morning. -> keep, phrase=such a nice, phrase_type=sentence_frame, card_focus=训练 such a nice + 名词表达自然赞叹。"
         "废例子：Today we are going to talk about AI models. -> skip, phrase=talk about, reject_reason=B1 用户太基础，而且只是视频引入。"
         "只返回严格 JSON，不要 Markdown。结构："
         '{"candidates":[{"id":"seg_0001","decision":"keep|skip","phrase":"原句里的词伙",'
-        '"phrase_type":"spoken_phrase|sentence_frame|collocation|discourse_marker|listening_sentence|vocabulary_usage|grammar_pattern",'
+        '"phrase_type":"spoken_phrase|sentence_frame|collocation|discourse_marker|idiom|listening_sentence|vocabulary_usage|grammar_pattern",'
         '"value_score":1,"score_breakdown":{"transferability":1,"spoken_naturalness":1,"level_fit":1,"context_clarity":1},'
         '"reason":"推荐理由","card_focus":"训练重点","reject_reason":"跳过原因"}]}。'
         f"用户当前水平：{level}。允许收录难度范围：{', '.join(collection_levels)}。"
@@ -3211,6 +3254,10 @@ def merge_ai_cards(
                     "phrase_type",
                     "content_kind",
                     "source_evidence",
+                    "retrieval_prompt",
+                    "answer_core",
+                    "usage_boundary",
+                    "confusable_note",
                 ]:
                     if ai_card.get(key):
                         card[key] = str(ai_card[key])
@@ -3219,7 +3266,11 @@ def merge_ai_cards(
                     if phrase_type:
                         card["phrase_type"] = phrase_type
                         card["content_kind"] = card.get("content_kind") or content_kind_for_phrase_type(phrase_type)
-                        card["type_label"] = card_label_for_phrase_type(phrase_type, card.get("type_label", "词伙卡"))
+                    card["type_label"] = card_label_for_learning_card(
+                        str(card.get("phrase_type") or ""),
+                        str(card.get("content_kind") or ""),
+                        card.get("type_label", "表达卡"),
+                    )
                 if ai_card is ai_template_card and card["type"] not in ai_cards_by_type:
                     card["teacher_note"] = (
                         card.get("teacher_note")
@@ -3243,7 +3294,11 @@ def merge_ai_cards(
                     phrase_type = str(card.get("phrase_type") or "")
                     if phrase_type:
                         card["content_kind"] = card.get("content_kind") or content_kind_for_phrase_type(phrase_type)
-                        card["type_label"] = card_label_for_phrase_type(phrase_type, card.get("type_label", "词伙卡"))
+                    card["type_label"] = card_label_for_learning_card(
+                        str(card.get("phrase_type") or ""),
+                        str(card.get("content_kind") or ""),
+                        card.get("type_label", "表达卡"),
+                    )
                 card["quality"] = assess_card_quality(card, segment, "ai", level)
                 card["enabled"] = card["quality"]["status"] == "recommended"
                 cards.append(card)
@@ -6628,6 +6683,148 @@ audio {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* Mobile-first review card overrides: keep every learning block in the natural
+   document flow so Anki mobile never hides the answer, usage, or warning. */
+html,
+body,
+#qa {
+  height: auto !important;
+  min-height: 100% !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+}
+.card {
+  min-height: 100%;
+  overflow-x: hidden;
+  overflow-y: visible;
+}
+.wrap {
+  width: min(980px, calc(100vw - 16px));
+  max-width: calc(100vw - 12px);
+  height: auto;
+  min-height: 0;
+}
+.study-card {
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+  border-radius: 14px;
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.08);
+}
+.front-card,
+.back-card,
+.back-card:not(.has-media) {
+  display: flex;
+  flex-direction: column;
+}
+.front-task {
+  order: 0;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  overflow: visible;
+  padding: clamp(18px, 4vw, 34px);
+  border-bottom: 1px solid var(--line);
+}
+.front-badge {
+  width: auto;
+  min-height: 0;
+  justify-self: start;
+  padding: 6px 10px;
+}
+.cinema {
+  order: 1;
+  grid-template-rows: auto auto;
+  padding: clamp(8px, 2vw, 14px);
+}
+.cinema video {
+  height: auto;
+  max-height: min(46vh, 520px);
+}
+.audio-strip {
+  order: 2;
+  overflow: visible;
+  padding: clamp(12px, 3vw, 20px) clamp(18px, 4vw, 34px);
+}
+.audio-row {
+  grid-template-columns: clamp(70px, 18vw, 108px) minmax(0, 1fr);
+}
+.replay {
+  height: auto;
+  max-height: none;
+  grid-template-rows: auto auto;
+  overflow: visible;
+  padding: clamp(10px, 3vw, 18px);
+}
+.replay-media {
+  height: auto;
+  max-width: 920px;
+  padding: 0;
+}
+.replay-media video {
+  height: auto;
+  max-height: min(34vh, 360px);
+}
+.answer-hero {
+  gap: 10px;
+  overflow: visible;
+  padding: clamp(16px, 4vw, 30px);
+  background: #ffffff;
+}
+.answer-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.answer-box strong {
+  font-size: clamp(24px, 6vw, 44px);
+}
+.meaning {
+  color: #3a3a3c;
+  font-size: clamp(16px, 3.8vw, 23px);
+  font-weight: 760;
+}
+.sentence {
+  overflow: visible;
+  padding: clamp(14px, 4vw, 26px);
+}
+.english {
+  font-size: clamp(22px, 5vw, 38px);
+}
+.detail-grid,
+.learning-grid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-auto-rows: auto;
+  overflow: visible;
+  padding: clamp(14px, 4vw, 26px);
+}
+.detail,
+.detail p,
+.detail p.english-detail {
+  overflow: visible;
+}
+.detail p {
+  flex: 0 1 auto;
+}
+@media (max-width: 680px) {
+  .card {
+    padding: 5px;
+  }
+  .wrap {
+    width: calc(100vw - 10px);
+  }
+  .audio-row {
+    grid-template-columns: 1fr;
+  }
+  .detail-grid,
+  .learning-grid {
+    grid-template-columns: 1fr;
+  }
+  .replay-buttons {
+    justify-content: flex-start;
+  }
+}
 """
 
 
@@ -6648,12 +6845,11 @@ FRONT_TEMPLATE = """
         <h1 class="task-title" data-fit data-fit-min="18" data-fit-max="36">{{FrontPrompt}}</h1>
         {{#FrontContent}}<p class="front-content" data-fit data-fit-min="15" data-fit-max="25">{{FrontContent}}</p>{{/FrontContent}}
       </div>
-      <div class="front-badge">{{#Video}}字幕只能翻面后看{{/Video}}{{^Video}}先想答案{{/Video}}</div>
+      <div class="front-badge">{{#Video}}无字幕听辨{{/Video}}{{^Video}}主动检索{{/Video}}</div>
     </div>
     {{#Audio}}<div class="audio-strip">
-      <div class="audio-title"><strong>声音轨道</strong><span>0.75x 慢放 / 循环</span></div>
+      <div class="audio-title"><strong>原声线索</strong><span>0.75x 慢放 / 循环</span></div>
       <div class="audio-row"><span>原声音频</span>{{Audio}}</div>
-      {{#TtsAudio}}<div class="audio-row"><span>整句 AI 朗读</span>{{TtsAudio}}</div>{{/TtsAudio}}
     </div>{{/Audio}}
   </section>
 </div>
@@ -6770,14 +6966,13 @@ BACK_TEMPLATE = """
         <span>{{CardType}}</span>
         <span>{{Difficulty}}</span>
       </div>
-      <div class="focus-line">
-        <h1 class="focus-word" data-fit data-fit-min="28" data-fit-max="80">{{Phrase}}</h1>
-        {{#PhraseTtsAudio}}<button class="phrase-speaker" type="button" aria-label="播放词伙发音" title="播放词伙发音" onclick="playPhraseTts(this)"><span class="speaker-icon" aria-hidden="true"></span></button><span class="phrase-audio">{{PhraseTtsAudio}}</span>{{/PhraseTtsAudio}}
-      </div>
-      <div class="meaning" data-fit data-fit-min="16" data-fit-max="34">{{ChineseFeel}}</div>
-      <div class="translation" data-fit data-fit-min="14" data-fit-max="26">{{Chinese}}</div>
-      {{#Answer}}<div class="answer-box"><span>这张卡真正要记住的答案</span><strong data-fit data-fit-min="20" data-fit-max="48">{{Answer}}</strong></div>{{/Answer}}
-      {{#TeacherNote}}<div class="teacher" data-fit data-fit-min="11" data-fit-max="18">{{TeacherNote}}</div>{{/TeacherNote}}
+      {{#Answer}}<div class="answer-box main-answer">
+        <span>核心答案</span>
+        <div class="answer-line">
+          <strong data-fit data-fit-min="20" data-fit-max="44">{{Answer}}</strong>
+          {{#PhraseTtsAudio}}<button class="phrase-speaker" type="button" aria-label="播放表达发音" title="播放表达发音" onclick="playPhraseTts(this)"><span class="speaker-icon" aria-hidden="true"></span></button><span class="phrase-audio">{{PhraseTtsAudio}}</span>{{/PhraseTtsAudio}}
+        </div>
+      </div>{{/Answer}}
     </div>
 
     <div class="sentence">
@@ -6793,14 +6988,22 @@ BACK_TEMPLATE = """
       <div class="detail learning-block understand-block">
         <strong>怎么理解</strong>
         <p data-fit data-fit-min="13" data-fit-max="20">{{Definition}}</p>
+        {{#ChineseFeel}}<p class="support-note" data-fit data-fit-min="12" data-fit-max="18">{{ChineseFeel}}</p>{{/ChineseFeel}}
         {{#Why}}<p class="support-note" data-fit data-fit-min="12" data-fit-max="18">{{Why}}</p>{{/Why}}
       </div>
       <div class="detail learning-block use-block">
         <strong>怎么用</strong>
         <p class="english-detail" data-fit data-fit-min="13" data-fit-max="21">{{Collocations}}</p>
         {{#Context}}<p class="support-note" data-fit data-fit-min="12" data-fit-max="18">{{Context}}</p>{{/Context}}
-        {{#Example}}<p class="english-detail example-line" data-fit data-fit-min="13" data-fit-max="20">{{Example}}</p>{{/Example}}
       </div>
+      {{#TeacherNote}}<div class="detail learning-block caution-block">
+        <strong>别这样用</strong>
+        <p data-fit data-fit-min="12" data-fit-max="18">{{TeacherNote}}</p>
+      </div>{{/TeacherNote}}
+      {{#Example}}<div class="detail learning-block transfer-block">
+        <strong>再造一句</strong>
+        <p class="english-detail example-line" data-fit data-fit-min="13" data-fit-max="20">{{Example}}</p>
+      </div>{{/Example}}
     </div>
   </section>
 </div>
@@ -7090,11 +7293,40 @@ def anki_text(value: Any) -> str:
     return html.escape(str(value or ""), quote=False)
 
 
+def compact_retrieval_cue(value: Any, max_chars: int = 26) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    text = text.strip(" \t\r\n。.!！?？；;，,")
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars].rstrip()}..."
+
+
+def is_contextual_vocabulary_card(card: dict[str, Any]) -> bool:
+    return (
+        str(card.get("content_kind") or "").strip() == "vocabulary"
+        or str(card.get("phrase_type") or "").strip() == "vocabulary_usage"
+    )
+
+
+def card_answer_core(card: dict[str, Any]) -> str:
+    explicit = str(card.get("answer_core") or "").strip()
+    if explicit:
+        return explicit
+    phrase = str(card.get("phrase") or "").strip()
+    chinese = str(card.get("natural_chinese") or card.get("chinese") or "").strip()
+    if is_contextual_vocabulary_card(card) and phrase and chinese:
+        return f"{phrase} = {chinese}"
+    if phrase and chinese:
+        return f"{phrase} = {chinese}"
+    return phrase or chinese or str(card.get("english") or "").strip()
+
+
 def card_front_fields(card: dict[str, Any]) -> dict[str, str]:
     card_type = card.get("type", "")
     english = card.get("english", "")
     phrase = card.get("phrase", "")
     chinese = card.get("chinese", "")
+    retrieval_prompt = str(card.get("retrieval_prompt") or "").strip()
     if card_type == "listening":
         return {
             "front_prompt": "只看画面和听声音，先复述这一句。",
@@ -7102,16 +7334,27 @@ def card_front_fields(card: dict[str, Any]) -> dict[str, str]:
             "answer": english,
         }
     if card_type == "phrase":
+        if retrieval_prompt:
+            front_prompt = retrieval_prompt
+        elif is_contextual_vocabulary_card(card):
+            front_prompt = f"“{phrase}”在这句里是什么意思？" if phrase else "这个词在原句里是什么意思？"
+        else:
+            cue = compact_retrieval_cue(card.get("natural_chinese") or chinese or card.get("chinese_feel"))
+            front_prompt = f"这句里表示“{cue}”的自然表达是什么？" if cue else "回忆这句里最值得带走的自然表达。"
         return {
-            "front_prompt": "听完后，判断这句最值得学的口语词伙。",
-            "front_content": "不要急着看答案，先在脑子里抓住那段自然表达。",
-            "answer": f"{phrase} = {chinese}".strip(" ="),
+            "front_prompt": front_prompt,
+            "front_content": (
+                "按原句场景解释，不背词典第一个释义。"
+                if is_contextual_vocabulary_card(card)
+                else "先听原声，再在心里补出这个表达。"
+            ),
+            "answer": card_answer_core(card),
         }
     if card_type == "cloze":
         return {
             "front_prompt": "根据语气和画面，在心里补出关键表达。",
             "front_content": card.get("cloze", "") or "先听原声，再补出关键表达。",
-            "answer": phrase,
+            "answer": card_answer_core(card),
         }
     if card_type == "knowledge":
         return {
@@ -7375,7 +7618,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         if skip_video_media:
             warnings.append("本次导出为字幕-only / 跳过视频切片模式，APKG 不包含视频片段和原声音频。")
         if not tts_requested:
-            warnings.append("TTS 当前未启用，本次导出不会生成整句 AI 朗读和词伙小喇叭。")
+            warnings.append("TTS 当前未启用，本次导出不会生成整句 AI 朗读和表达小喇叭。")
         elif not tts_config["api_key"]:
             warnings.append("TTS 已启用但缺少 API Key，本次导出不会生成 MIMO / AI 朗读音频。")
         elif (tts_config["provider"] in OPENAI_COMPATIBLE_PROVIDERS or tts_config["provider"] in QWEN_TTS_PROVIDERS) and (
@@ -7583,7 +7826,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     phrase_tts_name = f"{media_prefix}_phrase_{stable_id(phrase_key, 0)}.mp3"
                     phrase_tts_out = media_dir / phrase_tts_name
                     try:
-                        emit_progress("export", "tts", min(88, segment_percent + 5), f"正在生成词伙发音：{phrase_text}")
+                        emit_progress("export", "tts", min(88, segment_percent + 5), f"正在生成表达发音：{phrase_text}")
                         if synthesize_tts(project, segment, phrase_tts_out, text_override=phrase_text):
                             media_files.append(str(phrase_tts_out))
                             phrase_tts_by_phrase[phrase_key] = phrase_tts_name
@@ -7591,7 +7834,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                             phrase_tts_name = ""
                     except Exception as err:
                         phrase_tts_name = ""
-                        warnings.append(f"{segment_id} 词伙 TTS 失败：{err}")
+                        warnings.append(f"{segment_id} 表达 TTS 失败：{err}")
             note = genanki.Note(
                 model=model,
                 fields=[
@@ -7640,9 +7883,9 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             warnings.append(f"整句 AI 朗读只生成 {len(tts_by_segment)}/{expected_sentence_tts} 条，请检查导出日志。")
         expected_phrase_tts = len(expected_phrase_tts_keys)
         if expected_phrase_tts and not phrase_tts_by_phrase:
-            warnings.append("TTS 已启用，但词伙小喇叭生成 0 条；请先测试 TTS 配置后再导出。")
+            warnings.append("TTS 已启用，但表达小喇叭生成 0 条；请先测试 TTS 配置后再导出。")
         elif len(phrase_tts_by_phrase) < expected_phrase_tts:
-            warnings.append(f"词伙小喇叭只生成 {len(phrase_tts_by_phrase)}/{expected_phrase_tts} 条，请检查导出日志。")
+            warnings.append(f"表达小喇叭只生成 {len(phrase_tts_by_phrase)}/{expected_phrase_tts} 条，请检查导出日志。")
 
     emit_progress("export", "package", 92, "正在写入 .apkg。")
     media_files = list(dict.fromkeys(media_files))

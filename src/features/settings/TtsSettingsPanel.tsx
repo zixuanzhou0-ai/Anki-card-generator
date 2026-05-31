@@ -188,9 +188,9 @@ export function TtsSettingsPanel({
       <div className="tts-enable-row">
         <label className="toggle">
           <input type="checkbox" checked={tts.enabled} onChange={handleEnabledChange} />
-          <span>导出时生成整句和词伙 TTS</span>
+          <span>导出时生成整句和表达 TTS</span>
         </label>
-        <small>开启后会额外生成整句朗读，并给顶部重点词伙生成小喇叭音频。</small>
+        <small>开启后会额外生成整句朗读，并给顶部重点表达生成小喇叭音频。</small>
       </div>
 
       {tts.enabled ? (
@@ -356,7 +356,7 @@ export function TtsSettingsPanel({
       ) : (
         <div className="tts-disabled-note">
           <strong>TTS 当前关闭</strong>
-          <span>导出时只使用视频原声；需要顶部词伙小喇叭和 AI 朗读时，打开上面的开关或选择一个常用语音预设。</span>
+          <span>导出时只使用视频原声；需要顶部表达小喇叭和 AI 朗读时，打开上面的开关或选择一个常用语音预设。</span>
         </div>
       )}
     </section>

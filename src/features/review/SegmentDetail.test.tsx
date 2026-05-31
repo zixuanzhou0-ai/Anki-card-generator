@@ -29,7 +29,7 @@ const segment: Segment = {
       quality: { issues: ['语境清楚'], score: 5, status: 'recommended' },
       teacher_note: '很常见。',
       type: 'phrase',
-      type_label: '词伙卡',
+      type_label: '表达卡',
       why: '',
     },
   ],

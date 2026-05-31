@@ -169,7 +169,7 @@ export function SegmentDetail({
                   ? '模型或规则认为它暂时不适合做文档精读卡。'
                   : isKnowledge
                     ? '模型或规则认为它暂时不适合做知识卡。'
-                    : '模型或规则认为它暂时不适合做精品词伙卡。')}
+                    : '模型或规则认为它暂时不适合做表达卡。')}
             </span>
           </div>
         ) : null}
@@ -209,7 +209,7 @@ function CardEditor({ card, documentStudyMode, motionDuration, prefersReducedMot
   const howToUseIt = card.how_to_use_it || card.context
   const cardTypeLabel =
     phraseTypeLabel(card.phrase_type ?? segment.phrase_type) ||
-    (card.content_kind === 'vocabulary' ? '语境生词' : card.content_kind === 'grammar' ? '语法框架' : '词伙表达')
+    (card.content_kind === 'vocabulary' ? '语境生词' : card.content_kind === 'grammar' ? '语法框架' : '自然表达')
   const editPointLabel = isReadingCard ? '精读点' : isKnowledgeCard ? '知识点' : cardTypeLabel === '语境生词' ? '语境生词' : '学习点'
 
   return (

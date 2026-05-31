@@ -431,7 +431,7 @@ TRANSFERABLE_FUNCTION_FRAME_PHRASES = {
 }
 CARD_TYPE_LABELS = {
     "listening": "听力卡",
-    "phrase": "沉浸主卡",
+    "phrase": "表达卡",
     "cloze": "输出填空卡",
     "knowledge": "知识卡",
 }

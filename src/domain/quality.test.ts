@@ -12,7 +12,7 @@ import {
 const baseCard: Card = {
   id: 'card-1',
   type: 'phrase',
-  type_label: '词伙卡',
+  type_label: '表达卡',
   enabled: false,
   english: 'It turns out this works.',
   chinese: '结果这真的有用。',
