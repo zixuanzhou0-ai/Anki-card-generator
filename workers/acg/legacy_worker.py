@@ -4212,7 +4212,7 @@ def handle_generate_document(payload: dict[str, Any]) -> dict[str, Any]:
         "language": payload.get("language", "English"),
         "level": level,
         "collection_levels": collection_levels,
-        "template_id": payload.get("template_id", "immersive"),
+        "template_id": payload.get("template_id", "immersive_v11"),
         "content_toggles": payload.get("content_toggles", {}),
         "language_focus": normalized_document_reading_focus(payload) if study_mode == "language_reading" else normalized_language_focus(payload),
         "document_focus": normalized_document_focus(payload),
@@ -4456,7 +4456,7 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         "language": payload.get("language", "English"),
         "level": level,
         "collection_levels": collection_levels,
-        "template_id": payload.get("template_id", "immersive"),
+        "template_id": payload.get("template_id", "immersive_v11"),
         "content_toggles": payload.get("content_toggles", {}),
         "language_focus": normalized_language_focus(payload),
         "study_depth": normalized_study_depth(payload),
@@ -7574,6 +7574,488 @@ MINIMAL_BACK_TEMPLATE = """
 """
 
 
+CARD_CSS_V11 = """
+.card {
+  margin: 0;
+  min-height: 100%;
+  padding: clamp(10px, 3vw, 24px);
+  background: #f5f5f7;
+  color: #1d1d1f;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
+  line-height: 1.5;
+  text-align: left;
+  letter-spacing: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+* { box-sizing: border-box; }
+html,
+body,
+#qa {
+  width: 100% !important;
+  min-height: 100% !important;
+  height: auto !important;
+  margin: 0 !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+}
+.v11-card {
+  width: min(1120px, calc(100vw - 18px));
+  margin: 0 auto;
+  padding: clamp(24px, 4vw, 42px);
+  border: 1px solid rgba(60, 60, 67, 0.12);
+  border-radius: clamp(22px, 3vw, 30px);
+  background: #ffffff;
+  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.10);
+  overflow: hidden;
+}
+.v11-top {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+.v11-pill,
+.v11-difficulty {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  font-size: clamp(14px, 2.8vw, 18px);
+  font-weight: 850;
+}
+.v11-pill {
+  background: rgba(0, 122, 255, 0.10);
+  color: #0066df;
+}
+.v11-difficulty {
+  background: rgba(88, 86, 214, 0.10);
+  color: #5a38c7;
+}
+.v11-time {
+  color: #6e6e73;
+  font-size: clamp(14px, 2.6vw, 18px);
+  font-weight: 650;
+}
+.v11-front-copy {
+  margin-top: clamp(20px, 4vw, 30px);
+}
+.v11-front-copy h1 {
+  margin: 0;
+  color: #111114;
+  font-size: clamp(38px, 6vw, 68px);
+  line-height: 1.08;
+  font-weight: 900;
+  overflow-wrap: anywhere;
+}
+.v11-front-copy p {
+  margin: 10px 0 0;
+  color: #6e6e73;
+  font-size: clamp(18px, 3vw, 25px);
+  font-weight: 520;
+}
+.v11-video-stage {
+  position: relative;
+  margin-top: clamp(24px, 4vw, 34px);
+  border-radius: clamp(18px, 2.5vw, 24px);
+  background: #050506;
+  overflow: hidden;
+  cursor: pointer;
+}
+.v11-video-stage video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  max-height: min(58vh, 560px);
+  background: #000;
+  object-fit: cover;
+}
+.v11-back .v11-video-stage {
+  margin-top: 0;
+}
+.v11-back .v11-video-stage video {
+  max-height: 250px;
+}
+.v11-video-toggle {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  display: grid;
+  width: clamp(58px, 10vw, 82px);
+  height: clamp(58px, 10vw, 82px);
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(20, 20, 22, 0.44);
+  color: #ffffff;
+  font-size: clamp(28px, 5vw, 40px);
+  font-weight: 900;
+  transform: translate(-50%, -50%);
+  opacity: 0;
+  transition: opacity 160ms ease, background 160ms ease;
+  pointer-events: none;
+}
+.v11-video-stage:hover .v11-video-toggle,
+.v11-video-stage.is-paused .v11-video-toggle {
+  opacity: 1;
+}
+.v11-video-stage.is-paused .v11-video-toggle {
+  background: rgba(20, 20, 22, 0.62);
+}
+.v11-video-time {
+  position: absolute;
+  right: 14px;
+  bottom: 12px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.48);
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 760;
+}
+.v11-sound-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: clamp(12px, 3vw, 24px);
+  margin-top: clamp(22px, 4vw, 32px);
+}
+.v11-sound-actions.is-left {
+  justify-content: flex-start;
+  margin-top: 18px;
+}
+.v11-sound-button,
+.v11-speaker {
+  border: 1px solid rgba(60, 60, 67, 0.15);
+  background: #ffffff;
+  color: #1d1d1f;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.03);
+  cursor: pointer;
+}
+.v11-sound-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-width: min(220px, 40vw);
+  min-height: 58px;
+  padding: 10px 24px;
+  border-radius: 999px;
+  font-size: clamp(18px, 3vw, 24px);
+  font-weight: 820;
+}
+.v11-sound-actions.is-left .v11-sound-button {
+  min-width: 150px;
+  min-height: 48px;
+  font-size: 18px;
+}
+.v11-play {
+  color: #0066df;
+  font-size: 1.1em;
+  line-height: 1;
+}
+.v11-media-source,
+.v11-media-source audio {
+  display: none !important;
+}
+.v11-answer-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.9fr);
+  gap: clamp(28px, 5vw, 48px);
+  align-items: center;
+  margin-top: clamp(28px, 5vw, 42px);
+}
+.v11-label {
+  margin-top: 14px;
+  color: #6e6e73;
+  font-size: clamp(16px, 2.8vw, 22px);
+  font-weight: 680;
+}
+.v11-phrase-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-top: 4px;
+}
+.v11-answer-title {
+  margin: 0;
+  color: #050506;
+  font-size: clamp(44px, 7vw, 78px);
+  line-height: 1.02;
+  font-weight: 930;
+  overflow-wrap: anywhere;
+}
+.v11-speaker {
+  display: inline-grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 14px;
+  color: #0066df;
+  font-size: 20px;
+  font-weight: 900;
+}
+.v11-chinese-core {
+  margin: 8px 0 0;
+  color: #0066df;
+  font-size: clamp(22px, 4vw, 30px);
+  line-height: 1.3;
+  font-weight: 820;
+  overflow-wrap: anywhere;
+}
+.v11-divider {
+  margin: clamp(20px, 4vw, 28px) 0;
+  border: 0;
+  border-top: 1px solid rgba(60, 60, 67, 0.14);
+}
+.v11-source {
+  margin: 8px 0 0;
+  color: #111114;
+  font-size: clamp(25px, 4.5vw, 40px);
+  line-height: 1.18;
+  font-weight: 850;
+  overflow-wrap: anywhere;
+}
+.v11-info-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: clamp(14px, 2.4vw, 24px);
+  margin-top: clamp(32px, 5vw, 48px);
+}
+.v11-info-block {
+  min-height: 150px;
+  padding: clamp(18px, 3vw, 26px);
+  border: 1px solid rgba(60, 60, 67, 0.13);
+  border-radius: 20px;
+  background: #ffffff;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.03);
+}
+.v11-info-head {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 14px;
+  color: #111114;
+  font-size: clamp(18px, 3vw, 22px);
+  font-weight: 880;
+}
+.v11-icon {
+  display: inline-grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(0, 122, 255, 0.10);
+  color: #0066df;
+}
+.v11-info-block:nth-child(2) .v11-icon {
+  background: rgba(52, 199, 89, 0.13);
+  color: #16833a;
+}
+.v11-info-block:nth-child(3) .v11-icon {
+  background: rgba(88, 86, 214, 0.12);
+  color: #5a38c7;
+}
+.v11-info-block p {
+  margin: 0;
+  color: #5f626b;
+  font-size: clamp(16px, 3vw, 20px);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.v11-info-block p + p {
+  margin-top: 8px;
+}
+@media (max-width: 760px) {
+  .card { padding: 8px; }
+  .v11-card {
+    width: calc(100vw - 16px);
+    padding: 24px;
+    border-radius: 24px;
+  }
+  .v11-front-copy h1 {
+    font-size: clamp(38px, 11vw, 58px);
+  }
+  .v11-front-copy p {
+    font-size: clamp(18px, 5vw, 23px);
+  }
+  .v11-video-stage video {
+    max-height: none;
+    aspect-ratio: 4 / 3;
+  }
+  .v11-sound-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .v11-sound-actions.is-left {
+    display: flex;
+    justify-content: flex-start;
+  }
+  .v11-sound-button {
+    min-width: 0;
+    width: 100%;
+    min-height: 58px;
+    padding: 9px 14px;
+  }
+  .v11-sound-actions.is-left .v11-sound-button {
+    width: auto;
+    min-width: 112px;
+  }
+  .v11-answer-layout {
+    display: block;
+  }
+  .v11-back .v11-video-stage {
+    margin-top: 26px;
+  }
+  .v11-back .v11-video-stage video {
+    max-height: none;
+    aspect-ratio: 16 / 9;
+  }
+  .v11-answer-title {
+    font-size: clamp(42px, 13vw, 66px);
+  }
+  .v11-source {
+    font-size: clamp(25px, 7vw, 34px);
+  }
+  .v11-info-grid {
+    grid-template-columns: 1fr;
+    gap: 14px;
+    margin-top: 26px;
+  }
+  .v11-info-block {
+    min-height: 0;
+  }
+}
+"""
+
+
+V11_CARD_SCRIPT = """
+<script>
+(function() {
+  function rootFor(node) {
+    return node && node.closest ? (node.closest(".v11-card") || document) : document;
+  }
+
+  window.playV11Audio = function(button, selector) {
+    var root = rootFor(button);
+    var audio = root.querySelector(selector + " audio");
+    if (!audio) return;
+    document.querySelectorAll("audio").forEach(function(node) {
+      if (node !== audio) {
+        node.pause();
+        try { node.currentTime = 0; } catch (error) {}
+      }
+    });
+    try { audio.currentTime = 0; } catch (error) {}
+    audio.playbackRate = 1;
+    var playResult = audio.play();
+    if (playResult && playResult.catch) playResult.catch(function() {});
+  };
+
+  window.toggleV11Video = function(stage) {
+    if (!stage) return;
+    var video = stage.querySelector("video");
+    if (!video) return;
+    if (video.paused) {
+      var playResult = video.play();
+      if (playResult && playResult.catch) playResult.catch(function() {});
+      stage.classList.remove("is-paused");
+    } else {
+      video.pause();
+      stage.classList.add("is-paused");
+    }
+  };
+
+  function setupV11Videos() {
+    document.querySelectorAll(".v11-front .v11-video-stage").forEach(function(stage) {
+      var video = stage.querySelector("video");
+      if (!video) return;
+      video.loop = true;
+      video.muted = true;
+      video.playsInline = true;
+      var playResult = video.play();
+      if (playResult && playResult.catch) playResult.catch(function() {});
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", setupV11Videos);
+  } else {
+    setupV11Videos();
+  }
+})();
+</script>
+"""
+
+
+LANGUAGE_FRONT_TEMPLATE_V11 = """
+<div class="v11-card v11-front layout-{{CardLayout}}">
+  <div class="v11-top">
+    <span class="v11-pill">▮ 复读卡</span>
+    <span class="v11-time">{{SourceTime}}</span>
+  </div>
+  <section class="v11-front-copy">
+    <h1>{{FrontPrompt}}</h1>
+    {{#FrontContent}}<p>{{FrontContent}}</p>{{/FrontContent}}
+  </section>
+  {{#Video}}
+  <section class="v11-video-stage" onclick="toggleV11Video(this)">
+    {{Video}}
+    <span class="v11-video-toggle">▶</span>
+  </section>
+  {{/Video}}
+  <section class="v11-sound-actions">
+    {{#Audio}}<span class="v11-media-source audio-original">{{Audio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-original')"><span class="v11-play">▶</span><span>原声</span></button>{{/Audio}}
+    {{#TtsAudio}}<span class="v11-media-source audio-slow">{{TtsAudio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-slow')"><span class="v11-play">▶</span><span>慢读</span></button>{{/TtsAudio}}
+  </section>
+</div>
+""" + V11_CARD_SCRIPT
+
+
+LANGUAGE_BACK_TEMPLATE_V11 = """
+<div class="v11-card v11-back layout-{{CardLayout}}">
+  <div class="v11-top">
+    <span class="v11-pill">▮ 复读卡</span>
+    {{#Difficulty}}<span class="v11-difficulty">{{Difficulty}}</span>{{/Difficulty}}
+  </div>
+  <section class="v11-answer-layout">
+    <div class="v11-answer-main">
+      <div class="v11-time">{{SourceTime}}</div>
+      <div class="v11-label">核心表达</div>
+      <div class="v11-phrase-line">
+        <h1 class="v11-answer-title">{{Answer}}</h1>
+        {{#PhraseTtsAudio}}<span class="v11-media-source audio-phrase">{{PhraseTtsAudio}}</span><button class="v11-speaker" onclick="playV11Audio(this, '.audio-phrase')" aria-label="播放表达发音">▶</button>{{/PhraseTtsAudio}}
+      </div>
+      {{#Chinese}}<p class="v11-chinese-core">{{Chinese}}</p>{{/Chinese}}
+      <hr class="v11-divider">
+      <div class="v11-label">原句</div>
+      <p class="v11-source">{{English}}</p>
+      <div class="v11-sound-actions is-left">
+        {{#Audio}}<span class="v11-media-source audio-original">{{Audio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-original')"><span class="v11-play">▶</span><span>原声</span></button>{{/Audio}}
+        {{#TtsAudio}}<span class="v11-media-source audio-slow">{{TtsAudio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-slow')"><span class="v11-play">▶</span><span>慢读</span></button>{{/TtsAudio}}
+      </div>
+    </div>
+    {{#Video}}
+    <div class="v11-video-stage" onclick="toggleV11Video(this)">
+      {{Video}}
+      <span class="v11-video-toggle">▶</span>
+      <span class="v11-video-time">{{SourceTime}}</span>
+    </div>
+    {{/Video}}
+  </section>
+  <section class="v11-info-grid">
+    {{#Definition}}<div class="v11-info-block"><div class="v11-info-head"><span class="v11-icon">?</span><strong>怎么理解</strong></div><p>{{Definition}}</p>{{#ChineseFeel}}<p>{{ChineseFeel}}</p>{{/ChineseFeel}}</div>{{/Definition}}
+    <div class="v11-info-block"><div class="v11-info-head"><span class="v11-icon">↔</span><strong>怎么迁移</strong></div>{{#Collocations}}<p>{{Collocations}}</p>{{/Collocations}}{{#Example}}<p>{{Example}}</p>{{/Example}}</div>
+    {{#TeacherNote}}<div class="v11-info-block"><div class="v11-info-head"><span class="v11-icon">!</span><strong>老师提醒</strong></div><p>{{TeacherNote}}</p>{{#Why}}<p>{{Why}}</p>{{/Why}}</div>{{/TeacherNote}}
+  </section>
+</div>
+""" + V11_CARD_SCRIPT
+
+
 DICTIONARY_FRONT_TEMPLATE = MINIMAL_FRONT_TEMPLATE
 DICTIONARY_BACK_TEMPLATE = READING_BACK_TEMPLATE
 FRONT_TEMPLATE = LANGUAGE_FRONT_TEMPLATE
@@ -7581,26 +8063,37 @@ BACK_TEMPLATE = LANGUAGE_BACK_TEMPLATE
 
 
 def anki_template_family(template_id: str, deck_kind_code: str) -> str:
-    template_id = template_id if template_id in {"immersive", "dictionary", "minimal"} else "immersive"
+    template_id = template_id if template_id in {"immersive_v11", "immersive", "dictionary", "minimal"} else "immersive_v11"
     deck_kind_code = str(deck_kind_code or "")
     if deck_kind_code == "document_knowledge":
         return "document-knowledge"
     if deck_kind_code == "document_reading":
         return "document-reading"
+    if template_id == "immersive_v11":
+        return "language-immersive-v11"
     return f"language-{template_id}"
 
 
 def anki_template_assets(template_id: str, deck_kind_code: str = "video_language") -> tuple[str, str, str, str]:
-    template_id = template_id if template_id in {"immersive", "dictionary", "minimal"} else "immersive"
+    template_id = template_id if template_id in {"immersive_v11", "immersive", "dictionary", "minimal"} else "immersive_v11"
     if deck_kind_code == "document_knowledge":
         return "文档知识 V10", CARD_CSS, KNOWLEDGE_FRONT_TEMPLATE, KNOWLEDGE_BACK_TEMPLATE
     if deck_kind_code == "document_reading":
         return "文档精读 V10", CARD_CSS, READING_FRONT_TEMPLATE, READING_BACK_TEMPLATE
+    if template_id == "immersive_v11":
+        return "沉浸复读 V11", CARD_CSS_V11, LANGUAGE_FRONT_TEMPLATE_V11, LANGUAGE_BACK_TEMPLATE_V11
     if template_id == "dictionary":
         return "词典解释 V10", CARD_CSS, DICTIONARY_FRONT_TEMPLATE, DICTIONARY_BACK_TEMPLATE
     if template_id == "minimal":
         return "极简复习 V10", CARD_CSS, MINIMAL_FRONT_TEMPLATE, MINIMAL_BACK_TEMPLATE
     return "视频语言 V10", CARD_CSS, LANGUAGE_FRONT_TEMPLATE, LANGUAGE_BACK_TEMPLATE
+
+
+def anki_template_version(template_id: str, deck_kind_code: str = "video_language") -> str:
+    template_id = template_id if template_id in {"immersive_v11", "immersive", "dictionary", "minimal"} else "immersive_v11"
+    if deck_kind_code not in {"video_language", "subtitle_language"}:
+        return "V10"
+    return "V11" if template_id == "immersive_v11" else "V10"
 
 
 def safe_filename(value: str) -> str:
@@ -7618,7 +8111,14 @@ def project_media_prefix(project: dict[str, Any], export_run_id: int | None = No
     return f"{base}_{stable_id(seed, 0)}"
 
 
-def anki_video_html(webm_filename: str, mp4_filename: str = "", poster_filename: str = "") -> str:
+def anki_video_html(
+    webm_filename: str,
+    mp4_filename: str = "",
+    poster_filename: str = "",
+    *,
+    controls: bool = True,
+    muted: bool = False,
+) -> str:
     if not webm_filename and not mp4_filename:
         return ""
     poster_attr = ""
@@ -7635,14 +8135,21 @@ def anki_video_html(webm_filename: str, mp4_filename: str = "", poster_filename:
         safe_webm = html.escape(webm_filename, quote=True)
         sources.append(f'<source src="{safe_webm}" type="video/webm">')
     fallback = '<span>视频无法播放：当前 Anki 客户端不支持这个视频格式。</span>'
-    return f'{poster_preload}<video controls loop playsinline preload="metadata"{poster_attr}>{"".join(sources)}{fallback}</video>'
+    attrs = ["loop", "playsinline", 'preload="metadata"']
+    if controls:
+        attrs.append("controls")
+    if muted:
+        attrs.append("muted")
+    return f'{poster_preload}<video {" ".join(attrs)}{poster_attr}>{"".join(sources)}{fallback}</video>'
 
 
-def anki_audio_html(filename: str) -> str:
+def anki_audio_html(filename: str, *, controls: bool = True, role: str = "") -> str:
     if not filename:
         return ""
     safe_name = html.escape(filename, quote=True)
-    return f'<audio controls preload="metadata"><source src="{safe_name}" type="audio/mpeg"></audio>'
+    controls_attr = " controls" if controls else ""
+    role_attr = f' data-audio-role="{html.escape(role, quote=True)}"' if role else ""
+    return f'<audio{controls_attr} preload="metadata"{role_attr}><source src="{safe_name}" type="audio/mpeg"></audio>'
 
 
 def extract_media_references(value: str) -> list[str]:
@@ -7707,8 +8214,37 @@ def anki_text(value: Any) -> str:
     return html.escape(str(value or ""), quote=False)
 
 
-def compact_retrieval_cue(value: Any, max_chars: int = 26) -> str:
+INTERNAL_PLACEHOLDER_PATTERNS = (
+    "待精修",
+    "本地 fallback",
+    "本地草稿",
+    "本地待审",
+    "正式导出前",
+    "需要 AI 精修",
+    "只保证结构完整",
+    "不建议直接作为正式学习内容",
+    "当作本句目标表达",
+)
+
+
+def contains_internal_placeholder(value: Any) -> bool:
+    text = str(value or "")
+    return any(pattern in text for pattern in INTERNAL_PLACEHOLDER_PATTERNS)
+
+
+def clean_study_text(value: Any) -> str:
     text = re.sub(r"\s+", " ", str(value or "").strip())
+    if contains_internal_placeholder(text):
+        return ""
+    return text
+
+
+def anki_study_text(value: Any) -> str:
+    return anki_text(clean_study_text(value))
+
+
+def compact_retrieval_cue(value: Any, max_chars: int = 26) -> str:
+    text = clean_study_text(value)
     text = text.strip(" \t\r\n。.!！?？；;，,")
     if len(text) <= max_chars:
         return text
@@ -7723,16 +8259,20 @@ def is_contextual_vocabulary_card(card: dict[str, Any]) -> bool:
 
 
 def card_answer_core(card: dict[str, Any]) -> str:
-    explicit = str(card.get("answer_core") or "").strip()
+    explicit = clean_study_text(card.get("answer_core"))
     if explicit:
         return explicit
-    phrase = str(card.get("phrase") or "").strip()
-    chinese = str(card.get("natural_chinese") or card.get("chinese") or "").strip()
-    if is_contextual_vocabulary_card(card) and phrase and chinese:
-        return f"{phrase} = {chinese}"
-    if phrase and chinese:
-        return f"{phrase} = {chinese}"
-    return phrase or chinese or str(card.get("english") or "").strip()
+    phrase = clean_study_text(card.get("phrase"))
+    chinese = clean_study_text(card.get("natural_chinese") or card.get("chinese") or "")
+    return phrase or chinese or clean_study_text(card.get("english"))
+
+
+def card_chinese_core(card: dict[str, Any]) -> str:
+    return (
+        clean_study_text(card.get("natural_chinese"))
+        or clean_study_text(card.get("chinese"))
+        or clean_study_text(card.get("chinese_feel"))
+    )
 
 
 def card_visual_role(card: dict[str, Any], deck_kind_code: str = "") -> str:
@@ -7803,12 +8343,18 @@ def card_template_labels(card: dict[str, Any], deck_kind_code: str = "") -> dict
     }
 
 
-def card_front_fields(card: dict[str, Any]) -> dict[str, str]:
+def card_front_fields(card: dict[str, Any], *, repetition_mode: bool = False) -> dict[str, str]:
     card_type = card.get("type", "")
-    english = card.get("english", "")
-    phrase = card.get("phrase", "")
-    chinese = card.get("chinese", "")
-    retrieval_prompt = str(card.get("retrieval_prompt") or "").strip()
+    english = clean_study_text(card.get("english"))
+    phrase = clean_study_text(card.get("phrase"))
+    chinese = card_chinese_core(card)
+    retrieval_prompt = clean_study_text(card.get("retrieval_prompt"))
+    if repetition_mode and card_type != "knowledge":
+        return {
+            "front_prompt": "听原声，跟读这一句。",
+            "front_content": "先听一遍，再模仿语气和节奏。",
+            "answer": card_answer_core(card),
+        }
     if card_type == "listening":
         return {
             "front_prompt": "只看画面和听声音，先复述这一句。",
@@ -7835,7 +8381,7 @@ def card_front_fields(card: dict[str, Any]) -> dict[str, str]:
     if card_type == "cloze":
         return {
             "front_prompt": "根据语气和画面，在心里补出关键表达。",
-            "front_content": card.get("cloze", "") or "先听原声，再补出关键表达。",
+            "front_content": clean_study_text(card.get("cloze")) or "先听原声，再补出关键表达。",
             "answer": card_answer_core(card),
         }
     if card_type == "knowledge":
@@ -8036,12 +8582,14 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         deck_kind_code = "subtitle_language" if skip_video_media else "video_language"
         deck_kind = "字幕语言卡" if skip_video_media else "视频语言卡"
     deck_name = f"{deck_kind}::{project.get('title', 'Untitled')}"
-    template_id = project.get("template_id", "immersive")
+    template_id = project.get("template_id", "immersive_v11")
     template_family = anki_template_family(template_id, deck_kind_code)
     template_label, template_css, front_template, back_template = anki_template_assets(template_id, deck_kind_code)
+    template_version = anki_template_version(template_id, deck_kind_code)
+    use_v11_template = template_version == "V11"
     model = genanki.Model(
-        stable_id(f"anki-card-model-v10-{template_family}", 1000000000),
-        f"Anki Card Generator V10 - {template_label}",
+        stable_id(f"anki-card-model-{template_version.lower()}-{template_family}", 1000000000),
+        f"Anki Card Generator {template_version} - {template_label}",
         fields=[
             {"name": "CardId"},
             {"name": "CardType"},
@@ -8067,6 +8615,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             {"name": "TeacherNote"},
             {"name": "Cloze"},
             {"name": "CardLayout"},
+            {"name": "CardVisualRole"},
             {"name": "FrontKicker"},
             {"name": "SourceLabel"},
             {"name": "UnderstandLabel"},
@@ -8301,10 +8850,10 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             cut_segments.add(segment_id)
 
         for card in enabled_cards:
-            front_fields = card_front_fields(card)
+            front_fields = card_front_fields(card, repetition_mode=use_v11_template)
             template_labels = card_template_labels(card, deck_kind_code)
             export_card_id = f"{project_card_prefix}_{card.get('id', '')}"
-            phrase_text = re.sub(r"\s+", " ", str(card.get("phrase") or "").strip())
+            phrase_text = clean_study_text(card.get("phrase"))
             phrase_tts_name = ""
             phrase_key = phrase_text.lower()
             if tts_requested and phrase_text and phrase_key not in {"key expression", "n/a"}:
@@ -8328,36 +8877,37 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                 model=model,
                 fields=[
                     anki_text(export_card_id),
-                    anki_text(card.get("type_label", card.get("type", ""))),
-                    anki_video_html(video_webm_name, video_mp4_name, poster_name),
-                    anki_audio_html(audio_name),
-                    anki_audio_html(tts_by_segment.get(segment_id, "")),
-                    anki_audio_html(phrase_tts_name),
+                    anki_study_text(card.get("type_label", card.get("type", ""))),
+                    anki_video_html(video_webm_name, video_mp4_name, poster_name, controls=not use_v11_template, muted=use_v11_template),
+                    anki_audio_html(audio_name, controls=not use_v11_template, role="original"),
+                    anki_audio_html(tts_by_segment.get(segment_id, ""), controls=not use_v11_template, role="slow"),
+                    anki_audio_html(phrase_tts_name, controls=not use_v11_template, role="phrase"),
                     "1" if card.get("type") == "listening" else "",
-                    anki_text(front_fields["front_prompt"]),
-                    anki_text(front_fields["front_content"]),
-                    anki_text(front_fields["answer"]),
-                    anki_text(card.get("english", "")),
-                    anki_text(card.get("chinese", "")),
-                    anki_text(card.get("phrase", "")),
-                    anki_text(card.get("definition", "")),
-                    anki_text(card.get("collocations", "")),
-                    anki_text(card.get("context", "")),
-                    anki_text(card.get("example", "")),
-                    anki_text(card.get("chinese_feel", "")),
-                    anki_text(card.get("why", "")),
-                    anki_text(card.get("difficulty", "")),
+                    anki_study_text(front_fields["front_prompt"]),
+                    anki_study_text(front_fields["front_content"]),
+                    anki_study_text(front_fields["answer"]),
+                    anki_study_text(card.get("english", "")),
+                    anki_study_text(card_chinese_core(card)),
+                    anki_study_text(card.get("phrase", "")),
+                    anki_study_text(card.get("definition", "")),
+                    anki_study_text(card.get("collocations", "")),
+                    anki_study_text(card.get("context", "")),
+                    anki_study_text(card.get("example", "")),
+                    anki_study_text(card.get("chinese_feel", "")),
+                    anki_study_text(card.get("why", "")),
+                    anki_study_text(card.get("difficulty", "")),
                     anki_text(segment.get("source_time", "")),
-                    anki_text(card.get("teacher_note", "")),
-                    anki_text(card.get("cloze", "")),
+                    anki_study_text(card.get("teacher_note", "")),
+                    anki_study_text(card.get("cloze", "")),
                     anki_text(template_labels["card_layout"]),
+                    anki_text("repetition" if use_v11_template else template_labels["card_layout"]),
                     anki_text(template_labels["front_kicker"]),
                     anki_text(template_labels["source_label"]),
                     anki_text(template_labels["understand_label"]),
                     anki_text(template_labels["use_label"]),
                 ],
                 tags=[
-                    "anki_card_generator_v10",
+                    f"anki_card_generator_{template_version.lower()}",
                     project.get("language", "English"),
                     project.get("level", "B1"),
                     template_id,

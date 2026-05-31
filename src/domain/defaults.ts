@@ -30,7 +30,7 @@ export const defaultRequest: GenerateRequest = {
   language: 'English',
   level: 'B1',
   collection_levels: defaultCollectionLevels('B1'),
-  template_id: 'immersive',
+  template_id: 'immersive_v11',
   content_toggles: defaultToggles,
   language_focus: defaultLanguageFocus,
   document_focus: defaultDocumentFocus,

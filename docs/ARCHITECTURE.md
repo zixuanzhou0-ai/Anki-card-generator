@@ -55,7 +55,7 @@ Video and URL language learning now have a material-understanding layer:
 - Candidate review and card-generation prompts receive `material_context`, so Qwen / DashScope, MIMO, and other OpenAI-compatible models can use reasoning/thinking to judge context before writing cards.
 - `language_focus` defaults to `phrases + vocabulary + listening`. `vocabulary` produces contextual vocabulary cards through `phrase_type: "vocabulary_usage"` and the exported card label `语境生词卡`; it does not create isolated dictionary cards.
 - APKG field names stay V10-compatible. New identity is stored in project/card metadata such as `study_depth`, `material_context`, `phrase_type`, `content_kind`, and `source_evidence`.
-- V10 export now splits visual note-model families by `deck_kind`: video/subtitle language cards use the language layout, `document_knowledge` uses a knowledge-answer layout, and `document_reading` uses a reading layout. The field list stays compatible, while the generated model id includes the template family to avoid mixing different front/back HTML under one Anki note model.
+- APKG export now splits visual note-model families by `deck_kind` and template version. Video/subtitle language cards default to `immersive_v11` (`沉浸复读 V11`): the front is a shadowing surface with autoplaying muted loop video plus custom `原声` / `慢读` buttons, and the back prioritizes core expression, Chinese intuition, source sentence, phrase TTS, and compact explanation blocks. `document_knowledge` keeps a knowledge-answer layout, and `document_reading` keeps a reading layout. The field list stays compatible, while the generated model id includes the template family/version to avoid mixing different front/back HTML under one Anki note model.
 
 ## Tauri Boundary
 

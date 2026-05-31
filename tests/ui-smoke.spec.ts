@@ -72,7 +72,7 @@ test('desktop workflow shell supports simplified settings, URL mode, document mo
   await page.locator('.preference-details summary').click()
   await expect(page.getByRole('button', { name: /词典解释/ })).toBeDisabled()
   await expect(page.getByRole('button', { name: /极简复习/ })).toBeDisabled()
-  await expect(page.locator('.preview-panel.template-immersive')).toBeVisible()
+  await expect(page.locator('.preview-panel.template-immersive_v11')).toBeVisible()
 
   await page.getByRole('button', { name: '本段停用' }).click()
   await expect(page.locator('.metric-card.primary')).toContainText('3/6')

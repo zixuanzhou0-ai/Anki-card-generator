@@ -9,7 +9,7 @@ Use this file when opening a fresh Codex / GPT review window for the Anki Card G
 - Active branch: `codex/complete-refactor-hardening`
 - Active PR: https://github.com/zixuanzhou0-ai/Anki-card-generator/pull/6
 - PR base: `main`
-- Current status when this handoff was written: PR #6 contains the document-study split plus local-video, API-key persistence, TTS export, Qwen3 TTS voice hardening, and the first Deep Study / contextual vocabulary card pipeline. Local working tree should be clean after pushing the latest commit.
+- Current status when this handoff was written: PR #6 contains the document-study split plus local-video, API-key persistence, TTS export, Qwen3 TTS voice hardening, the first Deep Study / contextual vocabulary card pipeline, and the new default `沉浸复读 V11` Anki template for video/subtitle cards. Local working tree should be clean after pushing the latest commit.
 
 Important: ask reviewers to inspect PR #6, not only `main`. The latest document-study work is on the PR branch.
 
@@ -37,6 +37,7 @@ Recent hardening added after the initial document-study split:
 - `language_focus` now defaults to `phrases + vocabulary + listening`. `vocabulary_usage` exports as `语境生词卡` while keeping V10 APKG fields compatible.
 - Candidate review is no longer worded as MIMO-only; OpenAI-compatible providers such as Qwen / DashScope can run the same AI candidate review path.
 - V10 APKG visual templates are now split by export family: video/subtitle language cards, document knowledge cards, and document reading cards use different front/back HTML while keeping the existing field names. The templates no longer rely on JS overflow fitting and allow stable vertical scrolling.
+- Video/subtitle language cards now default to `immersive_v11` / `沉浸复读 V11`: front side is shadowing-first with autoplaying muted loop video and custom `原声` / `慢读` buttons; back side shows core expression, Chinese intuition, source sentence, phrase TTS, compact replay video, and explanation blocks. `immersive` remains as the old V10 fallback option.
 
 ## Key Files
 
@@ -142,7 +143,7 @@ python -m pytest tests/test_worker_quality.py -q
 - Default document mode is knowledge absorption.
 - Language reading is opt-in under document input.
 - For Qwen3 TTS English cards, prefer `Jennifer` or `Aiden`; `Cherry` remains available but is no longer the default.
-- Use one responsive Anki template family rather than asking the user to choose desktop/mobile templates.
+- Use one responsive Anki template family rather than asking the user to choose desktop/mobile templates. The current default for video cards is `沉浸复读 V11`.
 - Do not create isolated dictionary vocabulary cards. Vocabulary cards must be contextual `语境生词卡` tied to an original sentence and scene.
 - Keep Deep Study on by default for model-backed generation, but allow `快速生成` for quick workflow checks.
 - Do not add OCR, RAG, more providers, more templates, or multi-platform packaging until the beta core is steadier.

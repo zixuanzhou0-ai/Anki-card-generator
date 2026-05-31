@@ -16,6 +16,7 @@ This beta refresh focuses on the visible desktop experience and release assets.
 - Split document input into a default knowledge-absorption path and an opt-in language-reading path. Knowledge mode hides video-language controls such as CEFR level, listening cards, and phrase-card toggles.
 - Added the first Deep Study pipeline: generation now stores a hidden `material_context` and feeds it into candidate review and card writing, so stronger thinking models can judge the whole material before producing cards.
 - Added contextual vocabulary cards. `vocabulary` is now part of the default video learning focus, and `vocabulary_usage` cards export with the `语境生词卡` label while keeping V10 APKG fields compatible.
+- Added the default `沉浸复读 V11` Anki template for video/subtitle cards. The front is now a focused shadowing card with autoplaying muted loop video and custom `原声` / `慢读` buttons; the back prioritizes core expression, Chinese intuition, source sentence, phrase TTS, and compact explanation blocks while preserving compatible fields.
 - Generalized candidate review language from MIMO-only phrase review toward OpenAI-compatible AI candidate review, including Qwen / DashScope-compatible reasoning models.
 - Hardened TTS export so resolved provider settings are used during APKG export, including saved/reused TTS API keys.
 - Updated Qwen3 TTS presets for English cards: `Jennifer` is now the default American English female voice, `Aiden` is available as an American English male voice, and Qwen3 voice-design model IDs are exposed for advanced setup.

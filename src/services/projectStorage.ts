@@ -115,7 +115,7 @@ export function loadSavedProject(): Project | null {
     const documentStudyMode = normalizeDocumentStudyMode(saved.document_study_mode)
     return {
       ...saved,
-      template_id: saved.template_id ?? 'immersive',
+      template_id: saved.template_id ?? 'immersive_v11',
       source_mode: saved.source_mode ?? 'local',
       language_focus:
         documentStudyMode === 'language_reading'

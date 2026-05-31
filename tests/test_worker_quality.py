@@ -361,12 +361,15 @@ class WorkerQualityTests(unittest.TestCase):
             template = model["tmpls"][0]
             field_names = [field["name"] for field in model["flds"]]
 
-            self.assertNotIn("整句 AI 朗读", template["qfmt"])
-            self.assertNotIn("{{TtsAudio}}", template["qfmt"])
-            self.assertIn("核心答案", template["afmt"])
+            self.assertIn("沉浸复读 V11", model["name"])
+            self.assertIn("v11-front-copy", template["qfmt"])
+            self.assertIn("{{FrontPrompt}}", template["qfmt"])
+            self.assertIn("慢读", template["qfmt"])
+            self.assertIn("核心表达", template["afmt"])
             self.assertIn("老师提醒", template["afmt"])
-            self.assertIn("再造一句", template["afmt"])
+            self.assertNotIn("<audio controls", template["qfmt"] + template["afmt"])
             self.assertIn("CardLayout", field_names)
+            self.assertIn("CardVisualRole", field_names)
             self.assertIn("FrontKicker", field_names)
             self.assertIn("SourceLabel", field_names)
 
@@ -1329,11 +1332,40 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("负责收银", expression["front_prompt"])
         self.assertIn("自然表达是什么", expression["front_prompt"])
         self.assertNotIn("判断这句最值得学", expression["front_prompt"])
-        self.assertEqual(expression["answer"], "run the register = 负责收银")
+        self.assertEqual(expression["answer"], "run the register")
         self.assertEqual(vocabulary["front_prompt"], "“register”在这句里是什么意思？")
-        self.assertEqual(vocabulary["answer"], "register = 收银机")
+        self.assertEqual(vocabulary["answer"], "register")
+        repetition = worker.card_front_fields(
+            {
+                "type": "phrase",
+                "phrase": "run the register",
+                "natural_chinese": "负责收银",
+            },
+            repetition_mode=True,
+        )
+        self.assertEqual(repetition["front_prompt"], "听原声，跟读这一句。")
+        self.assertEqual(repetition["front_content"], "先听一遍，再模仿语气和节奏。")
+        self.assertEqual(repetition["answer"], "run the register")
         self.assertEqual(worker.card_label_for_learning_card("", "vocabulary"), "语境生词卡")
         self.assertEqual(worker.card_label_for_learning_card("idiom", "phrase"), "表达卡")
+
+    def test_internal_fallback_text_is_not_used_in_study_fields(self):
+        card = {
+            "type": "phrase",
+            "phrase": "run the register",
+            "chinese": "待精修：先把 run the register 当作本句目标表达。",
+            "natural_chinese": "正式导出前需要 AI 精修。",
+            "definition": "本地 fallback 只保证结构完整。",
+            "teacher_note": "不建议直接作为正式学习内容。",
+        }
+
+        fields = worker.card_front_fields(card, repetition_mode=True)
+
+        self.assertEqual(worker.card_answer_core(card), "run the register")
+        self.assertEqual(worker.card_chinese_core(card), "")
+        self.assertEqual(fields["answer"], "run the register")
+        self.assertNotIn("待精修", fields["front_prompt"] + fields["front_content"] + fields["answer"])
+        self.assertTrue(worker.contains_internal_placeholder(card["definition"]))
 
     def test_merge_ai_cards_preserves_boundary_fields_for_back_template(self):
         segments = [
@@ -1451,16 +1483,24 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(reading["card_layout"], "document_reading")
 
     def test_template_assets_split_by_project_kind(self):
+        v11 = worker.anki_template_assets("immersive_v11", "video_language")
         language = worker.anki_template_assets("immersive", "video_language")
         knowledge = worker.anki_template_assets("immersive", "document_knowledge")
         reading = worker.anki_template_assets("immersive", "document_reading")
 
+        self.assertEqual(v11[0], "沉浸复读 V11")
+        self.assertIn("v11-video-stage", v11[2])
+        self.assertIn("playV11Audio", v11[2] + v11[3])
+        self.assertIn("toggleV11Video", v11[2] + v11[3])
+        self.assertIn("慢读", v11[2])
+        self.assertNotIn("<audio controls", v11[2] + v11[3])
         self.assertEqual(language[0], "视频语言 V10")
         self.assertEqual(knowledge[0], "文档知识 V10")
         self.assertEqual(reading[0], "文档精读 V10")
         self.assertIn("{{SourceLabel}}", language[3])
         self.assertIn("{{UnderstandLabel}}", knowledge[3])
         self.assertIn("边界 / 易错", reading[3])
+        self.assertNotEqual(worker.anki_template_family("immersive_v11", "video_language"), worker.anki_template_family("immersive", "video_language"))
         self.assertNotEqual(worker.anki_template_family("immersive", "video_language"), worker.anki_template_family("immersive", "document_knowledge"))
 
     def test_phrase_review_skip_does_not_generate_candidate(self):
