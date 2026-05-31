@@ -1733,7 +1733,9 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
         "avoid_reason=不值得制卡时的原因。how_to_use_it 和 replacement_examples 必须是可以直接放进卡片背面的自然内容，"
         "不要写 natural object、complete sentence、use X in a sentence 这种占位说明。"
         "9) 每张卡必须给复习字段：retrieval_prompt=正面明确回忆题，不能写“判断最值得学”；"
-        "answer_core=翻面第一眼核对的核心答案；usage_boundary=什么时候能用/不能用，尤其是调侃、冒犯、正式度；"
+        "answer_core=翻面第一眼核对的核心答案，只能写英文表达/单词本体，例如 hold that against you；"
+        "禁止在 answer_core 写中文释义、IPA、发音融合、连读说明、语法解释或“X 是 Y”的说明；这些放 teacher_note 或 confusable_note。"
+        "usage_boundary=什么时候能用/不能用，尤其是调侃、冒犯、正式度；"
         "confusable_note=中文学习者最容易误解或误用的点。usage_boundary 和 confusable_note 要具体到这句的语气、对象、场景，"
         "不要写“注意语境”“很常见”这类空话。"
         "表达卡 retrieval_prompt 要问“这句里表示某个中文意思的自然表达是什么？”；"
@@ -8388,6 +8390,27 @@ ANSWER_COMMENTARY_RE = re.compile(
     r"\s*[\(（]([^()（）]*(?:听力|连读|弱读|缩读|读作|读为|发音|音变|pronunciation|sounds like)[^()（）]*)[\)）]\s*",
     re.IGNORECASE,
 )
+ANSWER_EXPLANATION_PATTERNS = (
+    "发音",
+    "融合",
+    "连读",
+    "弱读",
+    "缩读",
+    "非标准",
+    "变体",
+    "过去式",
+    "直接按",
+    "映射",
+    "听到",
+    "听力",
+    "读作",
+    "读为",
+    "解释为",
+    "理解为",
+    "pronunciation",
+    "sounds like",
+)
+IPA_TEXT_RE = re.compile(r"/[^/\n]{2,}/|[ɑɒɔəɜɪʊʌæɛθðŋʃʒːˈˌɚɝ]")
 
 
 def answer_display_text(value: Any) -> str:
@@ -8414,11 +8437,38 @@ def answer_commentary_text(value: Any) -> str:
     return note if note.startswith(("听感", "发音", "连读", "弱读", "缩读")) else f"听感：{note}"
 
 
+def is_answer_expression_candidate(value: Any, card: dict[str, Any]) -> bool:
+    text = clean_study_text(value)
+    if not text:
+        return False
+    lowered = text.lower()
+    if has_cjk(text) or IPA_TEXT_RE.search(text):
+        return False
+    if any(pattern in text or pattern.lower() in lowered for pattern in ANSWER_EXPLANATION_PATTERNS):
+        return False
+    if any(mark in text for mark in ("；", "。", "，")):
+        return False
+    words = overlap_words(text)
+    if not words:
+        return False
+    if str(card.get("type") or "") != "listening" and len(words) > 8:
+        return False
+    english = clean_study_text(card.get("english"))
+    if english and not phrase_in_text(english, text) and len(words) >= 2:
+        return False
+    return True
+
+
 def card_answer_core(card: dict[str, Any]) -> str:
-    explicit = answer_display_text(card.get("answer_core"))
-    if explicit:
-        return explicit
+    for value in (card.get("answer_core"), card.get("phrase")):
+        candidate = answer_display_text(value)
+        if is_answer_expression_candidate(candidate, card):
+            return candidate
     phrase = answer_display_text(card.get("phrase"))
+    if str(card.get("type") or "") != "listening":
+        discovered = find_phrase(clean_study_text(card.get("english")), "B1")
+        if is_answer_expression_candidate(discovered, card):
+            return discovered
     chinese = clean_study_text(card.get("natural_chinese") or card.get("chinese") or "")
     return phrase or chinese or clean_study_text(card.get("english"))
 

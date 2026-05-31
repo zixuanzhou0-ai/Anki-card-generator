@@ -1422,6 +1422,25 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(worker.v11_meaning_text(card), "因此对你有看法；记你的仇")
         self.assertEqual(worker.v11_source_translation_text(card), "我们不会因为这事儿对你有意见。")
 
+    def test_v11_answer_core_rejects_pronunciation_explanations(self):
+        card = {
+            "type": "phrase",
+            "phrase": "bounce off a windshield",
+            "english": "I seen one of those bounce off a windshield one time.",
+            "chinese": "从挡风玻璃上弹开",
+            "natural_chinese": "我见过那玩意儿从挡风玻璃上弹开。",
+            "answer_core": "发音融合为 /baʊn sɔː fə/；'I seen' 是 'I saw' 的非标准口语变体，直接按过去式理解",
+            "definition": "听到 /baʊn sɔː fə/ 时直接映射为 bounce off a，描述物体撞击表面后反弹开的动态过程。",
+        }
+
+        fields = worker.card_front_fields(card, repetition_mode=True)
+
+        self.assertFalse(worker.is_answer_expression_candidate(card["answer_core"], card))
+        self.assertEqual(worker.card_answer_core(card), "bounce off a windshield")
+        self.assertEqual(fields["answer"], "bounce off a windshield")
+        self.assertEqual(worker.v11_meaning_text(card), "从挡风玻璃上弹开")
+        self.assertEqual(worker.v11_source_translation_text(card), "我见过那玩意儿从挡风玻璃上弹开。")
+
     def test_merge_ai_cards_preserves_boundary_fields_for_back_template(self):
         segments = [
             {
@@ -1495,6 +1514,7 @@ class WorkerQualityTests(unittest.TestCase):
 
         self.assertIn("retrieval_prompt", prompt)
         self.assertIn("answer_core", prompt)
+        self.assertIn("禁止在 answer_core 写中文释义、IPA、发音融合、连读说明", prompt)
         self.assertIn("usage_boundary", prompt)
         self.assertIn("confusable_note", prompt)
         self.assertIn("这句里表示某个中文意思的自然表达是什么", prompt)
