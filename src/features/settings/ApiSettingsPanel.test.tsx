@@ -88,7 +88,7 @@ describe('ApiSettingsPanel', () => {
 
   it('patches provider defaults when switching to MIMO', () => {
     const onPatchApi = vi.fn()
-    renderPanel({ onPatchApi })
+    renderPanel({ onPatchApi, showAdvancedApi: true })
 
     fireEvent.change(screen.getByLabelText(/Provider/), { target: { value: 'mimo' } })
 
@@ -103,7 +103,7 @@ describe('ApiSettingsPanel', () => {
 
   it('patches DeepSeek V4 defaults when switching to OpenAI-compatible from empty local config', () => {
     const onPatchApi = vi.fn()
-    renderPanel({ onPatchApi })
+    renderPanel({ onPatchApi, showAdvancedApi: true })
 
     fireEvent.change(screen.getByLabelText(/Provider/), { target: { value: 'openai-compatible' } })
 
@@ -118,7 +118,7 @@ describe('ApiSettingsPanel', () => {
 
   it('patches Gemini Vertex defaults when switching to the Vertex provider', () => {
     const onPatchApi = vi.fn()
-    renderPanel({ onPatchApi })
+    renderPanel({ onPatchApi, showAdvancedApi: true })
 
     fireEvent.change(screen.getByLabelText(/Provider/), { target: { value: 'gemini-vertex' } })
 
@@ -133,7 +133,7 @@ describe('ApiSettingsPanel', () => {
 
   it('patches Gemini Vertex defaults from the model-row shortcut', () => {
     const onPatchApi = vi.fn()
-    renderPanel({ onPatchApi })
+    renderPanel({ onPatchApi, showAdvancedApi: true })
 
     fireEvent.click(screen.getByRole('button', { name: /Vertex AI/ }))
 

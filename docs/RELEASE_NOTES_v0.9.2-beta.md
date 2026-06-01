@@ -16,14 +16,14 @@ This beta refresh focuses on the visible desktop experience and release assets.
 - Split document input into a default knowledge-absorption path and an opt-in language-reading path. Knowledge mode hides video-language controls such as CEFR level, listening cards, and phrase-card toggles.
 - Added the first Deep Study pipeline: generation now stores a hidden `material_context` and feeds it into candidate review and card writing, so stronger thinking models can judge the whole material before producing cards.
 - Added contextual vocabulary cards. `vocabulary` is now part of the default video learning focus, and `vocabulary_usage` cards export with the `语境生词卡` label while keeping V10 APKG fields compatible.
-- Added the default `沉浸复读 V11` Anki template for video/subtitle cards. The front is now a focused shadowing card with autoplaying muted loop video and custom `原声` / `慢读` buttons; the back prioritizes core expression, Chinese intuition, source sentence, phrase TTS, and compact explanation blocks while preserving compatible fields.
+- Added the default `沉浸复读 V12` Anki template for video/subtitle cards. The front is now a focused shadowing card with click-to-play replay video and custom `原声` / `慢读` buttons; the back prioritizes core expression, Chinese intuition, standard IPA, spoken IPA, source-sentence listening notes, phrase TTS, and compact explanation blocks while preserving compatible fields.
 - Generalized candidate review language from MIMO-only phrase review toward OpenAI-compatible AI candidate review, including Qwen / DashScope-compatible reasoning models.
 - Added DeepSeek V4 Pro and DeepSeek V4 Flash presets. DeepSeek V4 thinking output is streamed as progress and stripped before JSON parsing, so the model can keep reasoning without stalling generation at an unchanged percent.
-- Hardened AI candidate review after GPT Pro review: `exact_span` must come from the source sentence, `answer_core` must stay a clean English answer, each subtitle sentence keeps at most two learning points, and AI-rejected candidates are no longer revived by the local fallback.
+- Hardened AI candidate review after GPT Pro review: `exact_span` must come from the source sentence, `answer_core` must stay a clean English answer, pronunciation/IPA is moved into dedicated fields, same-sentence learning points are grouped by kind instead of hard-capped, and AI-rejected candidates are no longer revived by the local fallback.
 - Hardened TTS export so resolved provider settings are used during APKG export, including saved/reused TTS API keys.
 - Updated Qwen3 TTS presets for English cards: `Jennifer` is now the default American English female voice, `Aiden` is available as an American English male voice, and Qwen3 voice-design model IDs are exposed for advanced setup.
 - Added Gemini Vertex TTS configuration docs and UI guidance for Google Vertex-backed speech generation.
-- Updated APKG import verification to use the actual exported template tag, so V11 packages are checked with `anki_card_generator_v11` instead of the legacy V10 tag.
+- Updated APKG import verification to use the actual exported template tag, so V12 packages are checked with `anki_card_generator_v12` instead of the legacy V10 tag. Export now also writes a media ledger for sentence TTS and phrase TTS text-hash consistency.
 
 ## Verified
 

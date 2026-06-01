@@ -1,6 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Anki Card Generator">
-  <rect width="64" height="64" rx="16" fill="#111111"/>
-  <path d="M18 18h19.5A8.5 8.5 0 0 1 46 26.5V46H26.5A8.5 8.5 0 0 1 18 37.5V18Z" fill="#ffffff"/>
-  <path d="M26 27h12M26 33h10M26 39h7" fill="none" stroke="#111111" stroke-width="3.2" stroke-linecap="round"/>
-  <path d="M43 14v6M40 17h6" stroke="#ffffff" stroke-width="3" stroke-linecap="round"/>
+  <rect width="64" height="64" rx="16" fill="#f8fbff"/>
+  <rect x="19" y="12" width="30" height="38" rx="7" fill="#0b7cff" opacity=".95"/>
+  <rect x="14" y="18" width="36" height="34" rx="8" fill="#ffffff" stroke="#dce7f5" stroke-width="1.5"/>
+  <path d="m39 22 2.8 8.5h8.9l-7.2 5.2 2.8 8.5L39 39l-7.2 5.2 2.8-8.5-7.2-5.2h8.9z" fill="#0b7cff"/>
+  <path d="M22 39h13M22 44h9" fill="none" stroke="#aeb8c5" stroke-width="2.8" stroke-linecap="round"/>
+  <path d="m23 28 8 5-8 5z" fill="#0b7cff"/>
 </svg>

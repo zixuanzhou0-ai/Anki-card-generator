@@ -9,6 +9,7 @@ import {
   documentFocusOptions,
   languageFocusOptions,
   levels,
+  selectionStrategyOptions,
   templateOptions,
 } from '../../domain/options'
 import type { GenerateRequest } from '../../domain/types'
@@ -38,6 +39,7 @@ function renderInspector(overrides: Partial<GenerateRequest> = {}) {
     statusTone: 'ok',
     templateId: request.template_id,
     templateOptions,
+    selectionStrategyOptions,
     workerBusy: false,
     workerErrorActions: [],
     workerProgress: null,
@@ -67,7 +69,7 @@ describe('InspectorPanel', () => {
     expect(screen.getByLabelText('素材和生成设置')).toBeInTheDocument()
     expect(screen.getByText('1/2')).toBeInTheDocument()
     expect(screen.getAllByText('素材').length).toBeGreaterThan(0)
-    expect(screen.getByText('学习设置')).toBeInTheDocument()
+    expect(screen.getByText('学习路径')).toBeInTheDocument()
     expect(screen.getByText('卡片和模板')).toBeInTheDocument()
   })
 
@@ -86,6 +88,6 @@ describe('InspectorPanel', () => {
 
     expect(screen.getByText('文档目标')).toBeVisible()
     expect(screen.getByText('知识吸收')).toBeVisible()
-    expect(screen.queryByText('学习设置')).not.toBeInTheDocument()
+    expect(screen.queryByText('学习路径')).not.toBeInTheDocument()
   })
 })

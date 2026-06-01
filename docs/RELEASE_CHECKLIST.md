@@ -11,7 +11,7 @@
 - [ ] `workers/` 已作为 Tauri resources 打包。
 - [ ] README、`PRIVACY.md`、`SECURITY.md`、`docs/BETA_LIMITATIONS.md`、`docs/USER_GUIDE.md` 和 `docs/TROUBLESHOOTING.md` 与本次发布一致。
 - [ ] `docs/screenshots/` 已用当前 UI 重新截图，README 引用的截图都能打开。
-- [ ] PR 描述、仓库 About 描述和 release note 都提到本次主要能力：本地视频/SRT、Deep Study、语境生词、V11 模板、DeepSeek/Gemini/Qwen TTS。
+- [ ] PR 描述、仓库 About 描述和 release note 都提到本次主要能力：本地视频/SRT、Deep Study、语境生词、V12 模板、英语 IPA/口语读法、DeepSeek/Gemini/Qwen TTS。
 - [ ] Release note 明确说明 YouTube、第三方模型、TTS 费用和版权限制。
 
 ## 自动测试

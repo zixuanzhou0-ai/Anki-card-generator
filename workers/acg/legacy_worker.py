@@ -337,6 +337,12 @@ LANGUAGE_FOCUS_RULES = {
     "listening": "只在弱读、连读、缩读、停顿切分或听音辨义明显时强化听力点；不要把所有句子都硬做听力卡。",
 }
 STUDY_DEPTHS = {"standard", "deep"}
+SELECTION_STRATEGIES = {"catch_all", "curated", "exhaustive"}
+SELECTION_STRATEGY_LABELS = {
+    "catch_all": "不漏优先",
+    "curated": "精选优先",
+    "exhaustive": "全量发现",
+}
 PHRASE_TYPE_CARD_LABELS = {
     "spoken_phrase": "表达卡",
     "sentence_frame": "表达卡",
@@ -436,6 +442,36 @@ def language_focus_instruction(payload: dict[str, Any]) -> str:
 def normalized_study_depth(payload: dict[str, Any]) -> str:
     value = str(payload.get("study_depth") or "").strip()
     return value if value in STUDY_DEPTHS else "deep"
+
+
+def normalized_selection_strategy(payload: dict[str, Any]) -> str:
+    value = str(payload.get("selection_strategy") or "").strip()
+    return value if value in SELECTION_STRATEGIES else "catch_all"
+
+
+def discovery_collection_levels(payload: dict[str, Any], current_level: str) -> list[str]:
+    strategy = normalized_selection_strategy(payload)
+    if strategy in {"catch_all", "exhaustive"}:
+        return list(CEFR_ORDER)
+    return collection_levels_from_payload(payload, current_level)
+
+
+def selection_candidate_multiplier(payload: dict[str, Any]) -> int:
+    strategy = normalized_selection_strategy(payload)
+    if strategy == "exhaustive":
+        return 6
+    if strategy == "catch_all":
+        return 4
+    return 2
+
+
+def max_learning_points_per_source(payload: dict[str, Any]) -> int:
+    strategy = normalized_selection_strategy(payload)
+    if strategy == "exhaustive":
+        return 12
+    if strategy == "catch_all":
+        return 8
+    return 4
 
 
 def card_label_for_phrase_type(phrase_type: str, fallback: str = "表达卡") -> str:
@@ -1156,18 +1192,26 @@ def review_candidate_mode(payload: dict[str, Any], max_segments: int, candidate_
     return bool(payload.get("_candidate_limit") and candidate_limit > max_segments)
 
 
+def learning_point_id_for_candidate(source_id: str, candidate: dict[str, Any]) -> str:
+    kind = str(candidate.get("candidate_kind") or "expression")
+    answer = str(candidate.get("normalized_answer") or candidate.get("phrase") or candidate.get("exact_span") or "")
+    return f"lp_{stable_id(f'{source_id}:{kind}:{answer.lower()}') & 0xFFFFFFFF:08x}"
+
+
 def build_segments(cues: list[Cue], payload: dict[str, Any]) -> list[dict[str, Any]]:
     level = payload.get("level", "B1")
-    collection_levels = collection_levels_from_payload(payload, level)
+    strategy = normalized_selection_strategy(payload)
+    collection_levels = discovery_collection_levels(payload, level)
     toggles = payload.get("content_toggles", {})
     max_segments = resolved_max_segments(payload, cues)
     candidate_limit = int(payload.get("_candidate_limit", max_segments))
     review_mode = review_candidate_mode(payload, max_segments, candidate_limit)
-    max_duration = 6.4 if review_mode else 5.4
-    max_words = 22 if review_mode else 16
-    min_discovery_score = 2.6 if review_mode else 4.0
-    min_candidate_score = 2.8 if review_mode else 3.2
-    min_context_score = 1.8 if review_mode else 2.4
+    broad_discovery = strategy in {"catch_all", "exhaustive"}
+    max_duration = 8.8 if strategy == "exhaustive" else 7.6 if broad_discovery else 6.4 if review_mode else 5.4
+    max_words = 34 if strategy == "exhaustive" else 28 if broad_discovery else 22 if review_mode else 16
+    min_discovery_score = 2.1 if strategy == "exhaustive" else 2.3 if broad_discovery else 2.6 if review_mode else 4.0
+    min_candidate_score = 2.3 if strategy == "exhaustive" else 2.5 if broad_discovery else 2.8 if review_mode else 3.2
+    min_context_score = 1.4 if strategy == "exhaustive" else 1.6 if broad_discovery else 1.8 if review_mode else 2.4
 
     candidates: list[dict[str, Any]] = []
     i = 0
@@ -1217,7 +1261,7 @@ def build_segments(cues: list[Cue], payload: dict[str, Any]) -> list[dict[str, A
             phrase_is_usable = usable_phrase(text, phrase)
             typed_candidates = typed_learning_point_candidates(text, phrase, score, level, payload)
             if phrase_is_usable and is_too_basic_for_level(phrase, level):
-                score -= 0.4 if review_mode else 2.2
+                score -= 0.0 if strategy == "exhaustive" else 0.2 if strategy == "catch_all" else 0.4 if review_mode else 2.2
                 typed_candidates = typed_learning_point_candidates(text, phrase, score, level, payload)
             if starts_like_fragment(text):
                 if not review_mode and not phrase_is_usable and not typed_candidates:
@@ -1265,10 +1309,26 @@ def build_segments(cues: list[Cue], payload: dict[str, Any]) -> list[dict[str, A
                 media_start, media_end = segment_media_bounds(start, end, text, segment_phrase, review_mode)
                 candidate_score = float(typed.get("score") or score)
                 source_id = source_segment_key(start, end, text)
+                learning_point_id = str(typed.get("id") or learning_point_id_for_candidate(source_id, typed))
+                learning_point = {
+                    "id": learning_point_id,
+                    "kind": typed.get("candidate_kind") or "expression",
+                    "exact_span": typed.get("exact_span") or segment_phrase,
+                    "answer_core": typed.get("answer_core") or typed.get("normalized_answer") or typed.get("phrase") or segment_phrase,
+                    "difficulty": level,
+                    "value_score": round(candidate_score, 2),
+                    "reason": typed.get("phrase_card_focus") or "",
+                    "suggested_card_type": "listening" if typed.get("candidate_kind") == "listening_feature" else "phrase",
+                    "content_kind": typed.get("content_kind") or "phrase",
+                    "normalized_answer": typed.get("normalized_answer") or typed.get("phrase") or segment_phrase,
+                    "source_evidence": typed.get("source_evidence") or text,
+                }
                 candidates.append(
                     {
                     "id": f"seg_{len(candidates) + 1:04d}",
                     "source_segment_id": source_id,
+                    "learning_point_id": learning_point_id,
+                    "learning_points": [learning_point],
                     "start": round(start, 3),
                     "end": round(end, 3),
                     "source_time": f"{fmt_time(start)} - {fmt_time(end)}",
@@ -1297,6 +1357,84 @@ def build_segments(cues: list[Cue], payload: dict[str, Any]) -> list[dict[str, A
 
     selected = sorted(candidates, key=lambda item: item["score"], reverse=True)[:candidate_limit]
     return sorted(selected, key=lambda item: item["start"])
+
+
+def learning_point_from_segment(segment: dict[str, Any]) -> dict[str, Any]:
+    source_id = str(segment.get("source_segment_id") or source_segment_key(float(segment.get("start") or 0), float(segment.get("end") or 0), str(segment.get("text") or "")))
+    existing = segment.get("learning_points")
+    if isinstance(existing, list) and existing:
+        point = dict(existing[0])
+    else:
+        point = {}
+    point_id = str(point.get("id") or segment.get("learning_point_id") or learning_point_id_for_candidate(source_id, segment))
+    point.update(
+        {
+            "id": point_id,
+            "kind": segment.get("candidate_kind") or point.get("kind") or "expression",
+            "exact_span": segment.get("exact_span") or point.get("exact_span") or segment.get("phrase") or "",
+            "answer_core": segment.get("answer_core")
+            or point.get("answer_core")
+            or segment.get("normalized_answer")
+            or segment.get("phrase")
+            or "",
+            "difficulty": point.get("difficulty") or segment.get("difficulty") or "",
+            "value_score": segment.get("phrase_value_score") or point.get("value_score") or segment.get("score"),
+            "reason": point.get("reason") or segment.get("phrase_card_focus") or segment.get("phrase_decision_reason") or "",
+            "suggested_card_type": point.get("suggested_card_type")
+            or ("listening" if segment.get("candidate_kind") == "listening_feature" else "phrase"),
+            "content_kind": segment.get("content_kind") or point.get("content_kind") or "phrase",
+            "normalized_answer": segment.get("normalized_answer") or point.get("normalized_answer") or segment.get("phrase") or "",
+            "source_evidence": segment.get("source_evidence") or point.get("source_evidence") or segment.get("text") or "",
+        }
+    )
+    for key in PRONUNCIATION_FIELDS:
+        if segment.get(key) not in (None, ""):
+            point[key] = segment.get(key)
+        elif point.get(key) not in (None, ""):
+            point[key] = point.get(key)
+    is_valid, reason, normalized = sanitize_learning_point_contract(
+        point,
+        str(segment.get("text") or ""),
+        language=segment.get("language", "English"),
+    )
+    if is_valid:
+        point = normalized
+    else:
+        point["validation_status"] = "reject"
+        point["validation_issues"] = [reason]
+    return point
+
+
+def group_segments_by_learning_points(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for segment in segments:
+        key = str(segment.get("source_segment_id") or source_segment_key(float(segment.get("start") or 0), float(segment.get("end") or 0), str(segment.get("text") or "")))
+        grouped.setdefault(key, []).append(segment)
+
+    merged: list[dict[str, Any]] = []
+    for source_id, items in grouped.items():
+        ranked = sorted(items, key=lambda item: float(item.get("score") or 0), reverse=True)
+        primary = dict(ranked[0])
+        seen: set[tuple[str, str]] = set()
+        points: list[dict[str, Any]] = []
+        for item in ranked:
+            point = learning_point_from_segment(item)
+            if str(point.get("validation_status") or "") == "reject":
+                continue
+            key = (str(point.get("kind") or ""), normalized_phrase_key(str(point.get("answer_core") or point.get("exact_span") or "")))
+            if key in seen:
+                continue
+            seen.add(key)
+            points.append(point)
+        primary["source_segment_id"] = source_id
+        primary["learning_points"] = points
+        if points:
+            primary["learning_point_id"] = points[0]["id"]
+        primary["recommendation"] = max(int(item.get("recommendation") or 1) for item in ranked)
+        primary["score"] = max(float(item.get("score") or 0) for item in ranked)
+        primary["cards"] = []
+        merged.append(primary)
+    return sorted(merged, key=lambda item: (float(item.get("start") or 0), str(item.get("id") or "")))
 
 
 def fallback_phrase_fields(text: str, phrase: str, level: str) -> dict[str, str]:
@@ -1593,6 +1731,9 @@ def assess_card_quality(
     if any("???" in str(value) or "\ufffd" in str(value) for value in text_fields):
         issues.append("字段疑似乱码")
         score -= 36
+    if str(card.get("validation_status") or "") == "reject":
+        issues.append("学习点硬校验未通过")
+        score -= 80
     answer_core = str(card.get("answer_core") or "").strip()
     displayed_answer_core = answer_display_text(answer_core)
     if (
@@ -1805,6 +1946,72 @@ def repair_card_fields(card: dict[str, Any], segment: dict[str, Any], level: str
         sanitized_answer = phrase if is_answer_expression_candidate(phrase, card) else ""
     if sanitized_answer:
         card["answer_core"] = sanitized_answer
+    elif str(card.get("type") or "") != "listening":
+        existing_validation_issues = card.get("validation_issues")
+        if isinstance(existing_validation_issues, list):
+            validation_issues = existing_validation_issues
+        elif existing_validation_issues:
+            validation_issues = [str(existing_validation_issues)]
+        else:
+            validation_issues = []
+        card["validation_status"] = "reject"
+        card["validation_issues"] = list(dict.fromkeys([*validation_issues, "answer_core 不是英文学习对象"]))
+    pronunciation_issues = sanitize_pronunciation_fields(card, segment.get("language", "English"))
+    if pronunciation_issues:
+        existing_issues = card.get("validation_issues")
+        if isinstance(existing_issues, list):
+            card["validation_issues"] = list(dict.fromkeys([*existing_issues, *pronunciation_issues]))
+        elif existing_issues:
+            card["validation_issues"] = [str(existing_issues), *pronunciation_issues]
+        else:
+            card["validation_issues"] = pronunciation_issues
+    if str(card.get("type") or "") != "knowledge":
+        contract = {
+            "kind": card.get("candidate_kind") or segment.get("candidate_kind") or candidate_kind_for_segment(segment),
+            "phrase_type": card.get("phrase_type") or segment.get("phrase_type") or "",
+            "exact_span": card.get("exact_span") or phrase,
+            "normalized_answer": card.get("normalized_answer") or phrase,
+            "answer_core": card.get("answer_core") or phrase,
+            "phrase": card.get("phrase") or phrase,
+            "content_kind": card.get("content_kind") or "",
+        }
+        for key in PRONUNCIATION_FIELDS:
+            if card.get(key):
+                contract[key] = card.get(key)
+        is_valid_contract, contract_reason, normalized_contract = sanitize_learning_point_contract(
+            contract,
+            str(text or ""),
+            language=segment.get("language", "English"),
+        )
+        if is_valid_contract:
+            for key in [
+                "exact_span",
+                "normalized_answer",
+                "answer_core",
+                "candidate_kind",
+                "phrase_type",
+                "content_kind",
+                "phonetic_ipa",
+                "spoken_ipa",
+                "source_spoken_ipa",
+                "pronunciation_note",
+                "pronunciation_confidence",
+                "validation_status",
+            ]:
+                if normalized_contract.get(key) not in (None, ""):
+                    card[key] = normalized_contract[key]
+            if normalized_contract.get("validation_issues"):
+                card["validation_issues"] = normalized_contract["validation_issues"]
+        else:
+            existing_issues = card.get("validation_issues")
+            if isinstance(existing_issues, list):
+                validation_issues = existing_issues
+            elif existing_issues:
+                validation_issues = [str(existing_issues)]
+            else:
+                validation_issues = []
+            card["validation_status"] = "reject"
+            card["validation_issues"] = list(dict.fromkeys([*validation_issues, contract_reason]))
     card["cloze"] = make_cloze(text, phrase)
 
 
@@ -1826,6 +2033,7 @@ def normalize_learning_action_fields(card: dict[str, Any]) -> None:
         or "核心价值" in learning_goal
         or "额外能力点" in learning_goal
         or "这张卡训练什么" in learning_goal
+        or "围绕这个学习点制卡" in learning_goal
     ):
         card["learning_goal"] = learning_target
     why = str(card.get("why") or "").strip()
@@ -1965,11 +2173,8 @@ def plan_card_types(segment: dict[str, Any], card_types: list[str], level: str) 
     if "phrase" in requested and primary != "phrase":
         skipped["phrase"] = "没有稳定、完整、可迁移的表达，不单独做表达卡。"
 
-    # Default to one card. Allow only one genuinely different specialist card.
     if optional:
-        planned.append(optional[0])
-        for card_type in optional[1:]:
-            skipped[card_type] = "已有主卡和一个专项卡，避免同一句重复刷三遍。"
+        planned.extend(card_type for card_type in optional if card_type not in planned)
 
     for card_type in requested:
         if card_type not in planned and card_type not in skipped:
@@ -1983,58 +2188,121 @@ def plan_card_types(segment: dict[str, Any], card_types: list[str], level: str) 
     }
 
 
+def card_type_for_learning_point(point: dict[str, Any], requested: list[str]) -> str:
+    kind = str(point.get("kind") or "")
+    suggested = str(point.get("suggested_card_type") or "")
+    answer = normalized_phrase_key(str(point.get("answer_core") or point.get("normalized_answer") or point.get("exact_span") or ""))
+    if answer in {"", "key expression"} and "listening" in requested:
+        return "listening"
+    if suggested in requested:
+        return suggested
+    if kind == "listening_feature" and "listening" in requested:
+        return "listening"
+    if "phrase" in requested:
+        return "phrase"
+    if "cloze" in requested:
+        return "cloze"
+    if "listening" in requested:
+        return "listening"
+    return requested[0] if requested else "phrase"
+
+
 def fallback_cards(segment: dict[str, Any], card_types: list[str], level: str) -> list[dict[str, Any]]:
-    fields = fallback_phrase_fields(segment["text"], segment["phrase"], level)
-    quality_source = fields.pop("_quality_source", "fallback")
-    plan = plan_card_types(segment, card_types, level)
+    requested = requested_card_types(card_types)
+    points = segment.get("learning_points")
+    if not isinstance(points, list) or not points:
+        points = [learning_point_from_segment(segment)]
     cards: list[dict[str, Any]] = []
-    for card_type in plan["types"]:
+    for index, raw_point in enumerate(points):
+        point = dict(raw_point)
+        point_answer = normalized_phrase_key(
+            str(point.get("answer_core") or point.get("normalized_answer") or point.get("exact_span") or segment.get("phrase") or "")
+        )
+        if point_answer in {"", "key expression"} and "listening" in requested:
+            point["kind"] = "listening_feature"
+            point["phrase_type"] = "listening_sentence"
+            point["content_kind"] = "listening"
+            point["suggested_card_type"] = "listening"
+            point["exact_span"] = segment.get("text", "")
+            point["normalized_answer"] = segment.get("text", "")
+            point["answer_core"] = segment.get("text", "")
+        is_valid_point, point_reason, normalized_point = sanitize_learning_point_contract(
+            point,
+            str(segment.get("text") or ""),
+            language=segment.get("language", "English"),
+        )
+        if is_valid_point:
+            point = normalized_point
+        else:
+            segment.setdefault("learning_point_reject_reasons", []).append(point_reason)
+            continue
+        answer = str(point.get("answer_core") or point.get("normalized_answer") or point.get("exact_span") or segment.get("phrase") or "")
+        fields = fallback_phrase_fields(segment["text"], answer, level)
+        quality_source = fields.pop("_quality_source", "fallback")
+        phrase_type = phrase_type_for_candidate_kind(str(point.get("kind") or segment.get("candidate_kind") or "expression"))
+        content_kind = str(point.get("content_kind") or content_kind_for_phrase_type(phrase_type))
+        card_type = card_type_for_learning_point(point, requested)
+        learning_point_id = str(point.get("id") or segment.get("learning_point_id") or f"{segment['id']}_lp_{index + 1}")
+        reason = str(point.get("reason") or segment.get("phrase_card_focus") or "围绕这个学习点制卡。")
         card = {
-            "id": f"{segment['id']}_{card_type}",
+            "id": f"{segment['id']}_{learning_point_id}_{card_type}",
             "type": card_type,
             "type_label": CARD_TYPE_LABELS.get(card_type, card_type),
             "enabled": False,
             "english": segment["text"],
             "chinese": "本地草稿：请在预览页用模型精修或手动改成自然中文。",
-            "cloze": make_cloze(segment["text"], fields["phrase"]),
+            "cloze": make_cloze(segment["text"], answer or fields["phrase"]),
             "teacher_note": fields.get("teacher_note") or fields["why"],
-            "card_role": "primary" if card_type == plan["primary"] else "specialist",
-            "learning_goal": plan["reason"] if card_type == plan["primary"] else "这张专项卡只训练一个额外能力点，避免和主卡重复。",
-            "decision_reason": plan["reason"],
-            "learning_target": plan["reason"],
+            "card_role": "primary" if index == 0 else "learning_point",
+            "learning_goal": reason,
+            "decision_reason": reason,
+            "learning_target": reason,
             "why_it_matters": fields.get("why", ""),
             "how_to_use_it": fields.get("context", ""),
             "natural_chinese": fields.get("chinese", ""),
             "replacement_examples": fields.get("collocations", ""),
             "avoid_reason": "",
-            "skipped_card_types": plan["skipped"],
+            "skipped_card_types": {},
             "phrase_value_score": segment.get("phrase_value_score"),
             "phrase_decision_reason": segment.get("phrase_decision_reason", ""),
             "phrase_reject_reason": segment.get("phrase_reject_reason", ""),
-            "phrase_card_focus": segment.get("phrase_card_focus", ""),
+            "phrase_card_focus": reason,
             "phrase_review_status": segment.get("phrase_review_status", ""),
-            "phrase_type": segment.get("phrase_type", ""),
-            "content_kind": segment.get("content_kind") or content_kind_for_phrase_type(str(segment.get("phrase_type") or "")),
-            "candidate_kind": segment.get("candidate_kind") or candidate_kind_for_segment(segment),
-            "exact_span": segment.get("exact_span") or segment.get("phrase", ""),
-            "normalized_answer": segment.get("normalized_answer") or segment.get("phrase", ""),
+            "phrase_type": phrase_type,
+            "learning_point_id": learning_point_id,
+            "content_kind": content_kind,
+            "candidate_kind": point.get("kind") or segment.get("candidate_kind") or candidate_kind_for_segment(segment),
+            "exact_span": point.get("exact_span") or segment.get("exact_span") or answer,
+            "normalized_answer": point.get("normalized_answer") or segment.get("normalized_answer") or answer,
             "candidate_source": segment.get("candidate_source", ""),
             "learning_point_schema_version": segment.get("learning_point_schema_version") or LEARNING_POINT_SCHEMA_VERSION,
-            "source_evidence": segment.get("source_evidence") or segment.get("text", ""),
+            "source_evidence": point.get("source_evidence") or segment.get("source_evidence") or segment.get("text", ""),
             "retrieval_prompt": "",
-            "answer_core": segment.get("answer_core") or segment.get("normalized_answer") or segment.get("phrase", ""),
-            "usage_boundary": "",
-            "confusable_note": "",
+            "answer_core": answer,
+            "usage_boundary": point.get("usage_boundary") or "",
+            "confusable_note": point.get("confusable_note") or "",
+            "phonetic_ipa": point.get("phonetic_ipa") or "",
+            "spoken_ipa": point.get("spoken_ipa") or "",
+            "source_spoken_ipa": point.get("source_spoken_ipa") or "",
+            "pronunciation_note": point.get("pronunciation_note") or "",
+            "pronunciation_confidence": point.get("pronunciation_confidence") or "",
             **fields,
         }
+        sanitize_pronunciation_fields(card, segment.get("language", "English"))
         if card_type == "phrase":
             card["type_label"] = card_label_for_learning_card(
                 str(card.get("phrase_type") or ""),
                 str(card.get("content_kind") or ""),
                 card["type_label"],
             )
+        if card_type == "listening":
+            card["type_label"] = "听力卡"
         card_quality_source = quality_source if card_type == "phrase" else "fallback"
         card["quality"] = assess_card_quality(card, segment, card_quality_source, level)
+        if card_type == "listening" and card["quality"]["status"] == "reject":
+            if set(card["quality"].get("issues", [])) <= {"本地草稿，需要人工确认", "字段像模板废话"}:
+                card["quality"]["status"] = "needs_review"
+                card["quality"]["score"] = max(42, int(card["quality"].get("score") or 0))
         card["enabled"] = card_quality_source == "curated_fallback" and card["quality"]["status"] == "recommended"
         cards.append(card)
     return cards
@@ -2044,6 +2312,7 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
     requested_types = requested_card_types([str(card_type) for card_type in project.get("card_types", []) if card_type])
     current_level = str(project.get("level", "B1"))
     collection_levels = collection_levels_from_payload(project, current_level)
+    selection_strategy = normalized_selection_strategy(project)
     focus_instruction = language_focus_instruction(project)
     material_context_instruction = material_context_for_prompt(project.get("material_context"))
     compact = [
@@ -2062,6 +2331,7 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
             "phrase_card_focus": segment.get("phrase_card_focus", ""),
             "phrase_type": segment.get("phrase_type", ""),
             "score_breakdown": segment.get("score_breakdown", {}),
+            "learning_points": segment.get("learning_points", []),
         }
         for segment in segments
     ]
@@ -2073,8 +2343,9 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
         "制卡前请在心里回答四个问题：这句最值得学的是什么？它是词伙、句型、口语短句、语气表达还是听力句？"
         "中文学习者为什么容易忽略它？这张卡训练听懂、会用、会替换还是理解语气？如果回答不清楚，返回 cards: []。"
         f"{focus_instruction}"
-        "候选现在是 typed learning point：candidate_kind 可能是 expression/contextual_vocab/grammar_pattern/listening_feature/pragmatic_risk。"
-        "制卡必须先尊重 candidate_kind 和 exact_span，再生成对应卡片；不要把所有候选都当词伙。"
+        "候选现在按 typed learning point / learning_points 分组：同一句可能同时包含 expression/contextual_vocab/grammar_pattern/listening_feature/pragmatic_risk。"
+        "制卡必须先尊重每个 learning_point 的 id、kind 和 exact_span，再生成对应卡片；不要把所有候选都当词伙。"
+        "同一句的不同学习点可以共存；只有 exact_span、answer_core 和训练动作实质重复时才合并。"
         "contextual_vocab 允许 answer_core 是一个英文单词；grammar_pattern 允许 answer_core 是句型框架；"
         "listening_feature 的 answer_core 是要听辨的英文片段或原句，不是发音解释。"
         "请只为真正值得复习的片段生成卡；如果片段只是主题介绍、专有名词、技术名词堆叠或没有可迁移表达，返回该片段的 cards: []。"
@@ -2102,6 +2373,9 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
         "9) 每张卡必须给复习字段：retrieval_prompt=正面明确回忆题，不能写“判断最值得学”；"
         "answer_core=翻面第一眼核对的核心答案，只能写英文表达/单词本体，例如 hold that against you；"
         "禁止在 answer_core 写中文释义、IPA、发音融合、连读说明、语法解释或“X 是 Y”的说明；这些放 teacher_note 或 confusable_note。"
+        "英语卡还要输出发音字段：phonetic_ipa=answer_core 的标准美式 IPA；spoken_ipa=美剧口语中 answer_core 的弱读/连读读法；"
+        "source_spoken_ipa=原句中包含 answer_core 的整句口语 IPA 或关键听辨片段；pronunciation_note=一句中文听点说明；"
+        "pronunciation_confidence=high|medium|low。IPA 只写在这些字段里，不能写进 answer_core、phrase 或 TTS 文本。"
         "usage_boundary=什么时候能用/不能用，尤其是调侃、冒犯、正式度；"
         "confusable_note=中文学习者最容易误解或误用的点。usage_boundary 和 confusable_note 要具体到这句的语气、对象、场景，"
         "不要写“注意语境”“很常见”这类空话。"
@@ -2112,17 +2386,17 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
         "teacher_note=下次想夸天气、地方或体验时，用 such a nice + 名词，比 very nice 更像真实口语。"
         "废卡样例：english=Today we are going to talk about AI models. phrase=talk about；B1 用户不推荐，因为太基础且不是真正值得学的内容。"
         "重复卡样例：同一句同时生成听力卡、表达卡、填空卡但训练点一样时，只保留一张表达卡。"
-        "卡片规划规则：默认每个片段只生成 1 张主卡，不要机械生成三张。"
-        "只有当训练目标明显不同，才额外生成 1 张专项卡；同一片段最多 2 张卡。"
-        "phrase 作为默认主卡，整合听力、语义、中文感、例句和挖空答案；"
+        "卡片规划规则：旧规则“默认每个片段只生成 1 张主卡”已取消；每个 learning_point 最多生成 1 张最合适的卡；同一句允许多个不同 learning_point。"
+        "phrase 作为表达/生词/语法的通用主卡，整合语义、中文感、例句和迁移；"
         "listening 只在弱读、连读、缩读或听音辨句难点明显时单独生成；"
-        "cloze 只在该表达值得主动输出时单独生成，且必须输出一个且仅一个 ____。"
+        "cloze 只在该表达值得主动输出且不重复表达卡时单独生成，且必须输出一个且仅一个 ____。"
         "优先 5-12 个词的短句；超过 14 个词通常不要做精品卡。"
         f"可用卡型：{json.dumps(requested_types, ensure_ascii=False)}。"
         "如果只需要一张卡，就只返回一张；不要为了满足卡型列表而复制同一张卡。"
         "每张卡必须写 card_role: primary|specialist、learning_goal、decision_reason。"
         "返回严格 JSON，不要 Markdown。JSON 结构："
         '{"segments":[{"id":"seg_0001","cards":[{"type":"listening|phrase|cloze",'
+        '"learning_point_id":"对应 learning_points[].id",'
         '"candidate_kind":"expression|contextual_vocab|grammar_pattern|listening_feature|pragmatic_risk",'
         '"exact_span":"逐词来自原句的片段","normalized_answer":"标准化英文答案",'
         '"phrase_type":"spoken_phrase|sentence_frame|collocation|discourse_marker|idiom|listening_sentence|vocabulary_usage|grammar_pattern",'
@@ -2137,10 +2411,14 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
         '"how_to_use_it":"下次怎么换场景使用","natural_chinese":"自然中文理解",'
         '"replacement_examples":"1-2 个可替换例子","avoid_reason":"不值得制卡时的原因",'
         '"retrieval_prompt":"正面明确回忆题","answer_core":"核心答案",'
+        '"phonetic_ipa":"标准美式 IPA","spoken_ipa":"口语连读/弱读 IPA",'
+        '"source_spoken_ipa":"原句口语 IPA 或关键听辨片段","pronunciation_note":"中文听点说明",'
+        '"pronunciation_confidence":"high|medium|low",'
         '"usage_boundary":"使用边界/语气风险","confusable_note":"易错提醒"}]}]}。'
         f"学习语言：{project.get('language', 'English')}。"
-        f"用户当前水平：{current_level}，解释深度和中文提示按这个水平写。"
-        f"允许收录难度范围：{', '.join(collection_levels)}；可以收录这些等级里的高频表达，但不要因为简单就写废话。"
+        f"用户当前水平：{current_level}，它只决定解释深度、标注和质量判断，不要把它当硬过滤。"
+        f"筛选策略：{SELECTION_STRATEGY_LABELS.get(selection_strategy, selection_strategy)}。"
+        f"高级难度关注范围：{', '.join(collection_levels)}；可以参考这些等级，但不要因此漏掉地道高频表达、生词用法、语法或听力点。"
         f"需要卡型：{', '.join(requested_types)}。"
         f"候选字幕：{json.dumps(compact, ensure_ascii=False)}"
     )
@@ -2979,6 +3257,7 @@ def phrase_review_available(project: dict[str, Any]) -> bool:
 def build_phrase_review_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str:
     level = str(project.get("level", "B1"))
     collection_levels = collection_levels_from_payload(project, level)
+    selection_strategy = normalized_selection_strategy(project)
     focus_instruction = language_focus_instruction(project)
     material_context_instruction = material_context_for_prompt(project.get("material_context"))
     compact = [
@@ -3017,7 +3296,7 @@ def build_phrase_review_prompt(project: dict[str, Any], segments: list[dict[str,
         "6) score_breakdown 必须给 transferability、spoken_naturalness、level_fit、context_dependence、answer_clarity、card_uniqueness、learning_action、risk_boundary 八项 1-5 分。"
         "7) card_focus 用一句短中文说明这张卡应该训练什么；skip 时写 reject_reason。"
         "8) answer_core 禁止包含中文、IPA、发音说明、语法解释或“X 是 Y”的说明；这些只能放到后续字段里。"
-        "9) 同一句最多 keep 2 个学习点，且训练动作必须明显不同；expression 和 contextual_vocab 可以共存，重复训练目标不能共存。"
+        "9) 同一句可以 keep 多个学习点，但训练动作必须明显不同；expression、contextual_vocab、grammar_pattern、listening_feature 可以共存，重复训练目标不能共存。"
         "好例子：Honestly, it's such a nice Monday morning. -> keep, phrase=such a nice, phrase_type=sentence_frame, card_focus=训练 such a nice + 名词表达自然赞叹。"
         "废例子：Today we are going to talk about AI models. -> skip, phrase=talk about, reject_reason=B1 用户太基础，而且只是视频引入。"
         "只返回严格 JSON，不要 Markdown。结构："
@@ -3027,7 +3306,9 @@ def build_phrase_review_prompt(project: dict[str, Any], segments: list[dict[str,
         '"phrase_type":"spoken_phrase|sentence_frame|collocation|discourse_marker|idiom|listening_sentence|vocabulary_usage|grammar_pattern",'
         '"value_score":1,"score_breakdown":{"transferability":1,"spoken_naturalness":1,"level_fit":1,"context_dependence":1,"answer_clarity":1,"card_uniqueness":1,"learning_action":1,"risk_boundary":1},'
         '"reason":"推荐理由","card_focus":"训练重点","reject_reason":"跳过原因"}]}。'
-        f"用户当前水平：{level}。允许收录难度范围：{', '.join(collection_levels)}。"
+        f"用户当前水平：{level}，它只用于解释深度和质量判断，不要作为硬过滤。"
+        f"筛选策略：{SELECTION_STRATEGY_LABELS.get(selection_strategy, selection_strategy)}。"
+        f"高级难度关注范围：{', '.join(collection_levels)}。"
         f"候选字幕：{json.dumps(compact, ensure_ascii=False)}"
     )
 
@@ -3124,46 +3405,41 @@ def validate_review_learning_point(
     text = str(segment.get("text") or "")
     final_kind = candidate_kind or candidate_kind_for_segment(segment)
     final_phrase_type = phrase_type or phrase_type_for_candidate_kind(final_kind)
-    exact_span = normalize_candidate_span(review.get("exact_span") or segment.get("exact_span") or phrase)
-    normalized_answer = normalize_candidate_span(
-        review.get("normalized_answer") or review.get("answer_core") or phrase or segment.get("normalized_answer")
-    )
-    raw_answer_core = str(review.get("answer_core") or normalized_answer or phrase).strip()
-    answer_core = answer_display_text(raw_answer_core)
-
-    if not exact_span:
-        return False, "AI 评审缺少 exact_span，无法确认学习点来自原句。", {}
-    if not phrase_in_text(text, exact_span):
-        return False, "AI 评审 exact_span 不在原句中。", {}
-    if not answer_core:
-        return False, "AI 评审缺少英文答案本体 answer_core。", {}
-    if answer_core != clean_study_text(raw_answer_core):
-        return False, "AI 评审 answer_core 包含中文释义、发音或解释，不能作为核心答案。", {}
-    fake_card = {
-        "type": "listening" if final_kind == "listening_feature" else "phrase",
-        "english": text,
-        "phrase": normalized_answer or phrase,
-        "answer_core": answer_core,
+    point_payload = {
+        "kind": final_kind,
         "candidate_kind": final_kind,
         "phrase_type": final_phrase_type,
+        "exact_span": review.get("exact_span") or segment.get("exact_span") or phrase,
+        "normalized_answer": review.get("normalized_answer") or review.get("answer_core") or phrase or segment.get("normalized_answer"),
+        "answer_core": review.get("answer_core") or review.get("normalized_answer") or phrase,
+        "phrase": review.get("phrase") or phrase,
         "content_kind": content_kind_for_phrase_type(final_phrase_type),
     }
-    if not is_answer_expression_candidate(answer_core, fake_card):
-        return False, "AI 评审 answer_core 不是纯英文学习答案本体。", {}
-    if not usable_learning_point_span(text, exact_span, final_kind, final_phrase_type):
-        return False, "AI 评审 exact_span 不适合作为该类型学习点。", {}
+    for key in PRONUNCIATION_FIELDS:
+        if review.get(key):
+            point_payload[key] = review.get(key)
+    is_valid, validation_reason, normalized_point = sanitize_learning_point_contract(point_payload, text)
+    if not is_valid:
+        return False, f"AI 评审{validation_reason}", {}
     for key, label in (("answer_clarity", "答案清晰度"), ("learning_action", "学习动作")):
         value = _score_breakdown_value(score_breakdown, key)
         if value is not None and value < 3:
             return False, f"AI 评审{label}低于 3 分。", {}
 
     return True, "", {
-        "exact_span": exact_span,
-        "normalized_answer": normalized_answer or answer_core,
-        "answer_core": answer_core,
+        "exact_span": normalized_point["exact_span"],
+        "normalized_answer": normalized_point["normalized_answer"],
+        "answer_core": normalized_point["answer_core"],
         "candidate_kind": final_kind,
         "phrase_type": final_phrase_type,
         "content_kind": content_kind_for_phrase_type(final_phrase_type),
+        "phonetic_ipa": normalized_point.get("phonetic_ipa", ""),
+        "spoken_ipa": normalized_point.get("spoken_ipa", ""),
+        "source_spoken_ipa": normalized_point.get("source_spoken_ipa", ""),
+        "pronunciation_note": normalized_point.get("pronunciation_note", ""),
+        "pronunciation_confidence": normalized_point.get("pronunciation_confidence", ""),
+        "validation_status": normalized_point.get("validation_status", "ok"),
+        "validation_issues": " / ".join(normalized_point.get("validation_issues", [])),
     }
 
 
@@ -3173,7 +3449,7 @@ def apply_phrase_review_decisions(
     project: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     level = str(project.get("level", "B1"))
-    collection_levels = collection_levels_from_payload(project, level)
+    collection_levels = discovery_collection_levels(project, level)
     kept: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
 
@@ -3300,6 +3576,13 @@ def apply_phrase_review_decisions(
                 "phrase_card_focus": card_focus or "围绕这个表达的真实语境和迁移用法制卡。",
                 "phrase_type": normalized_fields["phrase_type"],
                 "content_kind": normalized_fields["content_kind"],
+                "phonetic_ipa": normalized_fields.get("phonetic_ipa", ""),
+                "spoken_ipa": normalized_fields.get("spoken_ipa", ""),
+                "source_spoken_ipa": normalized_fields.get("source_spoken_ipa", ""),
+                "pronunciation_note": normalized_fields.get("pronunciation_note", ""),
+                "pronunciation_confidence": normalized_fields.get("pronunciation_confidence", ""),
+                "validation_status": normalized_fields.get("validation_status", "ok"),
+                "validation_issues": normalized_fields.get("validation_issues", ""),
                 "candidate_source": segment.get("candidate_source", ""),
                 "learning_point_schema_version": LEARNING_POINT_SCHEMA_VERSION,
                 "source_evidence": segment.get("text", ""),
@@ -3594,9 +3877,9 @@ def review_phrase_candidates_with_mimo(
     kept, skipped = apply_phrase_review_decisions(segments, reviews, project)
     rejected_ids = {str(item.get("id")) for item in skipped if str(item.get("phrase_review_status") or "") == "reject"}
     kept, skipped = ensure_min_review_candidates(segments, kept, skipped, project, rejected_ids)
-    kept, source_overflow = enforce_max_learning_points_per_source(kept, 2)
+    kept, source_overflow = enforce_max_learning_points_per_source(kept, max_learning_points_per_source(project))
     kept, duplicates = split_duplicate_phrase_segments(kept)
-    max_segments = resolved_max_segments(project)
+    max_segments = resolved_max_segments(project) * selection_candidate_multiplier(project)
     kept, overflow = limit_reviewed_segments(kept, max_segments)
     skipped = [*skipped, *source_overflow, *duplicates, *overflow]
     return kept, sorted(skipped, key=lambda item: item["start"]), None
@@ -4198,6 +4481,7 @@ def merge_ai_cards(
     ai_payload: dict[str, Any] | None,
     card_types: list[str],
     level: str,
+    language: str = "English",
 ) -> tuple[list[dict[str, Any]], str | None]:
     ai_by_segment: dict[str, dict[str, Any]] = {}
     warning = None
@@ -4214,20 +4498,63 @@ def merge_ai_cards(
         if ai_payload is None:
             warning = warning or "模型没有返回可用精修结果，本地草稿已默认停用，请人工检查后再导出。"
         if ai_segment:
-            ai_cards_by_type = {card.get("type"): card for card in ai_segment.get("cards", [])}
             usable_ai_cards = [
                 card
                 for card in ai_segment.get("cards", [])
                 if card.get("phrase") or card.get("chinese") or card.get("definition")
             ]
             ai_template_card = usable_ai_cards[0] if usable_ai_cards else None
+            by_learning_point_type: dict[tuple[str, str], list[dict[str, Any]]] = {}
+            by_span_kind_type: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+            by_type: dict[str, list[dict[str, Any]]] = {}
+            consumed_ai_cards: set[int] = set()
+            for ai_card in usable_ai_cards:
+                card_type = str(ai_card.get("type") or "")
+                learning_point_id = str(ai_card.get("learning_point_id") or "")
+                exact_span = normalized_phrase_key(str(ai_card.get("exact_span") or ai_card.get("phrase") or ""))
+                candidate_kind = str(ai_card.get("candidate_kind") or "")
+                if learning_point_id and card_type:
+                    by_learning_point_type.setdefault((learning_point_id, card_type), []).append(ai_card)
+                if exact_span and card_type:
+                    by_span_kind_type.setdefault((exact_span, candidate_kind, card_type), []).append(ai_card)
+                    by_span_kind_type.setdefault((exact_span, "", card_type), []).append(ai_card)
+                if card_type:
+                    by_type.setdefault(card_type, []).append(ai_card)
+
+            def pop_first(items: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+                while items:
+                    item = items.pop(0)
+                    item_id = id(item)
+                    if item_id in consumed_ai_cards:
+                        continue
+                    consumed_ai_cards.add(item_id)
+                    return item
+                return None
+
+            def match_ai_card(fallback_card: dict[str, Any]) -> dict[str, Any] | None:
+                card_type = str(fallback_card.get("type") or "")
+                learning_point_id = str(fallback_card.get("learning_point_id") or "")
+                exact_span = normalized_phrase_key(str(fallback_card.get("exact_span") or fallback_card.get("phrase") or ""))
+                candidate_kind = str(fallback_card.get("candidate_kind") or "")
+                return (
+                    pop_first(by_learning_point_type.get((learning_point_id, card_type)))
+                    or pop_first(by_span_kind_type.get((exact_span, candidate_kind, card_type)))
+                    or pop_first(by_span_kind_type.get((exact_span, "", card_type)))
+                    or pop_first(by_type.get(card_type))
+                    or (
+                        ai_template_card
+                        if ai_template_card is not None and id(ai_template_card) not in consumed_ai_cards
+                        else None
+                    )
+                )
+
             cards = []
             for card in fallback:
-                ai_card = ai_cards_by_type.get(card["type"]) or ai_template_card
-                if card.get("card_role") == "specialist" and card["type"] not in ai_cards_by_type:
-                    continue
+                ai_card = match_ai_card(card)
                 if not ai_card:
+                    cards.append(card)
                     continue
+                consumed_ai_cards.add(id(ai_card))
                 for key in [
                     "chinese",
                     "phrase",
@@ -4255,6 +4582,7 @@ def merge_ai_cards(
                     "phrase_card_focus",
                     "phrase_review_status",
                     "phrase_type",
+                    "learning_point_id",
                     "content_kind",
                     "candidate_kind",
                     "exact_span",
@@ -4266,6 +4594,11 @@ def merge_ai_cards(
                     "answer_core",
                     "usage_boundary",
                     "confusable_note",
+                    "phonetic_ipa",
+                    "spoken_ipa",
+                    "source_spoken_ipa",
+                    "pronunciation_note",
+                    "pronunciation_confidence",
                 ]:
                     if ai_card.get(key):
                         card[key] = str(ai_card[key])
@@ -4279,13 +4612,14 @@ def merge_ai_cards(
                         str(card.get("content_kind") or ""),
                         card.get("type_label", "表达卡"),
                     )
-                if ai_card is ai_template_card and card["type"] not in ai_cards_by_type:
+                if ai_card is ai_template_card and not str(ai_card.get("learning_point_id") or ""):
                     card["teacher_note"] = (
                         card.get("teacher_note")
                         or "同片段 AI 已识别出重点表达，这张卡由系统补齐为对应训练任务。"
                     )
                 normalize_learning_action_fields(card)
                 repair_card_fields(card, segment, level)
+                sanitize_pronunciation_fields(card, language)
                 for key in [
                     "phrase_value_score",
                     "phrase_decision_reason",
@@ -4293,6 +4627,7 @@ def merge_ai_cards(
                     "phrase_card_focus",
                     "phrase_review_status",
                     "phrase_type",
+                    "learning_point_id",
                     "content_kind",
                     "candidate_kind",
                     "exact_span",
@@ -4301,12 +4636,94 @@ def merge_ai_cards(
                     "learning_point_schema_version",
                     "source_evidence",
                 ]:
-                    if segment.get(key) not in (None, ""):
+                    if card.get(key) in (None, "") and segment.get(key) not in (None, ""):
                         card[key] = segment.get(key)
                 if card["type"] == "phrase":
                     phrase_type = str(card.get("phrase_type") or "")
                     if phrase_type:
                         card["content_kind"] = card.get("content_kind") or content_kind_for_phrase_type(phrase_type)
+                    card["type_label"] = card_label_for_learning_card(
+                        str(card.get("phrase_type") or ""),
+                        str(card.get("content_kind") or ""),
+                        card.get("type_label", "表达卡"),
+                    )
+                card["quality"] = assess_card_quality(card, segment, "ai", level)
+                card["enabled"] = card["quality"]["status"] == "recommended"
+                cards.append(card)
+            requested_for_extra = set(requested_card_types(card_types))
+            for extra_index, ai_card in enumerate(usable_ai_cards, start=1):
+                if id(ai_card) in consumed_ai_cards:
+                    continue
+                card_type = str(ai_card.get("type") or "")
+                if card_type not in requested_for_extra:
+                    continue
+                if not str(ai_card.get("definition") or "").strip():
+                    continue
+                if card_type == "cloze" and "____" not in str(ai_card.get("cloze") or ""):
+                    continue
+                if card_type == "listening" and not str(ai_card.get("teacher_note") or ai_card.get("learning_target") or "").strip():
+                    continue
+                card = dict(fallback[0]) if fallback else {}
+                card.update(
+                    {
+                        "id": f"{segment['id']}_ai_extra_{extra_index}_{card_type}",
+                        "type": card_type,
+                        "type_label": CARD_TYPE_LABELS.get(card_type, card_type),
+                        "enabled": False,
+                        "english": segment.get("text", ""),
+                        "card_role": str(ai_card.get("card_role") or "specialist"),
+                    }
+                )
+                for key in [
+                    "chinese",
+                    "phrase",
+                    "definition",
+                    "collocations",
+                    "context",
+                    "example",
+                    "chinese_feel",
+                    "why",
+                    "difficulty",
+                    "teacher_note",
+                    "cloze",
+                    "learning_goal",
+                    "decision_reason",
+                    "learning_target",
+                    "why_it_matters",
+                    "how_to_use_it",
+                    "natural_chinese",
+                    "replacement_examples",
+                    "avoid_reason",
+                    "phrase_value_score",
+                    "phrase_decision_reason",
+                    "phrase_reject_reason",
+                    "phrase_card_focus",
+                    "phrase_review_status",
+                    "phrase_type",
+                    "learning_point_id",
+                    "content_kind",
+                    "candidate_kind",
+                    "exact_span",
+                    "normalized_answer",
+                    "candidate_source",
+                    "learning_point_schema_version",
+                    "source_evidence",
+                    "retrieval_prompt",
+                    "answer_core",
+                    "usage_boundary",
+                    "confusable_note",
+                    "phonetic_ipa",
+                    "spoken_ipa",
+                    "source_spoken_ipa",
+                    "pronunciation_note",
+                    "pronunciation_confidence",
+                ]:
+                    if ai_card.get(key):
+                        card[key] = str(ai_card[key])
+                normalize_learning_action_fields(card)
+                repair_card_fields(card, segment, level)
+                sanitize_pronunciation_fields(card, language)
+                if card["type"] == "phrase":
                     card["type_label"] = card_label_for_learning_card(
                         str(card.get("phrase_type") or ""),
                         str(card.get("content_kind") or ""),
@@ -5272,6 +5689,11 @@ def build_quality_funnel(
     mimo_kept: int | None = None,
 ) -> dict[str, Any]:
     cards = [card for segment in segments for card in segment.get("cards", [])]
+    learning_point_count = sum(
+        len(segment.get("learning_points") or []) if isinstance(segment.get("learning_points"), list) else (1 if segment.get("cards") else 0)
+        for segment in segments
+    )
+    selected_card_count = sum(1 for card in cards if card.get("enabled", True))
     recommended_cards = sum(1 for card in cards if (card.get("quality") or {}).get("status") == "recommended")
     review_cards = sum(1 for card in cards if (card.get("quality") or {}).get("status") == "needs_review")
     rejected_cards = sum(1 for card in cards if (card.get("quality") or {}).get("status") == "reject")
@@ -5298,6 +5720,13 @@ def build_quality_funnel(
     return {
         "subtitle_cues": subtitle_cues,
         "candidate_segments": candidate_segments if candidate_segments is not None else len(segments),
+        "learning_point_count": learning_point_count,
+        "card_count": len(cards),
+        "selected_card_count": selected_card_count,
+        "recommended_card_count": recommended_cards,
+        "review_card_count": review_cards,
+        "rejected_learning_point_count": rejected_segments,
+        "duplicate_learning_point_count": duplicate_segments,
         "reviewed_keep": reviewed_keep
         if reviewed_keep is not None
         else sum(1 for segment in segments if segment.get("phrase_review_status") not in {"reject", "duplicate"}),
@@ -5383,14 +5812,11 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
     payload = {**payload, "max_segments": max_segments, "auto_max_segments": auto_segments}
 
     review_enabled = phrase_review_available(payload)
-    segment_payload = (
-        {
-            **payload,
-            "_candidate_limit": max(max_segments * 2, max_segments + 12),
-        }
-        if review_enabled
-        else payload
-    )
+    candidate_multiplier = selection_candidate_multiplier(payload)
+    segment_payload = {
+        **payload,
+        "_candidate_limit": max(max_segments * candidate_multiplier, max_segments + 12 * candidate_multiplier),
+    }
     emit_progress(
         "generate",
         "segments",
@@ -5420,16 +5846,18 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         if review_applied:
             segments = reviewed_segments
         else:
-            segments = sorted(segments, key=lambda item: item["score"], reverse=True)[:max_segments]
+            segments = sorted(segments, key=lambda item: item["score"], reverse=True)[: max_segments * candidate_multiplier]
             segments = sorted(segments, key=lambda item: item["start"])
     else:
-        segments = sorted(segments, key=lambda item: item["score"], reverse=True)[:max_segments]
+        segments = sorted(segments, key=lambda item: item["score"], reverse=True)[: max_segments * candidate_multiplier]
         segments = sorted(segments, key=lambda item: item["start"])
 
-    emit_progress("generate", "ai", 66, f"正在分批生成词伙、解释和卡片字段：{len(segments)} 个片段。")
+    segments = group_segments_by_learning_points(segments)
+
+    emit_progress("generate", "ai", 66, f"正在分批生成词伙、解释和卡片字段：{len(segments)} 个片段组。")
     ai_payload = call_model_batches(payload, segments) if segments else None
     emit_progress("generate", "cards", 84, "正在整理卡片草稿。")
-    segments, warning = merge_ai_cards(segments, ai_payload, card_types, level) if segments else ([], None)
+    segments, warning = merge_ai_cards(segments, ai_payload, card_types, level, payload.get("language", "English")) if segments else ([], None)
     reviewed_keep_count = len(segments)
     if context_warning:
         warning = f"{context_warning}；{warning}" if warning else str(context_warning)
@@ -5485,6 +5913,7 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         "content_toggles": payload.get("content_toggles", {}),
         "language_focus": normalized_language_focus(payload),
         "study_depth": normalized_study_depth(payload),
+        "selection_strategy": normalized_selection_strategy(payload),
         "material_context": material_context,
         "card_types": card_types,
         "max_segments": max_segments,
@@ -5501,6 +5930,8 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
             "video_path": video_path,
             "subtitle_path": subtitle_path,
             "subtitle_source": subtitle_source or "manual",
+            "video_fingerprint": file_fingerprint(video_path),
+            "subtitle_fingerprint": file_fingerprint(subtitle_path),
         },
         "created_at": int(time.time()),
     }
@@ -8864,6 +9295,37 @@ body,
   font-weight: 650;
   overflow-wrap: break-word;
 }
+.v11-pronunciation {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+.v11-ipa-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: baseline;
+  color: #424650;
+  font-size: clamp(14px, 2.6vw, 17px);
+  line-height: 1.4;
+}
+.v11-ipa-row span {
+  min-width: 72px;
+  color: #7a7f89;
+  font-weight: 760;
+}
+.v11-ipa-row strong {
+  color: #111114;
+  font-weight: 760;
+}
+.v11-pronunciation-note {
+  margin: 2px 0 0;
+  color: #5f626b;
+  font-size: clamp(14px, 2.6vw, 17px);
+  line-height: 1.48;
+  font-weight: 620;
+  overflow-wrap: break-word;
+}
 .v11-divider {
   margin: clamp(20px, 4vw, 28px) 0;
   border: 0;
@@ -9174,6 +9636,12 @@ LANGUAGE_BACK_TEMPLATE_V11 = """
       </div>
       {{#Chinese}}<p class="v11-chinese-core">{{Chinese}}</p>{{/Chinese}}
       {{#ChineseFeel}}<p class="v11-answer-note">{{ChineseFeel}}</p>{{/ChineseFeel}}
+      <div class="v11-pronunciation">
+        {{#PhoneticIpa}}<div class="v11-ipa-row"><span>标准 IPA</span><strong>{{PhoneticIpa}}</strong></div>{{/PhoneticIpa}}
+        {{#SpokenIpa}}<div class="v11-ipa-row"><span>口语读法</span><strong>{{SpokenIpa}}</strong></div>{{/SpokenIpa}}
+        {{#SourceSpokenIpa}}<div class="v11-ipa-row"><span>原句听感</span><strong>{{SourceSpokenIpa}}</strong></div>{{/SourceSpokenIpa}}
+        {{#PronunciationNote}}<p class="v11-pronunciation-note">{{PronunciationNote}}</p>{{/PronunciationNote}}
+      </div>
       <hr class="v11-divider">
       <div class="v11-label">原句</div>
       <p class="v11-source">{{English}}</p>
@@ -9226,7 +9694,7 @@ def anki_template_assets(template_id: str, deck_kind_code: str = "video_language
     if deck_kind_code == "document_reading":
         return "文档精读 V10", CARD_CSS, READING_FRONT_TEMPLATE, READING_BACK_TEMPLATE
     if template_id == "immersive_v11":
-        return "沉浸复读 V11", CARD_CSS_V11, LANGUAGE_FRONT_TEMPLATE_V11, LANGUAGE_BACK_TEMPLATE_V11
+        return "沉浸复读 V12", CARD_CSS_V11, LANGUAGE_FRONT_TEMPLATE_V11, LANGUAGE_BACK_TEMPLATE_V11
     if template_id == "dictionary":
         return "词典解释 V10", CARD_CSS, DICTIONARY_FRONT_TEMPLATE, DICTIONARY_BACK_TEMPLATE
     if template_id == "minimal":
@@ -9238,7 +9706,7 @@ def anki_template_version(template_id: str, deck_kind_code: str = "video_languag
     template_id = template_id if template_id in {"immersive_v11", "immersive", "dictionary", "minimal"} else "immersive_v11"
     if deck_kind_code not in {"video_language", "subtitle_language"}:
         return "V10"
-    return "V11" if template_id == "immersive_v11" else "V10"
+    return "V12" if template_id == "immersive_v11" else "V10"
 
 
 def safe_filename(value: str) -> str:
@@ -9315,17 +9783,53 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def media_manifest(media_files: list[str]) -> dict[str, dict[str, Any]]:
+def file_fingerprint(path_value: Any) -> str:
+    path = Path(str(path_value or ""))
+    if not path.exists() or not path.is_file():
+        return ""
+    try:
+        stat = path.stat()
+        digest = hashlib.sha256()
+        digest.update(str(path.resolve()).encode("utf-8", errors="ignore"))
+        digest.update(str(stat.st_size).encode("ascii"))
+        digest.update(str(stat.st_mtime_ns).encode("ascii"))
+        with path.open("rb") as handle:
+            digest.update(handle.read(65536))
+            if stat.st_size > 65536:
+                handle.seek(max(0, stat.st_size - 65536))
+                digest.update(handle.read(65536))
+        return digest.hexdigest()[:24]
+    except OSError:
+        return ""
+
+
+def media_manifest(media_files: list[str], media_ledger: list[dict[str, Any]] | None = None) -> dict[str, dict[str, Any]]:
+    ledger_by_file: dict[str, dict[str, Any]] = {}
+    for item in media_ledger or []:
+        name = Path(str(item.get("file") or "")).name
+        if name and name not in ledger_by_file:
+            ledger_by_file[name] = {
+                key: value
+                for key, value in item.items()
+                if key != "file" and value not in (None, "", [])
+            }
     manifest: dict[str, dict[str, Any]] = {}
     for media_file in media_files:
         path = Path(media_file)
         if not path.exists():
             continue
-        manifest[path.name] = {
+        entry = {
             "sha256": file_sha256(path),
             "bytes": path.stat().st_size,
         }
+        entry.update(ledger_by_file.get(path.name, {}))
+        manifest[path.name] = entry
     return manifest
+
+
+def media_text_hash(value: Any) -> str:
+    text = clean_tts_input_text(str(value or "")).lower()
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12] if text else ""
 
 
 def compare_media_manifest(expected: dict[str, dict[str, Any]], media_dir: Path) -> dict[str, Any]:
@@ -9473,10 +9977,145 @@ def is_answer_expression_candidate(value: Any, card: dict[str, Any]) -> bool:
         return False
     if str(card.get("type") or "") != "listening" and len(words) > 8:
         return False
+    if str(card.get("candidate_kind") or "") == "grammar_pattern":
+        return True
     english = clean_study_text(card.get("english"))
     if english and not phrase_in_text(english, text) and len(words) >= 2:
         return False
     return True
+
+
+PRONUNCIATION_FIELDS = (
+    "phonetic_ipa",
+    "spoken_ipa",
+    "source_spoken_ipa",
+    "pronunciation_note",
+    "pronunciation_confidence",
+)
+
+
+def is_english_language(language: Any = "English") -> bool:
+    value = str(language or "English").strip().lower()
+    return not value or value.startswith("en") or "english" in value or "英语" in value
+
+
+def normalize_pronunciation_confidence(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"high", "medium", "low"}:
+        return text
+    if text in {"高", "较高", "可信"}:
+        return "high"
+    if text in {"中", "中等", "一般"}:
+        return "medium"
+    if text in {"低", "不确定"}:
+        return "low"
+    return ""
+
+
+def normalize_ipa_field(value: Any, *, max_chars: int = 180) -> str:
+    text = clean_study_text(value)
+    if not text or has_cjk(text):
+        return ""
+    text = text.replace("\\", "/")
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > max_chars:
+        text = text[:max_chars].rstrip()
+    return text
+
+
+def sanitize_pronunciation_fields(target: dict[str, Any], language: Any = "English") -> list[str]:
+    issues: list[str] = []
+    if not is_english_language(language):
+        for key in PRONUNCIATION_FIELDS:
+            target.pop(key, None)
+        return issues
+    for key in ("phonetic_ipa", "spoken_ipa", "source_spoken_ipa"):
+        raw = target.get(key)
+        normalized = normalize_ipa_field(raw)
+        if raw and not normalized:
+            issues.append(f"{key} 含中文或不可用内容，已清空。")
+        if normalized:
+            target[key] = normalized
+        else:
+            target.pop(key, None)
+    note = clean_study_text(target.get("pronunciation_note"))
+    if note:
+        target["pronunciation_note"] = note[:260].rstrip()
+    else:
+        target.pop("pronunciation_note", None)
+    confidence = normalize_pronunciation_confidence(target.get("pronunciation_confidence"))
+    if confidence:
+        target["pronunciation_confidence"] = confidence
+    else:
+        target.pop("pronunciation_confidence", None)
+    return issues
+
+
+def sanitize_learning_point_contract(
+    item: dict[str, Any],
+    text: str,
+    *,
+    language: Any = "English",
+) -> tuple[bool, str, dict[str, Any]]:
+    normalized = dict(item)
+    issues: list[str] = []
+    kind = str(normalized.get("kind") or normalized.get("candidate_kind") or "expression")
+    phrase_type = str(normalized.get("phrase_type") or phrase_type_for_candidate_kind(kind))
+    exact_span = normalize_candidate_span(
+        normalized.get("exact_span")
+        or normalized.get("normalized_answer")
+        or normalized.get("answer_core")
+        or normalized.get("phrase")
+        or ""
+    )
+    if not exact_span:
+        return False, "学习点缺少 exact_span。", {}
+    if not phrase_in_text(text, exact_span):
+        return False, "学习点 exact_span 不在原句中。", {}
+    raw_answer = str(
+        normalized.get("answer_core")
+        or normalized.get("normalized_answer")
+        or normalized.get("phrase")
+        or exact_span
+    ).strip()
+    answer_core = answer_display_text(raw_answer)
+    fake_card = {
+        "type": "listening" if kind == "listening_feature" else "phrase",
+        "english": text,
+        "phrase": exact_span,
+        "answer_core": answer_core,
+        "candidate_kind": kind,
+        "phrase_type": phrase_type,
+        "content_kind": content_kind_for_phrase_type(phrase_type),
+    }
+    if raw_answer and clean_study_text(raw_answer) != answer_core:
+        issues.append("answer_core 含解释/发音信息，已尝试修复。")
+    if not is_answer_expression_candidate(answer_core, fake_card):
+        for fallback in (normalized.get("normalized_answer"), normalized.get("phrase"), exact_span):
+            candidate = answer_display_text(fallback)
+            fake_card["answer_core"] = candidate
+            fake_card["phrase"] = candidate or exact_span
+            if is_answer_expression_candidate(candidate, fake_card):
+                answer_core = candidate
+                issues.append("answer_core 已回退为原句中的英文学习对象。")
+                break
+    fake_card["answer_core"] = answer_core
+    if not is_answer_expression_candidate(answer_core, fake_card):
+        return False, "学习点 answer_core 不是纯英文学习对象。", {}
+    if not usable_learning_point_span(text, exact_span, kind, phrase_type):
+        return False, "学习点 exact_span 不适合作为该类型学习点。", {}
+    normalized["exact_span"] = exact_span
+    normalized["answer_core"] = answer_core
+    normalized["normalized_answer"] = answer_display_text(normalized.get("normalized_answer")) or answer_core
+    normalized["kind"] = kind
+    normalized["candidate_kind"] = kind
+    normalized["phrase_type"] = phrase_type
+    normalized["content_kind"] = normalized.get("content_kind") or content_kind_for_phrase_type(phrase_type)
+    issues.extend(sanitize_pronunciation_fields(normalized, language))
+    normalized["validation_status"] = "repaired" if issues else "ok"
+    if issues:
+        normalized["validation_issues"] = list(dict.fromkeys(issues))
+    return True, "", normalized
 
 
 def card_answer_core(card: dict[str, Any]) -> str:
@@ -10036,7 +10675,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     template_family = anki_template_family(template_id, deck_kind_code)
     template_label, template_css, front_template, back_template = anki_template_assets(template_id, deck_kind_code)
     template_version = anki_template_version(template_id, deck_kind_code)
-    use_v11_template = template_version == "V11"
+    use_v11_template = template_version in {"V11", "V12"}
     model = genanki.Model(
         stable_id(f"anki-card-model-{template_version.lower()}-{template_family}", 1000000000),
         f"Anki Card Generator {template_version} - {template_label}",
@@ -10051,6 +10690,11 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             {"name": "FrontPrompt"},
             {"name": "FrontContent"},
             {"name": "Answer"},
+            {"name": "PhoneticIpa"},
+            {"name": "SpokenIpa"},
+            {"name": "SourceSpokenIpa"},
+            {"name": "PronunciationNote"},
+            {"name": "PronunciationConfidence"},
             {"name": "English"},
             {"name": "Chinese"},
             {"name": "Phrase"},
@@ -10082,6 +10726,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     )
     deck = genanki.Deck(stable_id(deck_name, 1500000000), deck_name)
     media_files: list[str] = []
+    media_ledger: list[dict[str, Any]] = []
     tts_by_segment: dict[str, str] = {}
     phrase_tts_by_phrase: dict[str, str] = {}
     warnings: list[str] = []
@@ -10095,6 +10740,31 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     original_audio_count = 0
     project_card_prefix = safe_filename(project.get("title") or project.get("id") or "deck")
     media_prefix = project_media_prefix(project, export_run_id)
+
+    def ledger_add(
+        file_name: str,
+        *,
+        role: str,
+        segment: dict[str, Any],
+        card: dict[str, Any] | None = None,
+        field: str = "",
+        tts_text: str = "",
+    ) -> None:
+        if not file_name:
+            return
+        media_ledger.append(
+            {
+                "file": Path(file_name).name,
+                "role": role,
+                "segment_id": str(segment.get("id") or ""),
+                "card_id": str((card or {}).get("id") or ""),
+                "learning_point_id": str((card or segment).get("learning_point_id") or ""),
+                "field": field,
+                "source_time": str(segment.get("source_time") or ""),
+                "tts_text": clean_tts_input_text(tts_text) if tts_text else "",
+                "text_hash": media_text_hash(tts_text) if tts_text else "",
+            }
+        )
 
     export_segments = [
         segment
@@ -10126,7 +10796,8 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         video_mp4_name = "" if skip_video_media else f"{media_segment_id}.mp4"
         poster_name = "" if skip_video_media else f"{media_segment_id}.jpg"
         audio_name = "" if skip_video_media else f"{media_segment_id}.mp3"
-        tts_name = f"{media_segment_id}_tts.mp3"
+        segment_tts_text = str(segment.get("text") or "")
+        tts_name = f"{media_segment_id}_tts_{media_text_hash(segment_tts_text)}.mp3"
         video_webm_out = media_dir / video_webm_name
         video_mp4_out = media_dir / video_mp4_name
         poster_out = media_dir / poster_name
@@ -10147,6 +10818,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     if synthesize_tts(project, segment, tts_out):
                         media_files.append(str(tts_out))
                         tts_by_segment[segment_id] = tts_name
+                        ledger_add(tts_name, role="sentence_tts", segment=segment, field="TtsAudio", tts_text=segment_tts_text)
                 except Exception as err:
                     warnings.append(f"{segment_id} TTS 失败：{err}")
             cut_segments.add(segment_id)
@@ -10286,8 +10958,12 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     poster_out.unlink(missing_ok=True)
                     warnings.append(f"{segment_id} 视频封面生成失败：{poster_error}")
                 media_files.extend([str(video_webm_out), str(video_mp4_out), str(audio_out)])
+                ledger_add(video_webm_name, role="video", segment=segment, field="Video")
+                ledger_add(video_mp4_name, role="video", segment=segment, field="Video")
+                ledger_add(audio_name, role="original_audio", segment=segment, field="Audio")
                 if poster_name and poster_out.exists():
                     media_files.append(str(poster_out))
+                    ledger_add(poster_name, role="poster", segment=segment, field="Video")
                 video_segment_count += 1
                 video_file_count += 2
                 original_audio_count += 1
@@ -10297,6 +10973,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     if synthesize_tts(project, segment, tts_out):
                         media_files.append(str(tts_out))
                         tts_by_segment[segment_id] = tts_name
+                        ledger_add(tts_name, role="sentence_tts", segment=segment, field="TtsAudio", tts_text=segment_tts_text)
                 except Exception as err:
                     warnings.append(f"{segment_id} TTS 失败：{err}")
             cut_segments.add(segment_id)
@@ -10313,7 +10990,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                 if phrase_key in phrase_tts_by_phrase:
                     phrase_tts_name = phrase_tts_by_phrase[phrase_key]
                 else:
-                    phrase_tts_name = f"{media_prefix}_phrase_{stable_id(phrase_key, 0)}.mp3"
+                    phrase_tts_name = f"{media_prefix}_phrase_{media_text_hash(phrase_text)}.mp3"
                     phrase_tts_out = media_dir / phrase_tts_name
                     try:
                         emit_progress("export", "tts", min(88, segment_percent + 5), f"正在生成表达发音：{phrase_text}")
@@ -10325,6 +11002,15 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     except Exception as err:
                         phrase_tts_name = ""
                         warnings.append(f"{segment_id} 表达 TTS 失败：{err}")
+            if phrase_tts_name:
+                ledger_add(
+                    phrase_tts_name,
+                    role="phrase_tts",
+                    segment=segment,
+                    card=card,
+                    field="PhraseTtsAudio",
+                    tts_text=phrase_text,
+                )
             meaning_field = v11_meaning_text(card) if use_v11_template else card_chinese_core(card)
             definition_field = v11_usage_text(card) if use_v11_template else card.get("definition", "")
             collocations_field = v11_self_sentence_text(card) if use_v11_template else card.get("collocations", "")
@@ -10344,6 +11030,11 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     anki_study_text(front_fields["front_prompt"]),
                     anki_study_text(front_fields["front_content"]),
                     anki_study_text(front_fields["answer"]),
+                    anki_study_text(card.get("phonetic_ipa", "")),
+                    anki_study_text(card.get("spoken_ipa", "")),
+                    anki_study_text(card.get("source_spoken_ipa", "")),
+                    anki_study_text(card.get("pronunciation_note", "")),
+                    anki_text(card.get("pronunciation_confidence", "")),
                     anki_study_text(card.get("english", "")),
                     anki_study_text(meaning_field),
                     anki_study_text(card.get("phrase", "")),
@@ -10392,7 +11083,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
 
     emit_progress("export", "package", 92, "正在写入 .apkg。")
     media_files = list(dict.fromkeys(media_files))
-    exported_media_manifest = media_manifest(media_files)
+    exported_media_manifest = media_manifest(media_files, media_ledger)
     media_bytes = 0
     for media_file in media_files:
         try:
@@ -10415,6 +11106,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         "anki_tag": anki_tag,
         "media_prefix": media_prefix,
         "media_manifest": exported_media_manifest,
+        "media_ledger": media_ledger,
         "cards": exported_cards,
         "segments": len(cut_segments),
         "media_summary": {
@@ -10482,6 +11174,29 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
             referenced_media.update(extract_media_references(anki_field_value(fields, field_name)))
 
     expected_names = set(expected_manifest)
+    media_ledger = export_result.get("media_ledger") if isinstance(export_result.get("media_ledger"), list) else []
+    ledger_files = {
+        Path(str(item.get("file") or "")).name
+        for item in media_ledger
+        if isinstance(item, dict) and str(item.get("file") or "").strip()
+    }
+    ledger_missing_manifest = sorted(ledger_files - expected_names)
+    manifest_tts_without_ledger = sorted(
+        name
+        for name, info in expected_manifest.items()
+        if isinstance(info, dict) and str(info.get("role") or "") in {"sentence_tts", "phrase_tts"} and name not in ledger_files
+    )
+    ledger_text_hash_mismatch = [
+        {
+            "file": Path(str(item.get("file") or "")).name,
+            "expected_text_hash": media_text_hash(item.get("tts_text")),
+            "ledger_text_hash": str(item.get("text_hash") or ""),
+        }
+        for item in media_ledger
+        if isinstance(item, dict)
+        and item.get("tts_text")
+        and str(item.get("text_hash") or "") not in {"", media_text_hash(item.get("tts_text"))}
+    ]
     expected_referenced_manifest = {
         name: expected_manifest[name]
         for name in sorted(expected_names & referenced_media)
@@ -10504,6 +11219,12 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
         failed_checks.append("missing_imported_media")
     if manifest_check["mismatched"]:
         failed_checks.append("media_hash_mismatch")
+    if ledger_missing_manifest:
+        failed_checks.append("ledger_missing_manifest")
+    if manifest_tts_without_ledger:
+        failed_checks.append("manifest_tts_without_ledger")
+    if ledger_text_hash_mismatch:
+        failed_checks.append("ledger_text_hash_mismatch")
 
     return {
         "ok": not failed_checks,
@@ -10520,6 +11241,9 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
         "mismatched_media": manifest_check["mismatched"],
         "unexpected_media_references": unexpected_references,
         "unreferenced_expected_media": unreferenced_expected,
+        "ledger_missing_manifest": ledger_missing_manifest,
+        "manifest_tts_without_ledger": manifest_tts_without_ledger,
+        "ledger_text_hash_mismatch": ledger_text_hash_mismatch,
         "anki_media_dir": str(anki_media_dir),
     }
 

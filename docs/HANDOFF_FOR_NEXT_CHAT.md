@@ -9,7 +9,7 @@ Use this file when opening a fresh Codex / GPT review window for the Anki Card G
 - Active branch: `codex/complete-refactor-hardening`
 - Active PR: https://github.com/zixuanzhou0-ai/Anki-card-generator/pull/6
 - PR base: `main`
-- Current status when this handoff was written: PR #6 contains the document-study split plus local-video, API-key persistence, TTS export, Qwen3 TTS voice hardening, Gemini Vertex TTS setup, the first Deep Study / contextual vocabulary card pipeline, the default `沉浸复读 V11` Anki template for video/subtitle cards, and candidate-review hardening from GPT Pro feedback. Local working tree should be clean after pushing the latest commit.
+- Current status when this handoff was written: PR #6 contains the document-study split plus local-video, API-key persistence, TTS export, Qwen3 TTS voice hardening, Gemini Vertex TTS setup, the Deep Study / contextual vocabulary pipeline, the default `沉浸复读 V12` Anki template for video/subtitle cards, strict learning-point validation, English IPA / connected-speech fields, TTS media ledger export, and candidate-review hardening from GPT Pro feedback. Local working tree should be clean after pushing the latest commit.
 
 Important: ask reviewers to inspect PR #6, not only `main`. The latest document-study work is on the PR branch.
 
@@ -39,13 +39,16 @@ Recent hardening added after the initial document-study split:
 - DeepSeek V4 Pro / Flash presets were added with official model IDs `deepseek-v4-pro` and `deepseek-v4-flash`. The worker now treats DeepSeek V4 as a thinking model: streaming `reasoning_content` keeps progress alive while final JSON parsing ignores thinking text.
 - Gemini Vertex TTS is documented and available through the Vertex / `gcloud` auth path. It uses local `gcloud auth print-access-token` rather than storing a TTS API key.
 - V10 APKG visual templates are now split by export family: video/subtitle language cards, document knowledge cards, and document reading cards use different front/back HTML while keeping the existing field names. The templates no longer rely on JS overflow fitting and allow stable vertical scrolling.
-- Video/subtitle language cards now default to `immersive_v11` / `沉浸复读 V11`: front side is shadowing-first with autoplaying muted loop video and custom `原声` / `慢读` buttons; back side shows core expression, Chinese intuition, source sentence, phrase TTS, compact replay video, and explanation blocks. `immersive` remains as the old V10 fallback option.
+- Video/subtitle language cards now default to `immersive_v11` / `沉浸复读 V12`: front side is shadowing-first with click-to-play video and custom `原声` / `慢读` buttons; back side shows core expression, Chinese intuition, standard IPA, spoken IPA, source-sentence listening notes, phrase TTS, compact replay video, and explanation blocks. `immersive` remains as the old V10 fallback option.
 - GPT Pro review follow-up added hard gates to the AI candidate-review merge path:
   - `exact_span` must be recoverable from the original sentence.
   - `answer_core` must be a clean English answer, not mixed Chinese/IPA/explanation text.
-  - each `source_segment_id` keeps at most two learning points.
+  - pronunciation, connected speech, non-standard forms, and IPA live in `phonetic_ipa`, `spoken_ipa`, `source_spoken_ipa`, `pronunciation_note`, or teacher notes.
+  - same-sentence expression / vocabulary / grammar / listening / pragmatic learning points can coexist after grouped dedupe; low-value points become review/reject instead of being hard-capped to two.
   - AI-rejected candidates are not revived by the local minimum-count fallback.
-  - export results now carry `template_version` / `anki_tag`, and Anki import verification uses the actual V10/V11 tag.
+  - export results now carry `template_version` / `anki_tag`, and Anki import verification uses the actual V10/V12 tag.
+- TTS/media hardening now writes `media_ledger` alongside `media_manifest`. Sentence TTS filenames include a source-text hash, phrase TTS filenames include the visible answer hash, and Anki import verification checks ledger/manifests for missing files and text-hash mismatches.
+- Local projects now store `video_fingerprint` and `subtitle_fingerprint` in `source_info`, in addition to source-mode path isolation. Local mode clears stale URL/document paths; URL/document modes clear unrelated local paths before worker calls.
 - README, user guide, troubleshooting, release notes, release checklist, beta limitations, handoff, screenshots, PR body, and repo About description were refreshed after this hardening pass.
 
 ## Key Files
@@ -145,13 +148,21 @@ npm run test:unit -- src/features/learning/LearningSettingsPanel.test.tsx src/fe
 python -m pytest tests/test_worker_quality.py -q
 ```
 
-Latest targeted checks for candidate-review hardening and docs refresh:
+Latest targeted checks for candidate-review hardening, V12 pronunciation fields, TTS ledger, and docs refresh:
 
 ```powershell
 python -m unittest tests.test_worker_quality
 npm run build
 npm run test:ui
 git diff --check
+```
+
+Latest checks for this handoff update:
+
+```powershell
+python -m unittest tests.test_worker_quality
+npm run test:unit
+npm run build
 ```
 
 ## Current Product Decisions
@@ -161,7 +172,7 @@ git diff --check
 - Default document mode is knowledge absorption.
 - Language reading is opt-in under document input.
 - For Qwen3 TTS English cards, prefer `Jennifer` or `Aiden`; `Cherry` remains available but is no longer the default.
-- Use one responsive Anki template family rather than asking the user to choose desktop/mobile templates. The current default for video cards is `沉浸复读 V11`.
+- Use one responsive Anki template family rather than asking the user to choose desktop/mobile templates. The current default for video cards is `沉浸复读 V12`.
 - Do not create isolated dictionary vocabulary cards. Vocabulary cards must be contextual `语境生词卡` tied to an original sentence and scene.
 - Keep Deep Study on by default for model-backed generation, but allow `快速生成` for quick workflow checks.
 - Do not add OCR, RAG, more providers, more templates, or multi-platform packaging until the beta core is steadier.
@@ -171,8 +182,8 @@ git diff --check
 
 The next iteration should focus on the strongest remaining beta gaps:
 
-1. Run a real local video + SRT Deep Study generation using Qwen / DashScope and inspect whether `material_context` improves selected cards.
-2. Continue visually tuning the split Anki template families with real Anki desktop/mobile screenshots.
+1. Run a real local video + SRT Deep Study generation using Qwen / DashScope / Gemini Vertex and inspect whether the new pronunciation fields are useful.
+2. Continue visually tuning the V12 Anki template with real Anki desktop/mobile screenshots, especially long expressions and IPA rows.
 3. Add a real document generate + export + APKG verify smoke test.
 4. Add packaged portable zip smoke to catch release resource issues.
 5. Improve pending-review indicators and mobile screenshots for the split Anki templates.
@@ -197,7 +208,7 @@ Current shipped direction:
 - Video / URL = English context learning.
 - Video / URL now use Deep Study by default: understand material -> review candidates -> write cards.
 - Contextual vocabulary cards are in scope and labeled `语境生词卡`.
-- AI candidate review now has strict `exact_span` / `answer_core` validation and same-sentence max-two learning point arbitration.
+- AI candidate review now has strict `exact_span` / `answer_core` validation, same-sentence grouped learning points, and English pronunciation fields for V12 cards.
 - Document input = knowledge absorption by default.
 - Document input has optional language_reading mode.
 - Two-pane desktop layout stays; do not restore the left Rail.
@@ -235,7 +246,9 @@ Focus on whether the document input path is now genuinely independent from video
 - README / ARCHITECTURE / USER_GUIDE consistency
 - screenshot freshness
 - README / GitHub PR body / repository About description freshness
-- candidate-review hard gates: exact_span, answer_core, source_segment_id max-two arbitration, no revival of AI rejects
+- candidate-review hard gates: exact_span, answer_core, grouped same-sentence learning points, no revival of AI rejects
+- English IPA / connected-speech fields in V12 language cards
+- TTS media ledger and import verification consistency
 
 Please identify any remaining inconsistency between source code, tests, documentation, screenshots, and release behavior.
 Return P0/P1/P2 issues with file paths and concrete fixes.

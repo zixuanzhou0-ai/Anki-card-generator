@@ -1,6 +1,6 @@
 import { Languages } from 'lucide-react'
 
-import type { ContentToggles, GenerateRequest, LanguageFocus, Level } from '../../domain/types'
+import type { ContentToggles, GenerateRequest, LanguageFocus, Level, SelectionStrategy } from '../../domain/types'
 import { languageFocusSummary, normalizeCollectionLevels, studyDepthOptions } from '../../domain/options'
 
 type LevelOption = {
@@ -22,6 +22,13 @@ type LanguageFocusOption = {
   defaultOn: boolean
 }
 
+type SelectionStrategyOption = {
+  id: SelectionStrategy
+  label: string
+  note: string
+  badge: string
+}
+
 type CollectionPreset = 'current' | 'below' | 'around'
 
 type LearningSettingsPanelProps = {
@@ -29,6 +36,7 @@ type LearningSettingsPanelProps = {
   languageFocusOptions: LanguageFocusOption[]
   levels: LevelOption[]
   request: GenerateRequest
+  selectionStrategyOptions: SelectionStrategyOption[]
   onApplyCollectionPreset: (preset: CollectionPreset) => void
   onPatchRequest: (patch: Partial<GenerateRequest>) => void
   onSelectCurrentLevel: (level: Level) => void
@@ -42,6 +50,7 @@ export function LearningSettingsPanel({
   languageFocusOptions,
   levels,
   request,
+  selectionStrategyOptions,
   onApplyCollectionPreset,
   onPatchRequest,
   onSelectCurrentLevel,
@@ -53,6 +62,8 @@ export function LearningSettingsPanel({
   const selectedContentCount = contentOptions.filter((item) => request.content_toggles[item.key]).length
   const focusSummary = languageFocusSummary(request.language_focus)
   const currentLevel = levels.find((level) => level.id === request.level) ?? levels[0]
+  const currentStrategy =
+    selectionStrategyOptions.find((option) => option.id === request.selection_strategy) ?? selectionStrategyOptions[0]
   const segmentBudgetLabel = request.max_segments <= 0 ? '自动片段' : `${request.max_segments} 段`
 
   return (
@@ -60,48 +71,58 @@ export function LearningSettingsPanel({
       <div className="panel-heading">
         <Languages size={20} />
         <div className="panel-title-stack">
-          <h3>学习设置</h3>
-          <span>{`${request.language} · ${request.level} · ${segmentBudgetLabel}`}</span>
+          <h3>学习路径</h3>
+          <span>{`${request.level} · ${currentStrategy?.label ?? '不漏优先'} · ${segmentBudgetLabel}`}</span>
         </div>
       </div>
       <div className="learning-core-card">
-        <div className="learning-setting-row">
+        <div className="learning-setting-row level-picker-row">
           <span>
-            <strong>理解深度</strong>
-            <small>深度理解会先读懂整段素材，再筛选词伙、生词和句型</small>
+            <strong>我的英语水平</strong>
+            <small>{currentLevel ? `${currentLevel.label} · 用来决定解释深度，不再硬过滤学习点` : '控制解释深度和质量判断'}</small>
           </span>
-          <div className="study-depth-toggle" aria-label="理解深度">
-            {studyDepthOptions.map((item) => (
+          <div className="level-strip" aria-label="我的英语水平">
+            {levels.map((level) => (
               <button
                 type="button"
-                key={item.id}
-                className={request.study_depth === item.id ? 'selected' : ''}
-                aria-pressed={request.study_depth === item.id}
-                title={item.note}
-                onClick={() => onPatchRequest({ study_depth: item.id })}
+                key={level.id}
+                className={request.level === level.id ? 'selected' : ''}
+                aria-label={`${level.id}${level.note}`}
+                title={`${level.label} · ${level.note}`}
+                onClick={() => onSelectCurrentLevel(level.id)}
               >
-                <strong>{item.label}</strong>
-                <small>{item.id === 'deep' ? '推荐' : '快'}</small>
+                <strong>{level.id}</strong>
               </button>
             ))}
           </div>
         </div>
-        <label className="learning-setting-row">
+        <div className="learning-setting-row strategy-picker-row">
           <span>
-            <strong>学习语言</strong>
-            <small>生成解释、例句和老师评语时使用</small>
+            <strong>筛选策略</strong>
+            <small>决定生成时少而精，还是优先不漏掉值得学的东西</small>
           </span>
-          <select
-            aria-label="学习语言"
-            value={request.language}
-            onChange={(event) => onPatchRequest({ language: event.target.value })}
-          >
-            <option>English</option>
-            <option>Français</option>
-            <option>Español</option>
-            <option>日本語</option>
-          </select>
-        </label>
+          <div className="selection-strategy-grid" aria-label="筛选策略">
+            {selectionStrategyOptions.map((item) => {
+              const selected = request.selection_strategy === item.id
+              return (
+                <button
+                  type="button"
+                  key={item.id}
+                  className={selected ? 'selected' : ''}
+                  aria-pressed={selected}
+                  title={item.note}
+                  onClick={() => onPatchRequest({ selection_strategy: item.id })}
+                >
+                  <span>
+                    <strong>{item.label}</strong>
+                    <em>{item.badge}</em>
+                  </span>
+                  <small>{item.note}</small>
+                </button>
+              )
+            })}
+          </div>
+        </div>
         <label className="learning-setting-row">
           <span>
             <strong>片段预算</strong>
@@ -132,106 +153,136 @@ export function LearningSettingsPanel({
           </div>
         </label>
       </div>
-      {request.source_mode !== 'document' ? (
-        <details className="compact-details language-focus-panel" open>
-          <summary>
-            <span>学习重点</span>
-            <strong>{focusSummary}</strong>
-          </summary>
-          <div className="focus-choice-grid" aria-label="语言学习重点">
-            {languageFocusOptions.map((item) => {
-              const selected = request.language_focus.includes(item.id)
-              return (
+      <details className="compact-details advanced-learning-options">
+        <summary>
+          <span>高级学习选项</span>
+          <strong>{`${focusSummary} · ${collectionLevels.join('/')}`}</strong>
+        </summary>
+        <div className="advanced-learning-body">
+          <label className="learning-setting-row compact-learning-row">
+            <span>
+              <strong>学习语言</strong>
+              <small>生成解释、例句和老师评语时使用</small>
+            </span>
+            <select
+              aria-label="学习语言"
+              value={request.language}
+              onChange={(event) => onPatchRequest({ language: event.target.value })}
+            >
+              <option>English</option>
+              <option>Français</option>
+              <option>Español</option>
+              <option>日本語</option>
+            </select>
+          </label>
+          <div className="learning-setting-row compact-learning-row">
+            <span>
+              <strong>理解深度</strong>
+              <small>深度理解会先读懂整段素材，再筛选词伙、生词和句型</small>
+            </span>
+            <div className="study-depth-toggle" aria-label="理解深度">
+              {studyDepthOptions.map((item) => (
                 <button
                   type="button"
                   key={item.id}
-                  className={selected ? 'focus-choice selected' : 'focus-choice'}
-                  aria-pressed={selected}
-                  onClick={() => onToggleLanguageFocus(item.id)}
+                  className={request.study_depth === item.id ? 'selected' : ''}
+                  aria-pressed={request.study_depth === item.id}
+                  title={item.note}
+                  onClick={() => onPatchRequest({ study_depth: item.id })}
                 >
                   <strong>{item.label}</strong>
-                  <span>{item.note}</span>
+                  <small>{item.id === 'deep' ? '推荐' : '快'}</small>
                 </button>
-              )
-            })}
+              ))}
+            </div>
           </div>
-        </details>
-      ) : (
-        <div className="document-focus-note">
-          <strong>文档资料</strong>
-          <span>文档会单独按知识点、术语和章节结构制卡，不混入语言素材的词伙 / 听力选择。</span>
-        </div>
-      )}
-      <div className="settings-subheading level-subheading refined-level-heading">
-        <strong>当前水平</strong>
-        <span>{currentLevel ? `${currentLevel.label} · ${currentLevel.note}` : '控制解释深度和质量门槛'}</span>
-      </div>
-      <div className="level-strip" aria-label="当前学习水平">
-        {levels.map((level) => (
-          <button
-            type="button"
-            key={level.id}
-            className={request.level === level.id ? 'selected' : ''}
-            aria-label={`${level.id}${level.note}`}
-            title={`${level.label} · ${level.note}`}
-            onClick={() => onSelectCurrentLevel(level.id)}
-          >
-            <strong>{level.id}</strong>
-          </button>
-        ))}
-      </div>
-      <details className="compact-details inspector-fold level-range-panel" aria-label="收录难度范围">
-        <summary>
-          <span>收录难度范围</span>
-          <strong>{collectionLevels.join(' / ')}</strong>
-        </summary>
-        <div className="level-range-body">
-          <div className="range-actions" aria-label="收录范围快捷设置">
-            <button type="button" onClick={() => onApplyCollectionPreset('current')}>
-              只当前
-            </button>
-            <button type="button" onClick={() => onApplyCollectionPreset('below')}>
-              当前及以下
-            </button>
-            <button type="button" onClick={() => onApplyCollectionPreset('around')}>
-              上下一级
-            </button>
-          </div>
-          <div className="level-range-grid">
-            {levels.map((level) => {
-              const selected = collectionLevels.includes(level.id)
-              return (
+          {request.source_mode !== 'document' ? (
+            <div className="advanced-subsection">
+              <div className="settings-subheading">
+                <strong>学习重点</strong>
+                <span>{focusSummary}</span>
+              </div>
+              <div className="focus-choice-grid" aria-label="语言学习重点">
+                {languageFocusOptions.map((item) => {
+                  const selected = request.language_focus.includes(item.id)
+                  return (
+                    <button
+                      type="button"
+                      key={item.id}
+                      className={selected ? 'focus-choice selected' : 'focus-choice'}
+                      aria-pressed={selected}
+                      onClick={() => onToggleLanguageFocus(item.id)}
+                    >
+                      <strong>{item.label}</strong>
+                      <span>{item.note}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          ) : (
+            <div className="document-focus-note">
+              <strong>文档资料</strong>
+              <span>文档会单独按知识点、术语和章节结构制卡，不混入语言素材的词伙 / 听力选择。</span>
+            </div>
+          )}
+          <div className="advanced-subsection level-range-panel" aria-label="难度关注范围">
+            <div className="settings-subheading">
+              <strong>难度关注范围</strong>
+              <span>{`${collectionLevels.join(' / ')} · 高级调参，不再作为主要硬过滤`}</span>
+            </div>
+            <div className="level-range-body">
+              <div className="range-actions" aria-label="难度关注范围快捷设置">
                 <button
                   type="button"
-                  key={level.id}
-                  className={selected ? 'selected' : ''}
-                  onClick={() => onToggleCollectionLevel(level.id)}
-                  aria-pressed={selected}
+                  onClick={() => onApplyCollectionPreset('current')}
                 >
-                  <strong>{level.id}</strong>
-                  <span>{level.note}</span>
+                  只当前
                 </button>
-              )
-            })}
+                <button type="button" onClick={() => onApplyCollectionPreset('below')}>
+                  当前及以下
+                </button>
+                <button type="button" onClick={() => onApplyCollectionPreset('around')}>
+                  上下一级
+                </button>
+              </div>
+              <div className="level-range-grid">
+                {levels.map((level) => {
+                  const selected = collectionLevels.includes(level.id)
+                  return (
+                    <button
+                      type="button"
+                      key={level.id}
+                      className={selected ? 'selected' : ''}
+                      onClick={() => onToggleCollectionLevel(level.id)}
+                      aria-pressed={selected}
+                    >
+                      <strong>{level.id}</strong>
+                      <span>{level.note}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
           </div>
-        </div>
-      </details>
-      <details className="compact-details content-preferences">
-        <summary>
-          <span>内容偏好</span>
-          <strong>{selectedContentCount} 项已选</strong>
-        </summary>
-        <div className="toggle-grid">
-          {contentOptions.map((item) => (
-            <label className="toggle" key={item.key}>
-              <input
-                type="checkbox"
-                checked={request.content_toggles[item.key]}
-                onChange={() => onToggleContent(item.key)}
-              />
-              <span>{item.label}</span>
-            </label>
-          ))}
+          <div className="advanced-subsection content-preferences">
+            <div className="settings-subheading">
+              <strong>内容偏好</strong>
+              <span>{selectedContentCount} 项已选</span>
+            </div>
+            <div className="toggle-grid">
+              {contentOptions.map((item) => (
+                <label className="toggle" key={item.key}>
+                  <input
+                    type="checkbox"
+                    checked={request.content_toggles[item.key]}
+                    onChange={() => onToggleContent(item.key)}
+                  />
+                  <span>{item.label}</span>
+                </label>
+              ))}
+            </div>
+          </div>
         </div>
       </details>
     </div>

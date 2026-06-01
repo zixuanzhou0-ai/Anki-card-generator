@@ -123,6 +123,23 @@ export function ApiSettingsPanel({
     </button>
   )
 
+  const selectedPreset = [...featuredApiPresets, ...advancedApiPresets].find(isPresetSelected)
+  const providerLabel: Record<Provider, string> = {
+    claude: 'Claude 原生',
+    gemini: 'Gemini 原生',
+    'gemini-vertex': 'Gemini Vertex',
+    local: '本地草稿',
+    mimo: 'MIMO / 小米',
+    'openai-compatible': 'OpenAI-compatible',
+  }
+  const currentModelTitle = selectedPreset?.label ?? providerLabel[apiConfig.provider]
+  const currentModelMeta =
+    apiConfig.provider === 'local'
+      ? '无需 API Key，适合快速预览流程'
+      : apiConfig.provider === 'gemini-vertex'
+        ? `${apiConfig.model || GEMINI_VERTEX_DEFAULT_MODEL} · 使用本机 gcloud OAuth`
+        : `${apiConfig.model || '未填写模型名'} · ${apiConfig.base_url || '原生端点'}`
+
   return (
     <section className="settings-section settings-section-single">
       <div className="panel-heading">
@@ -154,20 +171,6 @@ export function ApiSettingsPanel({
         </div>
       </details>
 
-      <ConnectionTestCard
-        buttonLabel="测试连接"
-        disabled={apiTesting || appBusy}
-        message={apiTestMessage}
-        meta={apiTestMeta}
-        ok={apiTestOk}
-        statusLabel="连接状态"
-        testing={apiTesting}
-        testingLabel="测试中..."
-        title={apiTestTitle}
-        tone={apiTestTone}
-        onTest={onTestApi}
-      />
-
       <div className="settings-subheading">
         <strong>推荐配置</strong>
         <span>普通用户只需要选一个服务商、填 Key、点测试。</span>
@@ -185,7 +188,54 @@ export function ApiSettingsPanel({
         </div>
       ) : null}
 
-      <div className="api-grid">
+      <div className="settings-current-card">
+        <div className="settings-current-main">
+          <span>当前模型方案</span>
+          <strong>{currentModelTitle}</strong>
+          <small>{currentModelMeta}</small>
+        </div>
+        <label className="field settings-key-field">
+          <span>API Key</span>
+          <input
+            type="password"
+            value={apiConfig.api_key}
+            onChange={(event) => onPatchApi({ api_key: event.target.value })}
+            placeholder={
+              apiConfig.provider === 'gemini-vertex'
+                ? '使用本机 gcloud，不需要填写'
+                : apiConfig.provider === 'mimo'
+                  ? 'sk-... / tp-...'
+                  : 'sk-...'
+            }
+          />
+          <small>
+            {apiConfig.provider === 'gemini-vertex'
+              ? 'Vertex 模式通过 gcloud auth print-access-token 静默授权，不保存 OAuth token。'
+              : '只用于字幕理解和卡片解释生成；记住后保存到本机系统凭据 / DPAPI，不写入明文缓存。'}
+          </small>
+        </label>
+        <label className="toggle secret-toggle settings-current-toggle">
+          <input type="checkbox" checked={secretPrefs.rememberModelKey} onChange={onToggleRememberModelKey} />
+          <span>记住本机模型 API Key（系统凭据 / DPAPI 加密）</span>
+        </label>
+      </div>
+
+      <ConnectionTestCard
+        buttonLabel="测试连接"
+        disabled={apiTesting || appBusy}
+        message={apiTestMessage}
+        meta={apiTestMeta}
+        ok={apiTestOk}
+        statusLabel="连接状态"
+        testing={apiTesting}
+        testingLabel="测试中..."
+        title={apiTestTitle}
+        tone={apiTestTone}
+        onTest={onTestApi}
+      />
+
+      {showAdvancedApi ? (
+        <div className="api-grid advanced-config-grid">
         <label className="field">
           <span>Provider</span>
           <select value={apiConfig.provider} onChange={(event) => handleProviderChange(event.target.value as Provider)}>
@@ -262,25 +312,8 @@ export function ApiSettingsPanel({
               : '填模型 ID，不是产品名。比如 deepseek-v4-pro、deepseek-v4-flash、qwen3.7-max。'}
           </small>
         </div>
-        <label className="field">
-          <span>API Key</span>
-          <input
-            type="password"
-            value={apiConfig.api_key}
-            onChange={(event) => onPatchApi({ api_key: event.target.value })}
-            placeholder={apiConfig.provider === 'gemini-vertex' ? '使用本机 gcloud，不需要填写' : apiConfig.provider === 'mimo' ? 'sk-... / tp-...' : 'sk-...'}
-          />
-          <small>
-            {apiConfig.provider === 'gemini-vertex'
-              ? 'Vertex 模式通过 gcloud auth print-access-token 静默授权，不保存 OAuth token。'
-              : '只用于字幕理解和卡片解释生成；记住后保存到本机系统凭据 / DPAPI，不写入明文缓存。'}
-          </small>
-        </label>
-        <label className="toggle secret-toggle">
-          <input type="checkbox" checked={secretPrefs.rememberModelKey} onChange={onToggleRememberModelKey} />
-          <span>记住本机模型 API Key（系统凭据 / DPAPI 加密）</span>
-        </label>
       </div>
+      ) : null}
       <button
         className="capability-heading collapsible-heading"
         type="button"

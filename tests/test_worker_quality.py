@@ -419,7 +419,128 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(project["source_url"], "")
         self.assertEqual(project["video_path"], str(video))
         self.assertEqual(project["subtitle_path"], str(subtitle))
+        self.assertRegex(project["source_info"]["video_fingerprint"], r"^[0-9a-f]{24}$")
+        self.assertRegex(project["source_info"]["subtitle_fingerprint"], r"^[0-9a-f]{24}$")
         self.assertTrue(any("Local only line" in segment["text"] for segment in project["segments"]))
+
+    def test_catch_all_groups_multiple_learning_points_from_one_sentence(self):
+        cues = [worker.Cue(1, 0.0, 4.0, "Ever want me to run the register, I could critique it for you.")]
+        segments = worker.build_segments(
+            cues,
+            {
+                "level": "C2",
+                "selection_strategy": "catch_all",
+                "collection_levels": ["A1", "A2", "B1", "B2", "C1", "C2"],
+                "language_focus": ["phrases", "vocabulary", "grammar", "listening"],
+                "card_types": ["phrase", "listening"],
+                "content_toggles": {"daily": True},
+                "max_segments": 1,
+                "_candidate_limit": 12,
+            },
+        )
+        grouped = worker.group_segments_by_learning_points(segments)
+
+        self.assertEqual(len(grouped), 1)
+        point_labels = {point["answer_core"].lower() for point in grouped[0]["learning_points"]}
+        self.assertIn("run the register", point_labels)
+        self.assertIn("register", point_labels)
+        self.assertIn("ever want me to", point_labels)
+        self.assertGreaterEqual(len(grouped[0]["learning_points"]), 3)
+
+    def test_merge_ai_cards_preserves_multiple_same_type_learning_points(self):
+        cues = [worker.Cue(1, 0.0, 2.5, "I'm gonna run the register.")]
+        grouped = worker.group_segments_by_learning_points(
+            worker.build_segments(
+                cues,
+                {
+                    "level": "C2",
+                    "selection_strategy": "catch_all",
+                    "collection_levels": ["A1", "A2", "B1", "B2", "C1", "C2"],
+                    "language_focus": ["phrases", "vocabulary", "grammar", "listening"],
+                    "card_types": ["phrase"],
+                    "content_toggles": {"daily": True},
+                    "max_segments": 1,
+                    "_candidate_limit": 12,
+                },
+            )
+        )
+        segment = grouped[0]
+        expression_point = next(point for point in segment["learning_points"] if point["answer_core"] == "run the register")
+        vocab_point = next(point for point in segment["learning_points"] if point["answer_core"] == "register")
+        ai_payload = {
+            "segments": [
+                {
+                    "id": segment["id"],
+                    "cards": [
+                        {
+                            "type": "phrase",
+                            "learning_point_id": expression_point["id"],
+                            "candidate_kind": "expression",
+                            "phrase_type": "collocation",
+                            "content_kind": "phrase",
+                            "exact_span": "run the register",
+                            "normalized_answer": "run the register",
+                            "answer_core": "run the register",
+                            "phrase": "run the register",
+                            "chinese": "负责收银",
+                            "definition": "在店里负责操作收银机。",
+                            "collocations": "run the register today",
+                            "context": "服务业工作场景。",
+                            "example": "Can you run the register for a minute?",
+                            "chinese_feel": "我来收银。",
+                            "why": "地道职场口语。",
+                            "difficulty": "B2 独立表达",
+                            "teacher_note": "不要直译成运行登记表。",
+                            "cloze": "I'm gonna ____.",
+                            "learning_target": "训练服务业场景表达。",
+                            "why_it_matters": "避免用 work as a cashier 的书面说法。",
+                            "how_to_use_it": "用在接手收银任务时。",
+                            "natural_chinese": "我来负责收银。",
+                            "replacement_examples": "I'll run the register for a while.",
+                            "retrieval_prompt": "这句里表示“负责收银”的自然表达是什么？",
+                            "usage_boundary": "适合商店、餐厅收银场景。",
+                            "confusable_note": "register 这里是收银机，不是注册。",
+                        },
+                        {
+                            "type": "phrase",
+                            "learning_point_id": vocab_point["id"],
+                            "candidate_kind": "contextual_vocab",
+                            "phrase_type": "vocabulary_usage",
+                            "content_kind": "vocabulary",
+                            "exact_span": "register",
+                            "normalized_answer": "register",
+                            "answer_core": "register",
+                            "phrase": "register",
+                            "chinese": "收银机 / 收银台",
+                            "definition": "register 在这里指店里的收银设备或收银台。",
+                            "collocations": "at the register / behind the register",
+                            "context": "零售或餐饮结账场景。",
+                            "example": "Meet me at the register.",
+                            "chinese_feel": "收银台。",
+                            "why": "同一个词在服务业语境里不是注册。",
+                            "difficulty": "B1 日常交流",
+                            "teacher_note": "看上下文判断 register 的场景义。",
+                            "cloze": "I'm gonna run the ____.",
+                            "learning_target": "训练 register 的语境词义。",
+                            "why_it_matters": "避免把 register 误解成登记。",
+                            "how_to_use_it": "用在商店、柜台、结账场景。",
+                            "natural_chinese": "我来负责收银。",
+                            "replacement_examples": "The receipt is at the register.",
+                            "retrieval_prompt": "register 在这句里是什么意思？",
+                            "usage_boundary": "在结账场景才这样理解。",
+                            "confusable_note": "不要默认理解成动词“注册”。",
+                        },
+                    ],
+                }
+            ]
+        }
+
+        merged, _ = worker.merge_ai_cards(grouped, ai_payload, ["phrase"], "C2")
+        phrases = {card["phrase"] for card in merged[0]["cards"]}
+
+        self.assertIn("run the register", phrases)
+        self.assertIn("register", phrases)
+        self.assertEqual(len([card for card in merged[0]["cards"] if card["type"] == "phrase"]), 2)
 
     def test_try_run_ffmpeg_returns_error_instead_of_exiting(self):
         original_which = worker.shutil.which
@@ -502,7 +623,7 @@ class WorkerQualityTests(unittest.TestCase):
             template = model["tmpls"][0]
             field_names = [field["name"] for field in model["flds"]]
 
-            self.assertIn("沉浸复读 V11", model["name"])
+            self.assertIn("沉浸复读 V12", model["name"])
             self.assertIn("v11-front-copy", template["qfmt"])
             self.assertIn("{{FrontPrompt}}", template["qfmt"])
             self.assertIn("慢读", template["qfmt"])
@@ -517,6 +638,11 @@ class WorkerQualityTests(unittest.TestCase):
             self.assertIn("CardVisualRole", field_names)
             self.assertIn("FrontKicker", field_names)
             self.assertIn("SourceLabel", field_names)
+            self.assertIn("PhoneticIpa", field_names)
+            self.assertIn("SpokenIpa", field_names)
+            self.assertIn("SourceSpokenIpa", field_names)
+            self.assertIn("PronunciationNote", field_names)
+            self.assertIn("标准 IPA", template["afmt"])
 
     def test_export_phrase_tts_matches_visible_answer_for_repetition_cards(self):
         try:
@@ -594,6 +720,15 @@ class WorkerQualityTests(unittest.TestCase):
             self.assertEqual(captured[1], "Ever want me to")
             self.assertNotIn("critique it", captured)
             self.assertEqual(result["media_summary"]["phrase_tts_files"], 1)
+            ledger = result["media_ledger"]
+            phrase_entries = [item for item in ledger if item["role"] == "phrase_tts"]
+            sentence_entries = [item for item in ledger if item["role"] == "sentence_tts"]
+            self.assertEqual(phrase_entries[0]["tts_text"], "Ever want me to")
+            self.assertIn(phrase_entries[0]["text_hash"], phrase_entries[0]["file"])
+            self.assertEqual(sentence_entries[0]["tts_text"], "Ever want me to read anything, I could critique it for you.")
+            self.assertIn(sentence_entries[0]["text_hash"], sentence_entries[0]["file"])
+            manifest_entry = result["media_manifest"][phrase_entries[0]["file"]]
+            self.assertEqual(manifest_entry["role"], "phrase_tts")
 
     def test_worker_fail_emits_machine_readable_error(self):
         from acg.protocol import ERROR_PREFIX, fail
@@ -1583,7 +1718,7 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertLess(kept[0]["media_end"], 112.18)
         self.assertLessEqual(kept[0]["media_end"] - kept[0]["media_start"], 6.25)
 
-    def test_phrase_review_rejects_explanatory_answer_core(self):
+    def test_phrase_review_repairs_explanatory_answer_core(self):
         segment = {
             "id": "seg_0001",
             "start": 0.0,
@@ -1612,9 +1747,10 @@ class WorkerQualityTests(unittest.TestCase):
 
         kept, skipped = worker.apply_phrase_review_decisions([segment], reviews, {"level": "B1"})
 
-        self.assertEqual(kept, [])
-        self.assertEqual(skipped[0]["phrase_review_status"], "reject")
-        self.assertIn("answer_core", skipped[0]["phrase_reject_reason"])
+        self.assertEqual(skipped, [])
+        self.assertEqual(kept[0]["answer_core"], "run the register")
+        self.assertEqual(kept[0]["validation_status"], "repaired")
+        self.assertIn("answer_core", kept[0]["validation_issues"])
 
     def test_phrase_review_rejects_exact_span_outside_source_sentence(self):
         segment = {
@@ -1975,6 +2111,9 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("禁止在 answer_core 写中文释义、IPA、发音融合、连读说明", prompt)
         self.assertIn("usage_boundary", prompt)
         self.assertIn("confusable_note", prompt)
+        self.assertIn("phonetic_ipa", prompt)
+        self.assertIn("spoken_ipa", prompt)
+        self.assertIn("source_spoken_ipa", prompt)
         self.assertIn("这句里表示某个中文意思的自然表达是什么", prompt)
         self.assertIn("typed learning point", prompt)
         self.assertIn("某个词在这句里是什么意思/怎么用", prompt)
@@ -2022,7 +2161,7 @@ class WorkerQualityTests(unittest.TestCase):
         knowledge = worker.anki_template_assets("immersive", "document_knowledge")
         reading = worker.anki_template_assets("immersive", "document_reading")
 
-        self.assertEqual(v11[0], "沉浸复读 V11")
+        self.assertEqual(v11[0], "沉浸复读 V12")
         self.assertIn("v11-video-stage", v11[2])
         self.assertIn("playV11Audio", v11[2] + v11[3])
         self.assertIn("toggleV11Video", v11[2] + v11[3])
@@ -2041,6 +2180,8 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("v11-answer-title.is-long", v11[1])
         self.assertIn("setupV11TextSizing", v11[2] + v11[3])
         self.assertIn("{{#ChineseFeel}}<p class=\"v11-answer-note\">{{ChineseFeel}}</p>{{/ChineseFeel}}", v11[3])
+        self.assertIn("{{#PhoneticIpa}}", v11[3])
+        self.assertIn("口语读法", v11[3])
         self.assertNotIn("overflow-wrap: anywhere", v11[1])
         self.assertIn("white-space: pre-line", v11[1])
         self.assertNotIn("<audio controls", v11[2] + v11[3])

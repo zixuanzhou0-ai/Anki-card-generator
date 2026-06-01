@@ -1,4 +1,13 @@
-import type { ApiConfig, GenerateRequest, Level, Project, SecretPrefs, TtsConfig, TtsProvider, UrlImportMode } from '../domain/types'
+import type {
+  ApiConfig,
+  GenerateRequest,
+  Level,
+  Project,
+  SecretPrefs,
+  TtsConfig,
+  TtsProvider,
+  UrlImportMode,
+} from '../domain/types'
 import {
   DEEPSEEK_DEFAULT_MODEL,
   DEEPSEEK_OPENAI_BASE_URL,
@@ -11,6 +20,7 @@ import {
   normalizeDocumentFocus,
   normalizeDocumentStudyMode,
   normalizeLanguageFocus,
+  normalizeSelectionStrategy,
   normalizeStudyDepth,
   PROJECT_STORAGE_KEY,
   REQUEST_STORAGE_KEY,
@@ -89,41 +99,49 @@ export function loadSavedRequest(): GenerateRequest {
     const legacyTtsProvider = savedApi.tts_provider?.trim()
     const legacyTtsModel = savedApi.tts_model?.trim()
     const documentStudyMode = normalizeDocumentStudyMode(saved.document_study_mode)
-    return stripRequestSecrets(normalizeSavedApiConfig({
-      ...defaultRequest,
-      ...saved,
-      template_id: 'immersive_v11',
-      url_import_mode: (saved.url_import_mode ?? defaultRequest.url_import_mode) as UrlImportMode,
-      url_auto_subtitle_fallback: saved.url_auto_subtitle_fallback ?? defaultRequest.url_auto_subtitle_fallback,
-      skip_video_slicing: saved.skip_video_slicing ?? defaultRequest.skip_video_slicing,
-      collection_levels: normalizeCollectionLevels(saved.collection_levels, (saved.level ?? defaultRequest.level) as Level),
-      content_toggles: {
-        ...defaultRequest.content_toggles,
-        ...(saved.content_toggles ?? {}),
-      },
-      language_focus:
-        documentStudyMode === 'language_reading'
-          ? normalizeDocumentLanguageFocus(saved.language_focus)
-          : normalizeLanguageFocus(saved.language_focus),
-      document_focus: normalizeDocumentFocus(saved.document_focus),
-      document_study_mode: documentStudyMode,
-      document_answer_language: normalizeDocumentAnswerLanguage(saved.document_answer_language),
-      document_depth: normalizeDocumentDepth(saved.document_depth),
-      document_answer_length: normalizeDocumentAnswerLength(saved.document_answer_length),
-      study_depth: normalizeStudyDepth(saved.study_depth),
-      api_config: {
-        ...defaultRequest.api_config,
-        ...savedApi,
-        tts_config: {
-          ...defaultRequest.api_config.tts_config,
-          ...savedTts,
-          provider: (savedTts.provider ?? legacyTtsProvider ?? defaultRequest.api_config.tts_config.provider) as TtsProvider,
-          voice: savedTts.voice ?? legacyTtsModel ?? defaultRequest.api_config.tts_config.voice,
-          enabled: savedTts.enabled ?? Boolean(legacyTtsProvider),
+    return stripRequestSecrets(
+      normalizeSavedApiConfig({
+        ...defaultRequest,
+        ...saved,
+        template_id: 'immersive_v11',
+        url_import_mode: (saved.url_import_mode ?? defaultRequest.url_import_mode) as UrlImportMode,
+        url_auto_subtitle_fallback: saved.url_auto_subtitle_fallback ?? defaultRequest.url_auto_subtitle_fallback,
+        skip_video_slicing: saved.skip_video_slicing ?? defaultRequest.skip_video_slicing,
+        collection_levels: normalizeCollectionLevels(
+          saved.collection_levels,
+          (saved.level ?? defaultRequest.level) as Level,
+        ),
+        content_toggles: {
+          ...defaultRequest.content_toggles,
+          ...(saved.content_toggles ?? {}),
         },
-      },
-      card_types: saved.card_types?.length ? saved.card_types : defaultRequest.card_types,
-    }))
+        language_focus:
+          documentStudyMode === 'language_reading'
+            ? normalizeDocumentLanguageFocus(saved.language_focus)
+            : normalizeLanguageFocus(saved.language_focus),
+        document_focus: normalizeDocumentFocus(saved.document_focus),
+        document_study_mode: documentStudyMode,
+        document_answer_language: normalizeDocumentAnswerLanguage(saved.document_answer_language),
+        document_depth: normalizeDocumentDepth(saved.document_depth),
+        document_answer_length: normalizeDocumentAnswerLength(saved.document_answer_length),
+        study_depth: normalizeStudyDepth(saved.study_depth),
+        selection_strategy: normalizeSelectionStrategy(saved.selection_strategy),
+        api_config: {
+          ...defaultRequest.api_config,
+          ...savedApi,
+          tts_config: {
+            ...defaultRequest.api_config.tts_config,
+            ...savedTts,
+            provider: (savedTts.provider ??
+              legacyTtsProvider ??
+              defaultRequest.api_config.tts_config.provider) as TtsProvider,
+            voice: savedTts.voice ?? legacyTtsModel ?? defaultRequest.api_config.tts_config.voice,
+            enabled: savedTts.enabled ?? Boolean(legacyTtsProvider),
+          },
+        },
+        card_types: saved.card_types?.length ? saved.card_types : defaultRequest.card_types,
+      }),
+    )
   } catch {
     return defaultRequest
   }
@@ -137,7 +155,7 @@ export function loadSavedProject(): Project | null {
     const saved = JSON.parse(raw) as Project
     if (!saved || !Array.isArray(saved.segments) || saved.segments.length === 0) return null
     const documentStudyMode = normalizeDocumentStudyMode(saved.document_study_mode)
-    return {
+    const project: Project = {
       ...saved,
       template_id: 'immersive_v11',
       source_mode: saved.source_mode ?? 'local',
@@ -151,15 +169,76 @@ export function loadSavedProject(): Project | null {
       document_depth: normalizeDocumentDepth(saved.document_depth),
       document_answer_length: normalizeDocumentAnswerLength(saved.document_answer_length),
       study_depth: normalizeStudyDepth(saved.study_depth),
+      selection_strategy: normalizeSelectionStrategy(saved.selection_strategy),
       material_context: saved.material_context ?? null,
       segments: saved.segments.map((segment) => ({
         ...segment,
         cards: Array.isArray(segment.cards) ? segment.cards : [],
       })),
     }
+    return project
   } catch {
     return null
   }
+}
+
+function normalizeMaterialPath(value: unknown) {
+  return String(value ?? '')
+    .trim()
+    .replace(/^["']|["']$/g, '')
+    .replace(/\//g, '\\')
+    .toLocaleLowerCase()
+}
+
+function normalizeMaterialUrl(value: unknown) {
+  return String(value ?? '').trim()
+}
+
+function projectSourceMode(project: Project) {
+  if (project.source_mode) return project.source_mode
+  if (project.source_url) return 'url'
+  if (project.document_path) return 'document'
+  return 'local'
+}
+
+export function projectMatchesRequest(project: Project, request: GenerateRequest) {
+  const sourceInfo = project.source_info ?? {}
+  if (projectSourceMode(project) !== request.source_mode) return false
+
+  if (request.source_mode === 'url') {
+    const requestUrl = normalizeMaterialUrl(request.source_url)
+    const projectUrl = normalizeMaterialUrl(
+      project.source_url || ('webpage_url' in sourceInfo ? sourceInfo.webpage_url : ''),
+    )
+    return Boolean(requestUrl && projectUrl && requestUrl === projectUrl)
+  }
+
+  if (request.source_mode === 'document') {
+    const requestDocumentPath = normalizeMaterialPath(request.document_path)
+    const projectDocumentPath = normalizeMaterialPath(
+      project.document_path || ('document_path' in sourceInfo ? sourceInfo.document_path : ''),
+    )
+    return Boolean(requestDocumentPath && projectDocumentPath && requestDocumentPath === projectDocumentPath)
+  }
+
+  const requestVideoPath = normalizeMaterialPath(request.video_path)
+  const projectVideoPath = normalizeMaterialPath(
+    project.video_path || ('video_path' in sourceInfo ? sourceInfo.video_path : ''),
+  )
+  if (!requestVideoPath || !projectVideoPath || requestVideoPath !== projectVideoPath) return false
+
+  const requestSubtitlePath = normalizeMaterialPath(request.subtitle_path)
+  const projectSubtitlePath = normalizeMaterialPath(
+    project.subtitle_path || ('subtitle_path' in sourceInfo ? sourceInfo.subtitle_path : ''),
+  )
+  if (requestSubtitlePath && projectSubtitlePath && requestSubtitlePath !== projectSubtitlePath) return false
+
+  return true
+}
+
+export function loadSavedProjectForRequest(request: GenerateRequest): Project | null {
+  const project = loadSavedProject()
+  return project && projectMatchesRequest(project, request) ? project : null
 }
 
 export function loadSecretPrefs(): SecretPrefs {

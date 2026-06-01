@@ -7,6 +7,7 @@ import type {
   GenerateRequest,
   LanguageFocus,
   Level,
+  SelectionStrategy,
   SourceMode,
   TemplateId,
   WorkerProgress,
@@ -38,6 +39,13 @@ type LanguageFocusOption = {
   label: string
   note: string
   defaultOn: boolean
+}
+
+type SelectionStrategyOption = {
+  id: SelectionStrategy
+  label: string
+  note: string
+  badge: string
 }
 
 type DocumentFocusOption = {
@@ -79,6 +87,7 @@ type InspectorPanelProps = {
   statusTone: string
   templateId: TemplateId
   templateOptions: TemplateOption[]
+  selectionStrategyOptions: SelectionStrategyOption[]
   workerBusy: boolean
   workerErrorActions: WorkerErrorAction[]
   workerProgress: WorkerProgress | null
@@ -114,6 +123,7 @@ export function InspectorPanel({
   statusTone,
   templateId,
   templateOptions,
+  selectionStrategyOptions,
   workerBusy,
   workerErrorActions,
   workerProgress,
@@ -181,6 +191,7 @@ export function InspectorPanel({
             languageFocusOptions={languageFocusOptions}
             levels={levels}
             request={request}
+            selectionStrategyOptions={selectionStrategyOptions}
             onApplyCollectionPreset={onApplyCollectionPreset}
             onPatchRequest={onPatchRequest}
             onSelectCurrentLevel={onSelectCurrentLevel}

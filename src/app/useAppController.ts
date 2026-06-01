@@ -63,6 +63,7 @@ import {
   PROJECT_STORAGE_KEY,
   REQUEST_STORAGE_KEY,
   SECRET_PREFS_STORAGE_KEY,
+  selectionStrategyOptions,
   templateOptions,
 } from '../domain/options'
 import { applyCardSelection, badgeText, isRecommendedCardForExport, segmentMatchesFilter } from '../domain/quality'
@@ -86,7 +87,13 @@ import {
   validateApiConfigForRequest,
   validateTtsConfigForRequest,
 } from '../services/apiConfig'
-import { loadSavedProject, loadSavedRequest, loadSecretPrefs, stripRequestSecrets } from '../services/projectStorage'
+import {
+  loadSavedProjectForRequest,
+  loadSavedRequest,
+  loadSecretPrefs,
+  projectMatchesRequest,
+  stripRequestSecrets,
+} from '../services/projectStorage'
 import {
   cancelWorkerJob,
   deleteSecret,
@@ -127,8 +134,9 @@ function touchesSourceMaterial(patch: Partial<GenerateRequest>) {
 }
 
 export function useAppController() {
-  const [request, setRequest] = useState<GenerateRequest>(() => loadSavedRequest())
-  const [project, setProject] = useState<Project | null>(() => loadSavedProject())
+  const initialRequest = useMemo(() => loadSavedRequest(), [])
+  const [request, setRequest] = useState<GenerateRequest>(initialRequest)
+  const [project, setProject] = useState<Project | null>(() => loadSavedProjectForRequest(initialRequest))
   const [envStatus, setEnvStatus] = useState<EnvStatus | null>(null)
   const [status, setStatus] = useState('准备生成 Anki 卡片。')
   const [busy, setBusy] = useState(false)
@@ -399,6 +407,22 @@ export function useAppController() {
   }, [project])
 
   useEffect(() => {
+    if (!project || projectMatchesRequest(project, request)) return
+    setProject(null)
+    setLastExport(null)
+    setAnkiVerifyResult(null)
+    setActiveSegmentId(null)
+    setStatus('已清理与当前素材不匹配的旧项目结果，请用当前本地视频重新生成。')
+  }, [
+    project,
+    request.source_mode,
+    request.source_url,
+    request.video_path,
+    request.subtitle_path,
+    request.document_path,
+  ])
+
+  useEffect(() => {
     if (!project) {
       setActiveSegmentId(null)
       return
@@ -642,7 +666,20 @@ export function useAppController() {
     setProject(null)
     setActiveSegmentId(null)
     setWorkerProgress(null)
-    patchRequest({ source_mode: mode, card_types: nextCardTypes })
+    const sourcePatch: Partial<GenerateRequest> = { source_mode: mode, card_types: nextCardTypes }
+    if (mode === 'local') {
+      sourcePatch.source_url = ''
+      sourcePatch.document_path = ''
+    } else if (mode === 'url') {
+      sourcePatch.video_path = ''
+      sourcePatch.subtitle_path = ''
+      sourcePatch.document_path = ''
+    } else {
+      sourcePatch.source_url = ''
+      sourcePatch.video_path = ''
+      sourcePatch.subtitle_path = ''
+    }
+    patchRequest(sourcePatch)
     setStatus(
       mode === 'url'
         ? '已切换到视频链接模式，请粘贴 YouTube 或视频 URL。'
@@ -734,9 +771,9 @@ export function useAppController() {
         ? '已关闭 TTS，导出时只使用视频原声音频。'
         : usesLocalVertexAuth
           ? `已套用 ${preset.label}，会使用本机 gcloud / Vertex AI 授权；建议先测试 TTS。`
-        : shouldReuseMainMimoKey || shouldReuseMainQwenKey
-          ? `已套用 ${preset.label}，会复用上方同服务商 API Key；建议先测试 TTS。`
-          : `已套用 ${preset.label}，请填写对应 API Key 后测试 TTS。`,
+          : shouldReuseMainMimoKey || shouldReuseMainQwenKey
+            ? `已套用 ${preset.label}，会复用上方同服务商 API Key；建议先测试 TTS。`
+            : `已套用 ${preset.label}，请填写对应 API Key 后测试 TTS。`,
     )
   }
 
@@ -1342,12 +1379,32 @@ export function useAppController() {
       return
     }
     if (actionId === 'use-subtitle-only') {
-      patchRequest({
-        source_mode: 'url',
-        url_import_mode: 'subtitles',
-        skip_video_slicing: true,
-        url_auto_subtitle_fallback: true,
-      })
+      if (request.source_mode === 'local') {
+        patchRequest({
+          source_mode: 'local',
+          source_url: '',
+          document_path: '',
+          skip_video_slicing: true,
+        })
+        setLastWorkerError(null)
+        setStatus('已切换到本地字幕-only：下次生成仍使用当前本地视频/SRT，不会跳到视频链接。')
+        return
+      }
+      patchRequest(
+        request.source_mode === 'url'
+          ? {
+              source_mode: 'url',
+              video_path: '',
+              subtitle_path: '',
+              document_path: '',
+              url_import_mode: 'subtitles',
+              skip_video_slicing: true,
+              url_auto_subtitle_fallback: true,
+            }
+          : {
+              skip_video_slicing: true,
+            },
+      )
       setLastWorkerError(null)
       setStatus('已切换到字幕-only：下次生成会跳过视频下载和切片，只用字幕继续制卡。')
       return
@@ -1446,6 +1503,7 @@ export function useAppController() {
     revealExport,
     runWindowAction,
     secretPrefs,
+    selectionStrategyOptions,
     segmentFilter,
     segmentReviewCounts,
     selectedCardCount,

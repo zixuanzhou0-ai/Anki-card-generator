@@ -63,6 +63,7 @@ export function SegmentDetail({
   const isReading = isDocumentReadingSegment(segment, documentStudyMode)
   const knowledgeCard = segment.cards.find((card) => card.type === 'knowledge') ?? segment.cards[0]
   const knowledgeType = knowledgeTypeLabel(segment.knowledge_type ?? knowledgeCard?.knowledge_type)
+  const learningPoints = Array.isArray(segment.learning_points) ? segment.learning_points : []
   return (
     <div className="segment-detail">
       <div className="segment-toolbar">
@@ -119,6 +120,19 @@ export function SegmentDetail({
           <strong>{segmentPhraseLabel(segment, documentStudyMode)}</strong>
         </div>
       </div>
+
+      {learningPoints.length > 1 ? (
+        <div className="learning-point-strip" aria-label="本句学习点">
+          <span>本句 {learningPoints.length} 个学习点</span>
+          <div>
+            {learningPoints.map((point) => (
+              <em key={point.id}>
+                {candidateKindLabel(point.kind) || point.content_kind || '学习点'} · {point.answer_core || point.exact_span}
+              </em>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       {isKnowledge && knowledgeCard ? (
         <div className={`phrase-review-panel status-${segmentReviewStatus(segment)}`}>
@@ -294,6 +308,14 @@ function CardEditor({ card, documentStudyMode, motionDuration, prefersReducedMot
             </p>
           ) : null}
           {card.phrase_card_focus ? <strong>训练点：{card.phrase_card_focus}</strong> : null}
+          {card.phonetic_ipa || card.spoken_ipa || card.source_spoken_ipa ? (
+            <p>
+              {[card.phonetic_ipa ? `标准 IPA：${card.phonetic_ipa}` : '', card.spoken_ipa ? `口语：${card.spoken_ipa}` : '', card.source_spoken_ipa ? `原句：${card.source_spoken_ipa}` : '']
+                .filter(Boolean)
+                .join(' · ')}
+            </p>
+          ) : null}
+          {card.pronunciation_note ? <p>听点：{card.pronunciation_note}</p> : null}
           {whyItMatters ? <p>为什么值得学：{whyItMatters}</p> : null}
           {howToUseIt ? <p>怎么用：{howToUseIt}</p> : null}
           {card.phrase_decision_reason ? <p>推荐理由：{card.phrase_decision_reason}</p> : null}
@@ -319,6 +341,41 @@ function CardEditor({ card, documentStudyMode, motionDuration, prefersReducedMot
             }
           />
         </label>
+        {!isKnowledgeCard ? (
+          <>
+            <label>
+              标准 IPA
+              <textarea
+                value={card.phonetic_ipa ?? ''}
+                onChange={(event: ChangeEvent<HTMLTextAreaElement>) =>
+                  onUpdateCard(segment.id, card.id, { phonetic_ipa: event.target.value })
+                }
+              />
+            </label>
+            <label>
+              口语读法 IPA
+              <textarea
+                value={card.spoken_ipa ?? ''}
+                onChange={(event: ChangeEvent<HTMLTextAreaElement>) =>
+                  onUpdateCard(segment.id, card.id, { spoken_ipa: event.target.value })
+                }
+              />
+            </label>
+            <label>
+              原句听感 / 听点
+              <textarea
+                value={[card.source_spoken_ipa ?? '', card.pronunciation_note ?? ''].filter(Boolean).join('\n')}
+                onChange={(event: ChangeEvent<HTMLTextAreaElement>) => {
+                  const [source_spoken_ipa, ...rest] = event.target.value.split('\n')
+                  onUpdateCard(segment.id, card.id, {
+                    source_spoken_ipa,
+                    pronunciation_note: rest.join('\n'),
+                  })
+                }}
+              />
+            </label>
+          </>
+        ) : null}
         <label>
           释义 / 搭配
           <textarea

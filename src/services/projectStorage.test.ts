@@ -11,7 +11,13 @@ import {
   REQUEST_STORAGE_KEY,
   SECRET_PREFS_STORAGE_KEY,
 } from '../domain/options'
-import { loadSavedProject, loadSavedRequest, loadSecretPrefs } from './projectStorage'
+import {
+  loadSavedProject,
+  loadSavedProjectForRequest,
+  loadSavedRequest,
+  loadSecretPrefs,
+  projectMatchesRequest,
+} from './projectStorage'
 
 describe('projectStorage document focus migration', () => {
   beforeEach(() => {
@@ -145,6 +151,90 @@ describe('projectStorage document focus migration', () => {
     const project = loadSavedProject()
     expect(project?.language_focus).toEqual(['phrases'])
     expect(project?.source_info).toMatchObject({ document_study_mode: 'language_reading' })
+  })
+
+  it('drops a saved URL project when the current request is local video', () => {
+    window.localStorage.setItem(
+      PROJECT_STORAGE_KEY,
+      JSON.stringify({
+        ...defaultRequest,
+        id: 'old-url-project',
+        source_mode: 'url',
+        source_url: 'https://www.youtube.com/watch?v=old',
+        source_info: { webpage_url: 'https://www.youtube.com/watch?v=old' },
+        video_path:
+          'C:\\Users\\Administrator\\AppData\\Local\\com.ankicard.generator\\projects\\url_cache\\old\\source.mp4',
+        subtitle_path:
+          'C:\\Users\\Administrator\\AppData\\Local\\com.ankicard.generator\\projects\\url_cache\\old\\source.en.srt',
+        segments: [
+          {
+            id: 'seg_0001',
+            start: 1,
+            end: 2,
+            source_time: '00:00:01.000 - 00:00:02.000',
+            text: 'old URL card',
+            duration: 1,
+            recommendation: 4,
+            phrase: 'old URL card',
+            cards: [],
+          },
+        ],
+        created_at: 1,
+      }),
+    )
+
+    expect(
+      loadSavedProjectForRequest({
+        ...defaultRequest,
+        source_mode: 'local',
+        video_path: 'E:\\Videos\\episode.mp4',
+        subtitle_path: 'E:\\Videos\\episode.srt',
+      }),
+    ).toBeNull()
+  })
+
+  it('keeps a saved local project only for the same local video', () => {
+    const project = {
+      ...defaultRequest,
+      id: 'local-project',
+      source_mode: 'local' as const,
+      source_info: {
+        video_path: 'E:\\Videos\\episode.mp4',
+        subtitle_path: 'E:\\Videos\\episode.srt',
+      },
+      video_path: 'E:\\Videos\\episode.mp4',
+      subtitle_path: 'E:\\Videos\\episode.srt',
+      segments: [
+        {
+          id: 'seg_0001',
+          start: 1,
+          end: 2,
+          source_time: '00:00:01.000 - 00:00:02.000',
+          text: 'same local card',
+          duration: 1,
+          recommendation: 4,
+          phrase: 'same local card',
+          cards: [],
+        },
+      ],
+      created_at: 1,
+    }
+    window.localStorage.setItem(PROJECT_STORAGE_KEY, JSON.stringify(project))
+
+    const matchingRequest = {
+      ...defaultRequest,
+      source_mode: 'local' as const,
+      video_path: 'E:\\Videos\\episode.mp4',
+      subtitle_path: '',
+    }
+    const otherRequest = {
+      ...matchingRequest,
+      video_path: 'E:\\Videos\\other.mp4',
+    }
+
+    expect(loadSavedProjectForRequest(matchingRequest)?.id).toBe('local-project')
+    expect(projectMatchesRequest(project, matchingRequest)).toBe(true)
+    expect(projectMatchesRequest(project, otherRequest)).toBe(false)
   })
 
   it('keeps secret persistence opt-in for browser previews', () => {

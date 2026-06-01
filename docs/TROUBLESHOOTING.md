@@ -95,7 +95,7 @@ The exporter generates two different AI audio fields:
 - Sentence TTS reads the full `English` source sentence.
 - Phrase TTS reads the visible core answer, normally `answer_core` or the cleaned phrase.
 
-If the phrase audio sounds unrelated, inspect the card in the review panel before export. The core answer must be the English expression only. Chinese meaning, IPA, pronunciation explanations, and teacher notes belong in the explanation fields, not in `answer_core`. The worker now rejects AI-reviewed candidates with mixed-language `answer_core`, but manually edited cards can still be made confusing if the answer field is overwritten with notes.
+If the phrase audio sounds unrelated, inspect the card in the review panel before export. The core answer must be the English expression only. Chinese meaning, IPA, pronunciation explanations, and teacher notes belong in `phonetic_ipa`, `spoken_ipa`, `source_spoken_ipa`, `pronunciation_note`, or explanation fields, not in `answer_core`. The worker now repairs or rejects mixed-language `answer_core`, and export writes a `media_ledger` so TTS files can be traced back to the segment, card, learning point, and text hash.
 
 ## TTS Sounds Slow or Unnatural
 
@@ -120,7 +120,7 @@ Check:
 - The export path ends in `.apkg`.
 - Anki is installed if you want the app to open the package directly.
 - The generated APKG passes `workers/verify_apkg.py`.
-- The import verifier is looking for the correct template tag: V10 packages use `anki_card_generator_v10`; V11 packages use `anki_card_generator_v11`.
+- The import verifier is looking for the correct template tag: V10 packages use `anki_card_generator_v10`; V12 language packages use `anki_card_generator_v12`.
 
 Release smoke output includes `verify_apkg.json`, which is the fastest way to inspect missing cards, media files, or template problems.
 

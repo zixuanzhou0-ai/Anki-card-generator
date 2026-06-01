@@ -85,18 +85,23 @@ export function ReviewSummaryPanel({
     <>
       <div className="review-dashboard" aria-label="生成审核概览">
         <div className="metric-card primary">
-          <span>已选 / 可导出卡片</span>
-          <strong>{`${selectedCardCount}/${qualityCounts.total}`}</strong>
-          <small>当前勾选后会进入导出</small>
+          <span>已选导出 / 全部卡片</span>
+          <strong>{`${selectedCardCount}/${qualityFunnel.card_count ?? qualityCounts.total}`}</strong>
+          <small>勾选的卡会进入 APKG</small>
         </div>
         <div className="metric-card">
-          <span>推荐卡片</span>
-          <strong>{qualityCounts.recommended}</strong>
-          <small>{`${qualityCounts.review} 张待审卡 · ${qualityCounts.rejected} 张建议删除`}</small>
+          <span>推荐可导出</span>
+          <strong>{qualityFunnel.recommended_card_count ?? qualityCounts.recommended}</strong>
+          <small>质量通过，默认建议保留</small>
         </div>
         <div className="metric-card">
-          <span>候选片段</span>
-          <strong>{project.segments.length}</strong>
+          <span>待人工确认</span>
+          <strong>{qualityFunnel.review_card_count ?? qualityCounts.review}</strong>
+          <small>{`${qualityCounts.rejected} 张建议删除`}</small>
+        </div>
+        <div className="metric-card">
+          <span>发现学习点</span>
+          <strong>{qualityFunnel.learning_point_count ?? qualityDiagnostics.candidates}</strong>
           <small>
             {project.max_segments
               ? `${project.auto_max_segments ? '自动预算' : '预算'} ${project.max_segments} · `
@@ -107,18 +112,16 @@ export function ReviewSummaryPanel({
           </small>
         </div>
         <div className="metric-card">
+          <span>已拒绝 / 重复</span>
+          <strong>{`${qualityFunnel.rejected_learning_point_count ?? qualityDiagnostics.rejectedSegments}/${
+            qualityFunnel.duplicate_learning_point_count ?? qualityDiagnostics.duplicate
+          }`}</strong>
+          <small>{qualityDiagnostics.shortReason || qualityDiagnostics.rejectReasons[0] || labels.score}</small>
+        </div>
+        <div className="metric-card">
           <span>{labels.score}</span>
           <strong>{qualityDiagnostics.avgScore === null ? '-' : qualityDiagnostics.avgScore.toFixed(1)}</strong>
           <small>{`${labels.candidate} ${qualityDiagnostics.candidates} · ${labels.duplicate} ${qualityDiagnostics.duplicate}`}</small>
-        </div>
-        <div className="metric-card">
-          <span>已拒绝片段</span>
-          <strong>{qualityDiagnostics.rejectedSegments}</strong>
-          <small>
-            {qualityDiagnostics.shortReason ||
-              qualityDiagnostics.rejectReasons[0] ||
-              (project.skip_video_slicing ? '字幕-only 导出，不含视频切片。' : '推荐数量正常')}
-          </small>
         </div>
       </div>
 
@@ -138,8 +141,8 @@ export function ReviewSummaryPanel({
             <Sparkles size={14} />
             {labels.pipeline}
           </span>
-          <strong>{`${labels.candidate} ${qualityFunnel.candidate_segments ?? '-'} · 可导出${labels.recommended} ${
-            qualityFunnel.recommended_cards ?? '-'
+          <strong>{`学习点 ${qualityFunnel.learning_point_count ?? qualityFunnel.candidate_segments ?? '-'} · 已选 ${
+            qualityFunnel.selected_card_count ?? selectedCardCount
           }`}</strong>
         </summary>
         <div className="quality-funnel" aria-label="质量漏斗">
@@ -148,24 +151,24 @@ export function ReviewSummaryPanel({
             <small>{labels.sourceUnits}</small>
           </span>
           <span>
-            <strong>{qualityFunnel.candidate_segments ?? '-'}</strong>
-            <small>{labels.candidate}</small>
+            <strong>{qualityFunnel.learning_point_count ?? qualityFunnel.candidate_segments ?? '-'}</strong>
+            <small>学习点</small>
           </span>
           <span>
-            <strong>{qualityFunnel.reviewed_keep ?? '-'}</strong>
-            <small>{labels.reviewed}</small>
+            <strong>{qualityFunnel.card_count ?? qualityCounts.total}</strong>
+            <small>全部卡片</small>
           </span>
           <span>
-            <strong>{qualityFunnel.recommended_cards ?? '-'}</strong>
+            <strong>{qualityFunnel.recommended_card_count ?? qualityFunnel.recommended_cards ?? '-'}</strong>
             <small>{labels.recommended}</small>
           </span>
           <span>
-            <strong>{qualityFunnel.review_cards ?? '-'}</strong>
+            <strong>{qualityFunnel.review_card_count ?? qualityFunnel.review_cards ?? '-'}</strong>
             <small>{labels.review}</small>
           </span>
           <span>
-            <strong>{qualityFunnel.duplicate_segments ?? '-'}</strong>
-            <small>{labels.duplicate}</small>
+            <strong>{qualityFunnel.selected_card_count ?? selectedCardCount}</strong>
+            <small>已选导出</small>
           </span>
         </div>
       </details>

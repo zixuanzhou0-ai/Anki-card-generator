@@ -7,6 +7,7 @@ export type DocumentAnswerLanguage = 'zh' | 'en' | 'bilingual'
 export type DocumentDepth = 'quick' | 'standard' | 'deep'
 export type DocumentAnswerLength = 'short' | 'medium' | 'long'
 export type StudyDepth = 'standard' | 'deep'
+export type SelectionStrategy = 'catch_all' | 'curated' | 'exhaustive'
 export type TemplateId = 'immersive_v11' | 'immersive' | 'dictionary' | 'minimal'
 export type Provider = 'local' | 'mimo' | 'openai-compatible' | 'claude' | 'gemini' | 'gemini-vertex'
 export type TtsProvider =
@@ -120,7 +121,8 @@ export type ExportResult = {
   media_dir: string
   deck_name?: string
   media_prefix?: string
-  media_manifest?: Record<string, { sha256: string; bytes: number }>
+  media_manifest?: Record<string, MediaManifestEntry>
+  media_ledger?: MediaLedgerItem[]
   cards: number
   segments: number
   media_summary?: {
@@ -151,6 +153,9 @@ export type AnkiVerifyResult = {
   mismatched_media?: Array<{ file: string; expected_sha256: string; actual_sha256: string }>
   unexpected_media_references?: string[]
   unreferenced_expected_media?: string[]
+  ledger_missing_manifest?: string[]
+  manifest_tts_without_ledger?: string[]
+  ledger_text_hash_mismatch?: Array<{ file: string; expected_text_hash: string; ledger_text_hash: string }>
 }
 
 export type WorkerProgress = {
@@ -198,6 +203,13 @@ export type InspectorState = 'open' | 'collapsed' | 'sheet'
 export type QualityFunnel = {
   subtitle_cues?: number
   candidate_segments?: number
+  learning_point_count?: number
+  card_count?: number
+  selected_card_count?: number
+  recommended_card_count?: number
+  review_card_count?: number
+  rejected_learning_point_count?: number
+  duplicate_learning_point_count?: number
   reviewed_keep?: number
   mimo_kept?: number
   recommended_cards?: number
@@ -263,9 +275,33 @@ export type GenerateRequest = {
   document_depth: DocumentDepth
   document_answer_length: DocumentAnswerLength
   study_depth: StudyDepth
+  selection_strategy: SelectionStrategy
   card_types: CardKind[]
   max_segments: number
   api_config: ApiConfig
+}
+
+export type LearningPoint = {
+  id: string
+  kind: CandidateKind
+  exact_span: string
+  answer_core: string
+  difficulty?: Level | string
+  value_score?: number | string | null
+  reason?: string
+  suggested_card_type?: CardKind | string
+  content_kind?: LearningContentKind
+  normalized_answer?: string
+  source_evidence?: string
+  usage_boundary?: string
+  confusable_note?: string
+  phonetic_ipa?: string
+  spoken_ipa?: string
+  source_spoken_ipa?: string
+  pronunciation_note?: string
+  pronunciation_confidence?: 'high' | 'medium' | 'low' | string
+  validation_status?: 'ok' | 'repaired' | 'reject' | string
+  validation_issues?: string[]
 }
 
 export type Card = {
@@ -283,6 +319,7 @@ export type Card = {
   phrase_card_focus?: string
   phrase_review_status?: PhraseReviewStatus
   phrase_type?: string
+  learning_point_id?: string
   candidate_kind?: CandidateKind
   exact_span?: string
   normalized_answer?: string
@@ -313,6 +350,11 @@ export type Card = {
   answer_core?: string
   usage_boundary?: string
   confusable_note?: string
+  phonetic_ipa?: string
+  spoken_ipa?: string
+  source_spoken_ipa?: string
+  pronunciation_note?: string
+  pronunciation_confidence?: 'high' | 'medium' | 'low' | string
   replacement_examples?: string | string[]
   avoid_reason?: string
   quality?: {
@@ -341,6 +383,7 @@ export type Segment = {
   phrase_review_status?: PhraseReviewStatus
   phrase_review_source?: string
   phrase_type?: string
+  learning_point_id?: string
   candidate_kind?: CandidateKind
   exact_span?: string
   normalized_answer?: string
@@ -353,6 +396,7 @@ export type Segment = {
   knowledge_type?: DocumentFocus | string
   document_card_kind?: DocumentCardKind | string
   score_breakdown?: Record<string, number | string>
+  learning_points?: LearningPoint[]
   cards: Card[]
 }
 
@@ -372,6 +416,8 @@ export type LocalSourceInfo = {
   video_path?: string
   subtitle_path?: string
   subtitle_source?: 'manual' | 'auto_matched' | 'embedded' | string
+  video_fingerprint?: string
+  subtitle_fingerprint?: string
 }
 
 export type DocumentSourceInfo = {
@@ -402,6 +448,7 @@ export type Project = {
   document_depth?: DocumentDepth
   document_answer_length?: DocumentAnswerLength
   study_depth?: StudyDepth
+  selection_strategy?: SelectionStrategy
   material_context?: MaterialContext | null
   card_types: CardKind[]
   max_segments?: number
@@ -416,6 +463,23 @@ export type Project = {
   fallbacks?: string[]
   warning?: string | null
   created_at: number
+}
+
+export type MediaManifestEntry = {
+  sha256: string
+  bytes: number
+  role?: 'video' | 'poster' | 'original_audio' | 'sentence_tts' | 'phrase_tts' | string
+  segment_id?: string
+  card_id?: string
+  learning_point_id?: string
+  tts_text?: string
+  text_hash?: string
+  field?: string
+  source_time?: string
+}
+
+export type MediaLedgerItem = MediaManifestEntry & {
+  file: string
 }
 
 export type EnvStatus = {

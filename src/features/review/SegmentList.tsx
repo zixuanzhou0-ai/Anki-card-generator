@@ -39,6 +39,7 @@ export function SegmentList({
         const score = phraseValueScore(segment.phrase_value_score)
         const totalCards = segment.cards.length
         const enabledCards = segment.cards.filter((card) => card.enabled).length
+        const learningPointCount = Array.isArray(segment.learning_points) ? segment.learning_points.length : 0
         const allCardsEnabled = totalCards > 0 && enabledCards === totalCards
         const partiallyEnabled = enabledCards > 0 && enabledCards < totalCards
         const phraseTitle = segmentPhraseTitle(segment, documentStudyMode)
@@ -93,6 +94,7 @@ export function SegmentList({
               {kindLabel ? <span className={`kind-chip kind-${segment.candidate_kind}`}>{kindLabel}</span> : null}
               <strong>{phraseTitle}</strong>
               <small>
+                {learningPointCount > 1 ? `${learningPointCount} 个学习点 · ` : ''}
                 {enabledCards}/{totalCards} 张已选 · 推荐 {segment.recommendation}/5
               </small>
               <small className="segment-focus">{isReading ? '精读动作' : isKnowledge ? '记忆动作' : '训练点'}：{trainingFocus}</small>

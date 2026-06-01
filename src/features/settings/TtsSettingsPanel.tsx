@@ -86,45 +86,61 @@ export function TtsSettingsPanel({
   }
 
   const handleProviderChange = (provider: TtsProvider) => {
+    const providerChanged = provider !== tts.provider
+    const defaultModel =
+      provider === 'mimo'
+        ? 'mimo-v2.5-tts'
+        : provider === 'qwen'
+          ? QWEN_TTS_DEFAULT_MODEL
+          : provider === 'gemini'
+            ? 'gemini-2.5-flash-preview-tts'
+            : provider === 'gemini-vertex'
+              ? GEMINI_VERTEX_TTS_DEFAULT_MODEL
+              : provider === 'openai-compatible'
+                ? 'gpt-4o-mini-tts'
+                : ''
+    const defaultVoice =
+      provider === 'mimo'
+        ? 'Mia'
+        : provider === 'qwen'
+          ? QWEN_TTS_DEFAULT_VOICE
+          : provider === 'grok'
+            ? 'eve'
+            : provider === 'gemini' || provider === 'gemini-vertex'
+              ? GEMINI_VERTEX_TTS_DEFAULT_VOICE
+              : provider === 'openai-compatible'
+                ? 'alloy'
+                : ''
+    const nextBaseUrl =
+      provider === 'disabled'
+        ? ''
+        : provider === 'gemini'
+          ? tts.base_url
+          : provider === 'mimo'
+            ? tts.base_url.includes('xiaomimimo.com')
+              ? tts.base_url
+              : mimoTokenPlanSgpBaseUrl
+            : provider === 'qwen'
+              ? tts.base_url.includes('dashscope')
+                ? tts.base_url
+                : 'https://dashscope.aliyuncs.com/api/v1'
+              : provider === 'grok'
+                ? 'https://api.x.ai/v1'
+                : provider === 'gemini-vertex'
+                  ? tts.base_url.includes('aiplatform.googleapis.com')
+                    ? tts.base_url
+                    : GEMINI_VERTEX_TTS_GLOBAL_BASE_URL
+                  : provider === 'openai-compatible'
+                    ? tts.base_url || 'https://api.openai.com/v1'
+                    : tts.base_url
+
     onPatchTts({
       provider,
       enabled: provider !== 'disabled',
-      base_url:
-        provider === 'mimo'
-          ? tts.base_url.includes('xiaomimimo.com')
-            ? tts.base_url
-            : mimoTokenPlanSgpBaseUrl
-          : provider === 'qwen'
-            ? tts.base_url.includes('dashscope')
-              ? tts.base_url
-              : 'https://dashscope.aliyuncs.com/api/v1'
-            : provider === 'grok'
-              ? 'https://api.x.ai/v1'
-              : provider === 'gemini-vertex'
-                ? tts.base_url.includes('aiplatform.googleapis.com')
-                  ? tts.base_url
-                  : GEMINI_VERTEX_TTS_GLOBAL_BASE_URL
-              : provider === 'openai-compatible'
-                ? tts.base_url || 'https://api.openai.com/v1'
-                : tts.base_url,
-      model:
-        provider === 'mimo' && !tts.model
-          ? 'mimo-v2.5-tts'
-          : provider === 'qwen' && !tts.model
-            ? QWEN_TTS_DEFAULT_MODEL
-            : provider === 'gemini-vertex'
-              ? tts.model || GEMINI_VERTEX_TTS_DEFAULT_MODEL
-              : tts.model,
-      voice:
-        provider === 'mimo'
-          ? tts.voice || 'Mia'
-          : provider === 'qwen'
-            ? tts.voice || QWEN_TTS_DEFAULT_VOICE
-            : provider === 'grok'
-              ? tts.voice || 'eve'
-              : provider === 'gemini-vertex'
-                ? tts.voice || GEMINI_VERTEX_TTS_DEFAULT_VOICE
-              : tts.voice,
+      base_url: nextBaseUrl,
+      api_key: providerChanged ? '' : tts.api_key,
+      model: providerChanged ? defaultModel : tts.model || defaultModel,
+      voice: providerChanged ? defaultVoice : tts.voice || defaultVoice,
     })
   }
 
@@ -140,6 +156,24 @@ export function TtsSettingsPanel({
       <small>{preset.key_hint}</small>
     </button>
   )
+
+  const selectedPreset = [...featuredTtsPresets, ...advancedTtsPresets].find(isPresetSelected)
+  const providerLabel: Record<TtsProvider, string> = {
+    disabled: '关闭 TTS',
+    gemini: 'Gemini TTS',
+    'gemini-vertex': 'Gemini Vertex TTS',
+    grok: 'Grok / xAI TTS',
+    mimo: 'MIMO / 小米 TTS',
+    'openai-compatible': 'OpenAI-compatible Speech',
+    qwen: 'Qwen / 千问 TTS',
+  }
+  const currentTtsTitle = tts.enabled ? (selectedPreset?.label ?? providerLabel[tts.provider]) : 'TTS 当前关闭'
+  const currentTtsMeta =
+    tts.enabled && tts.provider === 'gemini-vertex'
+      ? `${tts.model || GEMINI_VERTEX_TTS_DEFAULT_MODEL} · ${tts.voice || GEMINI_VERTEX_TTS_DEFAULT_VOICE} · 本机 gcloud OAuth`
+      : tts.enabled
+        ? `${tts.model || '未填写模型名'} · ${tts.voice || '未选择音色'}`
+        : '导出时只使用视频原声'
 
   return (
     <section className="settings-section settings-section-single">
@@ -171,29 +205,15 @@ export function TtsSettingsPanel({
         </div>
       </details>
 
-      <ConnectionTestCard
-        buttonLabel="测试 TTS"
-        disabled={ttsTesting || appBusy}
-        message={ttsTestMessage}
-        meta={ttsTestMeta}
-        ok={ttsTestOk}
-        statusLabel="TTS 状态"
-        testing={ttsTesting}
-        testingLabel="测试中..."
-        title={ttsTestTitle}
-        tone={ttsTestTone}
-        onTest={onTestTts}
-      />
-
       <div className="settings-subheading">
-        <strong>常用语音</strong>
-        <span>视频卡优先用原声；只在需要额外朗读时开启 TTS。</span>
+        <strong>一键语音方案</strong>
+        <span>视频卡优先用原声；需要额外朗读时选一个方案再测试。</span>
       </div>
       <div className="preset-grid compact-presets tts-preset-grid" aria-label="TTS 推荐预设">
         {featuredTtsPresets.map(renderPreset)}
       </div>
       <button className="advanced-toggle" type="button" onClick={() => onSetShowAdvancedTts((value) => !value)}>
-        {showAdvancedTts ? '收起高级 TTS' : '高级 TTS 模型和参数'}
+        {showAdvancedTts ? '收起高级 TTS' : '高级：语音服务、模型、音色参数'}
       </button>
       {showAdvancedTts ? (
         <div className="preset-grid compact-presets secondary-presets" aria-label="更多 TTS 预设">
@@ -210,7 +230,62 @@ export function TtsSettingsPanel({
       </div>
 
       {tts.enabled ? (
-        <div className="api-grid tts-api-grid">
+        <div className="settings-current-card tts-current-card">
+          <div className="settings-current-main">
+            <span>当前语音方案</span>
+            <strong>{currentTtsTitle}</strong>
+            <small>{currentTtsMeta}</small>
+          </div>
+          <label className="field settings-key-field">
+            <span>TTS API Key</span>
+            <input
+              type="password"
+              value={tts.api_key}
+              onChange={(event) => onPatchTts({ api_key: event.target.value })}
+              placeholder={
+                tts.provider === 'mimo'
+                  ? '可留空复用 MIMO 文本 Key'
+                  : tts.provider === 'qwen'
+                    ? '可留空复用千问文本 Key'
+                    : tts.provider === 'gemini-vertex'
+                      ? '本机 gcloud 登录，无需填写'
+                      : 'xai-... / AIza... / sk-...'
+              }
+            />
+            <small>
+              {tts.provider === 'gemini-vertex'
+                ? 'Vertex TTS 使用本机 gcloud OAuth token，不会把 Google token 保存到应用配置里。'
+                : '同服务商文本 Key 会自动复用；只有想给 TTS 单独换 Key 时才需要填写。'}
+            </small>
+          </label>
+          <label className="toggle secret-toggle settings-current-toggle">
+            <input type="checkbox" checked={secretPrefs.rememberTtsKey} onChange={onToggleRememberTtsKey} />
+            <span>记住本机 TTS API Key（系统凭据 / DPAPI 加密）</span>
+          </label>
+        </div>
+      ) : (
+        <div className="tts-disabled-note">
+          <strong>{currentTtsTitle}</strong>
+          <span>{currentTtsMeta}；需要顶部表达小喇叭和 AI 朗读时，打开上面的开关或选择一个语音方案。</span>
+        </div>
+      )}
+
+      <ConnectionTestCard
+        buttonLabel="测试 TTS"
+        disabled={ttsTesting || appBusy}
+        message={ttsTestMessage}
+        meta={ttsTestMeta}
+        ok={ttsTestOk}
+        statusLabel="TTS 状态"
+        testing={ttsTesting}
+        testingLabel="测试中..."
+        title={ttsTestTitle}
+        tone={ttsTestTone}
+        onTest={onTestTts}
+      />
+
+      {tts.enabled && showAdvancedTts ? (
+        <div className="api-grid tts-api-grid advanced-config-grid">
           <label className="field">
             <span>语音服务</span>
             <select value={tts.provider} onChange={(event) => handleProviderChange(event.target.value as TtsProvider)}>
@@ -246,34 +321,8 @@ export function TtsSettingsPanel({
                   ? '千问 TTS 默认北京地域 https://dashscope.aliyuncs.com/api/v1；新加坡改成 intl 端点。'
                   : tts.provider === 'gemini-vertex'
                     ? 'Vertex Gemini-TTS 默认 global 端点；如需指定区域可填 https://us-central1-aiplatform.googleapis.com。'
-                    : 'Grok 默认 https://api.x.ai/v1；Gemini API Key 版可留空。'}
+                : 'Grok 默认 https://api.x.ai/v1；Gemini API Key 版可留空。'}
             </small>
-          </label>
-          <label className="field">
-            <span>语音 API Key</span>
-            <input
-              type="password"
-              value={tts.api_key}
-              onChange={(event) => onPatchTts({ api_key: event.target.value })}
-              placeholder={
-                tts.provider === 'mimo'
-                  ? 'sk-... / tp-...'
-                  : tts.provider === 'qwen'
-                    ? 'sk-...'
-                    : tts.provider === 'gemini-vertex'
-                      ? '本机 gcloud 登录，无需填写'
-                      : 'xai-... / AIza...'
-              }
-            />
-            <small>
-              {tts.provider === 'gemini-vertex'
-                ? 'Vertex TTS 使用本机 gcloud OAuth token，不会把 Google token 保存到应用配置里。'
-                : 'MIMO / 千问 TTS 可留空并复用上方同服务商 Key；记住后保存到本机系统凭据 / DPAPI。'}
-            </small>
-          </label>
-          <label className="toggle secret-toggle">
-            <input type="checkbox" checked={secretPrefs.rememberTtsKey} onChange={onToggleRememberTtsKey} />
-            <span>记住本机 TTS API Key（系统凭据 / DPAPI 加密）</span>
           </label>
           <label className="field">
             <span>语音模型</span>
@@ -379,49 +428,40 @@ export function TtsSettingsPanel({
                 : 'MIMO V2.5 内置声音可填 Mia、Chloe、Milo、Dean；千问英语卡优先试 Jennifer 或 Aiden。'}
             </small>
           </label>
-          {showAdvancedTts ? (
-            <>
-              <label className="field">
-                <span>Language</span>
-                <input
-                  value={tts.language}
-                  onChange={(event) => onPatchTts({ language: event.target.value })}
-                  placeholder="auto / en / zh / ja"
-                />
-                <small>MIMO / Grok 支持 auto 或 BCP-47 语言码；英语卡建议 auto 或 en。</small>
-              </label>
-              <label className="field">
-                <span>Sample Rate</span>
-                <input
-                  type="number"
-                  min={8000}
-                  max={48000}
-                  value={tts.sample_rate}
-                  onChange={(event) => onPatchTts({ sample_rate: Number(event.target.value) })}
-                />
-                <small>MIMO / Grok 常用 24000；不确定就保持默认。</small>
-              </label>
-              <label className="field">
-                <span>Bit Rate</span>
-                <input
-                  type="number"
-                  min={32000}
-                  max={192000}
-                  step={32000}
-                  value={tts.bit_rate}
-                  onChange={(event) => onPatchTts({ bit_rate: Number(event.target.value) })}
-                />
-                <small>MP3 常用 128000，体积和质量比较均衡。</small>
-              </label>
-            </>
-          ) : null}
+          <label className="field">
+            <span>Language</span>
+            <input
+              value={tts.language}
+              onChange={(event) => onPatchTts({ language: event.target.value })}
+              placeholder="auto / en / zh / ja"
+            />
+            <small>MIMO / Grok 支持 auto 或 BCP-47 语言码；英语卡建议 auto 或 en。</small>
+          </label>
+          <label className="field">
+            <span>Sample Rate</span>
+            <input
+              type="number"
+              min={8000}
+              max={48000}
+              value={tts.sample_rate}
+              onChange={(event) => onPatchTts({ sample_rate: Number(event.target.value) })}
+            />
+            <small>MIMO / Grok 常用 24000；不确定就保持默认。</small>
+          </label>
+          <label className="field">
+            <span>Bit Rate</span>
+            <input
+              type="number"
+              min={32000}
+              max={192000}
+              step={32000}
+              value={tts.bit_rate}
+              onChange={(event) => onPatchTts({ bit_rate: Number(event.target.value) })}
+            />
+            <small>MP3 常用 128000，体积和质量比较均衡。</small>
+          </label>
         </div>
-      ) : (
-        <div className="tts-disabled-note">
-          <strong>TTS 当前关闭</strong>
-          <span>导出时只使用视频原声；需要顶部表达小喇叭和 AI 朗读时，打开上面的开关或选择一个常用语音预设。</span>
-        </div>
-      )}
+      ) : null}
     </section>
   )
 }

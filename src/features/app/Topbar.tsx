@@ -56,7 +56,7 @@ export function Topbar({
           <img src="/app-icon.png" alt="" />
         </div>
         <div>
-          <p className="eyebrow">Anki Card Generator V1</p>
+          <p className="eyebrow">Anki Card Generator</p>
           <h1>Anki 卡片生成器</h1>
         </div>
       </div>

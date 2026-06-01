@@ -80,6 +80,7 @@ export function AppShell({ controller }: AppShellProps) {
     revealExport,
     runWindowAction,
     secretPrefs,
+    selectionStrategyOptions,
     segmentFilter,
     segmentReviewCounts,
     selectedCardCount,
@@ -192,6 +193,7 @@ export function AppShell({ controller }: AppShellProps) {
             statusTone={statusTone}
             templateId={request.template_id}
             templateOptions={templateOptions}
+            selectionStrategyOptions={selectionStrategyOptions}
             workerBusy={workerBusy}
             workerErrorActions={workerErrorActions}
             workerProgress={workerProgress}

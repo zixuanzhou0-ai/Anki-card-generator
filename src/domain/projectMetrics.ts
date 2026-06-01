@@ -115,6 +115,11 @@ export function getQualityFunnel(
 ): QualityFunnel {
   const segments = project?.segments ?? []
   const provided = project?.quality_funnel ?? {}
+  const learningPointCount = segments.reduce(
+    (total, segment) => total + (segment.learning_points?.length || (segment.cards.length ? 1 : 0)),
+    0,
+  )
+  const selectedCardCount = countSelectedCards(project)
   const scored = segments
     .map((segment) => phraseValueScore(segment.phrase_value_score))
     .filter((score): score is number => typeof score === 'number')
@@ -122,6 +127,17 @@ export function getQualityFunnel(
   return {
     ...provided,
     candidate_segments: provided.candidate_segments ?? segments.length,
+    learning_point_count: provided.learning_point_count ?? learningPointCount,
+    card_count: provided.card_count ?? qualityCounts.total,
+    selected_card_count: provided.selected_card_count ?? selectedCardCount,
+    recommended_card_count: provided.recommended_card_count ?? qualityCounts.recommended,
+    review_card_count: provided.review_card_count ?? qualityCounts.review,
+    rejected_learning_point_count:
+      provided.rejected_learning_point_count ??
+      segments.filter((segment) => segmentReviewStatus(segment) === 'reject').length,
+    duplicate_learning_point_count:
+      provided.duplicate_learning_point_count ??
+      segments.filter((segment) => segmentReviewStatus(segment) === 'duplicate').length,
     reviewed_keep:
       provided.reviewed_keep ??
       segments.filter((segment) => {

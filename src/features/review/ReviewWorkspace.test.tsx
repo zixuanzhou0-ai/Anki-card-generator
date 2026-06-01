@@ -91,7 +91,7 @@ describe('ReviewWorkspace', () => {
     fireEvent.click(screen.getByRole('button', { name: /in the mood/ }))
 
     expect(screen.getByRole('heading', { name: 'AI 评审工作台' })).toBeInTheDocument()
-    expect(screen.getByText('推荐卡片')).toBeInTheDocument()
+    expect(screen.getByText('推荐可导出')).toBeInTheDocument()
     expect(onSetCardsEnabled).toHaveBeenCalledWith(false)
     expect(onSelectCardsByQuality).toHaveBeenCalledWith('recommended')
     expect(onSelectSegment).toHaveBeenCalledWith('seg_demo_001')

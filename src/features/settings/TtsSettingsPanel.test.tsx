@@ -130,7 +130,7 @@ describe('TtsSettingsPanel', () => {
 
   it('patches Qwen TTS provider defaults', () => {
     const onPatchTts = vi.fn()
-    renderPanel({ onPatchTts, tts: { ...enabledTts, provider: 'mimo', model: '', voice: '' } })
+    renderPanel({ onPatchTts, showAdvancedTts: true, tts: { ...enabledTts, provider: 'mimo', model: '', voice: '' } })
 
     fireEvent.change(screen.getByLabelText(/语音服务/), { target: { value: 'qwen' } })
 
@@ -147,13 +147,18 @@ describe('TtsSettingsPanel', () => {
 
   it('patches Gemini Vertex TTS provider defaults without an API key', () => {
     const onPatchTts = vi.fn()
-    renderPanel({ onPatchTts, tts: { ...enabledTts, provider: 'mimo', api_key: 'sk-old', model: '', voice: '' } })
+    renderPanel({
+      onPatchTts,
+      showAdvancedTts: true,
+      tts: { ...enabledTts, provider: 'mimo', api_key: 'sk-old', model: '', voice: '' },
+    })
 
     fireEvent.change(screen.getByLabelText(/语音服务/), { target: { value: 'gemini-vertex' } })
 
     expect(onPatchTts).toHaveBeenCalledWith(
       expect.objectContaining({
         base_url: 'https://aiplatform.googleapis.com',
+        api_key: '',
         enabled: true,
         model: 'gemini-3.1-flash-tts-preview',
         provider: 'gemini-vertex',
