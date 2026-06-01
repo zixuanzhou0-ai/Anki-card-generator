@@ -9,7 +9,7 @@ Use this file when opening a fresh Codex / GPT review window for the Anki Card G
 - Active branch: `codex/complete-refactor-hardening`
 - Active PR: https://github.com/zixuanzhou0-ai/Anki-card-generator/pull/6
 - PR base: `main`
-- Current status when this handoff was written: PR #6 contains the document-study split plus local-video, API-key persistence, TTS export, Qwen3 TTS voice hardening, the first Deep Study / contextual vocabulary card pipeline, and the new default `沉浸复读 V11` Anki template for video/subtitle cards. Local working tree should be clean after pushing the latest commit.
+- Current status when this handoff was written: PR #6 contains the document-study split plus local-video, API-key persistence, TTS export, Qwen3 TTS voice hardening, Gemini Vertex TTS setup, the first Deep Study / contextual vocabulary card pipeline, the default `沉浸复读 V11` Anki template for video/subtitle cards, and candidate-review hardening from GPT Pro feedback. Local working tree should be clean after pushing the latest commit.
 
 Important: ask reviewers to inspect PR #6, not only `main`. The latest document-study work is on the PR branch.
 
@@ -37,8 +37,16 @@ Recent hardening added after the initial document-study split:
 - `language_focus` now defaults to `phrases + vocabulary + listening`. `vocabulary_usage` exports as `语境生词卡` while keeping V10 APKG fields compatible.
 - Candidate review is no longer worded as MIMO-only; OpenAI-compatible providers such as DeepSeek V4 and Qwen / DashScope can run the same AI candidate review path.
 - DeepSeek V4 Pro / Flash presets were added with official model IDs `deepseek-v4-pro` and `deepseek-v4-flash`. The worker now treats DeepSeek V4 as a thinking model: streaming `reasoning_content` keeps progress alive while final JSON parsing ignores thinking text.
+- Gemini Vertex TTS is documented and available through the Vertex / `gcloud` auth path. It uses local `gcloud auth print-access-token` rather than storing a TTS API key.
 - V10 APKG visual templates are now split by export family: video/subtitle language cards, document knowledge cards, and document reading cards use different front/back HTML while keeping the existing field names. The templates no longer rely on JS overflow fitting and allow stable vertical scrolling.
 - Video/subtitle language cards now default to `immersive_v11` / `沉浸复读 V11`: front side is shadowing-first with autoplaying muted loop video and custom `原声` / `慢读` buttons; back side shows core expression, Chinese intuition, source sentence, phrase TTS, compact replay video, and explanation blocks. `immersive` remains as the old V10 fallback option.
+- GPT Pro review follow-up added hard gates to the AI candidate-review merge path:
+  - `exact_span` must be recoverable from the original sentence.
+  - `answer_core` must be a clean English answer, not mixed Chinese/IPA/explanation text.
+  - each `source_segment_id` keeps at most two learning points.
+  - AI-rejected candidates are not revived by the local minimum-count fallback.
+  - export results now carry `template_version` / `anki_tag`, and Anki import verification uses the actual V10/V11 tag.
+- README, user guide, troubleshooting, release notes, release checklist, beta limitations, handoff, screenshots, PR body, and repo About description were refreshed after this hardening pass.
 
 ## Key Files
 
@@ -137,6 +145,15 @@ npm run test:unit -- src/features/learning/LearningSettingsPanel.test.tsx src/fe
 python -m pytest tests/test_worker_quality.py -q
 ```
 
+Latest targeted checks for candidate-review hardening and docs refresh:
+
+```powershell
+python -m unittest tests.test_worker_quality
+npm run build
+npm run test:ui
+git diff --check
+```
+
 ## Current Product Decisions
 
 - Keep the two-pane layout: left Inspector, right Workspace. Do not restore the old left Rail.
@@ -180,12 +197,13 @@ Current shipped direction:
 - Video / URL = English context learning.
 - Video / URL now use Deep Study by default: understand material -> review candidates -> write cards.
 - Contextual vocabulary cards are in scope and labeled `语境生词卡`.
+- AI candidate review now has strict `exact_span` / `answer_core` validation and same-sentence max-two learning point arbitration.
 - Document input = knowledge absorption by default.
 - Document input has optional language_reading mode.
 - Two-pane desktop layout stays; do not restore the left Rail.
 
 Next likely work:
-1. Real Deep Study local-video generation QA with Qwen / DashScope and APKG import.
+1. Real Deep Study local-video generation QA with Qwen / DashScope / Gemini Vertex and APKG import.
 2. Continue visual QA on the split language / knowledge / document-reading Anki templates.
 3. Add document generate/export/APKG verify smoke.
 4. Improve pending-review cues and mobile screenshots for the Anki templates.
@@ -216,6 +234,8 @@ Focus on whether the document input path is now genuinely independent from video
 - document card review/default export behavior
 - README / ARCHITECTURE / USER_GUIDE consistency
 - screenshot freshness
+- README / GitHub PR body / repository About description freshness
+- candidate-review hard gates: exact_span, answer_core, source_segment_id max-two arbitration, no revival of AI rejects
 
 Please identify any remaining inconsistency between source code, tests, documentation, screenshots, and release behavior.
 Return P0/P1/P2 issues with file paths and concrete fixes.

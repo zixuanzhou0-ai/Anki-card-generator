@@ -68,6 +68,15 @@ The app should never require a real key in source files, docs, logs, or release 
 
 Use local video + the exact SRT file for that video, then regenerate with Deep Study enabled. The review dashboard should show a “素材理解” card; if its summary describes the wrong material, cancel and check that the selected source mode is still “本地视频” and the paths point to the current video/SRT. If the summary is correct but individual cards are weak, disable that card or switch off the irrelevant learning focus such as “单词用法” or “听力难点”.
 
+The current review pipeline keeps a `source_segment_id` for every candidate, requires `exact_span` to appear in the source sentence, and caps each subtitle sentence at two learning points. If a model returns an explanation as the learning answer, for example `run the register = 负责收银`, the candidate is rejected instead of becoming a broken card title.
+
+If stale cards still appear after switching source type:
+
+1. Confirm the left source selector is still `本地视频`.
+2. Clear the previous generated project by starting a new generation from the selected video/SRT pair.
+3. Check the top summary; it should describe the current material, not an older YouTube URL or document.
+4. Avoid manually reusing old card edits after changing source files.
+
 ## TTS Fails
 
 Common causes:
@@ -78,6 +87,15 @@ Common causes:
 - Balance or quota exhausted.
 
 You can disable TTS and still generate cards with original audio/video. TTS is only needed for extra sentence or phrase audio.
+
+## TTS Audio Does Not Match The Card Text
+
+The exporter generates two different AI audio fields:
+
+- Sentence TTS reads the full `English` source sentence.
+- Phrase TTS reads the visible core answer, normally `answer_core` or the cleaned phrase.
+
+If the phrase audio sounds unrelated, inspect the card in the review panel before export. The core answer must be the English expression only. Chinese meaning, IPA, pronunciation explanations, and teacher notes belong in the explanation fields, not in `answer_core`. The worker now rejects AI-reviewed candidates with mixed-language `answer_core`, but manually edited cards can still be made confusing if the answer field is overwritten with notes.
 
 ## TTS Sounds Slow or Unnatural
 
@@ -102,6 +120,7 @@ Check:
 - The export path ends in `.apkg`.
 - Anki is installed if you want the app to open the package directly.
 - The generated APKG passes `workers/verify_apkg.py`.
+- The import verifier is looking for the correct template tag: V10 packages use `anki_card_generator_v10`; V11 packages use `anki_card_generator_v11`.
 
 Release smoke output includes `verify_apkg.json`, which is the fastest way to inspect missing cards, media files, or template problems.
 

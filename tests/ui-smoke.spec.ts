@@ -67,7 +67,7 @@ test('desktop workflow shell supports simplified settings, URL mode, document mo
   await expect(page.getByText('6 张已选')).toBeVisible()
   await expect(page.getByText('演示卡片生成完成。')).toBeVisible()
   await expect(page.getByText('平均词伙评分')).toBeVisible()
-  await expect(page.getByText('拒绝原因')).toBeVisible()
+  await expect(page.getByLabel('生成审核概览').getByText('已拒绝片段')).toBeVisible()
 
   await page.locator('.preference-details summary').click()
   await expect(page.getByRole('button', { name: /沉浸复读 V11/ })).toBeVisible()

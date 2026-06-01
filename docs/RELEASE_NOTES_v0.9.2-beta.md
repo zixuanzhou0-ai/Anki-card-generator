@@ -19,8 +19,11 @@ This beta refresh focuses on the visible desktop experience and release assets.
 - Added the default `沉浸复读 V11` Anki template for video/subtitle cards. The front is now a focused shadowing card with autoplaying muted loop video and custom `原声` / `慢读` buttons; the back prioritizes core expression, Chinese intuition, source sentence, phrase TTS, and compact explanation blocks while preserving compatible fields.
 - Generalized candidate review language from MIMO-only phrase review toward OpenAI-compatible AI candidate review, including Qwen / DashScope-compatible reasoning models.
 - Added DeepSeek V4 Pro and DeepSeek V4 Flash presets. DeepSeek V4 thinking output is streamed as progress and stripped before JSON parsing, so the model can keep reasoning without stalling generation at an unchanged percent.
+- Hardened AI candidate review after GPT Pro review: `exact_span` must come from the source sentence, `answer_core` must stay a clean English answer, each subtitle sentence keeps at most two learning points, and AI-rejected candidates are no longer revived by the local fallback.
 - Hardened TTS export so resolved provider settings are used during APKG export, including saved/reused TTS API keys.
 - Updated Qwen3 TTS presets for English cards: `Jennifer` is now the default American English female voice, `Aiden` is available as an American English male voice, and Qwen3 voice-design model IDs are exposed for advanced setup.
+- Added Gemini Vertex TTS configuration docs and UI guidance for Google Vertex-backed speech generation.
+- Updated APKG import verification to use the actual exported template tag, so V11 packages are checked with `anki_card_generator_v11` instead of the legacy V10 tag.
 
 ## Verified
 
@@ -38,3 +41,4 @@ This beta refresh focuses on the visible desktop experience and release assets.
 - Model and TTS calls send selected text to the configured third-party provider and may incur API costs.
 - TTS voice quality varies by provider and voice. For English learning cards, prefer original audio or MiMo V2.5 TTS; if using Qwen3 TTS, try `Jennifer` or `Aiden` before `Cherry`.
 - Deep Study can be slower and use more model tokens because it asks the model to understand the material before selecting cards. Use “快速生成” when validating a workflow quickly.
+- Candidate review may now keep fewer cards than earlier builds because malformed AI answers and over-dense same-sentence candidates are rejected instead of being exported as weak cards.

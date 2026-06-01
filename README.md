@@ -31,12 +31,13 @@
 - 文档知识吸收：支持 TXT、Markdown、DOCX、EPUB、PDF，默认生成知识问答卡。
 - 文档语言精读：可选路径，用于英文文章/书籍里的表达、词汇和语法学习，不生成听力卡。
 - Deep Study 深度理解：模型会先建立素材上下文，再筛选候选和撰写卡片，减少“不是当前视频内容”的跑题卡。
-- AI 学习候选评审：MIMO、Qwen / DashScope 等 OpenAI-compatible 模型都会先评审词伙、语境生词、语法和听力候选，低价值内容默认不导出。
+- AI 学习候选评审：MIMO、Qwen / DashScope、DeepSeek V4、Gemini Vertex 等模型都会先评审词伙、语境生词、语法和听力候选，低价值内容默认不导出。
+- 候选硬校验：AI 返回的 `exact_span` 必须来自原句，`answer_core` 必须是纯英文学习答案；同一句字幕最多保留 2 个学习点，避免一条句子被拆成过多低质卡。
 - 语境生词卡：默认开启“单词用法”，只做来自原句、能解释当前场景并可迁移使用的生词卡，不做孤立词典卡。
 - 自动片段预算：根据视频长度和字幕密度自动决定候选数量。
 - 分流 Anki 模板：视频语言卡默认使用“沉浸复读 V11”，正面只做视频跟读训练，背面快速核对核心表达；文档知识卡和文档精读卡继续使用独立布局。APKG 字段保持向后兼容，卡片自然纵向滚动，不靠动态缩字硬塞进一屏。
 - 多音频导出：视频原声、整句 TTS、表达 TTS。
-- Anki `.apkg` 导出：可手动导入 Anki，也可调用本机 Anki 打开。
+- Anki `.apkg` 导出：可手动导入 Anki，也可调用本机 Anki 打开；导入核验会按导出模板版本查找 `anki_card_generator_v10` / `anki_card_generator_v11` 标签。
 
 ## 工作流程
 
@@ -101,6 +102,7 @@ flowchart TB
 - 英语学习卡优先使用视频原声；需要 AI 朗读时，MiMo V2.5 TTS 仍是当前更稳的英语选择。
 - Qwen3 TTS 已内置美语预设：`Jennifer` 为美语女声，`Aiden` 为美语男声。`Cherry` 仍可用，但更偏通用活泼女声。
 - Qwen3-TTS-Instruct-Flash 可做语速、情绪和朗读风格控制；Qwen3-TTS-VD 可先通过声音设计创建自定义 voice，再把返回的 voice id 填入设置页。
+- Google Gemini Vertex TTS 已作为可选路径加入设置页。它走本机 `gcloud` / Vertex AI 授权，默认使用 `gemini-3.1-flash-tts-preview`，不需要在应用里保存 TTS API Key。
 - 审核页的 `0.75x` 只影响试听播放速度，不会改变导出到 Anki 的 MP3。
 
 ## 必需依赖
@@ -166,6 +168,13 @@ powershell -ExecutionPolicy Bypass -File scripts/package_portable.ps1 -ReleaseEx
 ```powershell
 npm run check:full
 npm run tauri:build
+```
+
+文档和截图更新时请额外确认：
+
+```powershell
+git diff --name-only -- README.md docs
+npm run test:ui
 ```
 
 发布清单见 [Release Checklist](docs/RELEASE_CHECKLIST.md)。
