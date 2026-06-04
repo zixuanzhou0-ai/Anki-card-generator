@@ -472,12 +472,18 @@ PHRASE_GUIDE_ALIASES = {
 
 TEMPLATE_NOISE_PATTERNS = [
     r"本地草稿",
+    r"本地待审",
+    r"待精修",
+    r"正式导出前",
+    r"本句目标表达",
+    r"需要用\s*AI\s*精修",
     r"值得优先熟悉的表达块",
     r"中文里更接近自然顺口的一句话",
     r"真实口语中，这类表达通常用来快速说明",
     r"这句短.?口语感强",
     r"适合做听力和词伙记忆",
     r"natural object",
+    r"use .* in a complete sentence",
     r"use it in short spoken replies",
     r"i hear this pattern in lines like",
 ]

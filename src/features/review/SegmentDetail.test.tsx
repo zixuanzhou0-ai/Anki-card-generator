@@ -68,7 +68,7 @@ describe('SegmentDetail', () => {
     fireEvent.change(screen.getByLabelText(/中文意思/), { target: { value: '想出办法' } })
 
     expect(screen.getByText('I figured it out.')).toBeInTheDocument()
-    expect(screen.getByText(/AI 学习候选评审/)).toBeInTheDocument()
+    expect(screen.getByText(/可用卡片/)).toBeInTheDocument()
     expect(screen.getByText(/自然搭配：解决问题时的自然表达/)).toBeInTheDocument()
     expect(screen.getByText(/表达类型：自然搭配/)).toBeInTheDocument()
     expect(screen.getByText(/为什么值得学：它比 understand 更像口语里的“弄明白”。/)).toBeInTheDocument()
@@ -94,5 +94,45 @@ describe('SegmentDetail', () => {
     fireEvent.click(screen.getByRole('button', { name: '本段停用' }))
 
     expect(onSetSegmentCardsEnabled).toHaveBeenCalledWith(false, 'seg-1')
+  })
+
+  it('labels subtitle-inferred pronunciation as estimated in review', () => {
+    render(
+      <SegmentDetail
+        language="en"
+        motionDuration={0}
+        prefersReducedMotion
+        previewRate={1}
+        segment={{
+          ...segment,
+          cards: [
+            {
+              ...segment.cards[0],
+              phonetic_ipa: '/wʌt ɪf/',
+              spoken_ipa: '/wəd ɪf/',
+              source_spoken_ipa: '/wəd ɪf wi/',
+              pronunciation_note: '弱读 what if。',
+              pronunciation_meta: {
+                language_code: 'en',
+                accent_profile: 'en-US-general',
+                notation_system: 'ipa_en_connected',
+                generation_basis: 'subtitle_inferred',
+                field_confidence: { phonetic_ipa: 'high', spoken_ipa: 'medium', source_spoken_ipa: 'medium' },
+                same_as_standard_reason: null,
+                validation_issues: [],
+              },
+            },
+          ],
+        }}
+        videoSrc=""
+        onPreviewRateChange={vi.fn()}
+        onSetSegmentCardsEnabled={vi.fn()}
+        onUpdateCard={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText(/标准读法（IPA）：\/wʌt ɪf\//)).toBeInTheDocument()
+    expect(screen.getByText(/推测口语读法：\/wəd ɪf\//)).toBeInTheDocument()
+    expect(screen.getByText(/未实听，按字幕和常见口语规律推测/)).toBeInTheDocument()
   })
 })

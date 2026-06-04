@@ -87,6 +87,18 @@ describe('TtsSettingsPanel', () => {
     expect(props.onTestTts).toHaveBeenCalledOnce()
   })
 
+  it('renders a precise TTS failed diagnostic title', () => {
+    renderPanel({
+      tts: enabledTts,
+      ttsTestMessage: 'TTS请求超时：timed out。',
+      ttsTestTitle: 'TTS 请求超时',
+      ttsTestTone: 'warn',
+    })
+
+    expect(screen.getByText('TTS 请求超时')).toBeInTheDocument()
+    expect(screen.getByText('TTS请求超时：timed out。')).toBeInTheDocument()
+  })
+
   it('enables TTS with Qwen defaults', () => {
     const onPatchTts = vi.fn()
     renderPanel({ onPatchTts })

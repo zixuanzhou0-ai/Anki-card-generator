@@ -11,7 +11,7 @@ type TopbarProps = {
   inspectorActionLabel: string
   isCancelling: boolean
   projectSummary?: {
-    reviewCount: number
+    usableCount: number
     selectedCardLabel: string
     segmentCount: number
     templateLabel: string
@@ -66,7 +66,7 @@ export function Topbar({
           <div className="mini-summary" aria-label="项目摘要">
             <span>{`${projectSummary.segmentCount} 个片段`}</span>
             <span>{projectSummary.selectedCardLabel}</span>
-            <span>{`${projectSummary.reviewCount} 张待审`}</span>
+            <span>{`${projectSummary.usableCount} 张可用`}</span>
             <span>{projectSummary.templateLabel}</span>
           </div>
         ) : null}

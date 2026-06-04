@@ -2,6 +2,7 @@ import type {
   ApiConfig,
   GenerateRequest,
   Level,
+  LevelMode,
   Project,
   SecretPrefs,
   TtsConfig,
@@ -20,6 +21,7 @@ import {
   normalizeDocumentFocus,
   normalizeDocumentStudyMode,
   normalizeLanguageFocus,
+  normalizeLearningLanguage,
   normalizeSelectionStrategy,
   normalizeStudyDepth,
   PROJECT_STORAGE_KEY,
@@ -88,6 +90,10 @@ function normalizeDocumentLanguageFocus(value: unknown) {
   return focus.length ? focus : (['phrases'] as typeof focus)
 }
 
+function normalizeLevelMode(value: unknown): LevelMode {
+  return value === 'manual' ? 'manual' : 'auto'
+}
+
 export function loadSavedRequest(): GenerateRequest {
   if (typeof window === 'undefined') return defaultRequest
   try {
@@ -107,6 +113,8 @@ export function loadSavedRequest(): GenerateRequest {
         url_import_mode: (saved.url_import_mode ?? defaultRequest.url_import_mode) as UrlImportMode,
         url_auto_subtitle_fallback: saved.url_auto_subtitle_fallback ?? defaultRequest.url_auto_subtitle_fallback,
         skip_video_slicing: saved.skip_video_slicing ?? defaultRequest.skip_video_slicing,
+        language: normalizeLearningLanguage(saved.language),
+        level_mode: normalizeLevelMode(saved.level_mode),
         collection_levels: normalizeCollectionLevels(
           saved.collection_levels,
           (saved.level ?? defaultRequest.level) as Level,
@@ -159,6 +167,8 @@ export function loadSavedProject(): Project | null {
       ...saved,
       template_id: 'immersive_v11',
       source_mode: saved.source_mode ?? 'local',
+      language: normalizeLearningLanguage(saved.language),
+      level_mode: normalizeLevelMode(saved.level_mode),
       language_focus:
         documentStudyMode === 'language_reading'
           ? normalizeDocumentLanguageFocus(saved.language_focus)

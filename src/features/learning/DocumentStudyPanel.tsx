@@ -10,6 +10,9 @@ import {
   documentFocusSummary,
   documentReadingFocusOptions,
   documentStudyModeOptions,
+  learningLanguageLabel,
+  learningLanguageOptions,
+  normalizeLearningLanguage,
 } from '../../domain/options'
 import type { DocumentFocus, GenerateRequest, LanguageFocus, Level } from '../../domain/types'
 
@@ -57,8 +60,10 @@ export function DocumentStudyPanel({
   const isLanguageReading = request.document_study_mode === 'language_reading'
   const allowedReadingFocus = languageFocusOptions.filter((item) => documentReadingFocusOptions.includes(item.id))
   const selectedReadingFocus = request.language_focus.filter((item) => documentReadingFocusOptions.includes(item))
+  const autoLevel = request.level_mode !== 'manual'
+  const levelSummary = autoLevel ? '自动判断' : request.level
   const studySummary = isLanguageReading
-    ? `语言精读 · ${request.language} · ${request.level}`
+    ? `语言精读 · ${learningLanguageLabel(request.language)} · ${levelSummary}`
     : `${documentAnswerLanguageLabel(request.document_answer_language)} · ${documentDepthLabel(
         request.document_depth,
       )} · ${documentFocusSummary(request.document_focus)}`
@@ -111,24 +116,34 @@ export function DocumentStudyPanel({
             <select
               aria-label="文档精读语言"
               value={request.language}
-              onChange={(event) => onPatchRequest({ language: event.target.value })}
+              onChange={(event) => onPatchRequest({ language: normalizeLearningLanguage(event.target.value) })}
             >
-              <option>English</option>
-              <option>Français</option>
-              <option>Español</option>
-              <option>日本語</option>
+              {learningLanguageOptions.map((item) => (
+                <option key={item.code} value={item.code}>
+                  {item.label}
+                </option>
+              ))}
             </select>
           </label>
           <div className="settings-subheading refined-level-heading">
-            <strong>当前水平</strong>
-            <span>{levels.find((level) => level.id === request.level)?.note ?? '控制解释深度'}</span>
+            <strong>学习水平</strong>
+            <span>{autoLevel ? '自动判断每张卡难度' : levels.find((level) => level.id === request.level)?.note ?? '控制解释深度'}</span>
           </div>
           <div className="level-strip" aria-label="文档精读水平">
+            <button
+              type="button"
+              className={autoLevel ? 'selected' : ''}
+              aria-label="自动判断文档精读水平"
+              title="自动判断每张精读卡难度"
+              onClick={() => onPatchRequest({ level_mode: 'auto' })}
+            >
+              <strong>Auto</strong>
+            </button>
             {levels.map((level) => (
               <button
                 type="button"
                 key={level.id}
-                className={request.level === level.id ? 'selected' : ''}
+                className={!autoLevel && request.level === level.id ? 'selected' : ''}
                 aria-label={`${level.id}${level.note}`}
                 title={`${level.label} · ${level.note}`}
                 onClick={() => onSelectCurrentLevel(level.id)}

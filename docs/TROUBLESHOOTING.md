@@ -53,6 +53,7 @@ Gemini Vertex uses local `gcloud` auth instead of an API key:
 - Set the project with `gcloud config set project <project-id>`.
 - Use provider `Gemini Vertex`, Base URL `https://aiplatform.googleapis.com`, and model `gemini-3.1-pro-preview`.
 - If `gemini-3.1-pro` returns 404, use the preview model that is enabled in the current Vertex project.
+- The app now normalizes saved `gemini-3.1-pro` Vertex text-model settings back to the currently working `gemini-3.1-pro-preview` model before testing or generation.
 
 Gemini Vertex TTS uses the same local `gcloud` auth path:
 
@@ -68,7 +69,7 @@ The app should never require a real key in source files, docs, logs, or release 
 
 Use local video + the exact SRT file for that video, then regenerate with Deep Study enabled. The review dashboard should show a “素材理解” card; if its summary describes the wrong material, cancel and check that the selected source mode is still “本地视频” and the paths point to the current video/SRT. If the summary is correct but individual cards are weak, disable that card or switch off the irrelevant learning focus such as “单词用法” or “听力难点”.
 
-The current review pipeline keeps a `source_segment_id` for every candidate, requires `exact_span` to appear in the source sentence, and caps each subtitle sentence at two learning points. If a model returns an explanation as the learning answer, for example `run the register = 负责收银`, the candidate is rejected instead of becoming a broken card title.
+The current review pipeline keeps a `source_segment_id` for every candidate and requires `exact_span` to appear in the source sentence. A single subtitle sentence can keep multiple distinct learning points, such as expression, contextual vocabulary, grammar, listening, or pragmatic risk, but duplicates and weak cards are grouped, downgraded, or rejected. If a model returns an explanation as the learning answer, for example `run the register = 负责收银`, the candidate is rejected instead of becoming a broken card title.
 
 If stale cards still appear after switching source type:
 
@@ -88,6 +89,18 @@ Common causes:
 
 You can disable TTS and still generate cards with original audio/video. TTS is only needed for extra sentence or phrase audio.
 
+## Phrase TTS Only Generates Some Files
+
+The export summary may show a warning such as `表达小喇叭只生成 86/88 条`. This means the original media and full-sentence TTS succeeded, but a small number of phrase-level TTS requests failed.
+
+For Gemini Vertex TTS, the most common symptom is:
+
+```text
+Gemini Vertex TTS 没有返回 inlineData 音频。
+```
+
+This is not the same as a fully broken Vertex setup. If most phrase TTS files and all sentence TTS files were created, the key/auth/model path is working. The provider returned a non-audio or empty response for those specific phrase requests. Regenerate after checking the Vertex model, region, voice, quota, and FFmpeg availability. The exporter records phrase TTS text hashes and the media ledger in newer V12 exports so failed or mismatched audio can be traced to a segment/card/text.
+
 ## TTS Audio Does Not Match The Card Text
 
 The exporter generates two different AI audio fields:
@@ -96,6 +109,12 @@ The exporter generates two different AI audio fields:
 - Phrase TTS reads the visible core answer, normally `answer_core` or the cleaned phrase.
 
 If the phrase audio sounds unrelated, inspect the card in the review panel before export. The core answer must be the English expression only. Chinese meaning, IPA, pronunciation explanations, and teacher notes belong in `phonetic_ipa`, `spoken_ipa`, `source_spoken_ipa`, `pronunciation_note`, or explanation fields, not in `answer_core`. The worker now repairs or rejects mixed-language `answer_core`, and export writes a `media_ledger` so TTS files can be traced back to the segment, card, learning point, and text hash.
+
+## Card Back Only Shows The Original Sentence And Media
+
+If the back side only shows the original sentence, audio buttons, and video, the card likely has a sparse AI payload: the model returned the learning point but did not return usable explanation fields such as Chinese meaning, definition/usage, context, teacher note, or usage boundary.
+
+This should not be treated as a finished card. The worker now marks sparse AI expression/cloze cards with `AI 解释字段不足`, keeps them disabled or review-only, and blocks placeholder text such as `本地待审`, `待精修`, `正式导出前`, or `use ... in a complete sentence` from becoming recommended study content. Regenerate with a model-backed configuration, or manually fill the missing fields before export.
 
 ## TTS Sounds Slow or Unnatural
 

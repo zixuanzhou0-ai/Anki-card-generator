@@ -4,6 +4,7 @@ import {
   DEEPSEEK_OPENAI_BASE_URL,
   GEMINI_VERTEX_DEFAULT_MODEL,
   GEMINI_VERTEX_GLOBAL_BASE_URL,
+  GEMINI_VERTEX_UNAVAILABLE_MODEL_ALIASES,
   GEMINI_VERTEX_TTS_DEFAULT_MODEL,
   GEMINI_VERTEX_TTS_DEFAULT_VOICE,
   GEMINI_VERTEX_TTS_GLOBAL_BASE_URL,
@@ -41,6 +42,13 @@ export function normalizeDeepSeekModelId(value: string) {
   if (normalized === 'deepseek-chat' || normalized === 'deepseek-reasoner') {
     return DEEPSEEK_DEFAULT_MODEL
   }
+  return value.trim()
+}
+
+export function normalizeGeminiVertexModelId(value: string) {
+  const normalized = value.trim().toLowerCase()
+  if (!normalized) return GEMINI_VERTEX_DEFAULT_MODEL
+  if (GEMINI_VERTEX_UNAVAILABLE_MODEL_ALIASES.has(normalized)) return GEMINI_VERTEX_DEFAULT_MODEL
   return value.trim()
 }
 
@@ -134,7 +142,7 @@ export function normalizeApiConfigForRequest(api: ApiConfig): ApiConfig {
     return {
       ...api,
       base_url: api.base_url.trim() || GEMINI_VERTEX_GLOBAL_BASE_URL,
-      model: api.model.trim() || GEMINI_VERTEX_DEFAULT_MODEL,
+      model: normalizeGeminiVertexModelId(api.model),
       capabilities: Array.from(new Set([...(api.capabilities ?? []), 'structured_json', 'long_context'])),
     }
   }
@@ -192,7 +200,7 @@ export function resolveTtsConfig(tts: TtsConfig, api: ApiConfig): TtsConfig {
       base_url: tts.base_url.trim() || GEMINI_VERTEX_TTS_GLOBAL_BASE_URL,
       model: tts.model.trim() || GEMINI_VERTEX_TTS_DEFAULT_MODEL,
       voice: tts.voice.trim() || GEMINI_VERTEX_TTS_DEFAULT_VOICE,
-      language: tts.language.trim() || 'en-US',
+      language: tts.language.trim() || 'auto',
     }
   }
 

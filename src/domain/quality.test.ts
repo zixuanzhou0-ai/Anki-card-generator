@@ -48,12 +48,11 @@ describe('review quality helpers', () => {
     expect(title).not.toBe('key expression')
   })
 
-  it('matches recommended segments by review status', () => {
-    const segment = { ...baseSegment, phrase_review_status: 'recommended' }
+  it('matches segments by selected and unselected card state', () => {
+    const segment = { ...baseSegment, cards: [{ ...baseCard, enabled: true }] }
 
-    expect(segmentReviewStatus(segment)).toBe('recommended')
-    expect(segmentMatchesFilter(segment, 'recommended')).toBe(true)
-    expect(segmentMatchesFilter(segment, 'reject')).toBe(false)
+    expect(segmentMatchesFilter(segment, 'selected')).toBe(true)
+    expect(segmentMatchesFilter(segment, 'unselected')).toBe(false)
   })
 
   it('lets rejected card quality override a conflicting recommended segment status', () => {
@@ -61,8 +60,8 @@ describe('review quality helpers', () => {
     const segment = { ...baseSegment, phrase_review_status: 'recommended', cards: [rejected] }
 
     expect(segmentReviewStatus(segment)).toBe('reject')
-    expect(segmentMatchesFilter(segment, 'recommended')).toBe(false)
-    expect(segmentMatchesFilter(segment, 'reject')).toBe(true)
+    expect(segmentMatchesFilter(segment, 'selected')).toBe(false)
+    expect(segmentMatchesFilter(segment, 'unselected')).toBe(true)
   })
 
   it('selects only recommended cards in recommended mode', () => {
@@ -96,5 +95,72 @@ describe('review quality helpers', () => {
 
     expect(result.selected).toBe(1)
     expect(result.project.segments[0].cards.map((card) => card.enabled)).toEqual([true, false])
+  })
+
+  it('does not auto-export review cards just because their segment is recommended', () => {
+    const recommended = { ...baseCard, quality: { score: 90, status: 'recommended' as const, issues: [] } }
+    const review = { ...baseCard, id: 'card-2', quality: { score: 62, status: 'needs_review' as const, issues: ['needs human check'] } }
+    const project = {
+      id: 'project-1',
+      title: 'Project',
+      video_path: '',
+      subtitle_path: '',
+      language: 'English',
+      level: 'B1' as const,
+      template_id: 'immersive' as const,
+      content_toggles: {
+        daily: true,
+        slang: true,
+        sarcasm: true,
+        business: true,
+        culture: true,
+        profanity: false,
+        romance: false,
+        rare: false,
+      },
+      card_types: ['phrase' as const],
+      segments: [{ ...baseSegment, phrase_review_status: 'recommended', cards: [recommended, review] }],
+      created_at: 1,
+    }
+
+    const result = applyCardSelection(project, 'recommended')
+
+    expect(result.selected).toBe(1)
+    expect(result.project.segments[0].cards.map((card) => card.enabled)).toEqual([true, false])
+  })
+
+  it('selects recommended plus needs_review cards in reviewable mode', () => {
+    const recommended = { ...baseCard, quality: { score: 90, status: 'recommended' as const, issues: [] } }
+    const review = { ...baseCard, id: 'card-2', quality: { score: 62, status: 'needs_review' as const, issues: [] } }
+    const rejected = { ...baseCard, id: 'card-3', quality: { score: 20, status: 'reject' as const, issues: [] } }
+    const project = {
+      id: 'project-1',
+      title: 'Project',
+      video_path: '',
+      subtitle_path: '',
+      language: 'en',
+      level: 'B1' as const,
+      template_id: 'immersive' as const,
+      content_toggles: {
+        daily: true,
+        slang: true,
+        sarcasm: true,
+        business: true,
+        culture: true,
+        profanity: false,
+        romance: false,
+        rare: false,
+      },
+      card_types: ['phrase' as const],
+      selection_strategy: 'catch_all' as const,
+      segments: [{ ...baseSegment, cards: [recommended, review, rejected] }],
+      created_at: 1,
+    }
+
+    const result = applyCardSelection(project, 'reviewable')
+
+    expect(result.selected).toBe(2)
+    expect(result.project.segments[0].cards.map((card) => card.enabled)).toEqual([true, true, false])
+    expect(result.project.quality_funnel?.selected_card_count).toBe(2)
   })
 })

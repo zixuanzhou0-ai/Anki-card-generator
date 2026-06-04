@@ -22,7 +22,7 @@ export function createDemoProject(request: GenerateRequest): Project {
           id: 'doc_demo_001_knowledge',
           type: 'knowledge',
           type_label: isReading ? '文档精读卡' : '知识卡',
-          enabled: !isReading,
+          enabled: true,
           english: isReading
             ? 'How does the document use “it turns out” to introduce a discovered result?'
             : 'What is spaced repetition and why does it improve long-term memory?',
@@ -40,14 +40,16 @@ export function createDemoProject(request: GenerateRequest): Project {
           chinese_feel: isReading ? '中文更像“结果发现 / 事实证明”。' : '中文里更接近“隔一段时间再复习，而不是一次性死背”。',
           why: isReading ? '阅读英文资料时经常遇到，能帮助识别作者在引出结论。' : '这是理解 Anki 工作方式的基础概念，也容易迁移到任何学科。',
           difficulty: 'B1 日常交流',
+          estimated_level: 'B1',
+          difficulty_reason: '高频表达，但需要理解语篇承接功能。',
           teacher_note: isReading
-            ? '这张精读卡默认待审：确认表达来自原文，并补一个你会再次遇到的语境。'
+            ? '这张精读卡用于确认表达来自原文，并补一个你会再次遇到的语境。'
             : '这张卡要记住的是机制，不是背定义：为什么“隔开复习”更有效。',
           cloze: isReading ? '____ the simple method works in practice.' : '____ improves long-term memory by scheduling reviews before forgetting.',
           quality: {
             score: isReading ? 72 : 88,
             status: isReading ? 'needs_review' : 'recommended',
-            issues: isReading ? ['文档精读卡默认待审，需确认语言点是否值得保留'] : [],
+            issues: isReading ? ['文档精读卡建议确认表达是否来自原文'] : [],
           },
         },
       ],
@@ -62,6 +64,7 @@ export function createDemoProject(request: GenerateRequest): Project {
       subtitle_path: '',
       document_path: request.document_path || 'demo.md',
       language: request.language,
+      level_mode: request.level_mode,
       level: request.level,
       collection_levels: request.collection_levels,
       template_id: request.template_id,
@@ -146,6 +149,8 @@ export function createDemoProject(request: GenerateRequest): Project {
             : '中文里更接近“弄明白 / 想清楚”。',
         why: '这句短、真实、可迁移，适合用来训练听力和表达块。',
         difficulty: levels.find((level) => level.id === request.level)?.label ?? request.level,
+        estimated_level: request.level,
+        difficulty_reason: '按演示请求水平和表达迁移价值估计。',
         teacher_note: `这句值得学，因为 ${segment.phrase} 是真实口语里的高频表达。`,
         cloze,
         phrase_type: segment.phrase_type,
@@ -172,6 +177,7 @@ export function createDemoProject(request: GenerateRequest): Project {
     video_path: request.video_path || 'demo.mp4',
     subtitle_path: request.subtitle_path || 'demo.srt',
     language: request.language,
+    level_mode: request.level_mode,
     level: request.level,
     collection_levels: request.collection_levels,
     template_id: request.template_id,

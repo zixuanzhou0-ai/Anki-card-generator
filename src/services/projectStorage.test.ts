@@ -44,6 +44,12 @@ describe('projectStorage document focus migration', () => {
     expect(loadSavedRequest().document_focus).toEqual(['examples', 'terms'])
   })
 
+  it('normalizes legacy display language values to stable codes', () => {
+    window.localStorage.setItem(REQUEST_STORAGE_KEY, JSON.stringify({ language: 'Français' }))
+
+    expect(loadSavedRequest().language).toBe('fr')
+  })
+
   it('normalizes saved document study path settings', () => {
     window.localStorage.setItem(
       REQUEST_STORAGE_KEY,
@@ -149,6 +155,7 @@ describe('projectStorage document focus migration', () => {
     )
 
     const project = loadSavedProject()
+    expect(project?.language).toBe('en')
     expect(project?.language_focus).toEqual(['phrases'])
     expect(project?.source_info).toMatchObject({ document_study_mode: 'language_reading' })
   })

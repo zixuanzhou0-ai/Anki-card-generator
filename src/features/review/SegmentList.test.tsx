@@ -57,9 +57,9 @@ describe('SegmentList', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /figure out/ }))
 
-    expect(screen.getByText(/推荐 · 5\/5/)).toBeInTheDocument()
+    expect(screen.getByText(/学习点 · 5\/5/)).toBeInTheDocument()
     expect(screen.getByText(/训练点：练 figure out 的口语解决问题表达/)).toBeInTheDocument()
-    expect(screen.getByText('1/1 张已选 · 推荐 5/5')).toBeInTheDocument()
+    expect(screen.getByText('1/1 张已选')).toBeInTheDocument()
     expect(onSelectSegment).toHaveBeenCalledWith('seg-1')
 
     fireEvent.click(screen.getByRole('checkbox', { name: /选择片段：figure out/ }))

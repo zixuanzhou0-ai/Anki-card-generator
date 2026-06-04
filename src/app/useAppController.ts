@@ -66,7 +66,7 @@ import {
   selectionStrategyOptions,
   templateOptions,
 } from '../domain/options'
-import { applyCardSelection, badgeText, isRecommendedCardForExport, segmentMatchesFilter } from '../domain/quality'
+import { applyUsableCardSelection, badgeText, segmentMatchesFilter } from '../domain/quality'
 import {
   countSelectedCards,
   getQualityCounts,
@@ -131,6 +131,48 @@ function touchesSourceMaterial(patch: Partial<GenerateRequest>) {
   return ['source_mode', 'source_url', 'video_path', 'subtitle_path', 'document_path'].some((key) =>
     Object.prototype.hasOwnProperty.call(patch, key),
   )
+}
+
+function modelApiTestTitle(result: ApiTestResult | null, testing: boolean) {
+  if (testing) return '正在测试连接'
+  if (!result) return '尚未测试'
+  if (result.ok) return '连接成功'
+  switch (result.error_code) {
+    case 'MODEL_AUTH_FAILED':
+      return '授权失败'
+    case 'MODEL_TIMEOUT':
+      return '请求超时'
+    case 'MODEL_QUOTA_EXCEEDED':
+      return '配额或限流'
+    case 'MODEL_NOT_FOUND':
+      return '模型或端点不存在'
+    case 'MODEL_CONNECTION_FAILED':
+      return '网络连接异常'
+    case 'MODEL_JSON_INVALID':
+      return '模型输出格式异常'
+    default:
+      return '测试失败'
+  }
+}
+
+function ttsApiTestTitle(result: TtsTestResult | null, testing: boolean, enabled: boolean) {
+  if (testing) return '正在测试 TTS'
+  if (!result) return enabled ? 'TTS 已开启，尚未测试' : 'TTS 已关闭'
+  if (result.ok) return 'TTS 连接成功'
+  switch (result.error_code) {
+    case 'TTS_AUTH_FAILED':
+      return 'TTS 授权失败'
+    case 'TTS_TIMEOUT':
+      return 'TTS 请求超时'
+    case 'TTS_QUOTA_EXCEEDED':
+      return 'TTS 配额或限流'
+    case 'TTS_NOT_FOUND':
+      return 'TTS 模型或端点不存在'
+    case 'TTS_CONNECTION_FAILED':
+      return 'TTS 网络异常'
+    default:
+      return 'TTS 测试失败'
+  }
 }
 
 export function useAppController() {
@@ -250,13 +292,7 @@ export function useAppController() {
     },
   ]
   const apiTestTone = apiTesting ? 'testing' : apiTestResult ? (apiTestResult.ok ? 'ok' : 'warn') : 'idle'
-  const apiTestTitle = apiTesting
-    ? '正在测试连接'
-    : apiTestResult
-      ? apiTestResult.ok
-        ? '连接成功'
-        : '连接失败'
-      : '尚未测试'
+  const apiTestTitle = modelApiTestTitle(apiTestResult, apiTesting)
   const apiTestMessage = apiTesting
     ? '正在向当前接口发送一条短测试消息，通常几秒内会返回。'
     : (apiTestResult?.message ?? '换 Provider、Base URL、模型名或 API Key 后，都建议点一次测试连接。')
@@ -267,15 +303,7 @@ export function useAppController() {
     : `${request.api_config.provider} · ${request.api_config.model || '未填模型'}`
   const tts = request.api_config.tts_config
   const ttsTestTone = ttsTesting ? 'testing' : ttsTestResult ? (ttsTestResult.ok ? 'ok' : 'warn') : 'idle'
-  const ttsTestTitle = ttsTesting
-    ? '正在测试 TTS'
-    : ttsTestResult
-      ? ttsTestResult.ok
-        ? 'TTS 连接成功'
-        : 'TTS 连接失败'
-      : tts.enabled
-        ? 'TTS 已开启，尚未测试'
-        : 'TTS 已关闭'
+  const ttsTestTitle = ttsApiTestTitle(ttsTestResult, ttsTesting, tts.enabled)
   const ttsTestMessage = ttsTesting
     ? '正在生成一小段测试音频，用来确认 Key、语音和接口可用。'
     : (ttsTestResult?.message ??
@@ -434,31 +462,32 @@ export function useAppController() {
   }, [project, activeSegmentId, visibleSegments])
 
   function applyGeneratedProject(result: Project, editedDuringRun: boolean) {
-    setProject(result)
+    const generatedSelection = applyUsableCardSelection(result)
+    const projectToShow = generatedSelection.project
+    setProject(projectToShow)
     setSegmentFilter('all')
-    setActiveSegmentId(result.segments[0]?.id ?? null)
-    const recommendedCount = result.segments.reduce(
-      (total, segment) => total + segment.cards.filter((card) => isRecommendedCardForExport(segment, card)).length,
-      0,
-    )
-    const isDocument = result.source_mode === 'document'
-    const isReading = isDocument && result.document_study_mode === 'language_reading'
+    setActiveSegmentId(projectToShow.segments[0]?.id ?? null)
+    const usableCount = generatedSelection.selected
+    const filteredCount = projectToShow.quality_funnel?.filtered_learning_point_count ?? 0
+    const isDocument = projectToShow.source_mode === 'document'
+    const isReading = isDocument && projectToShow.document_study_mode === 'language_reading'
     const shortHint =
-      recommendedCount < 5
+      usableCount < 5
         ? isReading
-          ? '推荐精读卡偏少，通常是语言点较弱、模型返回空或多数卡仍需人工确认；可以在质量仪表盘查看原因。'
+          ? '可用精读卡偏少，通常是语言点较弱、模型返回空或多数学习点被过滤；可以在诊断面板查看原因。'
           : isDocument
-            ? '推荐知识卡偏少，通常是文档分段较少、模型返回空或多数卡仍需人工确认；可以在质量仪表盘查看原因。'
-            : '推荐卡偏少，通常是字幕太短、重复太多、词伙评分不足或模型返回空；可以在质量仪表盘查看原因。'
+            ? '可用知识卡偏少，通常是文档分段较少、模型返回空或多数学习点被过滤；可以在诊断面板查看原因。'
+            : '可用卡偏少，通常是字幕太短、重复太多、词伙评分不足或模型返回空；可以在诊断面板查看原因。'
         : ''
     const editedHint = editedDuringRun ? ' 生成期间你修改过设置；下一次生成会使用新配置。' : ''
     setStatus(
-      (result.warning ||
-        (result.source_mode === 'url'
-          ? `URL 导入成功，已生成 ${result.segments.length} 个片段组，推荐 ${recommendedCount} 张。${shortHint}`
-          : result.source_mode === 'document'
-            ? `文档导入成功，已生成 ${result.segments.length} 个${isReading ? '精读点' : '知识点'}组。${shortHint}`
-            : `已生成 ${result.segments.length} 个片段组，推荐 ${recommendedCount} 张。${shortHint}`)) + editedHint,
+      (projectToShow.warning ||
+        (projectToShow.source_mode === 'url'
+          ? `URL 导入成功，已生成 ${usableCount} 张可用卡，默认全选。过滤 ${filteredCount} 个低价值/重复学习点。${shortHint}`
+          : projectToShow.source_mode === 'document'
+            ? `文档导入成功，已生成 ${usableCount} 张${isReading ? '精读' : '知识'}可用卡，默认全选。过滤 ${filteredCount} 个低价值/重复学习点。${shortHint}`
+            : `已生成 ${usableCount} 张可用卡，默认全选。过滤 ${filteredCount} 个低价值/重复学习点。${shortHint}`)) +
+        editedHint,
     )
   }
 
@@ -618,6 +647,7 @@ export function useAppController() {
 
   const selectCurrentLevel = (level: Level) => {
     patchRequest({
+      level_mode: 'manual',
       level,
       collection_levels: defaultCollectionLevels(level),
     })
@@ -897,19 +927,27 @@ export function useAppController() {
       patchRequest({ api_config: api })
       setStatus('已自动修正模型 API 配置，再开始测试连接。')
     }
-    const failBeforeRequest = (message: string) => {
+    const failBeforeRequest = (message: string, errorCode: string = 'MODEL_AUTH_FAILED') => {
       setApiTestResult({
         ok: false,
         provider: api.provider,
         model: api.model,
         message,
+        error_code: errorCode,
+        stage: 'model_api',
+        retryable: false,
       })
       setStatus(`API 测试失败：${message}`)
     }
 
     const configError = validateApiConfigForRequest(api)
     if (configError) {
-      failBeforeRequest(configError)
+      const errorCode = !api.model.trim()
+        ? 'MODEL_NOT_FOUND'
+        : configError.includes('Base URL') || configError.includes('URL')
+          ? 'MODEL_CONNECTION_FAILED'
+          : 'MODEL_AUTH_FAILED'
+      failBeforeRequest(configError, errorCode)
       return
     }
 
@@ -939,6 +977,9 @@ export function useAppController() {
         provider: api.provider,
         model: api.model,
         message,
+        error_code: 'MODEL_CONNECTION_FAILED',
+        stage: 'model_api',
+        retryable: true,
       })
       setStatus(`API 测试失败：${message}`)
     } finally {
@@ -948,36 +989,45 @@ export function useAppController() {
 
   const testTts = async () => {
     const currentTts = resolveTtsConfig(request.api_config.tts_config, request.api_config)
-    const failBeforeRequest = (message: string) => {
+    const failBeforeRequest = (message: string, errorCode: string = 'TTS_AUTH_FAILED') => {
       setTtsTestResult({
         ok: false,
         provider: currentTts.provider,
         model: currentTts.model,
         voice: currentTts.voice,
         message,
+        error_code: errorCode,
+        stage: 'tts',
+        retryable: false,
       })
       setStatus(`TTS 测试失败：${message}`)
     }
 
     if (!currentTts.enabled || currentTts.provider === 'disabled') {
-      failBeforeRequest('TTS 当前是关闭状态。')
+      failBeforeRequest('TTS 当前是关闭状态。', 'TTS_NOT_FOUND')
       return
     }
     const ttsConfigError = validateTtsConfigForRequest(currentTts)
     if (ttsConfigError) {
-      failBeforeRequest(ttsConfigError)
+      const errorCode =
+        !currentTts.model.trim() || !currentTts.voice.trim()
+          ? 'TTS_NOT_FOUND'
+          : ttsConfigError.includes('Base URL') || ttsConfigError.includes('URL')
+            ? 'TTS_CONNECTION_FAILED'
+            : 'TTS_AUTH_FAILED'
+      failBeforeRequest(ttsConfigError, errorCode)
       return
     }
     if (currentTts.provider === 'grok' && !currentTts.voice.trim()) {
-      failBeforeRequest('Grok TTS 需要填写 voice_id，例如 eve、ara、leo、rex、sal。')
+      failBeforeRequest('Grok TTS 需要填写 voice_id，例如 eve、ara、leo、rex、sal。', 'TTS_NOT_FOUND')
       return
     }
     if (currentTts.provider === 'gemini' && !currentTts.model.trim()) {
-      failBeforeRequest('Gemini TTS 需要填写 TTS 模型名。')
+      failBeforeRequest('Gemini TTS 需要填写 TTS 模型名。', 'TTS_NOT_FOUND')
       return
     }
     if (currentTts.provider === 'gemini-vertex' && !currentTts.model.trim()) {
-      failBeforeRequest('Gemini Vertex TTS 需要填写 TTS 模型名。')
+      failBeforeRequest('Gemini Vertex TTS 需要填写 TTS 模型名。', 'TTS_NOT_FOUND')
       return
     }
     if (
@@ -988,6 +1038,7 @@ export function useAppController() {
         currentTts.provider === 'mimo'
           ? 'MIMO TTS 需要 Base URL 和模型名。'
           : 'OpenAI-compatible Speech 需要 Base URL 和模型名。',
+        'TTS_NOT_FOUND',
       )
       return
     }
@@ -998,6 +1049,7 @@ export function useAppController() {
     ) {
       failBeforeRequest(
         `你填的是 tp- 开头的 Token Plan Key，TTS Base URL 必须用 ${MIMO_TOKEN_PLAN_SGP_BASE_URL}，不能用公共 ${MIMO_OPENAI_BASE_URL}。请点 “MIMO SGP TTS” 预设。`,
+        'TTS_AUTH_FAILED',
       )
       return
     }
@@ -1034,6 +1086,9 @@ export function useAppController() {
         model: currentTts.model,
         voice: currentTts.voice,
         message,
+        error_code: 'TTS_CONNECTION_FAILED',
+        stage: 'tts',
+        retryable: true,
       })
       setStatus(`TTS 测试失败：${message}`)
     } finally {
@@ -1092,7 +1147,7 @@ export function useAppController() {
         : generateRequest.source_mode === 'document'
           ? '正在解析文档、总结知识点并生成卡片草稿。'
           : resolvedApi.fallbackReason
-            ? `模型 API 未就绪（${resolvedApi.fallbackReason}），本次先用本地规则解析字幕并生成推荐卡。`
+            ? `模型 API 未就绪（${resolvedApi.fallbackReason}），本次先用本地规则解析字幕并生成可用卡。`
             : generateRequest.subtitle_path
               ? '正在解析字幕、筛选片段并生成卡片草稿。'
               : '正在自动匹配同目录字幕、筛选片段并生成卡片草稿。',
@@ -1175,14 +1230,14 @@ export function useAppController() {
     }
     let projectForExport = project
     if (selectedCardCount === 0) {
-      const recommendedSelection = applyCardSelection(project, 'recommended')
-      if (recommendedSelection.selected === 0) {
-        setStatus('当前没有启用的卡片，也没有可自动启用的推荐卡。请改用“推荐+待审”或手动勾选至少一张。')
+      const usableSelection = applyUsableCardSelection(project)
+      if (usableSelection.selected === 0) {
+        setStatus('当前没有启用的卡片，也没有可自动启用的可用卡。请手动检查生成结果或重新生成。')
         return
       }
-      projectForExport = recommendedSelection.project
+      projectForExport = usableSelection.project
       setProject(projectForExport)
-      setStatus(`已自动启用 ${recommendedSelection.selected} 张推荐卡，继续导出。`)
+      setStatus(`已自动启用 ${usableSelection.selected} 张可用卡，继续导出。`)
     }
     if (!isTauriRuntime()) {
       setStatus('浏览器预览模式不能导出 apkg，请运行 npm run tauri:dev。')
@@ -1299,35 +1354,51 @@ export function useAppController() {
     setAnkiVerifyResult(null)
     setProject((current) => {
       if (!current) return current
+      const segments = current.segments.map((segment) =>
+        segmentId && segment.id !== segmentId
+          ? segment
+          : {
+              ...segment,
+              cards: segment.cards.map((card) => ({ ...card, enabled })),
+            },
+      )
+      const selected = segments.reduce(
+        (total, segment) => total + segment.cards.filter((card) => card.enabled).length,
+        0,
+      )
       return {
         ...current,
-        segments: current.segments.map((segment) =>
-          segmentId && segment.id !== segmentId
-            ? segment
-            : {
-                ...segment,
-                cards: segment.cards.map((card) => ({ ...card, enabled })),
-              },
-        ),
+        quality_funnel: current.quality_funnel
+          ? { ...current.quality_funnel, selected_card_count: selected }
+          : { selected_card_count: selected },
+        segments,
       }
     })
   }
 
-  const selectCardsByQuality = (mode: 'recommended' | 'reviewable') => {
+  const invertCardSelection = () => {
     setLastExport(null)
     setAnkiVerifyResult(null)
-    if (!project) return
-    const result = applyCardSelection(project, mode)
-    setProject(result.project)
-    setStatus(
-      result.selected === 0
-        ? mode === 'recommended'
-          ? '当前没有推荐卡；可以切到“推荐+待审”，或查看质量漏斗了解为什么推荐数量少。'
-          : '当前没有可导出的推荐或待审卡；请手动勾选，或降低筛选强度后重新生成。'
-        : mode === 'recommended'
-          ? `已只保留推荐卡：${result.selected} 张。待审和建议删除已关闭。`
-          : `已保留推荐卡和待审卡：${result.selected} 张。建议删除已关闭。`,
-    )
+    setProject((current) => {
+      if (!current) return current
+      let selected = 0
+      const segments = current.segments.map((segment) => ({
+        ...segment,
+        cards: segment.cards.map((card) => {
+          const enabled = !card.enabled
+          if (enabled) selected += 1
+          return { ...card, enabled }
+        }),
+      }))
+      return {
+        ...current,
+        quality_funnel: current.quality_funnel
+          ? { ...current.quality_funnel, selected_card_count: selected }
+          : { selected_card_count: selected },
+        segments,
+      }
+    })
+    setStatus('已反选当前生成的可用卡。')
   }
 
   const updateCard = (segmentId: string, cardId: string, patch: Partial<Card>) => {
@@ -1507,7 +1578,7 @@ export function useAppController() {
     segmentFilter,
     segmentReviewCounts,
     selectedCardCount,
-    selectCardsByQuality,
+    invertCardSelection,
     selectCurrentLevel,
     selectPath,
     selectSegment: setActiveSegmentId,

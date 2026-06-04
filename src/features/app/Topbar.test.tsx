@@ -51,7 +51,7 @@ describe('Topbar', () => {
       hasExportableCards: true,
       hasProject: true,
       projectSummary: {
-        reviewCount: 2,
+        usableCount: 6,
         selectedCardLabel: '6 张已选',
         segmentCount: 4,
         templateLabel: '沉浸语言 V10',

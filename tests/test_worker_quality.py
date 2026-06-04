@@ -226,6 +226,121 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(calls["timeout"], 180)
         self.assertEqual(content, '{"segments":[]}')
 
+    def test_gemini_vertex_model_alias_falls_back_to_preview(self):
+        calls = {}
+        original_http_json = worker._legacy_worker.http_json
+        original_gcloud_value = worker._legacy_worker.gcloud_value
+
+        def fake_gcloud_value(args, timeout=30):
+            if args == ["config", "get-value", "core/project"]:
+                return "project-test"
+            if args == ["auth", "print-access-token"]:
+                return "ya29.test-token"
+            return ""
+
+        def fake_http_json(url, headers, body, timeout=60):
+            calls["url"] = url
+            return {"candidates": [{"content": {"parts": [{"text": '{"segments":[]}'}]}}]}
+
+        try:
+            worker._legacy_worker.gcloud_value = fake_gcloud_value
+            worker._legacy_worker.http_json = fake_http_json
+            worker.gemini_vertex_generate_content(
+                {
+                    "provider": "gemini-vertex",
+                    "base_url": "https://aiplatform.googleapis.com",
+                    "model": "gemini-3.1-pro",
+                },
+                "Return JSON.",
+            )
+        finally:
+            worker._legacy_worker.http_json = original_http_json
+            worker._legacy_worker.gcloud_value = original_gcloud_value
+
+        self.assertIn("/models/gemini-3.1-pro-preview:generateContent", calls["url"])
+
+    def test_test_api_classifies_gemini_vertex_timeout(self):
+        original_generate = worker._legacy_worker.gemini_vertex_generate_content
+
+        def fake_generate(*args, **kwargs):
+            raise TimeoutError("timed out")
+
+        try:
+            worker._legacy_worker.gemini_vertex_generate_content = fake_generate
+            result = worker.handle_test_api(
+                {
+                    "api_config": {
+                        "provider": "gemini-vertex",
+                        "base_url": "https://aiplatform.googleapis.com",
+                        "model": "gemini-3.1-pro-preview",
+                    }
+                }
+            )
+        finally:
+            worker._legacy_worker.gemini_vertex_generate_content = original_generate
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_code"], "MODEL_TIMEOUT")
+        self.assertEqual(result["stage"], "model_api")
+        self.assertTrue(result["retryable"])
+        self.assertIn("模型请求超时", result["message"])
+
+    def test_test_api_classifies_gemini_vertex_quota_error(self):
+        original_generate = worker._legacy_worker.gemini_vertex_generate_content
+
+        def fake_generate(*args, **kwargs):
+            raise RuntimeError('API HTTP 429: {"error":{"message":"RESOURCE_EXHAUSTED quota exceeded"}}')
+
+        try:
+            worker._legacy_worker.gemini_vertex_generate_content = fake_generate
+            result = worker.handle_test_api(
+                {
+                    "api_config": {
+                        "provider": "gemini-vertex",
+                        "base_url": "https://aiplatform.googleapis.com",
+                        "model": "gemini-3.1-pro-preview",
+                    }
+                }
+            )
+        finally:
+            worker._legacy_worker.gemini_vertex_generate_content = original_generate
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_code"], "MODEL_QUOTA_EXCEEDED")
+        self.assertEqual(result["stage"], "model_api")
+        self.assertTrue(result["retryable"])
+        self.assertIn("模型配额或限流", result["message"])
+
+    def test_test_tts_classifies_vertex_timeout(self):
+        original_call_tts_audio = worker._legacy_worker.call_tts_audio
+
+        def fake_call_tts_audio(*args, **kwargs):
+            raise RuntimeError("Gemini Vertex TTS 请求失败：timed out")
+
+        try:
+            worker._legacy_worker.call_tts_audio = fake_call_tts_audio
+            result = worker.handle_test_tts(
+                {
+                    "tts_config": {
+                        "enabled": True,
+                        "provider": "gemini-vertex",
+                        "base_url": "https://aiplatform.googleapis.com",
+                        "model": "gemini-3.1-flash-tts-preview",
+                        "voice": "Kore",
+                        "language": "auto",
+                    },
+                    "language": "en",
+                }
+            )
+        finally:
+            worker._legacy_worker.call_tts_audio = original_call_tts_audio
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_code"], "TTS_TIMEOUT")
+        self.assertEqual(result["stage"], "tts")
+        self.assertTrue(result["retryable"])
+        self.assertIn("TTS请求超时", result["message"])
+
     def test_material_context_accepts_direct_gemini_vertex_context_payload(self):
         original_generate = worker._legacy_worker.gemini_vertex_generate_content
 
@@ -421,7 +536,8 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(project["subtitle_path"], str(subtitle))
         self.assertRegex(project["source_info"]["video_fingerprint"], r"^[0-9a-f]{24}$")
         self.assertRegex(project["source_info"]["subtitle_fingerprint"], r"^[0-9a-f]{24}$")
-        self.assertTrue(any("Local only line" in segment["text"] for segment in project["segments"]))
+        self.assertGreaterEqual(project["quality_funnel"]["subtitle_cues"], 2)
+        self.assertGreaterEqual(project["quality_funnel"]["filtered_learning_point_count"], 1)
 
     def test_catch_all_groups_multiple_learning_points_from_one_sentence(self):
         cues = [worker.Cue(1, 0.0, 4.0, "Ever want me to run the register, I could critique it for you.")]
@@ -542,6 +658,56 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("register", phrases)
         self.assertEqual(len([card for card in merged[0]["cards"] if card["type"] == "phrase"]), 2)
 
+    def test_sparse_ai_phrase_card_is_not_recommended(self):
+        segments = [
+            {
+                "id": "seg_0001",
+                "text": "This thing performs as advertised.",
+                "phrase": "performs as advertised",
+                "source_time": "00:00:01.000 - 00:00:03.000",
+                "candidate_kind": "expression",
+                "phrase_type": "collocation",
+                "content_kind": "phrase",
+                "learning_points": [
+                    {
+                        "id": "lp_phrase",
+                        "kind": "expression",
+                        "exact_span": "performs as advertised",
+                        "normalized_answer": "performs as advertised",
+                        "answer_core": "performs as advertised",
+                        "phrase_type": "collocation",
+                        "content_kind": "phrase",
+                        "suggested_card_type": "phrase",
+                    }
+                ],
+            }
+        ]
+        ai_payload = {
+            "segments": [
+                {
+                    "id": "seg_0001",
+                    "cards": [
+                        {
+                            "type": "phrase",
+                            "learning_point_id": "lp_phrase",
+                            "exact_span": "performs as advertised",
+                            "normalized_answer": "performs as advertised",
+                            "answer_core": "performs as advertised",
+                            "phrase": "performs as advertised",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        merged, _ = worker.merge_ai_cards(segments, ai_payload, ["phrase"], "C1")
+        card = merged[0]["cards"][0]
+
+        self.assertFalse(card["enabled"])
+        self.assertNotEqual(card["quality"]["status"], "recommended")
+        self.assertIn("AI 解释字段不足", card["quality"]["issues"])
+        self.assertIn("字段像模板废话", card["quality"]["issues"])
+
     def test_try_run_ffmpeg_returns_error_instead_of_exiting(self):
         original_which = worker.shutil.which
         try:
@@ -617,6 +783,7 @@ class WorkerQualityTests(unittest.TestCase):
             connection = sqlite3.connect(root / "collection.anki2")
             try:
                 models_json = connection.execute("select models from col").fetchone()[0]
+                note_fields = connection.execute("select flds from notes limit 1").fetchone()[0]
             finally:
                 connection.close()
             model = next(iter(json.loads(models_json).values()))
@@ -642,7 +809,17 @@ class WorkerQualityTests(unittest.TestCase):
             self.assertIn("SpokenIpa", field_names)
             self.assertIn("SourceSpokenIpa", field_names)
             self.assertIn("PronunciationNote", field_names)
-            self.assertIn("标准 IPA", template["afmt"])
+            self.assertIn("PronunciationMeta", field_names)
+            self.assertIn("SpokenPronunciationLabel", field_names)
+            self.assertIn("StandardPronunciationHint", field_names)
+            self.assertIn("标准读法", template["afmt"])
+            self.assertIn("{{SpokenPronunciationLabel}}", template["afmt"])
+            self.assertIn("{{^SourceSpokenIpa}}", template["afmt"])
+            self.assertIn("原句听感</span><strong>未单独标注</strong>", template["afmt"])
+            exported_fields = note_fields.split("\x1f")
+            meta = json.loads(exported_fields[field_names.index("PronunciationMeta")])
+            self.assertIn(meta["language_code"], {"en", "fr", "es", "ja", "ru"})
+            self.assertIn("generation_basis", meta)
 
     def test_export_phrase_tts_matches_visible_answer_for_repetition_cards(self):
         try:
@@ -1241,10 +1418,132 @@ class WorkerQualityTests(unittest.TestCase):
         )
         self.assertEqual(calls["headers"]["Authorization"], "Bearer ya29.test-token")
         self.assertEqual(calls["headers"]["x-goog-user-project"], "project-test")
-        speech_config = calls["body"]["generation_config"]["speech_config"]
-        self.assertEqual(speech_config["language_code"], "en-US")
-        self.assertEqual(speech_config["voice_config"]["prebuilt_voice_config"]["voice_name"], "Kore")
-        self.assertEqual(calls["body"]["contents"]["parts"]["text"], "This is a local video card.")
+        speech_config = calls["body"]["generationConfig"]["speechConfig"]
+        self.assertEqual(calls["body"]["generationConfig"]["responseModalities"], ["AUDIO"])
+        self.assertEqual(speech_config["languageCode"], "en-US")
+        self.assertEqual(speech_config["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"], "Kore")
+        self.assertEqual(calls["body"]["contents"][0]["parts"][0]["text"], "This is a local video card.")
+
+    def test_gemini_vertex_tts_retries_with_number_words_after_http_error(self):
+        calls = {"texts": []}
+        original_http_json = worker._legacy_worker.http_json
+        original_gcloud_value = worker._legacy_worker.gcloud_value
+
+        def fake_gcloud_value(args, timeout=30):
+            if args == ["config", "get-value", "core/project"]:
+                return "project-test"
+            if args == ["auth", "print-access-token"]:
+                return "ya29.test-token"
+            return ""
+
+        def fake_http_json(url, headers, body, timeout=60):
+            text = body["contents"][0]["parts"][0]["text"]
+            calls["texts"].append(text)
+            if text == "Tell you what, I'll let you off for a 10.":
+                raise RuntimeError("API HTTP 400: invalid argument")
+            if text == "Tell you what, I'll let you off for a ten.":
+                return {
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {
+                                        "inlineData": {
+                                            "data": base64.b64encode(b"\x00\x00\x01\x00").decode("ascii")
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            return {"candidates": [{"finishReason": "STOP", "content": {"parts": [{"text": "no audio"}]}}]}
+
+        try:
+            worker._legacy_worker.gcloud_value = fake_gcloud_value
+            worker._legacy_worker.http_json = fake_http_json
+            audio = worker.call_tts_audio(
+                {
+                    "provider": "gemini-vertex",
+                    "base_url": "https://aiplatform.googleapis.com",
+                    "api_key": "",
+                    "model": "gemini-3.1-flash-tts-preview",
+                    "voice": "Kore",
+                    "language": "en-US",
+                    "sample_rate": 24000,
+                    "bit_rate": 128000,
+                },
+                "Tell you what, I'll let you off for a 10.",
+                "English",
+            )
+        finally:
+            worker._legacy_worker.http_json = original_http_json
+            worker._legacy_worker.gcloud_value = original_gcloud_value
+
+        self.assertTrue(audio.startswith(b"RIFF"))
+        self.assertEqual(
+            calls["texts"],
+            ["Tell you what, I'll let you off for a 10.", "Tell you what, I'll let you off for a ten."],
+        )
+
+    def test_gemini_vertex_tts_retries_short_phrase_with_sentence_punctuation_when_no_audio(self):
+        calls = {"texts": []}
+        original_http_json = worker._legacy_worker.http_json
+        original_gcloud_value = worker._legacy_worker.gcloud_value
+
+        def fake_gcloud_value(args, timeout=30):
+            if args == ["config", "get-value", "core/project"]:
+                return "project-test"
+            if args == ["auth", "print-access-token"]:
+                return "ya29.test-token"
+            return ""
+
+        def fake_http_json(url, headers, body, timeout=60):
+            text = body["contents"][0]["parts"][0]["text"]
+            calls["texts"].append(text)
+            if text == "in style":
+                return {"candidates": [{"finishReason": "STOP", "content": {"parts": [{"text": "in style"}]}}]}
+            if text == "Read exactly this expression: in style.":
+                return {
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {
+                                        "inlineData": {
+                                            "data": base64.b64encode(b"\x00\x00\x01\x00").decode("ascii")
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            return {"candidates": []}
+
+        try:
+            worker._legacy_worker.gcloud_value = fake_gcloud_value
+            worker._legacy_worker.http_json = fake_http_json
+            audio = worker.call_tts_audio(
+                {
+                    "provider": "gemini-vertex",
+                    "base_url": "https://aiplatform.googleapis.com",
+                    "api_key": "",
+                    "model": "gemini-3.1-flash-tts-preview",
+                    "voice": "Kore",
+                    "language": "en-US",
+                    "sample_rate": 24000,
+                    "bit_rate": 128000,
+                },
+                "in style",
+                "English",
+            )
+        finally:
+            worker._legacy_worker.http_json = original_http_json
+            worker._legacy_worker.gcloud_value = original_gcloud_value
+
+        self.assertTrue(audio.startswith(b"RIFF"))
+        self.assertEqual(calls["texts"], ["in style", "in style.", "Read exactly this expression: in style."])
 
     def test_phrase_match_requires_all_phrase_words_in_compact_order(self):
         self.assertTrue(worker.phrase_in_text("I need to make sure we are ready.", "make sure"))
@@ -1637,6 +1936,17 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertLess(media_end, 112.35)
         self.assertLessEqual(media_end - media_start, 6.25)
 
+    def test_segment_display_source_time_prefers_media_source_time(self):
+        segment = {
+            "source_time": "00:01:40.000 - 00:01:52.000",
+            "media_source_time": "00:01:42.100 - 00:01:45.400",
+        }
+
+        self.assertEqual(
+            worker.segment_display_source_time(segment),
+            "00:01:42.100 - 00:01:45.400",
+        )
+
     def test_function_frame_phrase_can_start_with_it(self):
         self.assertTrue(worker.usable_phrase("It turns out that I was wrong.", "it turns out"))
 
@@ -1985,6 +2295,11 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("只用于工作职责", worker.v11_misuse_text(card))
         self.assertIn("register 这里不是", worker.v11_misuse_text(card))
 
+    def test_v11_back_template_labels_pronunciation_note_and_empty_spoken_status(self):
+        self.assertIn("发音说明", worker.LANGUAGE_BACK_TEMPLATE_V11)
+        self.assertIn("未单独标注", worker.LANGUAGE_BACK_TEMPLATE_V11)
+        self.assertIn("{{^SpokenIpa}}", worker.LANGUAGE_BACK_TEMPLATE_V11)
+
     def test_v11_long_answer_strips_listening_note_for_layout(self):
         card = {
             "type": "phrase",
@@ -2114,9 +2429,289 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("phonetic_ipa", prompt)
         self.assertIn("spoken_ipa", prompt)
         self.assertIn("source_spoken_ipa", prompt)
+        self.assertIn("generation_basis 必须是 subtitle_inferred", prompt)
+        self.assertIn("source_spoken_ipa 必须覆盖完整原句", prompt)
+        self.assertIn("不能只覆盖 answer_core", prompt)
+        self.assertIn("same_as_standard_reason", prompt)
+        self.assertIn("不要只写短语片段", prompt)
         self.assertIn("这句里表示某个中文意思的自然表达是什么", prompt)
         self.assertIn("typed learning point", prompt)
         self.assertIn("某个词在这句里是什么意思/怎么用", prompt)
+
+    def test_partial_source_spoken_ipa_is_cleared(self):
+        card = {
+            "english": "We will produce a chemically pure And stable product that performs as advertised.",
+            "answer_core": "performs as advertised",
+            "phrase": "performs as advertised",
+            "phonetic_ipa": "/pərˈfɔrmz æz ˈædvərˌtaɪzd/",
+            "spoken_ipa": "/pɚˈfɔrmz əz ˈædvɚˌtaɪzd/",
+            "source_spoken_ipa": "/pɚˈfɔrmz əz ˈædvɚˌtaɪzd/",
+        }
+
+        issues = worker.sanitize_pronunciation_fields(card, "English")
+
+        self.assertNotIn("source_spoken_ipa", card)
+        self.assertIn("source_spoken_ipa 不是完整原句听感，已清空。", issues)
+
+    def test_full_source_spoken_ipa_is_kept_when_near_sentence_length(self):
+        card = {
+            "english": "What time do you think you'll be home?",
+            "answer_core": "What time do you think you'll be",
+            "phrase": "What time do you think you'll be",
+            "phonetic_ipa": "/wʌt taɪm du ju θɪŋk jul bi/",
+            "spoken_ipa": "/wət taɪm dʒə θɪŋk jəl bi/",
+            "source_spoken_ipa": "/wət taɪm dʒə θɪŋk jəl bi hoʊm/",
+        }
+
+        issues = worker.sanitize_pronunciation_fields(card, "English")
+
+        self.assertEqual([], issues)
+        self.assertEqual("/wət taɪm dʒə θɪŋk jəl bi hoʊm/", card["source_spoken_ipa"])
+
+    def test_duplicate_spoken_ipa_is_cleared_for_reduction_phrase(self):
+        card = {
+            "english": "What if we rented one of those self-storage places?",
+            "answer_core": "What if we rented",
+            "phonetic_ipa": "/wʌt ɪf wi ˈrɛntɪd/",
+            "spoken_ipa": "/wʌt ɪf wi ˈrɛntɪd/",
+        }
+
+        issues = worker.sanitize_pronunciation_fields(card, "English")
+
+        self.assertIn("phonetic_ipa", card)
+        self.assertNotIn("spoken_ipa", card)
+        self.assertIn("spoken_ipa 与标准读法完全相同，缺少口语听感，已清空。", issues)
+
+    def test_duplicate_spoken_ipa_is_allowed_for_single_word_answer(self):
+        card = {
+            "english": "I mean you're flat as a washboard.",
+            "answer_core": "washboard",
+            "phonetic_ipa": "/ˈwɑʃˌbɔrd/",
+            "spoken_ipa": "/ˈwɑʃˌbɔrd/",
+        }
+
+        issues = worker.sanitize_pronunciation_fields(card, "English")
+
+        self.assertEqual([], issues)
+        self.assertEqual("/ˈwɑʃˌbɔrd/", card["spoken_ipa"])
+
+    def test_same_spoken_standard_gets_reason_when_kept(self):
+        card = {
+            "english": "You get paid till 5 You work till 5 no later.",
+            "answer_core": "no later",
+            "phonetic_ipa": "/noʊ ˈleɪtər/",
+            "spoken_ipa": "/noʊ ˈleɪtər/",
+            "source_spoken_ipa": "/ju ɡɛt peɪd tɪl faɪv | ju wɜrk tɪl faɪv | noʊ ˈleɪtər/",
+            "pronunciation_meta": {
+                "generation_basis": "subtitle_inferred",
+                "field_confidence": {
+                    "phonetic_ipa": "medium",
+                    "spoken_ipa": "medium",
+                    "source_spoken_ipa": "medium",
+                },
+                "validation_issues": [
+                    {
+                        "field": "spoken_ipa",
+                        "severity": "warn",
+                        "code": "SAME_AS_STANDARD_REASON_REQUIRED",
+                        "message": "口语读法与标准读法相同，必须说明 same_as_standard_reason。",
+                    }
+                ],
+            },
+        }
+
+        issues = worker.sanitize_pronunciation_fields(card, "English")
+
+        self.assertNotIn("SAME_AS_STANDARD_REASON_REQUIRED", " ".join(issues))
+        self.assertEqual("/noʊ ˈleɪtər/", card["spoken_ipa"])
+        self.assertIn("未实听", card["pronunciation_meta"]["same_as_standard_reason"])
+        self.assertIn("口语读法与标准读法暂按相同处理", card["pronunciation_note"])
+        self.assertNotIn(
+            "SAME_AS_STANDARD_REASON_REQUIRED",
+            [issue["code"] for issue in card["pronunciation_meta"]["validation_issues"]],
+        )
+
+    def test_pronunciation_meta_defaults_to_subtitle_inferred_and_caps_spoken_confidence(self):
+        card = {
+            "english": "What time do you think you'll be home?",
+            "answer_core": "What time do you think you'll be",
+            "phonetic_ipa": "/wʌt taɪm du ju θɪŋk jul bi/",
+            "spoken_ipa": "/wət taɪm dʒə θɪŋk jəl bi/",
+            "source_spoken_ipa": "/wət taɪm dʒə θɪŋk jəl bi hoʊm/",
+            "pronunciation_meta": {
+                "generation_basis": "subtitle_inferred",
+                "field_confidence": {
+                    "phonetic_ipa": "high",
+                    "spoken_ipa": "high",
+                    "source_spoken_ipa": "high",
+                },
+                "validation_issues": [],
+            },
+        }
+
+        worker.sanitize_pronunciation_fields(card, "en")
+
+        meta = card["pronunciation_meta"]
+        self.assertEqual(meta["language_code"], "en")
+        self.assertEqual(meta["generation_basis"], "subtitle_inferred")
+        self.assertEqual(meta["field_confidence"]["spoken_ipa"], "medium")
+        self.assertEqual(meta["field_confidence"]["source_spoken_ipa"], "medium")
+        self.assertEqual(card["pronunciation_confidence"], "medium")
+        self.assertIn("未实听", card["pronunciation_note"])
+
+    def test_dictionary_only_global_confidence_uses_lowest_field_confidence(self):
+        card = {
+            "english": "I'm gonna run the register.",
+            "answer_core": "run the register",
+            "phrase": "run the register",
+            "phonetic_ipa": "/rʌn ðə ˈrɛdʒɪstər/",
+            "spoken_ipa": "/rʌn ðə ˈrɛdʒɪstər/",
+            "source_spoken_ipa": "/aɪm ˈɡʌnə rʌn ðə ˈrɛdʒɪstər/",
+            "pronunciation_meta": {
+                "generation_basis": "dictionary_only",
+                "field_confidence": {
+                    "phonetic_ipa": "high",
+                    "spoken_ipa": "low",
+                    "source_spoken_ipa": "low",
+                    "pronunciation_note": "medium",
+                },
+                "validation_issues": [],
+            },
+        }
+
+        worker.sanitize_pronunciation_fields(card, "en")
+
+        self.assertNotIn("spoken_ipa", card)
+        self.assertNotIn("source_spoken_ipa", card)
+        self.assertEqual(card["pronunciation_confidence"], "low")
+        self.assertEqual(card["pronunciation_meta"]["field_confidence"]["phonetic_ipa"], "high")
+
+    def test_dictionary_only_defaults_missing_spoken_confidence_to_low(self):
+        card = {
+            "english": "I'm gonna run the register.",
+            "answer_core": "run the register",
+            "phrase": "run the register",
+            "phonetic_ipa": "/rʌn ðə ˈrɛdʒɪstər/",
+            "pronunciation_meta": {
+                "generation_basis": "dictionary_only",
+                "field_confidence": {"phonetic_ipa": "high"},
+                "validation_issues": [],
+            },
+        }
+
+        worker.sanitize_pronunciation_fields(card, "en")
+
+        self.assertEqual(card["pronunciation_meta"]["field_confidence"]["spoken_ipa"], "low")
+        self.assertEqual(card["pronunciation_meta"]["field_confidence"]["source_spoken_ipa"], "low")
+        self.assertEqual(card["pronunciation_confidence"], "low")
+
+    def test_blocked_source_spoken_ipa_sets_low_confidence(self):
+        card = {
+            "english": "Red Phosphorus in the presence of moisture And accelerated by heat yields Phosphorus Hydride.",
+            "answer_core": "in the presence of",
+            "phrase": "in the presence of",
+            "phonetic_ipa": "/ɪn ðə ˈprɛzəns ʌv/",
+            "spoken_ipa": "/ɪn ðə ˈprɛzəns əv/",
+            "source_spoken_ipa": "/ɪn ðə ˈprɛzəns əv/",
+            "pronunciation_meta": {
+                "generation_basis": "subtitle_inferred",
+                "field_confidence": {
+                    "phonetic_ipa": "medium",
+                    "spoken_ipa": "medium",
+                    "source_spoken_ipa": "medium",
+                },
+                "validation_issues": [],
+            },
+        }
+
+        issues = worker.sanitize_pronunciation_fields(card, "en")
+
+        self.assertNotIn("source_spoken_ipa", card)
+        self.assertIn("source_spoken_ipa 不是完整原句听感，已清空。", issues)
+        self.assertEqual(card["pronunciation_meta"]["field_confidence"]["source_spoken_ipa"], "low")
+        self.assertEqual(card["pronunciation_confidence"], "low")
+
+    def test_existing_blocked_empty_source_keeps_low_confidence_on_resanitize(self):
+        card = {
+            "english": "Red Phosphorus in the presence of moisture And accelerated by heat yields Phosphorus Hydride.",
+            "answer_core": "in the presence of",
+            "phrase": "in the presence of",
+            "phonetic_ipa": "/ɪn ðə ˈprɛzəns ʌv/",
+            "spoken_ipa": "/ɪn ðə ˈprɛzəns əv/",
+            "pronunciation_meta": {
+                "generation_basis": "subtitle_inferred",
+                "field_confidence": {
+                    "phonetic_ipa": "medium",
+                    "spoken_ipa": "medium",
+                    "source_spoken_ipa": "medium",
+                },
+                "validation_issues": [
+                    {
+                        "field": "source_spoken_ipa",
+                        "severity": "block",
+                        "code": "SOURCE_PRONUNCIATION_TOO_SHORT",
+                        "message": "source_spoken_ipa 不是完整原句听感，已清空。",
+                    }
+                ],
+            },
+        }
+
+        worker.sanitize_pronunciation_fields(card, "en")
+
+        self.assertEqual(card["pronunciation_meta"]["field_confidence"]["source_spoken_ipa"], "low")
+        self.assertEqual(card["pronunciation_confidence"], "low")
+
+    def test_spanish_latam_theta_is_blocked(self):
+        card = {
+            "english": "cereza",
+            "answer_core": "cereza",
+            "phonetic_ipa": "/θeˈɾeθa/",
+        }
+
+        issues = worker.sanitize_pronunciation_fields(card, "es")
+
+        self.assertNotIn("phonetic_ipa", card)
+        self.assertEqual(card["pronunciation_meta"]["language_code"], "es")
+        self.assertIn("默认拉美西语 profile 不使用 /θ/", " / ".join(issues))
+
+    def test_japanese_romaji_standard_reading_is_blocked(self):
+        card = {
+            "english": "何してるの？",
+            "answer_core": "何してるの",
+            "phonetic_ipa": "nani shiteru no",
+        }
+
+        issues = worker.sanitize_pronunciation_fields(card, "ja")
+
+        self.assertNotIn("phonetic_ipa", card)
+        self.assertEqual(card["pronunciation_meta"]["notation_system"], "kana_pitch")
+        self.assertIn("日语标准读法不能只有 romaji", " / ".join(issues))
+
+    def test_russian_multisyllable_standard_reading_requires_stress(self):
+        card = {
+            "english": "молоко",
+            "answer_core": "молоко",
+            "phonetic_ipa": "молоко",
+        }
+
+        issues = worker.sanitize_pronunciation_fields(card, "ru")
+
+        self.assertNotIn("phonetic_ipa", card)
+        self.assertEqual(card["pronunciation_meta"]["language_code"], "ru")
+        self.assertIn("俄语多音节实词必须标重音", " / ".join(issues))
+
+    def test_french_et_liaison_is_warned_not_cleared(self):
+        card = {
+            "english": "et ami",
+            "answer_core": "et ami",
+            "phonetic_ipa": "/e a.mi/",
+            "source_spoken_ipa": "et‿ami",
+        }
+
+        issues = worker.sanitize_pronunciation_fields(card, "fr")
+
+        self.assertEqual("et‿ami", card["source_spoken_ipa"])
+        self.assertIn("法语 et 后通常禁连读", " / ".join(issues))
 
     def test_v10_template_is_review_first_and_mobile_flowing(self):
         self.assertIn("{{#IsListening}}", worker.FRONT_TEMPLATE)
@@ -2181,7 +2776,13 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("setupV11TextSizing", v11[2] + v11[3])
         self.assertIn("{{#ChineseFeel}}<p class=\"v11-answer-note\">{{ChineseFeel}}</p>{{/ChineseFeel}}", v11[3])
         self.assertIn("{{#PhoneticIpa}}", v11[3])
-        self.assertIn("口语读法", v11[3])
+        self.assertIn("标准读法", v11[3])
+        self.assertIn("{{SpokenPronunciationLabel}}", v11[3])
+        self.assertIn("v11-ipa-row is-spoken", v11[3])
+        self.assertIn(".v11-source-block", v11[1])
+        self.assertIn("grid-template-columns: max-content minmax(0, 1fr)", v11[1])
+        self.assertLess(v11[3].index("<p class=\"v11-source\">{{English}}</p>"), v11[3].index("v11-source-ipa"))
+        self.assertLess(v11[3].index("v11-source-ipa"), v11[3].index("v11-source-translation"))
         self.assertNotIn("overflow-wrap: anywhere", v11[1])
         self.assertIn("white-space: pre-line", v11[1])
         self.assertNotIn("<audio controls", v11[2] + v11[3])
@@ -2261,6 +2862,48 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in duplicates], ["seg_0003"])
         self.assertEqual(duplicates[0]["phrase_review_status"], "duplicate")
 
+    def test_placeholder_phrase_segments_are_not_deduped_as_one_expression(self):
+        segments = [
+            {
+                "id": "seg_0001",
+                "start": 0.0,
+                "text": "You won't even taste the difference.",
+                "phrase": "key expression",
+                "normalized_answer": "key expression",
+                "candidate_kind": "expression",
+                "phrase_card_focus": "人工确认是否值得制卡。",
+                "score": 3.6,
+                "phrase_value_score": 3,
+            },
+            {
+                "id": "seg_0002",
+                "start": 4.0,
+                "text": "What time do you think you'll be home?",
+                "phrase": "key expression",
+                "normalized_answer": "key expression",
+                "candidate_kind": "expression",
+                "phrase_card_focus": "人工确认是否值得制卡。",
+                "score": 3.4,
+                "phrase_value_score": 3,
+            },
+            {
+                "id": "seg_0003",
+                "start": 8.0,
+                "text": "I hope you know that.",
+                "phrase": "key expression",
+                "normalized_answer": "key expression",
+                "candidate_kind": "expression",
+                "phrase_card_focus": "人工确认是否值得制卡。",
+                "score": 3.2,
+                "phrase_value_score": 3,
+            },
+        ]
+
+        kept, duplicates = worker.split_duplicate_phrase_segments(segments)
+
+        self.assertEqual({item["id"] for item in kept}, {"seg_0001", "seg_0002", "seg_0003"})
+        self.assertEqual(duplicates, [])
+
     def test_same_source_sentence_keeps_at_most_two_learning_points(self):
         source_id = "src_same_sentence"
         segments = [
@@ -2309,6 +2952,246 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in rejected], ["seg_0003"])
         self.assertEqual(rejected[0]["phrase_review_status"], "reject")
         self.assertIn("预算已满", rejected[0]["phrase_reject_reason"])
+
+    def test_selection_strategy_learning_point_budgets_are_v2_values(self):
+        self.assertEqual(worker.max_learning_points_per_source({"selection_strategy": "catch_all"}), 4)
+        self.assertEqual(worker.max_learning_points_per_source({"selection_strategy": "exhaustive"}), 4)
+        self.assertEqual(worker.max_learning_points_per_source({"selection_strategy": "curated"}), 4)
+
+    def test_catch_all_keeps_four_distinct_learning_actions_per_source(self):
+        source_id = "src_same_sentence"
+        base = {
+            "source_segment_id": source_id,
+            "start": 0.0,
+            "end": 3.0,
+            "text": "I'm gonna run the register, but I don't want to hold that against you.",
+            "score": 4.0,
+            "phrase_value_score": 4,
+        }
+        segments = [
+            {
+                **base,
+                "id": "seg_expr",
+                "phrase": "run the register",
+                "normalized_answer": "run the register",
+                "candidate_kind": "expression",
+                "phrase_card_focus": "训练服务业搭配。",
+            },
+            {
+                **base,
+                "id": "seg_vocab",
+                "phrase": "register",
+                "normalized_answer": "register",
+                "candidate_kind": "contextual_vocab",
+                "phrase_card_focus": "训练 register 的语境义。",
+            },
+            {
+                **base,
+                "id": "seg_listen",
+                "phrase": "I'm gonna",
+                "normalized_answer": "I'm gonna",
+                "candidate_kind": "listening_feature",
+                "phrase_card_focus": "训练 gonna 弱读听辨。",
+            },
+            {
+                **base,
+                "id": "seg_prag",
+                "phrase": "hold that against you",
+                "normalized_answer": "hold that against you",
+                "candidate_kind": "pragmatic_risk",
+                "phrase_card_focus": "训练责怪语气边界。",
+            },
+            {
+                **base,
+                "id": "seg_extra",
+                "phrase": "don't want to",
+                "normalized_answer": "don't want to",
+                "candidate_kind": "grammar_pattern",
+                "phrase_card_focus": "训练 want to 结构。",
+                "phrase_value_score": 3,
+            },
+        ]
+
+        kept, rejected = worker.enforce_max_learning_points_per_source(
+            segments,
+            worker.max_learning_points_per_source({"selection_strategy": "catch_all"}),
+        )
+
+        self.assertEqual(len(kept), 4)
+        self.assertEqual({item["candidate_kind"] for item in kept}, {"expression", "contextual_vocab", "listening_feature", "pragmatic_risk"})
+        self.assertEqual([item["id"] for item in rejected], ["seg_extra"])
+
+    def test_source_expansion_adds_valid_points_and_rejects_invalid_spans(self):
+        source_id = "src_expansion"
+        segment = {
+            "id": "seg_0001",
+            "source_segment_id": source_id,
+            "start": 0.0,
+            "end": 2.5,
+            "source_time": "00:00:00.000 - 00:00:02.500",
+            "text": "I'm gonna run the register.",
+            "duration": 2.5,
+            "phrase": "run the register",
+            "exact_span": "run the register",
+            "normalized_answer": "run the register",
+            "answer_core": "run the register",
+            "candidate_kind": "expression",
+            "phrase_type": "collocation",
+            "content_kind": "phrase",
+            "phrase_card_focus": "训练搭配。",
+            "score": 4.2,
+            "recommendation": 4,
+        }
+        original_call = worker._legacy_worker.call_source_learning_point_expansion
+
+        def fake_expansion(_project, _groups):
+            return {
+                source_id: [
+                    {
+                        "candidate_kind": "contextual_vocab",
+                        "phrase_type": "vocabulary_usage",
+                        "exact_span": "register",
+                        "answer_core": "register = 收银机 /ˈredʒɪstər/",
+                        "normalized_answer": "register",
+                        "card_focus": "训练 register 在服务业语境里的意思。",
+                        "value_score": 4,
+                    },
+                    {
+                        "candidate_kind": "expression",
+                        "phrase_type": "spoken_phrase",
+                        "exact_span": "not in sentence",
+                        "answer_core": "not in sentence",
+                        "value_score": 4,
+                    },
+                ]
+            }, None
+
+        worker._legacy_worker.call_source_learning_point_expansion = fake_expansion
+        try:
+            expanded, rejected, warning = worker.expand_learning_points_by_source(
+                {
+                    "selection_strategy": "catch_all",
+                    "language": "en",
+                    "language_focus": ["phrases", "vocabulary", "listening"],
+                },
+                [segment],
+            )
+        finally:
+            worker._legacy_worker.call_source_learning_point_expansion = original_call
+
+        self.assertIsNone(warning)
+        self.assertEqual(len(expanded), 2)
+        self.assertTrue(any(item.get("candidate_source") == "source_expansion" for item in expanded))
+        repaired = next(item for item in expanded if item.get("candidate_source") == "source_expansion")
+        self.assertEqual(repaired["answer_core"], "register")
+        self.assertEqual(len(rejected), 1)
+        self.assertIn("exact_span 不在原句", rejected[0]["phrase_reject_reason"])
+
+    def test_source_expansion_auto_caps_requested_source_groups(self):
+        segments = []
+        for index in range(1, 9):
+            source_id = f"src_{index:04d}"
+            segments.append(
+                {
+                    "id": f"seg_{index:04d}",
+                    "source_segment_id": source_id,
+                    "start": float(index),
+                    "end": float(index) + 2.0,
+                    "source_time": "00:00:00.000 - 00:00:02.000",
+                    "text": f"I'm gonna run the register number {index}.",
+                    "phrase": "run the register",
+                    "exact_span": "run the register",
+                    "normalized_answer": "run the register",
+                    "answer_core": "run the register",
+                    "candidate_kind": "expression",
+                    "phrase_type": "collocation",
+                    "content_kind": "phrase",
+                    "score": 4.0 + index / 100,
+                    "recommendation": 4,
+                }
+            )
+        calls = {}
+        original_call = worker._legacy_worker.call_source_learning_point_expansion
+
+        def fake_expansion(_project, groups):
+            calls["groups"] = groups
+            return {}, None
+
+        worker._legacy_worker.call_source_learning_point_expansion = fake_expansion
+        project = {
+            "selection_strategy": "catch_all",
+            "source_expansion_mode": "auto",
+            "max_source_expansion_groups": 3,
+            "language": "en",
+        }
+        try:
+            expanded, rejected, warning = worker.expand_learning_points_by_source(project, segments)
+        finally:
+            worker._legacy_worker.call_source_learning_point_expansion = original_call
+
+        self.assertEqual(expanded, segments)
+        self.assertEqual(rejected, [])
+        self.assertIsNone(warning)
+        self.assertEqual(len(calls["groups"]), 3)
+        self.assertEqual(project["_source_expansion_stats"]["eligible_source_groups"], 8)
+        self.assertEqual(project["_source_expansion_stats"]["requested_source_groups"], 3)
+
+    def test_default_catch_all_selection_includes_review_but_never_reject(self):
+        segments = [
+            {
+                "id": "seg_0001",
+                "start": 0,
+                "end": 2,
+                "text": "It turns out this works.",
+                "source_time": "00:00:00.000 - 00:00:02.000",
+                "cards": [
+                    {"id": "c1", "quality": {"status": "recommended", "score": 90}, "enabled": False},
+                    {"id": "c2", "quality": {"status": "needs_review", "score": 62}, "enabled": False},
+                    {"id": "c3", "quality": {"status": "reject", "score": 20}, "enabled": True},
+                ],
+            }
+        ]
+
+        selected = worker.apply_default_generated_card_selection(segments, {"selection_strategy": "catch_all"})
+
+        self.assertEqual([card["enabled"] for card in selected[0]["cards"]], [True, True, False])
+
+    def test_pronunciation_fields_do_not_affect_quality_score(self):
+        segment = {
+            "id": "seg_0001",
+            "text": "You won't even taste the difference.",
+            "phrase": "taste the difference",
+            "candidate_kind": "expression",
+            "phrase_type": "spoken_phrase",
+            "source_time": "00:00:00.000 - 00:00:03.000",
+        }
+        card = {
+            "id": "card_1",
+            "type": "phrase",
+            "english": segment["text"],
+            "phrase": "taste the difference",
+            "answer_core": "taste the difference",
+            "definition": "notice a difference in flavor or quality.",
+            "chinese": "尝出区别",
+            "chinese_feel": "你根本尝不出区别。",
+            "teacher_note": "自然口语表达。",
+            "cloze": "You won't even ____.",
+            "content_kind": "phrase",
+            "candidate_kind": "expression",
+        }
+        with_pronunciation = {
+            **card,
+            "phonetic_ipa": "/teɪst ðə ˈdɪfrəns/",
+            "spoken_ipa": "/teɪs ðə ˈdɪfrəns/",
+            "source_spoken_ipa": "you WON't even tas(t) the difference",
+            "pronunciation_note": "字幕推测口语读法。",
+        }
+
+        plain_quality = worker.assess_card_quality(card, segment, "ai", "B1")
+        pronounced_quality = worker.assess_card_quality(with_pronunciation, segment, "ai", "B1")
+
+        self.assertEqual(plain_quality["score"], pronounced_quality["score"])
+        self.assertEqual(plain_quality["status"], pronounced_quality["status"])
 
     def test_min_review_promotion_does_not_revive_ai_rejected_candidates(self):
         rejected_id = "seg_0001"
@@ -2745,6 +3628,173 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertNotIn("目标表达过短", good_quality["issues"])
         self.assertIn("核心答案包含解释而不是英文答案", bad_quality["issues"])
 
+    def test_quality_rejects_incomplete_answer_core_fragments(self):
+        cases = [
+            {
+                "type": "cloze",
+                "english": "I do not like it when you don't talk to me.",
+                "phrase": "it when",
+                "answer_core": "it when",
+                "candidate_kind": "grammar_pattern",
+                "content_kind": "grammar",
+                "cloze": "I do not like ____ you don't talk to me.",
+            },
+            {
+                "type": "phrase",
+                "english": "You will not believe who's cleaning Chad's car.",
+                "phrase": "You will not believe who's",
+                "answer_core": "You will not believe who's",
+                "candidate_kind": "grammar_pattern",
+                "content_kind": "grammar",
+                "cloze": "____ cleaning Chad's car.",
+            },
+            {
+                "type": "phrase",
+                "english": "Is there something wrong with your table?",
+                "phrase": "Is there something wrong with",
+                "answer_core": "Is there something wrong with",
+                "candidate_kind": "grammar_pattern",
+                "content_kind": "grammar",
+                "cloze": "____ your table?",
+            },
+        ]
+
+        for card in cases:
+            card.update(
+                {
+                    "chinese": "这是一条测试中文释义。",
+                    "definition": "测试用：确保半截答案不会被推荐。",
+                    "collocations": "use the full pattern with a complete slot",
+                    "context": "用于检测卡片答案是否截断在功能词上。",
+                    "example": "Please finish the sentence with a complete object.",
+                    "teacher_note": "如果答案停在功能词上，学习者无法直接复用。",
+                    "learning_goal": "拦截半截学习点。",
+                    "difficulty": "B1 日常交流",
+                }
+            )
+            quality = worker.assess_card_quality(card, {"text": card["english"]}, "ai", "B1")
+
+            self.assertEqual(quality["status"], "reject")
+            self.assertIn("核心答案像半截词串", quality["issues"])
+
+    def test_quality_keeps_transferable_sentence_frames_ending_in_function_words(self):
+        cases = [
+            ("But I prefer to see it as the study of change.", "prefer to see it as", "grammar_pattern"),
+            ("I was thinking of driving up to Los Alamos.", "was thinking of", "grammar_pattern"),
+            ("So what tells you it's a meth lab?", "what tells you", "grammar_pattern"),
+            ("Yeah well we'll see about that.", "we'll see about that", "expression"),
+            (
+                "Red Phosphorus in the presence of moisture yields Phosphorus Hydride.",
+                "in the presence of",
+                "expression",
+            ),
+            ("I seen one of those bounce off a windshield one time.", "I seen", "grammar_pattern"),
+        ]
+
+        for english, answer, candidate_kind in cases:
+            card = {
+                "type": "phrase",
+                "english": english,
+                "phrase": answer,
+                "answer_core": answer,
+                "candidate_kind": candidate_kind,
+                "content_kind": "grammar" if candidate_kind == "grammar_pattern" else "phrase",
+                "chinese": "这是一条测试中文释义。",
+                "definition": f"测试用：{answer} 是可迁移句型或表达。",
+                "collocations": f"{answer} + natural continuation",
+                "context": "用于检测句型框架不会被误判为半截答案。",
+                "example": "I would use this pattern in a different sentence.",
+                "teacher_note": "这是可复用框架，答案本身可以停在功能词上。",
+                "learning_goal": "保留可迁移句型框架。",
+                "difficulty": "B1 日常交流",
+                "cloze": english.replace(answer, "____", 1),
+            }
+
+            quality = worker.assess_card_quality(card, {"text": english}, "ai", "B1")
+
+            self.assertNotIn("核心答案像半截词串", quality["issues"])
+
+    def test_quality_downgrades_truncated_listening_answers(self):
+        card = {
+            "type": "listening",
+            "english": "What'd you do to them?",
+            "phrase": "What'd you",
+            "answer_core": "What'd you",
+            "candidate_kind": "listening_feature",
+            "content_kind": "listening",
+            "chinese": "你对他们做了什么？",
+            "context": "听辨整句里的 what'd you do。",
+            "teacher_note": "只截到 What'd you 会丢掉真正的动作信息。",
+            "learning_goal": "听辨完整问句。",
+            "difficulty": "B1 日常交流",
+        }
+
+        quality = worker.assess_card_quality(card, {"text": card["english"]}, "ai", "B1")
+
+        self.assertNotEqual(quality["status"], "recommended")
+        self.assertIn("听力答案像截断片段", quality["issues"])
+
+    def test_quality_keeps_complete_short_phrases(self):
+        card = {
+            "type": "phrase",
+            "english": "They're going out in style.",
+            "phrase": "in style",
+            "answer_core": "in style",
+            "candidate_kind": "expression",
+            "content_kind": "phrase",
+            "chinese": "很体面、很有派头地结束或出场。",
+            "definition": "in style 表示做某事很体面、有派头。",
+            "collocations": "go out in style / celebrate in style",
+            "context": "用于描述收尾、庆祝或出场很漂亮。",
+            "example": "We finished the season in style.",
+            "teacher_note": "in style 是完整短语，不是半截介词短语。",
+            "learning_goal": "训练 in style 的整体口语含义。",
+            "difficulty": "B1 日常交流",
+            "cloze": "They're going out ____.",
+        }
+
+        quality = worker.assess_card_quality(card, {"text": card["english"]}, "ai", "B1")
+
+        self.assertEqual(quality["status"], "recommended")
+        self.assertNotIn("核心答案像半截词串", quality["issues"])
+
+    def test_quality_treats_context_shape_issues_as_warnings_for_good_phrases(self):
+        cases = [
+            (
+                "But we're not gonna hold that against you.",
+                "hold that against you",
+                "The teacher didn't hold my late work against me.",
+            ),
+            (
+                "When we can put this big a dent in the local drug trade.",
+                "put a dent in",
+                "This expense will put a dent in our budget.",
+            ),
+        ]
+
+        for english, phrase, example in cases:
+            card = {
+                "type": "phrase",
+                "english": english,
+                "phrase": phrase,
+                "answer_core": phrase,
+                "candidate_kind": "expression",
+                "content_kind": "phrase",
+                "chinese": "不要因为这件事一直怪你。",
+                "definition": f"{phrase} 表示把某件事记在某人账上、因此责怪对方。",
+                "collocations": f"{phrase} / don't hold one mistake against me",
+                "context": "用于表达虽然发生了问题，但不会因此长期责怪某人。",
+                "example": example,
+                "teacher_note": "重点记 hold + something + against + someone 的责怪结构。",
+                "learning_goal": f"训练 {phrase} 的自然用法。",
+                "difficulty": "B1 日常交流",
+                "cloze": english.replace(phrase, "____", 1),
+            }
+
+            quality = worker.assess_card_quality(card, {"text": english}, "ai", "B1")
+
+            self.assertEqual(quality["status"], "recommended")
+
     def test_quality_downgrades_generic_teacher_note_and_definition(self):
         card = {
             "type": "phrase",
@@ -2805,7 +3855,8 @@ class WorkerQualityTests(unittest.TestCase):
             ],
         )
 
-        self.assertIn("英语学习卡片编辑老师", prompt)
+        self.assertIn("语言学习卡片编辑老师", prompt)
+        self.assertIn("pronunciation_meta", prompt)
         self.assertIn("learning_target", prompt)
         self.assertIn("why_it_matters", prompt)
         self.assertIn("how_to_use_it", prompt)
@@ -2908,8 +3959,8 @@ class WorkerQualityTests(unittest.TestCase):
             )
 
         self.assertGreaterEqual(project["quality_funnel"]["recommended_cards"], 1)
-        self.assertIn("本地推荐卡", project["warning"])
-        self.assertIn("推荐卡已可直接审核导出", project["warning"])
+        self.assertIn("本地可用卡", project["warning"])
+        self.assertIn("可用卡已默认全选", project["warning"])
 
     def test_merge_ai_cards_does_not_inflate_to_all_requested_types(self):
         segments = [

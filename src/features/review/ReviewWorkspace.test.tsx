@@ -50,7 +50,7 @@ function renderWorkspace(project: Project | null, overrides = {}) {
     onPreviewRateChange: vi.fn(),
     onRevealExport: vi.fn(),
     onSegmentFilterChange: vi.fn(),
-    onSelectCardsByQuality: vi.fn(),
+    onInvertCardSelection: vi.fn(),
     onSelectSegment: vi.fn(),
     onSetCardsEnabled: vi.fn(),
     onUpdateCard: vi.fn(),
@@ -81,19 +81,19 @@ describe('ReviewWorkspace', () => {
   it('renders review controls and forwards selection actions', () => {
     const project = createDemoProject(defaultRequest)
     const onSetCardsEnabled = vi.fn()
-    const onSelectCardsByQuality = vi.fn()
+    const onInvertCardSelection = vi.fn()
     const onSelectSegment = vi.fn()
 
-    renderWorkspace(project, { onSelectCardsByQuality, onSelectSegment, onSetCardsEnabled })
+    renderWorkspace(project, { onInvertCardSelection, onSelectSegment, onSetCardsEnabled })
 
     fireEvent.click(screen.getByRole('button', { name: '全不选' }))
-    fireEvent.click(screen.getByRole('button', { name: '只保留推荐' }))
+    fireEvent.click(screen.getByRole('button', { name: '反选' }))
     fireEvent.click(screen.getByRole('button', { name: /in the mood/ }))
 
-    expect(screen.getByRole('heading', { name: 'AI 评审工作台' })).toBeInTheDocument()
-    expect(screen.getByText('推荐可导出')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '卡片检查工作台' })).toBeInTheDocument()
+    expect(screen.getByText('生成卡片数')).toBeInTheDocument()
     expect(onSetCardsEnabled).toHaveBeenCalledWith(false)
-    expect(onSelectCardsByQuality).toHaveBeenCalledWith('recommended')
+    expect(onInvertCardSelection).toHaveBeenCalledOnce()
     expect(onSelectSegment).toHaveBeenCalledWith('seg_demo_001')
   })
 })

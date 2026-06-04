@@ -8,9 +8,11 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -22,6 +24,7 @@ WORKER_DIR = Path(__file__).resolve().parents[1]
 if str(WORKER_DIR) not in sys.path:
     sys.path.insert(0, str(WORKER_DIR))
 
+from acg import errors as worker_errors
 from acg.documents.chunking import clip_words, split_document_chunks
 from acg.documents.readers import read_document_source
 from acg.phrases.lexicon import (
@@ -72,7 +75,104 @@ OPENAI_COMPATIBLE_PROVIDERS = {"openai-compatible", *MIMO_PROVIDERS}
 GEMINI_VERTEX_PROVIDERS = {"gemini-vertex", "vertex-gemini"}
 GEMINI_VERTEX_GLOBAL_BASE_URL = "https://aiplatform.googleapis.com"
 GEMINI_VERTEX_DEFAULT_MODEL = "gemini-3.1-pro-preview"
+GEMINI_VERTEX_UNAVAILABLE_MODEL_ALIASES = {"gemini-3.1-pro"}
 DEEPSEEK_THINKING_MODELS = {"deepseek-v4-pro", "deepseek-v4-flash", "deepseek-reasoner"}
+
+LEARNING_LANGUAGE_PROFILES: dict[str, dict[str, str]] = {
+    "en": {
+        "label": "English",
+        "accent_profile": "en-US-general",
+        "notation_system": "ipa_en_connected",
+        "standard_hint": "IPA",
+    },
+    "fr": {
+        "label": "Français",
+        "accent_profile": "fr-FR-standard-media",
+        "notation_system": "api_ipa_liaison",
+        "standard_hint": "API/IPA",
+    },
+    "es": {
+        "label": "Español",
+        "accent_profile": "es-LatAm-general-MX-like",
+        "notation_system": "spanish_syllable_stress_optional_ipa",
+        "standard_hint": "音节+重音",
+    },
+    "ja": {
+        "label": "日本語",
+        "accent_profile": "ja-JP-Tokyo-standard",
+        "notation_system": "kana_pitch",
+        "standard_hint": "假名+音高",
+    },
+    "ru": {
+        "label": "Русский",
+        "accent_profile": "ru-general-standard",
+        "notation_system": "stressed_cyrillic_optional_ipa",
+        "standard_hint": "重音西里尔",
+    },
+}
+
+LEARNING_LANGUAGE_ALIASES = {
+    "": "en",
+    "english": "en",
+    "en-us": "en",
+    "en-gb": "en",
+    "us english": "en",
+    "american english": "en",
+    "英语": "en",
+    "français": "fr",
+    "francais": "fr",
+    "french": "fr",
+    "fr-fr": "fr",
+    "法语": "fr",
+    "español": "es",
+    "espanol": "es",
+    "spanish": "es",
+    "es-mx": "es",
+    "es-419": "es",
+    "es-es": "es",
+    "西班牙语": "es",
+    "日本語": "ja",
+    "japanese": "ja",
+    "ja-jp": "ja",
+    "日语": "ja",
+    "русский": "ru",
+    "russian": "ru",
+    "ru-ru": "ru",
+    "俄语": "ru",
+}
+
+TTS_LANGUAGE_FALLBACKS: dict[str, list[str]] = {
+    "en": ["en-US", "en-GB"],
+    "fr": ["fr-FR", "fr-CA"],
+    "es": ["es-MX", "es-419", "es-US", "es-ES"],
+    "ja": ["ja-JP"],
+    "ru": ["ru-RU"],
+}
+
+
+def normalize_learning_language(language: Any = "en") -> str:
+    raw = str(language or "").strip()
+    lower = raw.lower()
+    if lower in LEARNING_LANGUAGE_PROFILES:
+        return lower
+    if lower in LEARNING_LANGUAGE_ALIASES:
+        return LEARNING_LANGUAGE_ALIASES[lower]
+    if lower.startswith("en"):
+        return "en"
+    if lower.startswith("fr"):
+        return "fr"
+    if lower.startswith("es"):
+        return "es"
+    if lower.startswith("ja") or "日本" in raw:
+        return "ja"
+    if lower.startswith("ru") or "рус" in lower or "俄语" in raw:
+        return "ru"
+    return "en"
+
+
+def pronunciation_profile(language: Any = "en") -> dict[str, str]:
+    code = normalize_learning_language(language)
+    return {"code": code, **LEARNING_LANGUAGE_PROFILES[code]}
 
 
 def overlap_words(value: str) -> list[str]:
@@ -81,6 +181,32 @@ def overlap_words(value: str) -> list[str]:
 
 def has_cjk(value: str) -> bool:
     return bool(re.search(r"[\u3400-\u9fff]", str(value or "")))
+
+
+def has_japanese_kana(value: Any) -> bool:
+    return bool(re.search(r"[\u3040-\u30ff]", str(value or "")))
+
+
+def has_cyrillic(value: Any) -> bool:
+    return bool(re.search(r"[\u0400-\u04ff]", str(value or "")))
+
+
+def has_latin_letter(value: Any) -> bool:
+    return bool(re.search(r"[A-Za-zÀ-ÖØ-öø-ÿĀ-ž]", str(value or "")))
+
+
+def looks_like_target_language_text(value: Any, language: Any = "en") -> bool:
+    text = clean_study_text(value) if "clean_study_text" in globals() else str(value or "").strip()
+    if not text:
+        return False
+    code = normalize_learning_language(language)
+    if code == "ja":
+        return has_japanese_kana(text) or has_cjk(text)
+    if code == "ru":
+        return has_cyrillic(text)
+    if code in {"fr", "es", "en"}:
+        return has_latin_letter(text)
+    return bool(text)
 
 
 def clean_input_path(value: Any) -> str:
@@ -320,7 +446,13 @@ def normalize_collection_levels(value: Any, current_level: str) -> list[str]:
 
 
 def collection_levels_from_payload(payload: dict[str, Any], current_level: str) -> list[str]:
+    if normalized_level_mode(payload) == "auto":
+        return list(CEFR_ORDER)
     return normalize_collection_levels(payload.get("collection_levels"), current_level)
+
+
+def normalized_level_mode(payload: dict[str, Any]) -> str:
+    return "manual" if str(payload.get("level_mode") or "").strip().lower() == "manual" else "auto"
 
 
 LANGUAGE_FOCUS_ORDER = ["phrases", "vocabulary", "grammar", "listening"]
@@ -339,9 +471,9 @@ LANGUAGE_FOCUS_RULES = {
 STUDY_DEPTHS = {"standard", "deep"}
 SELECTION_STRATEGIES = {"catch_all", "curated", "exhaustive"}
 SELECTION_STRATEGY_LABELS = {
-    "catch_all": "不漏优先",
-    "curated": "精选优先",
-    "exhaustive": "全量发现",
+    "catch_all": "智能筛选",
+    "curated": "智能筛选",
+    "exhaustive": "智能筛选",
 }
 PHRASE_TYPE_CARD_LABELS = {
     "spoken_phrase": "表达卡",
@@ -446,7 +578,7 @@ def normalized_study_depth(payload: dict[str, Any]) -> str:
 
 def normalized_selection_strategy(payload: dict[str, Any]) -> str:
     value = str(payload.get("selection_strategy") or "").strip()
-    return value if value in SELECTION_STRATEGIES else "catch_all"
+    return "catch_all" if value in SELECTION_STRATEGIES or not value else "catch_all"
 
 
 def discovery_collection_levels(payload: dict[str, Any], current_level: str) -> list[str]:
@@ -457,21 +589,31 @@ def discovery_collection_levels(payload: dict[str, Any], current_level: str) -> 
 
 
 def selection_candidate_multiplier(payload: dict[str, Any]) -> int:
-    strategy = normalized_selection_strategy(payload)
-    if strategy == "exhaustive":
-        return 6
-    if strategy == "catch_all":
-        return 4
-    return 2
+    return 4
 
 
 def max_learning_points_per_source(payload: dict[str, Any]) -> int:
-    strategy = normalized_selection_strategy(payload)
-    if strategy == "exhaustive":
-        return 12
-    if strategy == "catch_all":
-        return 8
     return 4
+
+
+def max_reviewable_cards_per_source(payload: dict[str, Any]) -> int:
+    return 6
+
+
+def normalized_source_expansion_mode(payload: dict[str, Any]) -> str:
+    value = str(payload.get("source_expansion_mode") or payload.get("catch_all_expansion") or "auto").strip().lower()
+    return value if value in {"auto", "full", "off"} else "auto"
+
+
+def max_source_expansion_groups(payload: dict[str, Any]) -> int:
+    raw = payload.get("max_source_expansion_groups")
+    try:
+        explicit = int(raw)
+    except (TypeError, ValueError):
+        explicit = 0
+    if explicit > 0:
+        return max(1, min(160, explicit))
+    return 48
 
 
 def card_label_for_phrase_type(phrase_type: str, fallback: str = "表达卡") -> str:
@@ -851,6 +993,16 @@ def has_generic_teacher_note(value: str) -> bool:
     return bool(text and any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in GENERIC_TEACHER_NOTE_PATTERNS))
 
 
+def has_template_noise(value: Any) -> bool:
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    return bool(text and any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in TEMPLATE_NOISE_PATTERNS))
+
+
+def is_specific_study_text(value: Any) -> bool:
+    text = clean_study_text(value)
+    return bool(text and not has_template_noise(text))
+
+
 def normalized_action_text(value: Any) -> str:
     if isinstance(value, list):
         return " / ".join(str(item).strip() for item in value if str(item).strip())
@@ -879,6 +1031,113 @@ def allows_function_start_phrase(phrase: str) -> bool:
     return lower in TRANSFERABLE_FUNCTION_FRAME_PHRASES or any(
         lower.startswith(f"{item} ") for item in TRANSFERABLE_FUNCTION_FRAME_PHRASES
     )
+
+
+INCOMPLETE_FINAL_WORDS = {
+    "because",
+    "if",
+    "than",
+    "when",
+    "where",
+    "which",
+    "who",
+    "whom",
+    "whose",
+    "with",
+}
+INCOMPLETE_FINAL_CONTRACTIONS = {
+    "where's",
+    "who's",
+}
+SHORT_WH_FRAGMENT_STARTS = {
+    "how",
+    "what",
+    "what'd",
+    "where",
+    "who",
+    "why",
+}
+SHORT_FRAGMENT_PRONOUN_ENDS = {"he", "her", "him", "it", "me", "she", "them", "they", "us", "we", "you"}
+ACCEPTABLE_FRAGMENT_ANSWERS = {
+    "apply heat to",
+    "be willing to",
+    "go first",
+    "how do you feel about",
+    "i do not like it when",
+    "i'd be willing to",
+    "i seen",
+    "in style",
+    "in the presence of",
+    "in the mood for",
+    "not really",
+    "prefer to see it as",
+    "right now",
+    "such a nice",
+    "that answers that",
+    "was thinking of",
+    "we'll see about that",
+    "what do you think about",
+    "what do you call that",
+    "what tells you",
+    "worked out of",
+}
+BAD_INCOMPLETE_ANSWERS = {
+    "it when",
+    "what'd you",
+    "what did you",
+    "what do you",
+    "what are you",
+    "where did you",
+    "who did you",
+}
+
+
+def normalized_answer_key(value: Any) -> str:
+    return re.sub(r"\s+", " ", normalize_candidate_span(value).lower())
+
+
+def looks_like_incomplete_answer_fragment(value: Any, card: dict[str, Any]) -> bool:
+    lower = normalized_answer_key(value)
+    if not lower or lower in ACCEPTABLE_FRAGMENT_ANSWERS or allows_function_start_phrase(lower):
+        return False
+    if normalize_learning_language(card.get("language_code") or card.get("language") or "en") != "en":
+        return False
+    if lower in BAD_INCOMPLETE_ANSWERS:
+        return True
+    candidate_kind = str(card.get("candidate_kind") or "")
+    if candidate_kind == "contextual_vocab":
+        return False
+    words = overlap_words(lower)
+    if not words:
+        return False
+    last = words[-1]
+    if last in INCOMPLETE_FINAL_CONTRACTIONS:
+        return True
+    if last in INCOMPLETE_FINAL_WORDS and not phrase_allows_trailing_preposition(lower):
+        return True
+    if len(words) <= 3 and words[0] in SHORT_WH_FRAGMENT_STARTS and last in SHORT_FRAGMENT_PRONOUN_ENDS:
+        return True
+    return False
+
+
+def looks_like_truncated_listening_answer(value: Any, source_text: Any) -> bool:
+    lower = normalized_answer_key(value)
+    if not lower or lower in ACCEPTABLE_FRAGMENT_ANSWERS:
+        return False
+    if lower in BAD_INCOMPLETE_ANSWERS:
+        return True
+    source_words = overlap_words(source_text)
+    answer_words = overlap_words(lower)
+    if len(answer_words) < 2 or len(source_words) <= len(answer_words) + 1:
+        return False
+    last = answer_words[-1]
+    if last in INCOMPLETE_FINAL_CONTRACTIONS:
+        return True
+    if last in INCOMPLETE_FINAL_WORDS and not phrase_allows_trailing_preposition(lower):
+        return True
+    if len(answer_words) <= 3 and answer_words[0] in SHORT_WH_FRAGMENT_STARTS and last in SHORT_FRAGMENT_PRONOUN_ENDS:
+        return True
+    return False
 
 
 def phrase_guide_key(phrase: str) -> str:
@@ -1052,7 +1311,7 @@ def usable_learning_point_span(
         return False
     words = overlap_words(normalized)
     if not words:
-        return False
+        return phrase_in_text(text, normalized)
     if not phrase_in_text(text, normalized) and len(words) >= 2:
         return False
     kind = candidate_kind or candidate_kind_for_phrase_type(phrase_type)
@@ -1199,6 +1458,7 @@ def learning_point_id_for_candidate(source_id: str, candidate: dict[str, Any]) -
 
 
 def build_segments(cues: list[Cue], payload: dict[str, Any]) -> list[dict[str, Any]]:
+    language = normalize_learning_language(payload.get("language", "en"))
     level = payload.get("level", "B1")
     strategy = normalized_selection_strategy(payload)
     collection_levels = discovery_collection_levels(payload, level)
@@ -1238,14 +1498,18 @@ def build_segments(cues: list[Cue], payload: dict[str, Any]) -> list[dict[str, A
         text = clean_candidate_text(merge_subtitle_parts(parts))
         duration = end - start
         words = re.findall(r"[A-Za-z']+", text)
+        unit_count = len(words)
+        if unit_count == 0 and language != "en":
+            compact_units = re.sub(r"\s+", "", text)
+            unit_count = max(1, min(max_words, len(compact_units) // 2))
         if has_unbalanced_quotes(text):
             i = max(j + 1, i + 1)
             continue
 
         terminal_count = len(re.findall(r"[.?!]+", text))
         min_duration = 1.4 if looks_complete_sentence(text) else 2.5
-        normal_window = min_duration <= duration <= max_duration and 4 <= len(words) <= max_words
-        typed_window = 0.6 <= duration <= (8.8 if review_mode else 7.2) and 1 <= len(words) <= max(max_words, 30)
+        normal_window = min_duration <= duration <= max_duration and 4 <= unit_count <= max_words
+        typed_window = 0.6 <= duration <= (8.8 if review_mode else 7.2) and 1 <= unit_count <= max(max_words, 30)
         if typed_window and terminal_count <= 1 and content_allowed(text, toggles):
             if looks_like_video_intro(text):
                 i = max(j + 1, i + 1)
@@ -1322,6 +1586,7 @@ def build_segments(cues: list[Cue], payload: dict[str, Any]) -> list[dict[str, A
                     "content_kind": typed.get("content_kind") or "phrase",
                     "normalized_answer": typed.get("normalized_answer") or typed.get("phrase") or segment_phrase,
                     "source_evidence": typed.get("source_evidence") or text,
+                    "language": language,
                 }
                 candidates.append(
                     {
@@ -1349,6 +1614,7 @@ def build_segments(cues: list[Cue], payload: dict[str, Any]) -> list[dict[str, A
                     "learning_point_schema_version": typed.get("learning_point_schema_version") or LEARNING_POINT_SCHEMA_VERSION,
                     "phrase_card_focus": typed.get("phrase_card_focus") or "",
                     "source_evidence": typed.get("source_evidence") or text,
+                    "language": language,
                     "score": candidate_score,
                 }
                 )
@@ -1392,6 +1658,10 @@ def learning_point_from_segment(segment: dict[str, Any]) -> dict[str, Any]:
             point[key] = segment.get(key)
         elif point.get(key) not in (None, ""):
             point[key] = point.get(key)
+    if segment.get("pronunciation_meta") not in (None, ""):
+        point["pronunciation_meta"] = segment.get("pronunciation_meta")
+    elif point.get("pronunciation_meta") not in (None, ""):
+        point["pronunciation_meta"] = point.get("pronunciation_meta")
     is_valid, reason, normalized = sanitize_learning_point_contract(
         point,
         str(segment.get("text") or ""),
@@ -1476,6 +1746,10 @@ def fallback_phrase_fields(text: str, phrase: str, level: str) -> dict[str, str]
 
 
 def phrase_in_text(text: str, phrase: str) -> bool:
+    raw_text = normalize_candidate_span(text).casefold()
+    raw_phrase = normalize_candidate_span(phrase).casefold()
+    if raw_phrase and raw_phrase in raw_text:
+        return True
     normalized_text = " ".join(overlap_words(text))
     normalized_phrase = " ".join(overlap_words(phrase))
     if not normalized_phrase:
@@ -1569,7 +1843,7 @@ def quality_issue_labels(
         score -= 12
     if card_type in {"phrase", "cloze"} and len(text_words) > 12:
         issues.append("词伙任务原句太长")
-        score -= 22
+        score -= 14
     if len(text_words) > 20:
         issues.append("原句太长，不适合做表达卡")
         score -= 18
@@ -1614,6 +1888,14 @@ def quality_issue_labels(
             "that kind of",
             "what do you think about",
             "how do you feel about",
+            "prefer to see it as",
+            "was thinking of",
+            "apply heat to",
+            "worked out of",
+            "in the presence of",
+            "i'd be willing to",
+            "be willing to",
+            "what's up for",
         }
     )
     if is_expression_like and words and words[-1] in trailing_prepositions and not allows_trailing_preposition:
@@ -1659,27 +1941,26 @@ def quality_from_score(score: int, issues: list[str]) -> dict[str, Any]:
         "目标表达偏长",
         "目标表达像整句而不是词伙",
         "表达和原句不完全匹配",
-        "词伙任务原句太长",
         "填空卡必须只有一个空",
         "填空卡没有真正挖空",
         "字段疑似乱码",
         "缺少中文意思",
         "缺少释义",
         "句子太像 filler",
-        "原句像截断片段",
         "表达太像视频口播引入语",
         "原句太像视频口播引入语",
         "目标表达太泛，学习价值低",
         "字段像模板废话",
         "中文意思不是中文",
         "搭配不自然",
-        "例句只是照抄原句",
-        "例句和原句过于相似",
         "老师提示和学习理由重复",
         "老师提示缺少具体用法",
         "释义太泛",
+        "AI 解释字段不足",
         "目标表达低于用户水平",
         "核心答案包含解释而不是英文答案",
+        "核心答案像半截词串",
+        "听力答案像截断片段",
         "词伙评审拒绝",
         "词伙重复合并",
     }
@@ -1746,8 +2027,17 @@ def assess_card_quality(
     ):
         issues.append("核心答案包含解释而不是英文答案")
         score -= 32
+    if not is_listening and displayed_answer_core and looks_like_incomplete_answer_fragment(displayed_answer_core, card):
+        issues.append("核心答案像半截词串")
+        score -= 54
+    if is_listening and displayed_answer_core and looks_like_truncated_listening_answer(
+        displayed_answer_core,
+        card.get("english") or segment.get("text", ""),
+    ):
+        issues.append("听力答案像截断片段")
+        score -= 42
     field_blob = "\n".join(str(value or "") for value in text_fields)
-    if any(re.search(pattern, field_blob, flags=re.IGNORECASE) for pattern in TEMPLATE_NOISE_PATTERNS):
+    if has_template_noise(field_blob):
         issues.append("字段像模板废话")
         score -= 30
     chinese_value = str(card.get("chinese", "") or "").strip()
@@ -1782,6 +2072,36 @@ def assess_card_quality(
     if card.get("type") in {"phrase", "cloze"} and has_generic_definition(str(card.get("definition", ""))):
         issues.append("释义太泛")
         score -= 20
+    if source == "ai" and card.get("type") in {"phrase", "cloze"}:
+        has_specific_meaning = any(
+            is_specific_study_text(value) and has_cjk(str(value))
+            for value in [
+                card.get("chinese", ""),
+                card.get("natural_chinese", ""),
+                card.get("chinese_feel", ""),
+            ]
+        )
+        has_specific_usage = any(
+            is_specific_study_text(value)
+            for value in [
+                card.get("definition", ""),
+                card.get("how_to_use_it", ""),
+                card.get("context", ""),
+            ]
+        )
+        has_specific_guidance = any(
+            is_specific_study_text(value)
+            for value in [
+                card.get("teacher_note", ""),
+                card.get("usage_boundary", ""),
+                card.get("confusable_note", ""),
+                card.get("collocations", ""),
+                card.get("replacement_examples", ""),
+            ]
+        )
+        if not (has_specific_meaning and has_specific_usage and has_specific_guidance):
+            issues.append("AI 解释字段不足")
+            score = min(score, 66)
     teacher_note = str(card.get("teacher_note", "") or "").strip()
     if len(teacher_note) < 8:
         issues.append("老师提示太薄")
@@ -1872,6 +2192,14 @@ def phrase_allows_trailing_preposition(phrase: str) -> bool:
             "in the mood for",
             "what do you think about",
             "how do you feel about",
+            "prefer to see it as",
+            "was thinking of",
+            "apply heat to",
+            "worked out of",
+            "in the presence of",
+            "i'd be willing to",
+            "be willing to",
+            "what's up for",
         }
     )
 
@@ -1912,6 +2240,7 @@ def choose_best_phrase(text: str, proposed: str, fallback: str, level: str, coll
 
 
 def repair_card_fields(card: dict[str, Any], segment: dict[str, Any], level: str) -> None:
+    card["language"] = normalize_learning_language(segment.get("language", card.get("language") or "en"))
     text = card.get("english") or segment.get("text", "")
     reviewed_phrase = str(segment.get("phrase") or "").strip()
     candidate_kind = str(card.get("candidate_kind") or segment.get("candidate_kind") or "")
@@ -1955,7 +2284,7 @@ def repair_card_fields(card: dict[str, Any], segment: dict[str, Any], level: str
         else:
             validation_issues = []
         card["validation_status"] = "reject"
-        card["validation_issues"] = list(dict.fromkeys([*validation_issues, "answer_core 不是英文学习对象"]))
+        card["validation_issues"] = list(dict.fromkeys([*validation_issues, "answer_core 不是目标语言学习对象"]))
     pronunciation_issues = sanitize_pronunciation_fields(card, segment.get("language", "English"))
     if pronunciation_issues:
         existing_issues = card.get("validation_issues")
@@ -1974,14 +2303,17 @@ def repair_card_fields(card: dict[str, Any], segment: dict[str, Any], level: str
             "answer_core": card.get("answer_core") or phrase,
             "phrase": card.get("phrase") or phrase,
             "content_kind": card.get("content_kind") or "",
+            "language": card.get("language"),
         }
         for key in PRONUNCIATION_FIELDS:
             if card.get(key):
                 contract[key] = card.get(key)
+        if card.get("pronunciation_meta"):
+            contract["pronunciation_meta"] = card.get("pronunciation_meta")
         is_valid_contract, contract_reason, normalized_contract = sanitize_learning_point_contract(
             contract,
             str(text or ""),
-            language=segment.get("language", "English"),
+            language=card.get("language", segment.get("language", "en")),
         )
         if is_valid_contract:
             for key in [
@@ -1993,11 +2325,12 @@ def repair_card_fields(card: dict[str, Any], segment: dict[str, Any], level: str
                 "content_kind",
                 "phonetic_ipa",
                 "spoken_ipa",
-                "source_spoken_ipa",
-                "pronunciation_note",
-                "pronunciation_confidence",
-                "validation_status",
-            ]:
+            "source_spoken_ipa",
+            "pronunciation_note",
+            "pronunciation_confidence",
+            "pronunciation_meta",
+            "validation_status",
+        ]:
                 if normalized_contract.get(key) not in (None, ""):
                     card[key] = normalized_contract[key]
             if normalized_contract.get("validation_issues"):
@@ -2012,6 +2345,13 @@ def repair_card_fields(card: dict[str, Any], segment: dict[str, Any], level: str
                 validation_issues = []
             card["validation_status"] = "reject"
             card["validation_issues"] = list(dict.fromkeys([*validation_issues, contract_reason]))
+    estimated_level = str(card.get("estimated_level") or "").strip().upper()
+    if estimated_level not in CEFR_ORDER:
+        difficulty_match = re.search(r"\b(A1|A2|B1|B2|C1|C2)\b", str(card.get("difficulty") or "").upper())
+        estimated_level = difficulty_match.group(1) if difficulty_match else (level if level in CEFR_ORDER else "B1")
+    card["estimated_level"] = estimated_level
+    if not str(card.get("difficulty_reason") or "").strip():
+        card["difficulty_reason"] = "系统根据表达本身、语境和听力/迁移难度估计。"
     card["cloze"] = make_cloze(text, phrase)
 
 
@@ -2024,6 +2364,19 @@ def normalize_learning_action_fields(card: dict[str, Any]) -> None:
     avoid_reason = normalized_action_text(card.get("avoid_reason"))
     usage_boundary = normalized_action_text(card.get("usage_boundary"))
     confusable_note = normalized_action_text(card.get("confusable_note"))
+
+    if (not natural_chinese or has_template_noise(natural_chinese)) and is_specific_study_text(card.get("chinese")):
+        card["natural_chinese"] = clean_study_text(card.get("chinese"))
+        natural_chinese = normalized_action_text(card.get("natural_chinese"))
+    if (not how_to_use_it or has_template_noise(how_to_use_it)) and is_specific_study_text(card.get("definition")):
+        card["how_to_use_it"] = clean_study_text(card.get("definition"))
+        how_to_use_it = normalized_action_text(card.get("how_to_use_it"))
+    if (not why_it_matters or has_template_noise(why_it_matters)) and is_specific_study_text(card.get("why")):
+        card["why_it_matters"] = clean_study_text(card.get("why"))
+        why_it_matters = normalized_action_text(card.get("why_it_matters"))
+    if (not replacement_examples or has_template_noise(replacement_examples)) and is_specific_study_text(card.get("collocations")):
+        card["replacement_examples"] = clean_study_text(card.get("collocations"))
+        replacement_examples = normalized_action_text(card.get("replacement_examples"))
 
     if natural_chinese and (not str(card.get("chinese") or "").strip() or not has_cjk(str(card.get("chinese") or ""))):
         card["chinese"] = natural_chinese
@@ -2260,6 +2613,8 @@ def fallback_cards(segment: dict[str, Any], card_types: list[str], level: str) -
             "why_it_matters": fields.get("why", ""),
             "how_to_use_it": fields.get("context", ""),
             "natural_chinese": fields.get("chinese", ""),
+            "estimated_level": level if level in CEFR_ORDER else "B1",
+            "difficulty_reason": "本地草稿按当前水平和表达可迁移性估计。",
             "replacement_examples": fields.get("collocations", ""),
             "avoid_reason": "",
             "skipped_card_types": {},
@@ -2279,6 +2634,7 @@ def fallback_cards(segment: dict[str, Any], card_types: list[str], level: str) -
             "source_evidence": point.get("source_evidence") or segment.get("source_evidence") or segment.get("text", ""),
             "retrieval_prompt": "",
             "answer_core": answer,
+            "language": normalize_learning_language(segment.get("language", "en")),
             "usage_boundary": point.get("usage_boundary") or "",
             "confusable_note": point.get("confusable_note") or "",
             "phonetic_ipa": point.get("phonetic_ipa") or "",
@@ -2286,6 +2642,7 @@ def fallback_cards(segment: dict[str, Any], card_types: list[str], level: str) -
             "source_spoken_ipa": point.get("source_spoken_ipa") or "",
             "pronunciation_note": point.get("pronunciation_note") or "",
             "pronunciation_confidence": point.get("pronunciation_confidence") or "",
+            "pronunciation_meta": point.get("pronunciation_meta") or None,
             **fields,
         }
         sanitize_pronunciation_fields(card, segment.get("language", "English"))
@@ -2299,8 +2656,14 @@ def fallback_cards(segment: dict[str, Any], card_types: list[str], level: str) -
             card["type_label"] = "听力卡"
         card_quality_source = quality_source if card_type == "phrase" else "fallback"
         card["quality"] = assess_card_quality(card, segment, card_quality_source, level)
-        if card_type == "listening" and card["quality"]["status"] == "reject":
-            if set(card["quality"].get("issues", [])) <= {"本地草稿，需要人工确认", "字段像模板废话"}:
+        if card_quality_source == "fallback" and card["quality"]["status"] == "reject":
+            local_draft_issues = {
+                "本地草稿，需要人工确认",
+                "字段像模板废话",
+                "例句只是照抄原句",
+                "老师提示和学习理由重复",
+            }
+            if set(card["quality"].get("issues", [])) <= local_draft_issues:
                 card["quality"]["status"] = "needs_review"
                 card["quality"]["score"] = max(42, int(card["quality"].get("score") or 0))
         card["enabled"] = card_quality_source == "curated_fallback" and card["quality"]["status"] == "recommended"
@@ -2308,9 +2671,48 @@ def fallback_cards(segment: dict[str, Any], card_types: list[str], level: str) -
     return cards
 
 
+def pronunciation_prompt_instruction(language_code: str) -> str:
+    profile = pronunciation_profile(language_code)
+    common = (
+        "发音字段使用 legacy key，但 UI 会显示为标准读法/推测口语读法/原句听感："
+        f"pronunciation_meta 必须包含 language_code={profile['code']}、accent_profile={profile['accent_profile']}、"
+        f"notation_system={profile['notation_system']}、generation_basis、field_confidence、same_as_standard_reason、validation_issues。"
+        "V1 没有音频实听/ASR/forced alignment；除非输入明确提供实听证据，否则 generation_basis 必须是 subtitle_inferred，"
+        "spoken_ipa 和 source_spoken_ipa 的 confidence 不能为 high，不得声称“剧中实际读作”。"
+        "如果只能给标准读法，generation_basis=dictionary_only，spoken_ipa 留空。"
+        "source_spoken_ipa 必须覆盖完整原句的主要词/音节，不能只覆盖 answer_core。"
+        "如果 spoken_ipa 与 phonetic_ipa 相同，必须填写 same_as_standard_reason。"
+    )
+    by_language = {
+        "en": (
+            "English：phonetic_ipa 用词典式美式 IPA；spoken_ipa 是字幕推测口语读法，可用 IPA + weak forms/linking/stress；"
+            "source_spoken_ipa 不推荐只有一长串 IPA，最好体现学习者可读的弱读、连读和重音听感。"
+        ),
+        "fr": (
+            "French：使用 API/IPA，标 liaison、enchaînement、e caduc；不要机械添加所有 liaison，区分必连、可连、禁连。"
+        ),
+        "es": (
+            "Spanish：accent_profile 必须是 es-LatAm-general-MX-like；默认不用 /θ/；"
+            "标准读法尽量给音节+重音，可附 IPA；s 弱化、d 省略、Rioplatense y/ll 只有 profile 或音频支持时才标。"
+        ),
+        "ja": (
+            "Japanese：phonetic_ipa 字段实际存“假名+可选音高”；必须给假名。音高只在可靠时标，"
+            "不确定则 pitch_confidence=unknown 或 low，不得硬标 ꜜ。"
+        ),
+        "ru": (
+            "Russian：phonetic_ipa 字段实际存“带重音西里尔+可选 IPA”；多音节实词必须标重音，ё 视为有重音；"
+            "重音不确定时仍可给最可能读法，但该字段 confidence 必须 low 并说明原因。"
+        ),
+    }
+    return common + by_language.get(language_code, by_language["en"])
+
+
 def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str:
     requested_types = requested_card_types([str(card_type) for card_type in project.get("card_types", []) if card_type])
     current_level = str(project.get("level", "B1"))
+    level_mode = normalized_level_mode(project)
+    language_code = normalize_learning_language(project.get("language", "en"))
+    profile = pronunciation_profile(language_code)
     collection_levels = collection_levels_from_payload(project, current_level)
     selection_strategy = normalized_selection_strategy(project)
     focus_instruction = language_focus_instruction(project)
@@ -2336,9 +2738,10 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
         for segment in segments
     ]
     return (
-        "你是给中文母语者做英语 Anki 卡的资深老师。目标不是多写信息，而是让学习者翻面后立刻知道："
+        f"你是给中文母语者做 {profile['label']} Anki 卡的资深老师。目标不是多写信息，而是让学习者翻面后立刻知道："
         "这句我该听懂什么、该记住哪个表达、以后怎么自己用。"
-        "你不是字段填写器，而是英语学习卡片编辑老师：先判断学习价值，再决定是否制卡，最后自检这张卡是不是有明确训练动作。"
+        "你不是字段填写器，而是语言学习卡片编辑老师：先判断学习价值，再决定是否制卡，最后自检这张卡是不是有明确训练动作。"
+        "JSON 字段 english 是历史字段名，实际表示目标语言原句/source sentence。"
         f"{material_context_instruction}"
         "制卡前请在心里回答四个问题：这句最值得学的是什么？它是词伙、句型、口语短句、语气表达还是听力句？"
         "中文学习者为什么容易忽略它？这张卡训练听懂、会用、会替换还是理解语气？如果回答不清楚，返回 cards: []。"
@@ -2371,14 +2774,17 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
         "avoid_reason=不值得制卡时的原因。how_to_use_it 和 replacement_examples 必须是可以直接放进卡片背面的自然内容，"
         "不要写 natural object、complete sentence、use X in a sentence 这种占位说明。"
         "9) 每张卡必须给复习字段：retrieval_prompt=正面明确回忆题，不能写“判断最值得学”；"
-        "answer_core=翻面第一眼核对的核心答案，只能写英文表达/单词本体，例如 hold that against you；"
+        f"answer_core=翻面第一眼核对的核心答案，只能写 {profile['label']} 表达/单词本体，例如 hold that against you；"
         "禁止在 answer_core 写中文释义、IPA、发音融合、连读说明、语法解释或“X 是 Y”的说明；这些放 teacher_note 或 confusable_note。"
-        "英语卡还要输出发音字段：phonetic_ipa=answer_core 的标准美式 IPA；spoken_ipa=美剧口语中 answer_core 的弱读/连读读法；"
-        "source_spoken_ipa=原句中包含 answer_core 的整句口语 IPA 或关键听辨片段；pronunciation_note=一句中文听点说明；"
-        "pronunciation_confidence=high|medium|low。IPA 只写在这些字段里，不能写进 answer_core、phrase 或 TTS 文本。"
+        f"{pronunciation_prompt_instruction(language_code)}"
+        "pronunciation_note=一句中文听点说明；pronunciation_confidence=high|medium|low，必须等于发音字段最低置信度。"
+        "读法标注只写在 phonetic_ipa/spoken_ipa/source_spoken_ipa/pronunciation_note/pronunciation_meta，不能写进 answer_core、phrase 或 TTS 文本。"
         "usage_boundary=什么时候能用/不能用，尤其是调侃、冒犯、正式度；"
         "confusable_note=中文学习者最容易误解或误用的点。usage_boundary 和 confusable_note 要具体到这句的语气、对象、场景，"
         "不要写“注意语境”“很常见”这类空话。"
+        "10) 每张卡必须输出 estimated_level=A1|A2|B1|B2|C1|C2，以及 difficulty_reason=一句中文说明难点来源。"
+        "如果 level_mode=auto，请根据表达本身、原句语境、听力难点和迁移难度估计每张卡难度；"
+        "如果 level_mode=manual，用户水平只作为解释深度和筛选倾向，不是硬过滤。"
         "表达卡 retrieval_prompt 要问“这句里表示某个中文意思的自然表达是什么？”；"
         "语境生词卡要问“某个词在这句里是什么意思/怎么用？”，禁止做脱离原句的词典卡。"
         "好卡样例：english=Honestly, it's such a nice Monday morning. phrase=such a nice；"
@@ -2405,18 +2811,25 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
         '"chinese":"中文意思","phrase":"重点表达或生词","definition":"释义","collocations":"搭配",'
         '"context":"语境","example":"例句","chinese_feel":"中文感","why":"为什么值得学",'
         '"difficulty":"A1 入门|A2 基础|B1 日常交流|B2 独立表达|C1 高阶表达|C2 接近母语",'
+        '"estimated_level":"A1|A2|B1|B2|C1|C2","difficulty_reason":"一句中文说明难点来源",'
         '"teacher_note":"一句老师评语","cloze":"挖空句","card_role":"primary|specialist",'
         '"learning_goal":"这张卡训练什么","decision_reason":"为什么生成这张卡",'
         '"learning_target":"这张卡训练什么","why_it_matters":"为什么值得学",'
         '"how_to_use_it":"下次怎么换场景使用","natural_chinese":"自然中文理解",'
         '"replacement_examples":"1-2 个可替换例子","avoid_reason":"不值得制卡时的原因",'
         '"retrieval_prompt":"正面明确回忆题","answer_core":"核心答案",'
-        '"phonetic_ipa":"标准美式 IPA","spoken_ipa":"口语连读/弱读 IPA",'
-        '"source_spoken_ipa":"原句口语 IPA 或关键听辨片段","pronunciation_note":"中文听点说明",'
+        '"phonetic_ipa":"标准读法；按当前 language 的 notation_system 输出",'
+        '"spoken_ipa":"字幕推测的 answer_core 口语读法；未实听时不得 high confidence",'
+        '"source_spoken_ipa":"完整原句听感，覆盖目标语言原句主要词/音节，不要只写短语片段","pronunciation_note":"中文听点说明",'
         '"pronunciation_confidence":"high|medium|low",'
+        '"pronunciation_meta":{"language_code":"en|fr|es|ja|ru","accent_profile":"...","notation_system":"...",'
+        '"generation_basis":"audio_verified|subtitle_inferred|dictionary_only","field_confidence":{"phonetic_ipa":"high|medium|low",'
+        '"spoken_ipa":"high|medium|low","source_spoken_ipa":"high|medium|low","pronunciation_note":"high|medium|low"},'
+        '"same_as_standard_reason":null,"pitch_confidence":"high|medium|low|unknown","validation_issues":[]},'
         '"usage_boundary":"使用边界/语气风险","confusable_note":"易错提醒"}]}]}。'
-        f"学习语言：{project.get('language', 'English')}。"
-        f"用户当前水平：{current_level}，它只决定解释深度、标注和质量判断，不要把它当硬过滤。"
+        f"学习语言：{profile['label']}（内部 code={language_code}）。"
+        f"level_mode：{level_mode}。用户当前水平 legacy fallback：{current_level}。"
+        "自动模式下请为每张卡自行判断 estimated_level；手动模式下只把用户水平当软偏好，不要硬过滤。"
         f"筛选策略：{SELECTION_STRATEGY_LABELS.get(selection_strategy, selection_strategy)}。"
         f"高级难度关注范围：{', '.join(collection_levels)}；可以参考这些等级，但不要因此漏掉地道高频表达、生词用法、语法或听力点。"
         f"需要卡型：{', '.join(requested_types)}。"
@@ -2727,6 +3140,120 @@ def http_get_binary(url: str, headers: dict[str, str] | None = None, timeout: in
         raise RuntimeError(f"TTS download HTTP {err.code}: {detail}") from err
 
 
+def http_status_from_error_message(message: str) -> int | None:
+    for pattern in (r"\b(?:API|TTS(?: download)?) HTTP\s+(\d{3})\b", r"\bHTTP(?: Error)?\s+(\d{3})\b"):
+        match = re.search(pattern, message, flags=re.IGNORECASE)
+        if match:
+            try:
+                return int(match.group(1))
+            except ValueError:
+                return None
+    return None
+
+
+def service_error_codes(kind: str) -> dict[str, str]:
+    if kind == "tts":
+        return {
+            "auth": worker_errors.TTS_AUTH_FAILED,
+            "connection": worker_errors.TTS_CONNECTION_FAILED,
+            "not_found": worker_errors.TTS_NOT_FOUND,
+            "quota": worker_errors.TTS_QUOTA_EXCEEDED,
+            "timeout": worker_errors.TTS_TIMEOUT,
+        }
+    return {
+        "auth": worker_errors.MODEL_AUTH_FAILED,
+        "connection": worker_errors.MODEL_CONNECTION_FAILED,
+        "not_found": worker_errors.MODEL_NOT_FOUND,
+        "quota": worker_errors.MODEL_QUOTA_EXCEEDED,
+        "timeout": worker_errors.MODEL_TIMEOUT,
+    }
+
+
+def service_stage(kind: str) -> str:
+    return "tts" if kind == "tts" else "model_api"
+
+
+def service_label(kind: str) -> str:
+    return "TTS" if kind == "tts" else "模型"
+
+
+def service_error_message(kind: str, category: str, detail: str) -> str:
+    label = service_label(kind)
+    if category == "timeout":
+        return f"{label}请求超时：{detail}。通常是单批内容太多、模型 thinking 时间过长，或网络代理不稳定。"
+    if category == "auth":
+        return f"{label}授权或权限失败：{detail}。请检查 gcloud 登录、Vertex AI 项目、API Key 或服务权限。"
+    if category == "quota":
+        return f"{label}配额或限流：{detail}。请稍后重试，或检查 Vertex AI 配额、并发限制和账单状态。"
+    if category == "not_found":
+        return f"{label}模型或端点不存在：{detail}。请检查模型名、Base URL、区域和项目是否支持该模型。"
+    if category == "connection":
+        return f"{label}网络连接异常：{detail}。请检查代理、DNS、Base URL 和本机网络。"
+    return f"{label}请求失败：{detail}"
+
+
+def classify_service_error(error: Exception, *, kind: str = "model") -> dict[str, Any]:
+    detail = str(error).strip() or error.__class__.__name__
+    lower = detail.lower()
+    status = http_status_from_error_message(detail)
+    codes = service_error_codes(kind)
+
+    category = "unknown"
+    retryable = False
+    if isinstance(error, (TimeoutError, socket.timeout)) or "timed out" in lower or "timeout" in lower or "超时" in detail:
+        category = "timeout"
+        retryable = True
+    elif status in {401, 403} or any(term in lower for term in ("unauthorized", "unauthenticated", "forbidden", "permission", "invalid api key", "oauth")) or "权限" in detail:
+        category = "auth"
+    elif status == 429 or any(term in lower for term in ("resource exhausted", "quota", "rate limit", "too many requests")) or "限流" in detail or "配额" in detail:
+        category = "quota"
+        retryable = True
+    elif status == 404 or any(term in lower for term in ("not found", "model not found", "publisher model")) or "不存在" in detail:
+        category = "not_found"
+    elif (
+        isinstance(error, urllib.error.URLError)
+        or status is not None and status >= 500
+        or any(
+            term in lower
+            for term in (
+                "urlopen error",
+                "connection",
+                "network",
+                "proxy",
+                "dns",
+                "getaddrinfo",
+                "remote end closed",
+            )
+        )
+        or "连接" in detail
+    ):
+        category = "connection"
+        retryable = True
+
+    code = codes.get(category, worker_errors.UNKNOWN_WORKER_ERROR)
+    return {
+        "message": service_error_message(kind, category, detail),
+        "error_code": code,
+        "stage": service_stage(kind),
+        "retryable": retryable,
+    }
+
+
+def classify_worker_exception(error: Exception, *, command: str = "") -> dict[str, Any]:
+    detail = str(error)
+    lower = detail.lower()
+    if command == "test_tts" or "tts" in lower or "audio" in lower or "语音" in detail:
+        return classify_service_error(error, kind="tts")
+    if command in {"test_api", "generate"} or "api" in lower or "模型" in detail or "gemini" in lower or "vertex" in lower:
+        return classify_service_error(error, kind="model")
+    return {
+        "message": detail.strip() or error.__class__.__name__,
+        "error_code": worker_errors.UNKNOWN_WORKER_ERROR,
+        "stage": command or None,
+        "retryable": False,
+    }
+
+
 def anki_connect(action: str, params: dict[str, Any] | None = None, url: str = "http://127.0.0.1:8765") -> Any:
     response = http_json(
         url,
@@ -2932,6 +3459,15 @@ def gemini_vertex_base_url(location: str) -> str:
     return GEMINI_VERTEX_GLOBAL_BASE_URL if location == "global" else f"https://{location}-aiplatform.googleapis.com"
 
 
+def normalize_gemini_vertex_model(value: Any) -> str:
+    model = str(value or "").strip()
+    if not model:
+        return GEMINI_VERTEX_DEFAULT_MODEL
+    if model.lower() in GEMINI_VERTEX_UNAVAILABLE_MODEL_ALIASES:
+        return GEMINI_VERTEX_DEFAULT_MODEL
+    return model
+
+
 def gemini_content_text(response: dict[str, Any]) -> str:
     texts: list[str] = []
     for candidate in response.get("candidates", []) or []:
@@ -2952,7 +3488,7 @@ def gemini_vertex_generate_content(
     max_output_tokens: int = 12000,
     response_mime_type: str = "application/json",
 ) -> str:
-    model = str(config.get("model") or GEMINI_VERTEX_DEFAULT_MODEL).strip()
+    model = normalize_gemini_vertex_model(config.get("model"))
     project = gemini_vertex_project(config)
     location = gemini_vertex_location(config)
     token = gcloud_value(["auth", "print-access-token"])
@@ -3192,7 +3728,8 @@ def call_model(project: dict[str, Any], segments: list[dict[str, Any]]) -> dict[
             )
             return extract_json_object(content)
     except Exception as err:
-        return {"error": str(err)}
+        details = classify_service_error(err, kind="model")
+        return {"error": details["message"], **details}
 
     return None
 
@@ -3217,6 +3754,7 @@ def call_model_batches(project: dict[str, Any], segments: list[dict[str, Any]], 
         batch_size = min(batch_size, 4)
     merged: list[dict[str, Any]] = []
     errors: list[str] = []
+    error_details: list[dict[str, Any]] = []
     any_called = False
     total_batches = max(1, (len(segments) + batch_size - 1) // batch_size)
     for start in range(0, len(segments), batch_size):
@@ -3236,13 +3774,23 @@ def call_model_batches(project: dict[str, Any], segments: list[dict[str, Any]], 
         any_called = True
         if "error" in payload:
             errors.append(f"{batch[0]['id']}..{batch[-1]['id']}: {payload['error']}")
+            error_details.append(
+                {
+                    "error_code": payload.get("error_code"),
+                    "stage": payload.get("stage"),
+                    "retryable": payload.get("retryable"),
+                }
+            )
             continue
         merged.extend(payload.get("segments", []))
     if errors and not merged:
-        return {"error": "；".join(errors)}
+        first_detail = next((item for item in error_details if item.get("error_code")), {})
+        return {"error": "；".join(errors), **first_detail}
     result: dict[str, Any] = {"segments": merged}
     if errors:
         result["error"] = "部分批次失败：" + "；".join(errors)
+        first_detail = next((item for item in error_details if item.get("error_code")), {})
+        result.update(first_detail)
     return result if any_called else None
 
 
@@ -3325,6 +3873,10 @@ def normalized_phrase_key(phrase: str) -> str:
     return re.sub(r"\s+", " ", str(phrase or "").strip().lower())
 
 
+def is_placeholder_learning_phrase(value: Any) -> bool:
+    return normalized_phrase_key(str(value or "")) in {"", "key expression", "n/a"}
+
+
 def review_phrase_choice(
     text: str,
     proposed: str,
@@ -3385,6 +3937,335 @@ def skipped_review_segment(segment: dict[str, Any], status: str, reason: str, va
     }
 
 
+def source_learning_point_groups(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for segment in segments:
+        grouped.setdefault(learning_point_source_key(segment), []).append(segment)
+
+    groups: list[dict[str, Any]] = []
+    for source_id, items in grouped.items():
+        ranked = sorted(items, key=lambda item: float(item.get("score") or 0), reverse=True)
+        primary = ranked[0]
+        groups.append(
+            {
+                "source_segment_id": source_id,
+                "start": primary.get("start"),
+                "end": primary.get("end"),
+                "source_time": primary.get("source_time"),
+                "text": primary.get("text"),
+                "local_candidates": [
+                    {
+                        "id": item.get("id"),
+                        "candidate_kind": candidate_kind_for_segment(item),
+                        "phrase_type": item.get("phrase_type") or phrase_type_for_candidate_kind(candidate_kind_for_segment(item)),
+                        "exact_span": item.get("exact_span") or item.get("phrase") or "",
+                        "answer_core": item.get("answer_core") or item.get("normalized_answer") or item.get("phrase") or "",
+                        "normalized_answer": item.get("normalized_answer") or item.get("phrase") or "",
+                        "card_focus": item.get("phrase_card_focus") or "",
+                        "value_score": item.get("phrase_value_score") or item.get("score") or 0,
+                    }
+                    for item in ranked[:8]
+                ],
+            }
+        )
+    return sorted(groups, key=lambda item: (float(item.get("start") or 0), str(item.get("source_segment_id") or "")))
+
+
+def build_source_learning_point_expansion_prompt(project: dict[str, Any], source_groups: list[dict[str, Any]]) -> str:
+    level = str(project.get("level", "B1"))
+    language = normalize_learning_language(project.get("language", "en"))
+    selection_strategy = normalized_selection_strategy(project)
+    focus_instruction = language_focus_instruction(project)
+    material_context_instruction = material_context_for_prompt(project.get("material_context"))
+    max_points = max_learning_points_per_source(project)
+    compact_groups = [
+        {
+            "source_segment_id": group["source_segment_id"],
+            "source_time": group.get("source_time"),
+            "sentence": group.get("text"),
+            "local_candidates": group.get("local_candidates", []),
+        }
+        for group in source_groups
+    ]
+    return (
+        "你是中文母语者的多语言 Anki 学习点发现老师。请逐句补漏学习点，不要生成卡片内容。"
+        "输入里的 local_candidates 是本地已经发现的候选，必须保留给后续评审；你的任务只是在同一句里补充遗漏的不同学习动作。"
+        f"{material_context_instruction}"
+        f"{focus_instruction}"
+        "硬规则："
+        "1) 每个新增 learning point 的 exact_span 必须逐字/逐词出现在 sentence 里；不能虚构、改写或跨句拼接。"
+        "2) answer_core/normalized_answer 只能写目标语言答案本体，禁止写 IPA、中文释义、发音说明、语法解释或“X 是 Y”。"
+        "3) candidate_kind 只能是 expression、contextual_vocab、grammar_pattern、listening_feature、pragmatic_risk。"
+        "4) phrase_type 只能是 spoken_phrase、sentence_frame、collocation、discourse_marker、idiom、listening_sentence、vocabulary_usage、grammar_pattern。"
+        "5) 同一句里不同训练动作可以共存，例如 collocation、单词语境义、语法框架、听力弱读；训练动作重复的不要新增。"
+        "6) 不要为了数量硬凑低价值点；value_score 1-5，3=待审，4-5=值得进入后续评审。"
+        f"7) 每句最多返回 {max_points} 个总学习点；如果本地候选已经覆盖，不要重复新增。"
+        "只返回严格 JSON，不要 Markdown。结构："
+        '{"sources":[{"source_segment_id":"src_xxx","learning_points":[{'
+        '"candidate_kind":"expression|contextual_vocab|grammar_pattern|listening_feature|pragmatic_risk",'
+        '"phrase_type":"spoken_phrase|sentence_frame|collocation|discourse_marker|idiom|listening_sentence|vocabulary_usage|grammar_pattern",'
+        '"exact_span":"原句中的连续片段","answer_core":"目标语言答案本体","normalized_answer":"标准化答案",'
+        '"card_focus":"中文短句说明训练动作","value_score":4,"reason":"为什么值得补充"}]}]}。'
+        f"用户水平：{level}。学习语言代码：{language}。筛选策略：{SELECTION_STRATEGY_LABELS.get(selection_strategy, selection_strategy)}。"
+        f"源句：{json.dumps(compact_groups, ensure_ascii=False)}"
+    )
+
+
+def call_source_learning_point_expansion(
+    project: dict[str, Any],
+    source_groups: list[dict[str, Any]],
+    batch_size: int = 8,
+) -> tuple[dict[str, list[dict[str, Any]]], str | None]:
+    api = project.get("api_config") or {}
+    if not phrase_review_available(project) or not source_groups:
+        return {}, None
+
+    expanded: dict[str, list[dict[str, Any]]] = {}
+    try:
+        total_batches = max(1, (len(source_groups) + batch_size - 1) // batch_size)
+        for start in range(0, len(source_groups), batch_size):
+            batch = source_groups[start : start + batch_size]
+            batch_index = start // batch_size + 1
+            percent = min(58, 54 + int((batch_index - 1) / total_batches * 4))
+            emit_progress(
+                "generate",
+                "learning_point_expansion",
+                percent,
+                f"AI 正在逐句补漏学习点：第 {batch_index}/{total_batches} 批。",
+            )
+            prompt = build_source_learning_point_expansion_prompt(project, batch)
+            if is_gemini_vertex_config(api):
+                content = gemini_vertex_generate_content(
+                    api,
+                    prompt,
+                    temperature=0.15,
+                    timeout=180 if is_gemini_vertex_thinking_config(api) else 120,
+                    max_output_tokens=9000 if is_gemini_vertex_thinking_config(api) else 4500,
+                )
+            else:
+                response = compatible_chat_completion(
+                    api,
+                    [
+                        {"role": "system", "content": "Return only valid JSON."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.15,
+                    timeout=180 if is_thinking_model_config(api) else 120,
+                    max_tokens=4500 if is_deepseek_thinking_config(api) else 3200,
+                    progress={
+                        "command": "generate",
+                        "stage": "learning_point_expansion",
+                        "percent": percent,
+                        "message": "AI 逐句补漏学习点",
+                    },
+                )
+                content = chat_completion_content(response)
+            payload = extract_json_object(content or "")
+            for source in payload.get("sources", []):
+                if not isinstance(source, dict):
+                    continue
+                source_id = str(source.get("source_segment_id") or "").strip()
+                points = source.get("learning_points")
+                if source_id and isinstance(points, list):
+                    expanded.setdefault(source_id, []).extend(point for point in points if isinstance(point, dict))
+    except Exception as err:
+        return {}, f"逐句补漏学习点失败，已回退到本地候选：{err}"
+
+    return expanded, None
+
+
+def expansion_point_to_segment(
+    point: dict[str, Any],
+    source_segment: dict[str, Any],
+    project: dict[str, Any],
+    index: int,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    source_id = learning_point_source_key(source_segment)
+    kind = str(point.get("candidate_kind") or point.get("kind") or "").strip()
+    if kind not in CANDIDATE_KIND_TO_PHRASE_TYPE:
+        kind = candidate_kind_for_phrase_type(str(point.get("phrase_type") or ""), "expression")
+    if not candidate_kind_allowed_by_focus(kind, project):
+        rejected = skipped_review_segment(
+            {
+                **source_segment,
+                "id": f"{source_segment.get('id', 'seg')}_expansion_reject_{index}",
+                "source_segment_id": source_id,
+                "candidate_kind": kind,
+            },
+            "reject",
+            "模型补漏学习点不符合当前学习重点，已拒绝。",
+            phrase_review_score(point.get("value_score")),
+        )
+        return None, rejected
+    phrase_type = str(point.get("phrase_type") or phrase_type_for_candidate_kind(kind)).strip()
+    if phrase_type not in PHRASE_TYPE_TO_CANDIDATE_KIND:
+        phrase_type = phrase_type_for_candidate_kind(kind)
+    try:
+        value_score = float(point.get("value_score") or point.get("score") or 3)
+    except (TypeError, ValueError):
+        value_score = 3.0
+    value_score = max(1.0, min(5.0, value_score))
+    raw_candidate = {
+        "kind": kind,
+        "candidate_kind": kind,
+        "phrase_type": phrase_type,
+        "exact_span": point.get("exact_span") or point.get("phrase") or point.get("answer_core") or "",
+        "normalized_answer": point.get("normalized_answer") or point.get("answer_core") or point.get("exact_span") or "",
+        "answer_core": point.get("answer_core") or point.get("normalized_answer") or point.get("exact_span") or "",
+        "phrase": point.get("phrase") or point.get("exact_span") or point.get("answer_core") or "",
+        "content_kind": content_kind_for_phrase_type(phrase_type),
+        "language": normalize_learning_language(project.get("language", source_segment.get("language", "en"))),
+    }
+    is_valid, reason, normalized_point = sanitize_learning_point_contract(
+        raw_candidate,
+        str(source_segment.get("text") or ""),
+        language=project.get("language", source_segment.get("language", "en")),
+    )
+    reject_seed = {
+        **source_segment,
+        "id": f"{source_segment.get('id', 'seg')}_expansion_reject_{index}",
+        "source_segment_id": source_id,
+        "candidate_kind": kind,
+        "phrase_type": phrase_type,
+        "exact_span": raw_candidate["exact_span"],
+        "normalized_answer": raw_candidate["normalized_answer"],
+        "answer_core": raw_candidate["answer_core"],
+        "candidate_source": "source_expansion",
+    }
+    if not is_valid:
+        return None, skipped_review_segment(reject_seed, "reject", f"模型补漏{reason}", phrase_review_score(value_score))
+
+    answer = str(normalized_point.get("answer_core") or normalized_point.get("normalized_answer") or normalized_point.get("exact_span") or "")
+    learning_point = {
+        "id": learning_point_id_for_candidate(source_id, normalized_point),
+        "kind": normalized_point["candidate_kind"],
+        "exact_span": normalized_point["exact_span"],
+        "answer_core": answer,
+        "difficulty": str(project.get("level", "B1")),
+        "value_score": round(value_score, 2),
+        "reason": str(point.get("card_focus") or point.get("reason") or "模型逐句补漏发现的学习点。"),
+        "suggested_card_type": "listening" if normalized_point["candidate_kind"] == "listening_feature" else "phrase",
+        "content_kind": normalized_point["content_kind"],
+        "normalized_answer": normalized_point["normalized_answer"],
+        "source_evidence": source_segment.get("text", ""),
+        "language": normalize_learning_language(project.get("language", source_segment.get("language", "en"))),
+    }
+    media_start, media_end = segment_media_bounds(
+        float(source_segment.get("start") or 0),
+        float(source_segment.get("end") or 0),
+        str(source_segment.get("text") or ""),
+        normalized_point["exact_span"],
+        True,
+    )
+    segment = {
+        **source_segment,
+        "id": f"{source_segment.get('id', 'seg')}_expansion_{stable_id(f'{source_id}:{answer}:{kind}:{index}') & 0xFFFF:04x}",
+        "source_segment_id": source_id,
+        "learning_point_id": learning_point["id"],
+        "learning_points": [learning_point],
+        "media_start": media_start,
+        "media_end": media_end,
+        "media_source_time": f"{fmt_time(media_start)} - {fmt_time(media_end)}",
+        "recommendation": min(5, max(1, round(value_score))),
+        "phrase": answer,
+        "exact_span": normalized_point["exact_span"],
+        "normalized_answer": normalized_point["normalized_answer"],
+        "answer_core": answer,
+        "candidate_kind": normalized_point["candidate_kind"],
+        "phrase_type": normalized_point["phrase_type"],
+        "content_kind": normalized_point["content_kind"],
+        "candidate_source": "source_expansion",
+        "learning_point_schema_version": LEARNING_POINT_SCHEMA_VERSION,
+        "phrase_card_focus": str(point.get("card_focus") or point.get("reason") or ""),
+        "source_evidence": source_segment.get("text", ""),
+        "score": float(source_segment.get("score") or 0) + max(0.0, value_score - 3.0),
+    }
+    return segment, None
+
+
+def expand_learning_points_by_source(
+    project: dict[str, Any],
+    segments: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
+    if normalized_selection_strategy(project) not in {"catch_all", "exhaustive"}:
+        return segments, [], None
+    mode = normalized_source_expansion_mode(project)
+    if mode == "off":
+        project["_source_expansion_stats"] = {
+            "mode": mode,
+            "eligible_source_groups": 0,
+            "requested_source_groups": 0,
+            "added_candidates": 0,
+            "rejected_candidates": 0,
+        }
+        return segments, [], None
+    groups = source_learning_point_groups(segments)
+    eligible_count = len(groups)
+    if mode == "auto":
+        max_groups = max_source_expansion_groups(project)
+        groups = sorted(
+            groups,
+            key=lambda group: (
+                len({str(item.get("candidate_kind") or "") for item in group.get("local_candidates", [])}),
+                max(float(item.get("value_score") or 0) for item in group.get("local_candidates", []) or [{"value_score": 0}]),
+                len(str(group.get("text") or "")),
+                -float(group.get("start") or 0),
+            ),
+            reverse=True,
+        )[:max_groups]
+        groups = sorted(groups, key=lambda item: (float(item.get("start") or 0), str(item.get("source_segment_id") or "")))
+    project["_source_expansion_stats"] = {
+        "mode": mode,
+        "eligible_source_groups": eligible_count,
+        "requested_source_groups": len(groups),
+        "added_candidates": 0,
+        "rejected_candidates": 0,
+    }
+    expanded, warning = call_source_learning_point_expansion(project, groups)
+    if not expanded:
+        return segments, [], warning
+
+    source_primary: dict[str, dict[str, Any]] = {}
+    for segment in segments:
+        source_primary.setdefault(learning_point_source_key(segment), segment)
+
+    additions: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    for source_id, points in expanded.items():
+        source_segment = source_primary.get(source_id)
+        if not source_segment:
+            continue
+        for index, point in enumerate(points, start=1):
+            addition, reject = expansion_point_to_segment(point, source_segment, project, index)
+            if addition:
+                additions.append(addition)
+            if reject:
+                rejected.append(reject)
+
+    merged: list[dict[str, Any]] = list(segments)
+    for addition in sorted(additions, key=lambda item: float(item.get("score") or 0), reverse=True):
+        same_source = [item for item in merged if learning_point_source_key(item) == learning_point_source_key(addition)]
+        if any(learning_actions_overlap(addition, existing) for existing in same_source):
+            rejected.append(
+                skipped_review_segment(
+                    addition,
+                    "duplicate",
+                    "模型补漏学习点与同句已有训练动作重复，已合并。",
+                    phrase_review_score(addition.get("score")),
+                )
+            )
+            continue
+        merged.append(addition)
+
+    stats = project.setdefault("_source_expansion_stats", {})
+    stats["added_candidates"] = len(additions)
+    stats["rejected_candidates"] = len(rejected)
+    return sorted(merged, key=lambda item: (float(item.get("start") or 0), str(item.get("id") or ""))), sorted(
+        rejected,
+        key=lambda item: (float(item.get("start") or 0), str(item.get("id") or "")),
+    ), warning
+
+
 def _score_breakdown_value(score_breakdown: dict[str, Any], key: str) -> int | None:
     if key not in score_breakdown:
         return None
@@ -3401,7 +4282,7 @@ def validate_review_learning_point(
     candidate_kind: str,
     phrase_type: str,
     score_breakdown: dict[str, Any],
-) -> tuple[bool, str, dict[str, str]]:
+) -> tuple[bool, str, dict[str, Any]]:
     text = str(segment.get("text") or "")
     final_kind = candidate_kind or candidate_kind_for_segment(segment)
     final_phrase_type = phrase_type or phrase_type_for_candidate_kind(final_kind)
@@ -3414,11 +4295,18 @@ def validate_review_learning_point(
         "answer_core": review.get("answer_core") or review.get("normalized_answer") or phrase,
         "phrase": review.get("phrase") or phrase,
         "content_kind": content_kind_for_phrase_type(final_phrase_type),
+        "language": normalize_learning_language(segment.get("language", "en")),
     }
     for key in PRONUNCIATION_FIELDS:
         if review.get(key):
             point_payload[key] = review.get(key)
-    is_valid, validation_reason, normalized_point = sanitize_learning_point_contract(point_payload, text)
+    if review.get("pronunciation_meta"):
+        point_payload["pronunciation_meta"] = review.get("pronunciation_meta")
+    is_valid, validation_reason, normalized_point = sanitize_learning_point_contract(
+        point_payload,
+        text,
+        language=segment.get("language", "en"),
+    )
     if not is_valid:
         return False, f"AI 评审{validation_reason}", {}
     for key, label in (("answer_clarity", "答案清晰度"), ("learning_action", "学习动作")):
@@ -3438,6 +4326,7 @@ def validate_review_learning_point(
         "source_spoken_ipa": normalized_point.get("source_spoken_ipa", ""),
         "pronunciation_note": normalized_point.get("pronunciation_note", ""),
         "pronunciation_confidence": normalized_point.get("pronunciation_confidence", ""),
+        "pronunciation_meta": normalized_point.get("pronunciation_meta") or None,
         "validation_status": normalized_point.get("validation_status", "ok"),
         "validation_issues": " / ".join(normalized_point.get("validation_issues", [])),
     }
@@ -3581,6 +4470,7 @@ def apply_phrase_review_decisions(
                 "source_spoken_ipa": normalized_fields.get("source_spoken_ipa", ""),
                 "pronunciation_note": normalized_fields.get("pronunciation_note", ""),
                 "pronunciation_confidence": normalized_fields.get("pronunciation_confidence", ""),
+                "pronunciation_meta": normalized_fields.get("pronunciation_meta") or None,
                 "validation_status": normalized_fields.get("validation_status", "ok"),
                 "validation_issues": normalized_fields.get("validation_issues", ""),
                 "candidate_source": segment.get("candidate_source", ""),
@@ -3737,7 +4627,7 @@ def enforce_max_learning_points_per_source(
                     skipped_review_segment(
                         item,
                         "reject",
-                        "同一句学习点预算已满，只保留最清晰的 0-2 个。",
+                        f"同一句学习点预算已满，只保留最清晰的 0-{max_per_source} 个。",
                         phrase_review_score(item.get("phrase_value_score")),
                     )
                 )
@@ -3763,14 +4653,16 @@ def split_duplicate_phrase_segments(segments: list[dict[str, Any]], max_per_phra
     kept: list[dict[str, Any]] = []
     duplicates: list[dict[str, Any]] = []
     for segment in ranked:
-        key_parts = [
-            normalized_phrase_key(segment.get("normalized_answer") or segment.get("phrase", "")),
-            str(segment.get("candidate_kind") or candidate_kind_for_segment(segment)),
-            re.sub(r"\s+", " ", str(segment.get("phrase_card_focus") or "").strip().lower())[:80],
-        ]
-        key = "::".join(part for part in key_parts if part)
-        if key == "key expression":
+        answer_key = normalized_phrase_key(segment.get("normalized_answer") or segment.get("phrase", ""))
+        if is_placeholder_learning_phrase(answer_key):
             key = f"key expression::{segment.get('id', '')}"
+        else:
+            key_parts = [
+                answer_key,
+                str(segment.get("candidate_kind") or candidate_kind_for_segment(segment)),
+                re.sub(r"\s+", " ", str(segment.get("phrase_card_focus") or "").strip().lower())[:80],
+            ]
+            key = "::".join(part for part in key_parts if part)
         if not key:
             duplicates.append(skipped_review_segment(segment, "duplicate", "缺少稳定词伙，已从候选中移除。", 0))
             continue
@@ -3917,11 +4809,15 @@ def validate_api_test_payload(text: str) -> tuple[bool, str]:
 
 
 def handle_test_api(payload: dict[str, Any]) -> dict[str, Any]:
-    api = payload.get("api_config") or {}
+    api = dict(payload.get("api_config") or {})
     provider = api.get("provider", "local")
     model = api.get("model", "").strip()
     api_key = api.get("api_key", "").strip()
     started = time.time()
+
+    if is_gemini_vertex_config(api):
+        api["model"] = normalize_gemini_vertex_model(model)
+        model = str(api["model"])
 
     if provider == "local":
         return {
@@ -3938,6 +4834,9 @@ def handle_test_api(payload: dict[str, Any]) -> dict[str, Any]:
             "provider": provider,
             "model": model,
             "message": "缺少 API Key。",
+            "error_code": worker_errors.MODEL_AUTH_FAILED,
+            "stage": "model_api",
+            "retryable": False,
         }
     if not model:
         return {
@@ -3945,6 +4844,9 @@ def handle_test_api(payload: dict[str, Any]) -> dict[str, Any]:
             "provider": provider,
             "model": model,
             "message": "缺少模型名。",
+            "error_code": worker_errors.MODEL_NOT_FOUND,
+            "stage": "model_api",
+            "retryable": False,
         }
 
     prompt = api_test_prompt()
@@ -4022,11 +4924,12 @@ def handle_test_api(payload: dict[str, Any]) -> dict[str, Any]:
             "latency_ms": latency_ms,
         }
     except Exception as err:
+        details = classify_service_error(err, kind="model")
         return {
             "ok": False,
             "provider": provider,
             "model": model,
-            "message": str(err),
+            **details,
             "latency_ms": int((time.time() - started) * 1000),
         }
 
@@ -4082,7 +4985,7 @@ def normalized_tts_config(project_or_payload: dict[str, Any]) -> dict[str, Any]:
         "voice": str(
             tts.get("voice") or legacy_model or (GEMINI_VERTEX_TTS_DEFAULT_VOICE if provider in GEMINI_VERTEX_TTS_PROVIDERS else "")
         ).strip(),
-        "language": str(tts.get("language") or ("en-US" if provider in GEMINI_VERTEX_TTS_PROVIDERS else "auto")).strip()
+        "language": str(tts.get("language") or "auto").strip()
         or "auto",
         "sample_rate": int(tts.get("sample_rate") or 24000),
         "bit_rate": int(tts.get("bit_rate") or 128000),
@@ -4193,6 +5096,25 @@ def qwen_language_type(language: str) -> str:
     return "Auto"
 
 
+def normalize_bcp47_language_code(value: Any) -> str:
+    lower = str(value or "").strip().lower()
+    if not lower:
+        return ""
+    if re.fullmatch(r"[a-z]{2,3}-[a-z0-9]{2,4}", lower):
+        left, right = lower.split("-", 1)
+        return f"{left}-{right.upper()}"
+    code = normalize_learning_language(lower)
+    return TTS_LANGUAGE_FALLBACKS[code][0]
+
+
+def resolve_tts_language_code(tts: dict[str, Any], language: Any) -> str:
+    explicit = str(tts.get("language") or "").strip()
+    if explicit and explicit.lower() != "auto":
+        return normalize_bcp47_language_code(explicit)
+    code = normalize_learning_language(language)
+    return TTS_LANGUAGE_FALLBACKS[code][0]
+
+
 def gemini_vertex_tts_language_code(language: str) -> str:
     lower = str(language or "").strip().lower()
     if lower in {"", "auto"}:
@@ -4213,6 +5135,149 @@ def clean_tts_input_text(value: Any) -> str:
     if not text:
         raise RuntimeError("TTS 文本为空，无法生成音频。")
     return text
+
+
+TTS_SMALL_NUMBER_WORDS = {
+    "0": "zero",
+    "1": "one",
+    "2": "two",
+    "3": "three",
+    "4": "four",
+    "5": "five",
+    "6": "six",
+    "7": "seven",
+    "8": "eight",
+    "9": "nine",
+    "10": "ten",
+    "11": "eleven",
+    "12": "twelve",
+    "13": "thirteen",
+    "14": "fourteen",
+    "15": "fifteen",
+    "16": "sixteen",
+    "17": "seventeen",
+    "18": "eighteen",
+    "19": "nineteen",
+    "20": "twenty",
+}
+
+
+def tts_ascii_punctuation_variant(text: str) -> str:
+    return (
+        text.replace("’", "'")
+        .replace("‘", "'")
+        .replace("“", '"')
+        .replace("”", '"')
+        .replace("—", "-")
+        .replace("–", "-")
+        .replace("…", "...")
+    )
+
+
+def tts_sentence_punctuation_variant(text: str) -> str:
+    stripped = text.strip()
+    if not stripped or re.search(r"[.!?。！？]$", stripped):
+        return stripped
+    return f"{stripped}."
+
+
+def tts_small_number_words_variant(text: str) -> str:
+    def replace_match(match: re.Match[str]) -> str:
+        return TTS_SMALL_NUMBER_WORDS.get(match.group(0), match.group(0))
+
+    return re.sub(r"(?<![\w.])(?:[0-9]|1[0-9]|20)(?![\w]|\.\d)", replace_match, text)
+
+
+def tts_instruction_fallback_variants(text: str) -> list[str]:
+    spoken = tts_sentence_punctuation_variant(tts_ascii_punctuation_variant(text))
+    if not spoken:
+        return []
+    latin_words = re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", spoken)
+    label = "expression" if 0 < len(latin_words) <= 5 else "sentence"
+    return [
+        f"Read exactly this {label}: {spoken}",
+        f"Say only this {label}: {spoken}",
+    ]
+
+
+def gemini_vertex_tts_text_variants(text: str) -> list[str]:
+    candidates = [
+        text,
+        tts_ascii_punctuation_variant(text),
+        tts_sentence_punctuation_variant(text),
+        tts_sentence_punctuation_variant(tts_ascii_punctuation_variant(text)),
+        tts_small_number_words_variant(text),
+        tts_sentence_punctuation_variant(tts_small_number_words_variant(text)),
+        *tts_instruction_fallback_variants(text),
+    ]
+    variants: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        cleaned = clean_tts_input_text(candidate)
+        if cleaned not in seen:
+            variants.append(cleaned)
+            seen.add(cleaned)
+    return variants
+
+
+def gemini_vertex_tts_request_body(tts: dict[str, Any], speech_text: str, resolved_language: str) -> dict[str, Any]:
+    return {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": speech_text}],
+            }
+        ],
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "speechConfig": {
+                "languageCode": gemini_vertex_tts_language_code(resolved_language),
+                "voiceConfig": {
+                    "prebuiltVoiceConfig": {
+                        "voiceName": str(tts.get("voice") or GEMINI_VERTEX_TTS_DEFAULT_VOICE).strip(),
+                    }
+                },
+            },
+        },
+    }
+
+
+def gemini_vertex_tts_inline_audio(response: dict[str, Any]) -> bytes | None:
+    for candidate in response.get("candidates", []) or []:
+        content = candidate.get("content") or {}
+        for part in content.get("parts", []) or []:
+            inline = part.get("inlineData") or part.get("inline_data") or {}
+            data = inline.get("data")
+            if data:
+                return base64.b64decode(data)
+    return None
+
+
+def gemini_vertex_tts_response_diagnostic(response: dict[str, Any]) -> str:
+    details: list[str] = []
+    for candidate in response.get("candidates", []) or []:
+        finish = candidate.get("finishReason") or candidate.get("finish_reason")
+        if finish:
+            details.append(f"finishReason={finish}")
+        content = candidate.get("content") or {}
+        texts = [
+            str(part.get("text") or "").strip()
+            for part in content.get("parts", []) or []
+            if str(part.get("text") or "").strip()
+        ]
+        if texts:
+            details.append(f"text={texts[0][:120]}")
+        safety = candidate.get("safetyRatings") or candidate.get("safety_ratings") or []
+        if safety:
+            ratings = []
+            for rating in safety[:3]:
+                category = rating.get("category")
+                probability = rating.get("probability")
+                if category or probability:
+                    ratings.append(f"{category}:{probability}")
+            if ratings:
+                details.append(f"safety={','.join(ratings)}")
+    return "; ".join(details) or "no candidates/parts"
 
 
 def mimo_tts_audio(tts: dict[str, Any], text: str, language: str) -> bytes:
@@ -4258,12 +5323,13 @@ def mimo_tts_audio(tts: dict[str, Any], text: str, language: str) -> bytes:
 
 def qwen_tts_audio(tts: dict[str, Any], text: str, language: str) -> bytes:
     model = tts["model"] or QWEN_TTS_DEFAULT_MODEL
+    resolved_language = resolve_tts_language_code(tts, language)
     body = {
         "model": model,
         "input": {
             "text": text,
             "voice": tts.get("voice") or QWEN_TTS_DEFAULT_VOICE,
-            "language_type": qwen_language_type(tts.get("language") or language),
+            "language_type": qwen_language_type(resolved_language),
         },
     }
     model_lower = model.lower()
@@ -4295,43 +5361,40 @@ def gemini_vertex_tts_audio(tts: dict[str, Any], text: str, language: str) -> by
         raise RuntimeError("Gemini Vertex TTS 需要模型名。")
     project = gemini_vertex_project(tts)
     token = gcloud_value(["auth", "print-access-token"])
-    speech_text = clean_tts_input_text(text)
-    body = {
-        "contents": {
-            "role": "user",
-            "parts": {"text": speech_text},
-        },
-        "generation_config": {
-            "speech_config": {
-                "language_code": gemini_vertex_tts_language_code(tts.get("language") or language),
-                "voice_config": {
-                    "prebuilt_voice_config": {
-                        "voice_name": str(tts.get("voice") or GEMINI_VERTEX_TTS_DEFAULT_VOICE).strip(),
-                    }
-                },
-            }
-        },
-    }
-    response = http_json(
-        gemini_vertex_tts_endpoint({**tts, "model": model, "project": project}),
-        {"Authorization": f"Bearer {token}", "x-goog-user-project": project},
-        body,
-        timeout=120,
-    )
-    for candidate in response.get("candidates", []) or []:
-        content = candidate.get("content") or {}
-        for part in content.get("parts", []) or []:
-            inline = part.get("inlineData") or part.get("inline_data") or {}
-            data = inline.get("data")
-            if data:
-                return wav_from_pcm_s16le(base64.b64decode(data), sample_rate=int(tts.get("sample_rate") or 24000))
-    raise RuntimeError("Gemini Vertex TTS 没有返回 inlineData 音频。请检查 Vertex AI 权限、模型、区域和 voice。")
+    resolved_language = resolve_tts_language_code(tts, language)
+    endpoint = gemini_vertex_tts_endpoint({**tts, "model": model, "project": project})
+    headers = {"Authorization": f"Bearer {token}", "x-goog-user-project": project}
+    last_error: Exception | None = None
+    last_diagnostic = ""
+
+    for speech_text in gemini_vertex_tts_text_variants(text):
+        try:
+            response = http_json(
+                endpoint,
+                headers,
+                gemini_vertex_tts_request_body(tts, speech_text, resolved_language),
+                timeout=120,
+            )
+        except Exception as exc:
+            last_error = exc
+            continue
+
+        pcm = gemini_vertex_tts_inline_audio(response)
+        if pcm:
+            return wav_from_pcm_s16le(pcm, sample_rate=int(tts.get("sample_rate") or 24000))
+        last_diagnostic = gemini_vertex_tts_response_diagnostic(response)
+
+    if last_error:
+        raise RuntimeError(f"Gemini Vertex TTS 请求失败：{last_error}") from last_error
+    detail = f"（{last_diagnostic}）" if last_diagnostic else ""
+    raise RuntimeError(f"Gemini Vertex TTS 没有返回 inlineData 音频{detail}。请检查 Vertex AI 权限、模型、区域和 voice。")
 
 
 def call_tts_audio(tts: dict[str, Any], text: str, language: str) -> bytes:
     provider = tts["provider"]
     api_key = tts["api_key"]
     text = clean_tts_input_text(text)
+    resolved_language = resolve_tts_language_code(tts, language)
     if provider in {"grok", "xai"}:
         return http_binary(
             grok_tts_endpoint(tts["base_url"]),
@@ -4339,7 +5402,7 @@ def call_tts_audio(tts: dict[str, Any], text: str, language: str) -> bytes:
             {
                 "text": text,
                 "voice_id": tts["voice"] or "eve",
-                "language": tts["language"] or language or "auto",
+                "language": resolved_language,
                 "output_format": {
                     "codec": "mp3",
                     "sample_rate": tts["sample_rate"],
@@ -4349,13 +5412,13 @@ def call_tts_audio(tts: dict[str, Any], text: str, language: str) -> bytes:
         )
 
     if is_mimo_config(tts):
-        return mimo_tts_audio(tts, text, language)
+        return mimo_tts_audio(tts, text, resolved_language)
 
     if provider in QWEN_TTS_PROVIDERS:
-        return qwen_tts_audio(tts, text, language)
+        return qwen_tts_audio({**tts, "language": resolved_language}, text, resolved_language)
 
     if is_gemini_vertex_tts_config(tts):
-        return gemini_vertex_tts_audio(tts, text, language)
+        return gemini_vertex_tts_audio({**tts, "language": resolved_language}, text, resolved_language)
 
     if provider in OPENAI_COMPATIBLE_PROVIDERS:
         return http_binary(
@@ -4374,7 +5437,7 @@ def call_tts_audio(tts: dict[str, Any], text: str, language: str) -> bytes:
 
 def handle_test_tts(payload: dict[str, Any]) -> dict[str, Any]:
     tts = normalized_tts_config(payload)
-    language = str(payload.get("language") or "English")
+    language = normalize_learning_language(payload.get("language") or "en")
     started = time.time()
 
     if not tts["enabled"] or tts["provider"] == "disabled":
@@ -4384,6 +5447,9 @@ def handle_test_tts(payload: dict[str, Any]) -> dict[str, Any]:
             "model": tts["model"],
             "voice": tts["voice"],
             "message": "TTS 当前是关闭状态。",
+            "error_code": worker_errors.TTS_NOT_FOUND,
+            "stage": "tts",
+            "retryable": False,
         }
     if not tts["api_key"] and not is_gemini_vertex_tts_config(tts):
         return {
@@ -4392,6 +5458,9 @@ def handle_test_tts(payload: dict[str, Any]) -> dict[str, Any]:
             "model": tts["model"],
             "voice": tts["voice"],
             "message": "缺少 TTS API Key。",
+            "error_code": worker_errors.TTS_AUTH_FAILED,
+            "stage": "tts",
+            "retryable": False,
         }
 
     try:
@@ -4404,6 +5473,9 @@ def handle_test_tts(payload: dict[str, Any]) -> dict[str, Any]:
                     "model": tts["model"],
                     "voice": tts["voice"],
                     "message": "Gemini TTS 需要模型名。",
+                    "error_code": worker_errors.TTS_NOT_FOUND,
+                    "stage": "tts",
+                    "retryable": False,
                 }
             response = http_json(
                 f"https://generativelanguage.googleapis.com/v1beta/models/{tts['model']}:generateContent",
@@ -4434,6 +5506,9 @@ def handle_test_tts(payload: dict[str, Any]) -> dict[str, Any]:
                     "model": tts["model"],
                     "voice": tts["voice"],
                     "message": "Gemini Vertex TTS 需要模型名。",
+                    "error_code": worker_errors.TTS_NOT_FOUND,
+                    "stage": "tts",
+                    "retryable": False,
                 }
             if tts["provider"] in OPENAI_COMPATIBLE_PROVIDERS and (not compatible_base_url(tts) or not tts["model"]):
                 return {
@@ -4442,8 +5517,11 @@ def handle_test_tts(payload: dict[str, Any]) -> dict[str, Any]:
                     "model": tts["model"],
                     "voice": tts["voice"],
                     "message": "MIMO / OpenAI-compatible Speech 需要 Base URL 和模型名。",
+                    "error_code": worker_errors.TTS_NOT_FOUND,
+                    "stage": "tts",
+                    "retryable": False,
                 }
-            audio_size = len(call_tts_audio(tts, text, language_code(language)))
+            audio_size = len(call_tts_audio(tts, text, language))
 
         return {
             "ok": True,
@@ -4455,7 +5533,8 @@ def handle_test_tts(payload: dict[str, Any]) -> dict[str, Any]:
             "bytes": audio_size,
         }
     except Exception as err:
-        message = str(err)
+        details = classify_service_error(err, kind="tts")
+        message = details["message"]
         if (
             is_mimo_config(tts)
             and tts["api_key"].lower().startswith("tp-")
@@ -4471,6 +5550,7 @@ def handle_test_tts(payload: dict[str, Any]) -> dict[str, Any]:
             "provider": tts["provider"],
             "model": tts["model"],
             "voice": tts["voice"],
+            **details,
             "message": message,
             "latency_ms": int((time.time() - started) * 1000),
         }
@@ -4602,6 +5682,8 @@ def merge_ai_cards(
                 ]:
                     if ai_card.get(key):
                         card[key] = str(ai_card[key])
+                if ai_card.get("pronunciation_meta"):
+                    card["pronunciation_meta"] = ai_card.get("pronunciation_meta")
                 if card["type"] == "phrase":
                     phrase_type = str(card.get("phrase_type") or segment.get("phrase_type") or "")
                     if phrase_type:
@@ -4684,6 +5766,8 @@ def merge_ai_cards(
                     "chinese_feel",
                     "why",
                     "difficulty",
+                    "estimated_level",
+                    "difficulty_reason",
                     "teacher_note",
                     "cloze",
                     "learning_goal",
@@ -4720,6 +5804,8 @@ def merge_ai_cards(
                 ]:
                     if ai_card.get(key):
                         card[key] = str(ai_card[key])
+                if ai_card.get("pronunciation_meta"):
+                    card["pronunciation_meta"] = ai_card.get("pronunciation_meta")
                 normalize_learning_action_fields(card)
                 repair_card_fields(card, segment, level)
                 sanitize_pronunciation_fields(card, language)
@@ -4736,6 +5822,100 @@ def merge_ai_cards(
                 cards = [fallback[0]]
         segment["cards"] = cards
     return segments, warning
+
+
+def card_quality_status(card: dict[str, Any]) -> str:
+    quality = card.get("quality") if isinstance(card.get("quality"), dict) else {}
+    return str(quality.get("status") or "").strip()
+
+
+def apply_default_generated_card_selection(segments: list[dict[str, Any]], project: dict[str, Any]) -> list[dict[str, Any]]:
+    for segment in segments:
+        for card in segment.get("cards", []) or []:
+            card["enabled"] = card_quality_status(card) in {"recommended", "needs_review"}
+    return segments
+
+
+def filter_usable_segments_for_output(
+    segments: list[dict[str, Any]],
+    skipped_segments: list[dict[str, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    stats = {
+        "filtered_learning_point_count": 0,
+        "duplicate_learning_point_count": 0,
+        "low_value_filtered_count": 0,
+        "blocked_quality_issue_count": 0,
+    }
+    for segment in skipped_segments or []:
+        stats["filtered_learning_point_count"] += 1
+        if segment.get("phrase_review_status") == "duplicate":
+            stats["duplicate_learning_point_count"] += 1
+        elif segment.get("phrase_review_status") == "reject":
+            stats["low_value_filtered_count"] += 1
+            stats["blocked_quality_issue_count"] += 1
+        else:
+            stats["low_value_filtered_count"] += 1
+
+    output_segments: list[dict[str, Any]] = []
+    for segment in segments:
+        original_cards = list(segment.get("cards", []) or [])
+        usable_cards = [card for card in original_cards if card_quality_status(card) != "reject"]
+        removed_cards = len(original_cards) - len(usable_cards)
+        if removed_cards:
+            stats["filtered_learning_point_count"] += removed_cards
+            stats["blocked_quality_issue_count"] += removed_cards
+        if not usable_cards:
+            stats["filtered_learning_point_count"] += 1 if not removed_cards else 0
+            status = str(segment.get("phrase_review_status") or "").strip()
+            if status == "duplicate":
+                stats["duplicate_learning_point_count"] += 1
+            else:
+                stats["low_value_filtered_count"] += 1
+            continue
+        next_segment = {**segment, "cards": []}
+        if str(next_segment.get("phrase_review_status") or "") in {"reject", "duplicate"}:
+            next_segment["phrase_review_status"] = "recommended"
+        for card in usable_cards:
+            next_card = {**card, "enabled": True}
+            next_segment["cards"].append(next_card)
+        output_segments.append(next_segment)
+    return output_segments, stats
+
+
+def enforce_reviewable_cards_per_source(
+    segments: list[dict[str, Any]],
+    project: dict[str, Any],
+) -> list[dict[str, Any]]:
+    max_cards = max_reviewable_cards_per_source(project)
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for segment in segments:
+        grouped.setdefault(learning_point_source_key(segment), []).append(segment)
+
+    for items in grouped.values():
+        reviewable_cards: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for segment in items:
+            for card in segment.get("cards", []) or []:
+                if card_quality_status(card) in {"recommended", "needs_review"}:
+                    reviewable_cards.append((segment, card))
+        ranked = sorted(
+            reviewable_cards,
+            key=lambda pair: (
+                int((pair[1].get("quality") or {}).get("score") or 0),
+                phrase_review_score(pair[1].get("phrase_value_score") or pair[0].get("phrase_value_score")),
+                -float(pair[0].get("start") or 0),
+            ),
+            reverse=True,
+        )
+        for _, card in ranked[max_cards:]:
+            quality = dict(card.get("quality") or {})
+            quality["status"] = "reject"
+            issues = list(quality.get("issues") or [])
+            issues.append(f"同一句可复习卡预算超过 {max_cards} 张，已从可用卡列表过滤。")
+            quality["issues"] = list(dict.fromkeys(issues))
+            quality["score"] = min(int(quality.get("score") or 0), 39)
+            card["quality"] = quality
+            card["enabled"] = False
+    return segments
 
 
 def yt_dlp_base_command() -> list[str] | None:
@@ -4996,6 +6176,8 @@ def subtitle_language_aliases(language: str) -> set[str]:
         return {"es", "spa", "spanish"}
     if any(value in lower for value in ["ja", "japanese", "日本"]):
         return {"ja", "jpn", "japanese"}
+    if any(value in lower for value in ["ru", "russian", "рус", "俄语"]):
+        return {"ru", "rus", "russian"}
     if any(value in lower for value in ["ko", "korean", "한국"]):
         return {"ko", "kor", "korean"}
     return {"en", "eng", "english", "en-us", "en-gb"}
@@ -5479,6 +6661,8 @@ def fallback_document_card(segment: dict[str, Any], level: str, study_mode: str 
         "why_it_matters": "本地 fallback 只能保留原文线索，需要模型或人工把它改成具体精读动作。" if is_reading else "本地 fallback 只能保留原文线索，需要模型或人工把它改成具体知识动作。",
         "how_to_use_it": "先确认表达是否来自原文，再补充下次阅读时如何辨认或复用。" if is_reading else "先检查问题是否具体，再把答案压缩成自己的话。",
         "difficulty": CEFR_LABELS.get(level, level),
+        "estimated_level": level if level in CEFR_ORDER else "B1",
+        "difficulty_reason": "本地文档草稿按当前水平和文本复杂度估计。",
         "teacher_note": "本地待审精读卡：建议检查语言点是否来自原文且值得复习。" if is_reading else "本地待审卡：建议检查问题是否具体，答案是否过长。",
         "cloze": f"{phrase} 的核心是 ____。",
         "quality": {
@@ -5567,6 +6751,8 @@ def merge_document_cards(
                     "why_it_matters",
                     "how_to_use_it",
                     "difficulty",
+                    "estimated_level",
+                    "difficulty_reason",
                     "teacher_note",
                     "cloze",
                     "content_kind",
@@ -5604,6 +6790,7 @@ def merge_document_cards(
 
 
 def handle_generate_document(payload: dict[str, Any]) -> dict[str, Any]:
+    payload = {**payload, "language": normalize_learning_language(payload.get("language", "en"))}
     document_path = clean_input_path(payload.get("document_path"))
     if not document_path:
         fail("请先选择 TXT、Markdown、DOCX、EPUB 或 PDF 文档。")
@@ -5631,6 +6818,9 @@ def handle_generate_document(payload: dict[str, Any]) -> dict[str, Any]:
     ai_payload = call_document_model(payload, segments)
     emit_progress("generate", "cards", 86, "正在整理文档卡字段。")
     segments, warning = merge_document_cards(segments, ai_payload, level, study_mode=study_mode)
+    document_candidate_count = len(segments)
+    segments = apply_default_generated_card_selection(segments, payload)
+    segments, output_filter_stats = filter_usable_segments_for_output(segments, [])
     if context_warning:
         warning = f"{context_warning}；{warning}" if warning else str(context_warning)
 
@@ -5642,8 +6832,10 @@ def handle_generate_document(payload: dict[str, Any]) -> dict[str, Any]:
     emit_progress("generate", "done", 100, f"文档制卡完成：{len(segments)} 个{split_label}。")
     quality_funnel = build_quality_funnel(
         segments,
-        candidate_segments=len(segments),
+        candidate_segments=document_candidate_count,
         reviewed_keep=len(segments),
+        filter_stats=output_filter_stats,
+        level_mode=normalized_level_mode(payload),
     )
     return {
         "id": f"project_{int(time.time())}",
@@ -5651,7 +6843,8 @@ def handle_generate_document(payload: dict[str, Any]) -> dict[str, Any]:
         "video_path": "",
         "subtitle_path": "",
         "document_path": document_path,
-        "language": payload.get("language", "English"),
+        "language": payload.get("language", "en"),
+        "level_mode": normalized_level_mode(payload),
         "level": level,
         "collection_levels": collection_levels,
         "template_id": payload.get("template_id", "immersive_v11"),
@@ -5687,8 +6880,15 @@ def build_quality_funnel(
     candidate_segments: int | None = None,
     reviewed_keep: int | None = None,
     mimo_kept: int | None = None,
+    max_learning_points: int | None = None,
+    source_expansion_stats: dict[str, Any] | None = None,
+    filter_stats: dict[str, int] | None = None,
+    level_mode: str = "auto",
 ) -> dict[str, Any]:
     cards = [card for segment in segments for card in segment.get("cards", [])]
+    source_groups: dict[str, list[dict[str, Any]]] = {}
+    for segment in segments:
+        source_groups.setdefault(learning_point_source_key(segment), []).append(segment)
     learning_point_count = sum(
         len(segment.get("learning_points") or []) if isinstance(segment.get("learning_points"), list) else (1 if segment.get("cards") else 0)
         for segment in segments
@@ -5697,36 +6897,76 @@ def build_quality_funnel(
     recommended_cards = sum(1 for card in cards if (card.get("quality") or {}).get("status") == "recommended")
     review_cards = sum(1 for card in cards if (card.get("quality") or {}).get("status") == "needs_review")
     rejected_cards = sum(1 for card in cards if (card.get("quality") or {}).get("status") == "reject")
+    usable_cards = recommended_cards + review_cards
+    filter_stats = filter_stats or {}
+    recommended_learning_points = {
+        str(card.get("learning_point_id") or card.get("id") or "")
+        for card in cards
+        if (card.get("quality") or {}).get("status") == "recommended"
+    }
+    review_learning_points = {
+        str(card.get("learning_point_id") or card.get("id") or "")
+        for card in cards
+        if (card.get("quality") or {}).get("status") == "needs_review"
+    }
+    rejected_learning_points = {
+        str(card.get("learning_point_id") or card.get("id") or "")
+        for card in cards
+        if (card.get("quality") or {}).get("status") == "reject"
+    }
     rejected_segments = sum(1 for segment in segments if segment.get("phrase_review_status") == "reject")
     duplicate_segments = sum(1 for segment in segments if segment.get("phrase_review_status") == "duplicate")
+    learning_points_per_source_distribution: dict[str, int] = {}
+    enabled_cards_per_source_distribution: dict[str, int] = {}
+    for items in source_groups.values():
+        lp_count = sum(
+            len(item.get("learning_points") or []) if isinstance(item.get("learning_points"), list) else (1 if item.get("cards") else 0)
+            for item in items
+            if item.get("phrase_review_status") not in {"reject", "duplicate"}
+        )
+        enabled_count = sum(1 for item in items for card in item.get("cards", []) if card.get("enabled", True))
+        learning_points_per_source_distribution[str(lp_count)] = learning_points_per_source_distribution.get(str(lp_count), 0) + 1
+        enabled_cards_per_source_distribution[str(enabled_count)] = enabled_cards_per_source_distribution.get(str(enabled_count), 0) + 1
     scores = [
         phrase_review_score(segment.get("phrase_value_score"))
         for segment in segments
         if phrase_review_score(segment.get("phrase_value_score")) > 0
     ]
     average_score = round(sum(scores) / len(scores), 2) if scores else None
-    if recommended_cards < 5:
+    if usable_cards < 5:
         if len(segments) < 6:
             short_reason = "字幕片段太少或有效候选不足。"
-        elif recommended_cards == 0:
-            if review_cards > 0:
-                short_reason = f"没有推荐卡，但有 {review_cards} 张待审卡；请人工确认或配置模型精修。"
+        elif usable_cards == 0:
+            if filter_stats.get("filtered_learning_point_count", 0) > 0:
+                short_reason = f"没有生成可用卡，过滤了 {filter_stats.get('filtered_learning_point_count', 0)} 个低价值或重复学习点。"
             else:
-                short_reason = "没有推荐卡，可能是词伙评分不足、模型返回空或筛选太严格。"
+                short_reason = "没有生成可用卡，可能是词伙评分不足、模型返回空或素材可学习点较少。"
         else:
-            short_reason = "推荐卡偏少，通常是重复合并、低价值表达或模型评审较严格。"
+            short_reason = "可用卡偏少，通常是重复合并、低价值表达或模型评审较严格。"
     else:
         short_reason = ""
     return {
         "subtitle_cues": subtitle_cues,
+        "source_sentence_count": len(source_groups),
         "candidate_segments": candidate_segments if candidate_segments is not None else len(segments),
         "learning_point_count": learning_point_count,
+        "recommended_learning_point_count": len([item for item in recommended_learning_points if item]),
+        "review_learning_point_count": len([item for item in review_learning_points if item]),
+        "rejected_learning_point_count": max(rejected_segments, len([item for item in rejected_learning_points if item])),
         "card_count": len(cards),
         "selected_card_count": selected_card_count,
+        "usable_card_count": usable_cards,
+        "filtered_learning_point_count": filter_stats.get("filtered_learning_point_count", 0),
+        "low_value_filtered_count": filter_stats.get("low_value_filtered_count", 0),
+        "blocked_quality_issue_count": filter_stats.get("blocked_quality_issue_count", 0),
+        "level_mode": level_mode,
         "recommended_card_count": recommended_cards,
         "review_card_count": review_cards,
-        "rejected_learning_point_count": rejected_segments,
-        "duplicate_learning_point_count": duplicate_segments,
+        "duplicate_learning_point_count": max(duplicate_segments, filter_stats.get("duplicate_learning_point_count", 0)),
+        "learning_points_per_source_distribution": learning_points_per_source_distribution,
+        "enabled_cards_per_source_distribution": enabled_cards_per_source_distribution,
+        "max_learning_points_per_source": max_learning_points,
+        "source_expansion": source_expansion_stats or None,
         "reviewed_keep": reviewed_keep
         if reviewed_keep is not None
         else sum(1 for segment in segments if segment.get("phrase_review_status") not in {"reject", "duplicate"}),
@@ -5735,13 +6975,14 @@ def build_quality_funnel(
         "review_cards": review_cards,
         "rejected_cards": rejected_cards,
         "rejected_segments": rejected_segments,
-        "duplicate_segments": duplicate_segments,
+        "duplicate_segments": max(duplicate_segments, filter_stats.get("duplicate_learning_point_count", 0)),
         "average_phrase_score": average_score,
         "short_reason": short_reason,
     }
 
 
 def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
+    payload = {**payload, "language": normalize_learning_language(payload.get("language", "en"))}
     emit_progress("generate", "source", 5, "准备素材。")
     source_mode = str(payload.get("source_mode") or "").strip().lower()
     if not source_mode:
@@ -5837,8 +7078,19 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
     skipped_segments: list[dict[str, Any]] = []
     review_warning = None
     if review_enabled:
+        emit_progress("generate", "learning_point_expansion", 56, f"AI 正在逐句补漏学习点：{len(segments)} 个候选。")
+        segments, expansion_skipped, expansion_warning = expand_learning_points_by_source(payload, segments)
+        candidate_segment_count = len(segments)
+        if expansion_skipped:
+            skipped_segments.extend(expansion_skipped)
+        if expansion_warning:
+            review_warning = expansion_warning
         emit_progress("generate", "phrase_review", 58, f"AI 正在评审学习候选：{len(segments)} 个片段。")
         reviewed_segments, skipped_segments, review_warning = review_phrase_candidates_with_mimo(payload, segments)
+        if expansion_skipped:
+            skipped_segments = [*skipped_segments, *expansion_skipped]
+        if expansion_warning and expansion_warning not in (review_warning or ""):
+            review_warning = f"{expansion_warning}；{review_warning}" if review_warning else expansion_warning
         review_applied = any(
             str(item.get("phrase_review_source") or "") in {"mimo", "ai"}
             for item in [*reviewed_segments, *skipped_segments]
@@ -5856,15 +7108,20 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
 
     emit_progress("generate", "ai", 66, f"正在分批生成词伙、解释和卡片字段：{len(segments)} 个片段组。")
     ai_payload = call_model_batches(payload, segments) if segments else None
+    model_error_code = ai_payload.get("error_code") if isinstance(ai_payload, dict) else None
+    model_stage = ai_payload.get("stage") if isinstance(ai_payload, dict) else None
+    model_retryable = ai_payload.get("retryable") if isinstance(ai_payload, dict) else None
     emit_progress("generate", "cards", 84, "正在整理卡片草稿。")
     segments, warning = merge_ai_cards(segments, ai_payload, card_types, level, payload.get("language", "English")) if segments else ([], None)
+    segments = enforce_reviewable_cards_per_source(segments, payload)
+    segments = apply_default_generated_card_selection(segments, payload)
     reviewed_keep_count = len(segments)
+    segments, output_filter_stats = filter_usable_segments_for_output(segments, skipped_segments)
     if context_warning:
         warning = f"{context_warning}；{warning}" if warning else str(context_warning)
     if review_warning:
         warning = f"{review_warning}；{warning}" if warning else review_warning
-    if skipped_segments:
-        segments = sorted([*segments, *skipped_segments], key=lambda item: item["start"])
+    segments = sorted(segments, key=lambda item: item["start"])
 
     project_id = f"project_{int(time.time())}"
     title = payload.get("title") or (Path(video_path).stem if video_path else (source_info or {}).get("title") or "字幕素材")
@@ -5879,19 +7136,24 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         candidate_segments=candidate_segment_count,
         reviewed_keep=reviewed_keep_count,
         mimo_kept=reviewed_keep_count if review_enabled else None,
+        max_learning_points=max_learning_points_per_source(payload),
+        source_expansion_stats=payload.get("_source_expansion_stats"),
+        filter_stats=output_filter_stats,
+        level_mode=normalized_level_mode(payload),
     )
     if ai_payload is None and (quality_funnel.get("recommended_cards", 0) > 0 or quality_funnel.get("review_cards", 0) > 0):
         recommended_count = int(quality_funnel.get("recommended_cards", 0) or 0)
         review_count = int(quality_funnel.get("review_cards", 0) or 0)
+        usable_count = int(quality_funnel.get("usable_card_count", 0) or (recommended_count + review_count))
         if recommended_count:
             local_review_warning = (
-                f"已解析 {len(cues)} 条字幕，生成 {recommended_count} 张本地推荐卡"
-                f"和 {review_count} 张待审卡。推荐卡已可直接审核导出；配置模型精修后可继续提升中文释义和例句质量。"
+                f"已解析 {len(cues)} 条字幕，生成 {usable_count} 张本地可用卡。"
+                "可用卡已默认全选；配置模型精修后可继续提升中文释义和例句质量。"
             )
         else:
             local_review_warning = (
-                f"已解析 {len(cues)} 条字幕，生成 {review_count} 张待审本地草稿卡（默认停用）。"
-                "配置模型精修后可得到推荐卡，或在审核页手动确认后导出。"
+                f"已解析 {len(cues)} 条字幕，生成 {usable_count} 张本地草稿可用卡。"
+                "配置模型精修后可继续提升字段质量。"
             )
         warning = (
             f"{warning}；{local_review_warning}"
@@ -5900,13 +7162,14 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         )
     if source_notice and source_notice not in (warning or ""):
         warning = f"{source_notice}；{warning}" if warning else source_notice
-    emit_progress("generate", "done", 100, f"生成完成：{len(segments)} 个片段组。")
+    emit_progress("generate", "done", 100, f"生成完成：{quality_funnel.get('usable_card_count', 0)} 张可用卡。")
     return {
         "id": project_id,
         "title": title,
         "video_path": video_path,
         "subtitle_path": subtitle_path,
-        "language": payload.get("language", "English"),
+        "language": payload.get("language", "en"),
+        "level_mode": normalized_level_mode(payload),
         "level": level,
         "collection_levels": collection_levels,
         "template_id": payload.get("template_id", "immersive_v11"),
@@ -5922,6 +7185,9 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         "quality_funnel": quality_funnel,
         "segments": segments,
         "warning": warning,
+        "model_error_code": model_error_code,
+        "model_stage": model_stage,
+        "model_retryable": model_retryable,
         "source_mode": source_mode,
         "source_url": payload.get("source_url", "") if source_mode == "url" else "",
         "source_info": source_info
@@ -9318,7 +10584,19 @@ body,
   color: #111114;
   font-weight: 760;
 }
+.v11-ipa-row.is-spoken strong {
+  color: #0057c2;
+}
+.v11-ipa-row.is-status strong {
+  color: #6e6e73;
+  font-size: clamp(13px, 2.4vw, 16px);
+  font-weight: 680;
+}
 .v11-pronunciation-note {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: baseline;
   margin: 2px 0 0;
   color: #5f626b;
   font-size: clamp(14px, 2.6vw, 17px);
@@ -9326,21 +10604,69 @@ body,
   font-weight: 620;
   overflow-wrap: break-word;
 }
+.v11-pronunciation-note span {
+  min-width: 72px;
+  color: #7a7f89;
+  font-weight: 760;
+}
+.v11-pronunciation-note p {
+  flex: 1 1 220px;
+  margin: 0;
+}
 .v11-divider {
   margin: clamp(20px, 4vw, 28px) 0;
   border: 0;
   border-top: 1px solid rgba(60, 60, 67, 0.14);
 }
+.v11-source-block {
+  margin-top: clamp(18px, 3.2vw, 26px);
+  padding-left: clamp(14px, 2.4vw, 20px);
+  border-left: 3px solid rgba(0, 102, 223, 0.18);
+}
+.v11-source-label {
+  color: #6e6e73;
+  font-size: clamp(16px, 2.8vw, 21px);
+  line-height: 1.2;
+  font-weight: 780;
+}
 .v11-source {
   margin: 8px 0 0;
   color: #111114;
-  font-size: clamp(23px, 3.9vw, 34px);
-  line-height: 1.22;
+  font-size: clamp(23px, 3.8vw, 33px);
+  line-height: 1.24;
   font-weight: 850;
   overflow-wrap: break-word;
 }
+.v11-source-ipa {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 12px;
+  align-items: start;
+  margin: 12px 0 0;
+  color: #5f626b;
+  font-size: clamp(14px, 2.6vw, 17px);
+  line-height: 1.48;
+  font-weight: 650;
+  overflow-wrap: break-word;
+}
+.v11-source-ipa span {
+  color: #7a7f89;
+  font-weight: 780;
+  white-space: nowrap;
+}
+.v11-source-ipa strong {
+  color: #2f3238;
+  font-weight: 720;
+  overflow-wrap: break-word;
+}
+.v11-source-ipa.is-status strong {
+  color: #6e6e73;
+  font-weight: 680;
+}
 .v11-source-translation {
-  margin: 10px 0 0;
+  margin: 12px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid rgba(60, 60, 67, 0.12);
   color: #5f626b;
   font-size: clamp(18px, 3.2vw, 24px);
   line-height: 1.38;
@@ -9436,6 +10762,9 @@ body,
   }
   .v11-answer-layout {
     display: block;
+  }
+  .v11-source-ipa {
+    grid-template-columns: 1fr;
   }
   .v11-back .v11-video-stage {
     margin-top: 26px;
@@ -9637,15 +10966,19 @@ LANGUAGE_BACK_TEMPLATE_V11 = """
       {{#Chinese}}<p class="v11-chinese-core">{{Chinese}}</p>{{/Chinese}}
       {{#ChineseFeel}}<p class="v11-answer-note">{{ChineseFeel}}</p>{{/ChineseFeel}}
       <div class="v11-pronunciation">
-        {{#PhoneticIpa}}<div class="v11-ipa-row"><span>标准 IPA</span><strong>{{PhoneticIpa}}</strong></div>{{/PhoneticIpa}}
-        {{#SpokenIpa}}<div class="v11-ipa-row"><span>口语读法</span><strong>{{SpokenIpa}}</strong></div>{{/SpokenIpa}}
-        {{#SourceSpokenIpa}}<div class="v11-ipa-row"><span>原句听感</span><strong>{{SourceSpokenIpa}}</strong></div>{{/SourceSpokenIpa}}
-        {{#PronunciationNote}}<p class="v11-pronunciation-note">{{PronunciationNote}}</p>{{/PronunciationNote}}
+        {{#PhoneticIpa}}<div class="v11-ipa-row is-standard"><span>标准读法{{#StandardPronunciationHint}}（{{StandardPronunciationHint}}）{{/StandardPronunciationHint}}</span><strong>{{PhoneticIpa}}</strong></div>{{/PhoneticIpa}}
+        {{#SpokenIpa}}<div class="v11-ipa-row is-spoken"><span>{{SpokenPronunciationLabel}}</span><strong>{{SpokenIpa}}</strong></div>{{/SpokenIpa}}
+        {{^SpokenIpa}}{{#SpokenPronunciationLabel}}<div class="v11-ipa-row is-spoken is-status"><span>{{SpokenPronunciationLabel}}</span><strong>未单独标注</strong></div>{{/SpokenPronunciationLabel}}{{/SpokenIpa}}
+        {{#PronunciationNote}}<div class="v11-pronunciation-note"><span>发音说明</span><p>{{PronunciationNote}}</p></div>{{/PronunciationNote}}
       </div>
       <hr class="v11-divider">
-      <div class="v11-label">原句</div>
-      <p class="v11-source">{{English}}</p>
-      {{#Context}}<p class="v11-source-translation">{{Context}}</p>{{/Context}}
+      <section class="v11-source-block">
+        <div class="v11-source-label">原句</div>
+        <p class="v11-source">{{English}}</p>
+        {{#SourceSpokenIpa}}<p class="v11-source-ipa"><span>原句听感</span><strong>{{SourceSpokenIpa}}</strong></p>{{/SourceSpokenIpa}}
+        {{^SourceSpokenIpa}}{{#SpokenPronunciationLabel}}<p class="v11-source-ipa is-status"><span>原句听感</span><strong>未单独标注</strong></p>{{/SpokenPronunciationLabel}}{{/SourceSpokenIpa}}
+        {{#Context}}<p class="v11-source-translation">{{Context}}</p>{{/Context}}
+      </section>
       <div class="v11-sound-actions is-left">
         {{#Audio}}<span class="v11-media-source audio-original">{{Audio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-original')"><span class="v11-play">▶</span><span>只听原声</span></button>{{/Audio}}
         {{#TtsAudio}}<span class="v11-media-source audio-slow">{{TtsAudio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-slow')"><span class="v11-play">▶</span><span>慢读跟读</span></button>{{/TtsAudio}}
@@ -9827,6 +11160,10 @@ def media_manifest(media_files: list[str], media_ledger: list[dict[str, Any]] | 
     return manifest
 
 
+def segment_display_source_time(segment: dict[str, Any]) -> str:
+    return clean_study_text(segment.get("media_source_time")) or clean_study_text(segment.get("source_time"))
+
+
 def media_text_hash(value: Any) -> str:
     text = clean_tts_input_text(str(value or "")).lower()
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12] if text else ""
@@ -9893,6 +11230,24 @@ def clean_study_text(value: Any) -> str:
 
 def anki_study_text(value: Any) -> str:
     return anki_text(clean_study_text(value))
+
+
+def ensure_card_pronunciation_meta(card: dict[str, Any], language: Any = "en") -> dict[str, Any]:
+    sanitize_pronunciation_fields(card, card.get("language") or language)
+    meta = card.get("pronunciation_meta")
+    if isinstance(meta, dict):
+        return meta
+    return normalize_pronunciation_meta(
+        meta,
+        card.get("language") or language,
+        has_spoken=bool(card.get("spoken_ipa")),
+        has_source=bool(card.get("source_spoken_ipa")),
+    )
+
+
+def pronunciation_meta_json(card: dict[str, Any], language: Any = "en") -> str:
+    meta = ensure_card_pronunciation_meta(card, language)
+    return json.dumps(meta, ensure_ascii=False, separators=(",", ":"))
 
 
 def compact_retrieval_cue(value: Any, max_chars: int = 26) -> str:
@@ -9966,11 +11321,21 @@ def is_answer_expression_candidate(value: Any, card: dict[str, Any]) -> bool:
     if not text:
         return False
     lowered = text.lower()
-    if has_cjk(text) or IPA_TEXT_RE.search(text):
+    language = normalize_learning_language(card.get("language_code") or card.get("language") or "en")
+    if IPA_TEXT_RE.search(text):
         return False
     if any(pattern in text or pattern.lower() in lowered for pattern in ANSWER_EXPLANATION_PATTERNS):
         return False
     if any(mark in text for mark in ("；", "。", "，")):
+        return False
+    if language != "en":
+        if not looks_like_target_language_text(text, language):
+            return False
+        source_text = clean_study_text(card.get("english") or card.get("source_text"))
+        if source_text and text not in source_text and len(text) > 1 and not phrase_in_text(source_text, text):
+            return False
+        return True
+    if has_cjk(text):
         return False
     words = overlap_words(text)
     if not words:
@@ -9992,11 +11357,13 @@ PRONUNCIATION_FIELDS = (
     "pronunciation_note",
     "pronunciation_confidence",
 )
+PRONUNCIATION_TEXT_FIELDS = ("phonetic_ipa", "spoken_ipa", "source_spoken_ipa")
+PRONUNCIATION_CONFIDENCE_VALUES = {"high", "medium", "low"}
+GENERATION_BASIS_VALUES = {"audio_verified", "subtitle_inferred", "dictionary_only"}
 
 
 def is_english_language(language: Any = "English") -> bool:
-    value = str(language or "English").strip().lower()
-    return not value or value.startswith("en") or "english" in value or "英语" in value
+    return normalize_learning_language(language) == "en"
 
 
 def normalize_pronunciation_confidence(value: Any) -> str:
@@ -10023,17 +11390,409 @@ def normalize_ipa_field(value: Any, *, max_chars: int = 180) -> str:
     return text
 
 
+def normalize_pronunciation_text_field(
+    value: Any,
+    *,
+    language: Any = "en",
+    field: str = "phonetic_ipa",
+    max_chars: int = 180,
+) -> str:
+    text = clean_study_text(value)
+    if not text:
+        return ""
+    code = normalize_learning_language(language)
+    text = unicodedata.normalize("NFC", text.replace("\\", "/"))
+    text = re.sub(r"\s+", " ", text).strip()
+    if field in PRONUNCIATION_TEXT_FIELDS and code != "ja" and has_cjk(text):
+        return ""
+    if len(text) > max_chars:
+        text = text[:max_chars].rstrip()
+    return text
+
+
+def confidence_min(*values: Any) -> str:
+    order = {"low": 0, "medium": 1, "high": 2}
+    normalized = [normalize_pronunciation_confidence(value) or "low" for value in values if value not in (None, "")]
+    if not normalized:
+        return ""
+    return min(normalized, key=lambda value: order[value])
+
+
+def cap_confidence_for_basis(confidence: Any, basis: str, *, field: str = "") -> str:
+    normalized = normalize_pronunciation_confidence(confidence) or "low"
+    if basis != "audio_verified" and field in {"spoken_ipa", "source_spoken_ipa"} and normalized == "high":
+        return "medium"
+    return normalized
+
+
+def pronunciation_issue(field: str, severity: str, code: str, message: str) -> dict[str, str]:
+    return {"field": field, "severity": severity, "code": code, "message": message}
+
+
+def normalize_pronunciation_issue(value: Any) -> dict[str, str] | None:
+    if isinstance(value, dict):
+        field = str(value.get("field") or "pronunciation_meta")
+        severity = str(value.get("severity") or "warn")
+        code = str(value.get("code") or "PRONUNCIATION_ISSUE")
+        message = clean_study_text(value.get("message") or code)
+        if field not in {*PRONUNCIATION_TEXT_FIELDS, "pronunciation_note", "pronunciation_meta"}:
+            field = "pronunciation_meta"
+        if severity not in {"block", "warn", "info"}:
+            severity = "warn"
+        return pronunciation_issue(field, severity, code, message)
+    message = clean_study_text(value)
+    if message:
+        return pronunciation_issue("pronunciation_meta", "warn", "LEGACY_VALIDATION_ISSUE", message)
+    return None
+
+
+def normalize_pronunciation_meta(
+    value: Any,
+    language: Any = "en",
+    *,
+    has_spoken: bool = False,
+    has_source: bool = False,
+) -> dict[str, Any]:
+    raw: dict[str, Any] = {}
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                raw = parsed
+        except json.JSONDecodeError:
+            raw = {}
+    elif isinstance(value, dict):
+        raw = dict(value)
+    profile = pronunciation_profile(raw.get("language_code") or language)
+    basis = str(raw.get("generation_basis") or "").strip()
+    if basis not in GENERATION_BASIS_VALUES:
+        basis = "subtitle_inferred" if has_spoken or has_source else "dictionary_only"
+    field_confidence = raw.get("field_confidence")
+    if not isinstance(field_confidence, dict):
+        field_confidence = {}
+    normalized_confidence: dict[str, str] = {}
+    for field in ("phonetic_ipa", "spoken_ipa", "source_spoken_ipa", "pronunciation_note"):
+        confidence = cap_confidence_for_basis(field_confidence.get(field), basis, field=field)
+        if confidence:
+            normalized_confidence[field] = confidence
+    raw_issues = raw.get("validation_issues") or []
+    if not isinstance(raw_issues, list):
+        raw_issues = [raw_issues]
+    issues = []
+    for issue in raw_issues:
+        normalized_issue = normalize_pronunciation_issue(issue)
+        if normalized_issue:
+            issues.append(normalized_issue)
+    meta = {
+        "language_code": profile["code"],
+        "accent_profile": str(raw.get("accent_profile") or profile["accent_profile"]),
+        "notation_system": str(raw.get("notation_system") or profile["notation_system"]),
+        "generation_basis": basis,
+        "field_confidence": normalized_confidence,
+        "same_as_standard_reason": raw.get("same_as_standard_reason") or None,
+        "validation_issues": issues,
+    }
+    if profile["code"] == "ja":
+        pitch_confidence = str(raw.get("pitch_confidence") or "").strip().lower()
+        if pitch_confidence in {*PRONUNCIATION_CONFIDENCE_VALUES, "unknown"}:
+            meta["pitch_confidence"] = pitch_confidence
+    return meta
+
+
+def add_pronunciation_issue(target: dict[str, Any], issue: dict[str, str]) -> None:
+    existing_meta = target.get("pronunciation_meta")
+    meta = existing_meta if isinstance(existing_meta, dict) else {"validation_issues": []}
+    target["pronunciation_meta"] = meta
+    issues = meta.setdefault("validation_issues", [])
+    key = (issue["field"], issue["severity"], issue["code"], issue["message"])
+    existing = {
+        (str(item.get("field")), str(item.get("severity")), str(item.get("code")), str(item.get("message")))
+        for item in issues
+        if isinstance(item, dict)
+    }
+    if key not in existing:
+        issues.append(issue)
+
+
+def remove_pronunciation_issue_code(target: dict[str, Any], code: str) -> None:
+    meta = target.get("pronunciation_meta")
+    if not isinstance(meta, dict):
+        return
+    issues = meta.get("validation_issues")
+    if not isinstance(issues, list):
+        return
+    meta["validation_issues"] = [
+        issue for issue in issues if not (isinstance(issue, dict) and issue.get("code") == code)
+    ]
+
+
+def set_pronunciation_field_confidence(target: dict[str, Any], field: str, confidence: str) -> None:
+    meta = target.get("pronunciation_meta")
+    if isinstance(meta, str) and meta.strip():
+        try:
+            parsed = json.loads(meta)
+            meta = parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    target["pronunciation_meta"] = meta
+    field_confidence = meta.setdefault("field_confidence", {})
+    if isinstance(field_confidence, dict):
+        field_confidence[field] = confidence
+
+
+def ipa_token_count(value: Any) -> int:
+    text = clean_study_text(value).strip().strip("/")
+    if not text:
+        return 0
+    return len([part for part in re.split(r"\s+", text) if part])
+
+
+SPOKEN_IPA_DIFFERENCE_WORDS = {
+    "a",
+    "an",
+    "the",
+    "to",
+    "of",
+    "for",
+    "and",
+    "or",
+    "as",
+    "at",
+    "in",
+    "on",
+    "with",
+    "from",
+    "into",
+    "that",
+    "this",
+    "it",
+    "you",
+    "your",
+    "me",
+    "we",
+    "will",
+    "are",
+    "is",
+    "was",
+    "were",
+    "do",
+    "does",
+    "did",
+    "have",
+    "has",
+    "had",
+    "not",
+    "can",
+    "could",
+    "would",
+    "should",
+    "just",
+    "up",
+    "off",
+    "out",
+    "about",
+}
+
+
+def ipa_comparison_key(value: Any) -> str:
+    text = clean_study_text(value).strip().strip("/").lower()
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def spoken_ipa_should_be_distinct(target: dict[str, Any]) -> bool:
+    words = overlap_words(
+        str(target.get("answer_core") or target.get("phrase") or target.get("normalized_answer") or "")
+    )
+    if len(words) < 3:
+        return False
+    weak_signal_words = SPOKEN_IPA_DIFFERENCE_WORDS - {"the", "off"}
+    return any(word in weak_signal_words or "'" in word or word.endswith("ing") for word in words)
+
+
+def spoken_ipa_is_unhelpful_duplicate(target: dict[str, Any], spoken_ipa: str) -> bool:
+    phonetic = normalize_ipa_field(target.get("phonetic_ipa"))
+    if not phonetic or not spoken_ipa or not spoken_ipa_should_be_distinct(target):
+        return False
+    return ipa_comparison_key(phonetic) == ipa_comparison_key(spoken_ipa)
+
+
+def default_same_as_standard_reason(meta: dict[str, Any]) -> str:
+    if meta.get("generation_basis") == "audio_verified":
+        return "已按当前音频核验；未识别出明显弱读、连读或省读差异。"
+    if meta.get("generation_basis") == "dictionary_only":
+        return "只提供标准读法，未生成单独口语读法。"
+    return "未实听；按字幕推测时未识别出可靠的弱读、连读或省读差异，暂按标准读法保留。"
+
+
+def source_spoken_ipa_is_too_short(target: dict[str, Any], source_ipa: str) -> bool:
+    english_words = overlap_words(str(target.get("english") or target.get("source_text") or ""))
+    if len(english_words) < 5 or not source_ipa:
+        return False
+
+    token_count = ipa_token_count(source_ipa)
+    if token_count <= 0:
+        return False
+
+    answer_words = overlap_words(
+        str(target.get("answer_core") or target.get("phrase") or target.get("normalized_answer") or "")
+    )
+    phonetic = normalize_ipa_field(target.get("phonetic_ipa"))
+    spoken = normalize_ipa_field(target.get("spoken_ipa"))
+    if source_ipa.strip() in {phonetic.strip(), spoken.strip()} and len(english_words) > len(answer_words) + 1:
+        return True
+
+    missingish = len(english_words) - token_count
+    return missingish >= 2 and token_count / max(1, len(english_words)) < 0.8
+
+
+FRENCH_ASPIRE_H_WORDS = {
+    "haricot",
+    "hasard",
+    "haut",
+    "héros",
+    "honte",
+    "hors",
+    "huit",
+}
+
+RUSSIAN_VOWELS = set("аеёиоуыэюяАЕЁИОУЫЭЮЯ")
+
+
+def has_pitch_marker(value: Any) -> bool:
+    return bool(re.search(r"[ꜜ°｜↗↘]", str(value or "")))
+
+
+def looks_like_romaji_only(value: Any) -> bool:
+    text = clean_study_text(value)
+    return bool(text and re.fullmatch(r"[A-Za-z0-9\s'\-.,!?/]+", text) and re.search(r"[A-Za-z]", text))
+
+
+def looks_like_ipa_only(value: Any) -> bool:
+    text = clean_study_text(value)
+    return bool(text and IPA_TEXT_RE.search(text) and not has_japanese_kana(text) and not has_cjk(text))
+
+
+def russian_word_has_stress(word: str) -> bool:
+    decomposed = unicodedata.normalize("NFD", word)
+    return "\u0301" in decomposed or "ё" in word.lower()
+
+
+def russian_word_needs_stress(word: str) -> bool:
+    letters = re.sub(r"[^А-Яа-яЁё]", "", word)
+    if not letters:
+        return False
+    vowel_count = sum(1 for char in letters if char in RUSSIAN_VOWELS)
+    return vowel_count >= 2
+
+
+def pronunciation_issue_messages(target: dict[str, Any]) -> list[str]:
+    meta = target.get("pronunciation_meta")
+    if not isinstance(meta, dict):
+        return []
+    messages = []
+    for issue in meta.get("validation_issues") or []:
+        if isinstance(issue, dict) and issue.get("message"):
+            messages.append(str(issue["message"]))
+    return list(dict.fromkeys(messages))
+
+
+def spoken_label_for_meta(meta: dict[str, Any] | None) -> str:
+    if not isinstance(meta, dict):
+        return "剧中读法"
+    basis = meta.get("generation_basis")
+    if basis == "audio_verified":
+        return "剧中读法"
+    if basis == "dictionary_only":
+        return "按标准读法"
+    return "推测口语读法"
+
+
+def standard_hint_for_meta(meta: dict[str, Any] | None, language: Any = "en") -> str:
+    if isinstance(meta, dict):
+        return LEARNING_LANGUAGE_PROFILES.get(str(meta.get("language_code") or ""), {}).get("standard_hint") or pronunciation_profile(language)["standard_hint"]
+    return pronunciation_profile(language)["standard_hint"]
+
+
+def maybe_prefix_inferred_note(target: dict[str, Any], meta: dict[str, Any]) -> None:
+    if meta.get("generation_basis") == "audio_verified":
+        return
+    if not target.get("spoken_ipa") and not target.get("source_spoken_ipa"):
+        return
+    note = clean_study_text(target.get("pronunciation_note"))
+    prefix = "未实听，按字幕和常见口语规律推测。"
+    if note and "未实听" not in note:
+        target["pronunciation_note"] = f"{prefix}{note}"
+    elif not note:
+        target["pronunciation_note"] = prefix
+
+
 def sanitize_pronunciation_fields(target: dict[str, Any], language: Any = "English") -> list[str]:
+    target_language = normalize_learning_language(language or target.get("language") or "en")
+    target["language"] = target_language
     issues: list[str] = []
-    if not is_english_language(language):
-        for key in PRONUNCIATION_FIELDS:
-            target.pop(key, None)
-        return issues
-    for key in ("phonetic_ipa", "spoken_ipa", "source_spoken_ipa"):
+    for key in PRONUNCIATION_TEXT_FIELDS:
         raw = target.get(key)
-        normalized = normalize_ipa_field(raw)
+        normalized = normalize_pronunciation_text_field(
+            raw,
+            language=target_language,
+            field=key,
+            max_chars=340 if key == "source_spoken_ipa" else 220,
+        )
         if raw and not normalized:
-            issues.append(f"{key} 含中文或不可用内容，已清空。")
+            issue = pronunciation_issue(key, "block", "PRONUNCIATION_FIELD_UNUSABLE", f"{key} 含不适合该语言读法字段的内容，已清空。")
+            add_pronunciation_issue(target, issue)
+            set_pronunciation_field_confidence(target, key, "low")
+            issues.append(issue["message"])
+        if target_language == "en" and key == "spoken_ipa" and normalized and spoken_ipa_is_unhelpful_duplicate(target, normalized):
+            normalized = ""
+            issue = pronunciation_issue("spoken_ipa", "block", "SPOKEN_SAME_AS_STANDARD", "spoken_ipa 与标准读法完全相同，缺少口语听感，已清空。")
+            add_pronunciation_issue(target, issue)
+            set_pronunciation_field_confidence(target, "spoken_ipa", "low")
+            issues.append(issue["message"])
+        if target_language == "en" and key == "source_spoken_ipa" and normalized and source_spoken_ipa_is_too_short(target, normalized):
+            normalized = ""
+            issue = pronunciation_issue("source_spoken_ipa", "block", "SOURCE_PRONUNCIATION_TOO_SHORT", "source_spoken_ipa 不是完整原句听感，已清空。")
+            add_pronunciation_issue(target, issue)
+            set_pronunciation_field_confidence(target, "source_spoken_ipa", "low")
+            issues.append(issue["message"])
+        if target_language == "es" and normalized and "θ" in normalized:
+            normalized = ""
+            issue = pronunciation_issue(key, "block", "SPANISH_LATAM_THETA", "默认拉美西语 profile 不使用 /θ/，该读法字段已清空。")
+            add_pronunciation_issue(target, issue)
+            set_pronunciation_field_confidence(target, key, "low")
+            issues.append(issue["message"])
+        if target_language == "ja" and key == "phonetic_ipa" and normalized:
+            source_or_answer = str(target.get("answer_core") or target.get("phrase") or target.get("english") or "")
+            if looks_like_romaji_only(normalized):
+                normalized = ""
+                issue = pronunciation_issue("phonetic_ipa", "block", "JAPANESE_ROMAJI_ONLY", "日语标准读法不能只有 romaji，已清空。")
+                add_pronunciation_issue(target, issue)
+                set_pronunciation_field_confidence(target, "phonetic_ipa", "low")
+                issues.append(issue["message"])
+            elif looks_like_ipa_only(normalized):
+                normalized = ""
+                issue = pronunciation_issue("phonetic_ipa", "block", "JAPANESE_IPA_ONLY", "日语标准读法不能只有 IPA，已清空。")
+                add_pronunciation_issue(target, issue)
+                set_pronunciation_field_confidence(target, "phonetic_ipa", "low")
+                issues.append(issue["message"])
+            elif has_cjk(source_or_answer) and not has_japanese_kana(normalized):
+                normalized = ""
+                issue = pronunciation_issue("phonetic_ipa", "block", "JAPANESE_KANA_REQUIRED", "日语含汉字时必须给假名读音，已清空。")
+                add_pronunciation_issue(target, issue)
+                set_pronunciation_field_confidence(target, "phonetic_ipa", "low")
+                issues.append(issue["message"])
+        if target_language == "ru" and key == "phonetic_ipa" and normalized:
+            words = re.findall(r"[А-Яа-яЁё\u0301]+", unicodedata.normalize("NFD", normalized))
+            unstressed = [word for word in words if russian_word_needs_stress(word) and not russian_word_has_stress(word)]
+            if unstressed:
+                normalized = ""
+                issue = pronunciation_issue("phonetic_ipa", "block", "RUSSIAN_STRESS_REQUIRED", "俄语多音节实词必须标重音，已清空。")
+                add_pronunciation_issue(target, issue)
+                set_pronunciation_field_confidence(target, "phonetic_ipa", "low")
+                issues.append(issue["message"])
         if normalized:
             target[key] = normalized
         else:
@@ -10043,12 +11802,100 @@ def sanitize_pronunciation_fields(target: dict[str, Any], language: Any = "Engli
         target["pronunciation_note"] = note[:260].rstrip()
     else:
         target.pop("pronunciation_note", None)
-    confidence = normalize_pronunciation_confidence(target.get("pronunciation_confidence"))
+    meta = normalize_pronunciation_meta(
+        target.get("pronunciation_meta"),
+        target_language,
+        has_spoken=bool(target.get("spoken_ipa")),
+        has_source=bool(target.get("source_spoken_ipa")),
+    )
+    target["pronunciation_meta"] = meta
+
+    if meta["generation_basis"] == "dictionary_only":
+        for key in ("spoken_ipa", "source_spoken_ipa"):
+            if target.get(key):
+                target.pop(key, None)
+                issue = pronunciation_issue(key, "block", "DICTIONARY_ONLY_NO_SPOKEN", "dictionary_only 只保留标准读法，口语/原句听感已清空。")
+                add_pronunciation_issue(target, issue)
+                issues.append(issue["message"])
+    maybe_prefix_inferred_note(target, meta)
+
+    if target.get("spoken_ipa") and target.get("phonetic_ipa"):
+        same = ipa_comparison_key(target.get("spoken_ipa")) == ipa_comparison_key(target.get("phonetic_ipa"))
+        answer_words = overlap_words(str(target.get("answer_core") or target.get("phrase") or ""))
+        if same and len(answer_words) >= 2 and not meta.get("same_as_standard_reason"):
+            meta["same_as_standard_reason"] = default_same_as_standard_reason(meta)
+            remove_pronunciation_issue_code(target, "SAME_AS_STANDARD_REASON_REQUIRED")
+            note = clean_study_text(target.get("pronunciation_note"))
+            same_note = "口语读法与标准读法暂按相同处理。"
+            if note and same_note not in note:
+                target["pronunciation_note"] = f"{note} {same_note}"[:260].rstrip()
+            elif not note:
+                target["pronunciation_note"] = same_note
+
+    source_text = str(target.get("english") or target.get("source_text") or "")
+    source_pronunciation = str(target.get("source_spoken_ipa") or target.get("spoken_ipa") or "")
+    if target_language == "fr":
+        if re.search(r"\bet\s*‿", source_pronunciation, flags=re.IGNORECASE):
+            issue = pronunciation_issue("source_spoken_ipa", "warn", "FRENCH_ET_LIAISON", "法语 et 后通常禁连读，请检查 et‿...。")
+            add_pronunciation_issue(target, issue)
+            issues.append(issue["message"])
+        if re.search(r"\b(?:les|des|mes|tes|ses|nos|vos|vous)\s+[aeiouhàâäéèêëîïôöùûü]", source_text, flags=re.IGNORECASE) and not re.search(r"[zZ]\s*‿|‿", source_pronunciation):
+            issue = pronunciation_issue("source_spoken_ipa", "warn", "FRENCH_MANDATORY_LIAISON_POSSIBLY_MISSING", "法语高频必连读可能漏标，请检查 liaison。")
+            add_pronunciation_issue(target, issue)
+            issues.append(issue["message"])
+        for word in FRENCH_ASPIRE_H_WORDS:
+            if re.search(rf"[zZ]\s*‿\s*{word}", source_pronunciation, flags=re.IGNORECASE):
+                issue = pronunciation_issue("source_spoken_ipa", "warn", "FRENCH_H_ASPIRE_LIAISON", f"h aspiré 词 {word} 前通常禁连读。")
+                add_pronunciation_issue(target, issue)
+                issues.append(issue["message"])
+    if target_language == "es" and target.get("phonetic_ipa"):
+        standard = str(target.get("phonetic_ipa") or "")
+        if not re.search(r"[ˈáéíóúÁÉÍÓÚ]|[-·.]", standard) and len(overlap_words(standard)) >= 1:
+            issue = pronunciation_issue("phonetic_ipa", "warn", "SPANISH_STRESS_HINT_MISSING", "西语标准读法建议包含重音或音节提示。")
+            add_pronunciation_issue(target, issue)
+            issues.append(issue["message"])
+    if target_language == "ja" and has_pitch_marker(target.get("phonetic_ipa")) and not meta.get("pitch_confidence"):
+        issue = pronunciation_issue("pronunciation_meta", "warn", "JAPANESE_PITCH_CONFIDENCE_MISSING", "日语音高符号存在，但缺少 pitch_confidence。")
+        add_pronunciation_issue(target, issue)
+        issues.append(issue["message"])
+    if target_language == "ru" and "е" in source_text.lower():
+        confidence = meta.get("field_confidence", {}).get("phonetic_ipa")
+        if confidence == "high" and "ё" not in source_text.lower():
+            issue = pronunciation_issue("phonetic_ipa", "warn", "RUSSIAN_E_YO_AMBIGUITY", "俄语 е/ё 可能有歧义；未确认时不应标 high confidence。")
+            add_pronunciation_issue(target, issue)
+            issues.append(issue["message"])
+
+    field_confidence = meta.setdefault("field_confidence", {})
+    if meta["generation_basis"] == "dictionary_only":
+        field_confidence.setdefault("spoken_ipa", "low")
+        field_confidence.setdefault("source_spoken_ipa", "low")
+    for key in ("spoken_ipa", "source_spoken_ipa", "phonetic_ipa"):
+        if target.get(key):
+            continue
+        if any(
+            isinstance(issue, dict)
+            and issue.get("field") == key
+            and issue.get("severity") == "block"
+            for issue in meta.get("validation_issues") or []
+        ):
+            field_confidence[key] = "low"
+    if target.get("phonetic_ipa") and not field_confidence.get("phonetic_ipa"):
+        field_confidence["phonetic_ipa"] = "high"
+    for key in ("spoken_ipa", "source_spoken_ipa"):
+        if target.get(key):
+            field_confidence[key] = cap_confidence_for_basis(field_confidence.get(key), meta["generation_basis"], field=key)
+    if target.get("pronunciation_note") and not field_confidence.get("pronunciation_note"):
+        field_confidence["pronunciation_note"] = "medium"
+    confidence = confidence_min(
+        field_confidence.get("phonetic_ipa"),
+        field_confidence.get("spoken_ipa"),
+        field_confidence.get("source_spoken_ipa"),
+    )
     if confidence:
         target["pronunciation_confidence"] = confidence
     else:
         target.pop("pronunciation_confidence", None)
-    return issues
+    return list(dict.fromkeys([*issues, *pronunciation_issue_messages(target)]))
 
 
 def sanitize_learning_point_contract(
@@ -10082,6 +11929,7 @@ def sanitize_learning_point_contract(
     fake_card = {
         "type": "listening" if kind == "listening_feature" else "phrase",
         "english": text,
+        "language": normalize_learning_language(language),
         "phrase": exact_span,
         "answer_core": answer_core,
         "candidate_kind": kind,
@@ -10097,11 +11945,11 @@ def sanitize_learning_point_contract(
             fake_card["phrase"] = candidate or exact_span
             if is_answer_expression_candidate(candidate, fake_card):
                 answer_core = candidate
-                issues.append("answer_core 已回退为原句中的英文学习对象。")
+                issues.append("answer_core 已回退为原句中的目标语言学习对象。")
                 break
     fake_card["answer_core"] = answer_core
     if not is_answer_expression_candidate(answer_core, fake_card):
-        return False, "学习点 answer_core 不是纯英文学习对象。", {}
+        return False, "学习点 answer_core 不是目标语言学习对象。", {}
     if not usable_learning_point_span(text, exact_span, kind, phrase_type):
         return False, "学习点 exact_span 不适合作为该类型学习点。", {}
     normalized["exact_span"] = exact_span
@@ -10111,6 +11959,7 @@ def sanitize_learning_point_contract(
     normalized["candidate_kind"] = kind
     normalized["phrase_type"] = phrase_type
     normalized["content_kind"] = normalized.get("content_kind") or content_kind_for_phrase_type(phrase_type)
+    normalized["language"] = normalize_learning_language(language)
     issues.extend(sanitize_pronunciation_fields(normalized, language))
     normalized["validation_status"] = "repaired" if issues else "ok"
     if issues:
@@ -10496,14 +12345,7 @@ def card_phrase_tts_text(card: dict[str, Any], front_fields: dict[str, str]) -> 
 
 
 def language_code(language: str) -> str:
-    lower = language.lower()
-    if "fr" in lower:
-        return "fr"
-    if "es" in lower:
-        return "es"
-    if "ja" in lower or "日本" in language:
-        return "ja"
-    return "en"
+    return normalize_learning_language(language)
 
 
 def transcode_wav_file_to_mp3(wav_path: Path, output_path: Path, label: str) -> None:
@@ -10553,7 +12395,7 @@ def synthesize_tts(
         return False
 
     if provider in {"grok", "xai"}:
-        audio = call_tts_audio(tts, text, language_code(project.get("language", "English")))
+        audio = call_tts_audio(tts, text, project.get("language", "en"))
         output_path.write_bytes(audio)
         return True
 
@@ -10561,7 +12403,7 @@ def synthesize_tts(
         if not compatible_base_url(tts) or not tts["model"]:
             return False
         wav_path = output_path.with_suffix(".mimo.wav")
-        audio = call_tts_audio(tts, text, language_code(project.get("language", "English")))
+        audio = call_tts_audio(tts, text, project.get("language", "en"))
         wav_path.write_bytes(audio)
         transcode_wav_file_to_mp3(wav_path, output_path, "MIMO TTS")
         return True
@@ -10570,7 +12412,7 @@ def synthesize_tts(
         if not tts["base_url"] or not tts["model"]:
             return False
         wav_path = output_path.with_suffix(".qwen.wav")
-        audio = call_tts_audio(tts, text, project.get("language", "English"))
+        audio = call_tts_audio(tts, text, project.get("language", "en"))
         wav_path.write_bytes(audio)
         transcode_wav_file_to_mp3(wav_path, output_path, "Qwen TTS")
         return True
@@ -10579,7 +12421,7 @@ def synthesize_tts(
         if not tts["model"]:
             return False
         wav_path = output_path.with_suffix(".gemini_vertex.wav")
-        audio = call_tts_audio(tts, text, project.get("language", "English"))
+        audio = call_tts_audio(tts, text, project.get("language", "en"))
         wav_path.write_bytes(audio)
         transcode_wav_file_to_mp3(wav_path, output_path, "Gemini Vertex TTS")
         return True
@@ -10587,7 +12429,7 @@ def synthesize_tts(
     if provider in OPENAI_COMPATIBLE_PROVIDERS:
         if not compatible_base_url(tts) or not tts["model"]:
             return False
-        audio = call_tts_audio(tts, text, language_code(project.get("language", "English")))
+        audio = call_tts_audio(tts, text, project.get("language", "en"))
         output_path.write_bytes(audio)
         return True
 
@@ -10695,6 +12537,9 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             {"name": "SourceSpokenIpa"},
             {"name": "PronunciationNote"},
             {"name": "PronunciationConfidence"},
+            {"name": "PronunciationMeta"},
+            {"name": "SpokenPronunciationLabel"},
+            {"name": "StandardPronunciationHint"},
             {"name": "English"},
             {"name": "Chinese"},
             {"name": "Phrase"},
@@ -10760,7 +12605,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                 "card_id": str((card or {}).get("id") or ""),
                 "learning_point_id": str((card or segment).get("learning_point_id") or ""),
                 "field": field,
-                "source_time": str(segment.get("source_time") or ""),
+                "source_time": segment_display_source_time(segment),
                 "tts_text": clean_tts_input_text(tts_text) if tts_text else "",
                 "text_hash": media_text_hash(tts_text) if tts_text else "",
             }
@@ -11017,6 +12862,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             context_field = v11_source_translation_text(card) if use_v11_template else card.get("context", "")
             teacher_note_field = v11_misuse_text(card) if use_v11_template else card.get("teacher_note", "")
             chinese_feel_field = v11_answer_note_text(card) if use_v11_template else card.get("chinese_feel", "")
+            pronunciation_meta = ensure_card_pronunciation_meta(card, project.get("language", "en"))
             note = genanki.Note(
                 model=model,
                 fields=[
@@ -11035,6 +12881,9 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     anki_study_text(card.get("source_spoken_ipa", "")),
                     anki_study_text(card.get("pronunciation_note", "")),
                     anki_text(card.get("pronunciation_confidence", "")),
+                    anki_text(json.dumps(pronunciation_meta, ensure_ascii=False, separators=(",", ":"))),
+                    anki_text(spoken_label_for_meta(pronunciation_meta)),
+                    anki_text(standard_hint_for_meta(pronunciation_meta, project.get("language", "en"))),
                     anki_study_text(card.get("english", "")),
                     anki_study_text(meaning_field),
                     anki_study_text(card.get("phrase", "")),
@@ -11045,7 +12894,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     anki_study_text(chinese_feel_field),
                     anki_study_text(card.get("why", "")),
                     anki_study_text(card.get("difficulty", "")),
-                    anki_text(segment.get("source_time", "")),
+                    anki_text(segment_display_source_time(segment)),
                     anki_study_text(teacher_note_field),
                     anki_study_text(card.get("cloze", "")),
                     anki_text(template_labels["card_layout"]),

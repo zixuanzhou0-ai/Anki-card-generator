@@ -137,6 +137,30 @@ describe('validateServiceBaseUrl', () => {
     expect(validateApiConfigForRequest(normalized)).toBeNull()
   })
 
+  it('maps unavailable Gemini Vertex stable aliases to the working preview model', () => {
+    const normalized = normalizeApiConfigForRequest({
+      provider: 'gemini-vertex',
+      base_url: 'https://aiplatform.googleapis.com',
+      api_key: '',
+      model: 'gemini-3.1-pro',
+      capabilities: [],
+      tts_config: {
+        enabled: false,
+        provider: 'disabled',
+        base_url: '',
+        api_key: '',
+        model: '',
+        voice: '',
+        language: 'auto',
+        sample_rate: 24000,
+        bit_rate: 128000,
+      },
+    })
+
+    expect(normalized.model).toBe('gemini-3.1-pro-preview')
+    expect(validateApiConfigForRequest(normalized)).toBeNull()
+  })
+
   it('rejects DashScope-shaped keys on MIMO Token Plan endpoints before a network request', () => {
     const apiMessage = validateApiConfigForRequest({
       provider: 'mimo',
@@ -252,7 +276,7 @@ describe('validateServiceBaseUrl', () => {
     expect(resolved.base_url).toBe('https://aiplatform.googleapis.com')
     expect(resolved.model).toBe('gemini-3.1-flash-tts-preview')
     expect(resolved.voice).toBe('Kore')
-    expect(resolved.language).toBe('en-US')
+    expect(resolved.language).toBe('auto')
     expect(validateTtsConfigForRequest(resolved)).toBeNull()
   })
 

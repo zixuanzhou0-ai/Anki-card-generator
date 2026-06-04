@@ -53,7 +53,7 @@ type ReviewWorkspaceProps = {
   onPreviewRateChange: (rate: number) => void
   onRevealExport: () => void
   onSegmentFilterChange: (filter: SegmentFilter) => void
-  onSelectCardsByQuality: (quality: 'recommended' | 'reviewable') => void
+  onInvertCardSelection: () => void
   onSelectSegment: (segmentId: string) => void
   onSetCardsEnabled: (enabled: boolean, segmentId?: string) => void
   onUpdateCard: (segmentId: string, cardId: string, patch: Partial<Card>) => void
@@ -92,7 +92,7 @@ export function ReviewWorkspace({
   onPreviewRateChange,
   onRevealExport,
   onSegmentFilterChange,
-  onSelectCardsByQuality,
+  onInvertCardSelection,
   onSelectSegment,
   onSetCardsEnabled,
   onUpdateCard,
@@ -109,9 +109,9 @@ export function ReviewWorkspace({
         <div className="panel-heading">
           <MessageSquareText size={20} />
           <div>
-            <h3 id="preview-title">{project ? 'AI 评审工作台' : '生成工作台'}</h3>
+            <h3 id="preview-title">{project ? '卡片检查工作台' : '生成工作台'}</h3>
             <p className="panel-subtitle">
-              {project ? '查看模型留下的表达、判断理由和可导出的卡片草稿。' : '先选择素材，再生成卡片；结果会在这里展开。'}
+              {project ? '查看生成出的可用卡片，取消不想导出的内容。' : '先选择素材，再生成卡片；结果会在这里展开。'}
             </p>
           </div>
         </div>
@@ -123,11 +123,8 @@ export function ReviewWorkspace({
             <button className="ghost-button" type="button" onClick={() => onSetCardsEnabled(false)}>
               全不选
             </button>
-            <button className="ghost-button" type="button" onClick={() => onSelectCardsByQuality('recommended')}>
-              只保留推荐
-            </button>
-            <button className="ghost-button" type="button" onClick={() => onSelectCardsByQuality('reviewable')}>
-              推荐+待审
+            <button className="ghost-button" type="button" onClick={onInvertCardSelection}>
+              反选
             </button>
           </div>
         ) : null}
@@ -185,6 +182,7 @@ export function ReviewWorkspace({
           {activeSegment ? (
             <SegmentDetail
               documentStudyMode={project.document_study_mode}
+              language={project.language || language}
               motionDuration={motionDuration}
               prefersReducedMotion={prefersReducedMotion}
               previewRate={previewRate}

@@ -2,6 +2,7 @@
 import {
   isRecommendedCardForExport,
   isReviewableCardForExport,
+  isUsableCardForExport,
   phraseValueScore,
   segmentReviewStatus,
 } from './quality'
@@ -34,12 +35,13 @@ export function countSelectedCards(project: Project | null): number {
 export function getQualityCounts(project: Project | null): QualityCounts {
   const segments = project?.segments ?? []
   const cards = segments.flatMap((segment) => segment.cards)
+  const usable = segments.reduce(
+    (total, segment) => total + segment.cards.filter((card) => isUsableCardForExport(segment, card)).length,
+    0,
+  )
   return {
     total: cards.length,
-    recommended: segments.reduce(
-      (total, segment) => total + segment.cards.filter((card) => isRecommendedCardForExport(segment, card)).length,
-      0,
-    ),
+    recommended: usable,
     review: segments.reduce(
       (total, segment) =>
         total +
@@ -63,10 +65,8 @@ export function getQualityDiagnostics(project: Project | null, recommendedCount:
     .map((segment) => phraseValueScore(segment.phrase_value_score))
     .filter((score): score is number => typeof score === 'number')
   const avgScore = scored.length ? scored.reduce((total, score) => total + score, 0) / scored.length : null
-  const reviewableCount = segments.reduce(
-    (total, segment) =>
-      total +
-      segment.cards.filter((card) => !isRecommendedCardForExport(segment, card) && isReviewableCardForExport(segment, card)).length,
+  const usableCount = segments.reduce(
+    (total, segment) => total + segment.cards.filter((card) => isUsableCardForExport(segment, card)).length,
     0,
   )
   const rejectReasons = segments
@@ -80,22 +80,22 @@ export function getQualityDiagnostics(project: Project | null, recommendedCount:
           ? '文档分段较少或可制卡片段不足。'
           : '字幕片段太少或切分后有效候选不足。'
         : recommendedCount === 0
-          ? reviewableCount > 0
+          ? usableCount > 0
             ? isReading
-              ? `当前筛选没有推荐精读卡，但有 ${reviewableCount} 张待审精读卡；请人工确认后再导出。`
+              ? `当前生成了 ${usableCount} 张精读卡，默认已选；可以手动取消不需要的卡。`
               : isDocument
-                ? `当前筛选没有推荐知识卡，但有 ${reviewableCount} 张待审知识卡；请人工确认后再导出。`
-                : `当前筛选没有推荐卡，但有 ${reviewableCount} 张待审卡；请人工确认或配置模型精修。`
+                ? `当前生成了 ${usableCount} 张知识卡，默认已选；可以手动取消不需要的卡。`
+                : `当前生成了 ${usableCount} 张可用卡，默认已选；可以手动取消不需要的卡。`
             : isReading
-              ? '当前筛选没有推荐精读卡，可能是模型返回空或多数语言点仍需人工确认。'
+              ? '当前没有生成可用精读卡，可能是模型返回空或语言点被质量 gate 过滤。'
               : isDocument
-                ? '当前筛选没有推荐知识卡，可能是模型返回空或多数知识点仍需人工确认。'
-                : '当前筛选没有推荐卡，可能是词伙评分不足、模型返回空或筛选太严格。'
+                ? '当前没有生成可用知识卡，可能是模型返回空或知识点被质量 gate 过滤。'
+                : '当前没有生成可用卡，可能是词伙评分不足、模型返回空或学习点被质量 gate 过滤。'
           : isReading
-            ? '推荐精读卡偏少，通常是语言点价值较弱或模型评审较严格。'
+            ? '可用精读卡偏少，通常是语言点价值较弱或模型评审较严格。'
             : isDocument
-              ? '推荐知识卡偏少，通常是文档片段信息不足或模型评审较严格。'
-              : '推荐卡偏少，通常是重复合并、低价值表达或模型评审较严格。'
+              ? '可用知识卡偏少，通常是文档片段信息不足或模型评审较严格。'
+              : '可用卡偏少，通常是重复合并、低价值表达或模型评审较严格。'
       : ''
 
   return {
@@ -115,9 +115,31 @@ export function getQualityFunnel(
 ): QualityFunnel {
   const segments = project?.segments ?? []
   const provided = project?.quality_funnel ?? {}
+  const sourceIds = new Set(
+    segments.map((segment) => segment.source_segment_id || `${segment.start}:${segment.end}:${segment.text}`),
+  )
   const learningPointCount = segments.reduce(
     (total, segment) => total + (segment.learning_points?.length || (segment.cards.length ? 1 : 0)),
     0,
+  )
+  const distribution = <T,>(items: T[], valueForItem: (item: T) => number) =>
+    items.reduce<Record<string, number>>((acc, item) => {
+      const key = String(valueForItem(item))
+      acc[key] = (acc[key] ?? 0) + 1
+      return acc
+    }, {})
+  const sourceGroups = Array.from(
+    segments.reduce<Map<string, typeof segments>>((acc, segment) => {
+      const key = segment.source_segment_id || `${segment.start}:${segment.end}:${segment.text}`
+      acc.set(key, [...(acc.get(key) ?? []), segment])
+      return acc
+    }, new Map()),
+  ).map(([, group]) => group)
+  const learningPointsPerSource = distribution(sourceGroups, (group) =>
+    group.reduce((total, segment) => total + (segment.learning_points?.length || (segment.cards.length ? 1 : 0)), 0),
+  )
+  const enabledCardsPerSource = distribution(sourceGroups, (group) =>
+    group.reduce((total, segment) => total + segment.cards.filter((card) => card.enabled).length, 0),
   )
   const selectedCardCount = countSelectedCards(project)
   const scored = segments
@@ -126,10 +148,20 @@ export function getQualityFunnel(
   const averageScore = scored.length ? scored.reduce((total, score) => total + score, 0) / scored.length : null
   return {
     ...provided,
+    source_sentence_count: provided.source_sentence_count ?? sourceIds.size,
     candidate_segments: provided.candidate_segments ?? segments.length,
     learning_point_count: provided.learning_point_count ?? learningPointCount,
+    recommended_learning_point_count: provided.recommended_learning_point_count ?? qualityCounts.recommended,
+    review_learning_point_count: provided.review_learning_point_count ?? qualityCounts.review,
     card_count: provided.card_count ?? qualityCounts.total,
     selected_card_count: provided.selected_card_count ?? selectedCardCount,
+    usable_card_count: provided.usable_card_count ?? qualityCounts.recommended,
+    filtered_learning_point_count:
+      provided.filtered_learning_point_count ??
+      (provided.rejected_learning_point_count ?? 0) + (provided.duplicate_learning_point_count ?? 0),
+    low_value_filtered_count: provided.low_value_filtered_count ?? provided.rejected_learning_point_count ?? 0,
+    blocked_quality_issue_count: provided.blocked_quality_issue_count ?? provided.rejected_cards ?? 0,
+    level_mode: provided.level_mode ?? project?.level_mode ?? 'auto',
     recommended_card_count: provided.recommended_card_count ?? qualityCounts.recommended,
     review_card_count: provided.review_card_count ?? qualityCounts.review,
     rejected_learning_point_count:
@@ -138,6 +170,11 @@ export function getQualityFunnel(
     duplicate_learning_point_count:
       provided.duplicate_learning_point_count ??
       segments.filter((segment) => segmentReviewStatus(segment) === 'duplicate').length,
+    learning_points_per_source_distribution:
+      provided.learning_points_per_source_distribution ?? learningPointsPerSource,
+    enabled_cards_per_source_distribution: provided.enabled_cards_per_source_distribution ?? enabledCardsPerSource,
+    max_learning_points_per_source:
+      provided.max_learning_points_per_source ?? 4,
     reviewed_keep:
       provided.reviewed_keep ??
       segments.filter((segment) => {
@@ -160,9 +197,7 @@ export function getSegmentReviewCounts(project: Project | null) {
   const segments = project?.segments ?? []
   return {
     all: segments.length,
-    recommended: segments.filter((segment) => segmentReviewStatus(segment) === 'recommended').length,
-    needs_review: segments.filter((segment) => segmentReviewStatus(segment) === 'needs_review').length,
-    reject: segments.filter((segment) => segmentReviewStatus(segment) === 'reject').length,
-    duplicate: segments.filter((segment) => segmentReviewStatus(segment) === 'duplicate').length,
+    selected: segments.filter((segment) => segment.cards.some((card) => card.enabled)).length,
+    unselected: segments.filter((segment) => !segment.cards.some((card) => card.enabled)).length,
   }
 }

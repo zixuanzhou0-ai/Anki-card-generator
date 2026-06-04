@@ -54,7 +54,7 @@ describe('CardTemplatePanel', () => {
     fireEvent.click(screen.getByText('卡片和模板'))
 
     expect(screen.getAllByText('文档精读卡')[1]).toBeVisible()
-    expect(screen.getByText('从文档里提取表达、词汇或语法点；不生成听力卡，默认进入待审。')).toBeVisible()
+    expect(screen.getByText('从文档里提取表达、词汇或语法点；不生成听力卡，可用卡默认全选。')).toBeVisible()
   })
 
   it('does not show parked legacy templates', () => {

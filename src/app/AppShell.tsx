@@ -84,7 +84,7 @@ export function AppShell({ controller }: AppShellProps) {
     segmentFilter,
     segmentReviewCounts,
     selectedCardCount,
-    selectCardsByQuality,
+    invertCardSelection,
     selectCurrentLevel,
     selectPath,
     selectSegment,
@@ -143,10 +143,10 @@ export function AppShell({ controller }: AppShellProps) {
         inspectorActionLabel={inspectorActionLabel}
         inspectorActive={inspectorState === 'open' || inspectorSheetOpen}
         isCancelling={isCancelling}
-        projectSummary={
+            projectSummary={
           project
             ? {
-                reviewCount: qualityCounts.review,
+                usableCount: qualityCounts.total,
                 selectedCardLabel: badgeText(selectedCardCount),
                 segmentCount: project.segments.length,
                 templateLabel: activeTemplate?.label ?? '沉浸视频',
@@ -244,7 +244,7 @@ export function AppShell({ controller }: AppShellProps) {
             onPreviewRateChange={setPreviewRate}
             onRevealExport={revealExport}
             onSegmentFilterChange={setSegmentFilter}
-            onSelectCardsByQuality={selectCardsByQuality}
+            onInvertCardSelection={invertCardSelection}
             onSelectSegment={selectSegment}
             onSetCardsEnabled={setCardsEnabled}
             onUpdateCard={updateCard}

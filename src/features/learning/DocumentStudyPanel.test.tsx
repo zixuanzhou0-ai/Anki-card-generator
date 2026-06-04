@@ -47,13 +47,14 @@ describe('DocumentStudyPanel', () => {
       request: { ...defaultRequest, source_mode: 'document', document_study_mode: 'language_reading' },
     })
 
-    fireEvent.change(screen.getByLabelText('文档精读语言'), { target: { value: 'Français' } })
+    expect(screen.getByRole('option', { name: 'Русский' })).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('文档精读语言'), { target: { value: 'fr' } })
     fireEvent.click(screen.getAllByRole('button', { name: /B2表达块/ })[0])
     fireEvent.click(screen.getByRole('button', { name: /单词用法/ }))
 
     expect(screen.getByText(/文档精读不生成听力卡/)).toBeVisible()
     expect(screen.queryByRole('button', { name: /听力难点/ })).not.toBeInTheDocument()
-    expect(props.onPatchRequest).toHaveBeenCalledWith({ language: 'Français' })
+    expect(props.onPatchRequest).toHaveBeenCalledWith({ language: 'fr' })
     expect(props.onSelectCurrentLevel).toHaveBeenCalledWith('B2')
     expect(props.onToggleLanguageFocus).toHaveBeenCalledWith('vocabulary')
   })

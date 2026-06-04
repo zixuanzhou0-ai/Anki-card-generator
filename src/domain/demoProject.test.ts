@@ -17,7 +17,7 @@ describe('createDemoProject', () => {
     expect(project.language_focus).toEqual(['phrases', 'grammar'])
     expect(project.segments[0].source_time).toBe('文档精读点 1')
     expect(card.type_label).toBe('文档精读卡')
-    expect(card.enabled).toBe(false)
+    expect(card.enabled).toBe(true)
     expect(card.quality?.status).toBe('needs_review')
   })
 })

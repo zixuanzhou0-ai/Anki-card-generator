@@ -10,6 +10,7 @@ export const DEEPSEEK_OPENAI_BASE_URL = 'https://api.deepseek.com'
 export const DEEPSEEK_DEFAULT_MODEL = 'deepseek-v4-pro'
 export const GEMINI_VERTEX_GLOBAL_BASE_URL = 'https://aiplatform.googleapis.com'
 export const GEMINI_VERTEX_DEFAULT_MODEL = 'gemini-3.1-pro-preview'
+export const GEMINI_VERTEX_UNAVAILABLE_MODEL_ALIASES = new Set(['gemini-3.1-pro'])
 
 export const mimoTextModels = [
   { value: 'mimo-v2.5-pro', label: 'MiMo-V2.5-Pro' },
@@ -34,7 +35,6 @@ export const deepseekTextModels = [
 
 export const geminiVertexTextModels = [
   { value: GEMINI_VERTEX_DEFAULT_MODEL, label: 'Gemini 3.1 Pro Preview' },
-  { value: 'gemini-3.1-pro', label: 'Gemini 3.1 Pro' },
   { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
   { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
 ]

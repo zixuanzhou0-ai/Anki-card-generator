@@ -377,7 +377,7 @@ export function TtsSettingsPanel({
                 : tts.provider === 'qwen'
                   ? '英语卡推荐 qwen3-tts-flash + Jennifer/Aiden；需要语气控制时用 qwen3-tts-instruct-flash。'
                   : tts.provider === 'gemini-vertex'
-                    ? 'Google Cloud 最新预览模型默认 gemini-3.1-flash-tts-preview；也可试 2.5 Pro/Flash 系列。'
+                    ? 'Google Cloud 最新预览模型默认 gemini-3.1-flash-tts-preview；Language 留 auto 时导出会按学习语言选择。'
                     : 'Grok TTS 当前不需要模型名，可留空；Gemini / Speech API 需要模型名。'}
             </small>
           </label>
@@ -424,7 +424,7 @@ export function TtsSettingsPanel({
             </datalist>
             <small>
               {tts.provider === 'gemini-vertex'
-                ? 'Gemini Vertex TTS 可先试 Kore、Aoede、Puck、Charon；英语卡建议 Language 填 en-US。'
+                ? 'Gemini Vertex TTS 可先试 Kore、Aoede、Puck、Charon；多语言卡建议 Language 保持 auto。'
                 : 'MIMO V2.5 内置声音可填 Mia、Chloe、Milo、Dean；千问英语卡优先试 Jennifer 或 Aiden。'}
             </small>
           </label>
@@ -433,9 +433,9 @@ export function TtsSettingsPanel({
             <input
               value={tts.language}
               onChange={(event) => onPatchTts({ language: event.target.value })}
-              placeholder="auto / en / zh / ja"
+              placeholder="auto / en-US / fr-FR / es-MX / ja-JP / ru-RU"
             />
-            <small>MIMO / Grok 支持 auto 或 BCP-47 语言码；英语卡建议 auto 或 en。</small>
+            <small>留 auto 时导出会按学习语言选择默认 BCP-47 代码；手动填写时优先使用这里的值。</small>
           </label>
           <label className="field">
             <span>Sample Rate</span>

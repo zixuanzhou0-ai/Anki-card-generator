@@ -44,7 +44,18 @@ def main() -> None:
     handler = COMMANDS.get(command)
     if not handler:
         fail(f"未知 worker 命令：{command}")
-    emit(handler(read_payload()))
+    try:
+        emit(handler(read_payload()))
+    except SystemExit:
+        raise
+    except Exception as err:
+        details = _legacy_worker.classify_worker_exception(err, command=command)
+        fail(
+            details["message"],
+            error_code=details.get("error_code"),
+            stage=details.get("stage"),
+            retryable=bool(details.get("retryable")),
+        )
 
 
 if __name__ == "__main__":

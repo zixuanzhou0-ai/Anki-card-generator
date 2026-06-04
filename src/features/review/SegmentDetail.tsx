@@ -2,7 +2,13 @@ import type { ChangeEvent, SyntheticEvent } from 'react'
 import { motion } from 'motion/react'
 import { Play } from 'lucide-react'
 
-import type { Card, DocumentStudyMode, Segment, SegmentFilter } from '../../domain/types'
+import type { Card, DocumentStudyMode, Segment } from '../../domain/types'
+import {
+  normalizePronunciationMeta,
+  pronunciationBasisHint,
+  spokenPronunciationLabel,
+  standardPronunciationHint,
+} from '../../domain/options'
 import {
   candidateKindLabel,
   isDocumentReadingSegment,
@@ -11,12 +17,10 @@ import {
   phraseValueScore,
   phraseTypeLabel,
   qualityClass,
-  qualityLabel,
   segmentMediaEnd,
   segmentMediaStart,
   segmentPhraseLabel,
   segmentReviewStatus,
-  segmentStatusLabel,
   segmentTrainingFocus,
 } from '../../domain/quality'
 
@@ -26,6 +30,7 @@ type SegmentDetailProps = {
   previewRate: number
   segment: Segment
   videoSrc: string
+  language?: string
   documentStudyMode?: DocumentStudyMode
   onPreviewRateChange: (rate: number) => void
   onSetSegmentCardsEnabled: (enabled: boolean, segmentId: string) => void
@@ -54,6 +59,7 @@ export function SegmentDetail({
   previewRate,
   segment,
   videoSrc,
+  language,
   documentStudyMode,
   onPreviewRateChange,
   onSetSegmentCardsEnabled,
@@ -137,10 +143,9 @@ export function SegmentDetail({
       {isKnowledge && knowledgeCard ? (
         <div className={`phrase-review-panel status-${segmentReviewStatus(segment)}`}>
           <div>
-            <span>{isReading ? '文档精读评审' : '文档知识评审'}</span>
+            <span>{isReading ? '文档精读学习点' : '文档知识学习点'}</span>
             <strong>
-              {segmentStatusLabel(segmentReviewStatus(segment))}
-              {knowledgeType ? ` · ${knowledgeType}` : ''}
+              {knowledgeType || '可用卡片'}
             </strong>
           </div>
           <p>{isReading ? '精读动作' : '记忆动作'}：{segmentTrainingFocus(segment, documentStudyMode)}</p>
@@ -148,7 +153,7 @@ export function SegmentDetail({
             <p>{isReading ? '为什么值得学' : '为什么值得记'}：{knowledgeCard.why_it_matters || knowledgeCard.why}</p>
           ) : null}
           {knowledgeCard.quality?.issues?.length ? (
-            <p>待审提示：{knowledgeCard.quality.issues.join(' / ')}</p>
+            <p>检查提示：{knowledgeCard.quality.issues.join(' / ')}</p>
           ) : null}
         </div>
       ) : segment.phrase_review_status ||
@@ -158,9 +163,9 @@ export function SegmentDetail({
         segment.phrase_value_score !== undefined ? (
         <div className={`phrase-review-panel status-${segmentReviewStatus(segment)}`}>
           <div>
-            <span>AI 学习候选评审</span>
+            <span>学习点</span>
             <strong>
-              {segmentStatusLabel(segmentReviewStatus(segment))}
+              可用卡片
               {phraseValueScore(segment.phrase_value_score) !== null
                 ? ` · ${phraseValueScore(segment.phrase_value_score)}/5`
                 : ''}
@@ -171,8 +176,8 @@ export function SegmentDetail({
           {segment.phrase_type ? <p>表达类型：{phraseTypeLabel(segment.phrase_type) || segment.phrase_type}</p> : null}
           {segment.exact_span ? <p>原文 span：{segment.exact_span}</p> : null}
           {segment.answer_core ? <p>核心答案：{segment.answer_core}</p> : null}
-          {segment.phrase_decision_reason ? <p>推荐理由：{segment.phrase_decision_reason}</p> : null}
-          {segment.phrase_reject_reason ? <p>拒绝 / 修复提示：{segment.phrase_reject_reason}</p> : null}
+          {segment.phrase_decision_reason ? <p>筛选理由：{segment.phrase_decision_reason}</p> : null}
+          {segment.phrase_reject_reason ? <p>检查提示：{segment.phrase_reject_reason}</p> : null}
         </div>
       ) : null}
 
@@ -198,6 +203,7 @@ export function SegmentDetail({
             motionDuration={motionDuration}
             prefersReducedMotion={prefersReducedMotion}
             segment={segment}
+            language={language}
             documentStudyMode={documentStudyMode}
             onUpdateCard={onUpdateCard}
           />
@@ -212,20 +218,33 @@ type CardEditorProps = {
   motionDuration: number
   prefersReducedMotion: boolean
   segment: Segment
+  language?: string
   documentStudyMode?: DocumentStudyMode
   onUpdateCard: (segmentId: string, cardId: string, patch: Partial<Card>) => void
 }
 
-function CardEditor({ card, documentStudyMode, motionDuration, prefersReducedMotion, segment, onUpdateCard }: CardEditorProps) {
+function CardEditor({
+  card,
+  documentStudyMode,
+  language,
+  motionDuration,
+  prefersReducedMotion,
+  segment,
+  onUpdateCard,
+}: CardEditorProps) {
   const skippedEntries = Object.entries(card.skipped_card_types ?? {})
   const isKnowledgeCard = card.type === 'knowledge'
   const isReadingCard = isDocumentReadingSegment(segment, documentStudyMode)
   const cardPhraseScore = phraseValueScore(card.phrase_value_score ?? segment.phrase_value_score)
-  const cardPhraseStatus = (card.phrase_review_status as SegmentFilter | undefined) ?? segmentReviewStatus(segment)
+  const cardPhraseStatus = String(card.phrase_review_status ?? segmentReviewStatus(segment))
   const learningTarget = card.learning_target || card.learning_goal
   const whyItMatters = card.why_it_matters || card.why
   const howToUseIt = card.how_to_use_it || card.context
   const candidateLabel = candidateKindLabel(card.candidate_kind ?? segment.candidate_kind)
+  const pronunciationMeta = normalizePronunciationMeta(card.pronunciation_meta, language)
+  const standardLabel = `标准读法（${standardPronunciationHint(pronunciationMeta?.language_code ?? language)}）`
+  const spokenLabel = spokenPronunciationLabel(pronunciationMeta)
+  const basisHint = pronunciationBasisHint(pronunciationMeta)
   const cardTypeLabel =
     candidateLabel ||
     phraseTypeLabel(card.phrase_type ?? segment.phrase_type) ||
@@ -252,11 +271,7 @@ function CardEditor({ card, documentStudyMode, motionDuration, prefersReducedMot
         </label>
         <div className="card-meta-row">
           {candidateLabel ? <span className={`kind-chip kind-${card.candidate_kind ?? segment.candidate_kind}`}>{candidateLabel}</span> : null}
-          <span className="difficulty">{card.difficulty}</span>
-          <span className={`quality-badge ${qualityClass(card)}`}>
-            {qualityLabel(card)}
-            {typeof card.quality?.score === 'number' ? ` · ${card.quality.score}` : ''}
-          </span>
+          <span className="difficulty">{card.estimated_level ? `难度 ${card.estimated_level}` : card.difficulty}</span>
         </div>
       </div>
       {learningTarget || card.decision_reason || skippedEntries.length > 0 ? (
@@ -268,6 +283,7 @@ function CardEditor({ card, documentStudyMode, motionDuration, prefersReducedMot
             {learningTarget ? <strong>{learningTarget}</strong> : null}
           </div>
           {card.decision_reason ? <p>{card.decision_reason}</p> : null}
+          {card.difficulty_reason ? <p>难度判断：{card.difficulty_reason}</p> : null}
           {skippedEntries.length > 0 ? (
             <details className="skipped-card-types">
               <summary>已合并 {skippedEntries.length} 个低价值卡型</summary>
@@ -295,7 +311,7 @@ function CardEditor({ card, documentStudyMode, motionDuration, prefersReducedMot
           {learningTarget ? <strong>{isReadingCard ? '精读动作' : '记忆动作'}：{learningTarget}</strong> : null}
           {whyItMatters ? <p>{isReadingCard ? '为什么值得学' : '为什么值得记'}：{whyItMatters}</p> : null}
           {howToUseIt ? <p>{isReadingCard ? '辨认 / 复用' : '适用语境'}：{howToUseIt}</p> : null}
-          {card.quality?.issues?.length ? <p>待审提示：{card.quality.issues.join(' / ')}</p> : null}
+          {card.quality?.issues?.length ? <p>检查提示：{card.quality.issues.join(' / ')}</p> : null}
         </div>
       ) : cardPhraseScore !== null || card.phrase_decision_reason || card.phrase_reject_reason || card.phrase_card_focus ? (
         <div className={`phrase-card-review status-${cardPhraseStatus}`}>
@@ -310,16 +326,21 @@ function CardEditor({ card, documentStudyMode, motionDuration, prefersReducedMot
           {card.phrase_card_focus ? <strong>训练点：{card.phrase_card_focus}</strong> : null}
           {card.phonetic_ipa || card.spoken_ipa || card.source_spoken_ipa ? (
             <p>
-              {[card.phonetic_ipa ? `标准 IPA：${card.phonetic_ipa}` : '', card.spoken_ipa ? `口语：${card.spoken_ipa}` : '', card.source_spoken_ipa ? `原句：${card.source_spoken_ipa}` : '']
+              {[
+                card.phonetic_ipa ? `${standardLabel}：${card.phonetic_ipa}` : '',
+                card.spoken_ipa ? `${spokenLabel}：${card.spoken_ipa}` : '',
+                card.source_spoken_ipa ? `原句听感：${card.source_spoken_ipa}` : '',
+              ]
                 .filter(Boolean)
                 .join(' · ')}
             </p>
           ) : null}
+          {basisHint ? <p>置信提示：{basisHint}</p> : null}
           {card.pronunciation_note ? <p>听点：{card.pronunciation_note}</p> : null}
           {whyItMatters ? <p>为什么值得学：{whyItMatters}</p> : null}
           {howToUseIt ? <p>怎么用：{howToUseIt}</p> : null}
-          {card.phrase_decision_reason ? <p>推荐理由：{card.phrase_decision_reason}</p> : null}
-          {card.phrase_reject_reason ? <p>拒绝 / 修复提示：{card.phrase_reject_reason}</p> : null}
+          {card.phrase_decision_reason ? <p>筛选理由：{card.phrase_decision_reason}</p> : null}
+          {card.phrase_reject_reason ? <p>检查提示：{card.phrase_reject_reason}</p> : null}
         </div>
       ) : null}
       <div className="edit-grid">
@@ -344,7 +365,7 @@ function CardEditor({ card, documentStudyMode, motionDuration, prefersReducedMot
         {!isKnowledgeCard ? (
           <>
             <label>
-              标准 IPA
+              {standardLabel}
               <textarea
                 value={card.phonetic_ipa ?? ''}
                 onChange={(event: ChangeEvent<HTMLTextAreaElement>) =>
@@ -353,7 +374,7 @@ function CardEditor({ card, documentStudyMode, motionDuration, prefersReducedMot
               />
             </label>
             <label>
-              口语读法 IPA
+              {spokenLabel}
               <textarea
                 value={card.spoken_ipa ?? ''}
                 onChange={(event: ChangeEvent<HTMLTextAreaElement>) =>

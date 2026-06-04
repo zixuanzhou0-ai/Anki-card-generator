@@ -9,7 +9,8 @@ Use this file when opening a fresh Codex / GPT review window for the Anki Card G
 - Active branch: `codex/complete-refactor-hardening`
 - Active PR: https://github.com/zixuanzhou0-ai/Anki-card-generator/pull/6
 - PR base: `main`
-- Current status when this handoff was written: PR #6 contains the document-study split plus local-video, API-key persistence, TTS export, Qwen3 TTS voice hardening, Gemini Vertex TTS setup, the Deep Study / contextual vocabulary pipeline, the default `沉浸复读 V12` Anki template for video/subtitle cards, strict learning-point validation, English IPA / connected-speech fields, TTS media ledger export, and candidate-review hardening from GPT Pro feedback. Local working tree should be clean after pushing the latest commit.
+- Current status when this handoff was written: PR #6 contains the document-study split plus local-video, API-key persistence, TTS export, Qwen3 TTS voice hardening, Gemini Vertex TTS setup, the Deep Study / contextual vocabulary pipeline, the default `沉浸复读 V12` Anki template for video/subtitle cards, strict learning-point validation, English IPA / connected-speech fields, TTS media ledger export, and candidate-review hardening from GPT Pro feedback.
+- Latest local state on 2026-06-02: a follow-up hardening pass is present in the working tree unless the previous window has committed it. Run `git status --short --branch` first. Expected modified files are `workers/acg/legacy_worker.py`, `workers/acg/phrases/lexicon.py`, `tests/test_worker_quality.py`, `docs/HANDOFF_FOR_NEXT_CHAT.md`, `docs/TROUBLESHOOTING.md`, and `docs/RELEASE_NOTES_v0.9.2-beta.md`.
 
 Important: ask reviewers to inspect PR #6, not only `main`. The latest document-study work is on the PR branch.
 
@@ -50,6 +51,19 @@ Recent hardening added after the initial document-study split:
 - TTS/media hardening now writes `media_ledger` alongside `media_manifest`. Sentence TTS filenames include a source-text hash, phrase TTS filenames include the visible answer hash, and Anki import verification checks ledger/manifests for missing files and text-hash mismatches.
 - Local projects now store `video_fingerprint` and `subtitle_fingerprint` in `source_info`, in addition to source-mode path isolation. Local mode clears stale URL/document paths; URL/document modes clear unrelated local paths before worker calls.
 - README, user guide, troubleshooting, release notes, release checklist, beta limitations, handoff, screenshots, PR body, and repo About description were refreshed after this hardening pass.
+- User later tested a V11 APKG export and saw two concrete issues:
+  - Phrase TTS warning: `seg_0147` / `seg_0173` failed because Gemini Vertex TTS returned no `inlineData` audio for a few phrase-level requests while sentence TTS and most phrase TTS files succeeded. This points to partial provider/voice/model/region behavior, not a fully broken TTS setup.
+  - Some card backs only showed the original sentence plus media. APKG inspection showed those notes had sparse fields: `Answer`, `English`, `Phrase`, `Example`, `Difficulty`, and `SourceTime`, but no usable `Chinese`, `Definition`, `Context`, `Why`, or `TeacherNote`.
+- Local follow-up fix added after that test:
+  - `TEMPLATE_NOISE_PATTERNS` now catches placeholder export text such as `本地待审`, `待精修`, `正式导出前`, `本句目标表达`, and `use ... in a complete sentence`.
+  - AI phrase/cloze cards must have specific meaning, usage, and guidance before they can be recommended; otherwise quality includes `AI 解释字段不足` and the card remains disabled/review-only.
+  - `normalize_learning_action_fields()` now backfills the newer action fields from specific legacy fields, so older valid AI card payloads are not wrongly rejected.
+  - Added `test_sparse_ai_phrase_card_is_not_recommended`.
+- Vertex setup follow-up on 2026-06-03:
+  - Local `gcloud config get-value core/project` and `gcloud auth print-access-token` both worked.
+  - Real worker `handle_test_api` calls succeeded for `gemini-3.1-pro-preview`, `gemini-2.5-pro`, and `gemini-2.5-flash`.
+  - `gemini-3.1-pro` returned Vertex 404 in the current project, so the app now removes it from the suggested Vertex model list and normalizes saved `gemini-3.1-pro` settings to `gemini-3.1-pro-preview` before worker requests.
+  - Real Vertex TTS tests succeeded for `gemini-3.1-flash-tts-preview`, `gemini-2.5-flash-tts`, and `gemini-2.5-pro-tts` with voice `Kore`.
 
 ## Key Files
 
@@ -165,6 +179,23 @@ npm run test:unit
 npm run build
 ```
 
+Latest checks for the sparse-card / phrase-TTS documentation follow-up:
+
+```powershell
+python -m unittest tests.test_worker_quality.WorkerQualityTests.test_sparse_ai_phrase_card_is_not_recommended tests.test_worker_quality.WorkerQualityTests.test_merge_ai_cards_preserves_multiple_same_type_learning_points
+python -m unittest tests.test_worker_quality
+python -m py_compile workers\acg\legacy_worker.py workers\acg\phrases\lexicon.py
+```
+
+Latest checks for Vertex settings repair:
+
+```powershell
+npm run test:unit -- src/services/apiConfig.test.ts src/features/settings/ApiSettingsPanel.test.tsx
+python -m unittest tests.test_worker_quality.WorkerQualityTests.test_gemini_vertex_generate_content_uses_gcloud_auth_and_global_endpoint tests.test_worker_quality.WorkerQualityTests.test_gemini_vertex_model_alias_falls_back_to_preview
+python -m py_compile workers\acg\legacy_worker.py
+# Real local check: worker.handle_test_api with model gemini-3.1-pro reports and uses gemini-3.1-pro-preview successfully.
+```
+
 ## Current Product Decisions
 
 - Keep the two-pane layout: left Inspector, right Workspace. Do not restore the old left Rail.
@@ -182,14 +213,16 @@ npm run build
 
 The next iteration should focus on the strongest remaining beta gaps:
 
-1. Run a real local video + SRT Deep Study generation using Qwen / DashScope / Gemini Vertex and inspect whether the new pronunciation fields are useful.
-2. Continue visually tuning the V12 Anki template with real Anki desktop/mobile screenshots, especially long expressions and IPA rows.
-3. Add a real document generate + export + APKG verify smoke test.
-4. Add packaged portable zip smoke to catch release resource issues.
-5. Improve pending-review indicators and mobile screenshots for the split Anki templates.
-6. Continue simplifying the left Inspector with large sections and drawers.
-7. Continue checking whether the lowered `1180 x 780` minimum window is sufficient across common Windows scaling settings.
-8. Continue extracting `workers/acg/legacy_worker.py` into real document, LLM, media, TTS, and Anki modules.
+1. If the sparse-card fix is still uncommitted, review, commit, and push it after any additional validation.
+2. Restart/rebuild the latest desktop app before user testing. The user's last APKG was still `Anki Card Generator V11 - 沉浸复读 V11`, so do not diagnose V12 behavior from that old export.
+3. Run a real local video + SRT Deep Study generation using Qwen / DashScope / Gemini Vertex and inspect whether sparse AI cards are now disabled/review-only and whether phrase TTS warnings identify the exact failed expressions.
+4. Continue visually tuning the V12 Anki template with real Anki desktop/mobile screenshots, especially long expressions and IPA rows.
+5. Add a real document generate + export + APKG verify smoke test.
+6. Add packaged portable zip smoke to catch release resource issues.
+7. Improve pending-review indicators and mobile screenshots for the split Anki templates.
+8. Continue simplifying the left Inspector with large sections and drawers.
+9. Continue checking whether the lowered `1180 x 780` minimum window is sufficient across common Windows scaling settings.
+10. Continue extracting `workers/acg/legacy_worker.py` into real document, LLM, media, TTS, and Anki modules.
 
 ## Prompt For A Fresh Codex Window
 
@@ -209,16 +242,20 @@ Current shipped direction:
 - Video / URL now use Deep Study by default: understand material -> review candidates -> write cards.
 - Contextual vocabulary cards are in scope and labeled `语境生词卡`.
 - AI candidate review now has strict `exact_span` / `answer_core` validation, same-sentence grouped learning points, and English pronunciation fields for V12 cards.
+- Sparse AI expression/cloze cards should not become recommended cards; look for the `AI 解释字段不足` quality issue if a card has only the original sentence and media.
 - Document input = knowledge absorption by default.
 - Document input has optional language_reading mode.
 - Two-pane desktop layout stays; do not restore the left Rail.
 
 Next likely work:
-1. Real Deep Study local-video generation QA with Qwen / DashScope / Gemini Vertex and APKG import.
-2. Continue visual QA on the split language / knowledge / document-reading Anki templates.
-3. Add document generate/export/APKG verify smoke.
-4. Improve pending-review cues and mobile screenshots for the Anki templates.
-5. Prepare public-beta release reliability.
+1. Check whether the latest sparse-card hardening is committed/pushed. Start with `git status --short --branch`.
+2. Rebuild/restart the latest desktop app before testing; the last user APKG was still V11.
+3. Real Deep Study local-video generation QA with Qwen / DashScope / Gemini Vertex and APKG import.
+4. Confirm sparse AI cards are disabled/review-only and phrase-TTS partial failures are clearly reported.
+5. Continue visual QA on the split language / knowledge / document-reading Anki templates.
+6. Add document generate/export/APKG verify smoke.
+7. Improve pending-review cues and mobile screenshots for the Anki templates.
+8. Prepare public-beta release reliability.
 
 Before editing, run:
 git status --short --branch

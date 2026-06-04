@@ -1,5 +1,7 @@
 ﻿export type Level = 'A1' | 'A2' | 'B1' | 'B2' | 'C1' | 'C2'
+export type LevelMode = 'auto' | 'manual'
 export type CardKind = 'listening' | 'phrase' | 'cloze' | 'knowledge'
+export type LearningLanguageCode = 'en' | 'fr' | 'es' | 'ja' | 'ru'
 export type LanguageFocus = 'phrases' | 'vocabulary' | 'grammar' | 'listening'
 export type DocumentFocus = 'concepts' | 'arguments' | 'terms' | 'examples'
 export type DocumentStudyMode = 'knowledge' | 'language_reading'
@@ -21,7 +23,7 @@ export type TtsProvider =
 export type SourceMode = 'local' | 'url' | 'document'
 export type UrlImportMode = 'video' | 'subtitles'
 export type SettingsTab = 'api' | 'tts' | 'env'
-export type SegmentFilter = 'all' | 'recommended' | 'needs_review' | 'reject' | 'duplicate'
+export type SegmentFilter = 'all' | 'selected' | 'unselected'
 export type PhraseReviewStatus = 'recommended' | 'needs_review' | 'reject' | 'duplicate' | 'unreviewed' | string
 export type CandidateKind =
   | 'expression'
@@ -32,6 +34,36 @@ export type CandidateKind =
   | string
 export type LearningContentKind = 'phrase' | 'vocabulary' | 'grammar' | 'listening' | 'knowledge' | string
 export type DocumentCardKind = 'knowledge' | 'language_reading'
+export type GenerationBasis = 'audio_verified' | 'subtitle_inferred' | 'dictionary_only'
+export type PronunciationConfidence = 'high' | 'medium' | 'low'
+export type PronunciationIssueSeverity = 'block' | 'warn' | 'info'
+export type PronunciationField =
+  | 'phonetic_ipa'
+  | 'spoken_ipa'
+  | 'source_spoken_ipa'
+  | 'pronunciation_note'
+  | 'pronunciation_meta'
+export type PronunciationIssue = {
+  field: PronunciationField
+  severity: PronunciationIssueSeverity
+  code: string
+  message: string
+}
+export type PronunciationMeta = {
+  language_code: LearningLanguageCode
+  accent_profile: string
+  notation_system: string
+  generation_basis: GenerationBasis
+  field_confidence: {
+    phonetic_ipa?: PronunciationConfidence
+    spoken_ipa?: PronunciationConfidence
+    source_spoken_ipa?: PronunciationConfidence
+    pronunciation_note?: PronunciationConfidence
+  }
+  same_as_standard_reason?: string | null
+  pitch_confidence?: PronunciationConfidence | 'unknown'
+  validation_issues: PronunciationIssue[]
+}
 export type ResizeDirection =
   | 'East'
   | 'North'
@@ -103,6 +135,9 @@ export type ApiTestResult = {
   provider: string
   model: string
   message: string
+  error_code?: WorkerErrorCode | string
+  stage?: string
+  retryable?: boolean
   latency_ms?: number
 }
 
@@ -112,6 +147,9 @@ export type TtsTestResult = {
   model: string
   voice: string
   message: string
+  error_code?: WorkerErrorCode | string
+  stage?: string
+  retryable?: boolean
   latency_ms?: number
   bytes?: number
 }
@@ -176,9 +214,15 @@ export type WorkerErrorCode =
   | 'YOUTUBE_SUBTITLE_UNAVAILABLE'
   | 'LOCAL_SUBTITLE_MISSING'
   | 'MODEL_AUTH_FAILED'
+  | 'MODEL_CONNECTION_FAILED'
+  | 'MODEL_NOT_FOUND'
+  | 'MODEL_QUOTA_EXCEEDED'
   | 'MODEL_TIMEOUT'
   | 'MODEL_JSON_INVALID'
   | 'TTS_AUTH_FAILED'
+  | 'TTS_CONNECTION_FAILED'
+  | 'TTS_NOT_FOUND'
+  | 'TTS_QUOTA_EXCEEDED'
   | 'TTS_TIMEOUT'
   | 'FFMPEG_SLICE_FAILED'
   | 'ANKI_EXPORT_FAILED'
@@ -202,14 +246,32 @@ export type InspectorState = 'open' | 'collapsed' | 'sheet'
 
 export type QualityFunnel = {
   subtitle_cues?: number
+  source_sentence_count?: number
   candidate_segments?: number
   learning_point_count?: number
+  recommended_learning_point_count?: number
+  review_learning_point_count?: number
   card_count?: number
   selected_card_count?: number
   recommended_card_count?: number
   review_card_count?: number
   rejected_learning_point_count?: number
   duplicate_learning_point_count?: number
+  usable_card_count?: number
+  filtered_learning_point_count?: number
+  low_value_filtered_count?: number
+  blocked_quality_issue_count?: number
+  level_mode?: LevelMode | string
+  learning_points_per_source_distribution?: Record<string, number>
+  enabled_cards_per_source_distribution?: Record<string, number>
+  max_learning_points_per_source?: number
+  source_expansion?: {
+    mode?: 'auto' | 'full' | 'off' | string
+    eligible_source_groups?: number
+    requested_source_groups?: number
+    added_candidates?: number
+    rejected_candidates?: number
+  } | null
   reviewed_keep?: number
   mimo_kept?: number
   recommended_cards?: number
@@ -263,7 +325,8 @@ export type GenerateRequest = {
   video_path: string
   subtitle_path: string
   document_path: string
-  language: string
+  language: LearningLanguageCode
+  level_mode: LevelMode
   level: Level
   collection_levels: Level[]
   template_id: TemplateId
@@ -300,6 +363,7 @@ export type LearningPoint = {
   source_spoken_ipa?: string
   pronunciation_note?: string
   pronunciation_confidence?: 'high' | 'medium' | 'low' | string
+  pronunciation_meta?: PronunciationMeta | string | null
   validation_status?: 'ok' | 'repaired' | 'reject' | string
   validation_issues?: string[]
 }
@@ -340,6 +404,8 @@ export type Card = {
   chinese_feel: string
   why: string
   difficulty: string
+  estimated_level?: Level | string
+  difficulty_reason?: string
   teacher_note: string
   cloze: string
   learning_target?: string
@@ -355,6 +421,7 @@ export type Card = {
   source_spoken_ipa?: string
   pronunciation_note?: string
   pronunciation_confidence?: 'high' | 'medium' | 'low' | string
+  pronunciation_meta?: PronunciationMeta | string | null
   replacement_examples?: string | string[]
   avoid_reason?: string
   quality?: {
@@ -436,7 +503,8 @@ export type Project = {
   video_path: string
   subtitle_path: string
   document_path?: string
-  language: string
+  language: LearningLanguageCode | string
+  level_mode?: LevelMode | string
   level: Level
   collection_levels?: Level[]
   template_id: TemplateId
@@ -458,6 +526,9 @@ export type Project = {
   segments: Segment[]
   warnings?: string[]
   error_code?: WorkerErrorCode | string
+  model_error_code?: WorkerErrorCode | string
+  model_stage?: string
+  model_retryable?: boolean
   stage?: string
   retryable?: boolean
   fallbacks?: string[]

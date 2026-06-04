@@ -1,27 +1,25 @@
 import type { Card, DocumentFocus, DocumentStudyMode, Project, Segment, SegmentFilter } from './types'
 
+type InternalReviewStatus = 'recommended' | 'needs_review' | 'reject' | 'duplicate' | 'unreviewed'
+
 export function badgeText(count: number) {
   return count > 0 ? `${count} 张已选` : '未选择卡片'
 }
 
 export function qualityLabel(card: Card) {
   const status = card.quality?.status
-  if (status === 'recommended') return '推荐保留'
-  if (status === 'needs_review') return '需要检查'
-  if (status === 'reject') return '建议删除'
-  return '未评分'
+  if (status === 'reject') return '已过滤'
+  return '可用卡'
 }
 
 export function qualityClass(card: Card) {
-  return card.quality?.status ?? 'unknown'
+  return card.quality?.status === 'reject' ? 'filtered' : 'usable'
 }
 
 export const segmentFilterOptions: Array<{ id: SegmentFilter; label: string }> = [
-  { id: 'all', label: '全部片段' },
-  { id: 'recommended', label: '推荐片段' },
-  { id: 'needs_review', label: '待审片段' },
-  { id: 'reject', label: '已拒绝片段' },
-  { id: 'duplicate', label: '重复片段' },
+  { id: 'all', label: '全部卡片' },
+  { id: 'selected', label: '只看已选' },
+  { id: 'unselected', label: '只看未选' },
 ]
 
 export function phraseValueScore(value: number | string | null | undefined) {
@@ -146,7 +144,7 @@ export function segmentTrainingFocus(segment: Segment, documentStudyMode?: Docum
   return focus || typeLabel || '等待模型给出训练点'
 }
 
-export function segmentReviewStatus(segment: Segment): SegmentFilter | 'unreviewed' {
+export function segmentReviewStatus(segment: Segment): InternalReviewStatus {
   const status = String(segment.phrase_review_status ?? '').trim()
   if (segment.cards.length > 0 && segment.cards.every((card) => card.quality?.status === 'reject')) return 'reject'
   if (status === 'recommended' || status === 'needs_review' || status === 'reject' || status === 'duplicate') {
@@ -158,17 +156,19 @@ export function segmentReviewStatus(segment: Segment): SegmentFilter | 'unreview
   return 'unreviewed'
 }
 
-export function segmentStatusLabel(status: SegmentFilter | 'unreviewed') {
-  if (status === 'recommended') return '推荐'
-  if (status === 'needs_review') return '待审'
-  if (status === 'reject') return '已拒绝'
-  if (status === 'duplicate') return '重复合并'
-  return '未评审'
+export function segmentStatusLabel(status: InternalReviewStatus) {
+  if (status === 'recommended' || status === 'needs_review') return '可用'
+  if (status === 'reject') return '已过滤'
+  if (status === 'duplicate') return '重复过滤'
+  return '未检查'
 }
 
 export function segmentMatchesFilter(segment: Segment, filter: SegmentFilter) {
   if (filter === 'all') return true
-  return segmentReviewStatus(segment) === filter
+  const selectedCards = segment.cards.filter((card) => card.enabled).length
+  if (filter === 'selected') return selectedCards > 0
+  if (filter === 'unselected') return selectedCards === 0
+  return true
 }
 
 export function segmentMediaStart(segment: Segment) {
@@ -186,6 +186,7 @@ export function segmentBudgetLabel(value: number | undefined) {
 export function isRecommendedCardForExport(segment: Segment, card: Card) {
   const quality = card.quality?.status
   if (quality === 'recommended') return true
+  if (quality === 'needs_review') return false
   if (quality === 'reject') return false
   const reviewStatus = segmentReviewStatus(segment)
   const score = phraseValueScore(card.phrase_value_score ?? segment.phrase_value_score)
@@ -200,21 +201,62 @@ export function isReviewableCardForExport(segment: Segment, card: Card) {
   return card.quality?.status === 'needs_review' || reviewStatus === 'needs_review' || Boolean(score && score >= 3)
 }
 
+export function isUsableCardForExport(segment: Segment, card: Card) {
+  return isReviewableCardForExport(segment, card)
+}
+
 export function applyCardSelection(project: Project, mode: 'recommended' | 'reviewable') {
   let selected = 0
+  const segments = project.segments.map((segment) => ({
+    ...segment,
+    cards: segment.cards.map((card) => {
+      const enabled =
+        mode === 'recommended'
+          ? isRecommendedCardForExport(segment, card)
+          : isReviewableCardForExport(segment, card)
+      if (enabled) selected += 1
+      return { ...card, enabled }
+    }),
+  }))
   const nextProject = {
     ...project,
-    segments: project.segments.map((segment) => ({
-      ...segment,
-      cards: segment.cards.map((card) => {
-        const enabled =
-          mode === 'recommended'
-            ? isRecommendedCardForExport(segment, card)
-            : isReviewableCardForExport(segment, card)
-        if (enabled) selected += 1
-        return { ...card, enabled }
-      }),
-    })),
+    quality_funnel: project.quality_funnel
+      ? {
+          ...project.quality_funnel,
+          selected_card_count: selected,
+        }
+      : {
+          selected_card_count: selected,
+        },
+    segments,
+  }
+  return { project: nextProject, selected }
+}
+
+export function applyUsableCardSelection(project: Project) {
+  let selected = 0
+  const segments = project.segments.map((segment) => ({
+    ...segment,
+    cards: segment.cards.map((card) => {
+      const enabled = isUsableCardForExport(segment, card)
+      if (enabled) selected += 1
+      return { ...card, enabled }
+    }),
+  }))
+  const nextProject = {
+    ...project,
+    selection_strategy: 'catch_all' as const,
+    quality_funnel: project.quality_funnel
+      ? {
+          ...project.quality_funnel,
+          usable_card_count: selected,
+          selected_card_count: selected,
+        }
+      : {
+          usable_card_count: selected,
+          selected_card_count: selected,
+        },
+    segments,
   }
   return { project: nextProject, selected }
 }

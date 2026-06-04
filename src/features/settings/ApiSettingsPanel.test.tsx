@@ -86,6 +86,17 @@ describe('ApiSettingsPanel', () => {
     expect(props.onApplyApiPreset).toHaveBeenCalledWith(preset)
   })
 
+  it('renders a precise failed diagnostic title', () => {
+    renderPanel({
+      apiTestMessage: '模型请求超时：timed out。',
+      apiTestTitle: '请求超时',
+      apiTestTone: 'warn',
+    })
+
+    expect(screen.getByText('请求超时')).toBeInTheDocument()
+    expect(screen.getByText('模型请求超时：timed out。')).toBeInTheDocument()
+  })
+
   it('patches provider defaults when switching to MIMO', () => {
     const onPatchApi = vi.fn()
     renderPanel({ onPatchApi, showAdvancedApi: true })

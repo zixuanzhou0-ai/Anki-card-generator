@@ -1,6 +1,7 @@
 import { Sparkles } from 'lucide-react'
 
 import type { Project, QualityFunnel, SegmentFilter } from '../../domain/types'
+import { learningLanguageLabel } from '../../domain/options'
 import { segmentFilterOptions } from '../../domain/quality'
 import type { QualityCounts, QualityDiagnostics } from '../../domain/projectMetrics'
 
@@ -46,38 +47,44 @@ export function ReviewSummaryPanel({
   const isDocument = project.source_mode === 'document'
   const isReading = isDocument && project.document_study_mode === 'language_reading'
   const localSubtitleSource = subtitleSourceLabel(project)
+  const displayLanguage = learningLanguageLabel(language)
   const materialContext = project.material_context
   const materialSummary = materialContext?.summary || materialContext?.topic || ''
+  const maxLearningPoints = qualityFunnel.max_learning_points_per_source ?? 4
+  const usableCount = qualityFunnel.usable_card_count ?? qualityFunnel.card_count ?? qualityCounts.total
+  const selectedCount = selectedCardCount
+  const filteredCount =
+    qualityFunnel.filtered_learning_point_count ??
+    (qualityFunnel.rejected_learning_point_count ?? qualityDiagnostics.rejectedSegments) +
+      (qualityFunnel.duplicate_learning_point_count ?? qualityDiagnostics.duplicate)
+  const duplicateCount = qualityFunnel.duplicate_learning_point_count ?? qualityDiagnostics.duplicate
+  const lowValueCount = qualityFunnel.low_value_filtered_count ?? qualityFunnel.rejected_learning_point_count ?? qualityDiagnostics.rejectedSegments
+  const levelLabel = project.level_mode === 'manual' ? level : '自动判断'
+  const sourceSentenceCount = qualityFunnel.source_sentence_count ?? qualityFunnel.subtitle_cues
   const labels = isReading
     ? {
         score: '精读点质量',
         candidate: '精读点',
-        pipeline: '文档精读流水线',
+        pipeline: '文档精读诊断',
         sourceUnits: '文档片段',
-        reviewed: '精读保留',
-        recommended: '推荐精读卡',
-        review: '待审精读卡',
+        usable: '可用精读卡',
         duplicate: '重复精读点',
       }
     : isDocument
       ? {
           score: '知识点质量',
           candidate: '知识点',
-          pipeline: '文档知识流水线',
+          pipeline: '文档知识诊断',
           sourceUnits: '文档片段',
-          reviewed: '知识保留',
-          recommended: '推荐知识卡',
-          review: '待审知识卡',
+          usable: '可用知识卡',
           duplicate: '重复知识点',
         }
       : {
           score: '平均词伙评分',
           candidate: '候选片段',
-          pipeline: 'AI 评审流水线',
+          pipeline: '智能筛选诊断',
           sourceUnits: '字幕句',
-          reviewed: '评审保留',
-          recommended: '推荐卡',
-          review: '待审卡',
+          usable: '可用卡片',
           duplicate: '重复合并',
         }
 
@@ -85,19 +92,19 @@ export function ReviewSummaryPanel({
     <>
       <div className="review-dashboard" aria-label="生成审核概览">
         <div className="metric-card primary">
-          <span>已选导出 / 全部卡片</span>
-          <strong>{`${selectedCardCount}/${qualityFunnel.card_count ?? qualityCounts.total}`}</strong>
-          <small>勾选的卡会进入 APKG</small>
+          <span>已选导出 / 生成卡片</span>
+          <strong>{`${selectedCardCount}/${usableCount}`}</strong>
+          <small>{`已生成 ${usableCount} 张可用卡，默认全选`}</small>
         </div>
         <div className="metric-card">
-          <span>推荐可导出</span>
-          <strong>{qualityFunnel.recommended_card_count ?? qualityCounts.recommended}</strong>
-          <small>质量通过，默认建议保留</small>
+          <span>生成卡片数</span>
+          <strong>{usableCount}</strong>
+          <small>通过质量 gate，可直接勾选导出</small>
         </div>
         <div className="metric-card">
-          <span>待人工确认</span>
-          <strong>{qualityFunnel.review_card_count ?? qualityCounts.review}</strong>
-          <small>{`${qualityCounts.rejected} 张建议删除`}</small>
+          <span>已选卡片数</span>
+          <strong>{selectedCount}</strong>
+          <small>导出只包含当前勾选的卡片</small>
         </div>
         <div className="metric-card">
           <span>发现学习点</span>
@@ -106,22 +113,23 @@ export function ReviewSummaryPanel({
             {project.max_segments
               ? `${project.auto_max_segments ? '自动预算' : '预算'} ${project.max_segments} · `
               : ''}
-            {level} · {language} · {activeTemplateLabel}
+            {`每句最多 ${maxLearningPoints} 个学习点 · `}
+            {levelLabel} · {displayLanguage} · {activeTemplateLabel}
             {localSubtitleSource ? ` · ${localSubtitleSource}` : ''}
             {project.source_mode === 'local' && project.skip_video_slicing ? ' · 字幕-only' : ''}
           </small>
         </div>
         <div className="metric-card">
-          <span>已拒绝 / 重复</span>
-          <strong>{`${qualityFunnel.rejected_learning_point_count ?? qualityDiagnostics.rejectedSegments}/${
-            qualityFunnel.duplicate_learning_point_count ?? qualityDiagnostics.duplicate
-          }`}</strong>
-          <small>{qualityDiagnostics.shortReason || qualityDiagnostics.rejectReasons[0] || labels.score}</small>
+          <span>过滤学习点</span>
+          <strong>{filteredCount}</strong>
+          <small>{qualityDiagnostics.shortReason || '低价值、重复或需要人工补救的点只进入诊断'}</small>
         </div>
         <div className="metric-card">
-          <span>{labels.score}</span>
-          <strong>{qualityDiagnostics.avgScore === null ? '-' : qualityDiagnostics.avgScore.toFixed(1)}</strong>
-          <small>{`${labels.candidate} ${qualityDiagnostics.candidates} · ${labels.duplicate} ${qualityDiagnostics.duplicate}`}</small>
+          <span>重复 / 低价值</span>
+          <strong>{`${duplicateCount}/${lowValueCount}`}</strong>
+          <small>{`${labels.candidate} ${qualityDiagnostics.candidates} · ${labels.score} ${
+            qualityDiagnostics.avgScore === null ? '-' : qualityDiagnostics.avgScore.toFixed(1)
+          }`}</small>
         </div>
       </div>
 
@@ -141,13 +149,11 @@ export function ReviewSummaryPanel({
             <Sparkles size={14} />
             {labels.pipeline}
           </span>
-          <strong>{`学习点 ${qualityFunnel.learning_point_count ?? qualityFunnel.candidate_segments ?? '-'} · 已选 ${
-            qualityFunnel.selected_card_count ?? selectedCardCount
-          }`}</strong>
+          <strong>{`可用 ${usableCount} · 已选 ${selectedCount} · 过滤 ${filteredCount}`}</strong>
         </summary>
         <div className="quality-funnel" aria-label="质量漏斗">
           <span>
-            <strong>{qualityFunnel.subtitle_cues ?? '-'}</strong>
+            <strong>{sourceSentenceCount ?? '-'}</strong>
             <small>{labels.sourceUnits}</small>
           </span>
           <span>
@@ -156,24 +162,24 @@ export function ReviewSummaryPanel({
           </span>
           <span>
             <strong>{qualityFunnel.card_count ?? qualityCounts.total}</strong>
-            <small>全部卡片</small>
+            <small>生成卡片</small>
           </span>
           <span>
-            <strong>{qualityFunnel.recommended_card_count ?? qualityFunnel.recommended_cards ?? '-'}</strong>
-            <small>{labels.recommended}</small>
+            <strong>{usableCount}</strong>
+            <small>{labels.usable}</small>
           </span>
           <span>
-            <strong>{qualityFunnel.review_card_count ?? qualityFunnel.review_cards ?? '-'}</strong>
-            <small>{labels.review}</small>
+            <strong>{filteredCount}</strong>
+            <small>过滤学习点</small>
           </span>
           <span>
-            <strong>{qualityFunnel.selected_card_count ?? selectedCardCount}</strong>
+            <strong>{selectedCount}</strong>
             <small>已选导出</small>
           </span>
         </div>
       </details>
 
-      <div className="review-filters" aria-label="片段质量筛选">
+      <div className="review-filters" aria-label="卡片选择筛选">
         {segmentFilterOptions.map((option) => (
           <button
             key={option.id}

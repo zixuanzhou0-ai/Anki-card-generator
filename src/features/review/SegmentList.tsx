@@ -8,8 +8,6 @@ import {
   isKnowledgeSegment,
   phraseValueScore,
   segmentPhraseTitle,
-  segmentReviewStatus,
-  segmentStatusLabel,
   segmentTrainingFocus,
 } from '../../domain/quality'
 
@@ -35,7 +33,6 @@ export function SegmentList({
   return (
     <div className="segment-list">
       {segments.map((segment, index) => {
-        const status = segmentReviewStatus(segment)
         const score = phraseValueScore(segment.phrase_value_score)
         const totalCards = segment.cards.length
         const enabledCards = segment.cards.filter((card) => card.enabled).length
@@ -55,7 +52,7 @@ export function SegmentList({
           primaryCard?.why_it_matters ||
           primaryCard?.why ||
           primaryCard?.teacher_note ||
-          '等待模型或规则给出推荐理由'
+          '等待模型或规则给出训练理由'
         return (
           <motion.div
             layout
@@ -86,16 +83,13 @@ export function SegmentList({
             <button className="segment-tab-content" type="button" onClick={() => onSelectSegment(segment.id)}>
               <span className="segment-tab-top">
                 <span>{segment.source_time}</span>
-                <em className={`segment-status ${status}`}>
-                  {segmentStatusLabel(status)}
-                  {score !== null ? ` · ${score}/5` : ''}
-                </em>
+                {score !== null ? <em className="segment-status usable">学习点 · {score}/5</em> : null}
               </span>
               {kindLabel ? <span className={`kind-chip kind-${segment.candidate_kind}`}>{kindLabel}</span> : null}
               <strong>{phraseTitle}</strong>
               <small>
                 {learningPointCount > 1 ? `${learningPointCount} 个学习点 · ` : ''}
-                {enabledCards}/{totalCards} 张已选 · 推荐 {segment.recommendation}/5
+                {enabledCards}/{totalCards} 张已选
               </small>
               <small className="segment-focus">{isReading ? '精读动作' : isKnowledge ? '记忆动作' : '训练点'}：{trainingFocus}</small>
               <small className="segment-reason">{reason}</small>
@@ -106,7 +100,7 @@ export function SegmentList({
       {segments.length === 0 ? (
         <div className="filter-empty-state">
           <strong>当前筛选下没有片段</strong>
-          <span>切换到“全部”可以查看完整生成结果。</span>
+          <span>切换到“全部卡片”可以查看完整生成结果。</span>
         </div>
       ) : null}
     </div>

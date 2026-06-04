@@ -1,7 +1,13 @@
-import { Languages } from 'lucide-react'
+import { ChevronDown, Languages, SlidersHorizontal } from 'lucide-react'
 
 import type { ContentToggles, GenerateRequest, LanguageFocus, Level, SelectionStrategy } from '../../domain/types'
-import { languageFocusSummary, normalizeCollectionLevels, studyDepthOptions } from '../../domain/options'
+import {
+  languageFocusSummary,
+  learningLanguageOptions,
+  normalizeCollectionLevels,
+  normalizeLearningLanguage,
+  studyDepthOptions,
+} from '../../domain/options'
 
 type LevelOption = {
   id: Level
@@ -65,6 +71,8 @@ export function LearningSettingsPanel({
   const currentStrategy =
     selectionStrategyOptions.find((option) => option.id === request.selection_strategy) ?? selectionStrategyOptions[0]
   const segmentBudgetLabel = request.max_segments <= 0 ? '自动片段' : `${request.max_segments} 段`
+  const autoLevel = request.level_mode !== 'manual'
+  const levelSummary = autoLevel ? '自动判断' : request.level
 
   return (
     <div className="panel settings-panel">
@@ -72,21 +80,36 @@ export function LearningSettingsPanel({
         <Languages size={20} />
         <div className="panel-title-stack">
           <h3>学习路径</h3>
-          <span>{`${request.level} · ${currentStrategy?.label ?? '不漏优先'} · ${segmentBudgetLabel}`}</span>
+          <span>{`${levelSummary} · ${currentStrategy?.label ?? '智能筛选'} · ${segmentBudgetLabel}`}</span>
         </div>
       </div>
       <div className="learning-core-card">
         <div className="learning-setting-row level-picker-row">
           <span>
-            <strong>我的英语水平</strong>
-            <small>{currentLevel ? `${currentLevel.label} · 用来决定解释深度，不再硬过滤学习点` : '控制解释深度和质量判断'}</small>
+            <strong>学习水平</strong>
+            <small>
+              {autoLevel
+                ? '自动判断每张卡的难度；手动水平只作为解释深度和筛选倾向'
+                : currentLevel
+                  ? `${currentLevel.label} · 作为软偏好，不硬过滤学习点`
+                  : '控制解释深度和质量判断'}
+            </small>
           </span>
-          <div className="level-strip" aria-label="我的英语水平">
+          <div className="level-strip" aria-label="当前语言水平">
+            <button
+              type="button"
+              className={autoLevel ? 'selected' : ''}
+              aria-label="自动判断学习水平"
+              title="自动判断每张卡的难度"
+              onClick={() => onPatchRequest({ level_mode: 'auto' })}
+            >
+              <strong>Auto</strong>
+            </button>
             {levels.map((level) => (
               <button
                 type="button"
                 key={level.id}
-                className={request.level === level.id ? 'selected' : ''}
+                className={!autoLevel && request.level === level.id ? 'selected' : ''}
                 aria-label={`${level.id}${level.note}`}
                 title={`${level.label} · ${level.note}`}
                 onClick={() => onSelectCurrentLevel(level.id)}
@@ -98,29 +121,17 @@ export function LearningSettingsPanel({
         </div>
         <div className="learning-setting-row strategy-picker-row">
           <span>
-            <strong>筛选策略</strong>
-            <small>决定生成时少而精，还是优先不漏掉值得学的东西</small>
+            <strong>智能筛选</strong>
+            <small>系统逐句发现学习点，只输出可用卡片；生成后默认全选</small>
           </span>
-          <div className="selection-strategy-grid" aria-label="筛选策略">
-            {selectionStrategyOptions.map((item) => {
-              const selected = request.selection_strategy === item.id
-              return (
-                <button
-                  type="button"
-                  key={item.id}
-                  className={selected ? 'selected' : ''}
-                  aria-pressed={selected}
-                  title={item.note}
-                  onClick={() => onPatchRequest({ selection_strategy: item.id })}
-                >
-                  <span>
-                    <strong>{item.label}</strong>
-                    <em>{item.badge}</em>
-                  </span>
-                  <small>{item.note}</small>
-                </button>
-              )
-            })}
+          <div className="selection-strategy-grid single-strategy" aria-label="智能筛选">
+            <button type="button" className="selected" aria-pressed="true" title={currentStrategy?.note}>
+              <span>
+                <strong>{currentStrategy?.label ?? '智能筛选'}</strong>
+                <em>{currentStrategy?.badge ?? '默认'}</em>
+              </span>
+              <small>{currentStrategy?.note ?? '每句最多 4 个不同学习点，重复和低价值内容只进诊断。'}</small>
+            </button>
           </div>
         </div>
         <label className="learning-setting-row">
@@ -154,9 +165,23 @@ export function LearningSettingsPanel({
         </label>
       </div>
       <details className="compact-details advanced-learning-options">
-        <summary>
-          <span>高级学习选项</span>
-          <strong>{`${focusSummary} · ${collectionLevels.join('/')}`}</strong>
+        <summary className="advanced-learning-summary">
+          <span className="advanced-learning-summary-title">
+            <SlidersHorizontal size={16} aria-hidden="true" />
+            <span>
+              <strong>高级学习设置</strong>
+              <small>学习语言、理解深度、难度范围、内容偏好</small>
+            </span>
+          </span>
+          <span className="advanced-learning-summary-meta">
+            <strong>{focusSummary}</strong>
+            <small>{collectionLevels.join(' / ')}</small>
+          </span>
+          <span className="advanced-learning-summary-action" aria-hidden="true">
+            <span className="when-closed">展开</span>
+            <span className="when-open">收起</span>
+            <ChevronDown size={16} />
+          </span>
         </summary>
         <div className="advanced-learning-body">
           <label className="learning-setting-row compact-learning-row">
@@ -167,12 +192,13 @@ export function LearningSettingsPanel({
             <select
               aria-label="学习语言"
               value={request.language}
-              onChange={(event) => onPatchRequest({ language: event.target.value })}
+              onChange={(event) => onPatchRequest({ language: normalizeLearningLanguage(event.target.value) })}
             >
-              <option>English</option>
-              <option>Français</option>
-              <option>Español</option>
-              <option>日本語</option>
+              {learningLanguageOptions.map((item) => (
+                <option key={item.code} value={item.code}>
+                  {item.label}
+                </option>
+              ))}
             </select>
           </label>
           <div className="learning-setting-row compact-learning-row">
@@ -229,7 +255,11 @@ export function LearningSettingsPanel({
           <div className="advanced-subsection level-range-panel" aria-label="难度关注范围">
             <div className="settings-subheading">
               <strong>难度关注范围</strong>
-              <span>{`${collectionLevels.join(' / ')} · 高级调参，不再作为主要硬过滤`}</span>
+              <span>
+                {autoLevel
+                  ? '自动模式下仅作提示上下文'
+                  : `${collectionLevels.join(' / ')} · 高级调参，不再作为主要硬过滤`}
+              </span>
             </div>
             <div className="level-range-body">
               <div className="range-actions" aria-label="难度关注范围快捷设置">
