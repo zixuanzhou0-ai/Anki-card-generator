@@ -341,6 +341,49 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertTrue(result["retryable"])
         self.assertIn("TTS请求超时", result["message"])
 
+    def test_tts_output_volume_defaults_and_clamps(self):
+        self.assertEqual(worker._legacy_worker.normalized_tts_config({"tts_config": {}})["output_volume"], 0.65)
+        self.assertEqual(
+            worker._legacy_worker.normalized_tts_config({"tts_config": {"output_volume": 0.2}})["output_volume"],
+            0.4,
+        )
+        self.assertEqual(
+            worker._legacy_worker.normalized_tts_config({"tts_config": {"output_volume": 2}})["output_volume"],
+            1.0,
+        )
+
+    def test_tts_transcode_applies_output_volume_filter(self):
+        original_which = worker._legacy_worker.shutil.which
+        original_run = worker._legacy_worker.subprocess.run
+        calls = {}
+
+        class Completed:
+            returncode = 0
+            stderr = ""
+
+        def fake_run(args, **kwargs):
+            calls["args"] = args
+            calls["kwargs"] = kwargs
+            return Completed()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            wav_path = Path(temp_dir) / "tts.wav"
+            mp3_path = Path(temp_dir) / "tts.mp3"
+            wav_path.write_bytes(b"RIFF")
+
+            try:
+                worker._legacy_worker.shutil.which = lambda name: "ffmpeg" if name == "ffmpeg" else None
+                worker._legacy_worker.subprocess.run = fake_run
+                worker._legacy_worker.transcode_wav_file_to_mp3(wav_path, mp3_path, "Unit TTS", 0.65)
+            finally:
+                worker._legacy_worker.shutil.which = original_which
+                worker._legacy_worker.subprocess.run = original_run
+
+            self.assertFalse(wav_path.exists())
+            self.assertIn("-af", calls["args"])
+            self.assertIn("volume=0.650", calls["args"])
+            self.assertEqual(worker._legacy_worker.tts_volume_filter_args(1.0), [])
+
     def test_material_context_accepts_direct_gemini_vertex_context_payload(self):
         original_generate = worker._legacy_worker.gemini_vertex_generate_content
 
@@ -1178,8 +1221,39 @@ class WorkerQualityTests(unittest.TestCase):
 
         self.assertIn("status_items", status)
         self.assertTrue(any(item["id"] == "python" for item in status["status_items"]))
+        self.assertTrue(any(item["id"] == "anki" for item in status["status_items"]))
+        self.assertIn("anki_installed", status)
+        self.assertIn("anki_running", status)
         self.assertNotIn("api_key", worker.json.dumps(status).lower())
         self.assertNotIn("sk-", worker.json.dumps(status).lower())
+
+    def test_repair_env_returns_manual_ankiconnect_steps_without_secrets(self):
+        original_check_anki_connect = worker._legacy_worker.check_anki_connect
+        original_find_anki_executable = worker._legacy_worker.find_anki_executable
+        original_is_process_running = worker._legacy_worker.is_process_running
+        original_launch_anki_desktop = worker._legacy_worker.launch_anki_desktop
+
+        try:
+            worker._legacy_worker.check_anki_connect = lambda: (False, "not connected")
+            worker._legacy_worker.find_anki_executable = lambda: r"C:\Program Files\Anki\anki.exe"
+            worker._legacy_worker.is_process_running = lambda _name: False
+            worker._legacy_worker.launch_anki_desktop = lambda _path: (True, "已尝试打开 Anki")
+
+            result = worker.handle_repair_env({"target": "anki_connect"})
+        finally:
+            worker._legacy_worker.check_anki_connect = original_check_anki_connect
+            worker._legacy_worker.find_anki_executable = original_find_anki_executable
+            worker._legacy_worker.is_process_running = original_is_process_running
+            worker._legacy_worker.launch_anki_desktop = original_launch_anki_desktop
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["target"], "anki_connect")
+        self.assertTrue(any(action["id"] == "anki_launch" and action["status"] == "success" for action in result["actions"]))
+        plugin_action = next(action for action in result["actions"] if action["id"] == "anki_connect")
+        self.assertEqual(plugin_action["status"], "manual")
+        self.assertIn("2055492159", plugin_action["next_step"])
+        self.assertNotIn("api_key", worker.json.dumps(result).lower())
+        self.assertNotIn("sk-", worker.json.dumps(result).lower())
 
     def test_video_html_keeps_mp4_and_webm_fallbacks(self):
         html = worker.anki_video_html("clip.webm", "clip.mp4", "clip.jpg")
@@ -2629,6 +2703,11 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertNotIn("source_spoken_ipa", card)
         self.assertIn("source_spoken_ipa 不是完整原句听感，已清空。", issues)
         self.assertEqual(card["pronunciation_meta"]["field_confidence"]["source_spoken_ipa"], "low")
+        changes = card["pronunciation_meta"]["field_changes"]
+        self.assertEqual(changes[0]["field"], "source_spoken_ipa")
+        self.assertEqual(changes[0]["action"], "hidden")
+        self.assertEqual(changes[0]["code"], "SOURCE_PRONUNCIATION_TOO_SHORT")
+        self.assertIn("原句听感未可靠生成", card["pronunciation_note"])
         self.assertEqual(card["pronunciation_confidence"], "low")
 
     def test_existing_blocked_empty_source_keeps_low_confidence_on_resanitize(self):
@@ -2957,6 +3036,80 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(worker.max_learning_points_per_source({"selection_strategy": "catch_all"}), 4)
         self.assertEqual(worker.max_learning_points_per_source({"selection_strategy": "exhaustive"}), 4)
         self.assertEqual(worker.max_learning_points_per_source({"selection_strategy": "curated"}), 4)
+
+    def test_vertex_thinking_final_card_batch_size_is_not_clamped_to_three(self):
+        api = {"provider": "gemini-vertex", "model": "gemini-3.1-pro-preview"}
+        self.assertEqual(worker.final_card_batch_size(api, 10), 8)
+        self.assertEqual(worker.final_card_generation_concurrency(api, 4), 2)
+
+    def test_learning_point_inventory_exposes_generated_candidates_duplicates_and_blocks(self):
+        segment = {
+            "id": "seg_0001",
+            "source_segment_id": "src_1",
+            "source_time": "00:00:01 - 00:00:03",
+            "start": 1.0,
+            "end": 3.0,
+            "text": "I'm gonna run the register.",
+            "phrase": "run the register",
+            "exact_span": "run the register",
+            "answer_core": "run the register",
+            "candidate_kind": "expression",
+            "phrase_type": "collocation",
+            "phrase_value_score": 4,
+            "phrase_decision_reason": "服务业场景搭配值得学。",
+            "cards": [
+                {
+                    "id": "card_1",
+                    "type": "phrase",
+                    "phrase": "run the register",
+                    "answer_core": "run the register",
+                    "exact_span": "run the register",
+                    "candidate_kind": "expression",
+                    "phrase_type": "collocation",
+                    "learning_target": "训练 run the register 这个搭配。",
+                    "quality": {"status": "recommended", "score": 88, "issues": []},
+                }
+            ],
+        }
+        skipped = [
+            {
+                **segment,
+                "id": "seg_dup",
+                "phrase": "run the register",
+                "answer_core": "run the register",
+                "phrase_review_status": "duplicate",
+                "phrase_reject_reason": "同一句已有训练动作相近的学习点，已合并为重复候选。",
+                "cards": [],
+            },
+            {
+                **segment,
+                "id": "seg_candidate",
+                "phrase": "register",
+                "answer_core": "register",
+                "candidate_kind": "contextual_vocab",
+                "phrase_review_status": "reject",
+                "phrase_reject_reason": "片段预算已满，暂未生成完整卡。",
+                "cards": [],
+            },
+            {
+                **segment,
+                "id": "seg_block",
+                "phrase": "中文解释",
+                "answer_core": "中文解释",
+                "phrase_review_status": "reject",
+                "phrase_reject_reason": "answer_core 包含中文解释。",
+                "cards": [],
+            },
+        ]
+
+        inventory = worker.build_learning_point_inventory([segment], skipped)
+        statuses = {item["status"] for item in inventory}
+
+        self.assertIn("card_generated", statuses)
+        self.assertIn("hidden_duplicate", statuses)
+        self.assertIn("candidate_only", statuses)
+        self.assertIn("hard_blocked", statuses)
+        self.assertEqual(worker.learning_point_inventory_stats(inventory)["candidate_only_learning_point_count"], 1)
 
     def test_catch_all_keeps_four_distinct_learning_actions_per_source(self):
         source_id = "src_same_sentence"

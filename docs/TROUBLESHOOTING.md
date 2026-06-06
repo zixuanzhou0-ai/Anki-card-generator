@@ -1,152 +1,191 @@
 # Troubleshooting
 
-This guide covers the common failures for `v0.9.2-beta`.
+This guide covers the current desktop app behavior.
+
+## Local Environment Check Fails
+
+Open `设置 -> 本地环境` and click `检查环境`.
+
+The app now separates these cases:
+
+- Python runtime missing.
+- Python worker dependencies missing.
+- FFmpeg missing.
+- Deno/Node missing.
+- Anki desktop missing.
+- Anki installed but not running.
+- AnkiConnect not installed or not connected.
+
+Click `一键修复全部可修复项` first.
+
+What the repair can do:
+
+- Install recommended Python 3.12 through winget.
+- Create project `.venv`.
+- Install/upgrade `genanki`, `yt-dlp`, `pypdf`.
+- Install FFmpeg through winget.
+- Install Deno through winget.
+- Install Anki through winget.
+
+What still needs user confirmation:
+
+- AnkiConnect must be installed inside Anki with plugin code `2055492159`.
+- If winget is not available, system dependencies need manual installation.
+
+## Python Worker Cannot Start
+
+If the Python worker cannot start, the Tauri native bootstrap layer should still show a local environment report. Use `一键修复全部可修复项` to install recommended Python 3.12, then restart the app and run the check again.
+
+The app intentionally does not install “latest Python”. It targets Python 3.12 for stability.
+
+## AnkiConnect Is Not Connected
+
+Check the exact status in `设置 -> 本地环境`:
+
+- `Anki 桌面端` blocked: install Anki or use the repair button.
+- `Anki 桌面端` installed but not running: open Anki.
+- `AnkiConnect 插件` not connected: install/enable the plugin.
+
+Plugin install steps:
+
+1. Open Anki.
+2. Tools -> Add-ons -> Get Add-ons.
+3. Enter `2055492159`.
+4. Restart Anki.
+5. Return to the app and click `检查环境`.
+
+You can still export `.apkg` without AnkiConnect; you just cannot run automatic import verification.
 
 ## YouTube URL Fails
 
 Common causes:
 
 - HTTP 429: YouTube is rate limiting requests.
-- n challenge / EJS warning: yt-dlp needs a supported JavaScript runtime and challenge solver.
-- Subtitles unavailable: the video has no usable English captions.
-- Region/login restriction: the video cannot be fetched anonymously from the current network.
+- n challenge / EJS warning: yt-dlp needs Deno or Node.
+- Captions unavailable.
+- Region/login restriction.
 
 Recommended actions:
 
-1. Switch to subtitle-only generation if subtitles are available.
-2. Download or provide your own SRT and use local video + SRT.
-3. Run `scripts/setup_runtime.ps1` again to refresh yt-dlp dependencies.
-4. Try a different video or wait before retrying if the error is 429.
+1. Switch to subtitle-only generation if captions are available.
+2. Use local video + SRT.
+3. Run `一键修复全部可修复项` to refresh yt-dlp and Deno.
+4. Wait or change network if YouTube returns 429.
 
-## Generation Gets Stuck
+## No SRT File
 
-The progress message should show the current stage: subtitle parsing, material understanding, candidate building, model review, card generation, media slicing, TTS, export, or verification.
+Current V1 does not include ASR or forced alignment.
 
-If the UI stays on one stage for a long time:
+Fallback order:
 
-1. Click cancel.
-2. Retry with TTS disabled.
-3. Switch “理解深度” to “快速生成” to skip the extra material-context call.
-4. Retry with video slicing disabled or subtitle-only mode.
-5. Use a shorter local SRT to confirm the model/API path works.
+1. If the video has embedded subtitles, the app can try to extract them.
+2. If there is a same-directory `.srt` or `.vtt`, the app can try to match it.
+3. If there is no subtitle, transcribe with Whisper/local ASR/online ASR first, then import the SRT.
 
-Reasoning models such as DeepSeek V4, Qwen / DashScope, MiMo, or Gemini Vertex may spend longer in material understanding or candidate review. The app keeps the reasoning path alive and strips thinking before JSON parsing, so a longer wait is not automatically an error. If progress stays at the same percent but the message says “thinking 已保留”, the model is still working.
+## Generation Feels Slow
 
-## API Test Fails
+The current workflow does more than old simple subtitle splitting:
 
-Check:
+- material understanding
+- learning point recall
+- hard validation
+- dedupe
+- multilingual pronunciation metadata
+- card body generation
+- optional TTS and media ledger
 
-- Provider preset matches the API key.
-- Base URL is correct.
-- Model name is lowercase when the provider requires it.
-- The key has enough quota.
+Cost/time controls:
 
-DeepSeek V4 presets use:
+- Use shorter source clips for testing.
+- Disable TTS while checking card quality.
+- Use subtitle-only when video slicing is not needed.
+- Keep learning level on auto unless you need a manual preference.
 
-- Base URL: `https://api.deepseek.com`
-- Pro model: `deepseek-v4-pro`
-- Flash model: `deepseek-v4-flash`
+## Generated Card Count Looks Low
 
-Gemini Vertex uses local `gcloud` auth instead of an API key:
+The app no longer exposes “recommended / review / reject” as the main user workflow. It now shows:
 
-- Install Google Cloud SDK and sign in with `gcloud auth login`.
-- Set the project with `gcloud config set project <project-id>`.
-- Use provider `Gemini Vertex`, Base URL `https://aiplatform.googleapis.com`, and model `gemini-3.1-pro-preview`.
-- If `gemini-3.1-pro` returns 404, use the preview model that is enabled in the current Vertex project.
-- The app now normalizes saved `gemini-3.1-pro` Vertex text-model settings back to the currently working `gemini-3.1-pro-preview` model before testing or generation.
+- generated usable cards
+- selected cards
+- discovered learning points
+- learning point diagnostics
+- duplicate/hard-blocked counts
 
-Gemini Vertex TTS uses the same local `gcloud` auth path:
+If generated cards are fewer than expected, open `学习点诊断`. It will show whether learning points were:
 
-- In TTS settings, choose `Gemini 3.1 TTS Vertex`.
-- Use Base URL `https://aiplatform.googleapis.com`, model `gemini-3.1-flash-tts-preview`, and a voice such as `Kore`, `Aoede`, `Puck`, or `Charon`.
-- Leave the TTS API Key empty. The app calls Vertex AI with a short-lived `gcloud auth print-access-token` token.
-- If you need a regional endpoint, use an `aiplatform.googleapis.com` regional base such as `https://us-central1-aiplatform.googleapis.com`.
-- The Vertex response is raw 24 kHz PCM, so FFmpeg must be available to convert it into the MP3 files Anki imports.
+- legal but not generated yet
+- duplicate training actions
+- hard-blocked because `exact_span` was not in the source sentence
+- hard-blocked because `answer_core` contained Chinese, IPA, or explanation text
 
-The app should never require a real key in source files, docs, logs, or release artifacts.
-
-## Cards Do Not Match The Current Video
-
-Use local video + the exact SRT file for that video, then regenerate with Deep Study enabled. The review dashboard should show a “素材理解” card; if its summary describes the wrong material, cancel and check that the selected source mode is still “本地视频” and the paths point to the current video/SRT. If the summary is correct but individual cards are weak, disable that card or switch off the irrelevant learning focus such as “单词用法” or “听力难点”.
-
-The current review pipeline keeps a `source_segment_id` for every candidate and requires `exact_span` to appear in the source sentence. A single subtitle sentence can keep multiple distinct learning points, such as expression, contextual vocabulary, grammar, listening, or pragmatic risk, but duplicates and weak cards are grouped, downgraded, or rejected. If a model returns an explanation as the learning answer, for example `run the register = 负责收银`, the candidate is rejected instead of becoming a broken card title.
-
-If stale cards still appear after switching source type:
-
-1. Confirm the left source selector is still `本地视频`.
-2. Clear the previous generated project by starting a new generation from the selected video/SRT pair.
-3. Check the top summary; it should describe the current material, not an older YouTube URL or document.
-4. Avoid manually reusing old card edits after changing source files.
+The current V1 does not automatically generate complete media/TTS/Anki fields for every candidate-only learning point.
 
 ## TTS Fails
 
-Common causes:
+Check `设置 -> 语音 TTS`:
 
-- Invalid TTS key.
-- Wrong TTS base URL.
-- Unsupported voice/model/format.
-- Balance or quota exhausted.
+- Provider/model/voice match.
+- API key exists when the provider needs one.
+- Vertex TTS uses local `gcloud` auth and does not need an API key field.
+- FFmpeg is available, because some providers return PCM that needs conversion.
 
-You can disable TTS and still generate cards with original audio/video. TTS is only needed for extra sentence or phrase audio.
+You can disable TTS and still export cards with original video/audio.
 
-## Phrase TTS Only Generates Some Files
+## TTS Audio Does Not Match Card Text
 
-The export summary may show a warning such as `表达小喇叭只生成 86/88 条`. This means the original media and full-sentence TTS succeeded, but a small number of phrase-level TTS requests failed.
+The exporter uses different text sources:
 
-For Gemini Vertex TTS, the most common symptom is:
+- `TtsAudio`: full source sentence.
+- `PhraseTtsAudio`: visible core answer / answer_core.
+
+If phrase audio sounds wrong, inspect the card before export. The answer field must not contain Chinese explanation, IPA, or pronunciation notes. Those belong in pronunciation/explanation fields.
+
+The export writes a media ledger with TTS text hash, segment id, card id, and learning point id. APKG verification should report zero media/TTS hash mismatches.
+
+## TTS Is Much Louder Than Original Video
+
+Exported AI TTS is lowered by default to 65%. This affects exported Anki media only. It does not change in-app preview and does not boost original video volume.
+
+If it still feels unbalanced, lower the TTS export volume in settings.
+
+## Pronunciation Fields Are Hidden Or Marked Low Confidence
+
+This is usually intentional.
+
+V1 does not do ASR or forced alignment. When pronunciation is inferred from subtitles:
 
 ```text
-Gemini Vertex TTS 没有返回 inlineData 音频。
+generation_basis = subtitle_inferred
 ```
 
-This is not the same as a fully broken Vertex setup. If most phrase TTS files and all sentence TTS files were created, the key/auth/model path is working. The provider returned a non-audio or empty response for those specific phrase requests. Regenerate after checking the Vertex model, region, voice, quota, and FFmpeg availability. The exporter records phrase TTS text hashes and the media ledger in newer V12 exports so failed or mismatched audio can be traced to a segment/card/text.
+The UI should call it inferred/spoken approximation rather than audio-verified performance. If a field is cleared or hidden, `PronunciationMeta.field_changes` records the reason.
 
-## TTS Audio Does Not Match The Card Text
+## Japanese Pitch Or Russian Stress Looks Suspicious
 
-The exporter generates two different AI audio fields:
+V1 does not connect external dictionaries such as NHK/OJAD or Russian stress dictionaries.
 
-- Sentence TTS reads the full `English` source sentence.
-- Phrase TTS reads the visible core answer, normally `answer_core` or the cleaned phrase.
+Rules:
 
-If the phrase audio sounds unrelated, inspect the card in the review panel before export. The core answer must be the English expression only. Chinese meaning, IPA, pronunciation explanations, and teacher notes belong in `phonetic_ipa`, `spoken_ipa`, `source_spoken_ipa`, `pronunciation_note`, or explanation fields, not in `answer_core`. The worker now repairs or rejects mixed-language `answer_core`, and export writes a `media_ledger` so TTS files can be traced back to the segment, card, learning point, and text hash.
+- Japanese kana reading is required; pitch accent is only shown when confidence is acceptable.
+- Russian multi-syllable words should mark stress; uncertain stress should lower confidence.
 
-## Card Back Only Shows The Original Sentence And Media
+If the model guesses too confidently, treat the card as needing manual review.
 
-If the back side only shows the original sentence, audio buttons, and video, the card likely has a sparse AI payload: the model returned the learning point but did not return usable explanation fields such as Chinese meaning, definition/usage, context, teacher note, or usage boundary.
-
-This should not be treated as a finished card. The worker now marks sparse AI expression/cloze cards with `AI 解释字段不足`, keeps them disabled or review-only, and blocks placeholder text such as `本地待审`, `待精修`, `正式导出前`, or `use ... in a complete sentence` from becoming recommended study content. Regenerate with a model-backed configuration, or manually fill the missing fields before export.
-
-## TTS Sounds Slow or Unnatural
-
-First switch the in-app preview speed to `1x`. The `0.75x` control only changes review-page playback and does not slow down the exported Anki MP3.
-
-For English cards:
-
-- Prefer original video audio when the source clip already has clear speech.
-- MiMo V2.5 TTS is currently the safer default for natural English learning audio.
-- Qwen3 TTS users should try `Jennifer` for American English female voice or `Aiden` for American English male voice before using `Cherry`.
-- Gemini Vertex TTS users should start with `Kore`, `Aoede`, `Puck`, or `Charon`, then compare with the original video audio before making it the default for a deck.
-- Use `qwen3-tts-instruct-flash` only when you need explicit style, emotion, or pacing instructions.
-
-## FFmpeg Missing or Media Slicing Fails
-
-Install FFmpeg and make sure it is available on PATH, then restart the app. If only the media step fails, export text cards first and revisit slicing later.
-
-## APKG Export or Anki Import Fails
+## APKG Export Or Anki Import Fails
 
 Check:
 
 - The export path ends in `.apkg`.
-- Anki is installed if you want the app to open the package directly.
-- The generated APKG passes `workers/verify_apkg.py`.
-- The import verifier is looking for the correct template tag: V10 packages use `anki_card_generator_v10`; V12 language packages use `anki_card_generator_v12`.
-
-Release smoke output includes `verify_apkg.json`, which is the fastest way to inspect missing cards, media files, or template problems.
+- The APKG passes `workers/verify_apkg.py`.
+- Anki is installed if you want the app to open the package.
+- AnkiConnect is installed and running if you want import verification.
+- `PronunciationMeta` JSON is parseable.
+- Media manifest and TTS ledger have no missing/hash mismatch entries.
 
 ## Privacy Checks
 
-Before sharing logs or screenshots:
+Before sharing screenshots or logs:
 
 - Redact API keys and Authorization headers.
-- Hide personal file paths if needed.
+- Hide private file paths if needed.
 - Do not share private videos, subtitles, generated decks, or cache folders.

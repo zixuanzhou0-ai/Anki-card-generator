@@ -3,7 +3,7 @@ import type { ComponentProps } from 'react'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { SecretPrefs, TtsConfig, TtsPreset } from '../../domain/types'
+import type { TtsConfig, TtsPreset } from '../../domain/types'
 import { TtsSettingsPanel } from './TtsSettingsPanel'
 
 afterEach(() => cleanup())
@@ -15,6 +15,7 @@ const tts: TtsConfig = {
   enabled: false,
   language: 'auto',
   model: '',
+  output_volume: 0.65,
   provider: 'disabled',
   sample_rate: 24000,
   voice: '',
@@ -40,11 +41,6 @@ const preset: TtsPreset = {
   voice: 'Mia',
 }
 
-const secretPrefs: SecretPrefs = {
-  rememberModelKey: false,
-  rememberTtsKey: false,
-}
-
 function renderPanel(overrides: Partial<ComponentProps<typeof TtsSettingsPanel>> = {}) {
   const props: ComponentProps<typeof TtsSettingsPanel> = {
     advancedTtsPresets: [],
@@ -56,19 +52,23 @@ function renderPanel(overrides: Partial<ComponentProps<typeof TtsSettingsPanel>>
     mimoTtsVoices: ['Mia', 'Chloe'],
     qwenTtsModels: [{ label: 'Qwen3 TTS Flash', value: 'qwen3-tts-flash' }],
     qwenTtsVoices: ['Jennifer', 'Aiden', 'Cherry', 'Serena'],
-    secretPrefs,
+    activeTtsProfileId: 'disabled',
+    savedTtsProfiles: [],
     showAdvancedTts: false,
     tts,
+    ttsProfileDirty: false,
+    ttsProfileStatus: '未保存到我的语音',
     ttsTestMessage: 'TTS 当前关闭。',
     ttsTestMeta: 'disabled · 无模型名 · 无 voice',
     ttsTestTitle: 'TTS 未启用',
     ttsTestTone: 'idle',
     ttsTesting: false,
+    onApplySavedTtsProfile: vi.fn(),
     onApplyTtsPreset: vi.fn(),
     onPatchTts: vi.fn(),
+    onSaveTtsProfile: vi.fn(),
     onSetShowAdvancedTts: vi.fn(),
     onTestTts: vi.fn(),
-    onToggleRememberTtsKey: vi.fn(),
     ...overrides,
   }
   render(<TtsSettingsPanel {...props} />)
@@ -79,7 +79,7 @@ describe('TtsSettingsPanel', () => {
   it('renders disabled state and can apply a preset', () => {
     const props = renderPanel()
 
-    fireEvent.click(screen.getByRole('button', { name: /MIMO SGP TTS/ }))
+    fireEvent.change(screen.getByLabelText(/语音方案/), { target: { value: 'preset:mimo' } })
     fireEvent.click(screen.getByRole('button', { name: /测试 TTS/ }))
 
     expect(screen.getByText('TTS 当前关闭')).toBeInTheDocument()
@@ -120,6 +120,7 @@ describe('TtsSettingsPanel', () => {
 
     fireEvent.change(screen.getByLabelText(/语音服务/), { target: { value: 'grok' } })
     fireEvent.change(screen.getByLabelText(/Sample Rate/), { target: { value: '48000' } })
+    fireEvent.change(screen.getByLabelText(/导出 TTS 音量/), { target: { value: '0.8' } })
 
     expect(onPatchTts).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -129,15 +130,17 @@ describe('TtsSettingsPanel', () => {
       }),
     )
     expect(onPatchTts).toHaveBeenCalledWith({ sample_rate: 48000 })
+    expect(onPatchTts).toHaveBeenCalledWith({ output_volume: 0.8 })
+    expect(screen.getByText('导出 TTS 音量：65%')).toBeInTheDocument()
   })
 
-  it('toggles remember-key preference', () => {
-    const onToggleRememberTtsKey = vi.fn()
-    renderPanel({ onToggleRememberTtsKey, tts: enabledTts })
+  it('saves the current TTS profile', () => {
+    const onSaveTtsProfile = vi.fn()
+    renderPanel({ onSaveTtsProfile, tts: enabledTts })
 
-    fireEvent.click(screen.getByLabelText(/记住本机 TTS API Key/))
+    fireEvent.click(screen.getByRole('button', { name: /保存语音方案/ }))
 
-    expect(onToggleRememberTtsKey).toHaveBeenCalledOnce()
+    expect(onSaveTtsProfile).toHaveBeenCalledOnce()
   })
 
   it('patches Qwen TTS provider defaults', () => {
@@ -191,6 +194,9 @@ describe('TtsSettingsPanel', () => {
       },
     })
 
-    expect(screen.getByText(/Vertex TTS 使用本机 gcloud OAuth token/)).toBeInTheDocument()
+    expect(screen.getByText('Vertex TTS 授权')).toBeInTheDocument()
+    expect(screen.getByText('使用本机 gcloud OAuth')).toBeInTheDocument()
+    expect(screen.queryByLabelText('TTS API Key')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/记住本机 TTS API Key/)).not.toBeInTheDocument()
   })
 })

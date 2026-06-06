@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  normalizeTtsOutputVolume,
   normalizeApiConfigForRequest,
   resolveGenerateApiConfig,
   resolveTtsConfig,
@@ -137,6 +138,13 @@ describe('validateServiceBaseUrl', () => {
     expect(validateApiConfigForRequest(normalized)).toBeNull()
   })
 
+  it('normalizes TTS output volume with backward-compatible defaults', () => {
+    expect(normalizeTtsOutputVolume(undefined)).toBe(0.65)
+    expect(normalizeTtsOutputVolume(0.2)).toBe(0.4)
+    expect(normalizeTtsOutputVolume(2)).toBe(1)
+    expect(normalizeTtsOutputVolume(0.8)).toBe(0.8)
+  })
+
   it('maps unavailable Gemini Vertex stable aliases to the working preview model', () => {
     const normalized = normalizeApiConfigForRequest({
       provider: 'gemini-vertex',
@@ -237,6 +245,7 @@ describe('validateServiceBaseUrl', () => {
     expect(resolved.base_url).toBe('https://dashscope.aliyuncs.com/api/v1')
     expect(resolved.model).toBe('qwen3-tts-flash')
     expect(resolved.voice).toBe('Jennifer')
+    expect(resolved.output_volume).toBe(0.65)
   })
 
   it('allows Gemini Vertex TTS to use local gcloud auth without an API key', () => {

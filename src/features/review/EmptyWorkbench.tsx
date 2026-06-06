@@ -1,16 +1,13 @@
-import { Loader2, Settings2, Sparkles, Wand2 } from 'lucide-react'
+import { ClipboardList, FileSearch, Layers3 } from 'lucide-react'
 
 import type { SourceMode } from '../../domain/types'
 import { segmentBudgetLabel } from '../../domain/quality'
 
 type EmptyWorkbenchProps = {
-  appBusy: boolean
   level: string
   maxSegments: number
   sourceMode: SourceMode
   templateLabel: string
-  onGenerate: () => void
-  onOpenSettings: () => void
 }
 
 function sourceModeLabel(sourceMode: SourceMode) {
@@ -20,50 +17,35 @@ function sourceModeLabel(sourceMode: SourceMode) {
 }
 
 export function EmptyWorkbench({
-  appBusy,
   level,
   maxSegments,
   sourceMode,
   templateLabel,
-  onGenerate,
-  onOpenSettings,
 }: EmptyWorkbenchProps) {
   return (
     <div className="empty-workbench">
-      <section className="workbench-hero">
-        <span className="hero-kicker">Ready to build</span>
-        <Sparkles size={32} />
-        <h2>把真实素材变成 Anki 复习卡</h2>
-        <p>
-          选择视频、字幕或文档，设置学习范围，然后让模型提取值得记的表达。生成完成后，这里会显示片段、评分、理由和可导出的卡片。
-        </p>
-        <div className="hero-actions">
-          <button className="primary-button" type="button" onClick={onGenerate} disabled={appBusy}>
-            {appBusy ? <Loader2 className="spin" size={18} /> : <Wand2 size={18} />}
-            开始生成
-          </button>
-          <button className="ghost-button" type="button" onClick={onOpenSettings}>
-            <Settings2 size={18} />
-            检查 API
-          </button>
+      <section className="workbench-empty-state">
+        <div className="workbench-empty-icon" aria-hidden="true">
+          <ClipboardList size={24} />
+        </div>
+        <div>
+          <span className="hero-kicker">等待生成结果</span>
+          <h2>审核区会在生成后展开</h2>
+          <p>左侧完成素材和生成设置后，点击顶栏“生成卡片”。这里会显示片段队列、卡片详情、更多学习点和导出核验。</p>
         </div>
       </section>
-      <div className="workflow-strip" aria-label="生成流程">
+      <div className="workbench-result-map" aria-label="生成后可检查内容">
         <span>
-          <strong>1</strong>
-          素材
+          <FileSearch size={17} />
+          片段队列
         </span>
         <span>
-          <strong>2</strong>
-          评审
+          <Layers3 size={17} />
+          卡片详情
         </span>
         <span>
-          <strong>3</strong>
-          制卡
-        </span>
-        <span>
-          <strong>4</strong>
-          导出
+          <ClipboardList size={17} />
+          更多学习点
         </span>
       </div>
       <div className="workbench-summary-grid" aria-label="当前生成配置摘要">

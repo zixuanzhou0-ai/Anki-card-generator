@@ -1,6 +1,6 @@
-import { Boxes, CircleAlert, Cloud, KeyRound, PlugZap } from 'lucide-react'
+import { Boxes, CircleAlert, Cloud, KeyRound, PlugZap, Save } from 'lucide-react'
 
-import type { ApiConfig, ApiPreset, Provider, SecretPrefs } from '../../domain/types'
+import type { ApiConfig, ApiPreset, Provider, SavedApiProfile } from '../../domain/types'
 import {
   DEEPSEEK_DEFAULT_MODEL,
   DEEPSEEK_OPENAI_BASE_URL,
@@ -23,21 +23,25 @@ type ApiSettingsPanelProps = {
   apiTestTitle: string
   apiTestTone: string
   apiTesting: boolean
+  activeApiProfileId: string
+  apiProfileDirty: boolean
+  apiProfileStatus: string
   appBusy: boolean
   capabilityHelp: Record<string, string>
   capabilityLabels: string[]
   featuredApiPresets: ApiPreset[]
   mimoOpenAiBaseUrl: string
   mimoTextModels: ModelOption[]
-  secretPrefs: SecretPrefs
+  savedApiProfiles: SavedApiProfile[]
   showAdvancedApi: boolean
   showCapabilities: boolean
   onApplyApiPreset: (preset: ApiPreset) => void
+  onApplySavedApiProfile: (profileId: string) => void
   onPatchApi: (patch: Partial<ApiConfig>) => void
+  onSaveApiProfile: () => void
   onSetShowAdvancedApi: (value: boolean | ((current: boolean) => boolean)) => void
   onSetShowCapabilities: (value: boolean | ((current: boolean) => boolean)) => void
   onTestApi: () => void
-  onToggleRememberModelKey: () => void
 }
 
 export function ApiSettingsPanel({
@@ -49,21 +53,25 @@ export function ApiSettingsPanel({
   apiTestTitle,
   apiTestTone,
   apiTesting,
+  activeApiProfileId,
+  apiProfileDirty,
+  apiProfileStatus,
   appBusy,
   capabilityHelp,
   capabilityLabels,
   featuredApiPresets,
   mimoOpenAiBaseUrl,
   mimoTextModels,
-  secretPrefs,
+  savedApiProfiles,
   showAdvancedApi,
   showCapabilities,
   onApplyApiPreset,
+  onApplySavedApiProfile,
   onPatchApi,
+  onSaveApiProfile,
   onSetShowAdvancedApi,
   onSetShowCapabilities,
   onTestApi,
-  onToggleRememberModelKey,
 }: ApiSettingsPanelProps) {
   const isPresetSelected = (preset: ApiPreset) =>
     apiConfig.provider === preset.provider && apiConfig.base_url === preset.base_url && apiConfig.model === preset.model
@@ -83,17 +91,18 @@ export function ApiSettingsPanel({
           ? apiConfig.base_url || mimoOpenAiBaseUrl
           : useVertexDefaults
             ? GEMINI_VERTEX_GLOBAL_BASE_URL
-          : useDeepSeekDefaults
-            ? DEEPSEEK_OPENAI_BASE_URL
-            : apiConfig.base_url,
+            : useDeepSeekDefaults
+              ? DEEPSEEK_OPENAI_BASE_URL
+              : apiConfig.base_url,
       model:
         provider === 'mimo' && !apiConfig.model
           ? 'mimo-v2.5-pro'
           : useVertexDefaults
             ? GEMINI_VERTEX_DEFAULT_MODEL
-          : useDeepSeekDefaults
-            ? DEEPSEEK_DEFAULT_MODEL
-            : apiConfig.model,
+            : useDeepSeekDefaults
+              ? DEEPSEEK_DEFAULT_MODEL
+              : apiConfig.model,
+      api_key: useVertexDefaults ? '' : apiConfig.api_key,
       capabilities:
         provider === 'mimo' || useDeepSeekDefaults || useVertexDefaults
           ? Array.from(new Set([...apiConfig.capabilities, 'structured_json', 'long_context']))
@@ -104,6 +113,7 @@ export function ApiSettingsPanel({
   const useGeminiVertex = () => {
     onPatchApi({
       provider: 'gemini-vertex',
+      api_key: '',
       base_url: GEMINI_VERTEX_GLOBAL_BASE_URL,
       model: GEMINI_VERTEX_DEFAULT_MODEL,
       capabilities: Array.from(new Set([...apiConfig.capabilities, 'structured_json', 'long_context'])),
@@ -123,7 +133,24 @@ export function ApiSettingsPanel({
     </button>
   )
 
-  const selectedPreset = [...featuredApiPresets, ...advancedApiPresets].find(isPresetSelected)
+  const allApiPresets = [...featuredApiPresets, ...advancedApiPresets]
+  const selectedPreset = allApiPresets.find(isPresetSelected)
+  const activeSavedProfile = savedApiProfiles.find((profile) => profile.id === activeApiProfileId)
+  const profileSelectValue = activeSavedProfile
+    ? `saved:${activeSavedProfile.id}`
+    : selectedPreset
+      ? `preset:${selectedPreset.id}`
+      : '__custom'
+  const handleProfileSelect = (value: string) => {
+    if (value.startsWith('saved:')) {
+      onApplySavedApiProfile(value.slice('saved:'.length))
+      return
+    }
+    if (value.startsWith('preset:')) {
+      const preset = allApiPresets.find((item) => item.id === value.slice('preset:'.length))
+      if (preset) onApplyApiPreset(preset)
+    }
+  }
   const providerLabel: Record<Provider, string> = {
     claude: 'Claude 原生',
     gemini: 'Gemini 原生',
@@ -156,7 +183,8 @@ export function ApiSettingsPanel({
           <div>
             <strong>强模型优先选 DeepSeek V4 Pro、Qwen3.7 Max 或 MIMO V2.5 Pro。</strong>
             <p>
-              DeepSeek V4 / Qwen / MIMO 这类 Thinking 模型会流式接收推理过程并只解析最终 JSON；填好 Key 后先点“测试连接”。
+              DeepSeek V4 / Qwen / MIMO 这类 Thinking 模型会流式接收推理过程并只解析最终 JSON；填好 Key
+              后先点“测试连接”。
             </p>
           </div>
         </div>
@@ -171,22 +199,96 @@ export function ApiSettingsPanel({
         </div>
       </details>
 
-      <div className="settings-subheading">
-        <strong>推荐配置</strong>
-        <span>普通用户只需要选一个服务商、填 Key、点测试。</span>
-      </div>
-      <div className="preset-grid compact-presets" aria-label="API 推荐预设">
-        {featuredApiPresets.map(renderPreset)}
-      </div>
-
-      <button className="advanced-toggle" type="button" onClick={() => onSetShowAdvancedApi((value) => !value)}>
-        {showAdvancedApi ? '收起更多服务商' : '展开更多服务商'}
-      </button>
-      {showAdvancedApi ? (
-        <div className="preset-grid compact-presets secondary-presets" aria-label="更多 API 预设">
-          {advancedApiPresets.map(renderPreset)}
+      <div className="settings-profile-picker">
+        <div className="settings-subheading">
+          <strong>快速切换模型</strong>
+          <span>先选方案，再填 Key，最后保存到“我的模型”。</span>
         </div>
-      ) : null}
+        <div className="settings-profile-select-row">
+          <label className="field compact-field">
+            <span>模型方案</span>
+            <select value={profileSelectValue} onChange={(event) => handleProfileSelect(event.target.value)}>
+              <option value="__custom" disabled>
+                当前手动配置
+              </option>
+              {savedApiProfiles.length ? (
+                <optgroup label="我的模型">
+                  {savedApiProfiles.map((profile) => (
+                    <option key={profile.id} value={`saved:${profile.id}`}>
+                      {profile.label}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : null}
+              <optgroup label="推荐配置">
+                {featuredApiPresets.map((preset) => (
+                  <option key={preset.id} value={`preset:${preset.id}`}>
+                    {preset.label}
+                  </option>
+                ))}
+              </optgroup>
+              <optgroup label="更多服务商">
+                {advancedApiPresets.map((preset) => (
+                  <option key={preset.id} value={`preset:${preset.id}`}>
+                    {preset.label}
+                  </option>
+                ))}
+              </optgroup>
+            </select>
+          </label>
+          <button
+            className="primary-button settings-save-button"
+            type="button"
+            onClick={onSaveApiProfile}
+            disabled={appBusy}
+          >
+            <Save size={17} />
+            保存模型方案
+          </button>
+        </div>
+        <div className={`settings-profile-status ${apiProfileDirty ? 'warn' : 'ok'}`}>
+          <span>{apiProfileStatus}</span>
+          <small>
+            {apiConfig.provider === 'gemini-vertex'
+              ? 'Vertex 使用本机 gcloud OAuth，不保存 API Key。'
+              : '保存后 Key 只绑定当前模型方案，不会共享给其他服务商。'}
+          </small>
+        </div>
+        <details className="settings-disclosure compact-provider-drawer">
+          <summary>
+            <span>浏览全部模型方案</span>
+            <strong>
+              我的模型 {savedApiProfiles.length} · 预设 {allApiPresets.length}
+            </strong>
+          </summary>
+          {savedApiProfiles.length ? (
+            <div className="profile-drawer-list" aria-label="我的模型">
+              {savedApiProfiles.map((profile) => (
+                <button
+                  type="button"
+                  className={`profile-option-button ${profile.id === activeApiProfileId ? 'selected' : ''}`}
+                  key={profile.id}
+                  onClick={() => onApplySavedApiProfile(profile.id)}
+                >
+                  <strong>{profile.label}</strong>
+                  <span>
+                    {profile.provider} · {profile.model || '未填写模型'}
+                  </span>
+                  <small>
+                    {profile.auth === 'gcloud' ? 'gcloud OAuth' : profile.has_api_key ? '已保存 Key' : '未保存 Key'}
+                  </small>
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div className="profile-drawer-list" aria-label="推荐模型预设">
+            {featuredApiPresets.map(renderPreset)}
+          </div>
+          <div className="profile-drawer-list secondary-presets" aria-label="更多模型预设">
+            {advancedApiPresets.map(renderPreset)}
+          </div>
+        </details>
+      </div>
 
       <div className="settings-current-card">
         <div className="settings-current-main">
@@ -194,30 +296,29 @@ export function ApiSettingsPanel({
           <strong>{currentModelTitle}</strong>
           <small>{currentModelMeta}</small>
         </div>
-        <label className="field settings-key-field">
-          <span>API Key</span>
-          <input
-            type="password"
-            value={apiConfig.api_key}
-            onChange={(event) => onPatchApi({ api_key: event.target.value })}
-            placeholder={
-              apiConfig.provider === 'gemini-vertex'
-                ? '使用本机 gcloud，不需要填写'
-                : apiConfig.provider === 'mimo'
-                  ? 'sk-... / tp-...'
-                  : 'sk-...'
-            }
-          />
-          <small>
-            {apiConfig.provider === 'gemini-vertex'
-              ? 'Vertex 模式通过 gcloud auth print-access-token 静默授权，不保存 OAuth token。'
-              : '只用于字幕理解和卡片解释生成；记住后保存到本机系统凭据 / DPAPI，不写入明文缓存。'}
-          </small>
-        </label>
-        <label className="toggle secret-toggle settings-current-toggle">
-          <input type="checkbox" checked={secretPrefs.rememberModelKey} onChange={onToggleRememberModelKey} />
-          <span>记住本机模型 API Key（系统凭据 / DPAPI 加密）</span>
-        </label>
+        {apiConfig.provider === 'gemini-vertex' ? (
+          <div className="settings-auth-card">
+            <Cloud size={18} />
+            <div>
+              <span>Vertex 授权</span>
+              <strong>使用本机 gcloud OAuth</strong>
+              <small>不需要填写 API Key；点击“测试连接”会检查 gcloud 登录、项目权限、模型名和区域端点。</small>
+            </div>
+          </div>
+        ) : (
+          <>
+            <label className="field settings-key-field">
+              <span>API Key</span>
+              <input
+                type="password"
+                value={apiConfig.api_key}
+                onChange={(event) => onPatchApi({ api_key: event.target.value })}
+                placeholder={apiConfig.provider === 'mimo' ? 'sk-... / tp-...' : 'sk-...'}
+              />
+              <small>只用于字幕理解和卡片解释生成；点击“保存模型方案”后保存到本机系统凭据 / DPAPI。</small>
+            </label>
+          </>
+        )}
       </div>
 
       <ConnectionTestCard
@@ -234,85 +335,93 @@ export function ApiSettingsPanel({
         onTest={onTestApi}
       />
 
+      <button className="advanced-toggle" type="button" onClick={() => onSetShowAdvancedApi((value) => !value)}>
+        {showAdvancedApi ? '收起手动配置' : '高级：手动编辑 Provider / Base URL / Model'}
+      </button>
       {showAdvancedApi ? (
         <div className="api-grid advanced-config-grid">
-        <label className="field">
-          <span>Provider</span>
-          <select value={apiConfig.provider} onChange={(event) => handleProviderChange(event.target.value as Provider)}>
-            <option value="local">本地草稿</option>
-            <option value="mimo">MIMO / 小米</option>
-            <option value="openai-compatible">OpenAI-compatible</option>
-            <option value="claude">Claude 原生</option>
-            <option value="gemini">Gemini 原生</option>
-            <option value="gemini-vertex">Gemini Vertex</option>
-          </select>
-          <small>MIMO 已有独立选项；Vertex 使用本机 gcloud 登录，其他兼容 OpenAI API 的服务商选 OpenAI-compatible。</small>
-        </label>
-        <label className="field">
-          <span>Base URL</span>
-          <input
-            value={apiConfig.base_url}
-            onChange={(event) => onPatchApi({ base_url: event.target.value })}
-            placeholder={
-              apiConfig.provider === 'mimo'
-                ? mimoOpenAiBaseUrl
-                : apiConfig.provider === 'gemini-vertex'
-                  ? GEMINI_VERTEX_GLOBAL_BASE_URL
-                  : 'https://api.deepseek.com'
-            }
-          />
-          <small>
-            {apiConfig.provider === 'mimo'
-              ? `默认 ${mimoOpenAiBaseUrl}；Token Plan 可改成控制台专属端点。`
-              : apiConfig.provider === 'gemini-vertex'
-                ? 'Vertex global 端点用 https://aiplatform.googleapis.com；区域端点可填 https://us-central1-aiplatform.googleapis.com。'
-              : apiConfig.provider === 'claude' && apiConfig.base_url
-                ? '当前使用 Anthropic-compatible 自定义端点；通常会自动请求 /v1/messages。'
-                : 'OpenAI-compatible 必填；Claude / Gemini 原生模式不用填。'}
-          </small>
-        </label>
-        <div className="field model-field">
-          <span>Model</span>
-          <div className="model-input-row">
+          <label className="field">
+            <span>Provider</span>
+            <select
+              value={apiConfig.provider}
+              onChange={(event) => handleProviderChange(event.target.value as Provider)}
+            >
+              <option value="local">本地草稿</option>
+              <option value="mimo">MIMO / 小米</option>
+              <option value="openai-compatible">OpenAI-compatible</option>
+              <option value="claude">Claude 原生</option>
+              <option value="gemini">Gemini 原生</option>
+              <option value="gemini-vertex">Gemini Vertex</option>
+            </select>
+            <small>
+              MIMO 已有独立选项；Vertex 使用本机 gcloud 登录，其他兼容 OpenAI API 的服务商选 OpenAI-compatible。
+            </small>
+          </label>
+          <label className="field">
+            <span>Base URL</span>
             <input
-              aria-label="Model"
-              value={apiConfig.model}
-              onChange={(event) => onPatchApi({ model: event.target.value })}
-              list="mimo-text-models"
+              value={apiConfig.base_url}
+              onChange={(event) => onPatchApi({ base_url: event.target.value })}
               placeholder={
                 apiConfig.provider === 'mimo'
-                  ? 'mimo-v2.5-pro'
+                  ? mimoOpenAiBaseUrl
                   : apiConfig.provider === 'gemini-vertex'
-                    ? GEMINI_VERTEX_DEFAULT_MODEL
-                    : 'deepseek-v4-pro'
+                    ? GEMINI_VERTEX_GLOBAL_BASE_URL
+                    : 'https://api.deepseek.com'
               }
             />
-            <button
-              type="button"
-              className={`model-provider-chip ${apiConfig.provider === 'gemini-vertex' ? 'selected' : ''}`}
-              title="使用本机 gcloud 登录调用 Vertex AI"
-              onClick={useGeminiVertex}
-            >
-              <Cloud size={15} />
-              Vertex AI
-            </button>
+            <small>
+              {apiConfig.provider === 'mimo'
+                ? `默认 ${mimoOpenAiBaseUrl}；Token Plan 可改成控制台专属端点。`
+                : apiConfig.provider === 'gemini-vertex'
+                  ? 'Vertex global 端点用 https://aiplatform.googleapis.com；区域端点可填 https://us-central1-aiplatform.googleapis.com。'
+                  : apiConfig.provider === 'claude' && apiConfig.base_url
+                    ? '当前使用 Anthropic-compatible 自定义端点；通常会自动请求 /v1/messages。'
+                    : 'OpenAI-compatible 必填；Claude / Gemini 原生模式不用填。'}
+            </small>
+          </label>
+          <div className="field model-field">
+            <span>Model</span>
+            <div className="model-input-row">
+              <input
+                aria-label="Model"
+                value={apiConfig.model}
+                onChange={(event) => onPatchApi({ model: event.target.value })}
+                list="mimo-text-models"
+                placeholder={
+                  apiConfig.provider === 'mimo'
+                    ? 'mimo-v2.5-pro'
+                    : apiConfig.provider === 'gemini-vertex'
+                      ? GEMINI_VERTEX_DEFAULT_MODEL
+                      : 'deepseek-v4-pro'
+                }
+              />
+              <button
+                type="button"
+                className={`model-provider-chip ${apiConfig.provider === 'gemini-vertex' ? 'selected' : ''}`}
+                title="使用本机 gcloud 登录调用 Vertex AI"
+                onClick={useGeminiVertex}
+              >
+                <Cloud size={15} />
+                Vertex AI
+              </button>
+            </div>
+            <datalist id="mimo-text-models">
+              {mimoTextModels.map((model) => (
+                <option key={model.value} value={model.value}>
+                  {model.label}
+                </option>
+              ))}
+            </datalist>
+            <small>
+              {apiConfig.provider === 'mimo'
+                ? '官方要求模型 ID 小写：mimo-v2.5-pro、mimo-v2.5、mimo-v2-pro、mimo-v2-omni。'
+                : apiConfig.provider === 'gemini-vertex'
+                  ? '填 Vertex publisher model ID；当前 global 端点已实测 gemini-3.1-pro-preview 可用。'
+                  : '填模型 ID，不是产品名。比如 deepseek-v4-pro、deepseek-v4-flash、qwen3.7-max。'}
+            </small>
           </div>
-          <datalist id="mimo-text-models">
-            {mimoTextModels.map((model) => (
-              <option key={model.value} value={model.value}>
-                {model.label}
-              </option>
-            ))}
-          </datalist>
-          <small>
-            {apiConfig.provider === 'mimo'
-              ? '官方要求模型 ID 小写：mimo-v2.5-pro、mimo-v2.5、mimo-v2-pro、mimo-v2-omni。'
-              : apiConfig.provider === 'gemini-vertex'
-                ? '填 Vertex publisher model ID；当前 global 端点已实测 gemini-3.1-pro-preview 可用。'
-              : '填模型 ID，不是产品名。比如 deepseek-v4-pro、deepseek-v4-flash、qwen3.7-max。'}
-          </small>
         </div>
-      </div>
       ) : null}
       <button
         className="capability-heading collapsible-heading"

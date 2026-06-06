@@ -192,7 +192,15 @@ export function validateTtsConfigForRequest(tts: TtsConfig): string | null {
   return validateServiceBaseUrl(tts.base_url, 'TTS Base URL')
 }
 
+export function normalizeTtsOutputVolume(value: unknown): number {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return 0.65
+  return Math.min(1, Math.max(0.4, numeric))
+}
+
 export function resolveTtsConfig(tts: TtsConfig, api: ApiConfig): TtsConfig {
+  const output_volume = normalizeTtsOutputVolume(tts.output_volume)
+
   if (tts.provider === 'gemini-vertex') {
     return {
       ...tts,
@@ -201,6 +209,7 @@ export function resolveTtsConfig(tts: TtsConfig, api: ApiConfig): TtsConfig {
       model: tts.model.trim() || GEMINI_VERTEX_TTS_DEFAULT_MODEL,
       voice: tts.voice.trim() || GEMINI_VERTEX_TTS_DEFAULT_VOICE,
       language: tts.language.trim() || 'auto',
+      output_volume,
     }
   }
 
@@ -212,10 +221,11 @@ export function resolveTtsConfig(tts: TtsConfig, api: ApiConfig): TtsConfig {
       base_url: tts.base_url.trim() || QWEN_DASHSCOPE_CN_TTS_BASE_URL,
       model: tts.model || QWEN_TTS_DEFAULT_MODEL,
       voice: tts.voice || QWEN_TTS_DEFAULT_VOICE,
+      output_volume,
     }
   }
 
-  if (tts.provider !== 'mimo') return tts
+  if (tts.provider !== 'mimo') return { ...tts, output_volume }
 
   const canReuseMainMimo = isMimoApiConfig(api) && api.api_key.trim()
   const mainApiKey = canReuseMainMimo ? api.api_key.trim() : ''
@@ -241,5 +251,6 @@ export function resolveTtsConfig(tts: TtsConfig, api: ApiConfig): TtsConfig {
     base_url: baseUrl,
     model: normalizeMimoModelId(tts.model || 'mimo-v2.5-tts'),
     voice: tts.voice || 'Mia',
+    output_volume,
   }
 }

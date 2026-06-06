@@ -1,70 +1,86 @@
 # Release Checklist
 
-目标：确认别人拿到 Windows 包后，在没有源码和开发服务的环境里也能完成制卡和导出。
+目标：确认用户拿到 Windows 桌面端后，不需要源码和开发服务，也能完成素材导入、智能生成、审核、导出和 Anki 验证。
 
-## 构建前
+## 发布前
 
 - [ ] `git status` 只包含本次发布相关文件。
-- [ ] 没有真实 API Key。
-- [ ] `.gitignore` 已排除缓存、媒体、`.apkg`、测试输出和 `.venv/`。
-- [ ] 版本号已更新：`package.json`、`package-lock.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`。
+- [ ] 没有真实 API Key、OAuth token、私人视频、私人字幕、`.apkg` 或测试缓存。
+- [ ] `.gitignore` 已排除 `.playwright-mcp/`、`e2e_regression_*/`、`tmp_*.json`、媒体缓存、构建缓存和虚拟环境。
+- [ ] 版本号已同步：`package.json`、`package-lock.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`。
 - [ ] `workers/` 已作为 Tauri resources 打包。
-- [ ] README、`PRIVACY.md`、`SECURITY.md`、`docs/BETA_LIMITATIONS.md`、`docs/USER_GUIDE.md` 和 `docs/TROUBLESHOOTING.md` 与本次发布一致。
-- [ ] `docs/screenshots/` 已用当前 UI 重新截图，README 引用的截图都能打开。
-- [ ] PR 描述、仓库 About 描述和 release note 都提到本次主要能力：本地视频/SRT、Deep Study、语境生词、V12 模板、英语 IPA/口语读法、DeepSeek/Gemini/Qwen TTS。
-- [ ] Release note 明确说明 YouTube、第三方模型、TTS 费用和版权限制。
+- [ ] README、`docs/USER_GUIDE.md`、`docs/TROUBLESHOOTING.md`、`docs/ARCHITECTURE.md`、`docs/BETA_LIMITATIONS.md` 与当前 UI 一致。
+- [ ] `docs/screenshots/` 已用当前 UI 重新截图，README 和用户教程引用的截图都能打开。
+- [ ] 文档说明当前主流程：素材配置、统一智能筛选、可用卡片、学习点诊断、发音透明标记、APKG 导出。
+- [ ] 文档说明当前设置页：模型 API 按服务商独立保存、Vertex 使用 gcloud OAuth、TTS 独立保存、本地环境可检测和一键修复。
 
 ## 自动测试
 
 ```powershell
-python -m py_compile workers\anki_worker.py workers\verify_apkg.py tests\test_worker_quality.py
-npm run check
-npm run test:ui
-cargo build --manifest-path src-tauri/Cargo.toml --locked
-npm run tauri:build
-npm run smoke:release
+npm run lint
+npm run test:unit
+npm run build
+python -m pytest tests\test_worker_quality.py -q
+cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
-文档/截图刷新后额外跑：
+发布包前再跑：
 
 ```powershell
 npm run test:ui
-git diff --check
+npm run tauri:build
 ```
 
-GitHub Actions 必须是绿色；如果 CI 因外部服务故障失败，release note 需要写明原因和人工复核结果。
+如果 CI 因外部服务、模型接口、YouTube 限流或网络故障失败，release note 需要写明原因和人工复核结果。
 
-## 便携包检查
+## 桌面端 Smoke Test
 
-- [ ] 便携包包含 `Anki Card Generator.exe`。
-- [ ] 便携包包含 `workers/`。
-- [ ] 便携包包含 `scripts/setup_runtime.ps1`。
-- [ ] 便携包包含 `README.md`、`PRIVACY.md`、`SECURITY.md` 和 `docs/`。
-- [ ] 从便携包运行 `scripts/setup_runtime.ps1` 会创建项目本地 `.venv`。
-- [ ] `runtime_diagnostic.json` 已生成，且不包含 API Key。
-- [ ] 从便携包运行 `scripts/smoke_release.ps1` 通过，并生成 `verify_apkg.json`。
-- [ ] 可选：`scripts/smoke_portable.ps1 -PortableZip <zip>` 能从 zip 解压后跑完整 smoke。
+建议至少跑一次真实桌面端流程：
+
+1. 启动最新 Windows 桌面端。
+2. 打开设置，检查模型 API、语音 TTS、本地环境三个页签。
+3. 在本地环境页点击检测；缺失项需要能显示“可修复 / 需手动处理”的明确状态。
+4. 用短视频或本地视频 + SRT 生成项目。
+5. 确认 Review 页面显示：
+   - 生成卡片数
+   - 已选卡片数
+   - 全部片段
+   - 学习点诊断
+6. 取消选择几张卡，再重新全选。
+7. 打开学习点诊断，确认候选、重复、硬阻断原因可见。
+8. 检查至少 5 张卡：原句、答案、发音字段、TTS、原声、视频预览。
+9. 导出 APKG。
+10. 使用 APKG verify 检查字段、媒体、TTS ledger、PronunciationMeta。
+11. 导入 Anki，抽查音频按钮和卡面顺序。
 
 ## 干净机器验证
 
 建议用 Windows Sandbox / 虚拟机 / 另一台电脑。
 
-1. 只复制 release zip，不复制源码。
-2. 解压。
-3. 运行 `scripts/setup_runtime.ps1`。
-4. 打开软件，点击“检查环境”。
-5. 填 MIMO Key。
-6. 用短视频或 YouTube URL 生成卡片。
-7. 导出 `.apkg`。
-8. 导入 Anki。
-9. 检查视频、原声、TTS、表达 TTS 是否正常。
-10. 删除测试缓存和 `.apkg`，确认没有 API Key 或私人素材进入 release 目录。
+1. 只复制 release 安装包或 zip，不复制源码。
+2. 安装或解压。
+3. 启动应用。
+4. 打开本地环境页并点击“一键修复全部可修复项”。
+5. 确认 Python 3.12、Python 依赖、FFmpeg、Anki、AnkiConnect 的状态说明可读。
+6. 配置一个模型服务商和一个 TTS 服务商并保存。
+7. 用短素材生成卡片。
+8. 导出 APKG 并导入 Anki。
+9. 删除测试缓存和 APKG，确认 release 目录不包含 API Key、OAuth token 或私人素材。
 
 ## GitHub Release 内容
 
-- `AnkiCardGenerator-v0.9.2-beta-windows-portable.zip`
-- `AnkiCardGenerator-v0.9.2-beta-source.zip`
-- `AnkiCardGenerator-v0.9.2-beta-source.bundle`
-- `Anki Card Generator_0.9.2_x64-setup.exe`
-- `Anki Card Generator_0.9.2_x64_en-US.msi`
-- Release notes: `docs/RELEASE_NOTES_v0.9.2-beta.md`
+- Windows installer / portable package
+- Source archive
+- README
+- `docs/USER_GUIDE.md`
+- `docs/TROUBLESHOOTING.md`
+- `docs/BETA_LIMITATIONS.md`
+- Release notes
+
+Release note 应明确写出：
+
+- 当前是统一智能筛选，不再暴露“精选 / 不漏 / 全量”策略。
+- 生成出的完整卡默认全选，用户导出前自行勾选。
+- 学习点诊断只用于解释为什么有些学习点没有生成完整卡。
+- 多语言发音默认是字幕推测，不是音频实听。
+- 第三方模型、TTS 和 YouTube 可能产生费用、限流或版权风险。

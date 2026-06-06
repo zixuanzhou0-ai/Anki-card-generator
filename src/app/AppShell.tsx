@@ -10,10 +10,13 @@ type AppShellProps = {
 
 export function AppShell({ controller }: AppShellProps) {
   const {
+    activeWorkspaceStage,
     activeSegment,
     activeSegmentId,
     activeSegmentVideoSrc,
     activeTemplate,
+    activeApiProfileId,
+    activeTtsProfileId,
     advancedApiPresets,
     advancedTtsPresets,
     ankiVerifying,
@@ -24,10 +27,13 @@ export function AppShell({ controller }: AppShellProps) {
     apiTestTitle,
     apiTestTone,
     apiTesting,
+    apiProfileDirty,
+    apiProfileStatus,
     appBusy,
-    badgeText,
     applyApiPreset,
     applyCollectionPreset,
+    applySavedApiProfile,
+    applySavedTtsProfile,
     applyTtsPreset,
     cancelCurrentWorker,
     capabilityHelp,
@@ -37,6 +43,8 @@ export function AppShell({ controller }: AppShellProps) {
     contentOptions,
     deepseekTextModels,
     documentFocusOptions,
+    envRepairing,
+    envRepairResult,
     envStatus,
     exportApkg,
     featuredApiPresets,
@@ -78,8 +86,12 @@ export function AppShell({ controller }: AppShellProps) {
     requestEditedDuringRun,
     responsiveMode,
     revealExport,
+    repairEnv,
     runWindowAction,
-    secretPrefs,
+    savedApiProfiles,
+    savedTtsProfiles,
+    saveCurrentApiProfile,
+    saveCurrentTtsProfile,
     selectionStrategyOptions,
     segmentFilter,
     segmentReviewCounts,
@@ -91,6 +103,7 @@ export function AppShell({ controller }: AppShellProps) {
     selectSourceMode,
     selectTemplate,
     setCardsEnabled,
+    setActiveWorkspaceStage,
     setInspectorState,
     setPreviewRate,
     setSegmentFilter,
@@ -118,8 +131,9 @@ export function AppShell({ controller }: AppShellProps) {
     toggleDocumentFocus,
     toggleLanguageFocus,
     toggleInspector,
-    toggleRememberSecret,
     tts,
+    ttsProfileDirty,
+    ttsProfileStatus,
     ttsTesting,
     ttsTestMessage,
     ttsTestMeta,
@@ -141,18 +155,8 @@ export function AppShell({ controller }: AppShellProps) {
         hasExportableCards={selectedCardCount > 0}
         hasProject={Boolean(project)}
         inspectorActionLabel={inspectorActionLabel}
-        inspectorActive={inspectorState === 'open' || inspectorSheetOpen}
+        inspectorActive={inspectorState === 'open' || inspectorState === 'collapsing' || inspectorSheetOpen}
         isCancelling={isCancelling}
-            projectSummary={
-          project
-            ? {
-                usableCount: qualityCounts.total,
-                selectedCardLabel: badgeText(selectedCardCount),
-                segmentCount: project.segments.length,
-                templateLabel: activeTemplate?.label ?? '沉浸视频',
-              }
-            : undefined
-        }
         status={status}
         statusTone={statusTone}
         workerBusy={workerBusy}
@@ -177,15 +181,26 @@ export function AppShell({ controller }: AppShellProps) {
             />
           ) : null}
           <InspectorPanel
+            activeWorkspaceStage={activeWorkspaceStage}
             activeTemplateLabel={activeTemplate?.label ?? '沉浸视频'}
             appBusy={appBusy}
             cardOptions={cardOptions}
             cardTypes={request.card_types}
             contentOptions={contentOptions}
+            diagnosticCount={
+              (qualityFunnel.candidate_only_learning_point_count ?? 0) +
+              (qualityFunnel.hidden_duplicate_learning_point_count ?? 0) +
+              (qualityFunnel.hard_blocked_learning_point_count ?? 0)
+            }
             documentFocusOptions={documentFocusOptions}
+            generatedCardCount={qualityCounts.total}
+            hasExportableCards={selectedCardCount > 0}
+            hasProject={Boolean(project)}
             inspectorSheetOpen={inspectorSheetOpen}
             languageFocusOptions={languageFocusOptions}
             levels={levels}
+            previewRate={previewRate}
+            selectedCardCount={selectedCardCount}
             readiness={readiness}
             request={request}
             requestEditedDuringRun={requestEditedDuringRun}
@@ -199,7 +214,9 @@ export function AppShell({ controller }: AppShellProps) {
             workerProgress={workerProgress}
             onApplyCollectionPreset={applyCollectionPreset}
             onCloseSheet={() => setInspectorState('collapsed')}
+            onExport={exportApkg}
             onPatchRequest={patchRequest}
+            onPreviewRateChange={setPreviewRate}
             onSelectCurrentLevel={selectCurrentLevel}
             onSelectPath={selectPath}
             onSelectSourceMode={selectSourceMode}
@@ -209,6 +226,7 @@ export function AppShell({ controller }: AppShellProps) {
             onToggleContent={toggleContent}
             onToggleDocumentFocus={toggleDocumentFocus}
             onToggleLanguageFocus={toggleLanguageFocus}
+            onWorkspaceStageChange={setActiveWorkspaceStage}
             onWorkerErrorAction={handleWorkerErrorAction}
           />
 
@@ -219,7 +237,6 @@ export function AppShell({ controller }: AppShellProps) {
             activeTemplateLabel={activeTemplate?.label ?? '沉浸视频'}
             ankiVerifying={ankiVerifying}
             ankiVerifyResult={ankiVerifyResult}
-            appBusy={appBusy}
             lastExport={lastExport}
             language={request.language}
             level={request.level}
@@ -238,10 +255,7 @@ export function AppShell({ controller }: AppShellProps) {
             sourceMode={request.source_mode}
             templateId={request.template_id}
             visibleSegments={visibleSegments}
-            onGenerate={generate}
             onOpenAnkiImport={openAnkiImport}
-            onOpenSettings={() => setSettingsOpen(true)}
-            onPreviewRateChange={setPreviewRate}
             onRevealExport={revealExport}
             onSegmentFilterChange={setSegmentFilter}
             onInvertCardSelection={invertCardSelection}
@@ -263,24 +277,28 @@ export function AppShell({ controller }: AppShellProps) {
           apiTestTitle,
           apiTestTone,
           apiTesting,
+          activeApiProfileId,
+          apiProfileDirty,
+          apiProfileStatus,
           appBusy,
           capabilityHelp,
           capabilityLabels,
           featuredApiPresets,
           mimoOpenAiBaseUrl: MIMO_OPENAI_BASE_URL,
           mimoTextModels: [...mimoTextModels, ...qwenTextModels, ...deepseekTextModels, ...geminiVertexTextModels],
-          secretPrefs,
+          savedApiProfiles,
           showAdvancedApi,
           showCapabilities,
           onApplyApiPreset: applyApiPreset,
+          onApplySavedApiProfile: applySavedApiProfile,
           onPatchApi: patchApi,
+          onSaveApiProfile: saveCurrentApiProfile,
           onSetShowAdvancedApi: setShowAdvancedApi,
           onSetShowCapabilities: setShowCapabilities,
           onTestApi: testApi,
-          onToggleRememberModelKey: () => toggleRememberSecret('model'),
         }}
         dialogRef={settingsDialogRef}
-        envSettings={{ appBusy, envStatus, onCheckEnv: checkEnv }}
+        envSettings={{ appBusy, envRepairing, envRepairResult, envStatus, onCheckEnv: checkEnv, onRepairEnv: repairEnv }}
         motionDuration={motionDuration}
         open={settingsOpen}
         prefersReducedMotion={Boolean(prefersReducedMotion)}
@@ -295,20 +313,24 @@ export function AppShell({ controller }: AppShellProps) {
           mimoTtsVoices,
           qwenTtsModels,
           qwenTtsVoices,
-          secretPrefs,
+          activeTtsProfileId,
+          savedTtsProfiles,
           showAdvancedTts,
           tts,
+          ttsProfileDirty,
+          ttsProfileStatus,
           ttsTestMessage,
           ttsTestMeta,
           ttsTestOk: ttsTestResult?.ok,
           ttsTestTitle,
           ttsTestTone,
           ttsTesting,
+          onApplySavedTtsProfile: applySavedTtsProfile,
           onApplyTtsPreset: applyTtsPreset,
           onPatchTts: patchTts,
+          onSaveTtsProfile: saveCurrentTtsProfile,
           onSetShowAdvancedTts: setShowAdvancedTts,
           onTestTts: testTts,
-          onToggleRememberTtsKey: () => toggleRememberSecret('tts'),
         }}
         onClose={() => setSettingsOpen(false)}
         onSettingsTabChange={setSettingsTab}

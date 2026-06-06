@@ -41,8 +41,10 @@ type LearningSettingsPanelProps = {
   contentOptions: ContentOption[]
   languageFocusOptions: LanguageFocusOption[]
   levels: LevelOption[]
+  previewRate: number
   request: GenerateRequest
   selectionStrategyOptions: SelectionStrategyOption[]
+  onPreviewRateChange: (rate: number) => void
   onApplyCollectionPreset: (preset: CollectionPreset) => void
   onPatchRequest: (patch: Partial<GenerateRequest>) => void
   onSelectCurrentLevel: (level: Level) => void
@@ -55,8 +57,10 @@ export function LearningSettingsPanel({
   contentOptions,
   languageFocusOptions,
   levels,
+  previewRate,
   request,
   selectionStrategyOptions,
+  onPreviewRateChange,
   onApplyCollectionPreset,
   onPatchRequest,
   onSelectCurrentLevel,
@@ -130,7 +134,7 @@ export function LearningSettingsPanel({
                 <strong>{currentStrategy?.label ?? '智能筛选'}</strong>
                 <em>{currentStrategy?.badge ?? '默认'}</em>
               </span>
-              <small>{currentStrategy?.note ?? '每句最多 4 个不同学习点，重复和低价值内容只进诊断。'}</small>
+              <small>{currentStrategy?.note ?? '每句最多 4 个不同学习点，重复和低价值内容进入更多学习点说明。'}</small>
             </button>
           </div>
         </div>
@@ -163,6 +167,25 @@ export function LearningSettingsPanel({
             </button>
           </div>
         </label>
+        <div className="learning-setting-row preview-rate-row">
+          <span>
+            <strong>预览播放速度</strong>
+            <small>只影响应用内试听，不改变导出的 Anki 音频</small>
+          </span>
+          <div className="preview-rate global-preview-rate" aria-label="预览播放速度">
+            {[0.75, 1, 1.25].map((rate) => (
+              <button
+                type="button"
+                key={rate}
+                className={previewRate === rate ? 'selected' : ''}
+                aria-pressed={previewRate === rate}
+                onClick={() => onPreviewRateChange(rate)}
+              >
+                {rate}x
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
       <details className="compact-details advanced-learning-options">
         <summary className="advanced-learning-summary">

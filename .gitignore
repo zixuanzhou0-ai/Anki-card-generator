@@ -25,14 +25,17 @@ projects/
 *_e2e*/
 test_runs/
 test-results/
+.playwright-mcp/
 overnight_verify_exports/
 overnight_verify_import/
 quality_verify_exports/
 youtube_*_verify/
+e2e_regression_*/
 AnkiCard-*/
 DramaAnki-*/
 release/
 runtime_diagnostic.json
+tmp_*.json
 .package/
 NEXT_SESSION_HANDOFF.md
 OVERNIGHT_ACCEPTANCE.md

@@ -100,7 +100,7 @@ export function SegmentList({
       {segments.length === 0 ? (
         <div className="filter-empty-state">
           <strong>当前筛选下没有片段</strong>
-          <span>切换到“全部卡片”可以查看完整生成结果。</span>
+          <span>切换到“全部片段”可以查看完整生成结果。</span>
         </div>
       ) : null}
     </div>

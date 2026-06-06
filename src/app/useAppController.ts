@@ -12,6 +12,8 @@ import type {
   CardKind,
   ContentToggles,
   DocumentFocus,
+  EnvRepairResult,
+  EnvRepairTarget,
   EnvStatus,
   ExportResult,
   GenerateRequest,
@@ -22,7 +24,8 @@ import type {
   QualityFunnel,
   ResizeDirection,
   ResponsiveMode,
-  SecretPrefs,
+  SavedApiProfile,
+  SavedTtsProfile,
   SegmentFilter,
   SettingsTab,
   SourceMode,
@@ -33,6 +36,7 @@ import type {
   WorkerFinishedEvent,
   WorkerOperation,
   WorkerProgress,
+  WorkspaceStage,
 } from '../domain/types'
 import { createDemoProject } from '../domain/demoProject'
 import {
@@ -62,11 +66,11 @@ import {
   normalizeCollectionLevels,
   PROJECT_STORAGE_KEY,
   REQUEST_STORAGE_KEY,
-  SECRET_PREFS_STORAGE_KEY,
   selectionStrategyOptions,
   templateOptions,
 } from '../domain/options'
-import { applyUsableCardSelection, badgeText, segmentMatchesFilter } from '../domain/quality'
+import { materializeLearningPointInventory } from '../domain/inventoryDrafts'
+import { applyUsableCardSelection, segmentMatchesFilter } from '../domain/quality'
 import {
   countSelectedCards,
   getQualityCounts,
@@ -88,16 +92,33 @@ import {
   validateTtsConfigForRequest,
 } from '../services/apiConfig'
 import {
+  apiAuthMode,
+  apiConfigMatchesProfile,
+  apiProfileIdFromConfig,
+  buildSavedApiProfile,
+  buildSavedTtsProfile,
+  loadSavedApiProfiles,
+  loadSavedTtsProfiles,
+  profileSecretKey,
+  saveSavedApiProfiles,
+  saveSavedTtsProfiles,
+  ttsAuthMode,
+  ttsConfigMatchesProfile,
+  ttsProfileIdFromConfig,
+  upsertSavedApiProfile,
+  upsertSavedTtsProfile,
+} from '../services/settingsProfiles'
+import {
   loadSavedProjectForRequest,
   loadSavedRequest,
-  loadSecretPrefs,
   projectMatchesRequest,
   stripRequestSecrets,
 } from '../services/projectStorage'
 import {
   cancelWorkerJob,
-  deleteSecret,
+  checkBootstrapEnv,
   loadSecret,
+  repairBootstrapEnv,
   runWorker,
   saveSecret,
   startWorkerJob,
@@ -118,6 +139,8 @@ import {
   startWindowResize as startNativeWindowResize,
 } from '../services/windowChrome'
 
+const INSPECTOR_COLLAPSE_MS = 130
+
 function cleanLocalPath(value: string) {
   return value.trim().replace(/^["'](.+)["']$/, '$1')
 }
@@ -125,6 +148,18 @@ function cleanLocalPath(value: string) {
 function titleFromPath(value: string) {
   const fileName = cleanLocalPath(value).split(/[\\/]/).pop() ?? ''
   return fileName.replace(/\.[^.]+$/, '')
+}
+
+function mergeRepairResults(left: EnvRepairResult | null, right: EnvRepairResult): EnvRepairResult {
+  if (!left) return right
+  const failed = [...left.actions, ...right.actions].filter((action) => action.status === 'failed').length
+  const manual = [...left.actions, ...right.actions].filter((action) => action.status === 'manual').length
+  return {
+    ok: left.ok && right.ok,
+    target: left.target === right.target ? left.target : 'all',
+    summary: `${left.summary}；${right.summary}；合计失败 ${failed} 个，需手动处理 ${manual} 个。`,
+    actions: [...left.actions, ...right.actions],
+  }
 }
 
 function touchesSourceMaterial(patch: Partial<GenerateRequest>) {
@@ -178,8 +213,13 @@ function ttsApiTestTitle(result: TtsTestResult | null, testing: boolean, enabled
 export function useAppController() {
   const initialRequest = useMemo(() => loadSavedRequest(), [])
   const [request, setRequest] = useState<GenerateRequest>(initialRequest)
-  const [project, setProject] = useState<Project | null>(() => loadSavedProjectForRequest(initialRequest))
+  const [project, setProject] = useState<Project | null>(() => {
+    const savedProject = loadSavedProjectForRequest(initialRequest)
+    return savedProject ? materializeLearningPointInventory(savedProject).project : savedProject
+  })
   const [envStatus, setEnvStatus] = useState<EnvStatus | null>(null)
+  const [envRepairResult, setEnvRepairResult] = useState<EnvRepairResult | null>(null)
+  const [envRepairing, setEnvRepairing] = useState(false)
   const [status, setStatus] = useState('准备生成 Anki 卡片。')
   const [busy, setBusy] = useState(false)
   const [workerOperation, setWorkerOperation] = useState<WorkerOperation>({ status: 'idle' })
@@ -200,13 +240,18 @@ export function useAppController() {
   const [showAdvancedTts, setShowAdvancedTts] = useState(false)
   const [showCapabilities, setShowCapabilities] = useState(false)
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('api')
-  const [secretPrefs, setSecretPrefs] = useState<SecretPrefs>(() => loadSecretPrefs())
+  const [savedApiProfiles, setSavedApiProfiles] = useState<SavedApiProfile[]>(() => loadSavedApiProfiles())
+  const [savedTtsProfiles, setSavedTtsProfiles] = useState<SavedTtsProfile[]>(() => loadSavedTtsProfiles())
+  const [apiProfileDirty, setApiProfileDirty] = useState(false)
+  const [ttsProfileDirty, setTtsProfileDirty] = useState(false)
   const [segmentFilter, setSegmentFilter] = useState<SegmentFilter>('all')
   const [responsiveMode, setResponsiveMode] = useState<ResponsiveMode>('wide')
   const [inspectorState, setInspectorState] = useState<InspectorState>('open')
+  const [activeWorkspaceStage, setActiveWorkspaceStage] = useState<WorkspaceStage>(project ? 'review' : 'source')
   const prefersReducedMotion = useReducedMotion()
   const previewPanelRef = useRef<HTMLElement | null>(null)
   const settingsDialogRef = useRef<HTMLElement | null>(null)
+  const inspectorCollapseTimerRef = useRef<number | null>(null)
   const workerOperationRef = useRef<WorkerOperation>(workerOperation)
   const requestEditedDuringRunRef = useRef(requestEditedDuringRun)
 
@@ -315,6 +360,30 @@ export function useAppController() {
         ttsTestResult.latency_ms ? ` · ${ttsTestResult.latency_ms} ms` : ''
       }${ttsTestResult.bytes ? ` · ${ttsTestResult.bytes} bytes` : ''}`
     : `${tts.provider} · ${tts.model || '无模型名'} · ${tts.voice || '无 voice'}`
+  const allApiPresets = [...featuredApiPresets, ...advancedApiPresets]
+  const allTtsPresets = [...featuredTtsPresets, ...advancedTtsPresets]
+  const activeApiProfileId = apiProfileIdFromConfig(request.api_config)
+  const activeTtsProfileId = ttsProfileIdFromConfig(tts)
+  const activeApiProfile = savedApiProfiles.find((profile) => profile.id === activeApiProfileId)
+  const activeTtsProfile = savedTtsProfiles.find((profile) => profile.id === activeTtsProfileId)
+  const apiProfileSaved =
+    Boolean(activeApiProfile && apiConfigMatchesProfile(request.api_config, activeApiProfile)) && !apiProfileDirty
+  const ttsProfileSaved =
+    Boolean(activeTtsProfile && ttsConfigMatchesProfile(tts, activeTtsProfile)) && !ttsProfileDirty
+  const apiProfileStatus = apiProfileSaved
+    ? activeApiProfile?.has_api_key || apiAuthMode(request.api_config) !== 'api_key'
+      ? `已保存 · ${activeApiProfile?.last_test_ok ? '测试通过' : '未测试'}`
+      : '已保存配置 · 未保存 Key'
+    : activeApiProfile
+      ? '有未保存更改'
+      : '未保存到我的模型'
+  const ttsProfileStatus = ttsProfileSaved
+    ? activeTtsProfile?.has_api_key || ttsAuthMode(tts) !== 'api_key'
+      ? `已保存 · ${activeTtsProfile?.last_test_ok ? '测试通过' : '未测试'}`
+      : '已保存配置 · 未保存 Key'
+    : activeTtsProfile
+      ? '有未保存更改'
+      : '未保存到我的语音'
   const workerBusy = workerOperation.status === 'running' || workerOperation.status === 'cancelling'
   const appBusy = busy || workerBusy
   const isCancelling = workerOperation.status === 'cancelling'
@@ -324,9 +393,9 @@ export function useAppController() {
       ? inspectorSheetOpen
         ? '关闭面板'
         : '素材面板'
-      : inspectorState === 'open'
-        ? '收起面板'
-        : '打开面板'
+      : inspectorState === 'collapsed'
+        ? '打开面板'
+        : '收起面板'
   const motionDuration = prefersReducedMotion ? 0 : 0.2
   const statusTone =
     appBusy || workerProgress
@@ -350,6 +419,14 @@ export function useAppController() {
   }, [requestEditedDuringRun])
 
   useEffect(() => {
+    return () => {
+      if (inspectorCollapseTimerRef.current !== null) {
+        window.clearTimeout(inspectorCollapseTimerRef.current)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
     if (typeof window === 'undefined') return
     const syncResponsiveMode = () => {
       const width = window.innerWidth
@@ -361,7 +438,11 @@ export function useAppController() {
   }, [])
 
   useEffect(() => {
-    if (responsiveMode === 'compact' && inspectorState === 'open') {
+    if (responsiveMode === 'compact' && (inspectorState === 'open' || inspectorState === 'collapsing')) {
+      if (inspectorCollapseTimerRef.current !== null) {
+        window.clearTimeout(inspectorCollapseTimerRef.current)
+        inspectorCollapseTimerRef.current = null
+      }
       setInspectorState('collapsed')
     } else if (responsiveMode !== 'compact' && inspectorState === 'sheet') {
       setInspectorState('open')
@@ -373,18 +454,18 @@ export function useAppController() {
   }, [request])
 
   useEffect(() => {
-    window.localStorage.setItem(SECRET_PREFS_STORAGE_KEY, JSON.stringify(secretPrefs))
-  }, [secretPrefs])
-
-  useEffect(() => {
     if (!isTauriRuntime()) return
     let cancelled = false
     const restore = async () => {
       try {
-        const [modelKey, ttsKey] = await Promise.all([
-          secretPrefs.rememberModelKey ? loadSecret('model_api_key') : Promise.resolve(''),
-          secretPrefs.rememberTtsKey ? loadSecret('tts_api_key') : Promise.resolve(''),
-        ])
+        const modelKey =
+          activeApiProfile?.has_api_key && activeApiProfile.auth === 'api_key'
+            ? await loadSecret(profileSecretKey('api', activeApiProfile.id))
+            : ''
+        const ttsKey =
+          activeTtsProfile?.has_api_key && activeTtsProfile.auth === 'api_key'
+            ? await loadSecret(profileSecretKey('tts', activeTtsProfile.id))
+            : ''
         if (cancelled) return
         setRequest((current) => ({
           ...current,
@@ -405,25 +486,7 @@ export function useAppController() {
     return () => {
       cancelled = true
     }
-  }, [secretPrefs.rememberModelKey, secretPrefs.rememberTtsKey])
-
-  useEffect(() => {
-    if (!isTauriRuntime()) return
-    if (secretPrefs.rememberModelKey && request.api_config.api_key.trim()) {
-      saveSecret('model_api_key', request.api_config.api_key.trim()).catch(() => {
-        setStatus('模型 API Key 保存到系统凭据失败。')
-      })
-    }
-  }, [secretPrefs.rememberModelKey, request.api_config.api_key])
-
-  useEffect(() => {
-    if (!isTauriRuntime()) return
-    if (secretPrefs.rememberTtsKey && request.api_config.tts_config.api_key.trim()) {
-      saveSecret('tts_api_key', request.api_config.tts_config.api_key.trim()).catch(() => {
-        setStatus('TTS API Key 保存到系统凭据失败。')
-      })
-    }
-  }, [secretPrefs.rememberTtsKey, request.api_config.tts_config.api_key])
+  }, [activeApiProfile, activeTtsProfile])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -441,14 +504,7 @@ export function useAppController() {
     setAnkiVerifyResult(null)
     setActiveSegmentId(null)
     setStatus('已清理与当前素材不匹配的旧项目结果，请用当前本地视频重新生成。')
-  }, [
-    project,
-    request.source_mode,
-    request.source_url,
-    request.video_path,
-    request.subtitle_path,
-    request.document_path,
-  ])
+  }, [project, request])
 
   useEffect(() => {
     if (!project) {
@@ -462,32 +518,37 @@ export function useAppController() {
   }, [project, activeSegmentId, visibleSegments])
 
   function applyGeneratedProject(result: Project, editedDuringRun: boolean) {
-    const generatedSelection = applyUsableCardSelection(result)
+    const materialized = materializeLearningPointInventory(result)
+    const generatedSelection = applyUsableCardSelection(materialized.project)
     const projectToShow = generatedSelection.project
     setProject(projectToShow)
     setSegmentFilter('all')
     setActiveSegmentId(projectToShow.segments[0]?.id ?? null)
     const usableCount = generatedSelection.selected
-    const filteredCount = projectToShow.quality_funnel?.filtered_learning_point_count ?? 0
+    const candidateOnlyCount = projectToShow.quality_funnel?.candidate_only_learning_point_count ?? 0
+    const hiddenDuplicateCount = projectToShow.quality_funnel?.hidden_duplicate_learning_point_count ?? 0
+    const hardBlockedCount = projectToShow.quality_funnel?.hard_blocked_learning_point_count ?? 0
+    const autoAddedHint = materialized.added ? ` 已自动补成 ${materialized.added} 张草稿卡。` : ''
+    const diagnosticCount = candidateOnlyCount + hiddenDuplicateCount + hardBlockedCount
+    const inventoryHint = `更多学习点 ${diagnosticCount} 个，硬阻断 ${hardBlockedCount} 个。${autoAddedHint}`
     const isDocument = projectToShow.source_mode === 'document'
     const isReading = isDocument && projectToShow.document_study_mode === 'language_reading'
     const shortHint =
       usableCount < 5
         ? isReading
-          ? '可用精读卡偏少，通常是语言点较弱、模型返回空或多数学习点被过滤；可以在诊断面板查看原因。'
+          ? '可用精读卡偏少，通常是语言点较弱、模型返回空或多数学习点被过滤；可以在“更多学习点”查看原因。'
           : isDocument
-            ? '可用知识卡偏少，通常是文档分段较少、模型返回空或多数学习点被过滤；可以在诊断面板查看原因。'
-            : '可用卡偏少，通常是字幕太短、重复太多、词伙评分不足或模型返回空；可以在诊断面板查看原因。'
+            ? '可用知识卡偏少，通常是文档分段较少、模型返回空或多数学习点被过滤；可以在“更多学习点”查看原因。'
+            : '可用卡偏少，通常是字幕太短、重复太多、词伙评分不足或模型返回空；可以在“更多学习点”查看原因。'
         : ''
     const editedHint = editedDuringRun ? ' 生成期间你修改过设置；下一次生成会使用新配置。' : ''
     setStatus(
       (projectToShow.warning ||
         (projectToShow.source_mode === 'url'
-          ? `URL 导入成功，已生成 ${usableCount} 张可用卡，默认全选。过滤 ${filteredCount} 个低价值/重复学习点。${shortHint}`
+          ? `URL 导入成功，已生成 ${usableCount} 张可用卡，默认全选。${inventoryHint}${shortHint}`
           : projectToShow.source_mode === 'document'
-            ? `文档导入成功，已生成 ${usableCount} 张${isReading ? '精读' : '知识'}可用卡，默认全选。过滤 ${filteredCount} 个低价值/重复学习点。${shortHint}`
-            : `已生成 ${usableCount} 张可用卡，默认全选。过滤 ${filteredCount} 个低价值/重复学习点。${shortHint}`)) +
-        editedHint,
+            ? `文档导入成功，已生成 ${usableCount} 张${isReading ? '精读' : '知识'}可用卡，默认全选。${inventoryHint}${shortHint}`
+            : `已生成 ${usableCount} 张可用卡，默认全选。${inventoryHint}${shortHint}`)) + editedHint,
     )
   }
 
@@ -557,10 +618,13 @@ export function useAppController() {
       })
       if (payload.command === 'generate') {
         applyGeneratedProject(payload.result as Project, requestEditedDuringRunRef.current)
+        setActiveWorkspaceStage('review')
       } else if (payload.command === 'export') {
         applyExportResult(payload.result as ExportResult)
+        setActiveWorkspaceStage('review')
       } else if (payload.command === 'verify_anki_import') {
         applyVerifyResult(payload.result as AnkiVerifyResult)
+        setActiveWorkspaceStage('review')
       }
       setLastWorkerError(null)
       setWorkerOperation({ status: 'succeeded', command: payload.command, jobId: payload.job_id })
@@ -628,10 +692,31 @@ export function useAppController() {
   }
 
   const toggleInspector = () => {
-    setInspectorState((current) => {
-      if (responsiveMode === 'compact') return current === 'sheet' ? 'collapsed' : 'sheet'
-      return current === 'open' ? 'collapsed' : 'open'
-    })
+    if (inspectorCollapseTimerRef.current !== null) {
+      window.clearTimeout(inspectorCollapseTimerRef.current)
+      inspectorCollapseTimerRef.current = null
+    }
+
+    if (responsiveMode === 'compact') {
+      setInspectorState((current) => (current === 'sheet' ? 'collapsed' : 'sheet'))
+      return
+    }
+
+    if (prefersReducedMotion) {
+      setInspectorState((current) => (current === 'collapsed' ? 'open' : 'collapsed'))
+      return
+    }
+
+    if (inspectorState === 'open') {
+      setInspectorState('collapsing')
+      inspectorCollapseTimerRef.current = window.setTimeout(() => {
+        setInspectorState('collapsed')
+        inspectorCollapseTimerRef.current = null
+      }, INSPECTOR_COLLAPSE_MS)
+      return
+    }
+
+    setInspectorState('open')
   }
 
   const patchRequest = (patch: Partial<GenerateRequest>) => {
@@ -725,6 +810,7 @@ export function useAppController() {
       ...current,
       api_config: { ...current.api_config, ...patch },
     }))
+    setApiProfileDirty(true)
     setApiTestResult(null)
   }
 
@@ -737,73 +823,222 @@ export function useAppController() {
         tts_config: { ...current.api_config.tts_config, ...patch },
       },
     }))
+    setTtsProfileDirty(true)
     setTtsTestResult(null)
   }
 
-  const toggleRememberSecret = (kind: 'model' | 'tts') => {
-    const prefKey = kind === 'model' ? 'rememberModelKey' : 'rememberTtsKey'
-    const secretKey = kind === 'model' ? 'model_api_key' : 'tts_api_key'
-    setSecretPrefs((current) => {
-      const enabled = !current[prefKey]
-      if (!enabled) {
-        deleteSecret(secretKey).catch(() => {
-          setStatus('系统凭据删除失败，请稍后重试。')
-        })
+  const saveCurrentApiProfile = async () => {
+    const existing = savedApiProfiles.find((profile) => profile.id === activeApiProfileId)
+    const profile = buildSavedApiProfile(request.api_config, allApiPresets, existing, apiTestResult?.ok)
+    const shouldSaveKey = profile.auth === 'api_key' && request.api_config.api_key.trim()
+    try {
+      if (shouldSaveKey) {
+        await saveSecret(profileSecretKey('api', profile.id), request.api_config.api_key.trim())
+        profile.has_api_key = true
       }
-      if (enabled) {
-        const value =
-          kind === 'model' ? request.api_config.api_key.trim() : request.api_config.tts_config.api_key.trim()
-        if (value) {
-          saveSecret(secretKey, value).catch(() => {
-            setStatus('系统凭据保存失败，请确认当前桌面端有凭据访问权限。')
-          })
-        }
-      }
-      return { ...current, [prefKey]: enabled }
-    })
+      const next = upsertSavedApiProfile(savedApiProfiles, profile)
+      saveSavedApiProfiles(next)
+      setSavedApiProfiles(next)
+      setApiProfileDirty(false)
+      setStatus(
+        profile.auth === 'gcloud'
+          ? `已保存模型方案：${profile.label}。它使用本机 gcloud OAuth，不需要 API Key。`
+          : profile.has_api_key
+            ? `已保存模型方案：${profile.label}，API Key 已单独保存到系统凭据。`
+            : `已保存模型方案：${profile.label}。这个方案还没有保存 API Key。`,
+      )
+    } catch {
+      setStatus('模型方案保存失败，请确认系统凭据可写。')
+    }
   }
 
-  const applyApiPreset = (preset: ApiPreset) => {
+  const saveCurrentTtsProfile = async () => {
+    const existing = savedTtsProfiles.find((profile) => profile.id === activeTtsProfileId)
+    const profile = buildSavedTtsProfile(tts, allTtsPresets, existing, ttsTestResult?.ok)
+    const shouldSaveKey = profile.auth === 'api_key' && tts.api_key.trim()
+    try {
+      if (shouldSaveKey) {
+        await saveSecret(profileSecretKey('tts', profile.id), tts.api_key.trim())
+        profile.has_api_key = true
+      }
+      const next = upsertSavedTtsProfile(savedTtsProfiles, profile)
+      saveSavedTtsProfiles(next)
+      setSavedTtsProfiles(next)
+      setTtsProfileDirty(false)
+      setStatus(
+        profile.auth === 'gcloud'
+          ? `已保存语音方案：${profile.label}。它使用本机 gcloud OAuth，不需要 TTS API Key。`
+          : profile.has_api_key
+            ? `已保存语音方案：${profile.label}，TTS API Key 已单独保存到系统凭据。`
+            : `已保存语音方案：${profile.label}。这个方案还没有保存 TTS API Key。`,
+      )
+    } catch {
+      setStatus('语音方案保存失败，请确认系统凭据可写。')
+    }
+  }
+
+  const applySavedApiProfile = async (profileId: string) => {
+    const profile = savedApiProfiles.find((item) => item.id === profileId)
+    if (!profile) return
+    let apiKey = ''
+    try {
+      if (profile.auth === 'api_key' && profile.has_api_key) {
+        apiKey = await loadSecret(profileSecretKey('api', profile.id))
+      }
+    } catch {
+      setStatus('模型方案的 API Key 读取失败，请重新保存这个方案。')
+    }
     markRequestEditedIfRunning()
     setRequest((current) => ({
       ...current,
       api_config: {
         ...current.api_config,
-        provider: preset.provider,
-        base_url: preset.base_url,
-        model: preset.model,
-        capabilities: preset.capabilities,
+        provider: profile.provider,
+        base_url: profile.base_url,
+        model: profile.model,
+        capabilities: profile.capabilities,
+        api_key: apiKey,
+      },
+    }))
+    setApiProfileDirty(false)
+    setApiTestResult(
+      profile.last_test_ok === undefined
+        ? null
+        : {
+            ok: profile.last_test_ok,
+            provider: profile.provider,
+            model: profile.model,
+            message: profile.last_test_ok
+              ? '已加载保存方案，建议按需重新测试连接。'
+              : '已加载保存方案，建议重新测试连接。',
+          },
+    )
+    setStatus(
+      profile.auth === 'api_key' && !apiKey
+        ? `已切换到模型方案：${profile.label}。这个方案没有保存 API Key。`
+        : `已切换到模型方案：${profile.label}。`,
+    )
+  }
+
+  const applySavedTtsProfile = async (profileId: string) => {
+    const profile = savedTtsProfiles.find((item) => item.id === profileId)
+    if (!profile) return
+    let apiKey = ''
+    try {
+      if (profile.auth === 'api_key' && profile.has_api_key) {
+        apiKey = await loadSecret(profileSecretKey('tts', profile.id))
+      }
+    } catch {
+      setStatus('语音方案的 TTS API Key 读取失败，请重新保存这个方案。')
+    }
+    patchTts({
+      enabled: profile.enabled,
+      provider: profile.provider,
+      base_url: profile.base_url,
+      model: profile.model,
+      voice: profile.voice,
+      language: profile.language,
+      sample_rate: profile.sample_rate,
+      bit_rate: profile.bit_rate,
+      output_volume: profile.output_volume,
+      api_key: apiKey,
+    })
+    setTtsProfileDirty(false)
+    setTtsTestResult(
+      profile.last_test_ok === undefined
+        ? null
+        : {
+            ok: profile.last_test_ok,
+            provider: profile.provider,
+            model: profile.model,
+            voice: profile.voice,
+            message: profile.last_test_ok
+              ? '已加载保存语音方案，建议按需重新测试 TTS。'
+              : '已加载保存语音方案，建议重新测试 TTS。',
+          },
+    )
+    setStatus(
+      profile.auth === 'api_key' && !apiKey
+        ? `已切换到语音方案：${profile.label}。这个方案没有保存 TTS API Key。`
+        : `已切换到语音方案：${profile.label}。`,
+    )
+  }
+
+  const applyApiPreset = async (preset: ApiPreset) => {
+    markRequestEditedIfRunning()
+    const nextConfig = {
+      provider: preset.provider,
+      base_url: preset.base_url,
+      model: preset.model,
+      capabilities: preset.capabilities,
+    }
+    const profileId = apiProfileIdFromConfig(nextConfig)
+    const savedProfile = savedApiProfiles.find((profile) => profile.id === profileId)
+    const apiKey =
+      savedProfile?.auth === 'api_key' && savedProfile.has_api_key
+        ? await loadSecret(profileSecretKey('api', savedProfile.id)).catch(() => '')
+        : ''
+    setRequest((current) => ({
+      ...current,
+      api_config: {
+        ...current.api_config,
+        ...nextConfig,
+        api_key: apiKey,
       },
     }))
     setApiTestResult(null)
-    setStatus(`已套用 ${preset.label} 预设，请填写 API Key 后测试连接。`)
+    setApiProfileDirty(!savedProfile)
+    setStatus(
+      savedProfile
+        ? `已套用已保存的 ${preset.label} 方案。`
+        : preset.provider === 'gemini-vertex' || preset.provider === 'local'
+          ? `已套用 ${preset.label} 预设，建议保存为我的模型方案。`
+          : `已套用 ${preset.label} 预设，请填写 API Key 后保存方案并测试连接。`,
+    )
   }
 
-  const applyTtsPreset = (preset: TtsPreset) => {
+  const applyTtsPreset = async (preset: TtsPreset) => {
     const shouldReuseMainMimoKey =
       preset.provider === 'mimo' && isMimoApiConfig(request.api_config) && request.api_config.api_key.trim()
     const shouldReuseMainQwenKey =
       preset.provider === 'qwen' && isQwenApiConfig(request.api_config) && request.api_config.api_key.trim()
     const usesLocalVertexAuth = preset.provider === 'gemini-vertex'
-    patchTts({
+    const nextConfig = {
       enabled: preset.provider !== 'disabled',
       provider: preset.provider,
       base_url: preset.base_url,
       model: preset.model,
       voice: preset.voice,
+      language: request.api_config.tts_config.language,
+      sample_rate: request.api_config.tts_config.sample_rate,
+      bit_rate: request.api_config.tts_config.bit_rate,
+      output_volume: request.api_config.tts_config.output_volume,
+    }
+    const profileId = ttsProfileIdFromConfig(nextConfig)
+    const savedProfile = savedTtsProfiles.find((profile) => profile.id === profileId)
+    const savedKey =
+      savedProfile?.auth === 'api_key' && savedProfile.has_api_key
+        ? await loadSecret(profileSecretKey('tts', savedProfile.id)).catch(() => '')
+        : ''
+    patchTts({
+      ...nextConfig,
       api_key:
-        shouldReuseMainMimoKey || shouldReuseMainQwenKey || usesLocalVertexAuth
+        savedKey ||
+        (shouldReuseMainMimoKey || shouldReuseMainQwenKey || usesLocalVertexAuth
           ? ''
-          : request.api_config.tts_config.api_key,
+          : request.api_config.tts_config.api_key),
     })
+    setTtsProfileDirty(!savedProfile)
     setStatus(
-      preset.provider === 'disabled'
-        ? '已关闭 TTS，导出时只使用视频原声音频。'
-        : usesLocalVertexAuth
-          ? `已套用 ${preset.label}，会使用本机 gcloud / Vertex AI 授权；建议先测试 TTS。`
-          : shouldReuseMainMimoKey || shouldReuseMainQwenKey
-            ? `已套用 ${preset.label}，会复用上方同服务商 API Key；建议先测试 TTS。`
-            : `已套用 ${preset.label}，请填写对应 API Key 后测试 TTS。`,
+      savedProfile
+        ? `已套用已保存的 ${preset.label} 语音方案。`
+        : preset.provider === 'disabled'
+          ? '已关闭 TTS，导出时只使用视频原声音频。'
+          : usesLocalVertexAuth
+            ? `已套用 ${preset.label}，会使用本机 gcloud / Vertex AI 授权；建议先测试 TTS。`
+            : shouldReuseMainMimoKey || shouldReuseMainQwenKey
+              ? `已套用 ${preset.label}，会复用上方同服务商 API Key；建议先测试 TTS。`
+              : `已套用 ${preset.label}，请填写对应 API Key 后测试 TTS。`,
     )
   }
 
@@ -903,16 +1138,115 @@ export function useAppController() {
     setStatus('正在检查 Python、ffmpeg 和 genanki。')
     try {
       if (!isTauriRuntime()) {
-        setEnvStatus({ python: 'browser-preview', ffmpeg: false, genanki: false })
+        setEnvStatus({ python: 'browser-preview', ffmpeg: false, genanki: false, anki_installed: false, anki_connect: false })
         setStatus('当前是浏览器预览模式，真实导出请运行 Tauri 桌面端。')
       } else {
-        const result = await runWorker<EnvStatus>('check_env', {})
-        setEnvStatus(result)
-        setStatus(result.ffmpeg && result.genanki ? '环境检查通过。' : '环境缺少依赖，请查看状态卡。')
+        try {
+          const result = await runWorker<EnvStatus>('check_env', {})
+          setEnvStatus(result)
+          setStatus(result.ffmpeg && result.genanki ? '环境检查通过。' : '环境缺少依赖，请查看状态卡。')
+        } catch (workerError) {
+          const bootstrap = await checkBootstrapEnv()
+          setEnvStatus(bootstrap)
+          setStatus(`Python worker 暂时不可用，已切换到原生环境检查：${redactSensitiveText(workerError)}`)
+        }
       }
     } catch (error) {
       setStatus(redactSensitiveText(error))
     } finally {
+      setBusy(false)
+    }
+  }
+
+  const repairEnv = async (target: EnvRepairTarget = 'auto') => {
+    setBusy(true)
+    setEnvRepairing(true)
+    setWorkerProgress(null)
+    setEnvRepairResult(null)
+    const label =
+      target === 'all'
+        ? '正在一键修复本机环境：推荐 Python 3.12、Python 依赖、FFmpeg、Deno/Node、Anki 与 AnkiConnect。'
+        : target === 'python_runtime'
+          ? '正在尝试安装推荐 Python 3.12 运行环境。'
+        : target === 'ffmpeg'
+          ? '正在尝试安装 FFmpeg。'
+        : target === 'js_runtime'
+          ? '正在尝试安装 Deno / Node challenge solver。'
+          : target === 'anki'
+            ? '正在尝试安装 Anki 桌面端。'
+          : target === 'anki_connect'
+            ? '正在打开 Anki 并准备 AnkiConnect 安装步骤。'
+            : '正在修复 Python venv、genanki 和 yt-dlp。'
+    setStatus(label)
+    try {
+      if (!isTauriRuntime()) {
+        setEnvRepairResult({
+          ok: false,
+          target,
+          summary: '浏览器预览模式不能修复本机环境，请运行 Tauri 桌面端。',
+          actions: [
+            {
+              id: 'desktop',
+              label: '桌面端',
+              status: 'manual',
+              detail: '当前不是桌面运行时。',
+              next_step: '请打开 Anki 卡片生成器桌面端后再使用环境修复。',
+            },
+          ],
+        })
+        setStatus('浏览器预览模式不能修复本机环境。')
+        return
+      }
+      let result: EnvRepairResult | null = null
+      if (target === 'all' || target === 'python_runtime') {
+        result = await repairBootstrapEnv(target === 'all' ? 'all' : 'python_runtime')
+      }
+      if (target !== 'python_runtime') {
+        try {
+          const workerResult = await runWorker<EnvRepairResult>('repair_env', { target })
+          result = mergeRepairResults(result, workerResult)
+        } catch (workerError) {
+          if (!result) throw workerError
+          result = mergeRepairResults(result, {
+            ok: false,
+            target,
+            summary: 'Python worker 后续修复没有执行成功。',
+            actions: [
+              {
+                id: 'worker_repair',
+                label: '继续修复 worker 依赖',
+                status: 'failed',
+                detail: redactSensitiveText(workerError),
+                next_step: '先完成 Python 运行环境修复，重启应用后再点击一键修复。',
+              },
+            ],
+          })
+        }
+      }
+      if (!result) {
+        result = await runWorker<EnvRepairResult>('repair_env', { target })
+      }
+      setEnvRepairResult(result)
+      let env: EnvStatus
+      try {
+        env = await runWorker<EnvStatus>('check_env', {})
+      } catch {
+        env = await checkBootstrapEnv()
+      }
+      setEnvStatus(env)
+      const failed = result.actions.filter((action) => action.status === 'failed').length
+      const manual = result.actions.filter((action) => action.status === 'manual').length
+      setStatus(
+        failed
+          ? `环境修复有 ${failed} 项失败，已自动复检；请查看修复日志。`
+          : manual
+            ? `环境修复已执行，仍有 ${manual} 项需要手动处理；已自动复检。`
+            : '环境修复完成，已自动重新检查环境。',
+      )
+    } catch (error) {
+      setStatus(`环境修复失败：${redactSensitiveText(error)}`)
+    } finally {
+      setEnvRepairing(false)
       setBusy(false)
     }
   }
@@ -1136,6 +1470,7 @@ export function useAppController() {
     }
     setLastExport(null)
     setAnkiVerifyResult(null)
+    setActiveWorkspaceStage('generate')
     setWorkerProgress({ command: 'generate', stage: 'start', percent: 1, message: '准备开始生成。' })
     setBusy(true)
     setRequestEditedDuringRun(false)
@@ -1177,6 +1512,7 @@ export function useAppController() {
         )
         setWorkerProgress({ command: 'generate', stage: 'done', percent: 100, message: '演示卡片生成完成。' })
         setWorkerOperation({ status: 'succeeded', command: 'generate' })
+        setActiveWorkspaceStage('review')
         setBusy(false)
       } else {
         const job = await startWorkerJob('generate', requestSnapshot)
@@ -1229,8 +1565,14 @@ export function useAppController() {
       return
     }
     let projectForExport = project
+    const materializedForExport = materializeLearningPointInventory(projectForExport)
+    if (materializedForExport.added > 0) {
+      projectForExport = materializedForExport.project
+      setProject(projectForExport)
+      setStatus(`已自动把 ${materializedForExport.added} 个合法学习点补成草稿卡，继续准备导出。`)
+    }
     if (selectedCardCount === 0) {
-      const usableSelection = applyUsableCardSelection(project)
+      const usableSelection = applyUsableCardSelection(projectForExport)
       if (usableSelection.selected === 0) {
         setStatus('当前没有启用的卡片，也没有可自动启用的可用卡。请手动检查生成结果或重新生成。')
         return
@@ -1255,6 +1597,7 @@ export function useAppController() {
       return
     }
 
+    setActiveWorkspaceStage('review')
     setBusy(true)
     setLastWorkerError(null)
     setWorkerProgress({ command: 'export', stage: 'start', percent: 1, message: '准备开始导出。' })
@@ -1325,6 +1668,7 @@ export function useAppController() {
       return
     }
     setAnkiVerifying(true)
+    setActiveWorkspaceStage('review')
     setLastWorkerError(null)
     setAnkiVerifyResult(null)
     setStatus('正在通过 AnkiConnect 核验导入后的卡片和媒体。')
@@ -1504,6 +1848,7 @@ export function useAppController() {
   const activeSegmentVideoSrc = activeSegment && project?.video_path ? toAssetUrl(project.video_path) : ''
 
   return {
+    activeWorkspaceStage,
     activeSegment,
     activeSegmentId,
     activeSegmentVideoSrc,
@@ -1519,7 +1864,6 @@ export function useAppController() {
     apiTestTone,
     apiTesting,
     appBusy,
-    badgeText,
     applyApiPreset,
     applyCollectionPreset,
     applyTtsPreset,
@@ -1532,6 +1876,8 @@ export function useAppController() {
     documentFocusOptions,
     deepseekTextModels,
     envStatus,
+    envRepairing,
+    envRepairResult,
     exportApkg,
     featuredApiPresets,
     featuredTtsPresets,
@@ -1572,8 +1918,18 @@ export function useAppController() {
     requestEditedDuringRun,
     responsiveMode,
     revealExport,
+    repairEnv,
     runWindowAction,
-    secretPrefs,
+    activeApiProfileId,
+    activeTtsProfileId,
+    apiProfileDirty,
+    apiProfileStatus,
+    applySavedApiProfile,
+    applySavedTtsProfile,
+    savedApiProfiles,
+    savedTtsProfiles,
+    saveCurrentApiProfile,
+    saveCurrentTtsProfile,
     selectionStrategyOptions,
     segmentFilter,
     segmentReviewCounts,
@@ -1585,6 +1941,7 @@ export function useAppController() {
     selectSourceMode,
     selectTemplate,
     setCardsEnabled,
+    setActiveWorkspaceStage,
     setInspectorState,
     setPreviewRate,
     setSegmentFilter,
@@ -1612,8 +1969,9 @@ export function useAppController() {
     toggleDocumentFocus,
     toggleLanguageFocus,
     toggleInspector,
-    toggleRememberSecret,
     tts,
+    ttsProfileDirty,
+    ttsProfileStatus,
     ttsTesting,
     ttsTestMessage,
     ttsTestMeta,

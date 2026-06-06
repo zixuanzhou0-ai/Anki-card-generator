@@ -1,130 +1,135 @@
 # Anki Card Generator
 
-一个 Windows 桌面端 Anki 卡片生成器，面向中文用户，把真实素材变成可审核、可导出的 Anki 卡包。
+面向中文学习者的 Windows 桌面端 Anki 卡片生成器。它把视频、字幕、YouTube 链接和文档资料变成可以审核、选择并导出的 Anki `.apkg` 卡包。
 
-它现在有两条学习路径：
+当前仓库版本已经切到新的主流程：
 
-1. 视频 / URL：英语语境学习。<br>
-   从 YouTube、本地视频和 SRT 字幕中提取真实语境片段。默认会先理解整段素材，再生成听力卡、表达卡、语境生词卡和填空卡，可包含视频片段、原声、TTS、中文理解和老师提示。
-
-2. 文档资料：知识吸收或语言精读。<br>
-   文档默认走“知识吸收”，从 TXT、Markdown、DOCX、EPUB、PDF 中拆出核心概念、观点论证、术语定义和例子案例，生成知识问答卡。只有用户主动切到“语言精读”时，才会从英文文档中提取表达、词汇和语法点。
-
-当前版本：`v0.9.2-beta`
-
-## Beta 风险和数据边界
-
-这是 Windows 内测版本。YouTube 下载、字幕接口、模型 API、TTS 和本机 FFmpeg / Python 环境都会影响成功率。
-
-- YouTube 导入依赖 yt-dlp，可能因为 429、区域限制、字幕接口变化或 n challenge 失败。
-- 使用 MIMO、DeepSeek、OpenRouter、Claude、Gemini、xAI 等模型时，字幕、文档片段、卡片字段和 TTS 文本会发送给对应服务商。
-- TTS 会产生 API 调用费用；导出前请确认服务商计费规则。
-- 视频片段、字幕和文档可能受版权保护；生成的 `.apkg` 默认仅供个人学习使用，不建议公开分发。
-- 更完整的限制见 [Beta 限制说明](docs/BETA_LIMITATIONS.md)，数据流说明见 [Privacy](PRIVACY.md)。
-
-## 功能
-
-- 极简两片式桌面界面：左侧 Inspector 管理素材和学习设置，右侧 Workspace 负责生成、审核和导出。
-- 窗口最小尺寸保护：桌面端不会缩到破坏布局的尺寸。
-- YouTube URL 导入：自动下载视频和英文字幕。
-- 本地视频 + SRT：适合自己已有素材。
-- 文档知识吸收：支持 TXT、Markdown、DOCX、EPUB、PDF，默认生成知识问答卡。
-- 文档语言精读：可选路径，用于英文文章/书籍里的表达、词汇和语法学习，不生成听力卡。
-- Deep Study 深度理解：模型会先建立素材上下文，再筛选候选和撰写卡片，减少“不是当前视频内容”的跑题卡。
-- AI 学习候选评审：MIMO、Qwen / DashScope、DeepSeek V4、Gemini Vertex 等模型都会先评审词伙、语境生词、语法和听力候选，低价值内容默认不导出。
-- 候选硬校验：AI 返回的 `exact_span` 必须来自原句，`answer_core` 必须是纯英文学习答案；发音融合、IPA、中文释义和语法说明会被修复到专属字段或拒绝，不再污染卡片标题。
-- 不漏优先学习点：同一句可以同时保留表达、语境生词、语法/句法、听力和语用风险学习点；低价值内容进待审或拒绝，而不是被“每句最多两张卡”硬截断。
-- 语境生词卡：默认开启“单词用法”，只做来自原句、能解释当前场景并可迁移使用的生词卡，不做孤立词典卡。
-- 自动片段预算：根据视频长度和字幕密度自动决定候选数量。
-- 分流 Anki 模板：视频语言卡默认使用“沉浸复读 V12”，正面只做视频跟读训练，背面快速核对核心表达、中文义、标准 IPA、口语读法和听点说明；文档知识卡和文档精读卡继续使用独立布局。APKG 字段保持向后兼容，卡片自然纵向滚动，不靠动态缩字硬塞进一屏。
-- 多音频导出：视频原声、整句 TTS、表达 TTS；导出结果会带媒体账本，记录每个 TTS 文件对应的片段、卡片、学习点和朗读文本 hash。
-- Anki `.apkg` 导出：可手动导入 Anki，也可调用本机 Anki 打开；导入核验会按导出模板版本查找 `anki_card_generator_v10` / `anki_card_generator_v12` 标签，并核对媒体清单 / TTS 账本。
-
-## 工作流程
-
-```mermaid
-flowchart TB
-  A["视频 / URL"] --> B["字幕解析和自动切段"]
-  B --> C["Deep Study 素材理解"]
-  C --> D["表达 / 语境生词 / 语法 / 听力候选"]
-  D --> E["AI 学习候选评审"]
-  E --> N["视频 / 原声 / TTS 多媒体卡"]
-
-  F["文档资料"] --> G{"学习路径"}
-  G --> H["知识吸收：概念 / 观点 / 术语 / 例子"]
-  G --> I["语言精读：表达 / 词汇 / 语法"]
-  H --> J["知识问答卡"]
-  I --> K["文档精读待审卡"]
-
-  N --> L["导出 .apkg"]
-  J --> L
-  K --> L
-  L --> M["导入 Anki"]
+```text
+素材配置 -> 智能生成学习点 -> 审核可用卡片/学习点诊断 -> 导出已选 APKG
 ```
+
+不再让用户在“精选优先 / 不漏优先 / 全量发现”之间纠结，也不再把“推荐 / 待审 / 拒绝”作为主要操作心智。系统内部仍然保留质量 gate、重复过滤、硬阻断和诊断统计，但 Review UI 面向用户展示的是：
+
+- `可用卡片`：已经生成完整卡片，默认全选，用户可取消。
+- `学习点诊断`：展示未制卡、重复折叠或硬阻断的学习点与原因。
+- `导出已选`：只导出用户当前勾选的完整卡片。
+
+## 主要能力
+
+- 本地视频 + SRT：从剧集、课程或电影片段生成语言学习卡。
+- YouTube / URL：下载视频和字幕，失败时可降级到字幕-only。
+- 文档资料：支持知识吸收和语言精读两种路径。
+- 统一智能筛选：同一句里可以同时抽取词伙、语境生词、语法框架、听力难点和语气风险点。
+- 自动难度：学习水平默认自动判断，每张卡带 `estimated_level` / `difficulty`。
+- 多语言发音标注：支持 `en / fr / es / ja / ru`，不强行把所有语言塞进英语 IPA。
+- 发音透明追踪：`PronunciationMeta` 记录语言、口音 profile、生成依据、字段置信度和 validator issues。
+- TTS 与媒体账本：整句 TTS、表达 TTS、原视频音频、视频切片都会记录 hash 和 ledger，方便核验。
+- AnkiConnect 核验：可导入后检查 note/card、媒体引用、TTS ledger 和隐藏 JSON 字段。
+- 本地环境一键修复：设置页可以检测 Python、FFmpeg、Deno/Node、Anki、AnkiConnect，并尝试自动修复可自动处理的项。
 
 ## 界面预览
 
-主界面采用两片式工作台：左侧收纳素材和学习设置，右侧展示质量筛选、卡片预览和导出结果；复杂选项会收在展开项里：
+### 素材配置
 
-![主工作台](docs/screenshots/workflow-start.png)
+![素材配置](docs/screenshots/workflow-start.png)
 
-从 YouTube URL 或本地视频生成后，右侧可以按推荐、待审、已拒绝、重复合并筛选卡片，并在导出前逐张编辑：
+### 审核导出
 
-![生成后的卡片预览](docs/screenshots/workflow-generated.png)
+![审核导出](docs/screenshots/workflow-generated.png)
 
-文档资料默认进入“知识吸收”，左侧不再显示 A1-C2、听力卡、表达卡等视频语言学习设置，而是显示讲解语言、吸收重点、卡片深度和答案长度；右侧审核知识问答卡：
+### 模型 API 设置
 
-![文档知识吸收审核台](docs/screenshots/document-knowledge-review.png)
+Vertex 模式使用本机 `gcloud` OAuth，不需要粘贴 API Key。其它服务商的 Key 可以分别保存到“我的模型”。
 
-卡片详情会显示视频片段、原句、学习点、质量评分、中文理解、搭配和老师评语：
+![模型 API 设置](docs/screenshots/settings-model-api.png)
 
-![卡片审核面板](docs/screenshots/card-review-panel.png)
+### 语音 TTS 设置
 
-设置页集中管理文本模型、MIMO / Qwen / Gemini 等 TTS 和本地环境检查；API Key 只在本机填写，不写入仓库：
+TTS 服务商、音色和 Key 与文本模型分开保存。导出 TTS 默认降低音量，避免比原视频声音刺耳。
 
-![设置页](docs/screenshots/settings-modal.png)
+![语音 TTS 设置](docs/screenshots/settings-tts.png)
 
-## Windows 快速开始
+### 本地环境检测与修复
 
-推荐先下载 GitHub Release 里的 Windows 便携包：
+环境页会分开检测 Anki 桌面端、Anki 是否运行、AnkiConnect 是否可用。缺少 Python 时，Tauri 原生层会先尝试安装推荐 Python 3.12，再继续安装 worker 依赖。
 
-1. 解压 `AnkiCardGenerator-v0.9.2-beta-windows-portable.zip`。
-2. 右键 `scripts/setup_runtime.ps1`，用 PowerShell 运行；脚本会创建项目本地 `.venv`、安装 worker 依赖，并输出 `runtime_diagnostic.json`。
-3. 打开 `Anki Card Generator.exe`。
-4. 进入设置，点击“检查环境”，再填写自己的 MIMO、Qwen / DashScope 或其他模型 API Key 并测试连接。
-5. 用内置示例、本地视频 + SRT，或 YouTube URL 生成并导出 `.apkg`。
+![本地环境设置](docs/screenshots/settings-environment.png)
 
-如果 YouTube 触发 429、n challenge 或字幕接口失败，URL 面板可以切到“只用字幕生成”或“跳过视频切片”，先把卡片做出来。
+## 快速开始
 
-详细图文流程见 [用户指南](docs/USER_GUIDE.md)。开发和发布维护见 [架构说明](docs/ARCHITECTURE.md)，常见失败处理见 [故障排查](docs/TROUBLESHOOTING.md)。
+推荐普通用户直接使用 Windows 桌面端：
 
-## TTS 音色建议
+1. 下载或构建桌面端。
+2. 打开 `Anki Card Generator.exe`。
+3. 进入 `设置 -> 本地环境`，点击 `检查环境`。
+4. 如果有缺失项，点击 `一键修复全部可修复项`。
+5. 进入 `模型 API`，选择模型方案，测试连接并保存。
+6. 进入 `语音 TTS`，选择 TTS 方案，测试连接并保存。
+7. 选择素材：本地视频 + SRT、视频链接，或文档资料。
+8. 点击 `生成卡片`。
+9. 在 `审核导出` 里检查卡片，取消不想学的卡。
+10. 点击 `导出已选`，导入 Anki。
 
-- 英语学习卡优先使用视频原声；需要 AI 朗读时，MiMo V2.5 TTS 仍是当前更稳的英语选择。
-- Qwen3 TTS 已内置美语预设：`Jennifer` 为美语女声，`Aiden` 为美语男声。`Cherry` 仍可用，但更偏通用活泼女声。
-- Qwen3-TTS-Instruct-Flash 可做语速、情绪和朗读风格控制；Qwen3-TTS-VD 可先通过声音设计创建自定义 voice，再把返回的 voice id 填入设置页。
-- Google Gemini Vertex TTS 已作为可选路径加入设置页。它走本机 `gcloud` / Vertex AI 授权，默认使用 `gemini-3.1-flash-tts-preview`，不需要在应用里保存 TTS API Key。
-- 审核页的 `0.75x` 只影响试听播放速度，不会改变导出到 Anki 的 MP3。
+完整图文教程见 [用户指南](docs/USER_GUIDE.md)。
 
-## 必需依赖
+## 本地环境说明
 
-便携包不内置这些外部运行时，首次使用前需要安装：
+应用尽量把环境问题做成“检测 + 修复”，而不是只提示错误。
 
-| 依赖                     | 用途                                   |
-| ------------------------ | -------------------------------------- |
-| Python 3.11+             | 运行制卡 worker                        |
-| genanki                  | 生成 `.apkg`                           |
-| yt-dlp                   | 下载 YouTube 视频和字幕                |
-| Deno 2.0+ 或 Node.js 20+ | 帮 yt-dlp 解 YouTube EJS / n challenge |
-| pypdf                    | 读取 PDF 文档                          |
-| FFmpeg                   | 切视频、转音频、生成封面               |
-| Anki                     | 导入和复习卡片                         |
+| 项目 | 当前处理方式 |
+| --- | --- |
+| Python 运行环境 | 原生层检测；缺失时尝试通过 winget 安装推荐 Python 3.12 |
+| Python worker 依赖 | 创建 `.venv`，安装/更新 `genanki`、`yt-dlp`、`pypdf` |
+| FFmpeg | 缺失时尝试通过 winget 安装 |
+| Deno / Node | 缺失时尝试通过 winget 安装 Deno |
+| Anki 桌面端 | 缺失时尝试通过 winget 安装 |
+| AnkiConnect | 不能静默安装；应用会打开 Anki 并提示插件代码 `2055492159` |
 
-Python 依赖建议安装到项目本地 `.venv`，不要污染全局 Python：
+为什么不是“最新 Python”：当前推荐安装 Python 3.12，因为它更稳，避免最新版本带来依赖兼容波动。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/setup_runtime.ps1
+## 模型与 TTS
+
+当前设置页支持：
+
+- Gemini Vertex：文本模型默认 `gemini-3.1-pro-preview`，使用本机 `gcloud` OAuth。
+- Gemini Vertex TTS：默认 `gemini-3.1-flash-tts-preview`，使用本机 `gcloud` OAuth。
+- MIMO / OpenAI-compatible。
+- Qwen / DashScope。
+- DeepSeek。
+- 可扩展的自定义服务商配置。
+
+每个模型方案和 TTS 方案都可以单独保存到“我的模型”或“我的 TTS”。Vertex 方案不显示 API Key 输入框，因为它不使用本地保存的 API Key。
+
+## 多语言发音逻辑
+
+内部语言使用稳定 code：
+
+```ts
+en | fr | es | ja | ru
 ```
+
+默认 profile：
+
+| 语言 | 读法体系 |
+| --- | --- |
+| English | IPA + weak forms/linking/stress |
+| Français | API/IPA + liaison/e caduc |
+| Español | 拉美通用读法，音节 + 重音，可选 IPA |
+| 日本語 | 假名 + 可靠时标音高 |
+| Русский | 带重音西里尔，可选 IPA |
+
+V1 不做真实 ASR 或 forced alignment。没有音频实听时，`generation_basis` 默认是 `subtitle_inferred`，UI 和 Anki 卡面会标为推测口语读法或低置信度，不会把字幕推测包装成“剧中实听”。
+
+## 质量与诊断
+
+生成时会先召回学习点，再决定哪些生成完整卡片：
+
+- 合法且高价值：生成完整可用卡片。
+- 合法但未制卡：进入学习点诊断。
+- 训练动作重复：折叠为重复诊断。
+- `exact_span` 不在原句、`answer_core` 混入中文/IPA/解释：硬阻断。
+
+默认不会为了数量硬凑低价值卡。用户想多导出时，可以直接在可用卡片里选择更多卡片；后续可继续扩展“从候选库一键生成更多完整卡”。
 
 ## 开发运行
 
@@ -133,49 +138,36 @@ npm install
 npm run tauri:dev
 ```
 
-## 构建 Windows 包
+## 验证
+
+常用检查：
 
 ```powershell
+npm run lint
+npm run test:unit
 npm run build
-npm run tauri:build
+python -m pytest tests\test_worker_quality.py -q -k "check_env or repair_env"
+cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
-构建产物位于：
-
-- `src-tauri/target/release/bundle/nsis/*.exe`
-- `src-tauri/target/release/bundle/msi/*.msi`
-
-可以用脚本生成便携包：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/package_portable.ps1 -ReleaseExe "src-tauri/target/release/anki-card-generator.exe"
-```
-
-## 隐私和密钥
-
-- 不要把真实 API Key 写进源码、README、issue 或 release note。
-- API Key 只应该由用户在本机设置页填写；默认不会把文本/TTS Key 写入 localStorage。只有用户显式勾选“记住本机 Key”时，才会保存到 Windows Credential Manager，或在系统凭据不可用时保存到本机 DPAPI 加密文件。
-- 使用第三方模型或 TTS 时，字幕、文档片段和生成字段会发送给对应服务商。
-- 生成的视频、音频、`.apkg`、项目缓存默认不会提交到 Git。
-
-## 许可证状态
-
-当前仓库还没有选择正式开源许可证，代码和发行包的授权范围需要在公开推广前确认。生成的牌组如果包含第三方视频、字幕、文档摘录或合成音频，默认只用于个人学习，不应在没有授权的情况下重新分发。
-
-## 发布验证
-
-发布前请跑：
+完整发布前检查：
 
 ```powershell
 npm run check:full
 npm run tauri:build
 ```
 
-文档和截图更新时请额外确认：
+## 隐私与版权
 
-```powershell
-git diff --name-only -- README.md docs
-npm run test:ui
-```
+- 不要把真实 API Key 写进源码、README、issue、日志或截图。
+- 用户勾选保存时，密钥优先保存到 Windows Credential Manager；不可用时使用本机 DPAPI 加密文件。
+- 使用第三方模型或 TTS 时，字幕、文档片段和生成字段会发送给对应服务商。
+- 生成的视频片段、音频、字幕、`.apkg` 和项目缓存默认不提交到 Git。
+- 第三方视频、字幕、文档和合成音频默认仅供个人学习使用。
 
-发布清单见 [Release Checklist](docs/RELEASE_CHECKLIST.md)。
+## 更多文档
+
+- [用户指南](docs/USER_GUIDE.md)
+- [故障排查](docs/TROUBLESHOOTING.md)
+- [架构说明](docs/ARCHITECTURE.md)
+- [发布清单](docs/RELEASE_CHECKLIST.md)

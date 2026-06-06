@@ -17,9 +17,9 @@ export function qualityClass(card: Card) {
 }
 
 export const segmentFilterOptions: Array<{ id: SegmentFilter; label: string }> = [
-  { id: 'all', label: '全部卡片' },
-  { id: 'selected', label: '只看已选' },
-  { id: 'unselected', label: '只看未选' },
+  { id: 'all', label: '全部片段' },
+  { id: 'selected', label: '含已选卡片' },
+  { id: 'unselected', label: '无已选卡片' },
 ]
 
 export function phraseValueScore(value: number | string | null | undefined) {

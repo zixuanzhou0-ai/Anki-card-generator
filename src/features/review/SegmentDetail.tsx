@@ -2,7 +2,7 @@ import type { ChangeEvent, SyntheticEvent } from 'react'
 import { motion } from 'motion/react'
 import { Play } from 'lucide-react'
 
-import type { Card, DocumentStudyMode, Segment } from '../../domain/types'
+import type { Card, DocumentStudyMode, PronunciationFieldChange, Segment } from '../../domain/types'
 import {
   normalizePronunciationMeta,
   pronunciationBasisHint,
@@ -32,7 +32,6 @@ type SegmentDetailProps = {
   videoSrc: string
   language?: string
   documentStudyMode?: DocumentStudyMode
-  onPreviewRateChange: (rate: number) => void
   onSetSegmentCardsEnabled: (enabled: boolean, segmentId: string) => void
   onUpdateCard: (segmentId: string, cardId: string, patch: Partial<Card>) => void
 }
@@ -61,7 +60,6 @@ export function SegmentDetail({
   videoSrc,
   language,
   documentStudyMode,
-  onPreviewRateChange,
   onSetSegmentCardsEnabled,
   onUpdateCard,
 }: SegmentDetailProps) {
@@ -73,19 +71,6 @@ export function SegmentDetail({
   return (
     <div className="segment-detail">
       <div className="segment-toolbar">
-        <div className="preview-rate" aria-label="预览播放速度">
-          <span>播放</span>
-          {[0.75, 1].map((rate) => (
-            <button
-              type="button"
-              key={rate}
-              className={previewRate === rate ? 'selected' : ''}
-              onClick={() => onPreviewRateChange(rate)}
-            >
-              {rate}x
-            </button>
-          ))}
-        </div>
         <div className="segment-actions">
           <button className="ghost-button" type="button" onClick={() => onSetSegmentCardsEnabled(true, segment.id)}>
             本段全选
@@ -223,6 +208,21 @@ type CardEditorProps = {
   onUpdateCard: (segmentId: string, cardId: string, patch: Partial<Card>) => void
 }
 
+function pronunciationFieldLabel(field: PronunciationFieldChange['field']) {
+  if (field === 'phonetic_ipa') return '标准读法'
+  if (field === 'spoken_ipa') return '口语读法'
+  if (field === 'source_spoken_ipa') return '原句听感'
+  return '发音说明'
+}
+
+function pronunciationActionLabel(action: PronunciationFieldChange['action']) {
+  if (action === 'hidden') return '已隐藏'
+  if (action === 'cleared') return '已清空'
+  if (action === 'downgraded') return '低置信度'
+  if (action === 'not_generated') return '未可靠生成'
+  return '已保留'
+}
+
 function CardEditor({
   card,
   documentStudyMode,
@@ -245,6 +245,7 @@ function CardEditor({
   const standardLabel = `标准读法（${standardPronunciationHint(pronunciationMeta?.language_code ?? language)}）`
   const spokenLabel = spokenPronunciationLabel(pronunciationMeta)
   const basisHint = pronunciationBasisHint(pronunciationMeta)
+  const pronunciationFieldChanges = (pronunciationMeta?.field_changes ?? []).filter((change) => change.action !== 'kept')
   const cardTypeLabel =
     candidateLabel ||
     phraseTypeLabel(card.phrase_type ?? segment.phrase_type) ||
@@ -336,6 +337,16 @@ function CardEditor({
             </p>
           ) : null}
           {basisHint ? <p>置信提示：{basisHint}</p> : null}
+          {pronunciationFieldChanges.length ? (
+            <div className="pronunciation-field-changes" aria-label="发音字段变更">
+              {pronunciationFieldChanges.map((change) => (
+                <span key={`${change.field}-${change.action}-${change.code}`}>
+                  {pronunciationFieldLabel(change.field)}：{pronunciationActionLabel(change.action)}
+                  {change.message ? ` · ${change.message}` : ''}
+                </span>
+              ))}
+            </div>
+          ) : null}
           {card.pronunciation_note ? <p>听点：{card.pronunciation_note}</p> : null}
           {whyItMatters ? <p>为什么值得学：{whyItMatters}</p> : null}
           {howToUseIt ? <p>怎么用：{howToUseIt}</p> : null}

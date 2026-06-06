@@ -5,6 +5,7 @@ import base64
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import re
 import shutil
@@ -17,6 +18,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -3734,6 +3736,98 @@ def call_model(project: dict[str, Any], segments: list[dict[str, Any]]) -> dict[
     return None
 
 
+def final_card_batch_size(api: dict[str, Any], requested: int = 10) -> int:
+    if is_mimo_config(api):
+        return 1
+    if is_gemini_vertex_thinking_config(api):
+        return 8
+    if is_deepseek_thinking_config(api) or is_qwen_config(api):
+        return max(6, min(10, requested))
+    if is_thinking_model_config(api):
+        return max(6, min(10, requested))
+    return max(8, min(12, requested if requested > 0 else 10))
+
+
+def final_card_generation_concurrency(api: dict[str, Any], total_batches: int) -> int:
+    if total_batches <= 1 or is_mimo_config(api):
+        return 1
+    if is_gemini_vertex_config(api) or api.get("provider") in OPENAI_COMPATIBLE_PROVIDERS:
+        return 2
+    return 1
+
+
+def retryable_model_payload(payload: dict[str, Any]) -> bool:
+    if payload.get("retryable") is True:
+        return True
+    code = str(payload.get("error_code") or "").upper()
+    return any(signal in code for signal in ("TIMEOUT", "CONNECTION", "QUOTA", "HTTP_5", "REMOTE"))
+
+
+def call_model_batch_with_retry(
+    project: dict[str, Any],
+    batch: list[dict[str, Any]],
+    *,
+    batch_index: str,
+    total_batches: int,
+    retry_count: int = 0,
+) -> tuple[list[dict[str, Any]], list[str], list[dict[str, Any]]]:
+    payload = call_model(project, batch)
+    if payload is None:
+        return [], [f"{batch[0]['id']}..{batch[-1]['id']}: 模型不可用，已保留为候选。"], [
+            {"error_code": "MODEL_UNAVAILABLE", "stage": "ai", "retryable": False}
+        ]
+    if "error" not in payload:
+        return list(payload.get("segments", []) or []), [], []
+
+    error_message = str(payload.get("error") or "模型批次失败")
+    details = {
+        "error_code": payload.get("error_code"),
+        "stage": payload.get("stage"),
+        "retryable": payload.get("retryable"),
+    }
+    if retry_count == 0 and retryable_model_payload(payload):
+        emit_progress(
+            "generate",
+            "ai",
+            70,
+            f"模型连接中断，正在重试第 {batch_index}/{total_batches} 批 1/2。",
+        )
+        time.sleep(2)
+        return call_model_batch_with_retry(
+            project,
+            batch,
+            batch_index=batch_index,
+            total_batches=total_batches,
+            retry_count=1,
+        )
+
+    if len(batch) > 1 and retryable_model_payload(payload):
+        midpoint = max(1, len(batch) // 2)
+        emit_progress(
+            "generate",
+            "ai",
+            72,
+            f"第 {batch_index}/{total_batches} 批失败，已拆成 2 个小批继续生成。",
+        )
+        left_segments, left_errors, left_details = call_model_batch_with_retry(
+            project,
+            batch[:midpoint],
+            batch_index=f"{batch_index}.1",
+            total_batches=total_batches,
+            retry_count=1,
+        )
+        right_segments, right_errors, right_details = call_model_batch_with_retry(
+            project,
+            batch[midpoint:],
+            batch_index=f"{batch_index}.2",
+            total_batches=total_batches,
+            retry_count=1,
+        )
+        return left_segments + right_segments, left_errors + right_errors, left_details + right_details
+
+    return [], [f"{batch[0]['id']}..{batch[-1]['id']}: {error_message}"], [details]
+
+
 def call_model_batches(project: dict[str, Any], segments: list[dict[str, Any]], batch_size: int = 10) -> dict[str, Any] | None:
     if not segments:
         return None
@@ -3744,45 +3838,59 @@ def call_model_batches(project: dict[str, Any], segments: list[dict[str, Any]], 
         or not str(api.get("model", "")).strip()
     ):
         return None
-    if is_mimo_config(api):
-        batch_size = 1
-    elif is_gemini_vertex_thinking_config(api):
-        batch_size = min(batch_size, 3)
-    elif is_deepseek_thinking_config(api):
-        batch_size = min(batch_size, 4)
-    elif is_qwen_config(api):
-        batch_size = min(batch_size, 4)
+    batch_size = final_card_batch_size(api, batch_size)
     merged: list[dict[str, Any]] = []
     errors: list[str] = []
     error_details: list[dict[str, Any]] = []
     any_called = False
-    total_batches = max(1, (len(segments) + batch_size - 1) // batch_size)
-    for start in range(0, len(segments), batch_size):
-        batch = segments[start : start + batch_size]
-        batch_index = start // batch_size + 1
+    batches = [
+        (start // batch_size + 1, segments[start : start + batch_size])
+        for start in range(0, len(segments), batch_size)
+    ]
+    total_batches = max(1, len(batches))
+    concurrency = final_card_generation_concurrency(api, total_batches)
+
+    def run_one(index: int, batch: list[dict[str, Any]]) -> tuple[int, list[dict[str, Any]], list[str], list[dict[str, Any]]]:
         provider_hint = "，thinking 已保留" if is_thinking_model_config(api) else ""
-        percent = min(82, 66 + int((batch_index - 1) / total_batches * 14))
+        percent = min(82, 66 + int((index - 1) / total_batches * 14))
         emit_progress(
             "generate",
             "ai",
             percent,
-            f"正在请求模型生成卡片：第 {batch_index}/{total_batches} 批{provider_hint}。",
+            f"正在生成卡片正文：第 {index}/{total_batches} 批，每批最多 {batch_size} 个学习点{provider_hint}。",
         )
-        payload = call_model(project, batch)
-        if payload is None:
-            return None
-        any_called = True
-        if "error" in payload:
-            errors.append(f"{batch[0]['id']}..{batch[-1]['id']}: {payload['error']}")
-            error_details.append(
-                {
-                    "error_code": payload.get("error_code"),
-                    "stage": payload.get("stage"),
-                    "retryable": payload.get("retryable"),
-                }
-            )
-            continue
-        merged.extend(payload.get("segments", []))
+        batch_segments, batch_errors, batch_error_details = call_model_batch_with_retry(
+            project,
+            batch,
+            batch_index=str(index),
+            total_batches=total_batches,
+        )
+        return index, batch_segments, batch_errors, batch_error_details
+
+    if concurrency <= 1:
+        for index, batch in batches:
+            _, batch_segments, batch_errors, batch_error_details = run_one(index, batch)
+            any_called = True
+            merged.extend(batch_segments)
+            errors.extend(batch_errors)
+            error_details.extend(batch_error_details)
+    else:
+        emit_progress(
+            "generate",
+            "ai",
+            66,
+            f"最终制卡启用 {concurrency} 路并发：{total_batches} 批，每批最多 {batch_size} 个学习点。",
+        )
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            futures = [pool.submit(run_one, index, batch) for index, batch in batches]
+            for future in as_completed(futures):
+                index, batch_segments, batch_errors, batch_error_details = future.result()
+                any_called = True
+                merged.extend(batch_segments)
+                errors.extend(batch_errors)
+                error_details.extend(batch_error_details)
+                percent = min(82, 66 + int(index / total_batches * 14))
+                emit_progress("generate", "ai", percent, f"卡片正文第 {index}/{total_batches} 批已完成。")
     if errors and not merged:
         first_detail = next((item for item in error_details if item.get("error_code")), {})
         return {"error": "；".join(errors), **first_detail}
@@ -4989,7 +5097,18 @@ def normalized_tts_config(project_or_payload: dict[str, Any]) -> dict[str, Any]:
         or "auto",
         "sample_rate": int(tts.get("sample_rate") or 24000),
         "bit_rate": int(tts.get("bit_rate") or 128000),
+        "output_volume": normalized_tts_output_volume(tts.get("output_volume")),
     }
+
+
+def normalized_tts_output_volume(value: Any) -> float:
+    try:
+        volume = float(value)
+    except (TypeError, ValueError):
+        return 0.65
+    if not math.isfinite(volume):
+        return 0.65
+    return min(1.0, max(0.4, volume))
 
 
 def grok_tts_endpoint(base_url: str) -> str:
@@ -5827,6 +5946,190 @@ def merge_ai_cards(
 def card_quality_status(card: dict[str, Any]) -> str:
     quality = card.get("quality") if isinstance(card.get("quality"), dict) else {}
     return str(quality.get("status") or "").strip()
+
+
+LEARNING_POINT_INVENTORY_STATUSES = {"card_generated", "candidate_only", "hidden_duplicate", "hard_blocked"}
+
+
+def inventory_status_for_filtered_item(item: dict[str, Any], reason: str = "") -> str:
+    status = str(item.get("phrase_review_status") or "").strip()
+    reason_text = f"{reason} {item.get('phrase_reject_reason') or ''} {item.get('validation_issues') or ''}".lower()
+    if status == "duplicate" or "duplicate" in reason_text or "重复" in reason_text:
+        return "hidden_duplicate"
+    hard_signals = [
+        "exact_span",
+        "answer_core",
+        "不在原句",
+        "中文",
+        "ipa",
+        "发音说明",
+        "语法解释",
+        "幻觉",
+        "乱码",
+        "bad json",
+        "坏 json",
+    ]
+    if status == "reject" and any(signal in reason_text for signal in hard_signals):
+        return "hard_blocked"
+    return "candidate_only"
+
+
+def inventory_status_for_rejected_card(card: dict[str, Any], segment: dict[str, Any]) -> str:
+    quality = card.get("quality") if isinstance(card.get("quality"), dict) else {}
+    reason = " / ".join(str(issue) for issue in quality.get("issues") or [])
+    return inventory_status_for_filtered_item({**segment, **card}, reason)
+
+
+def inventory_learning_action(item: dict[str, Any], card: dict[str, Any] | None = None) -> str:
+    source = card or item
+    return clean_study_text(
+        source.get("learning_target")
+        or source.get("learning_goal")
+        or source.get("phrase_card_focus")
+        or source.get("why_it_matters")
+        or source.get("why")
+        or source.get("teacher_note")
+        or item.get("phrase_card_focus")
+        or "确认这个学习点是否值得做成卡。"
+    )
+
+
+def learning_point_inventory_item(
+    segment: dict[str, Any],
+    *,
+    status: str,
+    card: dict[str, Any] | None = None,
+    reason: str = "",
+    card_id: str | None = None,
+) -> dict[str, Any]:
+    source = card or segment
+    source_id = str(segment.get("source_segment_id") or learning_point_source_key(segment))
+    answer = clean_study_text(
+        source.get("answer_core")
+        or source.get("normalized_answer")
+        or source.get("exact_span")
+        or source.get("phrase")
+        or segment.get("answer_core")
+        or segment.get("normalized_answer")
+        or segment.get("phrase")
+        or ""
+    )
+    exact_span = clean_study_text(source.get("exact_span") or segment.get("exact_span") or answer)
+    candidate_kind = str(source.get("candidate_kind") or segment.get("candidate_kind") or candidate_kind_for_segment(segment) or "expression")
+    phrase_type = str(source.get("phrase_type") or segment.get("phrase_type") or phrase_type_for_candidate_kind(candidate_kind))
+    value_score = phrase_review_score(source.get("phrase_value_score") or segment.get("phrase_value_score") or segment.get("recommendation") or 0)
+    inventory_status = status if status in LEARNING_POINT_INVENTORY_STATUSES else "candidate_only"
+    filter_reason = ""
+    block_reason = ""
+    if inventory_status in {"candidate_only", "hidden_duplicate"}:
+        filter_reason = clean_study_text(reason or source.get("phrase_reject_reason") or segment.get("phrase_reject_reason") or "")
+    if inventory_status == "hard_blocked":
+        block_reason = clean_study_text(reason or source.get("phrase_reject_reason") or segment.get("phrase_reject_reason") or "")
+    item_id_seed = f"{source_id}:{answer}:{candidate_kind}:{phrase_type}:{inventory_status}:{card_id or source.get('learning_point_id') or source.get('id') or ''}"
+    item = {
+        "id": str(source.get("learning_point_id") or source.get("id") or f"lp_inv_{stable_id(item_id_seed) & 0xFFFFFFFF:08x}"),
+        "source_segment_id": source_id,
+        "source_time": str(segment.get("source_time") or ""),
+        "source_sentence": str(segment.get("text") or source.get("english") or ""),
+        "exact_span": exact_span,
+        "answer_core": answer,
+        "normalized_answer": clean_study_text(source.get("normalized_answer") or answer),
+        "candidate_kind": candidate_kind,
+        "phrase_type": phrase_type,
+        "estimated_level": str(source.get("estimated_level") or source.get("difficulty") or segment.get("difficulty") or ""),
+        "value_score": value_score,
+        "learning_action": inventory_learning_action(segment, card),
+        "reason": clean_study_text(reason or source.get("phrase_decision_reason") or segment.get("phrase_decision_reason") or source.get("why") or ""),
+        "status": inventory_status,
+    }
+    if card_id:
+        item["card_id"] = card_id
+    if filter_reason:
+        item["filter_reason"] = filter_reason
+    if block_reason:
+        item["block_reason"] = block_reason
+    return item
+
+
+def build_learning_point_inventory(
+    segments: list[dict[str, Any]],
+    skipped_segments: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str, str]] = set()
+
+    def append_item(item: dict[str, Any]) -> None:
+        key = (
+            str(item.get("source_segment_id") or ""),
+            normalized_phrase_key(str(item.get("answer_core") or item.get("exact_span") or "")),
+            str(item.get("candidate_kind") or ""),
+            str(item.get("status") or ""),
+            str(item.get("card_id") or ""),
+        )
+        if key in seen:
+            return
+        seen.add(key)
+        items.append(item)
+
+    for segment in segments:
+        original_cards = list(segment.get("cards", []) or [])
+        usable_cards = [card for card in original_cards if card_quality_status(card) != "reject"]
+        rejected_cards = [card for card in original_cards if card_quality_status(card) == "reject"]
+        for card in usable_cards:
+            append_item(
+                learning_point_inventory_item(
+                    segment,
+                    status="card_generated",
+                    card=card,
+                    card_id=str(card.get("id") or ""),
+                    reason=str(card.get("decision_reason") or card.get("phrase_decision_reason") or ""),
+                )
+            )
+        for card in rejected_cards:
+            quality = card.get("quality") if isinstance(card.get("quality"), dict) else {}
+            reason = " / ".join(str(issue) for issue in quality.get("issues") or []) or str(card.get("phrase_reject_reason") or "")
+            append_item(
+                learning_point_inventory_item(
+                    segment,
+                    status=inventory_status_for_rejected_card(card, segment),
+                    card=card,
+                    reason=reason,
+                )
+            )
+        if not original_cards:
+            status = inventory_status_for_filtered_item(segment)
+            append_item(learning_point_inventory_item(segment, status=status, reason=str(segment.get("phrase_reject_reason") or "")))
+
+    for segment in skipped_segments or []:
+        status = inventory_status_for_filtered_item(segment)
+        append_item(learning_point_inventory_item(segment, status=status, reason=str(segment.get("phrase_reject_reason") or "")))
+
+    status_order = {"card_generated": 0, "candidate_only": 1, "hidden_duplicate": 2, "hard_blocked": 3}
+    return sorted(
+        items,
+        key=lambda item: (
+            float(next((seg.get("start") for seg in segments if learning_point_source_key(seg) == item.get("source_segment_id")), 0) or 0),
+            status_order.get(str(item.get("status") or ""), 9),
+            str(item.get("answer_core") or ""),
+        ),
+    )
+
+
+def learning_point_inventory_stats(inventory: list[dict[str, Any]] | None) -> dict[str, int]:
+    counts = {
+        "candidate_only_learning_point_count": 0,
+        "hidden_duplicate_learning_point_count": 0,
+        "hard_blocked_learning_point_count": 0,
+    }
+    for item in inventory or []:
+        status = str(item.get("status") or "")
+        if status == "candidate_only":
+            counts["candidate_only_learning_point_count"] += 1
+        elif status == "hidden_duplicate":
+            counts["hidden_duplicate_learning_point_count"] += 1
+        elif status == "hard_blocked":
+            counts["hard_blocked_learning_point_count"] += 1
+    return counts
 
 
 def apply_default_generated_card_selection(segments: list[dict[str, Any]], project: dict[str, Any]) -> list[dict[str, Any]]:
@@ -6884,15 +7187,19 @@ def build_quality_funnel(
     source_expansion_stats: dict[str, Any] | None = None,
     filter_stats: dict[str, int] | None = None,
     level_mode: str = "auto",
+    learning_point_inventory: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     cards = [card for segment in segments for card in segment.get("cards", [])]
     source_groups: dict[str, list[dict[str, Any]]] = {}
     for segment in segments:
         source_groups.setdefault(learning_point_source_key(segment), []).append(segment)
-    learning_point_count = sum(
+    segment_learning_point_count = sum(
         len(segment.get("learning_points") or []) if isinstance(segment.get("learning_points"), list) else (1 if segment.get("cards") else 0)
         for segment in segments
     )
+    inventory_counts = learning_point_inventory_stats(learning_point_inventory)
+    inventory_learning_point_count = len(learning_point_inventory or [])
+    learning_point_count = max(segment_learning_point_count, inventory_learning_point_count)
     selected_card_count = sum(1 for card in cards if card.get("enabled", True))
     recommended_cards = sum(1 for card in cards if (card.get("quality") or {}).get("status") == "recommended")
     review_cards = sum(1 for card in cards if (card.get("quality") or {}).get("status") == "needs_review")
@@ -6959,6 +7266,9 @@ def build_quality_funnel(
         "filtered_learning_point_count": filter_stats.get("filtered_learning_point_count", 0),
         "low_value_filtered_count": filter_stats.get("low_value_filtered_count", 0),
         "blocked_quality_issue_count": filter_stats.get("blocked_quality_issue_count", 0),
+        "candidate_only_learning_point_count": inventory_counts["candidate_only_learning_point_count"],
+        "hidden_duplicate_learning_point_count": inventory_counts["hidden_duplicate_learning_point_count"],
+        "hard_blocked_learning_point_count": inventory_counts["hard_blocked_learning_point_count"],
         "level_mode": level_mode,
         "recommended_card_count": recommended_cards,
         "review_card_count": review_cards,
@@ -7116,6 +7426,7 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
     segments = enforce_reviewable_cards_per_source(segments, payload)
     segments = apply_default_generated_card_selection(segments, payload)
     reviewed_keep_count = len(segments)
+    learning_point_inventory = build_learning_point_inventory(segments, skipped_segments)
     segments, output_filter_stats = filter_usable_segments_for_output(segments, skipped_segments)
     if context_warning:
         warning = f"{context_warning}；{warning}" if warning else str(context_warning)
@@ -7140,6 +7451,7 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         source_expansion_stats=payload.get("_source_expansion_stats"),
         filter_stats=output_filter_stats,
         level_mode=normalized_level_mode(payload),
+        learning_point_inventory=learning_point_inventory,
     )
     if ai_payload is None and (quality_funnel.get("recommended_cards", 0) > 0 or quality_funnel.get("review_cards", 0) > 0):
         recommended_count = int(quality_funnel.get("recommended_cards", 0) or 0)
@@ -7183,6 +7495,7 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         "auto_max_segments": auto_segments,
         "skip_video_slicing": skip_video_slicing,
         "quality_funnel": quality_funnel,
+        "learning_point_inventory": learning_point_inventory,
         "segments": segments,
         "warning": warning,
         "model_error_code": model_error_code,
@@ -11446,6 +11759,24 @@ def normalize_pronunciation_issue(value: Any) -> dict[str, str] | None:
     return None
 
 
+def normalize_pronunciation_field_change(value: Any) -> dict[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    field = str(value.get("field") or "").strip()
+    action = str(value.get("action") or "").strip()
+    code = str(value.get("code") or "PRONUNCIATION_FIELD_CHANGE").strip()
+    message = clean_study_text(value.get("message") or code)
+    if field not in {"phonetic_ipa", "spoken_ipa", "source_spoken_ipa", "pronunciation_note"}:
+        return None
+    if action not in {"kept", "hidden", "cleared", "downgraded", "not_generated"}:
+        action = "downgraded"
+    change = {"field": field, "action": action, "code": code, "message": message}
+    original = clean_study_text(value.get("original_value") or "")
+    if original:
+        change["original_value"] = original
+    return change
+
+
 def normalize_pronunciation_meta(
     value: Any,
     language: Any = "en",
@@ -11483,6 +11814,14 @@ def normalize_pronunciation_meta(
         normalized_issue = normalize_pronunciation_issue(issue)
         if normalized_issue:
             issues.append(normalized_issue)
+    raw_changes = raw.get("field_changes") or []
+    if not isinstance(raw_changes, list):
+        raw_changes = [raw_changes]
+    field_changes = []
+    for change in raw_changes:
+        normalized_change = normalize_pronunciation_field_change(change)
+        if normalized_change:
+            field_changes.append(normalized_change)
     meta = {
         "language_code": profile["code"],
         "accent_profile": str(raw.get("accent_profile") or profile["accent_profile"]),
@@ -11492,6 +11831,8 @@ def normalize_pronunciation_meta(
         "same_as_standard_reason": raw.get("same_as_standard_reason") or None,
         "validation_issues": issues,
     }
+    if field_changes:
+        meta["field_changes"] = field_changes
     if profile["code"] == "ja":
         pitch_confidence = str(raw.get("pitch_confidence") or "").strip().lower()
         if pitch_confidence in {*PRONUNCIATION_CONFIDENCE_VALUES, "unknown"}:
@@ -11512,6 +11853,47 @@ def add_pronunciation_issue(target: dict[str, Any], issue: dict[str, str]) -> No
     }
     if key not in existing:
         issues.append(issue)
+
+
+def add_pronunciation_field_change(
+    target: dict[str, Any],
+    field: str,
+    action: str,
+    code: str,
+    message: str,
+    *,
+    original_value: Any = "",
+) -> None:
+    existing_meta = target.get("pronunciation_meta")
+    meta = existing_meta if isinstance(existing_meta, dict) else {"validation_issues": []}
+    target["pronunciation_meta"] = meta
+    changes = meta.setdefault("field_changes", [])
+    normalized = normalize_pronunciation_field_change(
+        {
+            "field": field,
+            "action": action,
+            "code": code,
+            "message": message,
+            "original_value": original_value,
+        }
+    )
+    if not normalized:
+        return
+    key = (normalized["field"], normalized["action"], normalized["code"], normalized["message"])
+    existing = {
+        (str(item.get("field")), str(item.get("action")), str(item.get("code")), str(item.get("message")))
+        for item in changes
+        if isinstance(item, dict)
+    }
+    if key not in existing:
+        changes.append(normalized)
+
+
+def append_pronunciation_note_once(target: dict[str, Any], message: str) -> None:
+    note = clean_study_text(target.get("pronunciation_note") or "")
+    if message in note:
+        return
+    target["pronunciation_note"] = f"{note} {message}".strip()[:260].rstrip()
 
 
 def remove_pronunciation_issue_code(target: dict[str, Any], code: str) -> None:
@@ -11725,8 +12107,23 @@ def maybe_prefix_inferred_note(target: dict[str, Any], meta: dict[str, Any]) -> 
     prefix = "未实听，按字幕和常见口语规律推测。"
     if note and "未实听" not in note:
         target["pronunciation_note"] = f"{prefix}{note}"
+        add_pronunciation_field_change(
+            target,
+            "pronunciation_note",
+            "downgraded",
+            "SUBTITLE_INFERRED_NOTE_PREFIXED",
+            "发音说明已标明：未实听，仅按字幕和常见口语规律推测。",
+            original_value=note,
+        )
     elif not note:
         target["pronunciation_note"] = prefix
+        add_pronunciation_field_change(
+            target,
+            "pronunciation_note",
+            "not_generated",
+            "SUBTITLE_INFERRED_NOTE_ADDED",
+            "未生成可靠发音说明，已补充未实听提示。",
+        )
 
 
 def sanitize_pronunciation_fields(target: dict[str, Any], language: Any = "English") -> list[str]:
@@ -11744,53 +12141,71 @@ def sanitize_pronunciation_fields(target: dict[str, Any], language: Any = "Engli
         if raw and not normalized:
             issue = pronunciation_issue(key, "block", "PRONUNCIATION_FIELD_UNUSABLE", f"{key} 含不适合该语言读法字段的内容，已清空。")
             add_pronunciation_issue(target, issue)
+            add_pronunciation_field_change(target, key, "cleared", issue["code"], issue["message"], original_value=raw)
+            if key == "source_spoken_ipa":
+                append_pronunciation_note_once(target, "原句听感未可靠生成，已隐藏。")
             set_pronunciation_field_confidence(target, key, "low")
             issues.append(issue["message"])
         if target_language == "en" and key == "spoken_ipa" and normalized and spoken_ipa_is_unhelpful_duplicate(target, normalized):
+            original_normalized = normalized
             normalized = ""
             issue = pronunciation_issue("spoken_ipa", "block", "SPOKEN_SAME_AS_STANDARD", "spoken_ipa 与标准读法完全相同，缺少口语听感，已清空。")
             add_pronunciation_issue(target, issue)
+            add_pronunciation_field_change(target, "spoken_ipa", "hidden", issue["code"], issue["message"], original_value=original_normalized)
             set_pronunciation_field_confidence(target, "spoken_ipa", "low")
             issues.append(issue["message"])
         if target_language == "en" and key == "source_spoken_ipa" and normalized and source_spoken_ipa_is_too_short(target, normalized):
+            original_normalized = normalized
             normalized = ""
             issue = pronunciation_issue("source_spoken_ipa", "block", "SOURCE_PRONUNCIATION_TOO_SHORT", "source_spoken_ipa 不是完整原句听感，已清空。")
             add_pronunciation_issue(target, issue)
+            add_pronunciation_field_change(target, "source_spoken_ipa", "hidden", issue["code"], issue["message"], original_value=original_normalized)
+            append_pronunciation_note_once(target, "原句听感未可靠生成，已隐藏。")
             set_pronunciation_field_confidence(target, "source_spoken_ipa", "low")
             issues.append(issue["message"])
         if target_language == "es" and normalized and "θ" in normalized:
+            original_normalized = normalized
             normalized = ""
             issue = pronunciation_issue(key, "block", "SPANISH_LATAM_THETA", "默认拉美西语 profile 不使用 /θ/，该读法字段已清空。")
             add_pronunciation_issue(target, issue)
+            add_pronunciation_field_change(target, key, "cleared", issue["code"], issue["message"], original_value=original_normalized)
             set_pronunciation_field_confidence(target, key, "low")
             issues.append(issue["message"])
         if target_language == "ja" and key == "phonetic_ipa" and normalized:
             source_or_answer = str(target.get("answer_core") or target.get("phrase") or target.get("english") or "")
             if looks_like_romaji_only(normalized):
+                original_normalized = normalized
                 normalized = ""
                 issue = pronunciation_issue("phonetic_ipa", "block", "JAPANESE_ROMAJI_ONLY", "日语标准读法不能只有 romaji，已清空。")
                 add_pronunciation_issue(target, issue)
+                add_pronunciation_field_change(target, "phonetic_ipa", "cleared", issue["code"], issue["message"], original_value=original_normalized)
                 set_pronunciation_field_confidence(target, "phonetic_ipa", "low")
                 issues.append(issue["message"])
             elif looks_like_ipa_only(normalized):
+                original_normalized = normalized
                 normalized = ""
                 issue = pronunciation_issue("phonetic_ipa", "block", "JAPANESE_IPA_ONLY", "日语标准读法不能只有 IPA，已清空。")
                 add_pronunciation_issue(target, issue)
+                add_pronunciation_field_change(target, "phonetic_ipa", "cleared", issue["code"], issue["message"], original_value=original_normalized)
                 set_pronunciation_field_confidence(target, "phonetic_ipa", "low")
                 issues.append(issue["message"])
             elif has_cjk(source_or_answer) and not has_japanese_kana(normalized):
+                original_normalized = normalized
                 normalized = ""
                 issue = pronunciation_issue("phonetic_ipa", "block", "JAPANESE_KANA_REQUIRED", "日语含汉字时必须给假名读音，已清空。")
                 add_pronunciation_issue(target, issue)
+                add_pronunciation_field_change(target, "phonetic_ipa", "cleared", issue["code"], issue["message"], original_value=original_normalized)
                 set_pronunciation_field_confidence(target, "phonetic_ipa", "low")
                 issues.append(issue["message"])
         if target_language == "ru" and key == "phonetic_ipa" and normalized:
             words = re.findall(r"[А-Яа-яЁё\u0301]+", unicodedata.normalize("NFD", normalized))
             unstressed = [word for word in words if russian_word_needs_stress(word) and not russian_word_has_stress(word)]
             if unstressed:
+                original_normalized = normalized
                 normalized = ""
                 issue = pronunciation_issue("phonetic_ipa", "block", "RUSSIAN_STRESS_REQUIRED", "俄语多音节实词必须标重音，已清空。")
                 add_pronunciation_issue(target, issue)
+                add_pronunciation_field_change(target, "phonetic_ipa", "cleared", issue["code"], issue["message"], original_value=original_normalized)
                 set_pronunciation_field_confidence(target, "phonetic_ipa", "low")
                 issues.append(issue["message"])
         if normalized:
@@ -11813,9 +12228,13 @@ def sanitize_pronunciation_fields(target: dict[str, Any], language: Any = "Engli
     if meta["generation_basis"] == "dictionary_only":
         for key in ("spoken_ipa", "source_spoken_ipa"):
             if target.get(key):
+                original_value = target.get(key)
                 target.pop(key, None)
                 issue = pronunciation_issue(key, "block", "DICTIONARY_ONLY_NO_SPOKEN", "dictionary_only 只保留标准读法，口语/原句听感已清空。")
                 add_pronunciation_issue(target, issue)
+                add_pronunciation_field_change(target, key, "hidden", issue["code"], issue["message"], original_value=original_value)
+                if key == "source_spoken_ipa":
+                    append_pronunciation_note_once(target, "原句听感未可靠生成，已隐藏。")
                 issues.append(issue["message"])
     maybe_prefix_inferred_note(target, meta)
 
@@ -11883,7 +12302,17 @@ def sanitize_pronunciation_fields(target: dict[str, Any], language: Any = "Engli
         field_confidence["phonetic_ipa"] = "high"
     for key in ("spoken_ipa", "source_spoken_ipa"):
         if target.get(key):
+            before_confidence = field_confidence.get(key)
             field_confidence[key] = cap_confidence_for_basis(field_confidence.get(key), meta["generation_basis"], field=key)
+            if meta["generation_basis"] != "audio_verified" and before_confidence == "high" and field_confidence[key] != "high":
+                add_pronunciation_field_change(
+                    target,
+                    key,
+                    "downgraded",
+                    "SUBTITLE_INFERRED_CONFIDENCE_CAPPED",
+                    f"{key} 未经音频实听，置信度已从 high 降级。",
+                    original_value=target.get(key),
+                )
     if target.get("pronunciation_note") and not field_confidence.get("pronunciation_note"):
         field_confidence["pronunciation_note"] = "medium"
     confidence = confidence_min(
@@ -12348,7 +12777,47 @@ def language_code(language: str) -> str:
     return normalize_learning_language(language)
 
 
-def transcode_wav_file_to_mp3(wav_path: Path, output_path: Path, label: str) -> None:
+def tts_volume_filter_args(output_volume: Any) -> list[str]:
+    volume = normalized_tts_output_volume(output_volume)
+    if abs(volume - 1.0) < 0.001:
+        return []
+    return ["-af", f"volume={volume:.3f}"]
+
+
+def apply_tts_output_volume(output_path: Path, output_volume: Any, label: str) -> None:
+    volume_args = tts_volume_filter_args(output_volume)
+    if not volume_args:
+        return
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError(f"找不到 ffmpeg，无法调整 {label} 的导出音量。")
+    volume_path = output_path.with_name(f"{output_path.stem}.volume{output_path.suffix}")
+    completed = subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(output_path),
+            *volume_args,
+            "-acodec",
+            "libmp3lame",
+            "-q:a",
+            "5",
+            str(volume_path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        **hidden_subprocess_flags(),
+    )
+    if completed.returncode != 0:
+        volume_path.unlink(missing_ok=True)
+        raise RuntimeError(f"{label} 音量处理失败：{completed.stderr[-800:]}")
+    volume_path.replace(output_path)
+
+
+def transcode_wav_file_to_mp3(wav_path: Path, output_path: Path, label: str, output_volume: Any = 0.65) -> None:
     if not shutil.which("ffmpeg"):
         wav_path.unlink(missing_ok=True)
         raise RuntimeError(f"找不到 ffmpeg，无法把 {label} 返回的音频转成 Anki 用的 mp3。")
@@ -12358,6 +12827,7 @@ def transcode_wav_file_to_mp3(wav_path: Path, output_path: Path, label: str) -> 
             "-y",
             "-i",
             str(wav_path),
+            *tts_volume_filter_args(output_volume),
             "-acodec",
             "libmp3lame",
             "-q:a",
@@ -12397,6 +12867,7 @@ def synthesize_tts(
     if provider in {"grok", "xai"}:
         audio = call_tts_audio(tts, text, project.get("language", "en"))
         output_path.write_bytes(audio)
+        apply_tts_output_volume(output_path, tts.get("output_volume"), "Grok TTS")
         return True
 
     if is_mimo_config(tts):
@@ -12405,7 +12876,7 @@ def synthesize_tts(
         wav_path = output_path.with_suffix(".mimo.wav")
         audio = call_tts_audio(tts, text, project.get("language", "en"))
         wav_path.write_bytes(audio)
-        transcode_wav_file_to_mp3(wav_path, output_path, "MIMO TTS")
+        transcode_wav_file_to_mp3(wav_path, output_path, "MIMO TTS", tts.get("output_volume"))
         return True
 
     if provider in QWEN_TTS_PROVIDERS:
@@ -12414,7 +12885,7 @@ def synthesize_tts(
         wav_path = output_path.with_suffix(".qwen.wav")
         audio = call_tts_audio(tts, text, project.get("language", "en"))
         wav_path.write_bytes(audio)
-        transcode_wav_file_to_mp3(wav_path, output_path, "Qwen TTS")
+        transcode_wav_file_to_mp3(wav_path, output_path, "Qwen TTS", tts.get("output_volume"))
         return True
 
     if is_gemini_vertex_tts_config(tts):
@@ -12423,7 +12894,7 @@ def synthesize_tts(
         wav_path = output_path.with_suffix(".gemini_vertex.wav")
         audio = call_tts_audio(tts, text, project.get("language", "en"))
         wav_path.write_bytes(audio)
-        transcode_wav_file_to_mp3(wav_path, output_path, "Gemini Vertex TTS")
+        transcode_wav_file_to_mp3(wav_path, output_path, "Gemini Vertex TTS", tts.get("output_volume"))
         return True
 
     if provider in OPENAI_COMPATIBLE_PROVIDERS:
@@ -12431,6 +12902,7 @@ def synthesize_tts(
             return False
         audio = call_tts_audio(tts, text, project.get("language", "en"))
         output_path.write_bytes(audio)
+        apply_tts_output_volume(output_path, tts.get("output_volume"), "OpenAI-compatible TTS")
         return True
 
     if provider == "gemini":
@@ -12468,6 +12940,7 @@ def synthesize_tts(
                 "1",
                 "-i",
                 str(pcm_path),
+                *tts_volume_filter_args(tts.get("output_volume")),
                 "-acodec",
                 "libmp3lame",
                 "-q:a",
@@ -13120,6 +13593,96 @@ def check_anki_connect() -> tuple[bool, str]:
         return False, str(err)
 
 
+def anki_executable_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    env_path = str(os.environ.get("ANKI_EXE") or "").strip().strip('"').strip("'")
+    if env_path:
+        candidates.append(Path(env_path))
+
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        base = Path(local_app_data)
+        candidates.extend(
+            [
+                base / "AnkiProgramFiles" / ".venv" / "Scripts" / "anki.exe",
+                base / "Programs" / "Anki" / "anki.exe",
+            ]
+        )
+
+    program_files = [os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)")]
+    for root in program_files:
+        if root:
+            candidates.append(Path(root) / "Anki" / "anki.exe")
+
+    which_anki = shutil.which("anki")
+    if which_anki:
+        candidates.append(Path(which_anki))
+
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for candidate in candidates:
+        key = str(candidate).lower()
+        if key and key not in seen:
+            seen.add(key)
+            unique.append(candidate)
+    return unique
+
+
+def find_anki_executable() -> str:
+    for candidate in anki_executable_candidates():
+        if candidate.exists():
+            return str(candidate)
+    return ""
+
+
+def is_process_running(image_name: str) -> bool:
+    if os.name == "nt":
+        try:
+            completed = subprocess.run(
+                ["tasklist", "/FI", f"IMAGENAME eq {image_name}"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
+            )
+            return completed.returncode == 0 and image_name.lower() in completed.stdout.lower()
+        except Exception:
+            return False
+    try:
+        completed = subprocess.run(
+            ["pgrep", "-f", image_name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+        )
+        return completed.returncode == 0 and bool(completed.stdout.strip())
+    except Exception:
+        return False
+
+
+def check_anki_desktop() -> dict[str, Any]:
+    anki_path = find_anki_executable()
+    anki_installed = bool(anki_path)
+    anki_running = is_process_running("anki.exe") if os.name == "nt" else is_process_running("anki")
+    if anki_installed and anki_running:
+        detail = f"已安装并正在运行：{anki_path}"
+    elif anki_installed:
+        detail = f"已安装但未打开：{anki_path}"
+    else:
+        detail = "未找到 Anki 桌面端；无法直连导入或安装 AnkiConnect。"
+    return {
+        "anki_installed": anki_installed,
+        "anki_path": anki_path,
+        "anki_running": anki_running,
+        "detail": detail,
+    }
+
+
 def handle_check_env(_: dict[str, Any]) -> dict[str, Any]:
     try:
         import genanki  # noqa: F401
@@ -13155,6 +13718,7 @@ def handle_check_env(_: dict[str, Any]) -> dict[str, Any]:
         if completed.returncode == 0:
             ffmpeg_version = (completed.stdout.splitlines() or [""])[0]
     js_runtime = "deno" if shutil.which("deno") else ("node" if shutil.which("node") else "")
+    anki_status = check_anki_desktop()
     anki_connect_ready, anki_connect_detail = check_anki_connect()
     venv_ready = ".venv" in str(Path(sys.executable).resolve()).lower()
     packages = {
@@ -13207,11 +13771,38 @@ def handle_check_env(_: dict[str, Any]) -> dict[str, Any]:
             "fix": "安装 Deno 2.0+ 或 Node.js 20+。",
         },
         {
+            "id": "anki",
+            "label": "Anki 桌面端",
+            "status": "ok" if anki_status["anki_installed"] else "blocked",
+            "detail": anki_status["detail"],
+            "fix": "安装 Anki，或设置 ANKI_EXE 指向 anki.exe。" if not anki_status["anki_installed"] else "打开 Anki 后重新检查。",
+        },
+        {
             "id": "anki_connect",
             "label": "AnkiConnect 导入核验",
-            "status": "ok" if anki_connect_ready else "action",
-            "detail": anki_connect_detail if anki_connect_ready else "Anki 未打开或未安装 AnkiConnect；仍可导出 APKG 后手动导入。",
-            "fix": "打开 Anki，并确认 AnkiConnect 插件启用。",
+            "status": "ok" if anki_connect_ready else ("blocked" if not anki_status["anki_installed"] else "action"),
+            "detail": (
+                anki_connect_detail
+                if anki_connect_ready
+                else (
+                    "需要先安装 Anki 桌面端。"
+                    if not anki_status["anki_installed"]
+                    else (
+                        "Anki 已安装但未打开；打开 Anki 后才能连接 AnkiConnect。"
+                        if not anki_status["anki_running"]
+                        else "Anki 已打开，但 AnkiConnect 插件未连接或未安装。"
+                    )
+                )
+            ),
+            "fix": (
+                "先安装 Anki。"
+                if not anki_status["anki_installed"]
+                else (
+                    "打开 Anki 后重新检查。"
+                    if not anki_status["anki_running"]
+                    else "安装/启用 AnkiConnect 插件，代码 2055492159。"
+                )
+            ),
         },
     ]
 
@@ -13226,11 +13817,329 @@ def handle_check_env(_: dict[str, Any]) -> dict[str, Any]:
         "yt_dlp": bool(yt_dlp_command),
         "yt_dlp_version": yt_dlp_version,
         "yt_dlp_js_runtime": js_runtime,
+        "anki_installed": anki_status["anki_installed"],
+        "anki_path": anki_status["anki_path"],
+        "anki_running": anki_status["anki_running"],
         "anki_connect": anki_connect_ready,
         "anki_connect_detail": anki_connect_detail,
         "packages": packages,
         "status_items": status_items,
         "worker": str(Path(__file__).resolve()),
+    }
+
+
+def repair_project_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def summarize_repair_output(completed: subprocess.CompletedProcess[str]) -> str:
+    output = "\n".join([completed.stdout or "", completed.stderr or ""]).strip()
+    output = output.replace("\r\n", "\n").replace("\r", "\n")
+    if not output:
+        return f"退出码 {completed.returncode}"
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    return "\n".join(lines[-8:])[:1200]
+
+
+def run_repair_step(
+    action_id: str,
+    label: str,
+    command: list[str],
+    *,
+    timeout: int = 600,
+    next_step: str = "",
+) -> dict[str, Any]:
+    emit_progress("repair_env", action_id, 20, f"正在修复：{label}")
+    try:
+        completed = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "id": action_id,
+            "label": label,
+            "status": "failed",
+            "detail": f"修复超时，超过 {timeout} 秒没有完成。",
+            "command": " ".join(command),
+            "next_step": next_step,
+        }
+    except Exception as err:
+        return {
+            "id": action_id,
+            "label": label,
+            "status": "failed",
+            "detail": f"无法执行修复命令：{err}",
+            "command": " ".join(command),
+            "next_step": next_step,
+        }
+    return {
+        "id": action_id,
+        "label": label,
+        "status": "success" if completed.returncode == 0 else "failed",
+        "detail": summarize_repair_output(completed),
+        "command": " ".join(command),
+        "next_step": "" if completed.returncode == 0 else next_step,
+    }
+
+
+def launch_anki_desktop(anki_path: str) -> tuple[bool, str]:
+    if not anki_path:
+        return False, "未找到 anki.exe。"
+    try:
+        subprocess.Popen([anki_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True, f"已尝试打开 Anki：{anki_path}"
+    except Exception as err:
+        return False, f"无法打开 Anki：{err}"
+
+
+def handle_repair_env(payload: dict[str, Any]) -> dict[str, Any]:
+    target = str(payload.get("target") or "auto")
+    if target not in {"all", "auto", "python_packages", "ffmpeg", "js_runtime", "anki", "anki_connect"}:
+        target = "auto"
+    root = repair_project_root()
+    requirements = root / "workers" / "requirements.txt"
+    venv_python = root / ".venv" / "Scripts" / "python.exe"
+    actions: list[dict[str, Any]] = []
+
+    emit_progress("repair_env", "start", 5, "正在准备环境修复。")
+
+    needs_python_repair = (
+        not venv_python.exists()
+        or not package_version("genanki")
+        or not yt_dlp_base_command()
+    )
+    if target in {"auto", "python_packages"} or (target == "all" and needs_python_repair):
+        if not venv_python.exists():
+            actions.append(
+                run_repair_step(
+                    "venv",
+                    "创建项目 Python venv",
+                    [sys.executable, "-m", "venv", str(root / ".venv")],
+                    timeout=300,
+                    next_step="如果创建失败，请确认已安装 Python 3.11+，并重新运行 scripts/setup_runtime.ps1。",
+                )
+            )
+        else:
+            actions.append(
+                {
+                    "id": "venv",
+                    "label": "项目 Python venv",
+                    "status": "skipped",
+                    "detail": f"已存在：{venv_python}",
+                    "next_step": "",
+                }
+            )
+
+        installer_python = str(venv_python if venv_python.exists() else Path(sys.executable))
+        actions.append(
+            run_repair_step(
+                "pip",
+                "升级 pip",
+                [installer_python, "-m", "pip", "install", "--upgrade", "pip"],
+                timeout=300,
+                next_step="如果 pip 升级失败，请检查网络代理，或手动运行 scripts/setup_runtime.ps1。",
+            )
+        )
+        actions.append(
+            run_repair_step(
+                "python_packages",
+                "安装/更新 worker Python 依赖",
+                [installer_python, "-m", "pip", "install", "--upgrade", "-r", str(requirements)],
+                timeout=900,
+                next_step="如果依赖安装失败，请检查网络代理，或手动运行 scripts/setup_runtime.ps1。",
+                )
+            )
+
+    elif target == "all":
+        actions.append(
+            {
+                "id": "python_packages",
+                "label": "Python worker 依赖",
+                "status": "skipped",
+                "detail": "项目 venv、genanki 和 yt-dlp 已经可用。",
+                "next_step": "",
+            }
+        )
+
+    if target in {"all", "ffmpeg"}:
+        if shutil.which("ffmpeg"):
+            actions.append(
+                {
+                    "id": "ffmpeg",
+                    "label": "FFmpeg",
+                    "status": "skipped",
+                    "detail": "FFmpeg 已经在 PATH 中。",
+                    "next_step": "",
+                }
+            )
+        else:
+            winget = shutil.which("winget")
+            if not winget:
+                actions.append(
+                    {
+                        "id": "ffmpeg",
+                        "label": "安装 FFmpeg",
+                        "status": "manual",
+                        "detail": "本机没有 winget，无法自动安装 FFmpeg。",
+                        "next_step": "请从 https://www.gyan.dev/ffmpeg/builds/ 下载 FFmpeg，并把 bin 目录加入 PATH。",
+                    }
+                )
+            else:
+                actions.append(
+                    run_repair_step(
+                        "ffmpeg",
+                        "通过 winget 安装 FFmpeg",
+                        [
+                            winget,
+                            "install",
+                            "--id",
+                            "Gyan.FFmpeg",
+                            "-e",
+                            "--accept-package-agreements",
+                            "--accept-source-agreements",
+                        ],
+                        timeout=1200,
+                        next_step="安装后请重启应用或重新打开终端，让 PATH 生效；如果失败，请手动安装 FFmpeg。",
+                    )
+                )
+
+    if target in {"all", "js_runtime"}:
+        if shutil.which("deno") or shutil.which("node"):
+            actions.append(
+                {
+                    "id": "js_runtime",
+                    "label": "Deno / Node",
+                    "status": "skipped",
+                    "detail": "已经检测到 Deno 或 Node。",
+                    "next_step": "",
+                }
+            )
+        else:
+            winget = shutil.which("winget")
+            if not winget:
+                actions.append(
+                    {
+                        "id": "js_runtime",
+                        "label": "安装 Deno",
+                        "status": "manual",
+                        "detail": "本机没有 winget，无法自动安装 Deno。",
+                        "next_step": "请安装 Deno 2.0+ 或 Node.js 20+，并加入 PATH。",
+                    }
+                )
+            else:
+                actions.append(
+                    run_repair_step(
+                        "js_runtime",
+                        "通过 winget 安装 Deno",
+                        [winget, "install", "--id", "DenoLand.Deno", "-e", "--accept-package-agreements", "--accept-source-agreements"],
+                        timeout=900,
+                        next_step="安装后请重启应用或重新打开终端，让 PATH 生效。",
+                    )
+                )
+
+    if target in {"all", "anki"}:
+        anki_path = find_anki_executable()
+        if anki_path:
+            actions.append(
+                {
+                    "id": "anki",
+                    "label": "Anki 桌面端",
+                    "status": "skipped",
+                    "detail": f"已找到：{anki_path}",
+                    "next_step": "",
+                }
+            )
+        else:
+            winget = shutil.which("winget")
+            if not winget:
+                actions.append(
+                    {
+                        "id": "anki",
+                        "label": "安装 Anki 桌面端",
+                        "status": "manual",
+                        "detail": "本机没有 winget，无法自动安装 Anki。",
+                        "next_step": "请从 https://apps.ankiweb.net/ 下载并安装 Anki，或设置 ANKI_EXE 指向 anki.exe。",
+                    }
+                )
+            else:
+                actions.append(
+                    run_repair_step(
+                        "anki",
+                        "通过 winget 安装 Anki",
+                        [
+                            winget,
+                            "install",
+                            "--id",
+                            "Anki.Anki",
+                            "-e",
+                            "--accept-package-agreements",
+                            "--accept-source-agreements",
+                        ],
+                        timeout=1200,
+                        next_step="安装后请重新打开应用，或设置 ANKI_EXE 指向 anki.exe。",
+                    )
+                )
+
+    if target in {"all", "anki_connect"}:
+        anki_connect_ready, _ = check_anki_connect()
+        anki_path = find_anki_executable()
+        if anki_connect_ready:
+            actions.append(
+                {
+                    "id": "anki_connect",
+                    "label": "AnkiConnect",
+                    "status": "skipped",
+                    "detail": "AnkiConnect 已经可用。",
+                    "next_step": "",
+                }
+            )
+        elif not anki_path:
+            actions.append(
+                {
+                    "id": "anki_connect",
+                    "label": "AnkiConnect",
+                    "status": "manual",
+                    "detail": "还没有找到 Anki 桌面端，暂时不能配置 AnkiConnect。",
+                    "next_step": "先安装 Anki，再打开 Anki → 工具 → 插件 → 获取插件 → 输入代码 2055492159。",
+                }
+            )
+        else:
+            if not (is_process_running("anki.exe") if os.name == "nt" else is_process_running("anki")):
+                launched, detail = launch_anki_desktop(anki_path)
+                actions.append(
+                    {
+                        "id": "anki_launch",
+                        "label": "打开 Anki 桌面端",
+                        "status": "success" if launched else "failed",
+                        "detail": detail,
+                        "next_step": "" if launched else "请手动打开 Anki 后继续安装插件。",
+                    }
+                )
+            actions.append(
+                {
+                    "id": "anki_connect",
+                    "label": "安装/启用 AnkiConnect",
+                    "status": "manual",
+                    "detail": "AnkiConnect 需要在 Anki 内确认安装，应用不能静默替你安装插件。",
+                    "next_step": "Anki 打开后：工具 → 插件 → 获取插件 → 输入代码 2055492159 → 确认安装 → 重启 Anki → 回到这里重新检查。",
+                }
+            )
+
+    ok = all(action["status"] in {"success", "skipped", "manual"} for action in actions)
+    failed = sum(1 for action in actions if action["status"] == "failed")
+    manual = sum(1 for action in actions if action["status"] == "manual")
+    emit_progress("repair_env", "done", 100, "环境修复步骤已完成，正在等待复检。")
+    return {
+        "ok": ok and failed == 0,
+        "target": target,
+        "summary": f"已执行 {len(actions)} 个修复步骤；失败 {failed} 个，需手动处理 {manual} 个。",
+        "actions": actions,
     }
 
 

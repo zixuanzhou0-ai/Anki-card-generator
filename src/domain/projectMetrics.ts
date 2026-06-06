@@ -142,6 +142,16 @@ export function getQualityFunnel(
     group.reduce((total, segment) => total + segment.cards.filter((card) => card.enabled).length, 0),
   )
   const selectedCardCount = countSelectedCards(project)
+  const inventory = Array.isArray(project?.learning_point_inventory) ? project.learning_point_inventory : []
+  const inventoryCounts = inventory.reduce(
+    (acc, item) => {
+      if (item.status === 'candidate_only') acc.candidateOnly += 1
+      if (item.status === 'hidden_duplicate') acc.hiddenDuplicate += 1
+      if (item.status === 'hard_blocked') acc.hardBlocked += 1
+      return acc
+    },
+    { candidateOnly: 0, hiddenDuplicate: 0, hardBlocked: 0 },
+  )
   const scored = segments
     .map((segment) => phraseValueScore(segment.phrase_value_score))
     .filter((score): score is number => typeof score === 'number')
@@ -150,7 +160,7 @@ export function getQualityFunnel(
     ...provided,
     source_sentence_count: provided.source_sentence_count ?? sourceIds.size,
     candidate_segments: provided.candidate_segments ?? segments.length,
-    learning_point_count: provided.learning_point_count ?? learningPointCount,
+    learning_point_count: provided.learning_point_count ?? Math.max(learningPointCount, inventory.length),
     recommended_learning_point_count: provided.recommended_learning_point_count ?? qualityCounts.recommended,
     review_learning_point_count: provided.review_learning_point_count ?? qualityCounts.review,
     card_count: provided.card_count ?? qualityCounts.total,
@@ -161,6 +171,12 @@ export function getQualityFunnel(
       (provided.rejected_learning_point_count ?? 0) + (provided.duplicate_learning_point_count ?? 0),
     low_value_filtered_count: provided.low_value_filtered_count ?? provided.rejected_learning_point_count ?? 0,
     blocked_quality_issue_count: provided.blocked_quality_issue_count ?? provided.rejected_cards ?? 0,
+    candidate_only_learning_point_count:
+      provided.candidate_only_learning_point_count ?? inventoryCounts.candidateOnly,
+    hidden_duplicate_learning_point_count:
+      provided.hidden_duplicate_learning_point_count ?? inventoryCounts.hiddenDuplicate,
+    hard_blocked_learning_point_count:
+      provided.hard_blocked_learning_point_count ?? inventoryCounts.hardBlocked,
     level_mode: provided.level_mode ?? project?.level_mode ?? 'auto',
     recommended_card_count: provided.recommended_card_count ?? qualityCounts.recommended,
     review_card_count: provided.review_card_count ?? qualityCounts.review,

@@ -53,19 +53,18 @@ export function ReviewSummaryPanel({
   const maxLearningPoints = qualityFunnel.max_learning_points_per_source ?? 4
   const usableCount = qualityFunnel.usable_card_count ?? qualityFunnel.card_count ?? qualityCounts.total
   const selectedCount = selectedCardCount
-  const filteredCount =
-    qualityFunnel.filtered_learning_point_count ??
-    (qualityFunnel.rejected_learning_point_count ?? qualityDiagnostics.rejectedSegments) +
-      (qualityFunnel.duplicate_learning_point_count ?? qualityDiagnostics.duplicate)
   const duplicateCount = qualityFunnel.duplicate_learning_point_count ?? qualityDiagnostics.duplicate
-  const lowValueCount = qualityFunnel.low_value_filtered_count ?? qualityFunnel.rejected_learning_point_count ?? qualityDiagnostics.rejectedSegments
+  const candidateOnlyCount = qualityFunnel.candidate_only_learning_point_count ?? 0
+  const hiddenDuplicateCount = qualityFunnel.hidden_duplicate_learning_point_count ?? duplicateCount
+  const hardBlockedCount = qualityFunnel.hard_blocked_learning_point_count ?? qualityFunnel.blocked_quality_issue_count ?? 0
+  const diagnosticCount = candidateOnlyCount + hiddenDuplicateCount + hardBlockedCount
   const levelLabel = project.level_mode === 'manual' ? level : '自动判断'
   const sourceSentenceCount = qualityFunnel.source_sentence_count ?? qualityFunnel.subtitle_cues
   const labels = isReading
     ? {
         score: '精读点质量',
         candidate: '精读点',
-        pipeline: '文档精读诊断',
+        pipeline: '文档精读过程',
         sourceUnits: '文档片段',
         usable: '可用精读卡',
         duplicate: '重复精读点',
@@ -74,7 +73,7 @@ export function ReviewSummaryPanel({
       ? {
           score: '知识点质量',
           candidate: '知识点',
-          pipeline: '文档知识诊断',
+          pipeline: '文档制卡过程',
           sourceUnits: '文档片段',
           usable: '可用知识卡',
           duplicate: '重复知识点',
@@ -82,7 +81,7 @@ export function ReviewSummaryPanel({
       : {
           score: '平均词伙评分',
           candidate: '候选片段',
-          pipeline: '智能筛选诊断',
+          pipeline: '智能筛选过程',
           sourceUnits: '字幕句',
           usable: '可用卡片',
           duplicate: '重复合并',
@@ -120,13 +119,13 @@ export function ReviewSummaryPanel({
           </small>
         </div>
         <div className="metric-card">
-          <span>过滤学习点</span>
-          <strong>{filteredCount}</strong>
-          <small>{qualityDiagnostics.shortReason || '低价值、重复或需要人工补救的点只进入诊断'}</small>
+          <span>更多学习点</span>
+          <strong>{diagnosticCount}</strong>
+          <small>{diagnosticCount ? '有些学习点未制卡，可打开“更多学习点”查看原因' : '合法学习点已自动生成卡片'}</small>
         </div>
         <div className="metric-card">
-          <span>重复 / 低价值</span>
-          <strong>{`${duplicateCount}/${lowValueCount}`}</strong>
+          <span>重复 / 硬阻断</span>
+          <strong>{`${hiddenDuplicateCount}/${hardBlockedCount}`}</strong>
           <small>{`${labels.candidate} ${qualityDiagnostics.candidates} · ${labels.score} ${
             qualityDiagnostics.avgScore === null ? '-' : qualityDiagnostics.avgScore.toFixed(1)
           }`}</small>
@@ -149,7 +148,7 @@ export function ReviewSummaryPanel({
             <Sparkles size={14} />
             {labels.pipeline}
           </span>
-          <strong>{`可用 ${usableCount} · 已选 ${selectedCount} · 过滤 ${filteredCount}`}</strong>
+          <strong>{`可用 ${usableCount} · 已选 ${selectedCount} · 更多 ${diagnosticCount}`}</strong>
         </summary>
         <div className="quality-funnel" aria-label="质量漏斗">
           <span>
@@ -169,8 +168,16 @@ export function ReviewSummaryPanel({
             <small>{labels.usable}</small>
           </span>
           <span>
-            <strong>{filteredCount}</strong>
-            <small>过滤学习点</small>
+            <strong>{diagnosticCount}</strong>
+            <small>更多学习点</small>
+          </span>
+          <span>
+            <strong>{hiddenDuplicateCount}</strong>
+            <small>重复折叠</small>
+          </span>
+          <span>
+            <strong>{hardBlockedCount}</strong>
+            <small>硬阻断</small>
           </span>
           <span>
             <strong>{selectedCount}</strong>

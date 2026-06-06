@@ -32,6 +32,7 @@ const WORKER_ERROR_PREFIX: &str = "__ANKI_CARD_ERROR__";
 const SECRET_SERVICE: &str = "Anki Card Generator";
 const SECRET_FALLBACK_DIR: &str = "com.ankicard.generator";
 const ALLOWED_SECRET_KEYS: &[&str] = &["model_api_key", "tts_api_key"];
+const ALLOWED_SECRET_KEY_PREFIXES: &[&str] = &["model_profile_key_", "tts_profile_key_"];
 const MIN_WINDOW_WIDTH: f64 = 1180.0;
 const MIN_WINDOW_HEIGHT: f64 = 780.0;
 
@@ -64,12 +65,36 @@ struct WorkerCancelResult {
     cancelled: bool,
 }
 
+#[derive(Serialize)]
+struct BootstrapRepairAction {
+    id: String,
+    label: String,
+    status: String,
+    detail: String,
+    command: Option<String>,
+    next_step: Option<String>,
+}
+
+#[derive(Serialize)]
+struct BootstrapRepairResult {
+    ok: bool,
+    target: String,
+    summary: String,
+    actions: Vec<BootstrapRepairAction>,
+}
+
 fn validate_secret_key(key: &str) -> Result<(), String> {
-    if ALLOWED_SECRET_KEYS.contains(&key) {
-        Ok(())
-    } else {
-        Err(format!("不允许保存这个凭据键：{key}"))
+    let known_key = ALLOWED_SECRET_KEYS.contains(&key);
+    let known_prefix = ALLOWED_SECRET_KEY_PREFIXES
+        .iter()
+        .any(|prefix| key.starts_with(prefix));
+    let safe_chars = key
+        .chars()
+        .all(|value| value.is_ascii_alphanumeric() || value == '_' || value == '-');
+    if known_key || (known_prefix && safe_chars && key.len() <= 96) {
+        return Ok(());
     }
+    Err(format!("不允许保存这个凭据键：{key}"))
 }
 
 fn save_keyring_secret(key: &str, value: &str) -> Result<(), String> {
@@ -281,7 +306,13 @@ fn find_worker(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 fn worker_command_allowed(command: &str) -> bool {
     matches!(
         command,
-        "check_env" | "generate" | "export" | "test_api" | "test_tts" | "verify_anki_import"
+        "check_env"
+            | "repair_env"
+            | "generate"
+            | "export"
+            | "test_api"
+            | "test_tts"
+            | "verify_anki_import"
     )
 }
 
@@ -321,16 +352,100 @@ fn python_candidates(worker: &Path) -> Vec<PathBuf> {
         candidates.push(ancestor.join(".venv").join("bin").join("python"));
     }
 
+    #[cfg(windows)]
+    {
+        if let Ok(local_app_data) = env::var("LOCALAPPDATA") {
+            let base = PathBuf::from(local_app_data).join("Programs").join("Python");
+            candidates.push(base.join("Python312").join("python.exe"));
+            candidates.push(base.join("Python313").join("python.exe"));
+        }
+        if let Ok(program_files) = env::var("ProgramFiles") {
+            let base = PathBuf::from(program_files);
+            candidates.push(base.join("Python312").join("python.exe"));
+            candidates.push(base.join("Python313").join("python.exe"));
+        }
+    }
+
     candidates.push(PathBuf::from("python"));
     candidates.push(PathBuf::from("python3"));
     candidates
 }
 
-fn find_python(worker: &Path) -> PathBuf {
+fn command_first_line(mut command: Command) -> Option<String> {
+    hide_console_window(&mut command);
+    command
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| {
+            let stdout_text = String::from_utf8_lossy(&output.stdout);
+            if let Some(line) = stdout_text.lines().map(str::trim).find(|value| !value.is_empty()) {
+                return Some(line.to_string());
+            }
+            let stderr_text = String::from_utf8_lossy(&output.stderr);
+            stderr_text
+                .lines()
+                .map(str::trim)
+                .find(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+}
+
+fn python_version(python: &Path) -> Option<String> {
+    let mut command = Command::new(python);
+    command.arg("--version");
+    command_first_line(command)
+}
+
+fn find_available_python(worker: &Path) -> Option<(PathBuf, String)> {
     python_candidates(worker)
         .into_iter()
-        .find(|path| path.exists() || path.components().count() == 1)
+        .find_map(|path| python_version(&path).map(|version| (path, version)))
+}
+
+fn find_python(worker: &Path) -> PathBuf {
+    find_available_python(worker)
+        .map(|(path, _)| path)
+        .or_else(|| {
+            python_candidates(worker)
+                .into_iter()
+                .find(|path| path.exists() || path.components().count() == 1)
+        })
         .unwrap_or_else(|| PathBuf::from("python"))
+}
+
+fn command_path(name: &str) -> Option<String> {
+    #[cfg(windows)]
+    let command = {
+        let mut command = Command::new("where");
+        command.arg(name);
+        command
+    };
+
+    #[cfg(not(windows))]
+    let command = {
+        let mut command = Command::new("which");
+        command.arg(name);
+        command
+    };
+
+    command_first_line(command)
+}
+
+fn command_version(name: &str, args: &[&str]) -> Option<String> {
+    let mut command = Command::new(name);
+    command.args(args);
+    command_first_line(command)
+}
+
+fn native_status_item(id: &str, label: &str, status: &str, detail: String, fix: &str) -> Value {
+    json!({
+        "id": id,
+        "label": label,
+        "status": status,
+        "detail": detail,
+        "fix": fix,
+    })
 }
 
 fn build_worker_command(
@@ -860,6 +975,325 @@ fn find_anki() -> Result<PathBuf, String> {
         })
 }
 
+fn process_running(image_name: &str) -> bool {
+    #[cfg(windows)]
+    {
+        let mut command = Command::new("tasklist");
+        command.args(["/FI", &format!("IMAGENAME eq {image_name}")]);
+        hide_console_window(&mut command);
+        return command
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| {
+                String::from_utf8_lossy(&output.stdout)
+                    .to_lowercase()
+                    .contains(&image_name.to_lowercase())
+            })
+            .unwrap_or(false);
+    }
+
+    #[cfg(not(windows))]
+    {
+        let mut command = Command::new("pgrep");
+        command.args(["-f", image_name]);
+        return command
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| !output.stdout.is_empty())
+            .unwrap_or(false);
+    }
+}
+
+fn bootstrap_worker_path(app: &tauri::AppHandle) -> PathBuf {
+    find_worker(app).unwrap_or_else(|_| {
+        env::current_dir()
+            .unwrap_or_default()
+            .join("workers")
+            .join("anki_worker.py")
+    })
+}
+
+#[tauri::command]
+fn check_bootstrap_env(app: tauri::AppHandle) -> Result<Value, String> {
+    let worker = bootstrap_worker_path(&app);
+    let python = find_available_python(&worker);
+    let ffmpeg_path = command_path("ffmpeg").unwrap_or_default();
+    let ffmpeg_version = if ffmpeg_path.is_empty() {
+        String::new()
+    } else {
+        command_version("ffmpeg", &["-version"]).unwrap_or_default()
+    };
+    let js_runtime = if command_path("deno").is_some() {
+        "deno"
+    } else if command_path("node").is_some() {
+        "node"
+    } else {
+        ""
+    };
+    let anki_path = find_anki().ok();
+    let anki_running = process_running("anki.exe") || process_running("anki");
+    let python_status = python
+        .as_ref()
+        .map(|(path, version)| {
+            native_status_item(
+                "python",
+                "Python 运行环境",
+                "ok",
+                format!("{version} · {}", path.display()),
+                "",
+            )
+        })
+        .unwrap_or_else(|| {
+            native_status_item(
+                "python",
+                "Python 运行环境",
+                "blocked",
+                "没有找到可用 Python；worker 无法启动。".to_string(),
+                "点击一键修复安装推荐 Python 3.12。",
+            )
+        });
+
+    let anki_detail = match &anki_path {
+        Some(path) if anki_running => format!("已安装并正在运行：{}", path.display()),
+        Some(path) => format!("已安装但未打开：{}", path.display()),
+        None => "未找到 Anki 桌面端。".to_string(),
+    };
+
+    let status_items = vec![
+        python_status,
+        native_status_item(
+            "venv",
+            "项目私有 venv",
+            if python.is_some() { "action" } else { "blocked" },
+            if python.is_some() {
+                "Python 可用；点击一键修复后会创建项目 .venv 并安装依赖。".to_string()
+            } else {
+                "需要先安装 Python，才能创建项目 .venv。".to_string()
+            },
+            "点击一键修复。",
+        ),
+        native_status_item(
+            "ffmpeg",
+            "FFmpeg 视频切片",
+            if ffmpeg_path.is_empty() { "blocked" } else { "ok" },
+            if ffmpeg_path.is_empty() {
+                "未在 PATH 找到 ffmpeg；本地视频导出会失败。".to_string()
+            } else {
+                ffmpeg_version
+            },
+            "点击一键修复尝试通过 winget 安装 FFmpeg。",
+        ),
+        native_status_item(
+            "genanki",
+            "genanki APKG 导出",
+            if python.is_some() { "action" } else { "blocked" },
+            "需要 Python worker 运行后安装/检查。".to_string(),
+            "点击一键修复安装 Python 依赖。",
+        ),
+        native_status_item(
+            "yt_dlp",
+            "yt-dlp URL 导入",
+            if python.is_some() { "action" } else { "blocked" },
+            "需要 Python worker 运行后安装/检查。".to_string(),
+            "点击一键修复安装 Python 依赖。",
+        ),
+        native_status_item(
+            "js_runtime",
+            "Deno / Node challenge solver",
+            if js_runtime.is_empty() { "action" } else { "ok" },
+            if js_runtime.is_empty() {
+                "YouTube n challenge 可能失败。".to_string()
+            } else {
+                js_runtime.to_string()
+            },
+            "点击一键修复尝试安装 Deno。",
+        ),
+        native_status_item(
+            "anki",
+            "Anki 桌面端",
+            if anki_path.is_some() { "ok" } else { "blocked" },
+            anki_detail,
+            "点击一键修复尝试安装 Anki。",
+        ),
+        native_status_item(
+            "anki_connect",
+            "AnkiConnect 导入核验",
+            if anki_path.is_some() { "action" } else { "blocked" },
+            if anki_path.is_some() {
+                "需要打开 Anki 并安装/启用 AnkiConnect 插件。".to_string()
+            } else {
+                "需要先安装 Anki 桌面端。".to_string()
+            },
+            "插件代码 2055492159。",
+        ),
+    ];
+
+    let (python_version, python_executable) = python
+        .map(|(path, version)| {
+            (
+                version.trim_start_matches("Python ").to_string(),
+                path.display().to_string(),
+            )
+        })
+        .unwrap_or_else(|| (String::new(), String::new()));
+
+    Ok(json!({
+        "python": python_version,
+        "python_executable": python_executable,
+        "venv": false,
+        "ffmpeg": !ffmpeg_path.is_empty(),
+        "ffmpeg_path": ffmpeg_path,
+        "ffmpeg_version": status_items.get(2).and_then(|item| item.get("detail")).and_then(Value::as_str).unwrap_or(""),
+        "genanki": false,
+        "yt_dlp": false,
+        "yt_dlp_version": "",
+        "yt_dlp_js_runtime": js_runtime,
+        "anki_installed": anki_path.is_some(),
+        "anki_path": anki_path.map(|path| path.display().to_string()).unwrap_or_default(),
+        "anki_running": anki_running,
+        "anki_connect": false,
+        "anki_connect_detail": "需要 Python worker 或 AnkiConnect 端口检查。",
+        "packages": {},
+        "status_items": status_items,
+        "worker": worker.display().to_string(),
+    }))
+}
+
+fn summarize_native_output(output: &std::process::Output) -> String {
+    let text = [
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+    ]
+    .join("\n")
+    .replace("\r\n", "\n")
+    .replace('\r', "\n");
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+    if lines.is_empty() {
+        return format!("退出码 {}", output.status.code().unwrap_or(-1));
+    }
+    lines
+        .iter()
+        .rev()
+        .take(8)
+        .copied()
+        .collect::<Vec<&str>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<&str>>()
+        .join("\n")
+}
+
+fn native_action(
+    id: &str,
+    label: &str,
+    status: &str,
+    detail: String,
+    command: Option<String>,
+    next_step: Option<String>,
+) -> BootstrapRepairAction {
+    BootstrapRepairAction {
+        id: id.to_string(),
+        label: label.to_string(),
+        status: status.to_string(),
+        detail,
+        command,
+        next_step,
+    }
+}
+
+#[tauri::command]
+fn repair_bootstrap_env(app: tauri::AppHandle, target: String) -> Result<BootstrapRepairResult, String> {
+    let normalized_target = if ["all", "python_runtime"].contains(&target.as_str()) {
+        target
+    } else {
+        "python_runtime".to_string()
+    };
+    let worker = bootstrap_worker_path(&app);
+    let mut actions = Vec::new();
+
+    if normalized_target == "all" || normalized_target == "python_runtime" {
+        if let Some((path, version)) = find_available_python(&worker) {
+            actions.push(native_action(
+                "python_runtime",
+                "Python 运行环境",
+                "skipped",
+                format!("已找到 {version}：{}", path.display()),
+                None,
+                None,
+            ));
+        } else if let Some(winget) = command_path("winget") {
+            let command_args = [
+                "install",
+                "--id",
+                "Python.Python.3.12",
+                "-e",
+                "--accept-package-agreements",
+                "--accept-source-agreements",
+            ];
+            let command_text = format!("{} {}", winget, command_args.join(" "));
+            let mut command = Command::new(&winget);
+            command.args(command_args);
+            hide_console_window(&mut command);
+            match command.output() {
+                Ok(output) => {
+                    let installed = find_available_python(&worker);
+                    let success = output.status.success() && installed.is_some();
+                    let detail = installed
+                        .map(|(path, version)| {
+                            format!("已安装并找到 {version}：{}", path.display())
+                        })
+                        .unwrap_or_else(|| summarize_native_output(&output));
+                    actions.push(native_action(
+                        "python_runtime",
+                        "通过 winget 安装推荐 Python 3.12",
+                        if success { "success" } else if output.status.success() { "manual" } else { "failed" },
+                        detail,
+                        Some(command_text),
+                        if success {
+                            None
+                        } else {
+                            Some("安装后如果仍未识别，请重启应用；也可以设置 ANKI_CARD_GENERATOR_PYTHON 指向 python.exe。".to_string())
+                        },
+                    ));
+                }
+                Err(err) => actions.push(native_action(
+                    "python_runtime",
+                    "通过 winget 安装推荐 Python 3.12",
+                    "failed",
+                    format!("无法执行 winget：{err}"),
+                    Some(command_text),
+                    Some("请手动安装 Python 3.12，或设置 ANKI_CARD_GENERATOR_PYTHON 指向 python.exe。".to_string()),
+                )),
+            }
+        } else {
+            actions.push(native_action(
+                "python_runtime",
+                "安装推荐 Python 3.12",
+                "manual",
+                "本机没有 winget，无法自动安装 Python。".to_string(),
+                None,
+                Some("请从 https://www.python.org/downloads/windows/ 安装 Python 3.12，并勾选 Add python.exe to PATH。".to_string()),
+            ));
+        }
+    }
+
+    let failed = actions.iter().filter(|action| action.status == "failed").count();
+    let manual = actions.iter().filter(|action| action.status == "manual").count();
+    Ok(BootstrapRepairResult {
+        ok: failed == 0,
+        target: normalized_target,
+        summary: format!(
+            "原生修复执行 {} 个步骤；失败 {} 个，需手动处理 {} 个。",
+            actions.len(),
+            failed,
+            manual
+        ),
+        actions,
+    })
+}
+
 fn clean_user_path(value: &str) -> String {
     value
         .trim()
@@ -1145,6 +1579,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             run_worker,
+            check_bootstrap_env,
+            repair_bootstrap_env,
             start_worker_job,
             cancel_worker_job,
             suggest_subtitle_path,

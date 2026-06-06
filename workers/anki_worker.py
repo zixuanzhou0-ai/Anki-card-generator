@@ -11,6 +11,7 @@ if str(WORKER_DIR) not in sys.path:
 from acg.commands.check_env import handle_check_env
 from acg.commands.export import handle_export
 from acg.commands.generate import handle_generate
+from acg.commands.repair_env import handle_repair_env
 from acg.commands.test_api import handle_test_api
 from acg.commands.test_tts import handle_test_tts
 from acg.commands.verify import handle_verify_anki_import
@@ -22,6 +23,7 @@ WorkerHandler = Callable[[dict[str, Any]], dict[str, Any]]
 
 COMMANDS: dict[str, WorkerHandler] = {
     "check_env": handle_check_env,
+    "repair_env": handle_repair_env,
     "test_api": handle_test_api,
     "test_tts": handle_test_tts,
     "generate": handle_generate,

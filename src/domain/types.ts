@@ -12,14 +12,7 @@ export type StudyDepth = 'standard' | 'deep'
 export type SelectionStrategy = 'catch_all' | 'curated' | 'exhaustive'
 export type TemplateId = 'immersive_v11' | 'immersive' | 'dictionary' | 'minimal'
 export type Provider = 'local' | 'mimo' | 'openai-compatible' | 'claude' | 'gemini' | 'gemini-vertex'
-export type TtsProvider =
-  | 'disabled'
-  | 'mimo'
-  | 'qwen'
-  | 'grok'
-  | 'gemini'
-  | 'gemini-vertex'
-  | 'openai-compatible'
+export type TtsProvider = 'disabled' | 'mimo' | 'qwen' | 'grok' | 'gemini' | 'gemini-vertex' | 'openai-compatible'
 export type SourceMode = 'local' | 'url' | 'document'
 export type UrlImportMode = 'video' | 'subtitles'
 export type SettingsTab = 'api' | 'tts' | 'env'
@@ -49,6 +42,14 @@ export type PronunciationIssue = {
   code: string
   message: string
 }
+export type PronunciationFieldAction = 'kept' | 'hidden' | 'cleared' | 'downgraded' | 'not_generated'
+export type PronunciationFieldChange = {
+  field: Exclude<PronunciationField, 'pronunciation_meta'>
+  action: PronunciationFieldAction
+  code: string
+  message: string
+  original_value?: string
+}
 export type PronunciationMeta = {
   language_code: LearningLanguageCode
   accent_profile: string
@@ -63,6 +64,7 @@ export type PronunciationMeta = {
   same_as_standard_reason?: string | null
   pitch_confidence?: PronunciationConfidence | 'unknown'
   validation_issues: PronunciationIssue[]
+  field_changes?: PronunciationFieldChange[]
 }
 export type ResizeDirection =
   | 'East'
@@ -106,6 +108,7 @@ export type TtsConfig = {
   language: string
   sample_rate: number
   bit_rate: number
+  output_volume?: number
 }
 
 export type ApiPreset = {
@@ -119,6 +122,21 @@ export type ApiPreset = {
   key_hint: string
 }
 
+export type SavedProfileAuth = 'api_key' | 'gcloud' | 'none'
+
+export type SavedApiProfile = {
+  id: string
+  label: string
+  provider: Provider
+  base_url: string
+  model: string
+  capabilities: string[]
+  auth: SavedProfileAuth
+  has_api_key: boolean
+  updated_at: string
+  last_test_ok?: boolean
+}
+
 export type TtsPreset = {
   id: string
   label: string
@@ -128,6 +146,24 @@ export type TtsPreset = {
   voice: string
   note: string
   key_hint: string
+}
+
+export type SavedTtsProfile = {
+  id: string
+  label: string
+  enabled: boolean
+  provider: TtsProvider
+  base_url: string
+  model: string
+  voice: string
+  language: string
+  sample_rate: number
+  bit_rate: number
+  output_volume?: number
+  auth: SavedProfileAuth
+  has_api_key: boolean
+  updated_at: string
+  last_test_ok?: boolean
 }
 
 export type ApiTestResult = {
@@ -241,8 +277,9 @@ export type WorkerOperation = {
   jobId?: string
 }
 
+export type WorkspaceStage = 'source' | 'generate' | 'review'
 export type ResponsiveMode = 'wide' | 'medium' | 'compact'
-export type InspectorState = 'open' | 'collapsed' | 'sheet'
+export type InspectorState = 'open' | 'collapsing' | 'collapsed' | 'sheet'
 
 export type QualityFunnel = {
   subtitle_cues?: number
@@ -261,6 +298,9 @@ export type QualityFunnel = {
   filtered_learning_point_count?: number
   low_value_filtered_count?: number
   blocked_quality_issue_count?: number
+  candidate_only_learning_point_count?: number
+  hidden_duplicate_learning_point_count?: number
+  hard_blocked_learning_point_count?: number
   level_mode?: LevelMode | string
   learning_points_per_source_distribution?: Record<string, number>
   enabled_cards_per_source_distribution?: Record<string, number>
@@ -315,6 +355,32 @@ export type EnvStatusItem = {
   fix?: string
 }
 
+export type EnvRepairTarget =
+  | 'all'
+  | 'auto'
+  | 'python_runtime'
+  | 'python_packages'
+  | 'ffmpeg'
+  | 'js_runtime'
+  | 'anki'
+  | 'anki_connect'
+
+export type EnvRepairAction = {
+  id: string
+  label: string
+  status: 'success' | 'failed' | 'skipped' | 'manual'
+  detail: string
+  command?: string
+  next_step?: string
+}
+
+export type EnvRepairResult = {
+  ok: boolean
+  target: EnvRepairTarget
+  summary: string
+  actions: EnvRepairAction[]
+}
+
 export type GenerateRequest = {
   title: string
   source_mode: SourceMode
@@ -366,6 +432,28 @@ export type LearningPoint = {
   pronunciation_meta?: PronunciationMeta | string | null
   validation_status?: 'ok' | 'repaired' | 'reject' | string
   validation_issues?: string[]
+}
+
+export type LearningPointInventoryStatus = 'card_generated' | 'candidate_only' | 'hidden_duplicate' | 'hard_blocked'
+
+export type LearningPointInventoryItem = {
+  id: string
+  source_segment_id: string
+  source_time: string
+  source_sentence: string
+  exact_span: string
+  answer_core: string
+  normalized_answer?: string
+  candidate_kind: CandidateKind
+  phrase_type?: string
+  estimated_level?: string
+  value_score?: number
+  learning_action: string
+  reason: string
+  status: LearningPointInventoryStatus
+  card_id?: string
+  filter_reason?: string
+  block_reason?: string
 }
 
 export type Card = {
@@ -523,6 +611,7 @@ export type Project = {
   auto_max_segments?: boolean
   skip_video_slicing?: boolean
   quality_funnel?: QualityFunnel
+  learning_point_inventory?: LearningPointInventoryItem[]
   segments: Segment[]
   warnings?: string[]
   error_code?: WorkerErrorCode | string
@@ -564,6 +653,9 @@ export type EnvStatus = {
   yt_dlp?: boolean
   yt_dlp_version?: string
   yt_dlp_js_runtime?: string
+  anki_installed?: boolean
+  anki_path?: string
+  anki_running?: boolean
   anki_connect?: boolean
   anki_connect_detail?: string
   packages?: Record<string, string>

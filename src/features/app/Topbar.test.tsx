@@ -46,22 +46,16 @@ describe('Topbar', () => {
     expect(props.onWindowAction).toHaveBeenCalledWith('minimize')
   })
 
-  it('shows project summary, export, and cancel states', () => {
+  it('shows cancel state without duplicating review metrics in the title bar', () => {
     const props = renderTopbar({
       hasExportableCards: true,
       hasProject: true,
-      projectSummary: {
-        usableCount: 6,
-        selectedCardLabel: '6 张已选',
-        segmentCount: 4,
-        templateLabel: '沉浸语言 V10',
-      },
       workerBusy: true,
     })
 
     fireEvent.click(screen.getByRole('button', { name: '取消任务' }))
 
-    expect(screen.getByLabelText('项目摘要')).toHaveTextContent('4 个片段')
+    expect(screen.queryByLabelText('项目摘要')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '导出' })).not.toBeInTheDocument()
     expect(props.onCancelCurrentWorker).toHaveBeenCalledOnce()
   })

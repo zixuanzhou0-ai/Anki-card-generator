@@ -59,7 +59,6 @@ describe('SegmentDetail', () => {
         previewRate={0.75}
         segment={segment}
         videoSrc=""
-        onPreviewRateChange={vi.fn()}
         onSetSegmentCardsEnabled={vi.fn()}
         onUpdateCard={onUpdateCard}
       />,
@@ -85,7 +84,6 @@ describe('SegmentDetail', () => {
         previewRate={1}
         segment={segment}
         videoSrc=""
-        onPreviewRateChange={vi.fn()}
         onSetSegmentCardsEnabled={onSetSegmentCardsEnabled}
         onUpdateCard={vi.fn()}
       />,
@@ -120,12 +118,19 @@ describe('SegmentDetail', () => {
                 field_confidence: { phonetic_ipa: 'high', spoken_ipa: 'medium', source_spoken_ipa: 'medium' },
                 same_as_standard_reason: null,
                 validation_issues: [],
+                field_changes: [
+                  {
+                    field: 'source_spoken_ipa',
+                    action: 'hidden',
+                    code: 'SOURCE_PRONUNCIATION_TOO_SHORT',
+                    message: '原句听感只覆盖答案词，已隐藏。',
+                  },
+                ],
               },
             },
           ],
         }}
         videoSrc=""
-        onPreviewRateChange={vi.fn()}
         onSetSegmentCardsEnabled={vi.fn()}
         onUpdateCard={vi.fn()}
       />,
@@ -133,6 +138,7 @@ describe('SegmentDetail', () => {
 
     expect(screen.getByText(/标准读法（IPA）：\/wʌt ɪf\//)).toBeInTheDocument()
     expect(screen.getByText(/推测口语读法：\/wəd ɪf\//)).toBeInTheDocument()
+    expect(screen.getByText(/原句听感：已隐藏/)).toBeInTheDocument()
     expect(screen.getByText(/未实听，按字幕和常见口语规律推测/)).toBeInTheDocument()
   })
 })

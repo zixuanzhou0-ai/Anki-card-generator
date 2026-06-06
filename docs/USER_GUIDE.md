@@ -1,169 +1,358 @@
 # 用户指南
 
-## 1. 准备运行环境
+这份指南按普通用户的实际操作顺序写：先让本地环境跑起来，再配置模型和 TTS，最后生成、审核、导出 Anki 卡包。
 
-先打开 PowerShell，运行：
+## 1. 第一次打开
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/setup_runtime.ps1
-```
+打开桌面端后，主界面分为三段：
 
-这个脚本会检查 Python、FFmpeg、Anki，并安装 worker 需要的 Python 包。
+1. `素材配置`：选择本地视频、视频链接或文档资料。
+2. `生成设置`：选择学习语言、自动/手动难度、卡片类型、模板和预览偏好。
+3. `审核导出`：检查可用卡片、学习点诊断，选择要导出的卡。
 
-## 2. 打开软件并检查环境
+![素材配置](screenshots/workflow-start.png)
 
-进入软件右上角“设置”。桌面端会保护最小窗口尺寸，窗口缩到一定大小后不会继续变窄，这样可以避免左侧设置和右侧预览被压坏：
+顶部右侧有常用操作：
 
-![设置页](screenshots/settings-modal.png)
+- `设置`：模型 API、语音 TTS、本地环境。
+- `生成卡片`：开始生成。
+- `导出`：生成完成后导出已选卡片。
+- `收起面板`：收起左侧流程台，留出更多审核空间。
+
+## 2. 检查和修复本地环境
+
+进入 `设置 -> 本地环境`。
+
+![本地环境设置](screenshots/settings-environment.png)
+
+点击 `检查环境`，应用会检测：
+
+| 项目 | 用途 |
+| --- | --- |
+| Python 运行环境 | 启动制卡 worker |
+| 项目 `.venv` | 隔离 Python 依赖 |
+| genanki | 生成 `.apkg` |
+| yt-dlp | 下载 YouTube 视频/字幕 |
+| FFmpeg | 视频切片、转音频、生成封面 |
+| Deno / Node | 解决 YouTube n challenge |
+| Anki 桌面端 | 打开或导入 APKG |
+| AnkiConnect | 导入后核验卡片和媒体 |
+
+如果缺少依赖，点击 `一键修复全部可修复项`。
+
+当前自动修复能力：
+
+- 缺少 Python 时，原生层会尝试通过 `winget` 安装推荐 Python 3.12。
+- Python 可用后，会创建 `.venv` 并安装/更新 `genanki`、`yt-dlp`、`pypdf`。
+- 缺少 FFmpeg 时，会尝试通过 `winget` 安装 `Gyan.FFmpeg`。
+- 缺少 Deno/Node 时，会尝试通过 `winget` 安装 Deno。
+- 缺少 Anki 时，会尝试通过 `winget` 安装 Anki。
+- AnkiConnect 需要在 Anki 内确认安装，应用会提示插件代码 `2055492159`。
+
+如果电脑没有 `winget`，对应项目会显示手动安装步骤。
+
+## 3. 配置模型 API
+
+进入 `设置 -> 模型 API`。
+
+![模型 API 设置](screenshots/settings-model-api.png)
+
+推荐流程：
+
+1. 在快速切换区选择模型方案。
+2. 如果该方案需要 API Key，填写 Key。
+3. 点击 `保存模型方案`，保存到“我的模型”。
+4. 点击 `测试连接`。
+
+注意：
+
+- Gemini Vertex 使用本机 `gcloud` OAuth，不需要在应用里填 API Key。
+- Vertex 文本模型默认使用 `gemini-3.1-pro-preview`。
+- 每个模型方案的 Key 单独保存，不再所有服务商共用同一个 Key。
+- Key 不会写入仓库；用户选择保存时，优先写入 Windows Credential Manager。
+
+常见模型选择：
+
+| 场景 | 建议 |
+| --- | --- |
+| 高质量英语/多语言卡 | Gemini Vertex / Qwen / DeepSeek / MIMO 中选择稳定方案 |
+| 快速试流程 | 选择响应更快、成本更低的模型 |
+| 长视频深度理解 | 使用支持 reasoning/thinking 且 JSON 稳定的模型 |
+| Vertex | 先确认 `gcloud auth login` 和 `gcloud config set project <project-id>` |
+
+## 4. 配置语音 TTS
+
+进入 `设置 -> 语音 TTS`。
+
+![语音 TTS 设置](screenshots/settings-tts.png)
+
+TTS 和文本模型分开配置：
+
+- `TtsAudio`：整句 AI 朗读。
+- `PhraseTtsAudio`：核心表达/答案朗读。
+- 原视频音频不会被 TTS 替代。
+
+当前设计：
+
+- TTS 服务商、模型、音色、Key 可以单独保存。
+- Gemini Vertex TTS 使用本机 `gcloud` OAuth，不需要填写 TTS API Key。
+- 导出时默认把 AI TTS 音量降到 65%，避免比原视频声音刺耳。
+- 预览播放速度只影响应用内试听，不改变导出的 Anki 音频。
+
+英语 TTS 建议：
+
+- 能听清原视频时，优先用原声。
+- 额外整句朗读和表达朗读再用 AI TTS。
+- Vertex TTS 可从 `Kore / Aoede / Puck / Charon` 等 voice 里试。
+- Qwen 英语可优先试 `Jennifer` 或 `Aiden`。
+
+## 5. 选择素材
+
+### 本地视频 + SRT
+
+适合自己已有视频和字幕。
+
+1. 选择 `本地视频`。
+2. 选择视频文件。
+3. 选择 SRT 字幕；如果留空，应用会尝试同目录自动匹配 SRT/VTT，也会尝试读取 MKV/MP4 内嵌字幕。
+4. 根据需要选择是否跳过视频切片。
+
+如果没有 SRT：
+
+- 有内嵌字幕时，应用会尝试提取。
+- 没有字幕时，当前版本不会自动 ASR；建议先用 Whisper、本地 ASR 或线上 ASR 转成 SRT，再导入。
+
+### 视频链接 / YouTube
+
+1. 选择 `视频链接`。
+2. 粘贴 URL。
+3. 默认尝试下载视频 + 字幕。
+4. 如果视频下载失败但字幕可用，可以切到字幕-only。
+
+URL 失败常见原因是 YouTube 429、区域限制、字幕不可用或 n challenge。先看 [故障排查](TROUBLESHOOTING.md)。
+
+### 文档资料
+
+支持 TXT、Markdown、DOCX、EPUB、PDF。
+
+文档有两种目标：
+
+- `知识吸收`：概念、观点、术语、例子，适合课程、论文、技术文档。
+- `语言精读`：表达、词汇、语法，适合英文文章或书籍。
+
+文档模式不会生成听力卡，因为没有原声。
+
+## 6. 生成设置
+
+### 学习语言
+
+支持：
+
+- English
+- Francais
+- Espanol
+- 日本語
+- Русский
+
+内部使用稳定 code：`en / fr / es / ja / ru`。
+
+不同语言使用不同读法体系：
+
+| 语言 | 读法体系 |
+| --- | --- |
+| English | IPA + weak forms/linking/stress |
+| French | API/IPA + liaison/e caduc |
+| Spanish | 拉美通用读法，音节 + 重音，可选 IPA |
+| Japanese | 假名 + 可靠时才标音高 |
+| Russian | 带重音西里尔，可选 IPA |
+
+### 学习水平
+
+默认是 `自动判断`。
+
+推荐保持自动。生成后每张卡会带：
+
+- estimated level
+- difficulty
+- difficulty reason
+
+如果手动选择 A1-C2，它只作为软偏好，影响解释深度和筛选倾向，不作为硬门槛。
+
+### 预览播放速度
+
+左侧统一设置预览播放速度：
+
+- 0.75x
+- 1x
+- 1.25x
+
+它只影响应用内预览，不影响导出的 Anki 音频。
+
+## 7. 生成卡片
+
+点击顶部 `生成卡片`。
+
+浏览器预览会生成 demo 卡；桌面端会真实调用 worker、模型、FFmpeg 和 TTS。
+
+生成流程大致是：
 
 ```mermaid
 flowchart TB
-  A["打开软件"] --> B["点击 设置"]
-  B --> C["本地环境"]
-  C --> D["检查环境"]
-  D --> E{"全部通过？"}
-  E -->|是| F["开始制卡"]
-  E -->|否| G["按提示安装缺失依赖"]
+  A["素材"] --> B["字幕/文档解析"]
+  B --> C["素材理解"]
+  C --> D["召回学习点"]
+  D --> E["硬校验和去重"]
+  E --> F["生成完整可用卡片"]
+  E --> G["写入学习点诊断"]
+  F --> H["媒体/TTS/PronunciationMeta"]
+  H --> I["审核导出"]
 ```
 
-环境检查至少应该看到：
+统一智能筛选会尽量召回合法学习点，但不会把所有候选都直接制成完整卡。这样能兼顾质量、速度和成本。
 
-| 项目 | 状态 |
+## 8. 审核导出
+
+生成完成后进入 `审核导出`。
+
+![审核导出](screenshots/workflow-generated.png)
+
+顶部统计含义：
+
+| 指标 | 含义 |
 | --- | --- |
-| Python | 显示版本号 |
-| ffmpeg | 绿色 |
-| genanki | 绿色 |
-| yt-dlp | 绿色，URL 导入需要 |
+| 生成卡片数 | 已经生成完整内容的可用卡片 |
+| 已选卡片数 | 当前会导出的卡片 |
+| 发现学习点 | 系统从素材中找到的学习点总数 |
+| 更多学习点 | 合法但未制成完整卡的候选 |
+| 重复 / 硬阻断 | 被折叠或不能制卡的学习点 |
 
-## 3. 配置模型和 TTS
+可用卡片默认全部选中。你可以：
 
-在“设置 - 文本模型”中选择：
+- 全选
+- 全不选
+- 反选
+- 只看已选
+- 只看未选
+- 按片段启用/停用
+- 单卡勾选/取消
 
-- MIMO Token Plan SGP，或
-- MIMO Public V2.5 Pro
-- DeepSeek V4 Pro / DeepSeek V4 Flash，或
-- Gemini Vertex：`gemini-3.1-pro-preview`，或
-- Qwen / DashScope 兼容接口，或
-- 其他 OpenAI-compatible 服务商
+导出只导出当前选中的完整卡片。
 
-填写自己的 API Key。DeepSeek V4 的 Base URL 使用 `https://api.deepseek.com`，模型名填真实 ID：`deepseek-v4-pro` 或 `deepseek-v4-flash`。Gemini Vertex 使用本机 `gcloud` 登录，不需要在应用里粘贴 OAuth token；默认 global 端点是 `https://aiplatform.googleapis.com`，当前可用模型优先填 `gemini-3.1-pro-preview`。TTS 在“语音模型”中单独配置；如果文本模型已经填了 MIMO 或 Qwen / DashScope Key，TTS 可以复用。
+## 9. 学习点诊断
 
-DeepSeek V4 / Qwen / MIMO / Gemini Vertex 这类模型会先 thinking 再输出最终 JSON。应用会保留模型思考能力，但只把最终 JSON 用于制卡，避免进度长时间停住或把 thinking 文本混进卡片字段。
+`学习点诊断` 用来解释“为什么某些学习点没有变成卡”。
 
-英语卡片的 TTS 建议：
+常见状态：
 
-- 优先用视频原声；AI TTS 主要用于额外整句朗读和表达小喇叭。
-- MiMo V2.5 TTS 当前更适合自然英语学习卡。
-- Qwen3 TTS 推荐先试 `Jennifer` 美语女声或 `Aiden` 美语男声；`Cherry` 支持英语，但不是最推荐的英语学习默认音色。
-- Google 最新 Gemini-TTS 可选 `Gemini 3.1 TTS Vertex`，默认模型 `gemini-3.1-flash-tts-preview`，Base URL `https://aiplatform.googleapis.com`，使用本机 `gcloud` / Vertex AI 授权，不需要填写 TTS API Key。
-- 需要控制语速、情绪或朗读风格时，用 `qwen3-tts-instruct-flash`；需要自定义角色音色时，先用 Qwen3 声音设计创建 voice id，再填入“声音 / voice_id”。
+| 状态 | 含义 |
+| --- | --- |
+| card_generated | 已生成完整卡 |
+| candidate_only | 合法、有价值，但暂未生成完整卡 |
+| hidden_duplicate | 训练动作重复，被折叠 |
+| hard_blocked | 不能制卡，例如跨度不存在、答案混入中文/IPA/解释 |
 
-## 4. 从 YouTube 生成卡片
+候选库 V1 先保证可见、可筛选、可解释。后续可以继续加“一键把候选生成完整卡”。
 
-1. 左侧选择“视频链接”。
-2. 粘贴 YouTube URL。
-3. 默认使用“下载视频+字幕”。如果网络经常失败，展开“下载和 fallback”，可以切到“只用字幕生成”或打开“视频下载失败时自动 fallback 到字幕-only”。
-4. 学习设置里建议使用“自动片段”。
-5. “理解深度”默认是“深度理解”。它会先读懂整段素材，再筛选候选和写卡；如果只想快速试流程，可以切到“快速生成”。
-6. 选择水平，比如 B1。
-7. 点击“生成卡片”。
+## 10. 发音字段
 
-![生成后的卡片预览](screenshots/workflow-generated.png)
+视频语言卡会包含：
 
-生成完成后先看右侧预览：
+- 标准读法
+- 推测口语读法 / 剧中读法
+- 原句听感
+- 发音说明
+- PronunciationMeta 隐藏 JSON
 
-- 推荐：默认导出。
-- 待审：需要人工确认后再勾选。
-- 已拒绝：低价值或重复内容，不建议导出。
-- 重复合并：已经被去重处理。
-- 素材理解：显示模型对这段视频/文档的全局理解，用来判断卡片是否真的来自当前素材。
+当前 V1 不做真实 ASR 或 forced alignment，所以默认：
 
-AI 评审工作台里的数字有三层含义：
+```text
+generation_basis = subtitle_inferred
+```
 
-- `发现学习点` 是从字幕里挖出的表达、语境生词、语法/句法、听力和语用风险学习机会。
-- `推荐可导出 / 待人工确认 / 已拒绝 / 重复` 是 AI 评审和本地硬校验后的质量分类。
-- `已选导出 / 全部卡片` 是当前会写进 APKG 的卡片数量。它可能因为你手动全选、勾选待审或保留了旧项目选择状态而大于“推荐可导出”。
+也就是说，没有音频实听时，应用不会把字幕推测包装成“剧中实际读法”。如果某个发音字段被隐藏、清空或降级，`PronunciationMeta.field_changes` 会记录原因。
 
-当前评审会做几道硬门槛：AI 返回的 `exact_span` 必须真的出现在原句里，`answer_core` 必须是纯英文学习答案，不能把中文释义、音标或解释塞进去；发音融合、连读、非标准口语和 IPA 会进入专门的发音字段或老师提示。同一句字幕可以保留多个不同学习点，但会按类型分组、去重、评分，低价值内容默认待审或拒绝。
+## 11. 导出 APKG
 
-每个片段点开后可以看到视频片段、原句、学习点、评分和解释。学习点可能是词伙表达、语境生词、语法框架或听力难点，英语语言卡还可以编辑标准 IPA、口语 IPA、原句听感和听点说明：
+确认卡片后点击 `导出已选`。
 
-![卡片审核面板](screenshots/card-review-panel.png)
+导出内容包括：
 
-## 5. 导出到 Anki
+- Anki notes/cards
+- 视频切片
+- 原声片段
+- 整句 TTS
+- 表达 TTS
+- PronunciationMeta
+- media manifest
+- TTS ledger
 
-1. 点击“只保留推荐”。
-2. 点击“导出 .apkg”。
-3. 在 Anki 里导入生成的 `.apkg`。
-4. 如果已安装 Anki，可以用软件里的打开/导入按钮。
+导出后可以：
 
-导出的卡片会按素材类型自动选择模板：视频 / 字幕语言卡默认使用“沉浸复读 V12”，正面只显示复读任务、大视频、`原声` 和 `慢读` 按钮，背面再显示核心表达、中文直觉、标准 IPA、口语读法、原句、小视频回放、表达小喇叭和解释块；文档知识卡使用“核心答案 / 关键机制 / 例子 / 边界”结构；文档精读卡使用“核心答案 / 原文线索 / 怎么理解 / 怎么用 / 边界”结构。模板继续保留兼容字段名，方便旧字段和后续校验继续复用。
+- 手动在 Anki 导入 `.apkg`。
+- 让应用打开 Anki 导入。
+- 使用 AnkiConnect 做导入核验。
 
-导入核验会按导出结果里的模板版本查找 Anki 标签。V10 包使用 `anki_card_generator_v10`，V12 包使用 `anki_card_generator_v12`，所以升级模板后不会再用旧标签误判导入失败。导出结果还会保存媒体账本，用来核对整句 TTS、表达 TTS 和卡片字段是否对应。
+## 12. AnkiConnect
 
-## 6. 从文档资料生成知识卡
+AnkiConnect 插件用于导入后自动核验。
 
-文档资料默认不是视频语言学习路径。切到“文档资料”后，左侧会显示“文档目标”，默认是“知识吸收”：
+安装步骤：
 
-- 讲解语言：中文 / 英文 / 双语，默认中文。
-- 吸收重点：核心概念、观点论证、术语定义、例子案例，默认前三项。
-- 卡片深度：快速记忆 / 标准理解 / 深入掌握。
-- 答案长度：短答案 / 中等答案 / 详细答案。
+1. 打开 Anki。
+2. 工具 -> 插件 -> 获取插件。
+3. 输入插件代码：`2055492159`。
+4. 重启 Anki。
+5. 回到应用设置页，点击 `检查环境`。
 
-知识吸收模式会隐藏 A1-C2、听力卡、表达卡、俚语/脏话等视频语言学习设置。它适合书籍、论文、课程资料、技术文档和长文章。
+环境页会区分：
 
-如果你上传的是英文文章，并且想专门学习里面的表达、词汇和语法，可以把文档目标切到“语言精读”。语言精读不会生成听力卡，生成结果默认更适合先人工待审。
+- Anki 没安装。
+- Anki 已安装但没打开。
+- Anki 已打开但 AnkiConnect 未连接。
+- AnkiConnect 正常。
 
-![文档知识吸收审核台](screenshots/document-knowledge-review.png)
+## 13. 推荐的端到端测试
 
-## 7. 常见问题
-
-### 打开后生成不了卡片
-
-先到“设置 - 本地环境”点击“检查环境”。常见原因是 Python、FFmpeg 或 yt-dlp 没装好。
-
-### YouTube 不能下载
-
-先更新 yt-dlp 和它的 EJS / impersonation 依赖：
+每次发布前建议跑：
 
 ```powershell
-python -m pip install --upgrade -r workers/requirements.txt
+npm run lint
+npm run test:unit
+npm run build
+python -m pytest tests\test_worker_quality.py -q -k "check_env or repair_env"
+cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
-如果错误里出现 `Remote component challenge solver`、`n challenge solving failed`，请确认本机能运行 Deno 或 Node.js。软件会自动给 yt-dlp 加 `--remote-components ejs:github`，但仍然需要一个 JavaScript runtime。
+完整桌面端回归：
 
-如果错误是 `HTTP Error 429: Too Many Requests`，通常是 YouTube 当前网络/IP 被限流，字幕接口尤其容易触发。可以稍后重试、换网络/代理，或先自己准备视频和 SRT 字幕，然后走“本地视频 + SRT”。
+1. 打开桌面端。
+2. 检查本地环境。
+3. 测试模型 API。
+4. 测试 TTS。
+5. 用本地视频 + SRT 生成。
+6. 检查可用卡片和学习点诊断。
+7. 导出 APKG。
+8. 运行 APKG verify。
+9. 导入 Anki，抽查音频、视频、发音字段和隐藏 JSON。
 
-如果只是视频下载失败，但字幕能下载，改用“只用字幕生成”。这种导出的卡包不包含视频片段和原声音频，但可以继续保留英文原句、表达解释和 TTS。
+## 14. 常见理解误区
 
-### 导出没有 TTS
+### 一键修复是不是完全无人值守？
 
-检查“设置 - 语音模型”：
+不是。能自动安装的会自动安装，但 AnkiConnect 必须在 Anki 内确认安装。没有 winget 时，系统级依赖也需要手动安装。
 
-- TTS 是否启用。
-- API Key 是否可用。
-- MIMO Token Plan Key 是否使用 SGP Base URL。
-- Qwen / DashScope TTS 是否使用对应地域的 Base URL。
-- Gemini Vertex TTS 是否已经 `gcloud auth login`、`gcloud config set project <project-id>`，并在 Google Cloud 项目中启用 Vertex AI。
+### 能不能把所有学习点都导出？
 
-如果只是听感不自然，先把审核页试听速度切到 `1x` 再判断；`0.75x` 只影响软件内试听，不会写入导出的 Anki MP3。Qwen3 英语音色建议优先试 `Jennifer` 或 `Aiden`。
+当前能导出的是“已经生成完整卡片”的可用卡。学习点诊断里能看到更多候选，但 V1 不默认为所有候选生成 TTS、媒体和完整 Anki 字段。
 
-### TTS 音频和卡片文字对不上
+### 为什么不用最新版 Python？
 
-导出前先看卡片详情里的学习点和核心答案。表达小喇叭会使用“可见的核心答案”，整句朗读会使用英文原句。不要把中文解释、音标或“发音融合为...”这类说明写进核心答案；这些内容应该放在“标准 IPA / 口语读法 / 原句听感 / 听点说明”或“别误用”里。导出时会把每个 TTS 文件、朗读文本 hash、片段、卡片和学习点写入媒体账本，导入核验时会一起检查。
+应用推荐 Python 3.12，因为它比“最新版”更稳定。最新版可能带来依赖兼容波动。
 
-### 卡片太少
+### 为什么没有 SRT 不能直接听懂视频？
 
-建议使用“自动片段”。软件会先生成更多候选，再由模型或本地规则过滤，不靠重复内容凑数量。生成后看右侧质量仪表盘：视频 / URL 会显示候选数、推荐数、待审数、拒绝数、重复合并数和平均词伙评分；文档会显示知识点或精读点质量。
+当前 V1 不内置 ASR。没有字幕时，建议先用本地 Whisper 或线上 ASR 转 SRT，再导入。
 
-不同模型会给出不同数量和质量的候选。DeepSeek V4 Pro、Qwen Max、Gemini Vertex、MIMO 等模型的“保守程度”不一样；数量少不一定代表模型更笨，可能是它把更多候选判成了低迁移价值。先看“素材理解”和拒绝理由，再决定是否调高片段预算、改学习重点，或换模型复跑。
+### 为什么发音字段会显示“推测”？
 
-### 语境生词卡是什么
-
-语境生词卡不是普通词典卡。它只选择原句里真正值得学的词，要求能说明这个词在当前场景里的意思、搭配、中文容易误解的地方，以及下次怎么复用。比如 `awkward` 不会只写“尴尬的”，而会解释 `This is getting awkward.` 里气氛正在变得不自在，常见搭配是 `get awkward / feel awkward`。
-
-如果你只想做传统表达卡，可以在“学习重点”里关闭“单词用法”；默认建议保留它，因为很多视频里最值得学的点不是长表达，而是一个词在真实语境里的用法。
-
-### 左侧设置太多
-
-v0.9.2-beta 起，左侧 Inspector 会把不常用的选项收进展开项。视频 / URL 常用流程只需要关注“素材”“学习设置”和右上角“生成卡片”；文档流程只需要关注“素材”“文档目标”和“生成卡片”。需要调下载策略、难度范围、文档深度或模板时再展开对应条目。
+因为没有真实音频对齐时，读法来自字幕和常见口语规律推断。应用宁愿标低置信度，也不误导学习者。

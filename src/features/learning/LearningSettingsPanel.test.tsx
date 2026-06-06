@@ -13,10 +13,12 @@ function renderPanel(overrides: Partial<ComponentProps<typeof LearningSettingsPa
     contentOptions,
     languageFocusOptions,
     levels,
+    previewRate: 0.75,
     request: defaultRequest,
     selectionStrategyOptions,
     onApplyCollectionPreset: vi.fn(),
     onPatchRequest: vi.fn(),
+    onPreviewRateChange: vi.fn(),
     onSelectCurrentLevel: vi.fn(),
     onToggleCollectionLevel: vi.fn(),
     onToggleContent: vi.fn(),
@@ -57,6 +59,17 @@ describe('LearningSettingsPanel', () => {
     expect(screen.getByRole('button', { name: /智能筛选/ })).toBeInTheDocument()
     expect(props.onApplyCollectionPreset).toHaveBeenCalledWith('around')
     expect(props.onToggleCollectionLevel).toHaveBeenCalledWith('C1')
+  })
+
+  it('changes the global preview playback speed', () => {
+    const onPreviewRateChange = vi.fn()
+    renderPanel({ onPreviewRateChange, previewRate: 0.75 })
+
+    fireEvent.click(screen.getByRole('button', { name: '1.25x' }))
+
+    expect(screen.getByText('预览播放速度')).toBeVisible()
+    expect(screen.getByText('只影响应用内试听，不改变导出的 Anki 音频')).toBeVisible()
+    expect(onPreviewRateChange).toHaveBeenCalledWith(1.25)
   })
 
   it('toggles content preferences', () => {

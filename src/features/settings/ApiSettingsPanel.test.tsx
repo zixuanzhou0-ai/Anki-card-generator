@@ -3,7 +3,7 @@ import type { ComponentProps } from 'react'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { ApiConfig, ApiPreset, SecretPrefs } from '../../domain/types'
+import type { ApiConfig, ApiPreset } from '../../domain/types'
 import { ApiSettingsPanel } from './ApiSettingsPanel'
 
 afterEach(() => cleanup())
@@ -38,11 +38,6 @@ const preset: ApiPreset = {
   provider: 'mimo',
 }
 
-const secretPrefs: SecretPrefs = {
-  rememberModelKey: false,
-  rememberTtsKey: false,
-}
-
 function renderPanel(overrides: Partial<ComponentProps<typeof ApiSettingsPanel>> = {}) {
   const props: ComponentProps<typeof ApiSettingsPanel> = {
     advancedApiPresets: [],
@@ -52,21 +47,25 @@ function renderPanel(overrides: Partial<ComponentProps<typeof ApiSettingsPanel>>
     apiTestTitle: '未测试',
     apiTestTone: 'idle',
     apiTesting: false,
+    activeApiProfileId: 'local',
+    apiProfileDirty: false,
+    apiProfileStatus: '未保存到我的模型',
     appBusy: false,
     capabilityHelp: { structured_json: '结构化输出' },
     capabilityLabels: ['structured_json'],
     featuredApiPresets: [preset],
     mimoOpenAiBaseUrl: 'https://api.xiaomimimo.com/v1',
     mimoTextModels: [{ label: 'MIMO V2.5 Pro', value: 'mimo-v2.5-pro' }],
-    secretPrefs,
+    savedApiProfiles: [],
     showAdvancedApi: false,
     showCapabilities: true,
     onApplyApiPreset: vi.fn(),
+    onApplySavedApiProfile: vi.fn(),
     onPatchApi: vi.fn(),
+    onSaveApiProfile: vi.fn(),
     onSetShowAdvancedApi: vi.fn(),
     onSetShowCapabilities: vi.fn(),
     onTestApi: vi.fn(),
-    onToggleRememberModelKey: vi.fn(),
     ...overrides,
   }
   render(<ApiSettingsPanel {...props} />)
@@ -78,7 +77,7 @@ describe('ApiSettingsPanel', () => {
     const props = renderPanel()
 
     fireEvent.click(screen.getByRole('button', { name: /测试连接/ }))
-    fireEvent.click(screen.getByRole('button', { name: /MIMO Token Plan/ }))
+    fireEvent.change(screen.getByRole('combobox', { name: /^模型方案$/ }), { target: { value: 'preset:mimo' } })
 
     expect(screen.getByText('模型 API')).toBeInTheDocument()
     expect(screen.getByText('请先测试连接。')).toBeInTheDocument()
@@ -135,6 +134,7 @@ describe('ApiSettingsPanel', () => {
 
     expect(onPatchApi).toHaveBeenCalledWith(
       expect.objectContaining({
+        api_key: '',
         base_url: 'https://aiplatform.googleapis.com',
         model: 'gemini-3.1-pro-preview',
         provider: 'gemini-vertex',
@@ -150,6 +150,7 @@ describe('ApiSettingsPanel', () => {
 
     expect(onPatchApi).toHaveBeenCalledWith(
       expect.objectContaining({
+        api_key: '',
         base_url: 'https://aiplatform.googleapis.com',
         model: 'gemini-3.1-pro-preview',
         provider: 'gemini-vertex',
@@ -157,15 +158,32 @@ describe('ApiSettingsPanel', () => {
     )
   })
 
-  it('toggles capabilities and remember-key preference', () => {
+  it('hides the API key field when Gemini Vertex uses local gcloud auth', () => {
+    renderPanel({
+      apiConfig: {
+        ...apiConfig,
+        api_key: 'sk-old-provider-key',
+        base_url: 'https://aiplatform.googleapis.com',
+        model: 'gemini-3.1-pro-preview',
+        provider: 'gemini-vertex',
+      },
+    })
+
+    expect(screen.getByText('Vertex 授权')).toBeInTheDocument()
+    expect(screen.getByText('使用本机 gcloud OAuth')).toBeInTheDocument()
+    expect(screen.queryByLabelText('API Key')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/记住本机模型 API Key/)).not.toBeInTheDocument()
+  })
+
+  it('toggles capabilities and saves the current model profile', () => {
     const onPatchApi = vi.fn()
-    const onToggleRememberModelKey = vi.fn()
-    renderPanel({ onPatchApi, onToggleRememberModelKey })
+    const onSaveApiProfile = vi.fn()
+    renderPanel({ onPatchApi, onSaveApiProfile })
 
     fireEvent.click(screen.getByRole('button', { name: /structured_json/ }))
-    fireEvent.click(screen.getByLabelText(/记住本机模型 API Key/))
+    fireEvent.click(screen.getByRole('button', { name: /保存模型方案/ }))
 
     expect(onPatchApi).toHaveBeenCalledWith({ capabilities: [] })
-    expect(onToggleRememberModelKey).toHaveBeenCalledOnce()
+    expect(onSaveApiProfile).toHaveBeenCalledOnce()
   })
 })

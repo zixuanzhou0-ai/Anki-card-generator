@@ -59,6 +59,9 @@ describe('ReviewSummaryPanel', () => {
           filtered_learning_point_count: 2,
           duplicate_learning_point_count: 1,
           low_value_filtered_count: 1,
+          candidate_only_learning_point_count: 2,
+          hidden_duplicate_learning_point_count: 1,
+          hard_blocked_learning_point_count: 0,
         }}
         selectedCardCount={3}
         segmentFilter="all"
@@ -72,11 +75,12 @@ describe('ReviewSummaryPanel', () => {
     expect(screen.getByText(/每句最多 4 个学习点/)).toBeInTheDocument()
     expect(screen.getByText('生成卡片数')).toBeInTheDocument()
     expect(screen.getAllByText('发现学习点').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('过滤学习点').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('更多学习点').length).toBeGreaterThan(0)
+    expect(screen.getByText('重复 / 硬阻断')).toBeInTheDocument()
     expect(screen.getByText(/平均词伙评分/)).toBeInTheDocument()
     expect(screen.getByText('字幕句')).toBeInTheDocument()
     expect(screen.getByText(/自动匹配字幕/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /只看未选\s*5/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /无已选卡片\s*5/ })).toBeInTheDocument()
   })
 
   it('uses document knowledge labels instead of subtitle phrase labels', () => {
@@ -104,7 +108,7 @@ describe('ReviewSummaryPanel', () => {
     )
 
     expect(screen.getByText(/知识点质量/)).toBeInTheDocument()
-    expect(screen.getByText('文档知识诊断')).toBeInTheDocument()
+    expect(screen.getByText('文档制卡过程')).toBeInTheDocument()
     expect(screen.getByText('文档片段')).toBeInTheDocument()
     expect(screen.queryByText('平均词伙评分')).not.toBeInTheDocument()
     expect(screen.queryByText('字幕句')).not.toBeInTheDocument()
@@ -135,7 +139,7 @@ describe('ReviewSummaryPanel', () => {
     )
 
     expect(screen.getByText(/精读点质量/)).toBeInTheDocument()
-    expect(screen.getByText('文档精读诊断')).toBeInTheDocument()
+    expect(screen.getByText('文档精读过程')).toBeInTheDocument()
     expect(screen.getByText('可用精读卡')).toBeInTheDocument()
     expect(screen.queryByText('平均词伙评分')).not.toBeInTheDocument()
     expect(screen.queryByText('字幕句')).not.toBeInTheDocument()

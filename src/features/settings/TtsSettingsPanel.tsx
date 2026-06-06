@@ -1,6 +1,6 @@
-import { CircleAlert, PlugZap } from 'lucide-react'
+import { CircleAlert, Cloud, PlugZap, Save } from 'lucide-react'
 
-import type { SecretPrefs, TtsConfig, TtsPreset, TtsProvider } from '../../domain/types'
+import type { SavedTtsProfile, TtsConfig, TtsPreset, TtsProvider } from '../../domain/types'
 import {
   GEMINI_VERTEX_TTS_DEFAULT_MODEL,
   GEMINI_VERTEX_TTS_DEFAULT_VOICE,
@@ -27,20 +27,24 @@ type TtsSettingsPanelProps = {
   mimoTtsVoices: string[]
   qwenTtsModels: ModelOption[]
   qwenTtsVoices: string[]
-  secretPrefs: SecretPrefs
+  activeTtsProfileId: string
+  savedTtsProfiles: SavedTtsProfile[]
   showAdvancedTts: boolean
   tts: TtsConfig
+  ttsProfileDirty: boolean
+  ttsProfileStatus: string
   ttsTestMessage: string
   ttsTestMeta: string
   ttsTestOk?: boolean
   ttsTestTitle: string
   ttsTestTone: string
   ttsTesting: boolean
+  onApplySavedTtsProfile: (profileId: string) => void
   onApplyTtsPreset: (preset: TtsPreset) => void
   onPatchTts: (patch: Partial<TtsConfig>) => void
+  onSaveTtsProfile: () => void
   onSetShowAdvancedTts: (value: boolean | ((current: boolean) => boolean)) => void
   onTestTts: () => void
-  onToggleRememberTtsKey: () => void
 }
 
 export function TtsSettingsPanel({
@@ -53,20 +57,24 @@ export function TtsSettingsPanel({
   mimoTtsVoices,
   qwenTtsModels,
   qwenTtsVoices,
-  secretPrefs,
+  activeTtsProfileId,
+  savedTtsProfiles,
   showAdvancedTts,
   tts,
+  ttsProfileDirty,
+  ttsProfileStatus,
   ttsTestMessage,
   ttsTestMeta,
   ttsTestOk,
   ttsTestTitle,
   ttsTestTone,
   ttsTesting,
+  onApplySavedTtsProfile,
   onApplyTtsPreset,
   onPatchTts,
+  onSaveTtsProfile,
   onSetShowAdvancedTts,
   onTestTts,
-  onToggleRememberTtsKey,
 }: TtsSettingsPanelProps) {
   const isPresetSelected = (preset: TtsPreset) =>
     tts.provider === preset.provider &&
@@ -157,7 +165,24 @@ export function TtsSettingsPanel({
     </button>
   )
 
-  const selectedPreset = [...featuredTtsPresets, ...advancedTtsPresets].find(isPresetSelected)
+  const allTtsPresets = [...featuredTtsPresets, ...advancedTtsPresets]
+  const selectedPreset = allTtsPresets.find(isPresetSelected)
+  const activeSavedProfile = savedTtsProfiles.find((profile) => profile.id === activeTtsProfileId)
+  const profileSelectValue = activeSavedProfile
+    ? `saved:${activeSavedProfile.id}`
+    : selectedPreset
+      ? `preset:${selectedPreset.id}`
+      : '__custom'
+  const handleProfileSelect = (value: string) => {
+    if (value.startsWith('saved:')) {
+      onApplySavedTtsProfile(value.slice('saved:'.length))
+      return
+    }
+    if (value.startsWith('preset:')) {
+      const preset = allTtsPresets.find((item) => item.id === value.slice('preset:'.length))
+      if (preset) onApplyTtsPreset(preset)
+    }
+  }
   const providerLabel: Record<TtsProvider, string> = {
     disabled: '关闭 TTS',
     gemini: 'Gemini TTS',
@@ -174,6 +199,10 @@ export function TtsSettingsPanel({
       : tts.enabled
         ? `${tts.model || '未填写模型名'} · ${tts.voice || '未选择音色'}`
         : '导出时只使用视频原声'
+  const outputVolume = Number.isFinite(Number(tts.output_volume))
+    ? Math.min(1, Math.max(0.4, Number(tts.output_volume)))
+    : 0.65
+  const outputVolumePercent = Math.round(outputVolume * 100)
 
   return (
     <section className="settings-section settings-section-single">
@@ -205,21 +234,96 @@ export function TtsSettingsPanel({
         </div>
       </details>
 
-      <div className="settings-subheading">
-        <strong>一键语音方案</strong>
-        <span>视频卡优先用原声；需要额外朗读时选一个方案再测试。</span>
-      </div>
-      <div className="preset-grid compact-presets tts-preset-grid" aria-label="TTS 推荐预设">
-        {featuredTtsPresets.map(renderPreset)}
-      </div>
-      <button className="advanced-toggle" type="button" onClick={() => onSetShowAdvancedTts((value) => !value)}>
-        {showAdvancedTts ? '收起高级 TTS' : '高级：语音服务、模型、音色参数'}
-      </button>
-      {showAdvancedTts ? (
-        <div className="preset-grid compact-presets secondary-presets" aria-label="更多 TTS 预设">
-          {advancedTtsPresets.map(renderPreset)}
+      <div className="settings-profile-picker">
+        <div className="settings-subheading">
+          <strong>快速切换语音</strong>
+          <span>需要 AI 朗读时选一个方案，调好音色后保存到“我的语音”。</span>
         </div>
-      ) : null}
+        <div className="settings-profile-select-row">
+          <label className="field compact-field">
+            <span>语音方案</span>
+            <select value={profileSelectValue} onChange={(event) => handleProfileSelect(event.target.value)}>
+              <option value="__custom" disabled>
+                当前手动配置
+              </option>
+              {savedTtsProfiles.length ? (
+                <optgroup label="我的语音">
+                  {savedTtsProfiles.map((profile) => (
+                    <option key={profile.id} value={`saved:${profile.id}`}>
+                      {profile.label}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : null}
+              <optgroup label="推荐语音">
+                {featuredTtsPresets.map((preset) => (
+                  <option key={preset.id} value={`preset:${preset.id}`}>
+                    {preset.label}
+                  </option>
+                ))}
+              </optgroup>
+              <optgroup label="更多语音服务">
+                {advancedTtsPresets.map((preset) => (
+                  <option key={preset.id} value={`preset:${preset.id}`}>
+                    {preset.label}
+                  </option>
+                ))}
+              </optgroup>
+            </select>
+          </label>
+          <button
+            className="primary-button settings-save-button"
+            type="button"
+            onClick={onSaveTtsProfile}
+            disabled={appBusy}
+          >
+            <Save size={17} />
+            保存语音方案
+          </button>
+        </div>
+        <div className={`settings-profile-status ${ttsProfileDirty ? 'warn' : 'ok'}`}>
+          <span>{ttsProfileStatus}</span>
+          <small>
+            {tts.provider === 'gemini-vertex'
+              ? 'Vertex TTS 使用本机 gcloud OAuth，不保存 TTS API Key。'
+              : '保存后 Key 只绑定当前语音方案，不会共享给其他语音服务。'}
+          </small>
+        </div>
+        <details className="settings-disclosure compact-provider-drawer">
+          <summary>
+            <span>浏览全部语音方案</span>
+            <strong>
+              我的语音 {savedTtsProfiles.length} · 预设 {allTtsPresets.length}
+            </strong>
+          </summary>
+          {savedTtsProfiles.length ? (
+            <div className="profile-drawer-list" aria-label="我的语音">
+              {savedTtsProfiles.map((profile) => (
+                <button
+                  type="button"
+                  className={`profile-option-button ${profile.id === activeTtsProfileId ? 'selected' : ''}`}
+                  key={profile.id}
+                  onClick={() => onApplySavedTtsProfile(profile.id)}
+                >
+                  <strong>{profile.label}</strong>
+                  <span>
+                    {profile.provider} · {profile.model || '无模型'} · {profile.voice || '无音色'}
+                  </span>
+                  <small>
+                    {profile.auth === 'gcloud' ? 'gcloud OAuth' : profile.has_api_key ? '已保存 Key' : '未保存 Key'}
+                  </small>
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div className="profile-drawer-list" aria-label="推荐语音预设">
+            {featuredTtsPresets.map(renderPreset)}
+          </div>
+          <div className="profile-drawer-list secondary-presets" aria-label="更多语音预设">
+            {advancedTtsPresets.map(renderPreset)}
+          </div>
+        </details>
+      </div>
 
       <div className="tts-enable-row">
         <label className="toggle">
@@ -236,32 +340,35 @@ export function TtsSettingsPanel({
             <strong>{currentTtsTitle}</strong>
             <small>{currentTtsMeta}</small>
           </div>
-          <label className="field settings-key-field">
-            <span>TTS API Key</span>
-            <input
-              type="password"
-              value={tts.api_key}
-              onChange={(event) => onPatchTts({ api_key: event.target.value })}
-              placeholder={
-                tts.provider === 'mimo'
-                  ? '可留空复用 MIMO 文本 Key'
-                  : tts.provider === 'qwen'
-                    ? '可留空复用千问文本 Key'
-                    : tts.provider === 'gemini-vertex'
-                      ? '本机 gcloud 登录，无需填写'
-                      : 'xai-... / AIza... / sk-...'
-              }
-            />
-            <small>
-              {tts.provider === 'gemini-vertex'
-                ? 'Vertex TTS 使用本机 gcloud OAuth token，不会把 Google token 保存到应用配置里。'
-                : '同服务商文本 Key 会自动复用；只有想给 TTS 单独换 Key 时才需要填写。'}
-            </small>
-          </label>
-          <label className="toggle secret-toggle settings-current-toggle">
-            <input type="checkbox" checked={secretPrefs.rememberTtsKey} onChange={onToggleRememberTtsKey} />
-            <span>记住本机 TTS API Key（系统凭据 / DPAPI 加密）</span>
-          </label>
+          {tts.provider === 'gemini-vertex' ? (
+            <div className="settings-auth-card">
+              <Cloud size={18} />
+              <div>
+                <span>Vertex TTS 授权</span>
+                <strong>使用本机 gcloud OAuth</strong>
+                <small>不需要填写 TTS API Key；测试 TTS 会检查 gcloud 登录、Vertex 项目权限、语音模型和音色。</small>
+              </div>
+            </div>
+          ) : (
+            <>
+              <label className="field settings-key-field">
+                <span>TTS API Key</span>
+                <input
+                  type="password"
+                  value={tts.api_key}
+                  onChange={(event) => onPatchTts({ api_key: event.target.value })}
+                  placeholder={
+                    tts.provider === 'mimo'
+                      ? '可留空复用 MIMO 文本 Key'
+                      : tts.provider === 'qwen'
+                        ? '可留空复用千问文本 Key'
+                        : 'xai-... / AIza... / sk-...'
+                  }
+                />
+                <small>同服务商文本 Key 可自动复用；点击“保存语音方案”后，这个 Key 才会单独绑定到当前语音。</small>
+              </label>
+            </>
+          )}
         </div>
       ) : (
         <div className="tts-disabled-note">
@@ -283,6 +390,10 @@ export function TtsSettingsPanel({
         tone={ttsTestTone}
         onTest={onTestTts}
       />
+
+      <button className="advanced-toggle" type="button" onClick={() => onSetShowAdvancedTts((value) => !value)}>
+        {showAdvancedTts ? '收起语音参数' : '高级：语音服务、模型、音色参数'}
+      </button>
 
       {tts.enabled && showAdvancedTts ? (
         <div className="api-grid tts-api-grid advanced-config-grid">
@@ -311,7 +422,7 @@ export function TtsSettingsPanel({
                     ? 'https://dashscope.aliyuncs.com/api/v1'
                     : tts.provider === 'gemini-vertex'
                       ? GEMINI_VERTEX_TTS_GLOBAL_BASE_URL
-                    : 'https://api.x.ai/v1'
+                      : 'https://api.x.ai/v1'
               }
             />
             <small>
@@ -321,7 +432,7 @@ export function TtsSettingsPanel({
                   ? '千问 TTS 默认北京地域 https://dashscope.aliyuncs.com/api/v1；新加坡改成 intl 端点。'
                   : tts.provider === 'gemini-vertex'
                     ? 'Vertex Gemini-TTS 默认 global 端点；如需指定区域可填 https://us-central1-aiplatform.googleapis.com。'
-                : 'Grok 默认 https://api.x.ai/v1；Gemini API Key 版可留空。'}
+                    : 'Grok 默认 https://api.x.ai/v1；Gemini API Key 版可留空。'}
             </small>
           </label>
           <label className="field">
@@ -336,11 +447,11 @@ export function TtsSettingsPanel({
                     ? 'qwen3-tts-flash'
                     : tts.provider === 'grok'
                       ? '留空即可，Grok TTS 不需要模型名'
-                    : tts.provider === 'gemini'
-                      ? 'gemini-2.5-flash-preview-tts'
-                      : tts.provider === 'gemini-vertex'
-                        ? GEMINI_VERTEX_TTS_DEFAULT_MODEL
-                      : 'gpt-4o-mini-tts'
+                      : tts.provider === 'gemini'
+                        ? 'gemini-2.5-flash-preview-tts'
+                        : tts.provider === 'gemini-vertex'
+                          ? GEMINI_VERTEX_TTS_DEFAULT_MODEL
+                          : 'gpt-4o-mini-tts'
               }
               list={
                 tts.provider === 'qwen'
@@ -459,6 +570,18 @@ export function TtsSettingsPanel({
               onChange={(event) => onPatchTts({ bit_rate: Number(event.target.value) })}
             />
             <small>MP3 常用 128000，体积和质量比较均衡。</small>
+          </label>
+          <label className="field tts-volume-field">
+            <span>导出 TTS 音量：{outputVolumePercent}%</span>
+            <input
+              type="range"
+              min={0.4}
+              max={1}
+              step={0.05}
+              value={outputVolume}
+              onChange={(event) => onPatchTts({ output_volume: Number(event.target.value) })}
+            />
+            <small>只降低 AI TTS 的整句和表达朗读，不改变原视频原声；默认 65%。</small>
           </label>
         </div>
       ) : null}

@@ -61,6 +61,7 @@ export const defaultRequest: GenerateRequest = {
       language: 'auto',
       sample_rate: 24000,
       bit_rate: 128000,
+      output_volume: 0.65,
     },
   },
 }

@@ -10,12 +10,6 @@ type TopbarProps = {
   inspectorActive: boolean
   inspectorActionLabel: string
   isCancelling: boolean
-  projectSummary?: {
-    usableCount: number
-    selectedCardLabel: string
-    segmentCount: number
-    templateLabel: string
-  }
   status: string
   statusTone: string
   workerBusy: boolean
@@ -36,7 +30,6 @@ export function Topbar({
   inspectorActive,
   inspectorActionLabel,
   isCancelling,
-  projectSummary,
   status,
   statusTone,
   workerBusy,
@@ -62,20 +55,12 @@ export function Topbar({
       </div>
       <div className="window-drag-region" />
       <div className="topbar-actions">
-        {projectSummary ? (
-          <div className="mini-summary" aria-label="项目摘要">
-            <span>{`${projectSummary.segmentCount} 个片段`}</span>
-            <span>{projectSummary.selectedCardLabel}</span>
-            <span>{`${projectSummary.usableCount} 张可用`}</span>
-            <span>{projectSummary.templateLabel}</span>
-          </div>
-        ) : null}
         <div className={`status-chip ${statusTone}`} title={status} role="status" aria-live="polite" aria-atomic="true">
           <CheckCircle2 size={16} />
           <span>{status}</span>
         </div>
         <button
-          className="ghost-button inspector-toggle"
+          className="ghost-button quiet-button inspector-toggle"
           type="button"
           onClick={onToggleInspector}
           aria-pressed={inspectorActive}

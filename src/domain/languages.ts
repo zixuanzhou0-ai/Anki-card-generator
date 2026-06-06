@@ -136,6 +136,7 @@ export function normalizePronunciationMeta(value: unknown, fallbackLanguage: unk
     same_as_standard_reason: raw.same_as_standard_reason ?? null,
     pitch_confidence: raw.pitch_confidence,
     validation_issues: Array.isArray(raw.validation_issues) ? raw.validation_issues : [],
+    field_changes: Array.isArray(raw.field_changes) ? raw.field_changes : [],
   }
 }
 
