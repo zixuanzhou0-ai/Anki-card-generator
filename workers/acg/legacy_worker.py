@@ -6335,6 +6335,7 @@ def run_yt_dlp(args: list[str], timeout: int = 900, check: bool = True) -> subpr
         encoding="utf-8",
         errors="replace",
         timeout=timeout,
+        **hidden_subprocess_flags(),
     )
     if check and completed.returncode != 0:
         detail = yt_dlp_failure_detail(completed)
@@ -6575,6 +6576,7 @@ def extract_embedded_subtitle(video_path: str, language: str = "English") -> Pat
         text=True,
         encoding="utf-8",
         errors="replace",
+        **hidden_subprocess_flags(),
     )
     if completed.returncode != 0 or not output_path.exists() or output_path.stat().st_size == 0:
         output_path.unlink(missing_ok=True)
@@ -7536,6 +7538,7 @@ def run_ffmpeg(args: list[str]) -> None:
         text=True,
         encoding="utf-8",
         errors="replace",
+        **hidden_subprocess_flags(),
     )
     if completed.returncode != 0:
         fail(
@@ -7557,6 +7560,7 @@ def try_run_ffmpeg(args: list[str]) -> str:
         text=True,
         encoding="utf-8",
         errors="replace",
+        **hidden_subprocess_flags(),
     )
     if completed.returncode != 0:
         return completed.stderr[-900:] or f"ffmpeg 退出码 {completed.returncode}"
@@ -13646,6 +13650,7 @@ def is_process_running(image_name: str) -> bool:
                 encoding="utf-8",
                 errors="replace",
                 timeout=5,
+                **hidden_subprocess_flags(),
             )
             return completed.returncode == 0 and image_name.lower() in completed.stdout.lower()
         except Exception:
@@ -13659,6 +13664,7 @@ def is_process_running(image_name: str) -> bool:
             encoding="utf-8",
             errors="replace",
             timeout=5,
+            **hidden_subprocess_flags(),
         )
         return completed.returncode == 0 and bool(completed.stdout.strip())
     except Exception:
@@ -13700,6 +13706,7 @@ def handle_check_env(_: dict[str, Any]) -> dict[str, Any]:
             text=True,
             encoding="utf-8",
             errors="replace",
+            **hidden_subprocess_flags(),
         )
         if completed.returncode == 0:
             yt_dlp_version = completed.stdout.strip()
@@ -13714,6 +13721,7 @@ def handle_check_env(_: dict[str, Any]) -> dict[str, Any]:
             text=True,
             encoding="utf-8",
             errors="replace",
+            **hidden_subprocess_flags(),
         )
         if completed.returncode == 0:
             ffmpeg_version = (completed.stdout.splitlines() or [""])[0]
@@ -13859,6 +13867,7 @@ def run_repair_step(
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
+            **hidden_subprocess_flags(),
         )
     except subprocess.TimeoutExpired:
         return {
@@ -13892,7 +13901,7 @@ def launch_anki_desktop(anki_path: str) -> tuple[bool, str]:
     if not anki_path:
         return False, "未找到 anki.exe。"
     try:
-        subprocess.Popen([anki_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen([anki_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **hidden_subprocess_flags())
         return True, f"已尝试打开 Anki：{anki_path}"
     except Exception as err:
         return False, f"无法打开 Anki：{err}"

@@ -109,7 +109,6 @@ import {
   upsertSavedTtsProfile,
 } from '../services/settingsProfiles'
 import {
-  loadSavedProjectForRequest,
   loadSavedRequest,
   projectMatchesRequest,
   stripRequestSecrets,
@@ -213,10 +212,7 @@ function ttsApiTestTitle(result: TtsTestResult | null, testing: boolean, enabled
 export function useAppController() {
   const initialRequest = useMemo(() => loadSavedRequest(), [])
   const [request, setRequest] = useState<GenerateRequest>(initialRequest)
-  const [project, setProject] = useState<Project | null>(() => {
-    const savedProject = loadSavedProjectForRequest(initialRequest)
-    return savedProject ? materializeLearningPointInventory(savedProject).project : savedProject
-  })
+  const [project, setProject] = useState<Project | null>(null)
   const [envStatus, setEnvStatus] = useState<EnvStatus | null>(null)
   const [envRepairResult, setEnvRepairResult] = useState<EnvRepairResult | null>(null)
   const [envRepairing, setEnvRepairing] = useState(false)
@@ -280,8 +276,10 @@ export function useAppController() {
       : request.source_mode === 'document'
         ? Boolean(request.document_path?.trim())
         : Boolean(localVideoPath)
-  const apiReady =
-    request.source_mode === 'local' || request.api_config.provider === 'local' || Boolean(apiTestResult?.ok)
+  const tts = request.api_config.tts_config
+  const ttsRequired = request.source_mode !== 'document' && tts.enabled && tts.provider !== 'disabled'
+  const apiReady = request.api_config.provider !== 'local' && Boolean(apiTestResult?.ok)
+  const ttsReady = !ttsRequired || Boolean(ttsTestResult?.ok)
   const envReady =
     !isTauriRuntime() ||
     Boolean(
@@ -320,14 +318,18 @@ export function useAppController() {
       done: apiReady,
       detail:
         request.api_config.provider === 'local'
-          ? '本地草稿'
-          : request.source_mode === 'local'
-            ? '本地规则可生成'
-            : apiTestResult?.ok
-              ? '已通过'
-              : apiTestResult
-                ? '失败'
-                : '未测试',
+          ? '请选择正式模型'
+          : apiTestResult?.ok
+            ? '已通过'
+            : apiTestResult
+              ? '失败'
+              : '未测试',
+    },
+    {
+      id: 'tts',
+      label: 'TTS',
+      done: ttsReady,
+      detail: !ttsRequired ? '已关闭' : ttsTestResult?.ok ? '已通过' : ttsTestResult ? '失败' : '未测试',
     },
     {
       id: 'cards',
@@ -346,7 +348,6 @@ export function useAppController() {
         apiTestResult.latency_ms ? ` · ${apiTestResult.latency_ms} ms` : ''
       }`
     : `${request.api_config.provider} · ${request.api_config.model || '未填模型'}`
-  const tts = request.api_config.tts_config
   const ttsTestTone = ttsTesting ? 'testing' : ttsTestResult ? (ttsTestResult.ok ? 'ok' : 'warn') : 'idle'
   const ttsTestTitle = ttsApiTestTitle(ttsTestResult, ttsTesting, tts.enabled)
   const ttsTestMessage = ttsTesting
@@ -530,7 +531,7 @@ export function useAppController() {
     const hardBlockedCount = projectToShow.quality_funnel?.hard_blocked_learning_point_count ?? 0
     const autoAddedHint = materialized.added ? ` 已自动补成 ${materialized.added} 张草稿卡。` : ''
     const diagnosticCount = candidateOnlyCount + hiddenDuplicateCount + hardBlockedCount
-    const inventoryHint = `更多学习点 ${diagnosticCount} 个，硬阻断 ${hardBlockedCount} 个。${autoAddedHint}`
+    const inventoryHint = diagnosticCount > 0 ? ` 更多学习点 ${diagnosticCount} 个可在诊断中查看。` : ''
     const isDocument = projectToShow.source_mode === 'document'
     const isReading = isDocument && projectToShow.document_study_mode === 'language_reading'
     const shortHint =
@@ -542,13 +543,14 @@ export function useAppController() {
             : '可用卡偏少，通常是字幕太短、重复太多、词伙评分不足或模型返回空；可以在“更多学习点”查看原因。'
         : ''
     const editedHint = editedDuringRun ? ' 生成期间你修改过设置；下一次生成会使用新配置。' : ''
+    const generatedLabel = isReading ? '精读卡' : isDocument ? '知识卡' : '可用卡'
     setStatus(
       (projectToShow.warning ||
         (projectToShow.source_mode === 'url'
-          ? `URL 导入成功，已生成 ${usableCount} 张可用卡，默认全选。${inventoryHint}${shortHint}`
+          ? `URL 导入成功，当前将导出 ${usableCount} 张${generatedLabel}。${inventoryHint}${autoAddedHint}${shortHint}`
           : projectToShow.source_mode === 'document'
-            ? `文档导入成功，已生成 ${usableCount} 张${isReading ? '精读' : '知识'}可用卡，默认全选。${inventoryHint}${shortHint}`
-            : `已生成 ${usableCount} 张可用卡，默认全选。${inventoryHint}${shortHint}`)) + editedHint,
+            ? `文档导入成功，当前将导出 ${usableCount} 张${generatedLabel}。${inventoryHint}${autoAddedHint}${shortHint}`
+            : `当前将导出 ${usableCount} 张${generatedLabel}。${inventoryHint}${autoAddedHint}${shortHint}`)) + editedHint,
     )
   }
 
@@ -1455,22 +1457,71 @@ export function useAppController() {
     }
     const resolvedApi = resolveGenerateApiConfig(generateRequest.api_config, generateRequest.source_mode)
     if (isTauriRuntime()) {
-      if (resolvedApi.error) {
-        setStatus(`生成前配置检查失败：${resolvedApi.error}`)
+      const openPreflightSettings = (tab: SettingsTab, message: string) => {
+        setActiveWorkspaceStage('generate')
+        setSettingsTab(tab)
+        setSettingsOpen(true)
+        setStatus(message)
+      }
+
+      if (!envStatus) {
+        openPreflightSettings('env', '生成前需要先检查本地环境。已打开“本地环境”设置，请完成检测后再开始正式制卡。')
         return
       }
+      if (!envReady) {
+        openPreflightSettings('env', '本地环境还没准备好，不能开始正式制卡。请先修复 Python、FFmpeg、genanki 或导入相关依赖。')
+        return
+      }
+      if (generateRequest.api_config.provider === 'local') {
+        openPreflightSettings(
+          'api',
+          '当前选择的是本地草稿模型，不能作为正式制卡结果。请先在“模型 API”里选择服务商、保存配置并测试连接。',
+        )
+        return
+      }
+      if (resolvedApi.error) {
+        openPreflightSettings('api', `生成前模型 API 配置未通过：${resolvedApi.error}`)
+        return
+      }
+      if (resolvedApi.fallbackReason) {
+        const fallbackIssue = resolvedApi.fallbackReason.replace(/[。.!！?？]+$/u, '')
+        openPreflightSettings(
+          'api',
+          `模型 API 未就绪：${fallbackIssue}。已禁止退回本地字幕草稿，请先测试模型 API。`,
+        )
+        return
+      }
+      if (!apiTestResult?.ok) {
+        openPreflightSettings('api', '模型 API 尚未通过测试，不能开始正式制卡。请保存配置并点击“测试连接”。')
+        return
+      }
+
+      const resolvedTts = resolveTtsConfig(generateRequest.api_config.tts_config, resolvedApi.api)
+      const ttsRequiredForGeneration =
+        generateRequest.source_mode !== 'document' && resolvedTts.enabled && resolvedTts.provider !== 'disabled'
+      if (ttsRequiredForGeneration) {
+        const ttsError = validateTtsConfigForRequest(resolvedTts)
+        if (ttsError) {
+          openPreflightSettings('tts', `生成前 TTS 配置未通过：${ttsError}`)
+          return
+        }
+        if (!ttsTestResult?.ok) {
+          openPreflightSettings('tts', 'TTS 已开启但尚未通过测试。请在“语音 TTS”里保存配置并测试，或关闭 TTS 后再生成。')
+          return
+        }
+      }
+
       if (
-        !resolvedApi.fallbackReason &&
-        (resolvedApi.api.base_url !== request.api_config.base_url ||
-          resolvedApi.api.model !== request.api_config.model ||
-          resolvedApi.api.provider !== request.api_config.provider)
+        resolvedApi.api.base_url !== request.api_config.base_url ||
+        resolvedApi.api.model !== request.api_config.model ||
+        resolvedApi.api.provider !== request.api_config.provider
       ) {
         patchRequest({ api_config: resolvedApi.api })
       }
     }
     setLastExport(null)
     setAnkiVerifyResult(null)
-    setActiveWorkspaceStage('generate')
+    setActiveWorkspaceStage('review')
     setWorkerProgress({ command: 'generate', stage: 'start', percent: 1, message: '准备开始生成。' })
     setBusy(true)
     setRequestEditedDuringRun(false)
@@ -1481,11 +1532,9 @@ export function useAppController() {
           : '正在下载 URL 视频和字幕，然后生成卡片草稿。'
         : generateRequest.source_mode === 'document'
           ? '正在解析文档、总结知识点并生成卡片草稿。'
-          : resolvedApi.fallbackReason
-            ? `模型 API 未就绪（${resolvedApi.fallbackReason}），本次先用本地规则解析字幕并生成可用卡。`
-            : generateRequest.subtitle_path
-              ? '正在解析字幕、筛选片段并生成卡片草稿。'
-              : '正在自动匹配同目录字幕、筛选片段并生成卡片草稿。',
+          : generateRequest.subtitle_path
+            ? '正在解析字幕、筛选片段并生成卡片草稿。'
+            : '正在自动匹配同目录字幕、筛选片段并生成卡片草稿。',
     )
     try {
       const requestSnapshot = JSON.parse(

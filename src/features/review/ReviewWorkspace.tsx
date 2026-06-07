@@ -13,9 +13,11 @@ import type {
   Segment,
   SegmentFilter,
   SourceMode,
+  WorkerProgress,
 } from '../../domain/types'
 import type { QualityCounts, QualityDiagnostics } from '../../domain/projectMetrics'
 import { candidateKindLabel, clipText, phraseTypeLabel } from '../../domain/quality'
+import { WorkerProgressPanel } from '../generation/WorkerProgressPanel'
 import { EmptyWorkbench } from './EmptyWorkbench'
 import { ExportResultPanel } from './ExportResultPanel'
 import { ReviewSummaryPanel } from './ReviewSummaryPanel'
@@ -49,6 +51,9 @@ type ReviewWorkspaceProps = {
   sourceMode: SourceMode
   templateId: string
   visibleSegments: Segment[]
+  workerBusy: boolean
+  workerProgress: WorkerProgress | null
+  status: string
   onOpenAnkiImport: () => void
   onRevealExport: () => void
   onSegmentFilterChange: (filter: SegmentFilter) => void
@@ -84,6 +89,9 @@ export function ReviewWorkspace({
   sourceMode,
   templateId,
   visibleSegments,
+  workerBusy,
+  workerProgress,
+  status,
   onOpenAnkiImport,
   onRevealExport,
   onSegmentFilterChange,
@@ -107,9 +115,13 @@ export function ReviewWorkspace({
         <div className="panel-heading">
           <MessageSquareText size={20} />
           <div>
-            <h3 id="preview-title">{project ? '审核导出' : '生成工作台'}</h3>
+            <h3 id="preview-title">{workerBusy && !project ? '生成中' : project ? '审核导出' : '生成工作台'}</h3>
             <p className="panel-subtitle">
-              {project ? '按片段检查卡片、音频和更多学习点，导出时只包含已选卡片。' : '先选择素材，再生成卡片；结果会在这里展开。'}
+              {workerBusy && !project
+                ? '正在按当前素材和学习设置制作卡片，完成后会自动进入审核导出。'
+                : project
+                  ? '按片段检查卡片、音频和更多学习点，导出时只包含已选卡片。'
+                  : '先选择素材，再生成卡片；结果会在这里展开。'}
             </p>
           </div>
         </div>
@@ -150,6 +162,12 @@ export function ReviewWorkspace({
         </div>
       ) : null}
 
+      {project && workerProgress ? (
+        <div className="review-task-progress" aria-live="polite">
+          <WorkerProgressPanel progress={workerProgress} />
+        </div>
+      ) : null}
+
       {project ? (
         <ReviewSummaryPanel
           activeTemplateLabel={activeTemplateLabel}
@@ -179,14 +197,16 @@ export function ReviewWorkspace({
 
       <AnimatePresence mode="wait">
         <motion.div
-          key={project ? reviewView : 'empty'}
+          key={project ? reviewView : workerBusy ? 'generating' : 'empty'}
           className="review-view-body"
           initial={{ opacity: 0, y: prefersReducedMotion ? 0 : 5 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: prefersReducedMotion ? 0 : -3 }}
           transition={{ duration: prefersReducedMotion ? 0 : Math.min(motionDuration, 0.16), ease: 'easeOut' }}
         >
-          {!project ? (
+          {!project && workerBusy && workerProgress ? (
+            <GenerationProgressWorkbench progress={workerProgress} status={status} />
+          ) : !project ? (
             <EmptyWorkbench
               level={level}
               maxSegments={maxSegments}
@@ -225,6 +245,34 @@ export function ReviewWorkspace({
         </motion.div>
       </AnimatePresence>
     </section>
+  )
+}
+
+function GenerationProgressWorkbench({ progress, status }: { progress: WorkerProgress; status: string }) {
+  const stepLabel = progress.command === 'export' ? '正在导出' : '正在生成'
+  return (
+    <div className="generation-progress-workbench" aria-label="生成进度">
+      <div className="generation-progress-hero">
+        <span className="hero-kicker">{stepLabel}</span>
+        <h2>{progress.command === 'export' ? '正在导出 APKG' : '正在制作 Anki 卡片'}</h2>
+        <p>{status}</p>
+      </div>
+      <WorkerProgressPanel progress={progress} variant="wide" />
+      <div className="generation-progress-steps" aria-label="生成阶段说明">
+        <span>
+          <strong>素材已确认</strong>
+          <small>视频、字幕或文档会按当前配置处理。</small>
+        </span>
+        <span>
+          <strong>设置已锁定</strong>
+          <small>生成期间不会再打开学习设置，避免参数混乱。</small>
+        </span>
+        <span>
+          <strong>完成后审核</strong>
+          <small>卡片生成完成后，这里会自动切换到审核导出。</small>
+        </span>
+      </div>
+    </div>
   )
 }
 

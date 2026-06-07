@@ -96,7 +96,7 @@ describe('LearningSettingsPanel', () => {
     renderPanel()
 
     expect(screen.getByText('高级学习设置')).toBeVisible()
-    expect(screen.getByText('学习语言、理解深度、难度范围、内容偏好')).toBeVisible()
+    expect(screen.getByText('理解深度、难度范围、内容偏好')).toBeVisible()
     expect(screen.getByText('展开')).toBeInTheDocument()
     expect(screen.getByText('收起')).toBeInTheDocument()
   })

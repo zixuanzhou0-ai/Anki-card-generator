@@ -70,14 +70,17 @@ describe('ReviewSummaryPanel', () => {
       />,
     )
 
-    expect(screen.getByText('3/3')).toBeInTheDocument()
-    expect(screen.getByText('已生成 3 张可用卡，默认全选')).toBeInTheDocument()
+    expect(screen.getByText('本次将导出')).toBeInTheDocument()
+    expect(screen.getByText('张卡片')).toBeInTheDocument()
+    expect(screen.getByText('只导出当前勾选的卡片；已选 3 / 生成 3')).toBeInTheDocument()
     expect(screen.getByText(/每句最多 4 个学习点/)).toBeInTheDocument()
-    expect(screen.getByText('生成卡片数')).toBeInTheDocument()
-    expect(screen.getAllByText('发现学习点').length).toBeGreaterThan(0)
+    expect(screen.getByText('生成可用卡')).toBeInTheDocument()
+    expect(screen.getByText('片段')).toBeInTheDocument()
+    expect(screen.getByText(/智能筛选过程 · 发现 8 个学习点/)).toBeInTheDocument()
     expect(screen.getAllByText('更多学习点').length).toBeGreaterThan(0)
-    expect(screen.getByText('重复 / 硬阻断')).toBeInTheDocument()
-    expect(screen.getByText(/平均词伙评分/)).toBeInTheDocument()
+    expect(screen.getByText(/重复 1 · 阻断 0/)).toBeInTheDocument()
+    expect(screen.getByText('片段筛选')).toBeInTheDocument()
+    expect(screen.getByText(/一个片段里可能包含多张卡/)).toBeInTheDocument()
     expect(screen.getByText('字幕句')).toBeInTheDocument()
     expect(screen.getByText(/自动匹配字幕/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /无已选卡片\s*5/ })).toBeInTheDocument()
@@ -107,8 +110,7 @@ describe('ReviewSummaryPanel', () => {
       />,
     )
 
-    expect(screen.getByText(/知识点质量/)).toBeInTheDocument()
-    expect(screen.getByText('文档制卡过程')).toBeInTheDocument()
+    expect(screen.getByText(/文档制卡过程 · 发现 2 个学习点/)).toBeInTheDocument()
     expect(screen.getByText('文档片段')).toBeInTheDocument()
     expect(screen.queryByText('平均词伙评分')).not.toBeInTheDocument()
     expect(screen.queryByText('字幕句')).not.toBeInTheDocument()
@@ -138,8 +140,7 @@ describe('ReviewSummaryPanel', () => {
       />,
     )
 
-    expect(screen.getByText(/精读点质量/)).toBeInTheDocument()
-    expect(screen.getByText('文档精读过程')).toBeInTheDocument()
+    expect(screen.getByText(/文档精读过程 · 发现 2 个学习点/)).toBeInTheDocument()
     expect(screen.getByText('可用精读卡')).toBeInTheDocument()
     expect(screen.queryByText('平均词伙评分')).not.toBeInTheDocument()
     expect(screen.queryByText('字幕句')).not.toBeInTheDocument()

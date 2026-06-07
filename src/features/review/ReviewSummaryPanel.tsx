@@ -89,46 +89,28 @@ export function ReviewSummaryPanel({
 
   return (
     <>
-      <div className="review-dashboard" aria-label="生成审核概览">
-        <div className="metric-card primary">
-          <span>已选导出 / 生成卡片</span>
-          <strong>{`${selectedCardCount}/${usableCount}`}</strong>
-          <small>{`已生成 ${usableCount} 张可用卡，默认全选`}</small>
+      <div className="review-export-summary" aria-label="导出数量概览">
+        <div className="export-count-card">
+          <span>本次将导出</span>
+          <div>
+            <strong>{selectedCount}</strong>
+            <em>张卡片</em>
+          </div>
+          <small>{`只导出当前勾选的卡片；已选 ${selectedCount} / 生成 ${usableCount}`}</small>
         </div>
-        <div className="metric-card">
-          <span>生成卡片数</span>
-          <strong>{usableCount}</strong>
-          <small>通过质量 gate，可直接勾选导出</small>
-        </div>
-        <div className="metric-card">
-          <span>已选卡片数</span>
-          <strong>{selectedCount}</strong>
-          <small>导出只包含当前勾选的卡片</small>
-        </div>
-        <div className="metric-card">
-          <span>发现学习点</span>
-          <strong>{qualityFunnel.learning_point_count ?? qualityDiagnostics.candidates}</strong>
-          <small>
-            {project.max_segments
-              ? `${project.auto_max_segments ? '自动预算' : '预算'} ${project.max_segments} · `
-              : ''}
-            {`每句最多 ${maxLearningPoints} 个学习点 · `}
-            {levelLabel} · {displayLanguage} · {activeTemplateLabel}
-            {localSubtitleSource ? ` · ${localSubtitleSource}` : ''}
-            {project.source_mode === 'local' && project.skip_video_slicing ? ' · 字幕-only' : ''}
-          </small>
-        </div>
-        <div className="metric-card">
-          <span>更多学习点</span>
-          <strong>{diagnosticCount}</strong>
-          <small>{diagnosticCount ? '有些学习点未制卡，可打开“更多学习点”查看原因' : '合法学习点已自动生成卡片'}</small>
-        </div>
-        <div className="metric-card">
-          <span>重复 / 硬阻断</span>
-          <strong>{`${hiddenDuplicateCount}/${hardBlockedCount}`}</strong>
-          <small>{`${labels.candidate} ${qualityDiagnostics.candidates} · ${labels.score} ${
-            qualityDiagnostics.avgScore === null ? '-' : qualityDiagnostics.avgScore.toFixed(1)
-          }`}</small>
+        <div className="export-side-metrics">
+          <span>
+            <strong>{usableCount}</strong>
+            <small>生成可用卡</small>
+          </span>
+          <span>
+            <strong>{segmentReviewCounts.all}</strong>
+            <small>片段</small>
+          </span>
+          <span>
+            <strong>{diagnosticCount}</strong>
+            <small>更多学习点</small>
+          </span>
         </div>
       </div>
 
@@ -146,10 +128,23 @@ export function ReviewSummaryPanel({
         <summary>
           <span className="funnel-summary-title">
             <Sparkles size={14} />
-            {labels.pipeline}
+            生成诊断
           </span>
-          <strong>{`可用 ${usableCount} · 已选 ${selectedCount} · 更多 ${diagnosticCount}`}</strong>
+          <strong>
+            {`${labels.pipeline} · 发现 ${qualityFunnel.learning_point_count ?? qualityDiagnostics.candidates} 个学习点 · 重复 ${hiddenDuplicateCount} · 阻断 ${hardBlockedCount}`}
+          </strong>
         </summary>
+        <div className="quality-context-line">
+          <span>
+            {project.max_segments
+              ? `${project.auto_max_segments ? '自动预算' : '预算'} ${project.max_segments} · `
+              : ''}
+            {`每句最多 ${maxLearningPoints} 个学习点 · `}
+            {levelLabel} · {displayLanguage} · {activeTemplateLabel}
+            {localSubtitleSource ? ` · ${localSubtitleSource}` : ''}
+            {project.source_mode === 'local' && project.skip_video_slicing ? ' · 字幕-only' : ''}
+          </span>
+        </div>
         <div className="quality-funnel" aria-label="质量漏斗">
           <span>
             <strong>{sourceSentenceCount ?? '-'}</strong>
@@ -186,6 +181,10 @@ export function ReviewSummaryPanel({
         </div>
       </details>
 
+      <div className="review-filter-heading">
+        <span>片段筛选</span>
+        <small>左侧列表按片段显示；一个片段里可能包含多张卡。</small>
+      </div>
       <div className="review-filters" aria-label="卡片选择筛选">
         {segmentFilterOptions.map((option) => (
           <button

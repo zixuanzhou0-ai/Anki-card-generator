@@ -45,6 +45,9 @@ function renderWorkspace(project: Project | null, overrides = {}) {
     sourceMode: 'local' as const,
     templateId: 'immersive',
     visibleSegments: project?.segments ?? [],
+    workerBusy: false,
+    workerProgress: null,
+    status: '准备生成 Anki 卡片。',
     onOpenAnkiImport: vi.fn(),
     onRevealExport: vi.fn(),
     onSegmentFilterChange: vi.fn(),
@@ -69,6 +72,25 @@ describe('ReviewWorkspace', () => {
     expect(screen.queryByRole('button', { name: /开始生成/ })).not.toBeInTheDocument()
   })
 
+  it('renders generation progress in the workbench while cards are being created', () => {
+    renderWorkspace(null, {
+      workerBusy: true,
+      workerProgress: {
+        command: 'generate',
+        stage: 'ai',
+        percent: 37,
+        message: '正在生成卡片正文：第 3/8 批。',
+      },
+      status: '正在解析字幕、筛选片段并生成卡片草稿。',
+    })
+
+    expect(screen.getByRole('heading', { name: '生成中' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '正在制作 Anki 卡片' })).toBeInTheDocument()
+    expect(screen.getByText('37%')).toBeInTheDocument()
+    expect(screen.getByText('正在生成卡片正文：第 3/8 批。')).toBeInTheDocument()
+    expect(screen.getByText('设置已锁定')).toBeInTheDocument()
+  })
+
   it('renders review controls and forwards selection actions', () => {
     const project = createDemoProject(defaultRequest)
     const onSetCardsEnabled = vi.fn()
@@ -82,7 +104,7 @@ describe('ReviewWorkspace', () => {
     fireEvent.click(screen.getByRole('button', { name: /in the mood/ }))
 
     expect(screen.getByRole('heading', { name: '审核导出' })).toBeInTheDocument()
-    expect(screen.getByText('生成卡片数')).toBeInTheDocument()
+    expect(screen.getByText('本次将导出')).toBeInTheDocument()
     expect(onSetCardsEnabled).toHaveBeenCalledWith(false)
     expect(onInvertCardSelection).toHaveBeenCalledOnce()
     expect(onSelectSegment).toHaveBeenCalledWith('seg_demo_001')

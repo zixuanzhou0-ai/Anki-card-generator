@@ -4,11 +4,12 @@ import type { WorkerProgress } from '../../domain/types'
 
 type WorkerProgressPanelProps = {
   progress: WorkerProgress
+  variant?: 'compact' | 'wide'
 }
 
-export function WorkerProgressPanel({ progress }: WorkerProgressPanelProps) {
+export function WorkerProgressPanel({ progress, variant = 'compact' }: WorkerProgressPanelProps) {
   return (
-    <section className={`panel progress-panel ${progress.percent >= 100 ? 'done' : ''}`}>
+    <section className={`progress-panel ${variant === 'wide' ? 'wide' : ''} ${progress.percent >= 100 ? 'done' : ''}`}>
       <div className="progress-head">
         <span>{progress.command === 'export' ? '导出进度' : '生成进度'}</span>
         <strong>{progress.percent}%</strong>
@@ -23,4 +24,3 @@ export function WorkerProgressPanel({ progress }: WorkerProgressPanelProps) {
     </section>
   )
 }
-

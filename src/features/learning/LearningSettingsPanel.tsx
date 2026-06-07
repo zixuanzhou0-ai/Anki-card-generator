@@ -74,6 +74,9 @@ export function LearningSettingsPanel({
   const currentLevel = levels.find((level) => level.id === request.level) ?? levels[0]
   const currentStrategy =
     selectionStrategyOptions.find((option) => option.id === request.selection_strategy) ?? selectionStrategyOptions[0]
+  const currentLanguage =
+    learningLanguageOptions.find((item) => item.code === normalizeLearningLanguage(request.language)) ??
+    learningLanguageOptions[0]
   const segmentBudgetLabel = request.max_segments <= 0 ? '自动片段' : `${request.max_segments} 段`
   const autoLevel = request.level_mode !== 'manual'
   const levelSummary = autoLevel ? '自动判断' : request.level
@@ -83,11 +86,28 @@ export function LearningSettingsPanel({
       <div className="panel-heading">
         <Languages size={20} />
         <div className="panel-title-stack">
-          <h3>学习路径</h3>
-          <span>{`${levelSummary} · ${currentStrategy?.label ?? '智能筛选'} · ${segmentBudgetLabel}`}</span>
+          <h3>学习设置</h3>
+          <span>{`${currentLanguage.label} · ${levelSummary} · ${segmentBudgetLabel}`}</span>
         </div>
       </div>
       <div className="learning-core-card">
+        <label className="learning-setting-row language-picker-row">
+          <span>
+            <strong>学习语言</strong>
+            <small>决定发音体系、解释口径和 TTS 语言</small>
+          </span>
+          <select
+            aria-label="学习语言"
+            value={request.language}
+            onChange={(event) => onPatchRequest({ language: normalizeLearningLanguage(event.target.value) })}
+          >
+            {learningLanguageOptions.map((item) => (
+              <option key={item.code} value={item.code}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+        </label>
         <div className="learning-setting-row level-picker-row">
           <span>
             <strong>学习水平</strong>
@@ -193,7 +213,7 @@ export function LearningSettingsPanel({
             <SlidersHorizontal size={16} aria-hidden="true" />
             <span>
               <strong>高级学习设置</strong>
-              <small>学习语言、理解深度、难度范围、内容偏好</small>
+              <small>理解深度、难度范围、内容偏好</small>
             </span>
           </span>
           <span className="advanced-learning-summary-meta">
@@ -207,23 +227,6 @@ export function LearningSettingsPanel({
           </span>
         </summary>
         <div className="advanced-learning-body">
-          <label className="learning-setting-row compact-learning-row">
-            <span>
-              <strong>学习语言</strong>
-              <small>生成解释、例句和老师评语时使用</small>
-            </span>
-            <select
-              aria-label="学习语言"
-              value={request.language}
-              onChange={(event) => onPatchRequest({ language: normalizeLearningLanguage(event.target.value) })}
-            >
-              {learningLanguageOptions.map((item) => (
-                <option key={item.code} value={item.code}>
-                  {item.label}
-                </option>
-              ))}
-            </select>
-          </label>
           <div className="learning-setting-row compact-learning-row">
             <span>
               <strong>理解深度</strong>

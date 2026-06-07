@@ -215,6 +215,7 @@ export function AppShell({ controller }: AppShellProps) {
             onApplyCollectionPreset={applyCollectionPreset}
             onCloseSheet={() => setInspectorState('collapsed')}
             onExport={exportApkg}
+            onGenerate={generate}
             onPatchRequest={patchRequest}
             onPreviewRateChange={setPreviewRate}
             onSelectCurrentLevel={selectCurrentLevel}
@@ -255,6 +256,9 @@ export function AppShell({ controller }: AppShellProps) {
             sourceMode={request.source_mode}
             templateId={request.template_id}
             visibleSegments={visibleSegments}
+            workerBusy={workerBusy}
+            workerProgress={workerProgress}
+            status={status}
             onOpenAnkiImport={openAnkiImport}
             onRevealExport={revealExport}
             onSegmentFilterChange={setSegmentFilter}
