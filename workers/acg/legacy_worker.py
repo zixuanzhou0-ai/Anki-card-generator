@@ -3,6 +3,7 @@
 import html
 import base64
 import hashlib
+import functools
 import importlib.util
 import json
 import math
@@ -568,7 +569,7 @@ def language_focus_instruction(payload: dict[str, Any]) -> str:
     rules = "".join(f"{LANGUAGE_FOCUS_LABELS[item]}：{LANGUAGE_FOCUS_RULES[item]}" for item in focus)
     return (
         f"本次用户选择的学习重点：{labels}。请只围绕这些重点判断和制卡。"
-        "如果某个片段只有未选择的学习价值，优先降级为待审或跳过，不要为了数量硬凑。"
+        "如果某个片段只有未选择的学习价值，降低优先级或放入候选库；不要因为类型占比或水平偏好硬过滤合法学习点。"
         f"{rules}"
     )
 
@@ -658,6 +659,63 @@ def candidate_kind_for_segment(segment: dict[str, Any]) -> str:
     if content_kind == "listening":
         return "listening_feature"
     return candidate_kind_for_phrase_type(str(segment.get("phrase_type") or ""), "expression")
+
+
+def normalize_candidate_kind(value: Any, fallback: str = "expression") -> str:
+    kind = str(value or "").strip()
+    return kind if kind in CANDIDATE_KIND_TO_PHRASE_TYPE else fallback
+
+
+def normalize_phrase_type(value: Any, candidate_kind: str = "expression") -> str:
+    phrase_type = str(value or "").strip()
+    if phrase_type in PHRASE_TYPE_TO_CANDIDATE_KIND:
+        return phrase_type
+    return phrase_type_for_candidate_kind(candidate_kind)
+
+
+def learning_point_confidence(value_score: Any, default: str = "medium") -> str:
+    try:
+        score = float(value_score)
+    except (TypeError, ValueError):
+        score = 0
+    if score >= 4:
+        return "high"
+    if score >= 3:
+        return "medium"
+    return default if default in {"high", "medium", "low"} else "medium"
+
+
+def exact_span_offsets(text: str, span: str) -> tuple[int | None, int | None]:
+    source = str(text or "")
+    target = str(span or "").strip()
+    if not source or not target:
+        return None, None
+    direct = source.lower().find(target.lower())
+    if direct >= 0:
+        return direct, direct + len(target)
+    pattern = r"\s+".join(re.escape(part) for part in target.split())
+    if not pattern:
+        return None, None
+    match = re.search(pattern, source, flags=re.IGNORECASE)
+    if not match:
+        return None, None
+    return match.start(), match.end()
+
+
+def learning_action_key_for_contract(item: dict[str, Any]) -> str:
+    focus = clean_study_text(
+        item.get("learning_action")
+        or item.get("phrase_card_focus")
+        or item.get("card_focus")
+        or item.get("reason")
+        or ""
+    )
+    parts = [
+        normalize_candidate_kind(item.get("candidate_kind") or item.get("kind")),
+        normalized_phrase_key(str(item.get("normalized_answer") or item.get("answer_core") or item.get("exact_span") or item.get("phrase") or "")),
+        re.sub(r"\s+", " ", focus.lower()).strip()[:96],
+    ]
+    return "::".join(part for part in parts if part)
 
 
 def candidate_kind_allowed_by_focus(candidate_kind: str, payload: dict[str, Any]) -> bool:
@@ -3953,7 +4011,7 @@ def build_phrase_review_prompt(project: dict[str, Any], segments: list[dict[str,
         "1) exact_span 必须逐词来自 english 原句；normalized_answer/answer_core 必须是英文答案本体。"
         "词伙通常 2-6 个词，单词用法可以是 1 个核心词，语法框架可以是原句里的可替换结构。它必须完整、自然、可换场景复用。"
         "2) keep 只给真正值得复习的表达；如果只是句子主题、名词堆叠、产品名、working with 这类泛短语，decision=skip。"
-        "3) B1 或更高水平不要把 talk about、go home 这类 A1/A2 基础表达评为 keep，除非原句里有更具体的表达框架。"
+        "3) B1 或更高水平遇到 talk about、go home 这类 A1/A2 基础表达时降低 value_score；如果仍有明确训练动作，可保留为候选，不要仅因基础而硬过滤。"
         "4) value_score 用 1-5：5=非常值得学，4=推荐制卡，3=可待审，1-2=跳过。"
         "5) candidate_kind 从 expression、contextual_vocab、grammar_pattern、listening_feature、pragmatic_risk 中选一个。"
         "phrase_type 从 spoken_phrase、sentence_frame、collocation、discourse_marker、idiom、listening_sentence、vocabulary_usage、grammar_pattern 中选一个。"
@@ -3962,7 +4020,7 @@ def build_phrase_review_prompt(project: dict[str, Any], segments: list[dict[str,
         "8) answer_core 禁止包含中文、IPA、发音说明、语法解释或“X 是 Y”的说明；这些只能放到后续字段里。"
         "9) 同一句可以 keep 多个学习点，但训练动作必须明显不同；expression、contextual_vocab、grammar_pattern、listening_feature 可以共存，重复训练目标不能共存。"
         "好例子：Honestly, it's such a nice Monday morning. -> keep, phrase=such a nice, phrase_type=sentence_frame, card_focus=训练 such a nice + 名词表达自然赞叹。"
-        "废例子：Today we are going to talk about AI models. -> skip, phrase=talk about, reject_reason=B1 用户太基础，而且只是视频引入。"
+        "低优先级例子：Today we are going to talk about AI models. -> candidate_only 或 low score, phrase=talk about, reason=基础表达且只是视频引入。"
         "只返回严格 JSON，不要 Markdown。结构："
         '{"candidates":[{"id":"seg_0001","decision":"keep|skip","phrase":"原句里的词伙",'
         '"candidate_kind":"expression|contextual_vocab|grammar_pattern|listening_feature|pragmatic_risk",'
@@ -4256,6 +4314,8 @@ def expansion_point_to_segment(
         "id": learning_point_id_for_candidate(source_id, normalized_point),
         "kind": normalized_point["candidate_kind"],
         "exact_span": normalized_point["exact_span"],
+        "exact_span_start": normalized_point.get("exact_span_start"),
+        "exact_span_end": normalized_point.get("exact_span_end"),
         "answer_core": answer,
         "difficulty": str(project.get("level", "B1")),
         "value_score": round(value_score, 2),
@@ -4265,6 +4325,12 @@ def expansion_point_to_segment(
         "normalized_answer": normalized_point["normalized_answer"],
         "source_evidence": source_segment.get("text", ""),
         "language": normalize_learning_language(project.get("language", source_segment.get("language", "en"))),
+        "learning_action": normalized_point.get("learning_action", ""),
+        "learning_action_key": normalized_point.get("learning_action_key", ""),
+        "source": normalized_point.get("source", "model"),
+        "confidence": normalized_point.get("confidence", "medium"),
+        "validation_status": normalized_point.get("validation_status", "valid"),
+        "repair_history": normalized_point.get("repair_history", []),
     }
     media_start, media_end = segment_media_bounds(
         float(source_segment.get("start") or 0),
@@ -4285,6 +4351,8 @@ def expansion_point_to_segment(
         "recommendation": min(5, max(1, round(value_score))),
         "phrase": answer,
         "exact_span": normalized_point["exact_span"],
+        "exact_span_start": normalized_point.get("exact_span_start"),
+        "exact_span_end": normalized_point.get("exact_span_end"),
         "normalized_answer": normalized_point["normalized_answer"],
         "answer_core": answer,
         "candidate_kind": normalized_point["candidate_kind"],
@@ -4292,6 +4360,12 @@ def expansion_point_to_segment(
         "content_kind": normalized_point["content_kind"],
         "candidate_source": "source_expansion",
         "learning_point_schema_version": LEARNING_POINT_SCHEMA_VERSION,
+        "learning_action": normalized_point.get("learning_action", ""),
+        "learning_action_key": normalized_point.get("learning_action_key", ""),
+        "contract_source": normalized_point.get("source", "model"),
+        "confidence": normalized_point.get("confidence", "medium"),
+        "validation_status": normalized_point.get("validation_status", "valid"),
+        "repair_history": normalized_point.get("repair_history", []),
         "phrase_card_focus": str(point.get("card_focus") or point.get("reason") or ""),
         "source_evidence": source_segment.get("text", ""),
         "score": float(source_segment.get("score") or 0) + max(0.0, value_score - 3.0),
@@ -4412,6 +4486,10 @@ def validate_review_learning_point(
         "phrase": review.get("phrase") or phrase,
         "content_kind": content_kind_for_phrase_type(final_phrase_type),
         "language": normalize_learning_language(segment.get("language", "en")),
+        "card_focus": review.get("card_focus") or segment.get("phrase_card_focus") or "",
+        "reason": review.get("reason") or segment.get("phrase_decision_reason") or "",
+        "value_score": review.get("value_score") or segment.get("phrase_value_score") or segment.get("recommendation") or 0,
+        "candidate_source": segment.get("candidate_source") or "model",
     }
     for key in PRONUNCIATION_FIELDS:
         if review.get(key):
@@ -4432,18 +4510,25 @@ def validate_review_learning_point(
 
     return True, "", {
         "exact_span": normalized_point["exact_span"],
+        "exact_span_start": normalized_point.get("exact_span_start"),
+        "exact_span_end": normalized_point.get("exact_span_end"),
         "normalized_answer": normalized_point["normalized_answer"],
         "answer_core": normalized_point["answer_core"],
-        "candidate_kind": final_kind,
-        "phrase_type": final_phrase_type,
-        "content_kind": content_kind_for_phrase_type(final_phrase_type),
+        "candidate_kind": normalized_point["candidate_kind"],
+        "phrase_type": normalized_point["phrase_type"],
+        "content_kind": normalized_point["content_kind"],
         "phonetic_ipa": normalized_point.get("phonetic_ipa", ""),
         "spoken_ipa": normalized_point.get("spoken_ipa", ""),
         "source_spoken_ipa": normalized_point.get("source_spoken_ipa", ""),
         "pronunciation_note": normalized_point.get("pronunciation_note", ""),
         "pronunciation_confidence": normalized_point.get("pronunciation_confidence", ""),
         "pronunciation_meta": normalized_point.get("pronunciation_meta") or None,
-        "validation_status": normalized_point.get("validation_status", "ok"),
+        "learning_action": normalized_point.get("learning_action", ""),
+        "learning_action_key": normalized_point.get("learning_action_key", ""),
+        "contract_source": normalized_point.get("source", "model"),
+        "confidence": normalized_point.get("confidence", "medium"),
+        "repair_history": normalized_point.get("repair_history", []),
+        "validation_status": normalized_point.get("validation_status", "valid"),
         "validation_issues": " / ".join(normalized_point.get("validation_issues", [])),
     }
 
@@ -4569,6 +4654,8 @@ def apply_phrase_review_decisions(
                 "source_segment_id": source_id,
                 "phrase": phrase,
                 "exact_span": normalized_fields["exact_span"],
+                "exact_span_start": normalized_fields.get("exact_span_start"),
+                "exact_span_end": normalized_fields.get("exact_span_end"),
                 "normalized_answer": normalized_fields["normalized_answer"],
                 "answer_core": normalized_fields["answer_core"],
                 "candidate_kind": normalized_fields["candidate_kind"],
@@ -4587,7 +4674,12 @@ def apply_phrase_review_decisions(
                 "pronunciation_note": normalized_fields.get("pronunciation_note", ""),
                 "pronunciation_confidence": normalized_fields.get("pronunciation_confidence", ""),
                 "pronunciation_meta": normalized_fields.get("pronunciation_meta") or None,
-                "validation_status": normalized_fields.get("validation_status", "ok"),
+                "learning_action": normalized_fields.get("learning_action", ""),
+                "learning_action_key": normalized_fields.get("learning_action_key", ""),
+                "contract_source": normalized_fields.get("contract_source", "model"),
+                "confidence": normalized_fields.get("confidence", "medium"),
+                "repair_history": normalized_fields.get("repair_history", []),
+                "validation_status": normalized_fields.get("validation_status", "valid"),
                 "validation_issues": normalized_fields.get("validation_issues", ""),
                 "candidate_source": segment.get("candidate_source", ""),
                 "learning_point_schema_version": LEARNING_POINT_SCHEMA_VERSION,
@@ -4694,6 +4786,10 @@ def candidate_kind_priority(segment: dict[str, Any]) -> int:
 def learning_actions_overlap(left: dict[str, Any], right: dict[str, Any]) -> bool:
     if str(left.get("candidate_kind") or "") != str(right.get("candidate_kind") or ""):
         return False
+    left_action_key = str(left.get("learning_action_key") or "").strip()
+    right_action_key = str(right.get("learning_action_key") or "").strip()
+    if left_action_key and right_action_key and left_action_key == right_action_key:
+        return True
     left_answer = normalized_phrase_key(str(left.get("normalized_answer") or left.get("phrase") or ""))
     right_answer = normalized_phrase_key(str(right.get("normalized_answer") or right.get("phrase") or ""))
     if left_answer and right_answer and (left_answer == right_answer or phrase_in_text(left_answer, right_answer) or phrase_in_text(right_answer, left_answer)):
@@ -5991,7 +6087,9 @@ def inventory_status_for_rejected_card(card: dict[str, Any], segment: dict[str, 
 def inventory_learning_action(item: dict[str, Any], card: dict[str, Any] | None = None) -> str:
     source = card or item
     return clean_study_text(
-        source.get("learning_target")
+        source.get("learning_action")
+        or item.get("learning_action")
+        or source.get("learning_target")
         or source.get("learning_goal")
         or source.get("phrase_card_focus")
         or source.get("why_it_matters")
@@ -6047,9 +6145,18 @@ def learning_point_inventory_item(
         "estimated_level": str(source.get("estimated_level") or source.get("difficulty") or segment.get("difficulty") or ""),
         "value_score": value_score,
         "learning_action": inventory_learning_action(segment, card),
+        "learning_action_key": str(source.get("learning_action_key") or segment.get("learning_action_key") or learning_action_key_for_contract(source)),
+        "source": str(source.get("contract_source") or source.get("source") or source.get("candidate_source") or segment.get("candidate_source") or "local"),
+        "confidence": str(source.get("confidence") or segment.get("confidence") or learning_point_confidence(value_score)),
+        "validation_status": str(source.get("validation_status") or segment.get("validation_status") or ("valid" if inventory_status == "card_generated" else inventory_status)),
+        "repair_history": source.get("repair_history") if isinstance(source.get("repair_history"), list) else [],
         "reason": clean_study_text(reason or source.get("phrase_decision_reason") or segment.get("phrase_decision_reason") or source.get("why") or ""),
         "status": inventory_status,
     }
+    if source.get("exact_span_start") is not None:
+        item["exact_span_start"] = source.get("exact_span_start")
+    if source.get("exact_span_end") is not None:
+        item["exact_span_end"] = source.get("exact_span_end")
     if card_id:
         item["card_id"] = card_id
     if filter_reason:
@@ -6069,8 +6176,8 @@ def build_learning_point_inventory(
     def append_item(item: dict[str, Any]) -> None:
         key = (
             str(item.get("source_segment_id") or ""),
-            normalized_phrase_key(str(item.get("answer_core") or item.get("exact_span") or "")),
             str(item.get("candidate_kind") or ""),
+            str(item.get("learning_action_key") or normalized_phrase_key(str(item.get("answer_core") or item.get("exact_span") or ""))),
             str(item.get("status") or ""),
             str(item.get("card_id") or ""),
         )
@@ -11505,6 +11612,45 @@ def stable_cache_key(payload: dict[str, Any], length: int = 32) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:length]
 
 
+TEXT_NORMALIZATION_CACHE_VERSION = 2
+TTS_PROVIDER_ADAPTER_VERSION = 2
+MEDIA_FFMPEG_PROFILE_VERSION = 2
+
+
+def tts_provider_scope(tts: dict[str, Any]) -> dict[str, str]:
+    provider = provider_name(tts)
+    scope = {
+        "project": str(tts.get("project") or tts.get("project_id") or "").strip(),
+        "region": str(tts.get("location") or tts.get("region") or "").strip(),
+        "style": str(tts.get("style") or tts.get("instructions") or "").strip(),
+    }
+    if provider in GEMINI_VERTEX_TTS_PROVIDERS:
+        scope["region"] = scope["region"] or gemini_vertex_location(tts)
+    return scope
+
+
+@functools.lru_cache(maxsize=1)
+def ffmpeg_cache_signature() -> str:
+    executable = shutil.which("ffmpeg") or ""
+    if not executable:
+        return "missing"
+    try:
+        completed = subprocess.run(
+            [executable, "-version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            **hidden_subprocess_flags(),
+        )
+        version = (completed.stdout.splitlines() or [""])[0].strip()
+    except Exception:
+        version = ""
+    return f"{executable}|{version}"
+
+
 def copy_cached_file(cache_path: Path, output_path: Path) -> bool:
     if not cache_path.exists() or cache_path.stat().st_size <= 0:
         return False
@@ -11527,16 +11673,19 @@ def tts_cache_path(tts: dict[str, Any], text: str, language: Any) -> tuple[Path,
     resolved_language = resolve_tts_language_code(tts, language)
     cache_key = stable_cache_key(
         {
-            "version": 1,
+            "version": 2,
             "kind": "tts",
             "provider": provider_name(tts),
+            "adapter_version": TTS_PROVIDER_ADAPTER_VERSION,
             "base_url": str(tts.get("base_url") or "").strip().rstrip("/"),
             "model": str(tts.get("model") or "").strip(),
             "voice": str(tts.get("voice") or "").strip(),
             "language": resolved_language,
+            "provider_scope": tts_provider_scope(tts),
             "sample_rate": int(tts.get("sample_rate") or 24000),
             "bit_rate": int(tts.get("bit_rate") or 128000),
             "output_volume": normalized_tts_output_volume(tts.get("output_volume")),
+            "text_normalization_version": TEXT_NORMALIZATION_CACHE_VERSION,
             "text_hash": media_text_hash(clean_text),
             "text": clean_text,
         }
@@ -11554,7 +11703,7 @@ def media_clip_cache_path(
 ) -> tuple[Path, str]:
     cache_key = stable_cache_key(
         {
-            "version": 1,
+            "version": 2,
             "kind": "media_clip",
             "video": video_fingerprint_value,
             "start": start,
@@ -11562,6 +11711,8 @@ def media_clip_cache_path(
             "role": role,
             "extension": extension,
             "profile": profile,
+            "ffmpeg_profile_version": MEDIA_FFMPEG_PROFILE_VERSION,
+            "ffmpeg": ffmpeg_cache_signature(),
         }
     )
     return persistent_cache_root() / "media" / f"{cache_key}.{extension.lstrip('.')}", cache_key
@@ -12420,8 +12571,14 @@ def sanitize_learning_point_contract(
 ) -> tuple[bool, str, dict[str, Any]]:
     normalized = dict(item)
     issues: list[str] = []
-    kind = str(normalized.get("kind") or normalized.get("candidate_kind") or "expression")
-    phrase_type = str(normalized.get("phrase_type") or phrase_type_for_candidate_kind(kind))
+    raw_kind = normalized.get("kind") or normalized.get("candidate_kind") or "expression"
+    kind = normalize_candidate_kind(raw_kind)
+    if str(raw_kind or "").strip() and str(raw_kind or "").strip() != kind:
+        issues.append("candidate_kind 不在允许枚举内，已按 expression 修复。")
+    raw_phrase_type = normalized.get("phrase_type") or phrase_type_for_candidate_kind(kind)
+    phrase_type = normalize_phrase_type(raw_phrase_type, kind)
+    if str(raw_phrase_type or "").strip() and str(raw_phrase_type or "").strip() != phrase_type:
+        issues.append("phrase_type 不在允许枚举内，已按 candidate_kind 修复。")
     exact_span = normalize_candidate_span(
         normalized.get("exact_span")
         or normalized.get("normalized_answer")
@@ -12466,7 +12623,11 @@ def sanitize_learning_point_contract(
         return False, "学习点 answer_core 不是目标语言学习对象。", {}
     if not usable_learning_point_span(text, exact_span, kind, phrase_type):
         return False, "学习点 exact_span 不适合作为该类型学习点。", {}
+    span_start, span_end = exact_span_offsets(text, exact_span)
     normalized["exact_span"] = exact_span
+    if span_start is not None and span_end is not None:
+        normalized["exact_span_start"] = span_start
+        normalized["exact_span_end"] = span_end
     normalized["answer_core"] = answer_core
     normalized["normalized_answer"] = answer_display_text(normalized.get("normalized_answer")) or answer_core
     normalized["kind"] = kind
@@ -12474,10 +12635,31 @@ def sanitize_learning_point_contract(
     normalized["phrase_type"] = phrase_type
     normalized["content_kind"] = normalized.get("content_kind") or content_kind_for_phrase_type(phrase_type)
     normalized["language"] = normalize_learning_language(language)
+    normalized["learning_action"] = clean_study_text(
+        normalized.get("learning_action")
+        or normalized.get("card_focus")
+        or normalized.get("phrase_card_focus")
+        or normalized.get("reason")
+        or "确认这个学习点是否值得做成卡。"
+    )
+    normalized["learning_action_key"] = normalized.get("learning_action_key") or learning_action_key_for_contract(normalized)
+    normalized["source"] = str(normalized.get("source") or normalized.get("candidate_source") or "model").strip() or "model"
+    if normalized["source"] not in {"local", "model", "repaired"}:
+        normalized["source"] = "model"
+    normalized["confidence"] = str(normalized.get("confidence") or learning_point_confidence(normalized.get("value_score"))).strip()
+    if normalized["confidence"] not in {"high", "medium", "low"}:
+        normalized["confidence"] = learning_point_confidence(normalized.get("value_score"))
     issues.extend(sanitize_pronunciation_fields(normalized, language))
-    normalized["validation_status"] = "repaired" if issues else "ok"
     if issues:
+        raw_history = normalized.get("repair_history")
+        prior_history = raw_history if isinstance(raw_history, list) else []
+        normalized["source"] = "repaired"
+        normalized["validation_status"] = "repaired"
+        normalized["repair_history"] = list(dict.fromkeys([*prior_history, *issues]))
         normalized["validation_issues"] = list(dict.fromkeys(issues))
+    else:
+        normalized["validation_status"] = "valid"
+        normalized.setdefault("repair_history", [])
     return True, "", normalized
 
 

@@ -12,6 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKER_PATH = ROOT / "workers" / "anki_worker.py"
+VERIFY_APKG_PATH = ROOT / "workers" / "verify_apkg.py"
 
 
 def load_worker():
@@ -24,6 +25,18 @@ def load_worker():
 
 
 worker = load_worker()
+
+
+def load_verify_apkg():
+    spec = importlib.util.spec_from_file_location("verify_apkg_for_tests", VERIFY_APKG_PATH)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+verify_apkg = load_verify_apkg()
 
 
 class WorkerQualityTests(unittest.TestCase):
@@ -432,6 +445,54 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIsInstance(second, dict)
         self.assertTrue(second["cache_hit"])
         self.assertEqual(first_bytes, second_bytes)
+
+    def test_tts_cache_key_includes_vertex_scope(self):
+        base = {
+            "enabled": True,
+            "provider": "gemini-vertex-tts",
+            "model": "gemini-3.1-flash-tts-preview",
+            "voice": "Kore",
+            "language": "en-US",
+            "sample_rate": 24000,
+            "bit_rate": 128000,
+            "output_volume": 0.65,
+            "project": "project-a",
+            "location": "global",
+        }
+
+        _path_a, key_a = worker._legacy_worker.tts_cache_path(base, "Read this once.", "en")
+        _path_b, key_b = worker._legacy_worker.tts_cache_path(
+            {**base, "project": "project-b"},
+            "Read this once.",
+            "en",
+        )
+        _path_c, key_c = worker._legacy_worker.tts_cache_path(
+            {**base, "location": "us-central1"},
+            "Read this once.",
+            "en",
+        )
+
+        self.assertNotEqual(key_a, key_b)
+        self.assertNotEqual(key_a, key_c)
+
+    def test_apkg_offline_field_report_detects_tts_hash_mismatch_and_bad_pronunciation_meta(self):
+        report = verify_apkg.offline_field_report(
+            [
+                {
+                    "English": "You won't even taste the difference.",
+                    "Answer": "taste the difference",
+                    "TtsAudio": '<audio><source src="deck_tts_deadbeef0000.mp3"></audio>',
+                    "PhraseTtsAudio": '<audio><source src="deck_phrase_deadbeef0000.mp3"></audio>',
+                    "PronunciationMeta": "{not-json}",
+                }
+            ],
+            {"deck_tts_deadbeef0000.mp3", "deck_phrase_deadbeef0000.mp3"},
+        )
+
+        self.assertEqual(report["missing_referenced_media"], [])
+        self.assertEqual(len(report["pronunciation_meta_parse_errors"]), 1)
+        self.assertEqual(len(report["tts_text_hash_mismatches"]), 1)
+        self.assertEqual(len(report["phrase_tts_text_hash_mismatches"]), 1)
 
     def test_material_context_accepts_direct_gemini_vertex_context_payload(self):
         original_generate = worker._legacy_worker.gemini_vertex_generate_content
@@ -3288,6 +3349,33 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(repaired["answer_core"], "register")
         self.assertEqual(len(rejected), 1)
         self.assertIn("exact_span 不在原句", rejected[0]["phrase_reject_reason"])
+
+    def test_learning_point_contract_adds_offsets_action_key_source_and_repair_history(self):
+        ok, reason, point = worker.sanitize_learning_point_contract(
+            {
+                "candidate_kind": "contextual_vocab",
+                "phrase_type": "vocabulary_usage",
+                "exact_span": "register",
+                "answer_core": "register = 收银机 /ˈredʒɪstər/",
+                "normalized_answer": "register",
+                "card_focus": "训练 register 在服务业语境里的意思。",
+                "value_score": 4,
+                "candidate_source": "source_expansion",
+            },
+            "I'm gonna run the register.",
+            language="en",
+        )
+
+        self.assertTrue(ok, reason)
+        self.assertEqual(point["answer_core"], "register")
+        self.assertEqual(point["exact_span_start"], 18)
+        self.assertEqual(point["exact_span_end"], 26)
+        self.assertEqual(point["learning_action"], "训练 register 在服务业语境里的意思。")
+        self.assertIn("contextual_vocab::register", point["learning_action_key"])
+        self.assertEqual(point["source"], "repaired")
+        self.assertEqual(point["confidence"], "high")
+        self.assertEqual(point["validation_status"], "repaired")
+        self.assertTrue(point["repair_history"])
 
     def test_source_expansion_auto_caps_requested_source_groups(self):
         segments = []

@@ -414,6 +414,8 @@ export type LearningPoint = {
   id: string
   kind: CandidateKind
   exact_span: string
+  exact_span_start?: number | null
+  exact_span_end?: number | null
   answer_core: string
   difficulty?: Level | string
   value_score?: number | string | null
@@ -430,8 +432,13 @@ export type LearningPoint = {
   pronunciation_note?: string
   pronunciation_confidence?: 'high' | 'medium' | 'low' | string
   pronunciation_meta?: PronunciationMeta | string | null
-  validation_status?: 'ok' | 'repaired' | 'reject' | string
+  learning_action?: string
+  learning_action_key?: string
+  source?: 'local' | 'model' | 'repaired' | string
+  confidence?: 'high' | 'medium' | 'low' | string
+  validation_status?: 'valid' | 'repaired' | 'candidate_only' | 'hidden_duplicate' | 'hard_blocked' | 'reject' | string
   validation_issues?: string[]
+  repair_history?: string[]
 }
 
 export type LearningPointInventoryStatus = 'card_generated' | 'candidate_only' | 'hidden_duplicate' | 'hard_blocked'
@@ -442,6 +449,8 @@ export type LearningPointInventoryItem = {
   source_time: string
   source_sentence: string
   exact_span: string
+  exact_span_start?: number | null
+  exact_span_end?: number | null
   answer_core: string
   normalized_answer?: string
   candidate_kind: CandidateKind
@@ -449,6 +458,11 @@ export type LearningPointInventoryItem = {
   estimated_level?: string
   value_score?: number
   learning_action: string
+  learning_action_key?: string
+  source?: 'local' | 'model' | 'repaired' | string
+  confidence?: 'high' | 'medium' | 'low' | string
+  validation_status?: 'valid' | 'repaired' | 'candidate_only' | 'hidden_duplicate' | 'hard_blocked' | 'reject' | string
+  repair_history?: string[]
   reason: string
   status: LearningPointInventoryStatus
   card_id?: string
@@ -474,9 +488,17 @@ export type Card = {
   learning_point_id?: string
   candidate_kind?: CandidateKind
   exact_span?: string
+  exact_span_start?: number | null
+  exact_span_end?: number | null
   normalized_answer?: string
   candidate_source?: string
+  contract_source?: string
   learning_point_schema_version?: number
+  learning_action?: string
+  learning_action_key?: string
+  confidence?: 'high' | 'medium' | 'low' | string
+  validation_status?: 'valid' | 'repaired' | 'candidate_only' | 'hidden_duplicate' | 'hard_blocked' | 'reject' | string
+  repair_history?: string[]
   content_kind?: LearningContentKind
   source_evidence?: string
   knowledge_type?: DocumentFocus | string
@@ -541,10 +563,18 @@ export type Segment = {
   learning_point_id?: string
   candidate_kind?: CandidateKind
   exact_span?: string
+  exact_span_start?: number | null
+  exact_span_end?: number | null
   normalized_answer?: string
   answer_core?: string
   candidate_source?: string
+  contract_source?: string
   learning_point_schema_version?: number
+  learning_action?: string
+  learning_action_key?: string
+  confidence?: 'high' | 'medium' | 'low' | string
+  validation_status?: 'valid' | 'repaired' | 'candidate_only' | 'hidden_duplicate' | 'hard_blocked' | 'reject' | string
+  repair_history?: string[]
   source_segment_id?: string
   content_kind?: LearningContentKind
   source_evidence?: string
