@@ -615,7 +615,7 @@ def max_source_expansion_groups(payload: dict[str, Any]) -> int:
         explicit = 0
     if explicit > 0:
         return max(1, min(160, explicit))
-    return 48
+    return 24
 
 
 def card_label_for_phrase_type(phrase_type: str, fallback: str = "表达卡") -> str:
@@ -3738,21 +3738,29 @@ def call_model(project: dict[str, Any], segments: list[dict[str, Any]]) -> dict[
 
 def final_card_batch_size(api: dict[str, Any], requested: int = 10) -> int:
     if is_mimo_config(api):
-        return 1
+        return 4
     if is_gemini_vertex_thinking_config(api):
-        return 8
+        return 16
+    if is_gemini_vertex_config(api):
+        return 20
     if is_deepseek_thinking_config(api) or is_qwen_config(api):
-        return max(6, min(10, requested))
+        return max(10, min(16, requested if requested > 0 else 16))
     if is_thinking_model_config(api):
-        return max(6, min(10, requested))
-    return max(8, min(12, requested if requested > 0 else 10))
+        return max(8, min(12, requested if requested > 0 else 12))
+    return max(16, min(24, requested if requested > 0 else 20))
 
 
 def final_card_generation_concurrency(api: dict[str, Any], total_batches: int) -> int:
-    if total_batches <= 1 or is_mimo_config(api):
+    if total_batches <= 1:
         return 1
-    if is_gemini_vertex_config(api) or api.get("provider") in OPENAI_COMPATIBLE_PROVIDERS:
-        return 2
+    if is_mimo_config(api):
+        return min(2, total_batches)
+    if is_gemini_vertex_thinking_config(api):
+        return min(3, total_batches)
+    if is_gemini_vertex_config(api):
+        return min(4, total_batches)
+    if api.get("provider") in OPENAI_COMPATIBLE_PROVIDERS:
+        return min(3, total_batches)
     return 1
 
 
@@ -11486,6 +11494,79 @@ def media_text_hash(value: Any) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12] if text else ""
 
 
+def persistent_cache_root() -> Path:
+    root = Path.cwd() / "projects" / "cache"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def stable_cache_key(payload: dict[str, Any], length: int = 32) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:length]
+
+
+def copy_cached_file(cache_path: Path, output_path: Path) -> bool:
+    if not cache_path.exists() or cache_path.stat().st_size <= 0:
+        return False
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(cache_path, output_path)
+    return True
+
+
+def store_cached_file(output_path: Path, cache_path: Path) -> None:
+    if not output_path.exists() or output_path.stat().st_size <= 0:
+        return
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = cache_path.with_suffix(f"{cache_path.suffix}.tmp")
+    shutil.copy2(output_path, temp_path)
+    temp_path.replace(cache_path)
+
+
+def tts_cache_path(tts: dict[str, Any], text: str, language: Any) -> tuple[Path, str]:
+    clean_text = clean_tts_input_text(text)
+    resolved_language = resolve_tts_language_code(tts, language)
+    cache_key = stable_cache_key(
+        {
+            "version": 1,
+            "kind": "tts",
+            "provider": provider_name(tts),
+            "base_url": str(tts.get("base_url") or "").strip().rstrip("/"),
+            "model": str(tts.get("model") or "").strip(),
+            "voice": str(tts.get("voice") or "").strip(),
+            "language": resolved_language,
+            "sample_rate": int(tts.get("sample_rate") or 24000),
+            "bit_rate": int(tts.get("bit_rate") or 128000),
+            "output_volume": normalized_tts_output_volume(tts.get("output_volume")),
+            "text_hash": media_text_hash(clean_text),
+            "text": clean_text,
+        }
+    )
+    return persistent_cache_root() / "tts" / f"{cache_key}.mp3", cache_key
+
+
+def media_clip_cache_path(
+    video_fingerprint_value: str,
+    start: str,
+    duration: str,
+    role: str,
+    extension: str,
+    profile: str,
+) -> tuple[Path, str]:
+    cache_key = stable_cache_key(
+        {
+            "version": 1,
+            "kind": "media_clip",
+            "video": video_fingerprint_value,
+            "start": start,
+            "duration": duration,
+            "role": role,
+            "extension": extension,
+            "profile": profile,
+        }
+    )
+    return persistent_cache_root() / "media" / f"{cache_key}.{extension.lstrip('.')}", cache_key
+
+
 def compare_media_manifest(expected: dict[str, dict[str, Any]], media_dir: Path) -> dict[str, Any]:
     missing: list[str] = []
     mismatched: list[dict[str, str]] = []
@@ -12855,24 +12936,39 @@ def synthesize_tts(
     segment: dict[str, Any],
     output_path: Path,
     text_override: str | None = None,
-) -> bool:
+) -> dict[str, Any] | bool:
     tts = normalized_tts_config(project)
     if not tts["enabled"] or tts["provider"] == "disabled":
         return False
 
+    provider = tts["provider"]
+    raw_text = (text_override or segment.get("text", "")).strip()
+    if not provider or not raw_text:
+        return False
+    try:
+        text = clean_tts_input_text(raw_text)
+    except RuntimeError:
+        return False
+
+    cache_path, cache_key = tts_cache_path(tts, text, project.get("language", "en"))
+    if copy_cached_file(cache_path, output_path):
+        return {"ok": True, "cache_hit": True, "cache_key": cache_key}
+
     if not tts["api_key"] and not is_gemini_vertex_tts_config(tts):
         return False
 
-    provider = tts["provider"]
-    text = (text_override or segment.get("text", "")).strip()
     if not provider or not text:
         return False
+
+    def done() -> dict[str, Any]:
+        store_cached_file(output_path, cache_path)
+        return {"ok": True, "cache_hit": False, "cache_key": cache_key}
 
     if provider in {"grok", "xai"}:
         audio = call_tts_audio(tts, text, project.get("language", "en"))
         output_path.write_bytes(audio)
         apply_tts_output_volume(output_path, tts.get("output_volume"), "Grok TTS")
-        return True
+        return done()
 
     if is_mimo_config(tts):
         if not compatible_base_url(tts) or not tts["model"]:
@@ -12881,7 +12977,7 @@ def synthesize_tts(
         audio = call_tts_audio(tts, text, project.get("language", "en"))
         wav_path.write_bytes(audio)
         transcode_wav_file_to_mp3(wav_path, output_path, "MIMO TTS", tts.get("output_volume"))
-        return True
+        return done()
 
     if provider in QWEN_TTS_PROVIDERS:
         if not tts["base_url"] or not tts["model"]:
@@ -12890,7 +12986,7 @@ def synthesize_tts(
         audio = call_tts_audio(tts, text, project.get("language", "en"))
         wav_path.write_bytes(audio)
         transcode_wav_file_to_mp3(wav_path, output_path, "Qwen TTS", tts.get("output_volume"))
-        return True
+        return done()
 
     if is_gemini_vertex_tts_config(tts):
         if not tts["model"]:
@@ -12899,7 +12995,7 @@ def synthesize_tts(
         audio = call_tts_audio(tts, text, project.get("language", "en"))
         wav_path.write_bytes(audio)
         transcode_wav_file_to_mp3(wav_path, output_path, "Gemini Vertex TTS", tts.get("output_volume"))
-        return True
+        return done()
 
     if provider in OPENAI_COMPATIBLE_PROVIDERS:
         if not compatible_base_url(tts) or not tts["model"]:
@@ -12907,7 +13003,7 @@ def synthesize_tts(
         audio = call_tts_audio(tts, text, project.get("language", "en"))
         output_path.write_bytes(audio)
         apply_tts_output_volume(output_path, tts.get("output_volume"), "OpenAI-compatible TTS")
-        return True
+        return done()
 
     if provider == "gemini":
         model = tts["model"] or "gemini-2.5-flash-preview-tts"
@@ -12953,7 +13049,7 @@ def synthesize_tts(
             ]
         )
         pcm_path.unlink(missing_ok=True)
-        return True
+        return done()
 
     return False
 
@@ -12973,9 +13069,11 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     is_document_project = project.get("source_mode") == "document"
     video_path_raw = clean_input_path(project.get("video_path"))
     skip_video_media = is_document_project or bool(project.get("skip_video_slicing")) or not video_path_raw
+    export_webm_media = bool(project.get("export_webm_media"))
     video_path = Path(video_path_raw) if video_path_raw else Path()
     if not skip_video_media and not video_path.exists():
         fail(f"视频文件不存在：{video_path}")
+    video_source_fingerprint = file_fingerprint(video_path) if not skip_video_media else ""
 
     emit_progress("export", "template", 10, "正在准备 Anki 模板和导出目录。")
     export_run_id = int(time.time())
@@ -13051,6 +13149,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     media_ledger: list[dict[str, Any]] = []
     tts_by_segment: dict[str, str] = {}
     phrase_tts_by_phrase: dict[str, str] = {}
+    phrase_tts_cache_hit_by_phrase: dict[str, bool] = {}
     warnings: list[str] = []
     tts_config = normalized_tts_config(project)
     tts_requested = bool(tts_config["enabled"] and tts_config["provider"] != "disabled")
@@ -13060,6 +13159,8 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     video_segment_count = 0
     video_file_count = 0
     original_audio_count = 0
+    tts_cache_hit_count = 0
+    media_cache_hit_count = 0
     project_card_prefix = safe_filename(project.get("title") or project.get("id") or "deck")
     media_prefix = project_media_prefix(project, export_run_id)
 
@@ -13071,22 +13172,33 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         card: dict[str, Any] | None = None,
         field: str = "",
         tts_text: str = "",
+        cache_hit: bool | None = None,
     ) -> None:
         if not file_name:
             return
-        media_ledger.append(
-            {
-                "file": Path(file_name).name,
-                "role": role,
-                "segment_id": str(segment.get("id") or ""),
-                "card_id": str((card or {}).get("id") or ""),
-                "learning_point_id": str((card or segment).get("learning_point_id") or ""),
-                "field": field,
-                "source_time": segment_display_source_time(segment),
-                "tts_text": clean_tts_input_text(tts_text) if tts_text else "",
-                "text_hash": media_text_hash(tts_text) if tts_text else "",
-            }
-        )
+        entry = {
+            "file": Path(file_name).name,
+            "role": role,
+            "segment_id": str(segment.get("id") or ""),
+            "card_id": str((card or {}).get("id") or ""),
+            "learning_point_id": str((card or segment).get("learning_point_id") or ""),
+            "field": field,
+            "source_time": segment_display_source_time(segment),
+            "tts_text": clean_tts_input_text(tts_text) if tts_text else "",
+            "text_hash": media_text_hash(tts_text) if tts_text else "",
+        }
+        if cache_hit is not None:
+            entry["cache_hit"] = cache_hit
+        if role in {"sentence_tts", "phrase_tts"}:
+            entry.update(
+                {
+                    "provider": str(tts_config.get("provider") or ""),
+                    "model": str(tts_config.get("model") or ""),
+                    "voice": str(tts_config.get("voice") or ""),
+                    "language": resolve_tts_language_code(tts_config, project.get("language", "en")),
+                }
+            )
+        media_ledger.append(entry)
 
     export_segments = [
         segment
@@ -13114,7 +13226,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
 
         segment_id = safe_filename(segment.get("id", "segment"))
         media_segment_id = f"{media_prefix}_{segment_id}"
-        video_webm_name = "" if skip_video_media else f"{media_segment_id}.webm"
+        video_webm_name = "" if skip_video_media or not export_webm_media else f"{media_segment_id}.webm"
         video_mp4_name = "" if skip_video_media else f"{media_segment_id}.mp4"
         poster_name = "" if skip_video_media else f"{media_segment_id}.jpg"
         audio_name = "" if skip_video_media else f"{media_segment_id}.mp3"
@@ -13137,10 +13249,21 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             if tts_requested and not is_document_project:
                 try:
                     emit_progress("export", "tts", min(86, segment_percent + 4), f"正在生成整句朗读：{segment_id}")
-                    if synthesize_tts(project, segment, tts_out):
+                    tts_result = synthesize_tts(project, segment, tts_out)
+                    if tts_result:
+                        cache_hit = bool(tts_result.get("cache_hit")) if isinstance(tts_result, dict) else False
+                        if cache_hit:
+                            tts_cache_hit_count += 1
                         media_files.append(str(tts_out))
                         tts_by_segment[segment_id] = tts_name
-                        ledger_add(tts_name, role="sentence_tts", segment=segment, field="TtsAudio", tts_text=segment_tts_text)
+                        ledger_add(
+                            tts_name,
+                            role="sentence_tts",
+                            segment=segment,
+                            field="TtsAudio",
+                            tts_text=segment_tts_text,
+                            cache_hit=cache_hit,
+                        )
                 except Exception as err:
                     warnings.append(f"{segment_id} TTS 失败：{err}")
             cut_segments.add(segment_id)
@@ -13158,100 +13281,128 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                 clip_end = float(segment.get("end", clip_start + 0.5) or clip_start + 0.5)
             start = str(max(0.0, clip_start))
             duration = str(max(0.5, clip_end - clip_start))
-            media_commands = [
-                (
-                    video_webm_out,
-                    [
-                        "-ss",
-                        start,
-                        "-t",
-                        duration,
-                        "-i",
-                        str(video_path),
-                        "-map",
-                        "0:v:0?",
-                        "-map",
-                        "0:a:0?",
-                        "-c:v",
-                        "libvpx-vp9",
-                        "-b:v",
-                        "0",
-                        "-crf",
-                        "36",
-                        "-row-mt",
-                        "1",
-                        "-deadline",
-                        "good",
-                        "-cpu-used",
-                        "4",
-                        "-pix_fmt",
-                        "yuv420p",
-                        "-ac",
-                        "2",
-                        "-c:a",
-                        "libopus",
-                        "-b:a",
-                        "64k",
-                        str(video_webm_out),
-                    ],
-                ),
-                (
-                    video_mp4_out,
-                    [
-                        "-ss",
-                        start,
-                        "-t",
-                        duration,
-                        "-i",
-                        str(video_path),
-                        "-map",
-                        "0:v:0?",
-                        "-map",
-                        "0:a:0?",
-                        "-c:v",
-                        "libx264",
-                        "-preset",
-                        "veryfast",
-                        "-crf",
-                        "26",
-                        "-ac",
-                        "2",
-                        "-c:a",
-                        "aac",
-                        "-b:a",
-                        "96k",
-                        "-movflags",
-                        "+faststart",
-                        str(video_mp4_out),
-                    ],
-                ),
-                (
-                    audio_out,
-                    [
-                        "-ss",
-                        start,
-                        "-t",
-                        duration,
-                        "-i",
-                        str(video_path),
-                        "-vn",
-                        "-ac",
-                        "2",
-                        "-acodec",
-                        "libmp3lame",
-                        "-q:a",
-                        "5",
-                        str(audio_out),
-                    ],
-                ),
-            ]
-            media_errors = [
-                error
-                for _, command in media_commands
-                if (error := try_run_ffmpeg(command))
-            ]
+            media_commands = []
+            if export_webm_media:
+                media_commands.append(
+                    (
+                        video_webm_out,
+                        "video_webm",
+                        "webm",
+                        "vp9-crf36-opus64",
+                        [
+                            "-ss",
+                            start,
+                            "-t",
+                            duration,
+                            "-i",
+                            str(video_path),
+                            "-map",
+                            "0:v:0?",
+                            "-map",
+                            "0:a:0?",
+                            "-c:v",
+                            "libvpx-vp9",
+                            "-b:v",
+                            "0",
+                            "-crf",
+                            "36",
+                            "-row-mt",
+                            "1",
+                            "-deadline",
+                            "good",
+                            "-cpu-used",
+                            "4",
+                            "-pix_fmt",
+                            "yuv420p",
+                            "-ac",
+                            "2",
+                            "-c:a",
+                            "libopus",
+                            "-b:a",
+                            "64k",
+                            str(video_webm_out),
+                        ],
+                    )
+                )
+            media_commands.extend(
+                [
+                    (
+                        video_mp4_out,
+                        "video_mp4",
+                        "mp4",
+                        "x264-crf26-aac96",
+                        [
+                            "-ss",
+                            start,
+                            "-t",
+                            duration,
+                            "-i",
+                            str(video_path),
+                            "-map",
+                            "0:v:0?",
+                            "-map",
+                            "0:a:0?",
+                            "-c:v",
+                            "libx264",
+                            "-preset",
+                            "veryfast",
+                            "-crf",
+                            "26",
+                            "-ac",
+                            "2",
+                            "-c:a",
+                            "aac",
+                            "-b:a",
+                            "96k",
+                            "-movflags",
+                            "+faststart",
+                            str(video_mp4_out),
+                        ],
+                    ),
+                    (
+                        audio_out,
+                        "original_audio",
+                        "mp3",
+                        "mp3-q5-stereo",
+                        [
+                            "-ss",
+                            start,
+                            "-t",
+                            duration,
+                            "-i",
+                            str(video_path),
+                            "-vn",
+                            "-ac",
+                            "2",
+                            "-acodec",
+                            "libmp3lame",
+                            "-q:a",
+                            "5",
+                            str(audio_out),
+                        ],
+                    ),
+                ]
+            )
+            media_errors = []
+            for output_path, role, extension, profile, command in media_commands:
+                cache_path, _ = media_clip_cache_path(
+                    video_source_fingerprint,
+                    start,
+                    duration,
+                    role,
+                    extension,
+                    profile,
+                )
+                if copy_cached_file(cache_path, output_path):
+                    media_cache_hit_count += 1
+                    continue
+                error = try_run_ffmpeg(command)
+                if error:
+                    media_errors.append(error)
+                else:
+                    store_cached_file(output_path, cache_path)
             if media_errors:
-                for output_path, _ in media_commands:
+                for output_path, *_ in media_commands:
                     output_path.unlink(missing_ok=True)
                 video_webm_name = ""
                 video_mp4_name = ""
@@ -13260,42 +13411,73 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                 warnings.append(f"{segment_id} 视频/原声切片失败，已保留文字卡：{media_errors[0]}")
             else:
                 poster_at = str(float(start) + min(0.75, max(0.1, float(duration) / 2)))
-                poster_error = try_run_ffmpeg(
-                    [
-                        "-ss",
-                        poster_at,
-                        "-i",
-                        str(video_path),
-                        "-frames:v",
-                        "1",
-                        "-q:v",
-                        "3",
-                        "-vf",
-                        "scale='min(960,iw)':-2",
-                        str(poster_out),
-                    ]
+                poster_cache_path, _ = media_clip_cache_path(
+                    video_source_fingerprint,
+                    poster_at,
+                    "poster",
+                    "poster",
+                    "jpg",
+                    "jpg-q3-scale960",
                 )
+                poster_error = ""
+                if copy_cached_file(poster_cache_path, poster_out):
+                    media_cache_hit_count += 1
+                else:
+                    poster_error = try_run_ffmpeg(
+                        [
+                            "-ss",
+                            poster_at,
+                            "-i",
+                            str(video_path),
+                            "-frames:v",
+                            "1",
+                            "-q:v",
+                            "3",
+                            "-vf",
+                            "scale='min(960,iw)':-2",
+                            str(poster_out),
+                        ]
+                    )
+                    if not poster_error:
+                        store_cached_file(poster_out, poster_cache_path)
                 if poster_error:
                     poster_name = ""
                     poster_out.unlink(missing_ok=True)
                     warnings.append(f"{segment_id} 视频封面生成失败：{poster_error}")
-                media_files.extend([str(video_webm_out), str(video_mp4_out), str(audio_out)])
-                ledger_add(video_webm_name, role="video", segment=segment, field="Video")
-                ledger_add(video_mp4_name, role="video", segment=segment, field="Video")
-                ledger_add(audio_name, role="original_audio", segment=segment, field="Audio")
+                if video_webm_name and video_webm_out.exists():
+                    media_files.append(str(video_webm_out))
+                    ledger_add(video_webm_name, role="video", segment=segment, field="Video")
+                    video_file_count += 1
+                if video_mp4_name and video_mp4_out.exists():
+                    media_files.append(str(video_mp4_out))
+                    ledger_add(video_mp4_name, role="video", segment=segment, field="Video")
+                    video_file_count += 1
+                if audio_name and audio_out.exists():
+                    media_files.append(str(audio_out))
+                    ledger_add(audio_name, role="original_audio", segment=segment, field="Audio")
+                    original_audio_count += 1
                 if poster_name and poster_out.exists():
                     media_files.append(str(poster_out))
                     ledger_add(poster_name, role="poster", segment=segment, field="Video")
                 video_segment_count += 1
-                video_file_count += 2
-                original_audio_count += 1
             if tts_requested and not is_document_project:
                 try:
                     emit_progress("export", "tts", min(86, segment_percent + 4), f"正在生成整句朗读：{segment_id}")
-                    if synthesize_tts(project, segment, tts_out):
+                    tts_result = synthesize_tts(project, segment, tts_out)
+                    if tts_result:
+                        cache_hit = bool(tts_result.get("cache_hit")) if isinstance(tts_result, dict) else False
+                        if cache_hit:
+                            tts_cache_hit_count += 1
                         media_files.append(str(tts_out))
                         tts_by_segment[segment_id] = tts_name
-                        ledger_add(tts_name, role="sentence_tts", segment=segment, field="TtsAudio", tts_text=segment_tts_text)
+                        ledger_add(
+                            tts_name,
+                            role="sentence_tts",
+                            segment=segment,
+                            field="TtsAudio",
+                            tts_text=segment_tts_text,
+                            cache_hit=cache_hit,
+                        )
                 except Exception as err:
                     warnings.append(f"{segment_id} TTS 失败：{err}")
             cut_segments.add(segment_id)
@@ -13316,9 +13498,14 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     phrase_tts_out = media_dir / phrase_tts_name
                     try:
                         emit_progress("export", "tts", min(88, segment_percent + 5), f"正在生成表达发音：{phrase_text}")
-                        if synthesize_tts(project, segment, phrase_tts_out, text_override=phrase_text):
+                        tts_result = synthesize_tts(project, segment, phrase_tts_out, text_override=phrase_text)
+                        if tts_result:
+                            cache_hit = bool(tts_result.get("cache_hit")) if isinstance(tts_result, dict) else False
+                            if cache_hit:
+                                tts_cache_hit_count += 1
                             media_files.append(str(phrase_tts_out))
                             phrase_tts_by_phrase[phrase_key] = phrase_tts_name
+                            phrase_tts_cache_hit_by_phrase[phrase_key] = cache_hit
                         else:
                             phrase_tts_name = ""
                     except Exception as err:
@@ -13332,6 +13519,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     card=card,
                     field="PhraseTtsAudio",
                     tts_text=phrase_text,
+                    cache_hit=phrase_tts_cache_hit_by_phrase.get(phrase_key, False),
                 )
             meaning_field = v11_meaning_text(card) if use_v11_template else card_chinese_core(card)
             definition_field = v11_usage_text(card) if use_v11_template else card.get("definition", "")
@@ -13441,6 +13629,8 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             "original_audio_files": original_audio_count,
             "sentence_tts_files": len(tts_by_segment),
             "phrase_tts_files": len(phrase_tts_by_phrase),
+            "tts_cache_hits": tts_cache_hit_count,
+            "media_cache_hits": media_cache_hit_count,
             "media_files": len(media_files),
             "media_bytes": media_bytes,
             "media_mb": round(media_bytes / (1024 * 1024), 1),

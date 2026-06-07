@@ -279,7 +279,13 @@ export function useAppController() {
   const tts = request.api_config.tts_config
   const ttsRequired = request.source_mode !== 'document' && tts.enabled && tts.provider !== 'disabled'
   const apiReady = request.api_config.provider !== 'local' && Boolean(apiTestResult?.ok)
-  const ttsReady = !ttsRequired || Boolean(ttsTestResult?.ok)
+  const ttsDetail = !ttsRequired
+    ? '已关闭'
+    : ttsTestResult?.ok
+      ? '导出可用'
+      : ttsTestResult
+        ? '导出会跳过'
+        : '可稍后测试'
   const envReady =
     !isTauriRuntime() ||
     Boolean(
@@ -327,9 +333,9 @@ export function useAppController() {
     },
     {
       id: 'tts',
-      label: 'TTS',
-      done: ttsReady,
-      detail: !ttsRequired ? '已关闭' : ttsTestResult?.ok ? '已通过' : ttsTestResult ? '失败' : '未测试',
+      label: 'TTS 增强',
+      done: true,
+      detail: ttsDetail,
     },
     {
       id: 'cards',
@@ -1496,21 +1502,6 @@ export function useAppController() {
         return
       }
 
-      const resolvedTts = resolveTtsConfig(generateRequest.api_config.tts_config, resolvedApi.api)
-      const ttsRequiredForGeneration =
-        generateRequest.source_mode !== 'document' && resolvedTts.enabled && resolvedTts.provider !== 'disabled'
-      if (ttsRequiredForGeneration) {
-        const ttsError = validateTtsConfigForRequest(resolvedTts)
-        if (ttsError) {
-          openPreflightSettings('tts', `生成前 TTS 配置未通过：${ttsError}`)
-          return
-        }
-        if (!ttsTestResult?.ok) {
-          openPreflightSettings('tts', 'TTS 已开启但尚未通过测试。请在“语音 TTS”里保存配置并测试，或关闭 TTS 后再生成。')
-          return
-        }
-      }
-
       if (
         resolvedApi.api.base_url !== request.api_config.base_url ||
         resolvedApi.api.model !== request.api_config.model ||
@@ -1636,10 +1627,9 @@ export function useAppController() {
     }
     const resolvedExportTtsConfig = resolveTtsConfig(request.api_config.tts_config, request.api_config)
     const exportTtsConfigError = validateTtsConfigForRequest(resolvedExportTtsConfig)
-    if (exportTtsConfigError) {
-      setStatus(`导出前 TTS 配置检查失败：${exportTtsConfigError}`)
-      return
-    }
+    const ttsConfigForExport = exportTtsConfigError
+      ? { ...resolvedExportTtsConfig, enabled: false, provider: 'disabled' as const }
+      : resolvedExportTtsConfig
 
     const outputDir = await selectDirectory()
     if (typeof outputDir !== 'string') {
@@ -1651,7 +1641,9 @@ export function useAppController() {
     setLastWorkerError(null)
     setWorkerProgress({ command: 'export', stage: 'start', percent: 1, message: '准备开始导出。' })
     setStatus(
-      projectForExport.source_mode === 'document'
+      exportTtsConfigError
+        ? `TTS 配置未通过，导出会自动跳过 AI 朗读：${exportTtsConfigError}`
+        : projectForExport.source_mode === 'document'
         ? '正在打包文档知识卡 apkg。'
         : projectForExport.skip_video_slicing
           ? '正在打包字幕-only 卡包，并按需生成 TTS。'
@@ -1664,7 +1656,7 @@ export function useAppController() {
           template_id: request.template_id,
           api_config: {
             ...request.api_config,
-            tts_config: resolvedExportTtsConfig,
+            tts_config: ttsConfigForExport,
           },
         },
         output_dir: outputDir,

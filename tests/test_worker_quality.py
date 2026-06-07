@@ -2,6 +2,7 @@ import base64
 import importlib.util
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -383,6 +384,54 @@ class WorkerQualityTests(unittest.TestCase):
             self.assertIn("-af", calls["args"])
             self.assertIn("volume=0.650", calls["args"])
             self.assertEqual(worker._legacy_worker.tts_volume_filter_args(1.0), [])
+
+    def test_synthesize_tts_reuses_persistent_cache_for_same_voice_and_text(self):
+        original_call_tts_audio = worker._legacy_worker.call_tts_audio
+        calls = {"count": 0}
+
+        def fake_call_tts_audio(tts, text, language):
+            calls["count"] += 1
+            return f"ID3:{text}:{language}".encode("utf-8")
+
+        project = {
+            "language": "en",
+            "api_config": {
+                "tts_config": {
+                    "enabled": True,
+                    "provider": "grok",
+                    "base_url": "https://api.x.ai/v1",
+                    "api_key": "sk-test",
+                    "model": "",
+                    "voice": "eve",
+                    "language": "en-US",
+                    "sample_rate": 24000,
+                    "bit_rate": 128000,
+                    "output_volume": 1.0,
+                }
+            },
+        }
+        segment = {"id": "seg_cache", "text": "Read this once."}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            first_path = Path(temp_dir) / "first.mp3"
+            second_path = Path(temp_dir) / "second.mp3"
+            try:
+                worker._legacy_worker.call_tts_audio = fake_call_tts_audio
+                first = worker._legacy_worker.synthesize_tts(project, segment, first_path)
+                second = worker._legacy_worker.synthesize_tts(project, segment, second_path)
+                first_bytes = first_path.read_bytes()
+                second_bytes = second_path.read_bytes()
+            finally:
+                worker._legacy_worker.call_tts_audio = original_call_tts_audio
+                os.chdir(original_cwd)
+
+        self.assertEqual(calls["count"], 1)
+        self.assertTrue(first)
+        self.assertIsInstance(second, dict)
+        self.assertTrue(second["cache_hit"])
+        self.assertEqual(first_bytes, second_bytes)
 
     def test_material_context_accepts_direct_gemini_vertex_context_payload(self):
         original_generate = worker._legacy_worker.gemini_vertex_generate_content
@@ -3039,8 +3088,8 @@ class WorkerQualityTests(unittest.TestCase):
 
     def test_vertex_thinking_final_card_batch_size_is_not_clamped_to_three(self):
         api = {"provider": "gemini-vertex", "model": "gemini-3.1-pro-preview"}
-        self.assertEqual(worker.final_card_batch_size(api, 10), 8)
-        self.assertEqual(worker.final_card_generation_concurrency(api, 4), 2)
+        self.assertEqual(worker.final_card_batch_size(api, 10), 16)
+        self.assertEqual(worker.final_card_generation_concurrency(api, 4), 3)
 
     def test_learning_point_inventory_exposes_generated_candidates_duplicates_and_blocks(self):
         segment = {
