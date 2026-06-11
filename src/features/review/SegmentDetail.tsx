@@ -325,12 +325,14 @@ function CardEditor({
             </p>
           ) : null}
           {card.phrase_card_focus ? <strong>训练点：{card.phrase_card_focus}</strong> : null}
-          {card.phonetic_ipa || card.spoken_ipa || card.source_spoken_ipa ? (
+          {card.phonetic_ipa || card.spoken_ipa || card.source_spoken_ipa || card.pronunciation_status || card.source_pronunciation_status ? (
             <p>
               {[
                 card.phonetic_ipa ? `${standardLabel}：${card.phonetic_ipa}` : '',
                 card.spoken_ipa ? `${spokenLabel}：${card.spoken_ipa}` : '',
                 card.source_spoken_ipa ? `原句听感：${card.source_spoken_ipa}` : '',
+                card.pronunciation_status ? `读法状态：${card.pronunciation_status}` : '',
+                card.source_pronunciation_status ? `原句听感状态：${card.source_pronunciation_status}` : '',
               ]
                 .filter(Boolean)
                 .join(' · ')}

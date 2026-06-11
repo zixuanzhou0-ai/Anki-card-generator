@@ -472,6 +472,7 @@ PHRASE_GUIDE_ALIASES = {
 
 TEMPLATE_NOISE_PATTERNS = [
     r"本地草稿",
+    r"预览草稿",
     r"本地待审",
     r"待精修",
     r"正式导出前",

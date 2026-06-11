@@ -3,7 +3,6 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
-  cardOptions,
   contentOptions,
   defaultRequest,
   documentFocusOptions,
@@ -23,13 +22,12 @@ function renderInspector(overrides: Partial<GenerateRequest> = {}, propOverrides
     activeWorkspaceStage: 'source' as const,
     activeTemplateLabel: '沉浸语言 V10',
     appBusy: false,
-    cardOptions,
-    cardTypes: request.card_types,
     contentOptions,
     diagnosticCount: 0,
     documentFocusOptions,
     generatedCardCount: 0,
     hasExportableCards: false,
+    hasLearningPointResult: false,
     hasProject: false,
     inspectorSheetOpen: false,
     languageFocusOptions,
@@ -42,6 +40,7 @@ function renderInspector(overrides: Partial<GenerateRequest> = {}, propOverrides
     request,
     requestEditedDuringRun: false,
     selectedCardCount: 0,
+    selectedLearningPointCount: 0,
     status: '准备生成 Anki 卡片。',
     statusTone: 'ok',
     templateId: request.template_id,
@@ -53,14 +52,16 @@ function renderInspector(overrides: Partial<GenerateRequest> = {}, propOverrides
     onApplyCollectionPreset: vi.fn(),
     onCloseSheet: vi.fn(),
     onExport: vi.fn(),
+    onCheckEnv: vi.fn(),
     onGenerate: vi.fn(),
+    onOpenEnvSettings: vi.fn(),
     onPatchRequest: vi.fn(),
     onPreviewRateChange: vi.fn(),
+    onRepairEnv: vi.fn(),
     onSelectCurrentLevel: vi.fn(),
     onSelectPath: vi.fn(),
     onSelectSourceMode: vi.fn(),
     onSelectTemplate: vi.fn(),
-    onToggleCardType: vi.fn(),
     onToggleCollectionLevel: vi.fn(),
     onToggleContent: vi.fn(),
     onToggleDocumentFocus: vi.fn(),
@@ -82,9 +83,11 @@ describe('InspectorPanel', () => {
     expect(screen.getByLabelText('制卡流程控制台')).toBeInTheDocument()
     expect(within(stepper).getByRole('button', { name: /素材配置/ })).toHaveAttribute('aria-current', 'step')
     expect(within(stepper).getByRole('button', { name: /学习设置/ })).toBeDisabled()
-    expect(within(stepper).getByRole('button', { name: /确认生成/ })).toBeDisabled()
+    expect(within(stepper).getByRole('button', { name: /确认抽取/ })).toBeDisabled()
     expect(screen.getByText('1/2')).toBeInTheDocument()
     expect(screen.getAllByText('素材').length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: /选择素材后继续/ })).toBeDisabled()
+    expect(screen.getByText('请选择本地视频文件后继续。')).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: '学习设置' })).not.toBeInTheDocument()
     expect(screen.queryByText('卡片和模板')).not.toBeInTheDocument()
   })
@@ -95,7 +98,7 @@ describe('InspectorPanel', () => {
     const stepper = screen.getByLabelText('制卡步骤')
     expect(screen.getByRole('heading', { name: '学习设置' })).toBeInTheDocument()
     expect(screen.getByText('卡片和模板')).toBeInTheDocument()
-    expect(within(stepper).getByRole('button', { name: /确认生成/ })).not.toBeDisabled()
+    expect(within(stepper).getByRole('button', { name: /确认抽取/ })).not.toBeDisabled()
   })
 
   it('uses next-step actions instead of free future navigation', () => {
@@ -114,7 +117,7 @@ describe('InspectorPanel', () => {
     expect(props.onWorkspaceStageChange).toHaveBeenCalledWith('generate')
   })
 
-  it('starts generation from the confirm step before a project exists', () => {
+  it('starts learning point extraction from the confirm step before a project exists', () => {
     const props = renderInspector(
       {},
       {
@@ -126,7 +129,30 @@ describe('InspectorPanel', () => {
       },
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /开始生成卡片/ }))
+    fireEvent.click(screen.getByRole('button', { name: /开始抽取学习点/ }))
+
+    expect(props.onGenerate).toHaveBeenCalledTimes(1)
+  })
+
+  it('generates selected cards after learning points exist', () => {
+    const props = renderInspector(
+      {},
+      {
+        activeWorkspaceStage: 'review',
+        hasLearningPointResult: true,
+        selectedLearningPointCount: 12,
+        readiness: [
+          { id: 'source', label: '素材', done: true, detail: '已就绪' },
+          { id: 'env', label: '环境', done: true, detail: '可用' },
+          { id: 'api', label: 'API', done: true, detail: '已通过' },
+        ],
+      },
+    )
+
+    expect(screen.getByText('选择学习点后生成完整卡片')).toBeInTheDocument()
+    expect(screen.getByText('12 个')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /生成选中卡片/ }))
 
     expect(props.onGenerate).toHaveBeenCalledTimes(1)
   })
@@ -156,12 +182,12 @@ describe('InspectorPanel', () => {
     expect(stageButtons[0]).toBeDisabled()
     expect(stageButtons[1]).toBeDisabled()
     expect(stageButtons[2]).not.toBeDisabled()
-    expect(screen.getByText('正在按当前设置制作卡片')).toBeInTheDocument()
+    expect(screen.getByText('正在把学习点生成完整卡片')).toBeInTheDocument()
     expect(screen.getByText(/生成进度已移到右侧工作台/)).toBeInTheDocument()
   })
 
-  it('lists unfinished preflight checks before generation', () => {
-    renderInspector(
+  it('lists extraction preflight checks before AI learning point extraction', () => {
+    const props = renderInspector(
       {},
       {
         activeWorkspaceStage: 'review',
@@ -175,8 +201,35 @@ describe('InspectorPanel', () => {
       },
     )
 
-    expect(screen.getByText('生成前还需要完成')).toBeInTheDocument()
-    expect(screen.getByText('环境：未检查 / API：未测试 / TTS：未测试')).toBeInTheDocument()
+    expect(screen.getByText('抽取学习点前还需要完成')).toBeInTheDocument()
+    expect(screen.getByText('环境：未检查 / API：未测试')).toBeInTheDocument()
+    expect(screen.queryByText(/TTS：未测试/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '立即检查' }))
+    fireEvent.click(screen.getByRole('button', { name: '查看详情' }))
+    expect(props.onCheckEnv).toHaveBeenCalledTimes(1)
+    expect(props.onOpenEnvSettings).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers one-click repair from the preflight card when the environment is checked but incomplete', () => {
+    const props = renderInspector(
+      {},
+      {
+        activeWorkspaceStage: 'review',
+        readiness: [
+          { id: 'source', label: '素材', done: true, detail: '已就绪' },
+          { id: 'env', label: '环境', done: false, detail: '缺少依赖' },
+          { id: 'api', label: 'API', done: true, detail: '已测试' },
+        ],
+      },
+    )
+
+    expect(screen.getByText('环境：缺少依赖')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '立即检查' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '一键修复' }))
+    fireEvent.click(screen.getByRole('button', { name: '查看详情' }))
+
+    expect(props.onRepairEnv).toHaveBeenCalledWith('all')
+    expect(props.onOpenEnvSettings).toHaveBeenCalledTimes(1)
   })
 
   it('forwards close and source mode actions', () => {
@@ -187,6 +240,45 @@ describe('InspectorPanel', () => {
 
     expect(props.onCloseSheet).toHaveBeenCalledTimes(1)
     expect(props.onSelectSourceMode).toHaveBeenCalledWith('url')
+  })
+
+  it('summarizes batch packages as nested subdeck work instead of a single source', () => {
+    const batchItems = [
+      {
+        id: 'ep1',
+        source_mode: 'local' as const,
+        enabled: true,
+        title: 'S01E01 - Pilot',
+        subdeck_title: 'S01E01 - Pilot',
+        deck_name: '无耻之徒 第一季::S01E01 - Pilot',
+        video_path: 'E:/Shows/S01E01 Pilot.mp4',
+      },
+      {
+        id: 'ep2',
+        source_mode: 'local' as const,
+        enabled: true,
+        title: 'S01E02 - Frank the Plank',
+        subdeck_title: 'S01E02 - Frank the Plank',
+        deck_name: '无耻之徒 第一季::S01E02 - Frank the Plank',
+        video_path: 'E:/Shows/S01E02 Frank.mp4',
+      },
+    ]
+
+    renderInspector(
+      { title: '无耻之徒 第一季', source_mode: 'local', batch_enabled: true, batch_items: batchItems },
+      {
+        activeWorkspaceStage: 'review',
+        readiness: [
+          { id: 'source', label: '素材', done: true, detail: '2 个素材' },
+          { id: 'env', label: '环境', done: true, detail: '可用' },
+          { id: 'api', label: 'API', done: true, detail: '已通过' },
+        ],
+      },
+    )
+
+    expect(screen.getByText('批量学习包')).toBeInTheDocument()
+    expect(screen.getAllByText('2 个子牌组')[0]).toBeInTheDocument()
+    expect(screen.getByText('无耻之徒 第一季')).toBeInTheDocument()
   })
 
   it('uses document target panel instead of language learning panel for document source', () => {

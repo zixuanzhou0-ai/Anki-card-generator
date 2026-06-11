@@ -36,7 +36,7 @@ describe('LearningSettingsPanel', () => {
 
     expect(screen.getByRole('option', { name: 'Русский' })).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('学习语言'), { target: { value: 'fr' } })
-    fireEvent.click(screen.getByRole('button', { name: /快速生成/ }))
+    fireEvent.click(screen.getByRole('button', { name: /快速提取/ }))
     fireEvent.click(screen.getByRole('button', { name: '自动' }))
 
     expect(onPatchRequest).toHaveBeenCalledWith({ language: 'fr' })
@@ -82,10 +82,25 @@ describe('LearningSettingsPanel', () => {
     expect(props.onToggleContent).toHaveBeenCalledWith('daily')
   })
 
+  it('keeps AI review cache reuse explicit and off by default', () => {
+    const onPatchRequest = vi.fn()
+    renderPanel({ onPatchRequest, request: { ...defaultRequest, reuse_ai_review_cache: false } })
+
+    fireEvent.click(screen.getByText('高级学习设置'))
+    expect(screen.getByText('每次重新精筛')).toBeVisible()
+    fireEvent.click(screen.getByLabelText('复用上次 AI 精筛结果'))
+
+    expect(onPatchRequest).toHaveBeenCalledWith({ reuse_ai_review_cache: true })
+  })
+
   it('toggles language learning focus for video and URL sources', () => {
     const props = renderPanel()
 
     fireEvent.click(screen.getByText('高级学习设置'))
+    expect(screen.getByText('素材解析方式')).toBeVisible()
+    expect(screen.getByText('深入解析')).toBeVisible()
+    expect(screen.getByText('快速提取')).toBeVisible()
+    expect(screen.getByText('影响生成前 AI 如何理解素材，不直接决定卡片背面信息量')).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: /单词用法/ }))
 
     expect(screen.getAllByText('词伙表达 / 单词用法 / 听力难点').length).toBeGreaterThanOrEqual(1)
@@ -96,7 +111,7 @@ describe('LearningSettingsPanel', () => {
     renderPanel()
 
     expect(screen.getByText('高级学习设置')).toBeVisible()
-    expect(screen.getByText('理解深度、难度范围、内容偏好')).toBeVisible()
+    expect(screen.getByText('素材解析、难度范围、内容偏好')).toBeVisible()
     expect(screen.getByText('展开')).toBeInTheDocument()
     expect(screen.getByText('收起')).toBeInTheDocument()
   })

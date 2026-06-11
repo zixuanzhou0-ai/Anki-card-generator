@@ -30,6 +30,7 @@ function renderWorkspace(project: Project | null, overrides = {}) {
     lastExport: null,
     language: 'English',
     level: 'B1' as const,
+    learningPointResult: null,
     maxSegments: 0,
     motionDuration: 0,
     prefersReducedMotion: true,
@@ -40,6 +41,7 @@ function renderWorkspace(project: Project | null, overrides = {}) {
     qualityDiagnostics,
     qualityFunnel: getQualityFunnel(project, qualityCounts, qualityDiagnostics),
     selectedCardCount: countSelectedCards(project),
+    selectedLearningPointIds: new Set<string>(),
     segmentFilter: 'all' as SegmentFilter,
     segmentReviewCounts: getSegmentReviewCounts(project),
     sourceMode: 'local' as const,
@@ -51,9 +53,12 @@ function renderWorkspace(project: Project | null, overrides = {}) {
     onOpenAnkiImport: vi.fn(),
     onRevealExport: vi.fn(),
     onSegmentFilterChange: vi.fn(),
+    onGenerateCardsFromLearningPoints: vi.fn(),
     onInvertCardSelection: vi.fn(),
+    onSelectDefaultLearningPoints: vi.fn(),
     onSelectSegment: vi.fn(),
     onSetCardsEnabled: vi.fn(),
+    onSetSelectedLearningPointIds: vi.fn(),
     onUpdateCard: vi.fn(),
     onVerifyAnkiImport: vi.fn(),
     ...overrides,
@@ -89,6 +94,70 @@ describe('ReviewWorkspace', () => {
     expect(screen.getByText('37%')).toBeInTheDocument()
     expect(screen.getByText('正在生成卡片正文：第 3/8 批。')).toBeInTheDocument()
     expect(screen.getByText('设置已锁定')).toBeInTheDocument()
+  })
+
+  it('renders learning point overview before cards are generated', () => {
+    const onGenerateCardsFromLearningPoints = vi.fn()
+    renderWorkspace(null, {
+      learningPointResult: {
+        id: 'lp-project',
+        title: '字幕素材',
+        source_mode: 'local',
+        video_path: '',
+        subtitle_path: '',
+        language: 'en',
+        level_mode: 'manual',
+        level: 'B1',
+        source_sentences: [],
+        learning_points: [
+          {
+            id: 'lp-1',
+            source_segment_id: 'src-1',
+            source_sentence: "I'm not really in the mood for this right now.",
+            source_time: '00:00:01.000 - 00:00:03.000',
+            exact_span: 'in the mood for',
+            answer_core: 'in the mood for',
+            normalized_answer: 'in the mood for',
+            type: 'phrase',
+            candidate_kind: 'expression',
+            phrase_type: 'collocation',
+            level: 'B1',
+            learning_action: '训练表达“有/没心情做某事”。',
+            learning_action_key: 'expression:in the mood for',
+            value_score: 4.5,
+            reason: '高频口语词伙。',
+            confidence: 'high',
+            status: 'recommended',
+            status_reason: '高价值、合法、不重复。',
+            source: 'local_rule',
+          },
+        ],
+        learning_point_summary: {
+          total: 1,
+          recommended: 1,
+          candidate_only: 0,
+          hidden_duplicate: 0,
+          hard_blocked: 0,
+          by_type: { phrase: 1 },
+          by_level: { B1: 1 },
+        },
+        quality_funnel: {
+          ai_review_cache_hits: 2,
+          ai_review_cache_misses: 3,
+        },
+      },
+      selectedLearningPointIds: new Set(['lp-1']),
+      onGenerateCardsFromLearningPoints,
+    })
+
+    expect(screen.getByRole('heading', { name: '学习点总览' })).toBeInTheDocument()
+    expect(screen.getByText('AI 已精筛 1 个学习点')).toBeInTheDocument()
+    expect(screen.getByText(/本次复用了 2 批 AI 精筛缓存，实时调用 3 批/)).toBeInTheDocument()
+    expect(screen.getByText('缓存命中批')).toBeInTheDocument()
+    expect(screen.getByText('实时调用批')).toBeInTheDocument()
+    expect(screen.getByText('in the mood for')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '生成选中卡片' }))
+    expect(onGenerateCardsFromLearningPoints).toHaveBeenCalledOnce()
   })
 
   it('renders review controls and forwards selection actions', () => {

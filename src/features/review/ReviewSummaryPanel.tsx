@@ -57,6 +57,19 @@ export function ReviewSummaryPanel({
   const candidateOnlyCount = qualityFunnel.candidate_only_learning_point_count ?? 0
   const hiddenDuplicateCount = qualityFunnel.hidden_duplicate_learning_point_count ?? duplicateCount
   const hardBlockedCount = qualityFunnel.hard_blocked_learning_point_count ?? qualityFunnel.blocked_quality_issue_count ?? 0
+  const selectedLearningPointCount = qualityFunnel.selected_learning_point_count
+  const successfulLearningPointCount = qualityFunnel.successful_learning_point_count
+  const modelMissingLearningPointCount = qualityFunnel.card_generation_missing_learning_point_count ?? 0
+  const cardGenerationFilteredCount = qualityFunnel.card_generation_filtered_card_count ?? 0
+  const cardGenerationSkippedCount = qualityFunnel.card_generation_skipped_learning_point_count ?? 0
+  const cardGenerationDiagnosticItems = project.card_generation_diagnostics?.items ?? []
+  const hasCardGenerationDiagnostics =
+    selectedLearningPointCount !== undefined ||
+    successfulLearningPointCount !== undefined ||
+    modelMissingLearningPointCount > 0 ||
+    cardGenerationFilteredCount > 0 ||
+    cardGenerationSkippedCount > 0 ||
+    cardGenerationDiagnosticItems.length > 0
   const diagnosticCount = candidateOnlyCount + hiddenDuplicateCount + hardBlockedCount
   const levelLabel = project.level_mode === 'manual' ? level : '自动判断'
   const sourceSentenceCount = qualityFunnel.source_sentence_count ?? qualityFunnel.subtitle_cues
@@ -116,7 +129,7 @@ export function ReviewSummaryPanel({
 
       {materialSummary ? (
         <div className="material-context-card" aria-label="素材理解">
-          <span>{project.study_depth === 'deep' ? '深度理解' : '素材理解'}</span>
+          <span>{project.study_depth === 'deep' ? '深入解析' : '素材理解'}</span>
           <strong>{materialSummary}</strong>
           {materialContext?.learning_opportunities?.length ? (
             <small>{materialContext.learning_opportunities.slice(0, 4).join(' / ')}</small>
@@ -145,6 +158,35 @@ export function ReviewSummaryPanel({
             {project.source_mode === 'local' && project.skip_video_slicing ? ' · 字幕-only' : ''}
           </span>
         </div>
+        {hasCardGenerationDiagnostics ? (
+          <div className="quality-context-line">
+            <span>
+              {`学习点制卡：已选 ${selectedLearningPointCount ?? '-'} · 成功 ${successfulLearningPointCount ?? usableCount} · 模型未返回 ${modelMissingLearningPointCount} · 质量过滤 ${cardGenerationFilteredCount}${
+                cardGenerationSkippedCount ? ` · 跳过 ${cardGenerationSkippedCount}` : ''
+              }`}
+            </span>
+          </div>
+        ) : null}
+        {cardGenerationDiagnosticItems.length ? (
+          <div className="card-generation-diagnostics" aria-label="未生成学习点明细">
+            {cardGenerationDiagnosticItems.slice(0, 5).map((item) => (
+              <span key={`${item.learning_point_id}-${item.status}`}>
+                <strong>{item.answer_core || item.learning_point_id}</strong>
+                <small>
+                  {item.status === 'model_missing'
+                    ? '模型未返回'
+                    : item.status === 'filtered'
+                      ? '质量过滤'
+                      : item.status === 'skipped'
+                        ? '已跳过'
+                        : item.status}
+                  ：{item.reason}
+                </small>
+              </span>
+            ))}
+            {cardGenerationDiagnosticItems.length > 5 ? <em>{`还有 ${cardGenerationDiagnosticItems.length - 5} 个未显示`}</em> : null}
+          </div>
+        ) : null}
         <div className="quality-funnel" aria-label="质量漏斗">
           <span>
             <strong>{sourceSentenceCount ?? '-'}</strong>

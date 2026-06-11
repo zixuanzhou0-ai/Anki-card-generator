@@ -2,6 +2,24 @@
 
 This guide covers the current desktop app behavior.
 
+## Desktop App Starts Slowly Or Shows Localhost Errors
+
+Development startup uses two processes:
+
+1. Vite starts the local frontend at `http://127.0.0.1:5173/`.
+2. Tauri/Cargo compiles and starts the desktop window.
+
+If the desktop window is slow after code changes, wait for Cargo to finish. A cold Tauri build can take around a minute. A browser page showing `localhost refused connection` only means the frontend dev server is not ready or has stopped; it does not by itself prove the desktop app build is broken.
+
+Recommended developer startup:
+
+```powershell
+cd E:\ANKI
+npm run tauri:dev
+```
+
+If a hidden/background dev server was left from yesterday, stop stale `anki-card-generator.exe` / project `node` / `cargo` processes, then start again. Avoid judging the app by an old installed portable release; use the current workspace when testing active changes.
+
 ## Local Environment Check Fails
 
 Open `设置 -> 本地环境` and click `检查环境`.
@@ -86,8 +104,9 @@ Fallback order:
 
 The current workflow does more than old simple subtitle splitting:
 
-- material understanding
-- learning point recall
+- local learning point recall
+- AI learning point review and missing-point expansion
+- user selection of recommended/candidate learning points
 - hard validation
 - dedupe
 - multilingual pronunciation metadata
@@ -119,6 +138,32 @@ If generated cards are fewer than expected, open `学习点诊断`. It will show
 - hard-blocked because `answer_core` contained Chinese, IPA, or explanation text
 
 The current V1 does not automatically generate complete media/TTS/Anki fields for every candidate-only learning point.
+
+## Learning Point Extraction Finishes In A Few Seconds
+
+Formal extraction should call the configured model API. If it finishes in a few seconds, check these cases:
+
+- You are looking at cached/demo/browser preview behavior rather than desktop worker behavior.
+- `reuse_ai_review_cache` is enabled and the same batch was already reviewed.
+- The task failed early but the UI is showing stale previous results.
+- API readiness was not tested and the app blocked formal extraction.
+
+For quality checks, use the desktop app, confirm the settings page shows the model API test passed, and start a fresh `抽取学习点` run.
+
+## 词霸天下实验 V1 Export Still Looks Like V11
+
+This should not be expected in V1.1 or later.
+
+`词霸天下实验 V1` changes the bottom-layer behavior:
+
+- AI learning point review prompt.
+- scoring preference for language actions.
+- final card-generation prompt.
+- exported Anki card face.
+
+It now provides a separate exported Anki visual template. The back side should use Ciba labels such as `语言动作`、`语境义`、`迁移句`、`搭配边界 / 别这么用` and `原句场景`.
+
+If an exported Ciba APKG still shows the V11 blocks `怎么用 / 别误用 / 自己造句`, check that the project `template_id` is `ciba_tianxia_v1`, rebuild the current desktop package, and confirm `anki_template_assets("ciba_tianxia_v1", ...)` is returning the Ciba template assets.
 
 ## TTS Fails
 

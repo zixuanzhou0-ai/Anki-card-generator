@@ -60,6 +60,8 @@ const ERROR_ACTIONS: Partial<Record<WorkerErrorCode, WorkerErrorActionId[]>> = {
   MODEL_QUOTA_EXCEEDED: ['open-api-settings', 'retry'],
   MODEL_TIMEOUT: ['open-api-settings', 'retry'],
   MODEL_JSON_INVALID: ['open-api-settings', 'retry'],
+  MODEL_REVIEW_BAD_JSON: ['open-api-settings', 'retry'],
+  MODEL_REVIEW_FAILED: ['open-api-settings', 'retry'],
   TTS_AUTH_FAILED: ['open-tts-settings'],
   TTS_CONNECTION_FAILED: ['open-tts-settings', 'retry'],
   TTS_NOT_FOUND: ['open-tts-settings'],

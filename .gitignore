@@ -36,6 +36,9 @@ DramaAnki-*/
 release/
 runtime_diagnostic.json
 tmp_*.json
+.tauri-dev.err
+.codex-desktop-screenshot.png
+card-template-panel-after.png
 .package/
 NEXT_SESSION_HANDOFF.md
 OVERNIGHT_ACCEPTANCE.md

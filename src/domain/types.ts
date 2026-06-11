@@ -1,4 +1,6 @@
-﻿export type Level = 'A1' | 'A2' | 'B1' | 'B2' | 'C1' | 'C2'
+﻿import type { BatchSourceItem } from './batch'
+
+export type Level = 'A1' | 'A2' | 'B1' | 'B2' | 'C1' | 'C2'
 export type LevelMode = 'auto' | 'manual'
 export type CardKind = 'listening' | 'phrase' | 'cloze' | 'knowledge'
 export type LearningLanguageCode = 'en' | 'fr' | 'es' | 'ja' | 'ru'
@@ -10,7 +12,9 @@ export type DocumentDepth = 'quick' | 'standard' | 'deep'
 export type DocumentAnswerLength = 'short' | 'medium' | 'long'
 export type StudyDepth = 'standard' | 'deep'
 export type SelectionStrategy = 'catch_all' | 'curated' | 'exhaustive'
-export type TemplateId = 'immersive_v11' | 'immersive' | 'dictionary' | 'minimal'
+export type ReviewDensity = 'full' | 'fast'
+export type TemplateId = 'immersive_v11' | 'ciba_tianxia_v1' | 'immersive' | 'dictionary' | 'minimal'
+export type CardStyleId = 'warm_paper' | 'minimal_white' | 'dark_immersive'
 export type Provider = 'local' | 'mimo' | 'openai-compatible' | 'claude' | 'gemini' | 'gemini-vertex'
 export type TtsProvider = 'disabled' | 'mimo' | 'qwen' | 'grok' | 'gemini' | 'gemini-vertex' | 'openai-compatible'
 export type SourceMode = 'local' | 'url' | 'document'
@@ -240,7 +244,12 @@ export type WorkerProgress = {
   message: string
 }
 
-export type WorkerCommand = 'generate' | 'export' | 'verify_anki_import'
+export type WorkerCommand =
+  | 'extract_learning_points'
+  | 'generate_cards_from_learning_points'
+  | 'generate'
+  | 'export'
+  | 'verify_anki_import'
 
 export type WorkerErrorCode =
   | 'ENV_PYTHON_MISSING'
@@ -255,6 +264,8 @@ export type WorkerErrorCode =
   | 'MODEL_QUOTA_EXCEEDED'
   | 'MODEL_TIMEOUT'
   | 'MODEL_JSON_INVALID'
+  | 'MODEL_REVIEW_BAD_JSON'
+  | 'MODEL_REVIEW_FAILED'
   | 'TTS_AUTH_FAILED'
   | 'TTS_CONNECTION_FAILED'
   | 'TTS_NOT_FOUND'
@@ -298,9 +309,17 @@ export type QualityFunnel = {
   filtered_learning_point_count?: number
   low_value_filtered_count?: number
   blocked_quality_issue_count?: number
+  selected_learning_point_count?: number
+  eligible_learning_point_count?: number
+  successful_learning_point_count?: number
+  card_generation_missing_learning_point_count?: number
+  card_generation_filtered_card_count?: number
+  card_generation_skipped_learning_point_count?: number
   candidate_only_learning_point_count?: number
   hidden_duplicate_learning_point_count?: number
   hard_blocked_learning_point_count?: number
+  ai_review_cache_hits?: number
+  ai_review_cache_misses?: number
   level_mode?: LevelMode | string
   learning_points_per_source_distribution?: Record<string, number>
   enabled_cards_per_source_distribution?: Record<string, number>
@@ -332,6 +351,23 @@ export type MaterialContext = {
   key_points?: string[]
   learning_opportunities?: string[]
   source?: 'ai' | 'heuristic' | string
+}
+
+export type CardGenerationDiagnosticItem = {
+  learning_point_id: string
+  answer_core?: string
+  status: 'skipped' | 'model_missing' | 'filtered' | string
+  reason: string
+}
+
+export type CardGenerationDiagnostics = {
+  selected_learning_point_count?: number
+  eligible_learning_point_count?: number
+  successful_learning_point_count?: number
+  model_missing_learning_point_count?: number
+  filtered_learning_point_count?: number
+  skipped_learning_point_count?: number
+  items?: CardGenerationDiagnosticItem[]
 }
 
 export type WorkerFinishedEvent = {
@@ -388,6 +424,8 @@ export type GenerateRequest = {
   url_import_mode: UrlImportMode
   url_auto_subtitle_fallback: boolean
   skip_video_slicing: boolean
+  batch_enabled: boolean
+  batch_items: BatchSourceItem[]
   video_path: string
   subtitle_path: string
   document_path: string
@@ -396,6 +434,8 @@ export type GenerateRequest = {
   level: Level
   collection_levels: Level[]
   template_id: TemplateId
+  card_style: CardStyleId
+  review_density: ReviewDensity
   content_toggles: ContentToggles
   language_focus: LanguageFocus[]
   document_focus: DocumentFocus[]
@@ -405,6 +445,7 @@ export type GenerateRequest = {
   document_answer_length: DocumentAnswerLength
   study_depth: StudyDepth
   selection_strategy: SelectionStrategy
+  reuse_ai_review_cache: boolean
   card_types: CardKind[]
   max_segments: number
   api_config: ApiConfig
@@ -431,6 +472,8 @@ export type LearningPoint = {
   source_spoken_ipa?: string
   pronunciation_note?: string
   pronunciation_confidence?: 'high' | 'medium' | 'low' | string
+  pronunciation_status?: string
+  source_pronunciation_status?: string
   pronunciation_meta?: PronunciationMeta | string | null
   learning_action?: string
   learning_action_key?: string
@@ -531,6 +574,8 @@ export type Card = {
   source_spoken_ipa?: string
   pronunciation_note?: string
   pronunciation_confidence?: 'high' | 'medium' | 'low' | string
+  pronunciation_status?: string
+  source_pronunciation_status?: string
   pronunciation_meta?: PronunciationMeta | string | null
   replacement_examples?: string | string[]
   avoid_reason?: string
@@ -626,6 +671,8 @@ export type Project = {
   level: Level
   collection_levels?: Level[]
   template_id: TemplateId
+  card_style?: CardStyleId | string
+  review_density?: ReviewDensity
   content_toggles: ContentToggles
   language_focus?: LanguageFocus[]
   document_focus?: DocumentFocus[]
@@ -640,7 +687,10 @@ export type Project = {
   max_segments?: number
   auto_max_segments?: boolean
   skip_video_slicing?: boolean
+  batch_enabled?: boolean
+  batch_items?: BatchSourceItem[]
   quality_funnel?: QualityFunnel
+  card_generation_diagnostics?: CardGenerationDiagnostics
   learning_point_inventory?: LearningPointInventoryItem[]
   segments: Segment[]
   warnings?: string[]

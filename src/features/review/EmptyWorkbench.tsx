@@ -31,7 +31,7 @@ export function EmptyWorkbench({
         <div>
           <span className="hero-kicker">等待生成结果</span>
           <h2>审核区会在生成后展开</h2>
-          <p>按左侧三步完成素材、学习设置和确认生成。生成后这里会显示片段队列、卡片详情、更多学习点和导出核验。</p>
+          <p>按左侧三步完成素材、学习设置和确认抽取。先查看学习点，再把选中的学习点生成卡片并导出。</p>
         </div>
       </section>
       <div className="workbench-result-map" aria-label="生成后可检查内容">

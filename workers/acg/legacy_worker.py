@@ -152,6 +152,123 @@ TTS_LANGUAGE_FALLBACKS: dict[str, list[str]] = {
     "ru": ["ru-RU"],
 }
 
+VALID_TEMPLATE_IDS = {"immersive_v11", "ciba_tianxia_v1", "immersive", "dictionary", "minimal"}
+
+
+def normalize_template_id(template_id: Any = "immersive_v11") -> str:
+    value = str(template_id or "").strip()
+    return value if value in VALID_TEMPLATE_IDS else "immersive_v11"
+
+
+def ciba_tianxia_mode(payload: dict[str, Any] | None) -> bool:
+    return normalize_template_id((payload or {}).get("template_id")) == "ciba_tianxia_v1"
+
+
+VALID_CARD_STYLES = {"warm_paper", "minimal_white", "dark_immersive"}
+VALID_REVIEW_DENSITIES = {"full", "fast"}
+CIBA_CARD_STYLE_LABELS = {
+    "warm_paper": "暖色纸感",
+    "minimal_white": "极简白卡",
+    "dark_immersive": "深色沉浸",
+}
+
+
+def normalize_card_style(card_style: Any = "warm_paper") -> str:
+    value = str(card_style or "").strip()
+    return value if value in VALID_CARD_STYLES else "warm_paper"
+
+
+def normalize_review_density(review_density: Any = "full") -> str:
+    value = str(review_density or "").strip()
+    return value if value in VALID_REVIEW_DENSITIES else "full"
+
+
+def fast_review_density(project: dict[str, Any]) -> bool:
+    return normalize_review_density(project.get("review_density")) == "fast"
+
+
+def fast_review_prompt_instruction(project: dict[str, Any]) -> str:
+    if not fast_review_density(project):
+        return ""
+    return (
+        "【快速背卡模式：真正减少 token】"
+        "用户选择的是精简背面/快速背卡，不是完整精学卡。"
+        "每张卡只生成最小复习字段：retrieval_prompt、answer_core、phrase、chinese、english/source_evidence、chinese_feel、teacher_note。"
+        "teacher_note 最多一句，优先 18-36 个中文字；definition 最多一句，优先 20-40 个中文字。"
+        "不要输出长段落，不要把边界、易错、为什么值得学、例句和迁移句都塞进 teacher_note。"
+        "definition/context/example/collocations/why/why_it_matters/how_to_use_it/usage_boundary/confusable_note/replacement_examples "
+        "这些字段能留空就留空；确实必须写时也只能短句。"
+        "同一个 learning_point 只做一张 phrase 主卡；除非用户明确选择听力/填空且该点不可替代，否则不要额外生成 listening 或 cloze。"
+        "目标是减少 token、减少审核负担，让背面只留下：答案、当前语境义、原句、一个很短提醒。"
+    )
+
+
+def short_fast_text(value: Any, limit: int) -> str:
+    text = clean_study_text(value)
+    if not text:
+        return ""
+    first = re.split(r"[。.!！?？；;]\s*", text, maxsplit=1)[0].strip()
+    text = first or text
+    return text[: max(0, limit)].rstrip()
+
+
+def fast_review_card_quality(card: dict[str, Any], segment: dict[str, Any] | None = None) -> dict[str, Any]:
+    segment = segment or {}
+    issues: list[str] = []
+    answer = clean_study_text(card.get("answer_core") or card.get("phrase"))
+    english = clean_study_text(card.get("english") or segment.get("text"))
+    chinese = clean_study_text(card.get("chinese"))
+    definition = clean_study_text(card.get("definition"))
+    teacher_note = clean_study_text(card.get("teacher_note"))
+    retrieval_prompt = clean_study_text(card.get("retrieval_prompt"))
+    if not answer:
+        issues.append("缺少核心答案")
+    if not english:
+        issues.append("缺少原句")
+    if answer and english and not normalized_contains_text(english, answer):
+        issues.append("核心答案不在原句")
+    if not chinese or not has_cjk(chinese):
+        issues.append("缺少中文语境义")
+    if not (definition or teacher_note):
+        issues.append("缺少短释义或老师提醒")
+    if not retrieval_prompt:
+        issues.append("缺少正面回忆题")
+    score = max(0, 88 - 16 * len(issues))
+    status = "recommended" if score >= 72 and not issues else "needs_review" if score >= 42 else "reject"
+    return {"score": score, "status": status, "issues": issues}
+
+
+def slim_fast_review_card(card: dict[str, Any], segment: dict[str, Any] | None = None) -> dict[str, Any]:
+    slim = dict(card)
+    slim["teacher_note"] = short_fast_text(slim.get("teacher_note") or slim.get("how_to_use_it") or slim.get("definition"), 48)
+    slim["definition"] = short_fast_text(slim.get("definition") or slim.get("learning_target"), 48)
+    slim["chinese_feel"] = short_fast_text(slim.get("chinese_feel") or slim.get("natural_chinese"), 40)
+    for key in [
+        "collocations",
+        "example",
+        "why",
+        "why_it_matters",
+        "how_to_use_it",
+        "usage_boundary",
+        "confusable_note",
+        "replacement_examples",
+        "conceptual_action",
+        "chinese_learner_trap",
+    ]:
+        slim[key] = ""
+    slim["quality"] = fast_review_card_quality(slim, segment)
+    slim["enabled"] = slim["quality"]["status"] == "recommended"
+    return slim
+
+
+def slim_fast_review_segments(segments: list[dict[str, Any]], project: dict[str, Any]) -> list[dict[str, Any]]:
+    if not fast_review_density(project):
+        return segments
+    slimmed: list[dict[str, Any]] = []
+    for segment in segments:
+        slimmed.append({**segment, "cards": [slim_fast_review_card(card, segment) for card in segment.get("cards", []) or []]})
+    return slimmed
+
 
 def normalize_learning_language(language: Any = "en") -> str:
     raw = str(language or "").strip()
@@ -180,6 +297,40 @@ def pronunciation_profile(language: Any = "en") -> dict[str, str]:
 
 def overlap_words(value: str) -> list[str]:
     return re.findall(r"[A-Za-z0-9']+", value.lower())
+
+
+CONTRACTION_WORD_EXPANSIONS = {
+    "i've": ["i", "have"],
+    "you've": ["you", "have"],
+    "we've": ["we", "have"],
+    "they've": ["they", "have"],
+    "i'm": ["i", "am"],
+    "you're": ["you", "are"],
+    "we're": ["we", "are"],
+    "they're": ["they", "are"],
+    "it's": ["it", "is"],
+    "that's": ["that", "is"],
+    "what's": ["what", "is"],
+    "who's": ["who", "is"],
+    "where's": ["where", "is"],
+    "there's": ["there", "is"],
+    "here's": ["here", "is"],
+    "i'd": ["i", "would"],
+    "you'd": ["you", "would"],
+    "we'd": ["we", "would"],
+    "they'd": ["they", "would"],
+    "i'll": ["i", "will"],
+    "you'll": ["you", "will"],
+    "we'll": ["we", "will"],
+    "they'll": ["they", "will"],
+}
+
+
+def expanded_overlap_words(value: str) -> list[str]:
+    words: list[str] = []
+    for word in overlap_words(value):
+        words.extend(CONTRACTION_WORD_EXPANSIONS.get(word, [word]))
+    return words
 
 
 def has_cjk(value: str) -> bool:
@@ -1810,8 +1961,9 @@ def phrase_in_text(text: str, phrase: str) -> bool:
     raw_phrase = normalize_candidate_span(phrase).casefold()
     if raw_phrase and raw_phrase in raw_text:
         return True
-    normalized_text = " ".join(overlap_words(text))
-    normalized_phrase = " ".join(overlap_words(phrase))
+    has_gap_marker = bool(re.search(r"\.{2,}|…", str(phrase or "")))
+    normalized_text = " ".join(expanded_overlap_words(text))
+    normalized_phrase = " ".join(expanded_overlap_words(re.sub(r"\.{2,}|…", " ", str(phrase or ""))))
     if not normalized_phrase:
         return False
     if normalized_phrase in normalized_text:
@@ -1829,7 +1981,7 @@ def phrase_in_text(text: str, phrase: str) -> bool:
             return text_word in {"it", "this", "that", "things", "something", "everything"}
         return pattern_word == text_word
 
-    max_extra_words = 2
+    max_extra_words = 8 if has_gap_marker else 2
     for first in [index for index, word in enumerate(text_words) if word_matches(phrase_words[0], word)]:
         position = first
         extra_words = 0
@@ -1881,7 +2033,7 @@ def quality_issue_labels(
         issues.append("本地规则卡，需要人工确认")
         score -= 4
     elif source != "ai":
-        issues.append("本地草稿，需要人工确认")
+        issues.append("预览草稿，需要人工确认")
         score -= 18
     if not text_words:
         issues.append("缺少英文原句")
@@ -2385,12 +2537,14 @@ def repair_card_fields(card: dict[str, Any], segment: dict[str, Any], level: str
                 "content_kind",
                 "phonetic_ipa",
                 "spoken_ipa",
-            "source_spoken_ipa",
-            "pronunciation_note",
-            "pronunciation_confidence",
-            "pronunciation_meta",
-            "validation_status",
-        ]:
+                "source_spoken_ipa",
+                "pronunciation_note",
+                "pronunciation_confidence",
+                "pronunciation_status",
+                "source_pronunciation_status",
+                "pronunciation_meta",
+                "validation_status",
+            ]:
                 if normalized_contract.get(key) not in (None, ""):
                     card[key] = normalized_contract[key]
             if normalized_contract.get("validation_issues"):
@@ -2415,6 +2569,43 @@ def repair_card_fields(card: dict[str, Any], segment: dict[str, Any], level: str
     card["cloze"] = make_cloze(text, phrase)
 
 
+def normalized_contains_text(haystack: Any, needle: Any) -> bool:
+    haystack_marker = re.sub(r"[\s\W_]+", "", clean_study_text(haystack).lower(), flags=re.UNICODE)
+    needle_marker = re.sub(r"[\s\W_]+", "", clean_study_text(needle).lower(), flags=re.UNICODE)
+    return bool(needle_marker and needle_marker in haystack_marker)
+
+
+LEARNING_ACTION_VALUES = {
+    "contextual_meaning",
+    "expression_recall",
+    "listening_discrimination",
+    "collocation_boundary",
+    "chinese_learner_trap",
+    "conceptual_action",
+    "grammar_pattern",
+}
+
+
+def learning_action_for_card(card: dict[str, Any]) -> str:
+    explicit = str(card.get("learning_action") or "").strip()
+    if explicit in LEARNING_ACTION_VALUES:
+        return explicit
+    candidate_kind = str(card.get("candidate_kind") or card.get("kind") or "").strip()
+    phrase_type = str(card.get("phrase_type") or "").strip()
+    content_kind = str(card.get("content_kind") or "").strip()
+    if candidate_kind == "contextual_vocab" or content_kind == "vocabulary" or phrase_type == "vocabulary_usage":
+        return "contextual_meaning"
+    if candidate_kind == "listening_feature" or content_kind == "listening" or phrase_type == "listening_sentence":
+        return "listening_discrimination"
+    if candidate_kind == "grammar_pattern" or content_kind == "grammar" or phrase_type == "grammar_pattern":
+        return "grammar_pattern"
+    if candidate_kind == "pragmatic_risk":
+        return "chinese_learner_trap"
+    if phrase_type in {"collocation", "idiom"}:
+        return "collocation_boundary"
+    return "expression_recall"
+
+
 def normalize_learning_action_fields(card: dict[str, Any]) -> None:
     learning_target = normalized_action_text(card.get("learning_target"))
     why_it_matters = normalized_action_text(card.get("why_it_matters"))
@@ -2424,6 +2615,16 @@ def normalize_learning_action_fields(card: dict[str, Any]) -> None:
     avoid_reason = normalized_action_text(card.get("avoid_reason"))
     usage_boundary = normalized_action_text(card.get("usage_boundary"))
     confusable_note = normalized_action_text(card.get("confusable_note"))
+    conceptual_action = normalized_action_text(card.get("conceptual_action"))
+    chinese_learner_trap = normalized_action_text(card.get("chinese_learner_trap"))
+    card["learning_action"] = learning_action_for_card(card)
+
+    if not chinese_learner_trap and confusable_note:
+        card["chinese_learner_trap"] = confusable_note
+        chinese_learner_trap = normalized_action_text(card.get("chinese_learner_trap"))
+    if not conceptual_action and is_specific_study_text(card.get("learning_target")):
+        card["conceptual_action"] = clean_study_text(card.get("learning_target"))
+        conceptual_action = normalized_action_text(card.get("conceptual_action"))
 
     if (not natural_chinese or has_template_noise(natural_chinese)) and is_specific_study_text(card.get("chinese")):
         card["natural_chinese"] = clean_study_text(card.get("chinese"))
@@ -2480,10 +2681,12 @@ def normalize_learning_action_fields(card: dict[str, Any]) -> None:
         card["teacher_note"] = how_to_use_it
         teacher_note = str(card.get("teacher_note") or "").strip()
     extra_notes = []
-    if usage_boundary:
+    if usage_boundary and not normalized_contains_text(teacher_note, usage_boundary):
         extra_notes.append(f"使用边界：{usage_boundary}")
-    if confusable_note:
+    if confusable_note and not normalized_contains_text(teacher_note, confusable_note):
         extra_notes.append(f"易错提醒：{confusable_note}")
+    if chinese_learner_trap and not normalized_contains_text(teacher_note, chinese_learner_trap):
+        extra_notes.append(f"中文误区：{chinese_learner_trap}")
     if extra_notes:
         merged_note = "；".join(extra_notes)
         if teacher_note and merged_note not in teacher_note:
@@ -2663,18 +2866,21 @@ def fallback_cards(segment: dict[str, Any], card_types: list[str], level: str) -
             "type_label": CARD_TYPE_LABELS.get(card_type, card_type),
             "enabled": False,
             "english": segment["text"],
-            "chinese": "本地草稿：请在预览页用模型精修或手动改成自然中文。",
+            "chinese": "预览草稿：请先用模型精修或手动改成自然中文。",
             "cloze": make_cloze(segment["text"], answer or fields["phrase"]),
             "teacher_note": fields.get("teacher_note") or fields["why"],
             "card_role": "primary" if index == 0 else "learning_point",
             "learning_goal": reason,
             "decision_reason": reason,
             "learning_target": reason,
+            "learning_action": learning_action_for_card({**point, "candidate_kind": point.get("kind") or segment.get("candidate_kind") or candidate_kind_for_segment(segment), "phrase_type": phrase_type, "content_kind": content_kind}),
+            "conceptual_action": point.get("conceptual_action") or "",
+            "chinese_learner_trap": point.get("chinese_learner_trap") or point.get("confusable_note") or "",
             "why_it_matters": fields.get("why", ""),
             "how_to_use_it": fields.get("context", ""),
             "natural_chinese": fields.get("chinese", ""),
             "estimated_level": level if level in CEFR_ORDER else "B1",
-            "difficulty_reason": "本地草稿按当前水平和表达可迁移性估计。",
+            "difficulty_reason": "预览草稿按当前水平和表达可迁移性估计。",
             "replacement_examples": fields.get("collocations", ""),
             "avoid_reason": "",
             "skipped_card_types": {},
@@ -2702,6 +2908,8 @@ def fallback_cards(segment: dict[str, Any], card_types: list[str], level: str) -
             "source_spoken_ipa": point.get("source_spoken_ipa") or "",
             "pronunciation_note": point.get("pronunciation_note") or "",
             "pronunciation_confidence": point.get("pronunciation_confidence") or "",
+            "pronunciation_status": point.get("pronunciation_status") or "",
+            "source_pronunciation_status": point.get("source_pronunciation_status") or "",
             "pronunciation_meta": point.get("pronunciation_meta") or None,
             **fields,
         }
@@ -2719,6 +2927,7 @@ def fallback_cards(segment: dict[str, Any], card_types: list[str], level: str) -
         if card_quality_source == "fallback" and card["quality"]["status"] == "reject":
             local_draft_issues = {
                 "本地草稿，需要人工确认",
+                "预览草稿，需要人工确认",
                 "字段像模板废话",
                 "例句只是照抄原句",
                 "老师提示和学习理由重复",
@@ -2742,6 +2951,8 @@ def pronunciation_prompt_instruction(language_code: str) -> str:
         "如果只能给标准读法，generation_basis=dictionary_only，spoken_ipa 留空。"
         "source_spoken_ipa 必须覆盖完整原句的主要词/音节，不能只覆盖 answer_core。"
         "如果 spoken_ipa 与 phonetic_ipa 相同，必须填写 same_as_standard_reason。"
+        "pronunciation_note 只写真正的发音教学内容，例如弱读、连读、重音、音变；"
+        "不要把“未实听”“按字幕推测”“原句听感未可靠生成”“已隐藏”等系统状态写进 pronunciation_note。"
     )
     by_language = {
         "en": (
@@ -2767,7 +2978,66 @@ def pronunciation_prompt_instruction(language_code: str) -> str:
     return common + by_language.get(language_code, by_language["en"])
 
 
-def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str:
+def build_fast_review_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str:
+    requested_types = requested_card_types([str(card_type) for card_type in project.get("card_types", []) if card_type])
+    current_level = str(project.get("level", "B1"))
+    level_mode = normalized_level_mode(project)
+    language_code = normalize_learning_language(project.get("language", "en"))
+    profile = pronunciation_profile(language_code)
+    material_context_instruction = material_context_for_prompt(project.get("material_context"))
+    focus_instruction = language_focus_instruction(project)
+    compact = [
+        {
+            "id": segment["id"],
+            "source_time": segment["source_time"],
+            "english": segment["text"],
+            "phrase_hint": segment.get("phrase") or segment.get("answer_core") or "",
+            "exact_span": segment.get("exact_span", ""),
+            "answer_core": segment.get("answer_core") or segment.get("normalized_answer") or "",
+            "candidate_kind": segment.get("candidate_kind", ""),
+            "phrase_type": segment.get("phrase_type", ""),
+            "learning_point_id": segment.get("learning_point_id", ""),
+            "learning_points": [
+                {
+                    "id": point.get("id"),
+                    "answer_core": point.get("answer_core") or point.get("exact_span") or "",
+                    "exact_span": point.get("exact_span") or "",
+                    "candidate_kind": point.get("candidate_kind") or "",
+                    "phrase_type": point.get("phrase_type") or "",
+                    "learning_action": point.get("learning_action") or "",
+                    "reason": point.get("reason") or point.get("status_reason") or "",
+                }
+                for point in segment.get("learning_points", [])
+                if isinstance(point, dict)
+            ],
+        }
+        for segment in segments
+    ]
+    return (
+        f"你是给中文母语者做 {profile['label']} Anki 卡的语言老师。"
+        "【快速背卡模式：真正减少 token】用户要的是精简背面/快速制卡，不是完整精学卡。"
+        "目标：减少 token、减少等待时间、减少审核负担。"
+        "每张卡只生成最小复习字段：type、learning_point_id、candidate_kind、exact_span、phrase、answer_core、english、chinese、definition、chinese_feel、teacher_note、retrieval_prompt。"
+        "不要输出长段落；teacher_note 最多一句 18-36 个中文字；definition 最多一句 20-40 个中文字。"
+        "definition/context/example/collocations/why/why_it_matters/how_to_use_it/usage_boundary/confusable_note/replacement_examples 这些字段能不写就不写；不要为了填字段而扩写。"
+        "优先让背面只有：答案、当前语境义、原句、一个很短提醒。"
+        f"{material_context_instruction}"
+        f"{focus_instruction}"
+        "只围绕 learning_points[].id 制卡；同一个 learning_point 最多 1 张卡。"
+        "phrase 必须逐词来自原句；answer_core 只写目标语言答案本体，不写中文解释。"
+        "如果学习点低价值或无法做成清楚回忆题，返回该片段 cards: []。"
+        f"学习语言：{profile['label']}（code={language_code}）。level_mode：{level_mode}。用户水平：{current_level}。"
+        f"需要卡型：{', '.join(requested_types)}。快速模式默认优先 phrase 主卡，除非 learning_point 明确是听力或填空。"
+        "返回严格 JSON，不要 Markdown。JSON 结构："
+        "{\"segments\":[{\"id\":\"seg_0001\",\"cards\":[{\"type\":\"phrase|listening|cloze\",\"learning_point_id\":\"对应 learning_points[].id\",\"candidate_kind\":\"expression|contextual_vocab|grammar_pattern|listening_feature|pragmatic_risk\",\"exact_span\":\"来自原句的片段\",\"phrase\":\"重点表达或单词\",\"answer_core\":\"核心答案\",\"english\":\"原句\",\"chinese\":\"语境中文义\",\"definition\":\"一句短释义\",\"chinese_feel\":\"一句中文语感\",\"teacher_note\":\"一句短提醒\",\"retrieval_prompt\":\"正面明确回忆题\"}]}]}。"
+        "候选字幕_JSON_START\n"
+        + json.dumps(compact, ensure_ascii=False)
+    )
+
+
+def build_immersive_v11_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str:
+    if fast_review_density(project):
+        return build_fast_review_prompt(project, segments)
     requested_types = requested_card_types([str(card_type) for card_type in project.get("card_types", []) if card_type])
     current_level = str(project.get("level", "B1"))
     level_mode = normalized_level_mode(project)
@@ -2777,6 +3047,7 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
     selection_strategy = normalized_selection_strategy(project)
     focus_instruction = language_focus_instruction(project)
     material_context_instruction = material_context_for_prompt(project.get("material_context"))
+    fast_review_instruction = fast_review_prompt_instruction(project)
     compact = [
         {
             "id": segment["id"],
@@ -2803,6 +3074,7 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
         "你不是字段填写器，而是语言学习卡片编辑老师：先判断学习价值，再决定是否制卡，最后自检这张卡是不是有明确训练动作。"
         "JSON 字段 english 是历史字段名，实际表示目标语言原句/source sentence。"
         f"{material_context_instruction}"
+        f"{fast_review_instruction}"
         "制卡前请在心里回答四个问题：这句最值得学的是什么？它是词伙、句型、口语短句、语气表达还是听力句？"
         "中文学习者为什么容易忽略它？这张卡训练听懂、会用、会替换还是理解语气？如果回答不清楚，返回 cards: []。"
         f"{focus_instruction}"
@@ -2874,13 +3146,15 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
         '"estimated_level":"A1|A2|B1|B2|C1|C2","difficulty_reason":"一句中文说明难点来源",'
         '"teacher_note":"一句老师评语","cloze":"挖空句","card_role":"primary|specialist",'
         '"learning_goal":"这张卡训练什么","decision_reason":"为什么生成这张卡",'
-        '"learning_target":"这张卡训练什么","why_it_matters":"为什么值得学",'
+        '"learning_target":"这张卡训练什么","learning_action":"contextual_meaning|expression_recall|listening_discrimination|collocation_boundary|chinese_learner_trap|conceptual_action|grammar_pattern",'
+        '"conceptual_action":"概念动作感","chinese_learner_trap":"中文学习者误区",'
+        '"why_it_matters":"为什么值得学",'
         '"how_to_use_it":"下次怎么换场景使用","natural_chinese":"自然中文理解",'
         '"replacement_examples":"1-2 个可替换例子","avoid_reason":"不值得制卡时的原因",'
         '"retrieval_prompt":"正面明确回忆题","answer_core":"核心答案",'
         '"phonetic_ipa":"标准读法；按当前 language 的 notation_system 输出",'
         '"spoken_ipa":"字幕推测的 answer_core 口语读法；未实听时不得 high confidence",'
-        '"source_spoken_ipa":"完整原句听感，覆盖目标语言原句主要词/音节，不要只写短语片段","pronunciation_note":"中文听点说明",'
+        '"source_spoken_ipa":"完整原句听感，覆盖目标语言原句主要词/音节，不要只写短语片段","pronunciation_note":"中文发音教学说明，不写未实听/已隐藏等系统状态",'
         '"pronunciation_confidence":"high|medium|low",'
         '"pronunciation_meta":{"language_code":"en|fr|es|ja|ru","accent_profile":"...","notation_system":"...",'
         '"generation_basis":"audio_verified|subtitle_inferred|dictionary_only","field_confidence":{"phonetic_ipa":"high|medium|low",'
@@ -2895,6 +3169,41 @@ def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str
         f"需要卡型：{', '.join(requested_types)}。"
         f"候选字幕：{json.dumps(compact, ensure_ascii=False)}"
     )
+
+
+def ciba_tianxia_card_prompt_instruction(project: dict[str, Any]) -> str:
+    return (
+        "【词霸天下实验 V1：语言动作卡模式】"
+        "每张卡只训练一个真实语言动作，不做泛泛知识整理。"
+        "你要帮助学习者把字幕里的词块、语境义、概念视角、搭配边界和真实听辨变成可复习动作。"
+        "所谓为说而思考，是让学习者知道下次自己说话时何时替换、如何搭配、哪里不能乱用。"
+        "优先制卡对象："
+        "1) 词块和短语动词，例如 run the register 这种动词+对象搭配；"
+        "2) 单词在本句里的语境义，而不是脱离上下文的词典义；"
+        "3) 可迁移的句型框架、概念视角和表达立场；"
+        "4) 有证据的听辨点，例如弱读、连读、缩读、吞音、重音变化；"
+        "5) 搭配边界、正式度、冒犯风险和中文学习者容易误用的地方。"
+        "降低或拒绝：主题标签、专有名词堆叠、过长整句、没有迁移价值的碎片、泛泛的 talk about/do something/good thing。"
+        "answer_core 必须干净：只能是目标语言答案本体，不能包含中文、IPA、发音说明、语法说明或解释句。"
+        "如果同一句有多个不同训练动作，可以分别制卡；如果只是同一个动作的听力/表达/填空重复，只保留最合适的一张。"
+        "teacher_note 必须解释具体操作：这个表达怎么迁移、搭配边界是什么、中文学习者哪里容易误会。"
+        "usage_boundary 和 confusable_note 不能写空话，必须结合本句说明对象、语气、场景或错误用法。"
+        "新增三项必须服务于主动复习：learning_action 只能从 contextual_meaning|expression_recall|listening_discrimination|collocation_boundary|chinese_learner_trap|conceptual_action|grammar_pattern 中选一个；"
+        "conceptual_action 写概念动作感，例如 hold back=把情绪往回压住，不让它出来；chinese_learner_trap 写中文学习者误区，不能泛泛说注意语境。"
+        "这两个字段都必须短：各 1 句，优先 20-36 个中文字，不要写成段落，避免背面过载。"
+        f"当前模板 id={normalize_template_id(project.get('template_id'))}。"
+    )
+
+
+def build_ciba_tianxia_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str:
+    base_prompt = build_immersive_v11_prompt(project, segments)
+    return ciba_tianxia_card_prompt_instruction(project) + base_prompt
+
+
+def build_prompt(project: dict[str, Any], segments: list[dict[str, Any]]) -> str:
+    if ciba_tianxia_mode(project):
+        return build_ciba_tianxia_prompt(project, segments)
+    return build_immersive_v11_prompt(project, segments)
 
 
 def material_context_for_prompt(context: Any) -> str:
@@ -3260,7 +3569,17 @@ def classify_service_error(error: Exception, *, kind: str = "model") -> dict[str
 
     category = "unknown"
     retryable = False
-    if isinstance(error, (TimeoutError, socket.timeout)) or "timed out" in lower or "timeout" in lower or "超时" in detail:
+    if (
+        "max_tokens" in lower
+        or "maxoutputtokens" in lower
+        or "max_tokens" in detail
+        or "MAX_TOKENS" in detail
+        or "输出预算" in detail
+        or "thinking 消耗完" in detail
+    ):
+        category = "timeout"
+        retryable = True
+    elif isinstance(error, (TimeoutError, socket.timeout)) or "timed out" in lower or "timeout" in lower or "超时" in detail:
         category = "timeout"
         retryable = True
     elif status in {401, 403} or any(term in lower for term in ("unauthorized", "unauthenticated", "forbidden", "permission", "invalid api key", "oauth")) or "权限" in detail:
@@ -3784,7 +4103,7 @@ def call_model(project: dict[str, Any], segments: list[dict[str, Any]]) -> dict[
                 prompt,
                 temperature=0.3,
                 timeout=180 if is_gemini_vertex_thinking_config(api) else 120,
-                max_output_tokens=16000 if is_gemini_vertex_thinking_config(api) else 8000,
+                max_output_tokens=32000 if is_gemini_vertex_thinking_config(api) else 8000,
             )
             return extract_json_object(content)
     except Exception as err:
@@ -3798,7 +4117,7 @@ def final_card_batch_size(api: dict[str, Any], requested: int = 10) -> int:
     if is_mimo_config(api):
         return 4
     if is_gemini_vertex_thinking_config(api):
-        return 16
+        return 8
     if is_gemini_vertex_config(api):
         return 20
     if is_deepseek_thinking_config(api) or is_qwen_config(api):
@@ -3852,8 +4171,10 @@ def call_model_batch_with_retry(
         "retryable": payload.get("retryable"),
     }
     if retry_count == 0 and retryable_model_payload(payload):
-        emit_progress(
-            "generate",
+        progress_command = str(project.get("_progress_command") or "generate")
+        emit_monotonic_model_progress(
+            project,
+            progress_command,
             "ai",
             70,
             f"模型连接中断，正在重试第 {batch_index}/{total_batches} 批 1/2。",
@@ -3869,8 +4190,10 @@ def call_model_batch_with_retry(
 
     if len(batch) > 1 and retryable_model_payload(payload):
         midpoint = max(1, len(batch) // 2)
-        emit_progress(
-            "generate",
+        progress_command = str(project.get("_progress_command") or "generate")
+        emit_monotonic_model_progress(
+            project,
+            progress_command,
             "ai",
             72,
             f"第 {batch_index}/{total_batches} 批失败，已拆成 2 个小批继续生成。",
@@ -3894,6 +4217,19 @@ def call_model_batch_with_retry(
     return [], [f"{batch[0]['id']}..{batch[-1]['id']}: {error_message}"], [details]
 
 
+def emit_monotonic_model_progress(
+    project: dict[str, Any],
+    command: str,
+    stage: str,
+    percent: int,
+    message: str,
+) -> None:
+    previous = int(project.get("_model_progress_percent") or 0)
+    current = max(previous, int(percent))
+    project["_model_progress_percent"] = current
+    emit_progress(command, stage, current, message)
+
+
 def call_model_batches(project: dict[str, Any], segments: list[dict[str, Any]], batch_size: int = 10) -> dict[str, Any] | None:
     if not segments:
         return None
@@ -3915,16 +4251,22 @@ def call_model_batches(project: dict[str, Any], segments: list[dict[str, Any]], 
     ]
     total_batches = max(1, len(batches))
     concurrency = final_card_generation_concurrency(api, total_batches)
+    progress_command = str(project.get("_progress_command") or "generate")
+    project["_model_progress_percent"] = 0
+    progress_start = 24
+    progress_span = 58
 
     def run_one(index: int, batch: list[dict[str, Any]]) -> tuple[int, list[dict[str, Any]], list[str], list[dict[str, Any]]]:
         provider_hint = "，thinking 已保留" if is_thinking_model_config(api) else ""
-        percent = min(82, 66 + int((index - 1) / total_batches * 14))
-        emit_progress(
-            "generate",
-            "ai",
-            percent,
-            f"正在生成卡片正文：第 {index}/{total_batches} 批，每批最多 {batch_size} 个学习点{provider_hint}。",
-        )
+        if concurrency <= 1:
+            percent = min(82, progress_start + int((index - 1) / total_batches * progress_span))
+            emit_monotonic_model_progress(
+                project,
+                progress_command,
+                "ai",
+                percent,
+                f"正在生成卡片正文：第 {index}/{total_batches} 批，每批最多 {batch_size} 个学习点{provider_hint}。",
+            )
         batch_segments, batch_errors, batch_error_details = call_model_batch_with_retry(
             project,
             batch,
@@ -3941,22 +4283,31 @@ def call_model_batches(project: dict[str, Any], segments: list[dict[str, Any]], 
             errors.extend(batch_errors)
             error_details.extend(batch_error_details)
     else:
-        emit_progress(
-            "generate",
+        emit_monotonic_model_progress(
+            project,
+            progress_command,
             "ai",
-            66,
+            progress_start,
             f"最终制卡启用 {concurrency} 路并发：{total_batches} 批，每批最多 {batch_size} 个学习点。",
         )
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
             futures = [pool.submit(run_one, index, batch) for index, batch in batches]
+            completed_batches = 0
             for future in as_completed(futures):
                 index, batch_segments, batch_errors, batch_error_details = future.result()
+                completed_batches += 1
                 any_called = True
                 merged.extend(batch_segments)
                 errors.extend(batch_errors)
                 error_details.extend(batch_error_details)
-                percent = min(82, 66 + int(index / total_batches * 14))
-                emit_progress("generate", "ai", percent, f"卡片正文第 {index}/{total_batches} 批已完成。")
+                percent = min(82, progress_start + int(completed_batches / total_batches * progress_span))
+                emit_monotonic_model_progress(
+                    project,
+                    progress_command,
+                    "ai",
+                    percent,
+                    f"卡片正文已完成 {completed_batches}/{total_batches} 批（刚完成第 {index} 批）。",
+                )
     if errors and not merged:
         first_detail = next((item for item in error_details if item.get("error_code")), {})
         return {"error": "；".join(errors), **first_detail}
@@ -4522,6 +4873,8 @@ def validate_review_learning_point(
         "source_spoken_ipa": normalized_point.get("source_spoken_ipa", ""),
         "pronunciation_note": normalized_point.get("pronunciation_note", ""),
         "pronunciation_confidence": normalized_point.get("pronunciation_confidence", ""),
+        "pronunciation_status": normalized_point.get("pronunciation_status", ""),
+        "source_pronunciation_status": normalized_point.get("source_pronunciation_status", ""),
         "pronunciation_meta": normalized_point.get("pronunciation_meta") or None,
         "learning_action": normalized_point.get("learning_action", ""),
         "learning_action_key": normalized_point.get("learning_action_key", ""),
@@ -4673,6 +5026,8 @@ def apply_phrase_review_decisions(
                 "source_spoken_ipa": normalized_fields.get("source_spoken_ipa", ""),
                 "pronunciation_note": normalized_fields.get("pronunciation_note", ""),
                 "pronunciation_confidence": normalized_fields.get("pronunciation_confidence", ""),
+                "pronunciation_status": normalized_fields.get("pronunciation_status", ""),
+                "source_pronunciation_status": normalized_fields.get("source_pronunciation_status", ""),
                 "pronunciation_meta": normalized_fields.get("pronunciation_meta") or None,
                 "learning_action": normalized_fields.get("learning_action", ""),
                 "learning_action_key": normalized_fields.get("learning_action_key", ""),
@@ -5036,7 +5391,7 @@ def handle_test_api(payload: dict[str, Any]) -> dict[str, Any]:
             "ok": True,
             "provider": provider,
             "model": model or "local-fallback",
-            "message": "本地草稿模式可用，不需要 API Key。",
+            "message": "预览模式可用，不需要 API Key；正式抽取学习点和制卡仍需配置模型 API。",
             "latency_ms": 0,
         }
 
@@ -5790,7 +6145,7 @@ def merge_ai_cards(
     warning = None
     if ai_payload:
         if "error" in ai_payload:
-            warning = f"部分模型精修失败，未精修片段会保留为停用的本地草稿：{ai_payload['error']}"
+            warning = f"部分模型精修失败，未精修片段会保留为停用的预览草稿：{ai_payload['error']}"
         for item in ai_payload.get("segments", []):
             ai_by_segment[item.get("id", "")] = item
 
@@ -5799,7 +6154,7 @@ def merge_ai_cards(
         fallback = fallback_cards(segment, card_types, level)
         cards = fallback
         if ai_payload is None:
-            warning = warning or "模型没有返回可用精修结果，本地草稿已默认停用，请人工检查后再导出。"
+            warning = warning or "模型没有返回可用精修结果，预览草稿已默认停用，请人工检查后再导出。"
         if ai_segment:
             usable_ai_cards = [
                 card
@@ -5874,6 +6229,9 @@ def merge_ai_cards(
                     "learning_goal",
                     "decision_reason",
                     "learning_target",
+                    "learning_action",
+                    "conceptual_action",
+                    "chinese_learner_trap",
                     "why_it_matters",
                     "how_to_use_it",
                     "natural_chinese",
@@ -5902,6 +6260,8 @@ def merge_ai_cards(
                     "source_spoken_ipa",
                     "pronunciation_note",
                     "pronunciation_confidence",
+                    "pronunciation_status",
+                    "source_pronunciation_status",
                 ]:
                     if ai_card.get(key):
                         card[key] = str(ai_card[key])
@@ -5940,6 +6300,9 @@ def merge_ai_cards(
                     "candidate_source",
                     "learning_point_schema_version",
                     "source_evidence",
+                    "learning_action",
+                    "conceptual_action",
+                    "chinese_learner_trap",
                 ]:
                     if card.get(key) in (None, "") and segment.get(key) not in (None, ""):
                         card[key] = segment.get(key)
@@ -6024,9 +6387,26 @@ def merge_ai_cards(
                     "source_spoken_ipa",
                     "pronunciation_note",
                     "pronunciation_confidence",
+                    "pronunciation_status",
+                    "source_pronunciation_status",
                 ]:
                     if ai_card.get(key):
                         card[key] = str(ai_card[key])
+                own_phrase = clean_study_text(
+                    ai_card.get("phrase")
+                    or ai_card.get("exact_span")
+                    or ai_card.get("normalized_answer")
+                    or ai_card.get("answer_core")
+                )
+                own_answer = clean_study_text(ai_card.get("answer_core") or own_phrase)
+                if own_phrase:
+                    card["phrase"] = own_phrase
+                    card["exact_span"] = clean_study_text(ai_card.get("exact_span") or own_phrase)
+                    card["normalized_answer"] = clean_study_text(
+                        ai_card.get("normalized_answer") or own_answer or own_phrase
+                    )
+                if own_answer:
+                    card["answer_core"] = own_answer
                 if ai_card.get("pronunciation_meta"):
                     card["pronunciation_meta"] = ai_card.get("pronunciation_meta")
                 normalize_learning_action_fields(card)
@@ -6254,9 +6634,63 @@ def apply_default_generated_card_selection(segments: list[dict[str, Any]], proje
     return segments
 
 
+def final_output_card_duplicate_key(segment: dict[str, Any], card: dict[str, Any]) -> str:
+    source_text = normalized_phrase_key(str(card.get("english") or segment.get("text") or ""))
+    answer = normalized_phrase_key(
+        str(card.get("answer_core") or card.get("phrase") or card.get("normalized_answer") or "")
+    )
+    card_type = str(card.get("type") or "").strip().lower()
+    if not source_text or not answer or not card_type:
+        return ""
+    return f"{source_text}|{answer}|{card_type}"
+
+
+EXPORT_BLOCKING_QUALITY_ISSUES = {
+    "本地草稿，需要人工确认",
+    "预览草稿，需要人工确认",
+    "字段像模板废话",
+    "AI 解释字段不足",
+    "缺少中文意思",
+    "缺少释义",
+}
+
+
+EXPORT_BLOCKING_TEXT_PATTERNS = (
+    "待精修",
+    "本地 fallback",
+    "本地草稿",
+    "预览草稿",
+    "正式导出前应使用模型精修",
+    "本地待审字段",
+    "适合快速预览流程",
+    "不建议直接作为正式学习内容",
+)
+
+
+def card_has_export_blocking_content(card: dict[str, Any]) -> bool:
+    quality = card.get("quality") if isinstance(card.get("quality"), dict) else {}
+    issues = {str(issue) for issue in quality.get("issues") or []}
+    if issues & EXPORT_BLOCKING_QUALITY_ISSUES:
+        return True
+    fields = [
+        card.get("chinese", ""),
+        card.get("definition", ""),
+        card.get("teacher_note", ""),
+        card.get("why", ""),
+        card.get("context", ""),
+        card.get("natural_chinese", ""),
+        card.get("why_it_matters", ""),
+        card.get("how_to_use_it", ""),
+    ]
+    blob = "\n".join(str(value or "") for value in fields)
+    return any(pattern in blob for pattern in EXPORT_BLOCKING_TEXT_PATTERNS)
+
+
 def filter_usable_segments_for_output(
     segments: list[dict[str, Any]],
     skipped_segments: list[dict[str, Any]] | None = None,
+    *,
+    block_export_drafts: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     stats = {
         "filtered_learning_point_count": 0,
@@ -6275,9 +6709,15 @@ def filter_usable_segments_for_output(
             stats["low_value_filtered_count"] += 1
 
     output_segments: list[dict[str, Any]] = []
+    seen_card_keys: set[str] = set()
     for segment in segments:
         original_cards = list(segment.get("cards", []) or [])
-        usable_cards = [card for card in original_cards if card_quality_status(card) != "reject"]
+        usable_cards = [
+            card
+            for card in original_cards
+            if card_quality_status(card) != "reject"
+            and (not block_export_drafts or not card_has_export_blocking_content(card))
+        ]
         removed_cards = len(original_cards) - len(usable_cards)
         if removed_cards:
             stats["filtered_learning_point_count"] += removed_cards
@@ -6293,10 +6733,24 @@ def filter_usable_segments_for_output(
         next_segment = {**segment, "cards": []}
         if str(next_segment.get("phrase_review_status") or "") in {"reject", "duplicate"}:
             next_segment["phrase_review_status"] = "recommended"
+        duplicate_cards_removed = 0
         for card in usable_cards:
             next_card = {**card, "enabled": True}
+            duplicate_key = final_output_card_duplicate_key(next_segment, next_card)
+            if duplicate_key and duplicate_key in seen_card_keys:
+                stats["filtered_learning_point_count"] += 1
+                stats["duplicate_learning_point_count"] += 1
+                duplicate_cards_removed += 1
+                continue
+            if duplicate_key:
+                seen_card_keys.add(duplicate_key)
             next_segment["cards"].append(next_card)
-        output_segments.append(next_segment)
+        if next_segment["cards"]:
+            output_segments.append(next_segment)
+        else:
+            stats["filtered_learning_point_count"] += 1
+            if not duplicate_cards_removed:
+                stats["duplicate_learning_point_count"] += 1
     return output_segments, stats
 
 
@@ -6956,20 +7410,33 @@ def build_document_prompt(project: dict[str, Any], segments: list[dict[str, Any]
         f"{material_context_instruction}"
         f"{focus_instruction}"
         f"{style_instruction}"
+        "高质量知识卡原则：必须遵守最小信息原则，先理解再记忆；"
+        "每张卡只保留一个可主动回忆的信息单元。"
+        "必须保留原文依据或适用语境，避免脱离资料凭空解释。"
+        "复杂概念先拆离散组件，再用少量综合卡连接。"
+        "必须写清边界/反例或易混点，帮助复习时判断什么时候不能这么用。"
+        "必须写迁移检查：复习时要知道下次遇到什么场景、判断题或例子时能用这张卡。"
+        "不要把标题、目录、铺垫做成卡；不要为了数量把空泛背景硬拆成卡。"
+        "cloze 只能有一个 ____，不能让多个空互相泄露答案。"
         "制卡标准："
         "1) 每张卡只训练一个知识动作：定义一个概念、解释一个观点、区分一组概念、记住一个例子。"
-        "2) 正面 english 必须是可主动回忆的问题；不要写“这段主要讲什么”这种泛问题。"
-        "3) 反面 chinese 必须短而准，优先 1-3 句；不要照抄整段原文。"
+        "2) retrieval_task/english 必须是具体主动回忆问题；不要写“这段主要讲什么”这种泛问题。"
+        "3) atomic_answer/chinese 是背面第一屏短答案，必须短而准，优先 1-3 句；不要照抄整段原文。"
         "4) phrase 是概念名、观点名或术语，必须短；禁止输出“核心知识点”“知识点”“章节标题”“N/A”。"
-        "5) definition 写怎么理解；collocations 写相关概念/对比项；context 写出现语境或适用范围。"
-        "6) example 必须来自文档例子或基于文档改写，不能空泛编造。"
-        "7) why 和 teacher_note 要解释为什么值得记、复习时怎么抓关键，不要写套话。"
-        "8) 如果片段只有铺垫、目录、广告、空泛背景，cards 返回空数组。"
+        "5) definition 写怎么理解；source_evidence 写原文依据；memory_hook 写帮助记住的类比或压缩提示。"
+        "6) transfer_check 写复习时如何迁移/判断；boundary 写边界/反例/易混点。"
+        "7) example 必须来自文档例子或基于文档改写，不能空泛编造。"
+        "8) why 和 teacher_note 要解释为什么值得记、复习时怎么抓关键，不要写套话。"
+        "9) 如果片段只有铺垫、目录、广告、空泛背景，cards 返回空数组。"
         "返回严格 JSON，不要 Markdown。JSON 结构："
         '{"segments":[{"id":"doc_0001","cards":[{"type":"knowledge",'
-        '"knowledge_type":"concepts|arguments|terms|examples","english":"正面问题","chinese":"反面核心答案",'
+        '"knowledge_type":"concepts|arguments|terms|examples","retrieval_task":"正面主动回忆问题",'
+        '"atomic_answer":"背面第一屏短答案","english":"正面问题","chinese":"反面核心答案",'
         '"phrase":"概念名/观点名/术语","definition":"概念解释",'
-        '"collocations":"相关概念/搭配","context":"适用语境","example":"例子","chinese_feel":"中文理解",'
+        '"source_evidence":"原文依据或原句线索","memory_hook":"记忆钩子",'
+        '"transfer_check":"迁移检查","boundary":"边界/反例",'
+        '"collocations":"相关概念/搭配","context":"适用语境",'
+        '"example":"例子","chinese_feel":"中文理解",'
         '"why":"为什么值得记","difficulty":"A1 入门|A2 基础|B1 日常交流|B2 独立表达|C1 高阶表达|C2 接近母语",'
         '"teacher_note":"一句老师提醒","learning_target":"这张卡练什么",'
         '"why_it_matters":"为什么值得记","how_to_use_it":"复习时如何迁移或判断",'
@@ -7071,7 +7538,7 @@ def fallback_document_card(segment: dict[str, Any], level: str, study_mode: str 
         "english": segment.get("text", ""),
         "chinese": answer or ("请根据原文补充语言点理解。" if is_reading else "请根据原文补充核心答案。"),
         "phrase": phrase,
-        "definition": answer or "本地草稿：请用模型精修或手动补充定义。",
+        "definition": answer or "预览草稿：请用模型精修或手动补充定义。",
         "collocations": "替换框架；语境搭配；易混用法" if is_reading else "相关概念；关键原因；典型例子",
         "context": "来自导入文档的精读点，适合确认表达、词义或语法框架。" if is_reading else "来自导入文档的知识点，适合做概念理解和主动回忆。",
         "example": clip_words(excerpt, 42),
@@ -7102,17 +7569,41 @@ def document_card_quality(card: dict[str, Any], fallback: bool = False) -> dict[
     teacher_note = str(card.get("teacher_note", "")).strip()
     why = str(card.get("why_it_matters") or card.get("why") or "").strip()
     knowledge_type = str(card.get("knowledge_type", "")).strip()
+    source_evidence = str(card.get("source_evidence") or card.get("context") or "").strip()
+    transfer_text = str(card.get("transfer_check") or card.get("how_to_use_it") or "").strip()
+    boundary_text = str(card.get("boundary") or "").strip()
+    boundary_candidates = " ".join(
+        str(card.get(key) or "") for key in ["teacher_note", "collocations", "context"]
+    )
+    if not boundary_text and any(
+        marker in boundary_candidates for marker in ["不是", "不能", "反例", "边界", "易混", "区别", "不等于", "不同于"]
+    ):
+        boundary_text = boundary_candidates.strip()
+    cloze = str(card.get("cloze", "")).strip()
 
     if fallback:
         issues.append("本地文档草稿，需要人工确认")
     if phrase in {"", "核心知识点", "知识点", "key point", "knowledge point", "n/a", "none"}:
         issues.append("概念名是占位词，需人工提炼")
+    if any(marker in phrase for marker in ["章节标题", "标题", "目录", "前言", "铺垫"]):
+        issues.append("概念名像标题，需提炼成可回忆知识点")
     if knowledge_type not in DOCUMENT_FOCUS_ORDER:
         issues.append("缺少明确知识类型")
-    if not english or len(english) < 8 or english in {"这段主要讲什么？", "这段内容的核心是什么？"}:
+    generic_questions = {"这段主要讲什么？", "这段内容的核心是什么？"}
+    if not english or len(english) < 8 or english in generic_questions or any(
+        marker in english for marker in ["这段主要", "这段内容", "本文主要", "本节主要"]
+    ):
         issues.append("正面问题太泛")
-    if len(chinese) > 260:
+    if not source_evidence:
+        issues.append("缺少原文依据")
+    if not transfer_text:
+        issues.append("缺少迁移检查")
+    if not boundary_text:
+        issues.append("缺少边界/反例")
+    if len(chinese) > 180:
         issues.append("答案过长，建议压缩成 1-3 句")
+    if cloze and cloze.count("____") != 1:
+        issues.append("cloze 只能有一个空")
     if not definition or definition == chinese:
         issues.append("缺少独立概念解释")
     if not why:
@@ -7177,9 +7668,33 @@ def merge_document_cards(
                     "cloze",
                     "content_kind",
                     "source_evidence",
+                    "retrieval_task",
+                    "atomic_answer",
+                    "memory_hook",
+                    "transfer_check",
+                    "boundary",
                 ]:
                     if ai_card.get(key):
                         card[key] = str(ai_card[key])
+                if card.get("retrieval_task"):
+                    card["english"] = clean_study_text(card.get("retrieval_task"))
+                if card.get("atomic_answer"):
+                    card["chinese"] = clean_study_text(card.get("atomic_answer"))
+                if card.get("memory_hook"):
+                    hook = clean_study_text(card.get("memory_hook"))
+                    existing_feel = clean_study_text(card.get("chinese_feel"))
+                    card["chinese_feel"] = "；".join(part for part in [existing_feel, hook] if part)
+                if card.get("transfer_check"):
+                    transfer = clean_study_text(card.get("transfer_check"))
+                    card["how_to_use_it"] = transfer
+                    card["why"] = transfer
+                if card.get("boundary"):
+                    boundary = clean_study_text(card.get("boundary"))
+                    existing_note = clean_study_text(card.get("teacher_note"))
+                    card["teacher_note"] = "；".join(part for part in [existing_note, boundary] if part)
+                    existing_collocations = clean_study_text(card.get("collocations"))
+                    if boundary and boundary not in existing_collocations:
+                        card["collocations"] = "；".join(part for part in [existing_collocations, boundary] if part)
                 if card["cloze"].count("____") != 1:
                     card["cloze"] = f"{card['phrase']} 的核心是 ____。"
                 card["type_label"] = "文档精读卡" if study_mode == "language_reading" else "知识卡"
@@ -7240,7 +7755,11 @@ def handle_generate_document(payload: dict[str, Any]) -> dict[str, Any]:
     segments, warning = merge_document_cards(segments, ai_payload, level, study_mode=study_mode)
     document_candidate_count = len(segments)
     segments = apply_default_generated_card_selection(segments, payload)
-    segments, output_filter_stats = filter_usable_segments_for_output(segments, [])
+    segments, output_filter_stats = filter_usable_segments_for_output(
+        segments,
+        [],
+        block_export_drafts=False,
+    )
     if context_warning:
         warning = f"{context_warning}；{warning}" if warning else str(context_warning)
 
@@ -7268,6 +7787,7 @@ def handle_generate_document(payload: dict[str, Any]) -> dict[str, Any]:
         "level": level,
         "collection_levels": collection_levels,
         "template_id": payload.get("template_id", "immersive_v11"),
+        "card_style": normalize_card_style(payload.get("card_style")),
         "content_toggles": payload.get("content_toggles", {}),
         "language_focus": normalized_document_reading_focus(payload) if study_mode == "language_reading" else normalized_language_focus(payload),
         "document_focus": normalized_document_focus(payload),
@@ -7408,12 +7928,180 @@ def build_quality_funnel(
     }
 
 
+def handle_generate_batch(payload: dict[str, Any], source_mode: str) -> dict[str, Any]:
+    raw_items = payload.get("batch_items") if isinstance(payload.get("batch_items"), list) else []
+    items = [item for item in raw_items if isinstance(item, dict) and item.get("enabled") is not False]
+    if not items:
+        fail("批量模式下没有可生成的素材。请先添加文件夹、文档或多条链接。", error_code="BATCH_EMPTY", stage="source", retryable=False)
+
+    parent_title = anki_deck_part(payload.get("title") or "批量学习包", "批量学习包")
+    combined_segments: list[dict[str, Any]] = []
+    combined_warnings: list[str] = []
+    child_projects: list[dict[str, Any]] = []
+    failed_items: list[dict[str, str]] = []
+    total_items = len(items)
+    emit_progress("generate", "batch", 8, f"开始批量生成：0/{total_items}。")
+
+    for index, item in enumerate(items, start=1):
+        item_source_mode = str(item.get("source_mode") or source_mode or payload.get("source_mode") or "local").strip().lower()
+        item_id = str(item.get("id") or f"item-{index}").strip() or f"item-{index}"
+        subdeck_title = anki_deck_part(item.get("subdeck_title") or item.get("title") or f"素材 {index}", f"素材 {index}")
+        deck_name = anki_deck_name(item.get("deck_name") or f"{parent_title}::{subdeck_title}", parent_title)
+        item_payload = {
+            **payload,
+            "batch_enabled": False,
+            "batch_items": [],
+            "title": subdeck_title,
+            "source_mode": item_source_mode,
+            "source_url": str(item.get("source_url") or "") if item_source_mode == "url" else "",
+            "video_path": clean_input_path(item.get("video_path")) if item_source_mode == "local" else "",
+            "subtitle_path": clean_input_path(item.get("subtitle_path")) if item_source_mode == "local" else "",
+            "document_path": clean_input_path(item.get("document_path")) if item_source_mode == "document" else "",
+            "_batch_item_id": item_id,
+            "_batch_subdeck_title": subdeck_title,
+            "_batch_deck_name": deck_name,
+        }
+        if item_source_mode == "url" and not item_payload["source_url"]:
+            failed_items.append({"id": item_id, "title": subdeck_title, "error": "缺少视频链接。"})
+            continue
+        if item_source_mode == "local" and not item_payload["video_path"]:
+            failed_items.append({"id": item_id, "title": subdeck_title, "error": "缺少视频文件。"})
+            continue
+        if item_source_mode == "document" and not item_payload["document_path"]:
+            failed_items.append({"id": item_id, "title": subdeck_title, "error": "缺少文档文件。"})
+            continue
+        emit_progress("generate", "batch", 8 + int((index - 1) / max(1, total_items) * 84), f"批量生成 {index}/{total_items}：{subdeck_title}")
+        try:
+            child_project = handle_generate_document(item_payload) if item_source_mode == "document" else handle_generate(item_payload)
+        except SystemExit as err:
+            failed_items.append({"id": item_id, "title": subdeck_title, "error": f"子任务失败：退出码 {err.code}"})
+            continue
+        child_projects.append(child_project)
+        child_warning = str(child_project.get("warning") or "").strip()
+        if child_warning:
+            combined_warnings.append(f"{subdeck_title}：{child_warning}")
+        for segment_index, segment in enumerate(child_project.get("segments") or [], start=1):
+            if not isinstance(segment, dict):
+                continue
+            segment_id = f"{safe_filename(item_id)}_{segment.get('id') or segment_index}"
+            next_segment = {
+                **segment,
+                "id": segment_id,
+                "batch_item_id": item_id,
+                "batch_subdeck_title": subdeck_title,
+                "deck_name": deck_name,
+                "video_path": child_project.get("video_path") or item_payload.get("video_path") or "",
+                "subtitle_path": child_project.get("subtitle_path") or item_payload.get("subtitle_path") or "",
+                "document_path": child_project.get("document_path") or item_payload.get("document_path") or "",
+                "source_url": child_project.get("source_url") or item_payload.get("source_url") or "",
+            }
+            next_cards = []
+            for card in segment.get("cards", []) or []:
+                if not isinstance(card, dict):
+                    continue
+                next_cards.append(
+                    {
+                        **card,
+                        "id": f"{safe_filename(item_id)}_{card.get('id') or len(next_cards) + 1}",
+                        "batch_item_id": item_id,
+                        "batch_subdeck_title": subdeck_title,
+                        "deck_name": deck_name,
+                    }
+                )
+            next_segment["cards"] = next_cards
+            combined_segments.append(next_segment)
+
+    if not combined_segments:
+        detail = "；".join(f"{item.get('title')}: {item.get('error')}" for item in failed_items[:5])
+        fail(f"批量生成没有产出可用卡片。{detail}", error_code="BATCH_GENERATE_EMPTY", stage="batch", retryable=True)
+
+    level = payload.get("level") or (child_projects[0].get("level") if child_projects else "B1")
+    collection_levels = collection_levels_from_payload(payload, level)
+    combined_segments = sorted(combined_segments, key=lambda item: (str(item.get("batch_item_id") or ""), float(item.get("start") or 0)))
+    quality_funnel = build_quality_funnel(
+        combined_segments,
+        candidate_segments=sum(int((project.get("quality_funnel") or {}).get("candidate_segments") or len(project.get("segments") or [])) for project in child_projects),
+        reviewed_keep=len(combined_segments),
+        level_mode=normalized_level_mode(payload),
+    )
+    batch_items = []
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("id") or f"item-{index}").strip() or f"item-{index}"
+        subdeck_title = anki_deck_part(item.get("subdeck_title") or item.get("title") or f"素材 {index}", f"素材 {index}")
+        batch_items.append(
+            {
+                **item,
+                "id": item_id,
+                "subdeck_title": subdeck_title,
+                "title": item.get("title") or subdeck_title,
+                "deck_name": anki_deck_name(item.get("deck_name") or f"{parent_title}::{subdeck_title}", parent_title),
+                "status": "generated" if any(segment.get("batch_item_id") == item_id for segment in combined_segments) else "failed",
+            }
+        )
+    warning = "；".join(combined_warnings)
+    if failed_items:
+        failed_summary = "；".join(f"{item['title']}：{item['error']}" for item in failed_items[:5])
+        warning = f"{warning}；{failed_summary}" if warning else failed_summary
+    emit_progress("generate", "done", 100, f"批量生成完成：{len(combined_segments)} 个片段，{quality_funnel.get('selected_card_count', 0)} 张可用卡。")
+    first_project = child_projects[0] if child_projects else {}
+    return {
+        "id": f"batch_project_{int(time.time())}",
+        "title": parent_title,
+        "batch_enabled": True,
+        "batch_items": batch_items,
+        "batch_summary": {
+            "items": len(items),
+            "generated_items": len({segment.get("batch_item_id") for segment in combined_segments}),
+            "failed_items": len(failed_items),
+        },
+        "source_mode": source_mode or payload.get("source_mode") or "mixed",
+        "source_url": "",
+        "video_path": "" if len(child_projects) != 1 else child_projects[0].get("video_path", ""),
+        "subtitle_path": "" if len(child_projects) != 1 else child_projects[0].get("subtitle_path", ""),
+        "document_path": "" if len(child_projects) != 1 else child_projects[0].get("document_path", ""),
+        "language": payload.get("language", "en"),
+        "level_mode": normalized_level_mode(payload),
+        "level": level,
+        "collection_levels": collection_levels,
+        "template_id": payload.get("template_id") or first_project.get("template_id") or "immersive_v11",
+        "card_style": normalize_card_style(payload.get("card_style") or first_project.get("card_style")),
+        "review_density": normalize_review_density(payload.get("review_density")),
+        "content_toggles": payload.get("content_toggles", {}),
+        "language_focus": normalized_document_reading_focus(payload) if source_mode == "document" and normalized_document_study_mode(payload) == "language_reading" else normalized_language_focus(payload),
+        "document_focus": normalized_document_focus(payload),
+        "document_study_mode": normalized_document_study_mode(payload),
+        "document_answer_language": normalized_document_answer_language(payload),
+        "document_depth": normalized_document_depth(payload),
+        "document_answer_length": normalized_document_answer_length(payload),
+        "study_depth": normalized_study_depth(payload),
+        "selection_strategy": normalized_selection_strategy(payload),
+        "card_types": payload.get("card_types") or first_project.get("card_types") or (["knowledge"] if source_mode == "document" else ["listening", "phrase", "cloze"]),
+        "max_segments": payload.get("max_segments") or first_project.get("max_segments") or 0,
+        "auto_max_segments": bool(payload.get("auto_max_segments") or first_project.get("auto_max_segments")),
+        "skip_video_slicing": bool(payload.get("skip_video_slicing") or source_mode == "document"),
+        "quality_funnel": quality_funnel,
+        "learning_point_inventory": [],
+        "segments": combined_segments,
+        "warning": warning,
+        "source_info": {
+            "title": parent_title,
+            "batch": True,
+            "items": batch_items,
+        },
+        "created_at": int(time.time()),
+    }
+
+
 def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
     payload = {**payload, "language": normalize_learning_language(payload.get("language", "en"))}
     emit_progress("generate", "source", 5, "准备素材。")
     source_mode = str(payload.get("source_mode") or "").strip().lower()
     if not source_mode:
         source_mode = "url" if str(payload.get("source_url") or "").strip() else "local"
+    if bool(payload.get("batch_enabled")) and isinstance(payload.get("batch_items"), list) and payload.get("batch_items"):
+        return handle_generate_batch(payload, source_mode)
     if source_mode == "document":
         return handle_generate_document(payload)
 
@@ -7576,13 +8264,13 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         usable_count = int(quality_funnel.get("usable_card_count", 0) or (recommended_count + review_count))
         if recommended_count:
             local_review_warning = (
-                f"已解析 {len(cues)} 条字幕，生成 {usable_count} 张本地可用卡。"
-                "可用卡已默认全选；配置模型精修后可继续提升中文释义和例句质量。"
+                f"已解析 {len(cues)} 条字幕，生成 {usable_count} 张预览卡。"
+                "正式抽取学习点和制卡请先配置并测试模型 API。"
             )
         else:
             local_review_warning = (
-                f"已解析 {len(cues)} 条字幕，生成 {usable_count} 张本地草稿可用卡。"
-                "配置模型精修后可继续提升字段质量。"
+                f"已解析 {len(cues)} 条字幕，生成 {usable_count} 张预览卡。"
+                "正式抽取学习点和制卡请先配置并测试模型 API。"
             )
         warning = (
             f"{warning}；{local_review_warning}"
@@ -7602,6 +8290,7 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         "level": level,
         "collection_levels": collection_levels,
         "template_id": payload.get("template_id", "immersive_v11"),
+        "card_style": normalize_card_style(payload.get("card_style")),
         "content_toggles": payload.get("content_toggles", {}),
         "language_focus": normalized_language_focus(payload),
         "study_depth": normalized_study_depth(payload),
@@ -7825,7 +8514,7 @@ audio {
 }
 .teacher-note {
   margin-top: 12px;
-  padding: 10px 12px;
+  padding: 9px 11px;
   border: 1px solid #dce8e2;
   border-radius: 10px;
   background: #f5faf7;
@@ -7870,7 +8559,7 @@ audio {
   border-top: 1px solid #ece9e1;
 }
 .compact-video-label {
-  margin-bottom: 7px;
+  margin-bottom: 6px;
   color: #6b746f;
   font-size: 11px;
   font-weight: 750;
@@ -10368,6 +11057,47 @@ body,
   box-shadow: 0 16px 42px rgba(0, 0, 0, 0.08);
   overflow: hidden;
 }
+.learning-hierarchy-system {
+  --recall-accent: #0057d8;
+  --evidence-accent: #34c759;
+  --boundary-accent: #b56a19;
+  --transfer-accent: #5856d6;
+}
+.recall-task .prompt {
+  font-weight: 950;
+  letter-spacing: -0.025em;
+}
+.recall-task .cue {
+  max-width: 72ch;
+}
+.answer-anchor {
+  background:
+    radial-gradient(circle at 0% 0%, rgba(0, 122, 255, 0.10), transparent 34%),
+    #ffffff;
+}
+.answer-anchor .answer,
+.answer-anchor h1 {
+  font-weight: 950;
+  letter-spacing: -0.025em;
+}
+.evidence-anchor {
+  background: #f8fbff;
+}
+.evidence-anchor .source {
+  font-weight: 860;
+}
+.understanding-block {
+  border-color: rgba(0, 122, 255, 0.16);
+  background: #fbfdff;
+}
+.transfer-block {
+  border-color: rgba(88, 86, 214, 0.18);
+  background: #fbfbff;
+}
+.boundary-block {
+  border-color: rgba(181, 106, 25, 0.25);
+  background: #fffaf0;
+}
 .card-section {
   padding: clamp(18px, 4vw, 34px);
   border-top: 1px solid rgba(60, 60, 67, 0.12);
@@ -10527,6 +11257,13 @@ audio {
   font-size: 13px;
   font-weight: 880;
 }
+.info-block small {
+  display: block;
+  margin: -3px 0 8px;
+  color: #8a8a8e;
+  font-size: 12px;
+  font-weight: 720;
+}
 .info-block p {
   margin: 0;
   color: #242426;
@@ -10546,6 +11283,67 @@ audio {
 .knowledge-card .answer {
   color: #1d1d1f;
 }
+.knowledge-answer-shell {
+  background:
+    radial-gradient(circle at 0% 0%, rgba(52, 199, 89, 0.13), transparent 34%),
+    #ffffff;
+}
+.knowledge-answer-note {
+  margin: 12px 0 0;
+  color: #3f4a45;
+  font-size: clamp(15px, 3.4vw, 18px);
+  line-height: 1.55;
+}
+.knowledge-evidence-card {
+  background: #f7fbf8;
+}
+.knowledge-source {
+  color: #24312c;
+  font-size: clamp(17px, 4.4vw, 25px);
+  font-weight: 760;
+  line-height: 1.35;
+}
+.knowledge-question-cue {
+  display: grid;
+  gap: 5px;
+  border-left-color: #34c759;
+  background: rgba(52, 199, 89, 0.08);
+  font-size: clamp(14px, 3.5vw, 17px);
+  font-weight: 650;
+}
+.knowledge-question-cue strong {
+  color: #166534;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+.knowledge-question-cue p,
+.knowledge-action-card p {
+  margin: 0;
+}
+.knowledge-grid {
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+.knowledge-action-card,
+.knowledge-transfer-check {
+  display: grid;
+  gap: 12px;
+  background: #fbfbfd;
+}
+.knowledge-transfer-check {
+  border-top-color: rgba(88, 86, 214, 0.18);
+  background:
+    linear-gradient(180deg, rgba(88, 86, 214, 0.055), rgba(255, 255, 255, 0.92));
+}
+.knowledge-action-card p,
+.knowledge-transfer-check p {
+  color: #242426;
+  font-size: clamp(15px, 3.6vw, 19px);
+  line-height: 1.5;
+}
+.knowledge-cloze-cue {
+  margin-top: 0;
+  border-left-color: #007aff;
+}
 .knowledge-card .tag {
   border-color: rgba(52, 199, 89, 0.22);
   background: rgba(52, 199, 89, 0.1);
@@ -10557,11 +11355,16 @@ audio {
   color: #4338ca;
 }
 @media (max-width: 560px) {
-  .card { padding: 6px; }
-  .review-card { width: calc(100vw - 10px); border-radius: 12px; }
-  .card-section { padding: 17px; }
-  .prompt { font-size: clamp(26px, 8vw, 36px); }
-  .answer { font-size: clamp(29px, 9vw, 42px); }
+  .card { padding: 8px; }
+  .review-card { width: calc(100vw - 16px); border-radius: 14px; }
+  .card-section { padding: 18px; }
+  .prompt { font-size: clamp(24px, 7vw, 32px); line-height: 1.16; }
+  .answer { font-size: clamp(26px, 8vw, 36px); line-height: 1.12; }
+  .knowledge-card .answer { font-size: clamp(24px, 6.8vw, 32px); }
+  .source { font-size: clamp(18px, 4.6vw, 24px); line-height: 1.3; }
+  .subtle { font-size: clamp(13px, 3.4vw, 15px); }
+  .media-panel video { max-height: min(34vh, 260px); }
+  .media-strip video { max-height: min(20vh, 180px); }
   .audio-item {
     width: 100%;
     grid-template-columns: 1fr;
@@ -10574,10 +11377,10 @@ audio {
 
 
 LANGUAGE_FRONT_TEMPLATE = """
-<div class="review-card language-card front layout-{{CardLayout}}">
+<div class="review-card language-card front layout-{{CardLayout}} learning-hierarchy-system">
   {{#IsListening}}
-  {{#Video}}<div class="media-panel">{{Video}}</div>{{/Video}}
-  <section class="card-section">
+  {{#Video}}<div class="media-panel evidence-anchor">{{Video}}</div>{{/Video}}
+  <section class="card-section recall-task">
     <div class="meta"><span class="tag">{{CardType}}</span><span>{{SourceTime}}</span></div>
     <div class="subtle">{{FrontKicker}}</div>
     <h1 class="prompt">{{FrontPrompt}}</h1>
@@ -10585,13 +11388,13 @@ LANGUAGE_FRONT_TEMPLATE = """
   </section>
   {{/IsListening}}
   {{^IsListening}}
-  <section class="card-section">
+  <section class="card-section recall-task">
     <div class="meta"><span class="tag">{{CardType}}</span><span>{{SourceTime}}</span></div>
     <div class="subtle">{{FrontKicker}}</div>
     <h1 class="prompt">{{FrontPrompt}}</h1>
     {{#FrontContent}}<div class="cue">{{FrontContent}}</div>{{/FrontContent}}
     {{#Audio}}<div class="audio-actions"><div class="audio-item"><span>原声</span>{{Audio}}</div></div>{{/Audio}}
-    {{#Video}}<div class="media-strip">{{Video}}</div>{{/Video}}
+    {{#Video}}<div class="media-strip evidence-anchor">{{Video}}</div>{{/Video}}
   </section>
   {{/IsListening}}
 </div>
@@ -10599,13 +11402,13 @@ LANGUAGE_FRONT_TEMPLATE = """
 
 
 LANGUAGE_BACK_TEMPLATE = """
-<div class="review-card language-card back layout-{{CardLayout}}">
-  <section class="card-section">
+<div class="review-card language-card back layout-{{CardLayout}} learning-hierarchy-system">
+  <section class="card-section answer-anchor">
     <div class="meta"><span class="tag">{{CardType}}</span><span>{{Difficulty}}</span></div>
     <strong class="subtle">核心答案</strong>
     {{#Answer}}<div class="answer-line"><h1 class="answer">{{Answer}}</h1>{{#PhraseTtsAudio}}<span class="phrase-audio">{{PhraseTtsAudio}}</span>{{/PhraseTtsAudio}}</div>{{/Answer}}
   </section>
-  <section class="card-section">
+  <section class="card-section evidence-anchor">
     <strong class="subtle">{{SourceLabel}}</strong>
     <div class="source">{{English}}</div>
     <div class="subtle">{{SourceTime}}</div>
@@ -10618,10 +11421,10 @@ LANGUAGE_BACK_TEMPLATE = """
   </section>
   <section class="card-section">
     <div class="block-grid">
-      <div class="info-block"><strong>{{UnderstandLabel}}</strong><p>{{Definition}}</p>{{#ChineseFeel}}<p>{{ChineseFeel}}</p>{{/ChineseFeel}}</div>
-      <div class="info-block"><strong>{{UseLabel}}</strong><p class="english-note">{{Collocations}}</p>{{#Context}}<p>{{Context}}</p>{{/Context}}</div>
-      {{#TeacherNote}}<div class="info-block warning-block"><strong>老师提醒</strong><p>{{TeacherNote}}</p>{{#Why}}<p>{{Why}}</p>{{/Why}}</div>{{/TeacherNote}}
-      {{#Example}}<div class="info-block"><strong>再造一句</strong><p class="english-note">{{Example}}</p></div>{{/Example}}
+      <div class="info-block understanding-block"><strong>{{UnderstandLabel}}</strong><p>{{Definition}}</p>{{#ChineseFeel}}<p>{{ChineseFeel}}</p>{{/ChineseFeel}}</div>
+      <div class="info-block transfer-block"><strong>{{UseLabel}}</strong><p class="english-note">{{Collocations}}</p>{{#Context}}<p>{{Context}}</p>{{/Context}}</div>
+      {{#TeacherNote}}<div class="info-block warning-block boundary-block"><strong>老师提醒</strong><p>{{TeacherNote}}</p>{{#Why}}<p>{{Why}}</p>{{/Why}}</div>{{/TeacherNote}}
+      {{#Example}}<div class="info-block transfer-block"><strong>再造一句</strong><p class="english-note">{{Example}}</p></div>{{/Example}}
     </div>
   </section>
 </div>
@@ -10629,8 +11432,8 @@ LANGUAGE_BACK_TEMPLATE = """
 
 
 KNOWLEDGE_FRONT_TEMPLATE = """
-<div class="review-card knowledge-card front layout-{{CardLayout}}">
-  <section class="card-section">
+<div class="review-card knowledge-card front layout-{{CardLayout}} learning-hierarchy-system">
+  <section class="card-section recall-task">
     <div class="meta"><span class="tag">{{CardType}}</span><span>{{SourceTime}}</span></div>
     <div class="subtle">{{FrontKicker}}</div>
     <h1 class="prompt">{{FrontPrompt}}</h1>
@@ -10641,31 +11444,41 @@ KNOWLEDGE_FRONT_TEMPLATE = """
 
 
 KNOWLEDGE_BACK_TEMPLATE = """
-<div class="review-card knowledge-card back layout-{{CardLayout}}">
-  <section class="card-section">
+<div class="review-card knowledge-card back layout-{{CardLayout}} learning-hierarchy-system">
+  <section class="card-section knowledge-answer-shell answer-anchor">
     <div class="meta"><span class="tag">{{CardType}}</span><span>{{Difficulty}}</span></div>
     <strong class="subtle">核心答案</strong>
     <h1 class="answer">{{Answer}}</h1>
+    {{#ChineseFeel}}<p class="knowledge-answer-note">{{ChineseFeel}}</p>{{/ChineseFeel}}
   </section>
-  <section class="card-section">
-    <strong class="subtle">{{SourceLabel}}</strong>
-    <div class="source">{{English}}</div>
+  <section class="card-section knowledge-evidence-card evidence-anchor">
+    <strong class="subtle">原文依据</strong>
+    {{#Context}}<div class="source knowledge-source">{{Context}}</div>{{/Context}}
+    <div class="cue knowledge-question-cue"><strong>{{SourceLabel}}</strong><p>{{English}}</p></div>
     <div class="subtle">{{SourceTime}}</div>
   </section>
-  <section class="card-section">
-    <div class="block-grid">
-      <div class="info-block"><strong>{{UnderstandLabel}}</strong><p>{{Definition}}</p>{{#ChineseFeel}}<p>{{ChineseFeel}}</p>{{/ChineseFeel}}</div>
-      {{#Example}}<div class="info-block"><strong>例子</strong><p>{{Example}}</p></div>{{/Example}}
-      <div class="info-block warning-block"><strong>边界 / 易混点</strong>{{#TeacherNote}}<p>{{TeacherNote}}</p>{{/TeacherNote}}{{#Why}}<p>{{Why}}</p>{{/Why}}{{#Collocations}}<p>{{Collocations}}</p>{{/Collocations}}</div>
+  <section class="card-section knowledge-structure-card">
+    <div class="block-grid knowledge-grid">
+      <div class="info-block understanding-block"><strong>理解结构</strong><small>{{UnderstandLabel}}</small><p>{{Definition}}</p></div>
+      {{#Example}}<div class="info-block transfer-block"><strong>例子</strong><p>{{Example}}</p></div>{{/Example}}
+      <div class="info-block warning-block boundary-block"><strong>边界 / 易混点</strong>{{#TeacherNote}}<p>{{TeacherNote}}</p>{{/TeacherNote}}{{#Collocations}}<p>{{Collocations}}</p>{{/Collocations}}</div>
     </div>
+  </section>
+  <section class="card-section knowledge-transfer-check transfer-block">
+    <strong class="subtle">迁移检查</strong>
+    {{#Why}}<p>{{Why}}</p>{{/Why}}
+  </section>
+  <section class="card-section knowledge-action-card transfer-block">
+    <strong class="subtle">复习动作</strong>
+    {{#Cloze}}<div class="cue knowledge-cloze-cue">{{Cloze}}</div>{{/Cloze}}
   </section>
 </div>
 """
 
 
 READING_FRONT_TEMPLATE = """
-<div class="review-card reading-card front layout-{{CardLayout}}">
-  <section class="card-section">
+<div class="review-card reading-card front layout-{{CardLayout}} learning-hierarchy-system">
+  <section class="card-section recall-task">
     <div class="meta"><span class="tag">{{CardType}}</span><span>{{SourceTime}}</span></div>
     <div class="subtle">{{FrontKicker}}</div>
     <h1 class="prompt">{{FrontPrompt}}</h1>
@@ -10676,23 +11489,23 @@ READING_FRONT_TEMPLATE = """
 
 
 READING_BACK_TEMPLATE = """
-<div class="review-card reading-card back layout-{{CardLayout}}">
-  <section class="card-section">
+<div class="review-card reading-card back layout-{{CardLayout}} learning-hierarchy-system">
+  <section class="card-section answer-anchor">
     <div class="meta"><span class="tag">{{CardType}}</span><span>{{Difficulty}}</span></div>
     <strong class="subtle">核心答案</strong>
     <h1 class="answer">{{Answer}}</h1>
   </section>
-  <section class="card-section">
+  <section class="card-section evidence-anchor">
     <strong class="subtle">{{SourceLabel}}</strong>
     <div class="source">{{English}}</div>
     <div class="subtle">{{SourceTime}}</div>
   </section>
   <section class="card-section">
     <div class="block-grid">
-      <div class="info-block"><strong>{{UnderstandLabel}}</strong><p>{{Definition}}</p>{{#ChineseFeel}}<p>{{ChineseFeel}}</p>{{/ChineseFeel}}</div>
-      <div class="info-block"><strong>{{UseLabel}}</strong><p class="english-note">{{Collocations}}</p>{{#Context}}<p>{{Context}}</p>{{/Context}}</div>
-      {{#TeacherNote}}<div class="info-block warning-block"><strong>边界 / 易错</strong><p>{{TeacherNote}}</p>{{#Why}}<p>{{Why}}</p>{{/Why}}</div>{{/TeacherNote}}
-      {{#Example}}<div class="info-block"><strong>再造一句</strong><p class="english-note">{{Example}}</p></div>{{/Example}}
+      <div class="info-block understanding-block"><strong>{{UnderstandLabel}}</strong><p>{{Definition}}</p>{{#ChineseFeel}}<p>{{ChineseFeel}}</p>{{/ChineseFeel}}</div>
+      <div class="info-block transfer-block"><strong>{{UseLabel}}</strong><p class="english-note">{{Collocations}}</p>{{#Context}}<p>{{Context}}</p>{{/Context}}</div>
+      {{#TeacherNote}}<div class="info-block warning-block boundary-block"><strong>边界 / 易错</strong><p>{{TeacherNote}}</p>{{#Why}}<p>{{Why}}</p>{{/Why}}</div>{{/TeacherNote}}
+      {{#Example}}<div class="info-block transfer-block"><strong>再造一句</strong><p class="english-note">{{Example}}</p></div>{{/Example}}
     </div>
   </section>
 </div>
@@ -10700,8 +11513,8 @@ READING_BACK_TEMPLATE = """
 
 
 MINIMAL_FRONT_TEMPLATE = """
-<div class="review-card minimal-card front layout-{{CardLayout}}">
-  <section class="card-section">
+<div class="review-card minimal-card front layout-{{CardLayout}} learning-hierarchy-system">
+  <section class="card-section recall-task">
     <div class="meta"><span class="tag">{{CardType}}</span><span>{{SourceTime}}</span></div>
     <div class="subtle">{{FrontKicker}}</div>
     <h1 class="prompt">{{FrontPrompt}}</h1>
@@ -10712,16 +11525,17 @@ MINIMAL_FRONT_TEMPLATE = """
 
 
 MINIMAL_BACK_TEMPLATE = """
-<div class="review-card minimal-card back layout-{{CardLayout}}">
-  <section class="card-section">
+<div class="review-card minimal-card back layout-{{CardLayout}} learning-hierarchy-system">
+  <section class="card-section answer-anchor">
     <div class="meta"><span class="tag">{{CardType}}</span><span>{{Difficulty}}</span></div>
     <h1 class="answer">{{Answer}}</h1>
-    <div class="source">{{English}}</div>
+    <div class="source evidence-anchor">{{English}}</div>
   </section>
   <section class="card-section">
     <div class="block-grid">
-      <div class="info-block"><strong>怎么理解</strong><p>{{Definition}}</p></div>
-      <div class="info-block"><strong>怎么用 / 怎么记</strong><p>{{Collocations}}</p>{{#Example}}<p class="english-note">{{Example}}</p>{{/Example}}</div>
+      <div class="info-block understanding-block"><strong>怎么理解</strong><p>{{Definition}}</p>{{#ChineseFeel}}<p>{{ChineseFeel}}</p>{{/ChineseFeel}}</div>
+      <div class="info-block transfer-block"><strong>怎么用 / 怎么记</strong><p>{{Collocations}}</p>{{#Example}}<p class="english-note">{{Example}}</p>{{/Example}}</div>
+      {{#TeacherNote}}<div class="info-block warning-block boundary-block"><strong>边界提醒</strong><p>{{TeacherNote}}</p></div>{{/TeacherNote}}
     </div>
   </section>
 </div>
@@ -10762,6 +11576,32 @@ body,
   background: #ffffff;
   box-shadow: 0 22px 70px rgba(0, 0, 0, 0.10);
   overflow: hidden;
+}
+.learning-hierarchy-system {
+  --recall-accent: #0066df;
+  --evidence-accent: #34c759;
+  --boundary-accent: #b56a19;
+  --transfer-accent: #5856d6;
+}
+.recall-task h1,
+.answer-anchor h1,
+.answer-anchor .v11-answer-title {
+  font-weight: 950;
+  letter-spacing: -0.035em;
+}
+.evidence-anchor {
+  border-color: rgba(52, 199, 89, 0.18);
+  background: rgba(52, 199, 89, 0.045);
+}
+.understanding-block {
+  border-color: rgba(0, 122, 255, 0.16) !important;
+}
+.transfer-block {
+  border-color: rgba(88, 86, 214, 0.18) !important;
+}
+.boundary-block {
+  border-color: rgba(181, 106, 25, 0.26) !important;
+  background: #fffaf0 !important;
 }
 .v11-top {
   display: flex;
@@ -11164,14 +12004,14 @@ body,
     border-radius: 22px;
   }
   .v11-front-copy h1 {
-    font-size: clamp(38px, 11vw, 58px);
+    font-size: clamp(32px, 9vw, 48px);
   }
   .v11-front-copy p {
-    font-size: clamp(18px, 5vw, 23px);
+    font-size: clamp(16px, 4.4vw, 20px);
   }
   .v11-video-stage video {
-    max-height: none;
-    aspect-ratio: 4 / 3;
+    max-height: min(34vh, 260px);
+    aspect-ratio: 16 / 9;
   }
   .v11-sound-actions {
     display: grid;
@@ -11185,8 +12025,8 @@ body,
   .v11-sound-button {
     min-width: 0;
     width: 100%;
-    min-height: 58px;
-    padding: 9px 14px;
+    min-height: 50px;
+    padding: 8px 12px;
   }
   .v11-sound-actions.is-left .v11-sound-button {
     width: auto;
@@ -11202,12 +12042,12 @@ body,
     margin-top: 26px;
   }
   .v11-back .v11-video-stage video {
-    max-height: none;
+    max-height: min(24vh, 190px);
     aspect-ratio: 16 / 9;
   }
   .v11-answer-title {
-    font-size: clamp(34px, 10vw, 48px);
-    line-height: 1.08;
+    font-size: clamp(30px, 8.5vw, 42px);
+    line-height: 1.1;
   }
   .v11-answer-title.is-long {
     font-size: clamp(29px, 8.2vw, 38px);
@@ -11218,10 +12058,10 @@ body,
     line-height: 1.18;
   }
   .v11-chinese-core {
-    font-size: clamp(18px, 5.2vw, 23px);
+    font-size: clamp(17px, 4.7vw, 21px);
   }
   .v11-source {
-    font-size: clamp(22px, 6vw, 30px);
+    font-size: clamp(19px, 5vw, 25px);
   }
   .v11-info-grid {
     grid-template-columns: 1fr;
@@ -11357,17 +12197,17 @@ V11_CARD_SCRIPT = """
 
 
 LANGUAGE_FRONT_TEMPLATE_V11 = """
-<div class="v11-card v11-front layout-{{CardLayout}}">
+<div class="v11-card v11-front layout-{{CardLayout}} learning-hierarchy-system">
   <div class="v11-top">
     <span class="v11-pill">▮ 复读卡</span>
     <span class="v11-time">{{SourceTime}}</span>
   </div>
-  <section class="v11-front-copy">
+  <section class="v11-front-copy recall-task">
     <h1>{{FrontPrompt}}</h1>
     {{#FrontContent}}<p>{{FrontContent}}</p>{{/FrontContent}}
   </section>
   {{#Video}}
-  <section class="v11-video-stage" onclick="toggleV11Video(this)">
+  <section class="v11-video-stage evidence-anchor" onclick="toggleV11Video(this)">
     {{Video}}
     <span class="v11-video-toggle">▶</span>
     <span class="v11-video-cue">点画面开始复读</span>
@@ -11382,15 +12222,15 @@ LANGUAGE_FRONT_TEMPLATE_V11 = """
 
 
 LANGUAGE_BACK_TEMPLATE_V11 = """
-<div class="v11-card v11-back layout-{{CardLayout}}">
+<div class="v11-card v11-back layout-{{CardLayout}} learning-hierarchy-system">
   <div class="v11-top">
     <span class="v11-pill">▮ 复读卡</span>
     {{#Difficulty}}<span class="v11-difficulty">{{Difficulty}}</span>{{/Difficulty}}
   </div>
-  <section class="v11-answer-layout">
+  <section class="v11-answer-layout answer-anchor">
     <div class="v11-answer-main">
       <div class="v11-time">{{SourceTime}}</div>
-      <div class="v11-label">表达 / 词义</div>
+      <div class="v11-label">{{CardType}}</div>
       <div class="v11-phrase-line">
         <h1 class="v11-answer-title">{{Answer}}</h1>
         {{#PhraseTtsAudio}}<span class="v11-media-source audio-phrase">{{PhraseTtsAudio}}</span><button class="v11-speaker" onclick="playV11Audio(this, '.audio-phrase')" aria-label="播放表达发音">▶</button>{{/PhraseTtsAudio}}
@@ -11400,15 +12240,16 @@ LANGUAGE_BACK_TEMPLATE_V11 = """
       <div class="v11-pronunciation">
         {{#PhoneticIpa}}<div class="v11-ipa-row is-standard"><span>标准读法{{#StandardPronunciationHint}}（{{StandardPronunciationHint}}）{{/StandardPronunciationHint}}</span><strong>{{PhoneticIpa}}</strong></div>{{/PhoneticIpa}}
         {{#SpokenIpa}}<div class="v11-ipa-row is-spoken"><span>{{SpokenPronunciationLabel}}</span><strong>{{SpokenIpa}}</strong></div>{{/SpokenIpa}}
-        {{^SpokenIpa}}{{#SpokenPronunciationLabel}}<div class="v11-ipa-row is-spoken is-status"><span>{{SpokenPronunciationLabel}}</span><strong>未单独标注</strong></div>{{/SpokenPronunciationLabel}}{{/SpokenIpa}}
+        {{^SpokenIpa}}{{#PronunciationStatus}}<div class="v11-ipa-row is-spoken is-status"><span>{{SpokenPronunciationLabel}}</span><strong>{{PronunciationStatus}}</strong></div>{{/PronunciationStatus}}{{/SpokenIpa}}
+        {{#SpokenIpa}}{{#PronunciationStatus}}<div class="v11-ipa-row is-spoken is-status"><span>读法状态</span><strong>{{PronunciationStatus}}</strong></div>{{/PronunciationStatus}}{{/SpokenIpa}}
         {{#PronunciationNote}}<div class="v11-pronunciation-note"><span>发音说明</span><p>{{PronunciationNote}}</p></div>{{/PronunciationNote}}
       </div>
       <hr class="v11-divider">
-      <section class="v11-source-block">
+      <section class="v11-source-block evidence-anchor">
         <div class="v11-source-label">原句</div>
         <p class="v11-source">{{English}}</p>
         {{#SourceSpokenIpa}}<p class="v11-source-ipa"><span>原句听感</span><strong>{{SourceSpokenIpa}}</strong></p>{{/SourceSpokenIpa}}
-        {{^SourceSpokenIpa}}{{#SpokenPronunciationLabel}}<p class="v11-source-ipa is-status"><span>原句听感</span><strong>未单独标注</strong></p>{{/SpokenPronunciationLabel}}{{/SourceSpokenIpa}}
+        {{^SourceSpokenIpa}}{{#SourcePronunciationStatus}}<p class="v11-source-ipa is-status"><span>原句听感</span><strong>{{SourcePronunciationStatus}}</strong></p>{{/SourcePronunciationStatus}}{{/SourceSpokenIpa}}
         {{#Context}}<p class="v11-source-translation">{{Context}}</p>{{/Context}}
       </section>
       <div class="v11-sound-actions is-left">
@@ -11426,12 +12267,769 @@ LANGUAGE_BACK_TEMPLATE_V11 = """
     {{/Video}}
   </section>
   <section class="v11-info-grid">
-    {{#Definition}}<div class="v11-info-block"><div class="v11-info-head"><span class="v11-icon">?</span><strong>怎么用</strong></div><p>{{Definition}}</p></div>{{/Definition}}
-    {{#TeacherNote}}<div class="v11-info-block"><div class="v11-info-head"><span class="v11-icon">!</span><strong>别误用</strong></div><p>{{TeacherNote}}</p></div>{{/TeacherNote}}
-    {{#Collocations}}<div class="v11-info-block"><div class="v11-info-head"><span class="v11-icon">↔</span><strong>自己造句</strong></div><p>{{Collocations}}</p></div>{{/Collocations}}
+    {{#Definition}}<div class="v11-info-block understanding-block"><div class="v11-info-head"><span class="v11-icon">?</span><strong>怎么用</strong></div><p>{{Definition}}</p></div>{{/Definition}}
+    {{#TeacherNote}}<div class="v11-info-block boundary-block"><div class="v11-info-head"><span class="v11-icon">!</span><strong>别误用</strong></div><p>{{TeacherNote}}</p></div>{{/TeacherNote}}
+    {{#Collocations}}<div class="v11-info-block transfer-block"><div class="v11-info-head"><span class="v11-icon">↔</span><strong>自己造句</strong></div><p>{{Collocations}}</p></div>{{/Collocations}}
   </section>
 </div>
 """ + V11_CARD_SCRIPT
+
+
+CARD_CSS_V11_FAST = CARD_CSS_V11 + """
+.fast-review-card .v11-top { margin-bottom: clamp(12px, 2.4vw, 18px); }
+.fast-review-card .v11-pill { background: rgba(52, 199, 89, 0.13); color: #16783a; }
+.fast-review-card .fast-answer-focus {
+  margin-top: clamp(14px, 2.8vw, 22px);
+  padding: clamp(20px, 4vw, 34px);
+  border: 1px solid rgba(60, 60, 67, 0.12);
+  border-radius: 26px;
+  background: linear-gradient(180deg, #ffffff 0%, #f7fbff 100%);
+}
+.fast-review-card .fast-answer-title {
+  margin: 0;
+  color: #0b0c10;
+  font-size: clamp(40px, 8vw, 78px);
+  line-height: 1.02;
+  font-weight: 950;
+  letter-spacing: -0.055em;
+  overflow-wrap: break-word;
+}
+.fast-review-card .fast-meaning {
+  margin: 12px 0 0;
+  color: #0057c2;
+  font-size: clamp(21px, 4vw, 31px);
+  line-height: 1.32;
+  font-weight: 820;
+}
+.fast-review-card .fast-context {
+  margin: 12px 0 0;
+  color: #5f626b;
+  font-size: clamp(17px, 3vw, 22px);
+  line-height: 1.42;
+  font-weight: 640;
+}
+.fast-review-card .fast-audio-row {
+  margin-top: 14px;
+}
+.fast-review-card .v11-video-stage video {
+  max-height: min(36vh, 320px);
+}
+"""
+
+
+LANGUAGE_FRONT_TEMPLATE_V11_FAST = """
+<div class="v11-card v11-front fast-review-card layout-{{CardLayout}} learning-hierarchy-system">
+  <div class="v11-top">
+    <span class="v11-pill">▮ 快速背卡</span>
+    <span class="v11-time">{{SourceTime}}</span>
+  </div>
+  <section class="v11-front-copy recall-task">
+    <h1>{{FrontPrompt}}</h1>
+    {{#FrontContent}}<p>{{FrontContent}}</p>{{/FrontContent}}
+  </section>
+  {{#Video}}
+  <section class="v11-video-stage evidence-anchor" onclick="toggleV11Video(this)">
+    {{Video}}
+    <span class="v11-video-toggle">▶</span>
+    <span class="v11-video-cue">点画面开始复读</span>
+  </section>
+  {{/Video}}
+  <section class="v11-sound-actions">
+    {{#Audio}}<span class="v11-media-source audio-original">{{Audio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-original')"><span class="v11-play">▶</span><span>只听原声</span></button>{{/Audio}}
+    {{#TtsAudio}}<span class="v11-media-source audio-slow">{{TtsAudio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-slow')"><span class="v11-play">▶</span><span>慢读跟读</span></button>{{/TtsAudio}}
+  </section>
+</div>
+""" + V11_CARD_SCRIPT
+
+
+LANGUAGE_BACK_TEMPLATE_V11_FAST = """
+<div class="v11-card v11-back fast-review-card layout-{{CardLayout}} learning-hierarchy-system">
+  <div class="v11-top">
+    <span class="v11-pill">▮ 快速背卡</span>
+    {{#Difficulty}}<span class="v11-difficulty">{{Difficulty}}</span>{{/Difficulty}}
+  </div>
+  {{#Video}}
+  <section class="v11-video-stage evidence-anchor" onclick="toggleV11Video(this)">
+    {{Video}}
+    <span class="v11-video-toggle">▶</span>
+    <span class="v11-video-cue">点画面开始复读</span>
+    <span class="v11-video-time">{{SourceTime}}</span>
+  </section>
+  {{/Video}}
+  <section class="fast-answer-focus answer-anchor">
+    <div class="v11-label">{{CardType}}</div>
+    <div class="v11-phrase-line">
+      <h1 class="fast-answer-title">{{Answer}}</h1>
+      {{#PhraseTtsAudio}}<span class="v11-media-source audio-phrase">{{PhraseTtsAudio}}</span><button class="v11-speaker" onclick="playV11Audio(this, '.audio-phrase')" aria-label="播放表达发音">▶</button>{{/PhraseTtsAudio}}
+    </div>
+    {{#Chinese}}<p class="fast-meaning"><strong>语境义</strong>：{{Chinese}}</p>{{/Chinese}}
+    {{#ChineseFeel}}<p class="fast-context">{{ChineseFeel}}</p>{{/ChineseFeel}}
+    {{#English}}<p class="fast-context evidence-anchor">{{English}}</p>{{/English}}
+    <div class="v11-sound-actions is-left fast-audio-row">
+      {{#Audio}}<span class="v11-media-source audio-original">{{Audio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-original')"><span class="v11-play">▶</span><span>原声</span></button>{{/Audio}}
+      {{#TtsAudio}}<span class="v11-media-source audio-slow">{{TtsAudio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-slow')"><span class="v11-play">▶</span><span>慢读</span></button>{{/TtsAudio}}
+    </div>
+  </section>
+</div>
+""" + V11_CARD_SCRIPT
+
+
+CARD_CSS_CIBA_V1 = CARD_CSS_V11 + """
+.card {
+  background: #f6f5f1 !important;
+  color: #25211d !important;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", "Microsoft YaHei UI", sans-serif !important;
+  padding: clamp(12px, 2.6vw, 24px) !important;
+}
+.ciba-card {
+  --ciba-paper: #fbfaf7;
+  --ciba-surface: #ffffff;
+  --ciba-ink: #25211d;
+  --ciba-muted: #706a63;
+  --ciba-line: rgba(49, 48, 46, 0.12);
+  --ciba-soft: #f4f1ec;
+  --ciba-blue: #0b6fcb;
+  --ciba-green: #2a8c62;
+  --ciba-amber: #b56a19;
+  width: min(880px, calc(100vw - 18px));
+  margin: 0 auto;
+  padding: clamp(18px, 3.4vw, 34px);
+  border: 1px solid var(--ciba-line);
+  border-radius: clamp(22px, 4vw, 34px);
+  background: linear-gradient(180deg, #ffffff 0%, var(--ciba-paper) 100%);
+  box-shadow:
+    0 24px 70px rgba(49, 48, 46, 0.10),
+    0 8px 24px rgba(49, 48, 46, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  overflow: hidden;
+}
+.ciba-top {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--ciba-muted);
+}
+.ciba-pill,
+.ciba-difficulty,
+.ciba-time {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  border-radius: 999px;
+  font-size: clamp(12px, 2.2vw, 14px);
+  line-height: 1;
+  font-weight: 720;
+  letter-spacing: 0.02em;
+}
+.ciba-pill {
+  padding: 7px 12px;
+  background: #f2f8ff;
+  color: var(--ciba-blue);
+  border: 1px solid rgba(11, 111, 203, 0.12);
+}
+.ciba-difficulty {
+  padding: 7px 12px;
+  background: #fff6e8;
+  color: var(--ciba-amber);
+  border: 1px solid rgba(181, 106, 25, 0.12);
+}
+.ciba-time {
+  color: #8b837a;
+  font-weight: 650;
+}
+.ciba-focus-card {
+  position: relative;
+  margin-top: clamp(12px, 2.4vw, 20px);
+  padding: clamp(18px, 3.4vw, 30px);
+  border: 1px solid rgba(49, 48, 46, 0.10);
+  border-radius: clamp(20px, 3.6vw, 30px);
+  background:
+    radial-gradient(circle at 12% 0%, rgba(11, 111, 203, 0.10), transparent 30%),
+    linear-gradient(135deg, #ffffff 0%, #fffdfa 58%, #f6f1ea 100%);
+  box-shadow:
+    0 14px 36px rgba(49, 48, 46, 0.07),
+    inset 0 1px 0 rgba(255, 255, 255, 0.86);
+}
+.ciba-front .ciba-focus-card {
+  min-height: clamp(170px, 34vw, 260px);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.ciba-kicker,
+.ciba-label,
+.ciba-section-label {
+  margin: 0 0 9px;
+  color: var(--ciba-muted);
+  font-size: clamp(13px, 2.3vw, 15px);
+  line-height: 1.3;
+  font-weight: 760;
+  letter-spacing: 0.04em;
+}
+.ciba-front-copy h1,
+.ciba-answer-block h1 {
+  margin: 0;
+  color: var(--ciba-ink);
+  font-size: clamp(29px, 5.0vw, 49px);
+  line-height: 1.08;
+  font-weight: 820;
+  letter-spacing: -0.045em;
+  overflow-wrap: break-word;
+}
+.ciba-front-copy p,
+.ciba-answer-note,
+.ciba-source-context {
+  color: var(--ciba-muted);
+}
+.ciba-front-copy p,
+.ciba-answer-note {
+  margin: 13px 0 0;
+  max-width: 48em;
+  font-size: clamp(15px, 2.7vw, 18px);
+  line-height: 1.58;
+  font-weight: 520;
+}
+.ciba-answer-block h1 {
+  color: #181511;
+  font-size: clamp(31px, 5.2vw, 53px);
+}
+.ciba-answer-note {
+  color: #5f5a53;
+  font-weight: 620;
+}
+.ciba-video-stage {
+  margin-top: clamp(10px, 2.2vw, 16px);
+  border: 1px solid rgba(49, 48, 46, 0.14);
+  border-radius: clamp(16px, 2.8vw, 22px);
+  background: #090807;
+  overflow: hidden;
+  box-shadow: 0 10px 28px rgba(49, 48, 46, 0.11);
+}
+.ciba-video-stage video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  max-height: min(38vh, 340px);
+  background: #000;
+  object-fit: cover;
+}
+.ciba-media-row,
+.ciba-audio-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+}
+.ciba-audio-item {
+  flex: 1 1 210px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(49, 48, 46, 0.10);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.72);
+}
+.ciba-audio-item strong {
+  display: block;
+  margin-bottom: 7px;
+  color: #5f5a53;
+  font-size: 12px;
+  font-weight: 760;
+  letter-spacing: 0.04em;
+}
+.ciba-audio-item audio {
+  width: 100%;
+}
+.ciba-inline-audio-row {
+  margin-top: 10px;
+  gap: 8px;
+}
+.ciba-compact-audio-item {
+  flex: 0 1 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: auto;
+  max-width: 100%;
+  padding: 7px 10px;
+  border-radius: 999px;
+}
+.ciba-compact-audio-item strong {
+  display: inline;
+  margin: 0;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.ciba-compact-audio-item audio {
+  width: 132px;
+  max-width: 46vw;
+}
+.ciba-back .ciba-video-stage video {
+  max-height: min(32vh, 280px);
+}
+.ciba-learning-group {
+  margin-top: clamp(14px, 2.8vw, 22px);
+  padding: clamp(12px, 2.4vw, 16px);
+  border: 1px solid rgba(49, 48, 46, 0.08);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.42);
+}
+.ciba-core-group {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.62) 0%, rgba(250, 247, 240, 0.50) 100%);
+}
+.ciba-transfer-group {
+  margin-top: clamp(16px, 3vw, 24px);
+  background: rgba(255, 253, 248, 0.34);
+}
+.ciba-group-label {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 0 11px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: rgba(37, 33, 29, 0.07);
+  color: var(--ciba-muted);
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 820;
+  letter-spacing: 0.08em;
+}
+.ciba-learning-group .ciba-priority-grid,
+.ciba-learning-group .ciba-study-stack {
+  margin-top: 0;
+}
+.ciba-priority-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+  gap: clamp(12px, 2.4vw, 16px);
+  margin-top: clamp(14px, 2.6vw, 20px);
+}
+.ciba-essential-block,
+.ciba-note-row,
+.ciba-listening-block,
+.ciba-conceptual-block,
+.ciba-source-block {
+  border: 1px solid rgba(49, 48, 46, 0.10);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.74);
+  box-shadow: 0 1px 0 rgba(49, 48, 46, 0.03);
+}
+.ciba-essential-block {
+  min-height: 126px;
+  padding: clamp(17px, 2.8vw, 22px);
+}
+.ciba-essential-block strong,
+.ciba-note-row strong,
+.ciba-listening-block strong,
+.ciba-conceptual-block strong,
+.ciba-source-block strong {
+  display: block;
+  color: #332f2a;
+  font-size: clamp(14px, 2.5vw, 16px);
+  line-height: 1.25;
+  font-weight: 820;
+  letter-spacing: 0.015em;
+}
+.ciba-essential-block p,
+.ciba-note-row p,
+.ciba-listening-block p,
+.ciba-conceptual-block p,
+.ciba-source-block p {
+  margin: 8px 0 0;
+  color: #4d4842;
+  font-size: clamp(16px, 2.8vw, 18px);
+  line-height: 1.62;
+  white-space: pre-line;
+  overflow-wrap: break-word;
+}
+.ciba-meaning-block {
+  background: linear-gradient(180deg, #f4f9ff 0%, #ffffff 100%);
+}
+.ciba-action-block {
+  background: linear-gradient(180deg, #f4fbf7 0%, #ffffff 100%);
+}
+.ciba-conceptual-stack {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+.ciba-conceptual-block {
+  padding: clamp(13px, 2.3vw, 17px) clamp(15px, 2.7vw, 19px);
+  background: #fffaf2;
+}
+.ciba-trap-block {
+  background: #fff7ed;
+}
+.ciba-trap-block strong {
+  color: #8a4f11;
+}
+.ciba-study-stack {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+.ciba-note-row {
+  display: grid;
+  grid-template-columns: minmax(92px, 0.24fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: clamp(14px, 2.4vw, 18px) clamp(16px, 2.8vw, 20px);
+}
+.ciba-note-row strong {
+  margin-top: 2px;
+  color: #5d574f;
+}
+.ciba-note-row p {
+  margin-top: 0;
+}
+.ciba-note-row p,
+.ciba-listening-block p {
+  font-size: clamp(15px, 2.5vw, 16px);
+  line-height: 1.56;
+}
+.ciba-warning-block {
+  background: #fff9ef;
+}
+.ciba-warning-block strong {
+  color: #8a4f11;
+}
+.ciba-listening-block {
+  margin-top: 10px;
+  padding: clamp(14px, 2.4vw, 18px) clamp(16px, 2.8vw, 20px);
+  background: #f7f6fb;
+}
+.ciba-source-block {
+  margin-top: clamp(10px, 2.2vw, 16px);
+  padding: clamp(14px, 2.4vw, 19px);
+  background: #302d29;
+  color: #fffdf8;
+  border-color: rgba(255, 255, 255, 0.10);
+  box-shadow: 0 18px 44px rgba(49, 48, 46, 0.16);
+}
+.ciba-source-block strong {
+  color: rgba(255, 253, 248, 0.72);
+}
+.ciba-source {
+  color: #fffdf8 !important;
+  font-size: clamp(20px, 3.6vw, 30px) !important;
+  line-height: 1.28 !important;
+  font-weight: 720 !important;
+  letter-spacing: -0.015em;
+}
+.ciba-source-context {
+  margin-top: 12px !important;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.13);
+  color: rgba(255, 253, 248, 0.72) !important;
+}
+.ciba-source-meta {
+  display: inline-flex;
+  margin-top: 12px;
+  color: rgba(255, 253, 248, 0.56);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+@media (max-width: 760px) {
+  .card { padding: 8px !important; }
+  .ciba-card {
+    width: calc(100vw - 16px);
+    padding: clamp(16px, 4.6vw, 22px);
+    border-radius: 24px;
+  }
+  .ciba-front .ciba-focus-card {
+    min-height: 160px;
+  }
+  .ciba-front-copy h1,
+  .ciba-answer-block h1 {
+    font-size: clamp(25px, 7.4vw, 35px);
+    letter-spacing: -0.032em;
+  }
+  .ciba-priority-grid {
+    grid-template-columns: 1fr;
+  }
+  .ciba-learning-group {
+    padding: 12px;
+    border-radius: 20px;
+  }
+  .ciba-group-label {
+    margin-bottom: 10px;
+  }
+  .ciba-note-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+  .ciba-video-stage video {
+    max-height: min(24vh, 190px);
+    aspect-ratio: 16 / 9;
+  }
+}
+.ciba-style-warm-paper {
+  display: none;
+}
+"""
+
+
+CARD_CSS_CIBA_MINIMAL_WHITE = CARD_CSS_CIBA_V1 + """
+.ciba-style-minimal-white { display: none; }
+.card {
+  background: #f7f8fb !important;
+  color: #1f2328 !important;
+}
+.ciba-card {
+  --ciba-paper: #ffffff;
+  --ciba-surface: #ffffff;
+  --ciba-ink: #1f2328;
+  --ciba-muted: #667085;
+  --ciba-line: rgba(31, 35, 40, 0.12);
+  --ciba-blue: #2563eb;
+  --ciba-green: #168a5b;
+  --ciba-amber: #a16207;
+  background: #ffffff;
+  border-radius: clamp(18px, 3vw, 26px);
+  box-shadow: 0 18px 44px rgba(16, 24, 40, 0.08);
+}
+.ciba-focus-card {
+  background: #ffffff;
+  box-shadow: none;
+}
+.ciba-meaning-block,
+.ciba-action-block,
+.ciba-listening-block,
+.ciba-conceptual-block,
+.ciba-learning-group {
+  background: #ffffff;
+}
+.ciba-note-row,
+.ciba-essential-block,
+.ciba-listening-block,
+.ciba-conceptual-block,
+.ciba-learning-group {
+  border-color: rgba(31, 35, 40, 0.10);
+  box-shadow: none;
+}
+.ciba-group-label {
+  background: #f3f5f7;
+}
+.ciba-source-block {
+  background: #f3f5f7;
+  color: #1f2328;
+  border-color: rgba(31, 35, 40, 0.10);
+  box-shadow: none;
+}
+.ciba-source-block strong,
+.ciba-source-meta {
+  color: #667085;
+}
+.ciba-source {
+  color: #1f2328 !important;
+}
+.ciba-source-context {
+  border-top-color: rgba(31, 35, 40, 0.10);
+  color: #667085 !important;
+}
+"""
+
+
+CARD_CSS_CIBA_DARK_IMMERSIVE = CARD_CSS_CIBA_V1 + """
+.ciba-style-dark-immersive { display: none; }
+.card {
+  background: #0d1117 !important;
+  color: #f8f3ea !important;
+}
+.ciba-card {
+  --ciba-paper: #111827;
+  --ciba-surface: #161b22;
+  --ciba-ink: #f8f3ea;
+  --ciba-muted: #aeb7c4;
+  --ciba-line: rgba(255, 255, 255, 0.12);
+  --ciba-blue: #7db7ff;
+  --ciba-green: #8ee0b7;
+  --ciba-amber: #f3c57a;
+  background: radial-gradient(circle at 18% 0%, rgba(125, 183, 255, 0.14), transparent 34%), linear-gradient(180deg, #151b24 0%, #0f141b 100%);
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.38);
+}
+.ciba-pill {
+  background: rgba(125, 183, 255, 0.13);
+  color: #cfe5ff;
+  border-color: rgba(125, 183, 255, 0.18);
+}
+.ciba-difficulty {
+  background: rgba(243, 197, 122, 0.12);
+  color: #f3c57a;
+  border-color: rgba(243, 197, 122, 0.20);
+}
+.ciba-focus-card,
+.ciba-essential-block,
+.ciba-note-row,
+.ciba-listening-block,
+.ciba-conceptual-block,
+.ciba-learning-group {
+  background: rgba(22, 27, 34, 0.88);
+  border-color: rgba(255, 255, 255, 0.10);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.20);
+}
+.ciba-front-copy h1,
+.ciba-answer-block h1,
+.ciba-essential-block strong,
+.ciba-note-row strong,
+.ciba-listening-block strong,
+.ciba-conceptual-block strong {
+  color: #f8f3ea;
+}
+.ciba-front-copy p,
+.ciba-answer-note,
+.ciba-kicker,
+.ciba-label,
+.ciba-time,
+.ciba-group-label,
+.ciba-note-row p,
+.ciba-listening-block p,
+.ciba-essential-block p,
+.ciba-conceptual-block p {
+  color: #aeb7c4;
+}
+.ciba-meaning-block {
+  background: rgba(31, 58, 91, 0.44);
+}
+.ciba-action-block {
+  background: rgba(28, 73, 55, 0.38);
+}
+.ciba-core-group,
+.ciba-transfer-group {
+  background: rgba(255, 255, 255, 0.045);
+  border-color: rgba(255, 255, 255, 0.07);
+  box-shadow: none;
+}
+.ciba-transfer-group {
+  margin-top: clamp(18px, 4vw, 28px);
+}
+.ciba-group-label {
+  background: rgba(125, 183, 255, 0.10);
+  color: #d7e6f6;
+}
+.ciba-conceptual-block {
+  background: rgba(255, 255, 255, 0.055);
+}
+.ciba-trap-block {
+  background: rgba(243, 197, 122, 0.11);
+}
+.ciba-trap-block strong {
+  color: #d9aa64;
+}
+.ciba-warning-block {
+  background: rgba(94, 63, 27, 0.34);
+}
+.ciba-warning-block strong {
+  color: #f3c57a;
+}
+.ciba-source-block {
+  background: #05070a;
+  border-color: rgba(255, 255, 255, 0.12);
+}
+.ciba-source {
+  color: #ffffff !important;
+}
+.ciba-source-context {
+  color: #aeb7c4 !important;
+}
+.ciba-audio-item {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.11);
+}
+.ciba-audio-item strong {
+  color: #c8d1dc;
+}
+"""
+
+
+CARD_CSS_CIBA_BY_STYLE = {
+    "warm_paper": CARD_CSS_CIBA_V1,
+    "minimal_white": CARD_CSS_CIBA_MINIMAL_WHITE,
+    "dark_immersive": CARD_CSS_CIBA_DARK_IMMERSIVE,
+}
+
+
+LANGUAGE_FRONT_TEMPLATE_CIBA_V1 = """
+<div class="ciba-card ciba-front layout-{{CardLayout}} learning-hierarchy-system">
+  <header class="ciba-top">
+    <span class="ciba-pill">语言动作卡</span>
+    <span class="ciba-time">{{SourceTime}}</span>
+  </header>
+
+  <section class="ciba-focus-card ciba-front-copy recall-task">
+    <div class="ciba-kicker">{{FrontKicker}}</div>
+    <h1>{{FrontPrompt}}</h1>
+    {{#FrontContent}}<p>{{FrontContent}}</p>{{/FrontContent}}
+  </section>
+
+  {{#Video}}<section class="ciba-video-stage evidence-anchor">{{Video}}</section>{{/Video}}
+  <section class="ciba-media-row">
+    {{#Audio}}<div class="ciba-audio-item"><strong>原声线索</strong>{{Audio}}</div>{{/Audio}}
+    {{#TtsAudio}}<div class="ciba-audio-item"><strong>整句慢读</strong>{{TtsAudio}}</div>{{/TtsAudio}}
+  </section>
+</div>
+"""
+
+
+LANGUAGE_BACK_TEMPLATE_CIBA_V1 = """
+<div class="ciba-card ciba-back layout-{{CardLayout}} learning-hierarchy-system">
+  <header class="ciba-top">
+    <span class="ciba-pill">词霸天下 · V1.2</span>
+    {{#Difficulty}}<span class="ciba-difficulty">{{Difficulty}}</span>{{/Difficulty}}
+  </header>
+
+  <section class="ciba-focus-card ciba-answer-block answer-anchor">
+    <div class="ciba-label">核心答案</div>
+    <h1>{{Answer}}</h1>
+    {{#ChineseFeel}}<p class="ciba-answer-note">{{ChineseFeel}}</p>{{/ChineseFeel}}
+    {{#PhraseTtsAudio}}<div class="ciba-audio-row ciba-inline-audio-row ciba-answer-audio-row"><div class="ciba-audio-item ciba-compact-audio-item"><strong>表达</strong>{{PhraseTtsAudio}}</div></div>{{/PhraseTtsAudio}}
+  </section>
+
+  <section class="ciba-source-block evidence-anchor">
+    <strong>原句场景</strong>
+    <p class="ciba-source">{{English}}</p>
+    {{#Video}}<div class="ciba-video-stage">{{Video}}</div>{{/Video}}
+    {{#Context}}<p class="ciba-source-context">{{Context}}</p>{{/Context}}
+    <div class="ciba-audio-row ciba-inline-audio-row">
+      {{#Audio}}<div class="ciba-audio-item ciba-compact-audio-item"><strong>原声</strong>{{Audio}}</div>{{/Audio}}
+      {{#TtsAudio}}<div class="ciba-audio-item ciba-compact-audio-item"><strong>慢读</strong>{{TtsAudio}}</div>{{/TtsAudio}}
+    </div>
+    <span class="ciba-source-meta">{{SourceTime}}</span>
+  </section>
+
+  <section class="ciba-core-group ciba-learning-group understanding-block">
+    <div class="ciba-group-label">理解核心</div>
+    <section class="ciba-priority-grid">
+      {{#Chinese}}<article class="ciba-essential-block ciba-meaning-block"><strong>语境义</strong><p>{{Chinese}}</p></article>{{/Chinese}}
+      {{#Definition}}<article class="ciba-essential-block ciba-action-block"><strong>语言动作</strong><p>{{Definition}}</p></article>{{/Definition}}
+    </section>
+
+    <section class="ciba-conceptual-stack">
+      {{#ConceptualAction}}<article class="ciba-conceptual-block"><strong>概念动作感</strong><p>{{ConceptualAction}}</p></article>{{/ConceptualAction}}
+      {{#ChineseLearnerTrap}}<article class="ciba-conceptual-block ciba-trap-block"><strong>中文脑子易错</strong><p>{{ChineseLearnerTrap}}</p></article>{{/ChineseLearnerTrap}}
+    </section>
+  </section>
+
+  <section class="ciba-transfer-group ciba-learning-group transfer-block">
+    <div class="ciba-group-label">迁移使用</div>
+    <section class="ciba-study-stack">
+      {{#Why}}<article class="ciba-note-row"><strong>为什么选它</strong><p>{{Why}}</p></article>{{/Why}}
+      {{#Collocations}}<article class="ciba-note-row"><strong>迁移句</strong><p>{{Collocations}}</p></article>{{/Collocations}}
+      {{#TeacherNote}}<article class="ciba-note-row ciba-warning-block boundary-block"><strong>搭配边界 / 别这么用</strong><p>{{TeacherNote}}</p></article>{{/TeacherNote}}
+    </section>
+  </section>
+
+  {{#PronunciationNote}}<section class="ciba-listening-block"><strong>真实听辨</strong><p>{{PronunciationNote}}</p></section>{{/PronunciationNote}}
+  {{#SpokenIpa}}<section class="ciba-listening-block"><strong>{{SpokenPronunciationLabel}}</strong><p>{{SpokenIpa}}</p></section>{{/SpokenIpa}}
+  {{^SpokenIpa}}{{#PronunciationStatus}}<section class="ciba-listening-block"><strong>{{SpokenPronunciationLabel}}</strong><p>{{PronunciationStatus}}</p></section>{{/PronunciationStatus}}{{/SpokenIpa}}
+  {{#SourceSpokenIpa}}<section class="ciba-listening-block"><strong>原句听感</strong><p>{{SourceSpokenIpa}}</p></section>{{/SourceSpokenIpa}}
+  {{^SourceSpokenIpa}}{{#SourcePronunciationStatus}}<section class="ciba-listening-block"><strong>原句听感</strong><p>{{SourcePronunciationStatus}}</p></section>{{/SourcePronunciationStatus}}{{/SourceSpokenIpa}}
+</div>
+"""
 
 
 DICTIONARY_FRONT_TEMPLATE = MINIMAL_FRONT_TEMPLATE
@@ -11440,25 +13038,40 @@ FRONT_TEMPLATE = LANGUAGE_FRONT_TEMPLATE
 BACK_TEMPLATE = LANGUAGE_BACK_TEMPLATE
 
 
-def anki_template_family(template_id: str, deck_kind_code: str) -> str:
-    template_id = template_id if template_id in {"immersive_v11", "immersive", "dictionary", "minimal"} else "immersive_v11"
+def anki_template_family(template_id: str, deck_kind_code: str, card_style: str = "warm_paper", review_density: str = "full") -> str:
+    template_id = normalize_template_id(template_id)
     deck_kind_code = str(deck_kind_code or "")
+    review_density = normalize_review_density(review_density)
     if deck_kind_code == "document_knowledge":
         return "document-knowledge"
     if deck_kind_code == "document_reading":
         return "document-reading"
+    if template_id == "ciba_tianxia_v1":
+        return f"language-ciba-tianxia-v1-{normalize_card_style(card_style)}"
     if template_id == "immersive_v11":
-        return "language-immersive-v11"
+        return "language-immersive-v11-fast" if review_density == "fast" else "language-immersive-v11"
     return f"language-{template_id}"
 
 
-def anki_template_assets(template_id: str, deck_kind_code: str = "video_language") -> tuple[str, str, str, str]:
-    template_id = template_id if template_id in {"immersive_v11", "immersive", "dictionary", "minimal"} else "immersive_v11"
+def anki_template_assets(template_id: str, deck_kind_code: str = "video_language", card_style: str = "warm_paper", review_density: str = "full") -> tuple[str, str, str, str]:
+    template_id = normalize_template_id(template_id)
+    review_density = normalize_review_density(review_density)
     if deck_kind_code == "document_knowledge":
         return "文档知识 V10", CARD_CSS, KNOWLEDGE_FRONT_TEMPLATE, KNOWLEDGE_BACK_TEMPLATE
     if deck_kind_code == "document_reading":
         return "文档精读 V10", CARD_CSS, READING_FRONT_TEMPLATE, READING_BACK_TEMPLATE
+    if template_id == "ciba_tianxia_v1":
+        normalized_style = normalize_card_style(card_style)
+        style_label = CIBA_CARD_STYLE_LABELS[normalized_style]
+        return (
+            f"词霸天下实验 V1 · {style_label}",
+            CARD_CSS_CIBA_BY_STYLE[normalized_style],
+            LANGUAGE_FRONT_TEMPLATE_CIBA_V1,
+            LANGUAGE_BACK_TEMPLATE_CIBA_V1,
+        )
     if template_id == "immersive_v11":
+        if review_density == "fast":
+            return "沉浸复读 V12 · 快速背卡", CARD_CSS_V11_FAST, LANGUAGE_FRONT_TEMPLATE_V11_FAST, LANGUAGE_BACK_TEMPLATE_V11_FAST
         return "沉浸复读 V12", CARD_CSS_V11, LANGUAGE_FRONT_TEMPLATE_V11, LANGUAGE_BACK_TEMPLATE_V11
     if template_id == "dictionary":
         return "词典解释 V10", CARD_CSS, DICTIONARY_FRONT_TEMPLATE, DICTIONARY_BACK_TEMPLATE
@@ -11468,14 +13081,66 @@ def anki_template_assets(template_id: str, deck_kind_code: str = "video_language
 
 
 def anki_template_version(template_id: str, deck_kind_code: str = "video_language") -> str:
-    template_id = template_id if template_id in {"immersive_v11", "immersive", "dictionary", "minimal"} else "immersive_v11"
+    template_id = normalize_template_id(template_id)
     if deck_kind_code not in {"video_language", "subtitle_language"}:
         return "V10"
-    return "V12" if template_id == "immersive_v11" else "V10"
+    return "V12" if template_id in {"immersive_v11", "ciba_tianxia_v1"} else "V10"
+
+
+def uses_v11_repetition_front(template_id: str, deck_kind_code: str = "video_language") -> bool:
+    template_id = normalize_template_id(template_id)
+    if deck_kind_code not in {"video_language", "subtitle_language"}:
+        return False
+    return template_id == "immersive_v11"
 
 
 def safe_filename(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_") or "media"
+
+
+def anki_deck_part(value: Any, fallback: str = "未命名") -> str:
+    cleaned = str(value or "").strip()
+    cleaned = re.sub(r"::+", " - ", cleaned)
+    cleaned = re.sub(r"[\\/:*?\"<>|]+", " - ", cleaned)
+    cleaned = re.sub(r"\s*-\s*", " - ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = re.sub(r"(?: - ){2,}", " - ", cleaned).strip(" -")
+    return cleaned or fallback
+
+
+def anki_deck_name(value: Any, fallback: str = "未命名") -> str:
+    raw = str(value or "").strip()
+    if "::" not in raw:
+        return anki_deck_part(raw, fallback)
+    parts = [anki_deck_part(part, fallback) for part in raw.split("::")]
+    return "::".join(part for part in parts if part) or fallback
+
+
+def batch_export_deck_specs(project: dict[str, Any]) -> tuple[str, list[dict[str, str]]]:
+    parent = anki_deck_part(project.get("title") or project.get("id") or "批量学习包", "批量学习包")
+    raw_items = project.get("batch_items") if isinstance(project.get("batch_items"), list) else []
+    specs: list[dict[str, str]] = []
+    seen_names: dict[str, int] = {}
+    for index, item in enumerate(raw_items):
+        if not isinstance(item, dict) or item.get("enabled") is False:
+            continue
+        item_id = str(item.get("id") or f"item-{index + 1}").strip()
+        if not item_id:
+            continue
+        explicit_deck = str(item.get("deck_name") or "").strip()
+        if explicit_deck:
+            deck_name = anki_deck_name(explicit_deck, parent)
+            if "::" not in deck_name:
+                deck_name = f"{parent}::{deck_name}"
+        else:
+            child = anki_deck_part(item.get("subdeck_title") or item.get("title") or item_id, f"素材 {index + 1}")
+            deck_name = f"{parent}::{child}"
+        count = seen_names.get(deck_name, 0)
+        seen_names[deck_name] = count + 1
+        if count:
+            deck_name = f"{deck_name} ({count + 1})"
+        specs.append({"id": item_id, "deck_name": deck_name})
+    return parent, specs
 
 
 def project_media_prefix(project: dict[str, Any], export_run_id: int | None = None) -> str:
@@ -11506,12 +13171,12 @@ def anki_video_html(
         poster_attr = f' poster="{safe_poster}"'
         poster_preload = f'<img src="{safe_poster}" alt="" style="display:none">'
     sources: list[str] = []
-    if mp4_filename:
-        safe_mp4 = html.escape(mp4_filename, quote=True)
-        sources.append(f'<source src="{safe_mp4}" type="video/mp4">')
     if webm_filename:
         safe_webm = html.escape(webm_filename, quote=True)
         sources.append(f'<source src="{safe_webm}" type="video/webm">')
+    if mp4_filename:
+        safe_mp4 = html.escape(mp4_filename, quote=True)
+        sources.append(f'<source src="{safe_mp4}" type="video/mp4">')
     fallback = '<span>视频无法播放：当前 Anki 客户端不支持这个视频格式。</span>'
     attrs = ["loop", "playsinline", 'preload="metadata"']
     if controls:
@@ -11651,16 +13316,62 @@ def ffmpeg_cache_signature() -> str:
     return f"{executable}|{version}"
 
 
+MEDIA_CACHE_MIN_BYTES = {
+    ".jpg": 1024,
+    ".jpeg": 1024,
+    ".mp3": 1024,
+    ".mp4": 4096,
+    ".webm": 4096,
+}
+
+
+def cached_media_file_valid(path: Path) -> bool:
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return False
+    if size < MEDIA_CACHE_MIN_BYTES.get(path.suffix.lower(), 1):
+        return False
+    try:
+        with path.open("rb") as handle:
+            header = handle.read(64)
+    except OSError:
+        return False
+    suffix = path.suffix.lower()
+    if suffix in {".jpg", ".jpeg"}:
+        return header.startswith(b"\xff\xd8")
+    if suffix == ".mp3":
+        return header.startswith(b"ID3") or (
+            len(header) >= 2 and header[0] == 0xFF and (header[1] & 0xE0) == 0xE0
+        )
+    if suffix == ".mp4":
+        return b"ftyp" in header
+    if suffix == ".webm":
+        return header.startswith(b"\x1a\x45\xdf\xa3")
+    return size > 0
+
+
+def discard_cached_file(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def copy_cached_file(cache_path: Path, output_path: Path) -> bool:
-    if not cache_path.exists() or cache_path.stat().st_size <= 0:
+    if not cached_media_file_valid(cache_path):
+        discard_cached_file(cache_path)
         return False
     output_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(cache_path, output_path)
-    return True
+    if cached_media_file_valid(output_path):
+        return True
+    discard_cached_file(output_path)
+    return False
 
 
 def store_cached_file(output_path: Path, cache_path: Path) -> None:
-    if not output_path.exists() or output_path.stat().st_size <= 0:
+    if not cached_media_file_valid(output_path):
         return
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = cache_path.with_suffix(f"{cache_path.suffix}.tmp")
@@ -11753,6 +13464,7 @@ INTERNAL_PLACEHOLDER_PATTERNS = (
     "待精修",
     "本地 fallback",
     "本地草稿",
+    "预览草稿",
     "本地待审",
     "正式导出前",
     "需要 AI 精修",
@@ -11905,6 +13617,8 @@ PRONUNCIATION_FIELDS = (
     "source_spoken_ipa",
     "pronunciation_note",
     "pronunciation_confidence",
+    "pronunciation_status",
+    "source_pronunciation_status",
 )
 PRONUNCIATION_TEXT_FIELDS = ("phonetic_ipa", "spoken_ipa", "source_spoken_ipa")
 PRONUNCIATION_CONFIDENCE_VALUES = {"high", "medium", "low"}
@@ -12132,6 +13846,30 @@ def append_pronunciation_note_once(target: dict[str, Any], message: str) -> None
     target["pronunciation_note"] = f"{note} {message}".strip()[:260].rstrip()
 
 
+def set_pronunciation_status_once(target: dict[str, Any], field: str, message: str) -> None:
+    if field not in {"pronunciation_status", "source_pronunciation_status"}:
+        return
+    text = clean_study_text(message)
+    if not text:
+        return
+    current = clean_study_text(target.get(field) or "")
+    if text in current:
+        return
+    target[field] = f"{current}；{text}".strip("；")[:180].rstrip()
+
+
+def set_source_pronunciation_hidden_status(target: dict[str, Any], *, code: str, message: str, original_value: Any = "") -> None:
+    set_pronunciation_status_once(target, "source_pronunciation_status", "原句听感未可靠生成，已隐藏")
+    add_pronunciation_field_change(
+        target,
+        "source_spoken_ipa",
+        "hidden",
+        code,
+        message,
+        original_value=original_value,
+    )
+
+
 def remove_pronunciation_issue_code(target: dict[str, Any], code: str) -> None:
     meta = target.get("pronunciation_meta")
     if not isinstance(meta, dict):
@@ -12337,28 +14075,56 @@ def standard_hint_for_meta(meta: dict[str, Any] | None, language: Any = "en") ->
 def maybe_prefix_inferred_note(target: dict[str, Any], meta: dict[str, Any]) -> None:
     if meta.get("generation_basis") == "audio_verified":
         return
-    if not target.get("spoken_ipa") and not target.get("source_spoken_ipa"):
+    if meta.get("generation_basis") == "dictionary_only":
+        set_pronunciation_status_once(target, "pronunciation_status", "未实听，仅提供标准读法")
         return
-    note = clean_study_text(target.get("pronunciation_note"))
-    prefix = "未实听，按字幕和常见口语规律推测。"
-    if note and "未实听" not in note:
-        target["pronunciation_note"] = f"{prefix}{note}"
+    if target.get("spoken_ipa") or target.get("source_spoken_ipa"):
+        set_pronunciation_status_once(target, "pronunciation_status", "未实听，按字幕和常见口语规律推测")
         add_pronunciation_field_change(
             target,
             "pronunciation_note",
-            "downgraded",
-            "SUBTITLE_INFERRED_NOTE_PREFIXED",
-            "发音说明已标明：未实听，仅按字幕和常见口语规律推测。",
-            original_value=note,
+            "kept" if target.get("pronunciation_note") else "not_generated",
+            "SUBTITLE_INFERRED_STATUS_SEPARATED",
+            "未实听状态已移到读法状态，不写入发音说明正文。",
+            original_value=target.get("pronunciation_note") or "",
         )
-    elif not note:
-        target["pronunciation_note"] = prefix
+
+
+PRONUNCIATION_SYSTEM_NOTE_PATTERNS = (
+    r"未实听[，,]?\s*按字幕和常见口语规律推测[。.]?",
+    r"原句听感未可靠生成[，,]?\s*已隐藏[。.]?",
+    r"读法未可靠生成[，,]?\s*已隐藏[。.]?",
+)
+
+
+def separate_pronunciation_status_from_note(target: dict[str, Any]) -> None:
+    note = clean_study_text(target.get("pronunciation_note"))
+    if not note:
+        target.pop("pronunciation_note", None)
+        return
+    original = note
+    if "未实听" in note:
+        set_pronunciation_status_once(target, "pronunciation_status", "未实听，按字幕和常见口语规律推测")
+    if "原句听感未可靠生成" in note:
+        set_pronunciation_status_once(target, "source_pronunciation_status", "原句听感未可靠生成，已隐藏")
+    if "读法未可靠生成" in note:
+        set_pronunciation_status_once(target, "pronunciation_status", "读法未可靠生成，已隐藏")
+    for pattern in PRONUNCIATION_SYSTEM_NOTE_PATTERNS:
+        note = re.sub(pattern, "", note)
+    note = re.sub(r"\s*[；;]\s*", "；", note)
+    note = re.sub(r"^[。.;；,\s]+|[。.;；,\s]+$", "", note).strip()
+    if note:
+        target["pronunciation_note"] = note[:260].rstrip()
+    else:
+        target.pop("pronunciation_note", None)
+    if note != original:
         add_pronunciation_field_change(
             target,
             "pronunciation_note",
-            "not_generated",
-            "SUBTITLE_INFERRED_NOTE_ADDED",
-            "未生成可靠发音说明，已补充未实听提示。",
+            "downgraded" if note else "hidden",
+            "PRONUNCIATION_STATUS_SEPARATED_FROM_NOTE",
+            "系统状态已从发音说明移到独立读法状态。",
+            original_value=original,
         )
 
 
@@ -12379,7 +14145,7 @@ def sanitize_pronunciation_fields(target: dict[str, Any], language: Any = "Engli
             add_pronunciation_issue(target, issue)
             add_pronunciation_field_change(target, key, "cleared", issue["code"], issue["message"], original_value=raw)
             if key == "source_spoken_ipa":
-                append_pronunciation_note_once(target, "原句听感未可靠生成，已隐藏。")
+                set_pronunciation_status_once(target, "source_pronunciation_status", "原句听感未可靠生成，已隐藏")
             set_pronunciation_field_confidence(target, key, "low")
             issues.append(issue["message"])
         if target_language == "en" and key == "spoken_ipa" and normalized and spoken_ipa_is_unhelpful_duplicate(target, normalized):
@@ -12396,7 +14162,7 @@ def sanitize_pronunciation_fields(target: dict[str, Any], language: Any = "Engli
             issue = pronunciation_issue("source_spoken_ipa", "block", "SOURCE_PRONUNCIATION_TOO_SHORT", "source_spoken_ipa 不是完整原句听感，已清空。")
             add_pronunciation_issue(target, issue)
             add_pronunciation_field_change(target, "source_spoken_ipa", "hidden", issue["code"], issue["message"], original_value=original_normalized)
-            append_pronunciation_note_once(target, "原句听感未可靠生成，已隐藏。")
+            set_pronunciation_status_once(target, "source_pronunciation_status", "原句听感未可靠生成，已隐藏")
             set_pronunciation_field_confidence(target, "source_spoken_ipa", "low")
             issues.append(issue["message"])
         if target_language == "es" and normalized and "θ" in normalized:
@@ -12453,6 +14219,7 @@ def sanitize_pronunciation_fields(target: dict[str, Any], language: Any = "Engli
         target["pronunciation_note"] = note[:260].rstrip()
     else:
         target.pop("pronunciation_note", None)
+    separate_pronunciation_status_from_note(target)
     meta = normalize_pronunciation_meta(
         target.get("pronunciation_meta"),
         target_language,
@@ -12470,9 +14237,30 @@ def sanitize_pronunciation_fields(target: dict[str, Any], language: Any = "Engli
                 add_pronunciation_issue(target, issue)
                 add_pronunciation_field_change(target, key, "hidden", issue["code"], issue["message"], original_value=original_value)
                 if key == "source_spoken_ipa":
-                    append_pronunciation_note_once(target, "原句听感未可靠生成，已隐藏。")
+                    set_pronunciation_status_once(target, "source_pronunciation_status", "原句听感未可靠生成，已隐藏")
                 issues.append(issue["message"])
     maybe_prefix_inferred_note(target, meta)
+    if not any(target.get(key) for key in PRONUNCIATION_TEXT_FIELDS) and not target.get("pronunciation_note"):
+        message = "读法未可靠生成，已隐藏。"
+        set_pronunciation_status_once(target, "pronunciation_status", "读法未可靠生成，已隐藏")
+        set_pronunciation_status_once(target, "source_pronunciation_status", "原句听感未可靠生成，已隐藏")
+        issue = pronunciation_issue(
+            "pronunciation_note",
+            "info",
+            "PRONUNCIATION_NOT_GENERATED",
+            message,
+        )
+        add_pronunciation_issue(target, issue)
+        add_pronunciation_field_change(
+            target,
+            "pronunciation_note",
+            "not_generated",
+            issue["code"],
+            "模型没有返回可靠的读法字段，卡面已改为显示独立读法状态。",
+        )
+        for key in ("phonetic_ipa", "spoken_ipa", "source_spoken_ipa", "pronunciation_note"):
+            set_pronunciation_field_confidence(target, key, "low")
+        issues.append(message)
 
     if target.get("spoken_ipa") and target.get("phonetic_ipa"):
         same = ipa_comparison_key(target.get("spoken_ipa")) == ipa_comparison_key(target.get("phonetic_ipa"))
@@ -12799,6 +14587,16 @@ def _specific_v11_text(value: Any) -> str:
     return text
 
 
+def _non_generic_export_text(value: Any) -> str:
+    text = clean_study_text(value)
+    if not text:
+        return ""
+    lowered = text.lower()
+    if any(pattern in text or pattern.lower() in lowered for pattern in GENERIC_V11_STUDY_PATTERNS):
+        return ""
+    return text
+
+
 def _v11_sentence_translation_fallback(card: dict[str, Any]) -> str:
     fallback = _v11_fallback(card)
     english_key = _v11_lookup_key(card.get("english"))
@@ -12883,18 +14681,186 @@ def v11_misuse_text(card: dict[str, Any]) -> str:
     special_boundary = ""
     if "flat as a washboard" in phrase:
         special_boundary = V11_EXPRESSION_FALLBACKS["flat as a washboard"]["misuse"]
+    teacher_note = _specific_v11_text(card.get("teacher_note"))
+    usage_boundary = _specific_v11_text(card.get("usage_boundary"))
+    confusable_note = _specific_v11_text(card.get("confusable_note"))
+    if normalized_contains_text(teacher_note, usage_boundary):
+        usage_boundary = ""
+    if normalized_contains_text(teacher_note, confusable_note):
+        confusable_note = ""
     lines = _study_lines(
-        _specific_v11_text(card.get("usage_boundary")),
+        usage_boundary,
         special_boundary,
-        _specific_v11_text(card.get("confusable_note")),
-        _specific_v11_text(card.get("teacher_note")),
+        confusable_note,
+        teacher_note,
         _specific_v11_text(fallback.get("misuse")),
     )
     return "\n".join(lines[:3])
 
 
+def _export_answer_label(card: dict[str, Any]) -> str:
+    return answer_display_text(card.get("answer_core") or card.get("phrase")) or card_answer_core(card) or "这个学习点"
+
+
+def _export_definition_fallback(card: dict[str, Any]) -> str:
+    answer = _export_answer_label(card)
+    return f"结合原句理解“{answer}”在这里的意思、搭配和使用场景。"
+
+
+def _export_teacher_note_fallback(card: dict[str, Any]) -> str:
+    answer = _export_answer_label(card)
+    return f"注意“{answer}”的语气和适用对象，复习时对照原句判断是否自然。"
+
+
+def export_meaning_text(card: dict[str, Any], use_v11_template: bool) -> str:
+    if use_v11_template:
+        return v11_meaning_text(card) or card_chinese_core(card) or clean_study_text(card.get("chinese"))
+    return card_chinese_core(card) or clean_study_text(card.get("chinese"))
+
+
+def export_definition_text(card: dict[str, Any], use_v11_template: bool) -> str:
+    if use_v11_template:
+        return (
+            v11_usage_text(card)
+            or _specific_v11_text(card.get("definition"))
+            or _specific_v11_text(card.get("how_to_use_it"))
+            or _non_generic_export_text(card.get("definition"))
+            or _non_generic_export_text(card.get("how_to_use_it"))
+            or _non_generic_export_text(card.get("learning_goal"))
+            or _non_generic_export_text(card.get("why_it_matters"))
+            or _export_definition_fallback(card)
+        )
+    return (
+        _non_generic_export_text(card.get("definition"))
+        or _non_generic_export_text(card.get("how_to_use_it"))
+        or _non_generic_export_text(card.get("learning_goal"))
+        or _non_generic_export_text(card.get("why_it_matters"))
+        or _export_definition_fallback(card)
+    )
+
+
+def export_teacher_note_text(card: dict[str, Any], use_v11_template: bool) -> str:
+    if use_v11_template:
+        return (
+            v11_misuse_text(card)
+            or _specific_v11_text(card.get("teacher_note"))
+            or _specific_v11_text(card.get("usage_boundary"))
+            or _specific_v11_text(card.get("confusable_note"))
+            or _non_generic_export_text(card.get("teacher_note"))
+            or _non_generic_export_text(card.get("usage_boundary"))
+            or _non_generic_export_text(card.get("confusable_note"))
+            or _non_generic_export_text(card.get("why_it_matters"))
+            or _export_teacher_note_fallback(card)
+        )
+    return (
+        _non_generic_export_text(card.get("teacher_note"))
+        or _non_generic_export_text(card.get("usage_boundary"))
+        or _non_generic_export_text(card.get("confusable_note"))
+        or _non_generic_export_text(card.get("why_it_matters"))
+        or _export_teacher_note_fallback(card)
+    )
+
+
+def export_context_text(card: dict[str, Any], use_v11_template: bool) -> str:
+    if use_v11_template:
+        return (
+            v11_source_translation_text(card)
+            or clean_study_text(card.get("context"))
+            or clean_study_text(card.get("source_chinese"))
+            or clean_study_text(card.get("sentence_chinese"))
+            or card_chinese_core(card)
+        )
+    return (
+        clean_study_text(card.get("source_evidence"))
+        or clean_study_text(card.get("context"))
+        or clean_study_text(card.get("source_chinese"))
+        or clean_study_text(card.get("sentence_chinese"))
+        or card_chinese_core(card)
+    )
+
+
+def ciba_contextual_meaning_text(card: dict[str, Any]) -> str:
+    return (
+        _specific_v11_text(card.get("chinese"))
+        or _specific_v11_text(card.get("answer_chinese"))
+        or _specific_v11_text(card.get("meaning"))
+        or _specific_v11_text(card.get("chinese_feel"))
+        or v11_meaning_text(card)
+        or _specific_v11_text(card.get("natural_chinese"))
+        or card_chinese_core(card)
+        or clean_study_text(card.get("chinese"))
+    )
+
+
+def ciba_language_action_text(card: dict[str, Any]) -> str:
+    lines = _study_lines(
+        _specific_v11_text(card.get("learning_target")),
+        _specific_v11_text(card.get("how_to_use_it")),
+        _specific_v11_text(card.get("definition")),
+        _specific_v11_text(card.get("learning_goal")),
+        _export_definition_fallback(card),
+    )
+    return "\n".join(lines[:2])
+
+
+def ciba_conceptual_action_text(card: dict[str, Any]) -> str:
+    lines = _study_lines(
+        _specific_v11_text(card.get("conceptual_action")),
+        _specific_v11_text(card.get("learning_target")),
+    )
+    return "\n".join(lines[:1])
+
+
+def ciba_chinese_learner_trap_text(card: dict[str, Any]) -> str:
+    lines = _study_lines(
+        _specific_v11_text(card.get("chinese_learner_trap")),
+        _specific_v11_text(card.get("confusable_note")),
+    )
+    return "\n".join(lines[:1])
+
+
+def ciba_reason_text(card: dict[str, Any]) -> str:
+    lines = _study_lines(
+        _specific_v11_text(card.get("why_it_matters")),
+        _specific_v11_text(card.get("why")),
+        _specific_v11_text(card.get("value_reason")),
+        _specific_v11_text(card.get("reason")),
+    )
+    return "\n".join(lines[:2])
+
+
+def ciba_transfer_text(card: dict[str, Any]) -> str:
+    lines = _study_lines(
+        _specific_v11_text(card.get("replacement_examples")),
+        _specific_v11_text(_new_example_for_card(card)),
+        _specific_v11_text(card.get("collocations")),
+    )
+    return "\n".join(lines[:3])
+
+
+def ciba_boundary_text(card: dict[str, Any]) -> str:
+    lines = _study_lines(
+        _specific_v11_text(card.get("chinese_learner_trap")),
+        _specific_v11_text(card.get("usage_boundary")),
+        _specific_v11_text(card.get("confusable_note")),
+        _specific_v11_text(card.get("avoid_reason")),
+        _specific_v11_text(card.get("teacher_note")),
+        _export_teacher_note_fallback(card),
+    )
+    return "\n".join(lines[:3])
+
+
+def ciba_source_context_text(card: dict[str, Any]) -> str:
+    return (
+        v11_source_translation_text(card)
+        or clean_study_text(card.get("context"))
+        or clean_study_text(card.get("source_chinese"))
+        or clean_study_text(card.get("sentence_chinese"))
+    )
+
+
 def v11_definition_text(card: dict[str, Any]) -> str:
-    return v11_usage_text(card)
+    return export_definition_text(card, True)
 
 
 def v11_migration_text(card: dict[str, Any]) -> str:
@@ -12902,7 +14868,7 @@ def v11_migration_text(card: dict[str, Any]) -> str:
 
 
 def v11_teacher_note_text(card: dict[str, Any]) -> str:
-    return v11_misuse_text(card)
+    return export_teacher_note_text(card, True)
 
 
 def card_visual_role(card: dict[str, Any], deck_kind_code: str = "") -> str:
@@ -13236,6 +15202,97 @@ def synthesize_tts(
     return False
 
 
+def export_tts_concurrency(project: dict[str, Any]) -> int:
+    tts = normalized_tts_config(project)
+    raw_value = (
+        tts.get("concurrency")
+        or project.get("tts_concurrency")
+        or project.get("export_tts_concurrency")
+        or project.get("tts_export_concurrency")
+    )
+    if raw_value in (None, ""):
+        raw_value = 2 if is_gemini_vertex_tts_config(tts) else 3
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        value = 2 if is_gemini_vertex_tts_config(tts) else 3
+    return max(1, min(4, value))
+
+
+def export_quality_audit(project: dict[str, Any], export_segments: list[dict[str, Any]]) -> dict[str, Any]:
+    empty_required_fields = 0
+    blocked_text_values = 0
+    duplicate_visible_cards = 0
+    pronunciation_meta_errors = 0
+    answer_not_in_source = 0
+    seen_cards: set[str] = set()
+    deck_kind_code = str(project.get("deck_kind") or project.get("project_kind") or "video_language")
+    project_template_id = str(project.get("template_id") or "immersive_v11")
+    project_is_ciba_template = normalize_template_id(project_template_id) == "ciba_tianxia_v1"
+    project_uses_v11_repetition_front = uses_v11_repetition_front(project_template_id, deck_kind_code)
+    for segment in export_segments:
+        source_text = clean_study_text(segment.get("text") or "")
+        for card in [card for card in segment.get("cards", []) if card.get("enabled", True)]:
+            use_v11_template = project_uses_v11_repetition_front or (
+                str(card.get("card_layout") or "").lower() == "repetition" and not project_is_ciba_template
+            )
+            if project_is_ciba_template:
+                meaning_field = ciba_contextual_meaning_text(card)
+                definition_field = ciba_language_action_text(card)
+                teacher_note_field = ciba_boundary_text(card)
+                context_field = ciba_source_context_text(card)
+            else:
+                meaning_field = export_meaning_text(card, use_v11_template)
+                definition_field = export_definition_text(card, use_v11_template)
+                teacher_note_field = export_teacher_note_text(card, use_v11_template)
+                context_field = export_context_text(card, use_v11_template)
+            required_values = {
+                "English": card.get("english") or source_text,
+                "Answer": card.get("answer_core") or card.get("phrase"),
+                "Chinese": meaning_field,
+                "Definition": definition_field,
+                "TeacherNote": teacher_note_field,
+                "Context": context_field,
+            }
+            empty_required_fields += sum(1 for value in required_values.values() if not clean_study_text(value))
+            study_values = [
+                card.get("chinese"),
+                card.get("definition"),
+                card.get("teacher_note"),
+                card.get("context"),
+                card.get("chinese_feel"),
+                card.get("phrase"),
+                card.get("answer_core"),
+            ]
+            blocked_text_values += sum(1 for value in study_values if contains_internal_placeholder(value))
+            answer = answer_display_text(card.get("answer_core") or card.get("phrase") or "")
+            if answer and source_text and not phrase_in_text(source_text, answer) and str(card.get("type") or "") != "listening":
+                answer_not_in_source += 1
+            duplicate_key = f"{segment.get('id')}:{str(card.get('type') or '')}:{answer.lower()}"
+            if duplicate_key in seen_cards:
+                duplicate_visible_cards += 1
+            seen_cards.add(duplicate_key)
+            meta = card.get("pronunciation_meta")
+            if isinstance(meta, str) and meta.strip():
+                try:
+                    parsed = json.loads(meta)
+                    if not isinstance(parsed, dict):
+                        pronunciation_meta_errors += 1
+                except json.JSONDecodeError:
+                    pronunciation_meta_errors += 1
+            elif meta is not None and not isinstance(meta, dict):
+                pronunciation_meta_errors += 1
+    return {
+        "card_count": sum(len([card for card in segment.get("cards", []) if card.get("enabled", True)]) for segment in export_segments),
+        "segment_count": len(export_segments),
+        "empty_required_fields": empty_required_fields,
+        "blocked_text_values": blocked_text_values,
+        "duplicate_visible_cards": duplicate_visible_cards,
+        "answer_not_in_source": answer_not_in_source,
+        "pronunciation_meta_errors": pronunciation_meta_errors,
+    }
+
+
 def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     emit_progress("export", "prepare", 4, "准备导出 Anki 卡包。")
     try:
@@ -13251,7 +15308,8 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     is_document_project = project.get("source_mode") == "document"
     video_path_raw = clean_input_path(project.get("video_path"))
     skip_video_media = is_document_project or bool(project.get("skip_video_slicing")) or not video_path_raw
-    export_webm_media = bool(project.get("export_webm_media"))
+    export_webm_media = project.get("export_webm_media")
+    export_webm_media = True if export_webm_media is None else bool(export_webm_media)
     video_path = Path(video_path_raw) if video_path_raw else Path()
     if not skip_video_media and not video_path.exists():
         fail(f"视频文件不存在：{video_path}")
@@ -13269,12 +15327,17 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     else:
         deck_kind_code = "subtitle_language" if skip_video_media else "video_language"
         deck_kind = "字幕语言卡" if skip_video_media else "视频语言卡"
-    deck_name = f"{deck_kind}::{project.get('title', 'Untitled')}"
-    template_id = project.get("template_id", "immersive_v11")
-    template_family = anki_template_family(template_id, deck_kind_code)
-    template_label, template_css, front_template, back_template = anki_template_assets(template_id, deck_kind_code)
+    review_density = normalize_review_density(project.get("review_density"))
+    parent_deck_name, batch_deck_specs = batch_export_deck_specs(project)
+    is_batch_export = bool(project.get("batch_enabled")) and bool(batch_deck_specs)
+    deck_name = parent_deck_name if is_batch_export else f"{deck_kind}::{project.get('title', 'Untitled')}"
+    template_id = normalize_template_id(project.get("template_id", "immersive_v11"))
+    card_style = normalize_card_style(project.get("card_style"))
+    template_family = anki_template_family(template_id, deck_kind_code, card_style, review_density)
+    template_label, template_css, front_template, back_template = anki_template_assets(template_id, deck_kind_code, card_style, review_density)
     template_version = anki_template_version(template_id, deck_kind_code)
-    use_v11_template = template_version in {"V11", "V12"}
+    is_ciba_template = normalize_template_id(template_id) == "ciba_tianxia_v1"
+    use_v11_repetition_front = uses_v11_repetition_front(template_id, deck_kind_code)
     model = genanki.Model(
         stable_id(f"anki-card-model-{template_version.lower()}-{template_family}", 1000000000),
         f"Anki Card Generator {template_version} - {template_label}",
@@ -13294,6 +15357,8 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             {"name": "SourceSpokenIpa"},
             {"name": "PronunciationNote"},
             {"name": "PronunciationConfidence"},
+            {"name": "PronunciationStatus"},
+            {"name": "SourcePronunciationStatus"},
             {"name": "PronunciationMeta"},
             {"name": "SpokenPronunciationLabel"},
             {"name": "StandardPronunciationHint"},
@@ -13309,6 +15374,9 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             {"name": "Difficulty"},
             {"name": "SourceTime"},
             {"name": "TeacherNote"},
+            {"name": "LearningAction"},
+            {"name": "ConceptualAction"},
+            {"name": "ChineseLearnerTrap"},
             {"name": "Cloze"},
             {"name": "CardLayout"},
             {"name": "CardVisualRole"},
@@ -13326,9 +15394,28 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         ],
         css=template_css,
     )
-    deck = genanki.Deck(stable_id(deck_name, 1500000000), deck_name)
+    default_deck = genanki.Deck(stable_id(deck_name, 1500000000), deck_name)
+    batch_decks_by_item_id: dict[str, Any] = {}
+    decks_for_package: list[Any] = [default_deck]
+    deck_names_for_result: list[str] = [deck_name]
+    if is_batch_export:
+        decks_for_package = []
+        deck_names_for_result = []
+        for spec in batch_deck_specs:
+            item_deck_name = spec["deck_name"]
+            item_deck = genanki.Deck(stable_id(item_deck_name, 1500000000), item_deck_name)
+            batch_decks_by_item_id[spec["id"]] = item_deck
+            decks_for_package.append(item_deck)
+            deck_names_for_result.append(item_deck_name)
+        if not decks_for_package:
+            decks_for_package = [default_deck]
+            deck_names_for_result = [deck_name]
+    fallback_batch_deck = genanki.Deck(stable_id(f"{deck_name}::未分组", 1500000000), f"{deck_name}::未分组") if is_batch_export else default_deck
+    fallback_batch_deck_used = False
+    exported_batch_item_ids: set[str] = set()
     media_files: list[str] = []
     media_ledger: list[dict[str, Any]] = []
+    media_by_clip_key: dict[tuple[str, str, str, bool], dict[str, str]] = {}
     tts_by_segment: dict[str, str] = {}
     phrase_tts_by_phrase: dict[str, str] = {}
     phrase_tts_cache_hit_by_phrase: dict[str, bool] = {}
@@ -13343,8 +15430,15 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     original_audio_count = 0
     tts_cache_hit_count = 0
     media_cache_hit_count = 0
+    media_reused_segment_count = 0
     project_card_prefix = safe_filename(project.get("title") or project.get("id") or "deck")
     media_prefix = project_media_prefix(project, export_run_id)
+    export_progress_percent = 10
+
+    def emit_export_progress(stage: str, percent: int, message: str) -> None:
+        nonlocal export_progress_percent
+        export_progress_percent = max(export_progress_percent, min(100, int(percent)))
+        emit_progress("export", stage, export_progress_percent, message)
 
     def ledger_add(
         file_name: str,
@@ -13387,6 +15481,33 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         for segment in project.get("segments", [])
         if any(card.get("enabled", True) for card in segment.get("cards", []))
     ]
+    quality_audit = export_quality_audit(project, export_segments)
+    if quality_audit["blocked_text_values"] or quality_audit["duplicate_visible_cards"] or quality_audit["pronunciation_meta_errors"]:
+        fail(
+            "导出前质量审计未通过："
+            f"草稿/内部文本 {quality_audit['blocked_text_values']}，"
+            f"重复可见卡 {quality_audit['duplicate_visible_cards']}，"
+            f"PronunciationMeta 错误 {quality_audit['pronunciation_meta_errors']}。",
+            error_code="EXPORT_QUALITY_GATE_FAILED",
+            stage="quality_audit",
+            retryable=False,
+        )
+    if quality_audit["empty_required_fields"]:
+        warnings.append(f"导出前审计发现 {quality_audit['empty_required_fields']} 个学习字段为空；请在质量诊断中抽查。")
+    if quality_audit["answer_not_in_source"]:
+        warnings.append(f"导出前审计发现 {quality_audit['answer_not_in_source']} 张非听力卡答案未能直接匹配原句；请抽查。")
+    tts_generation_enabled = False
+    sentence_tts_total = 0
+    sentence_tts_done = 0
+    phrase_tts_text_keys: set[str] = set()
+    if tts_requested and not is_document_project:
+        for segment in export_segments:
+            for card in [card for card in segment.get("cards", []) if card.get("enabled", True)]:
+                phrase_text = card_phrase_tts_text(card, card_front_fields(card, repetition_mode=use_v11_repetition_front)).lower()
+                if phrase_text and phrase_text not in {"key expression", "n/a"}:
+                    phrase_tts_text_keys.add(phrase_text)
+    phrase_tts_total = 0
+    phrase_tts_done = 0
     if not is_document_project:
         if skip_video_media:
             warnings.append("本次导出为字幕-only / 跳过视频切片模式，APKG 不包含视频片段和原声音频。")
@@ -13400,6 +15521,153 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             or is_gemini_vertex_tts_config(tts_config)
         ) and (not compatible_base_url(tts_config) or not tts_config["model"]):
             warnings.append("TTS 已启用但缺少 Base URL 或模型名，本次导出不会生成 AI 朗读音频。")
+        else:
+            tts_generation_enabled = tts_requested
+    if tts_generation_enabled:
+        sentence_tts_total = len(export_segments)
+        phrase_tts_total = len(phrase_tts_text_keys)
+
+    def synthesize_tts_tasks(
+        tasks: list[dict[str, Any]],
+        *,
+        stage: str,
+        label: str,
+        progress_start: int,
+        progress_end: int,
+    ) -> list[dict[str, Any]]:
+        if not tasks:
+            return []
+        max_workers = min(export_tts_concurrency(project), len(tasks))
+        completed = 0
+        results: list[dict[str, Any]] = []
+        emit_export_progress(stage, progress_start, f"{label} 0/{len(tasks)}，并发 {max_workers}。")
+
+        def run_task(task: dict[str, Any]) -> dict[str, Any]:
+            result = synthesize_tts(
+                project,
+                task["segment"],
+                task["output_path"],
+                text_override=task.get("text_override"),
+            )
+            return {**task, "result": result}
+
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = []
+            for task in tasks:
+                future = pool.submit(run_task, task)
+                future._acg_tts_task = task  # type: ignore[attr-defined]
+                futures.append(future)
+            for future in as_completed(futures):
+                completed += 1
+                percent = progress_start + int((completed / max(1, len(tasks))) * (progress_end - progress_start))
+                try:
+                    task_result = future.result()
+                    results.append(task_result)
+                except Exception as err:
+                    task_result = getattr(future, "_acg_tts_task", None)
+                    if isinstance(task_result, dict):
+                        results.append({**task_result, "error": str(err)})
+                    else:
+                        warnings.append(f"{label} 失败：{err}")
+                emit_export_progress(stage, percent, f"{label} {completed}/{len(tasks)}，并发 {max_workers}。")
+        return results
+
+    sentence_tts_tasks: list[dict[str, Any]] = []
+    phrase_tts_tasks: list[dict[str, Any]] = []
+    if tts_generation_enabled:
+        seen_phrase_keys: set[str] = set()
+        for segment in export_segments:
+            segment_id = safe_filename(segment.get("id", "segment"))
+            media_segment_id = f"{media_prefix}_{segment_id}"
+            segment_tts_text = str(segment.get("text") or "")
+            tts_name = f"{media_segment_id}_tts_{media_text_hash(segment_tts_text)}.mp3"
+            try:
+                clean_tts_input_text(segment_tts_text)
+                sentence_tts_tasks.append(
+                    {
+                        "kind": "sentence",
+                        "key": segment_id,
+                        "segment": segment,
+                        "file_name": tts_name,
+                        "output_path": media_dir / tts_name,
+                        "tts_text": segment_tts_text,
+                        "text_override": None,
+                    }
+                )
+            except RuntimeError:
+                warnings.append(f"{segment_id} 整句 TTS 文本为空，已跳过。")
+            for card in [card for card in segment.get("cards", []) if card.get("enabled", True)]:
+                front_fields = card_front_fields(card, repetition_mode=use_v11_repetition_front)
+                phrase_text = card_phrase_tts_text(card, front_fields)
+                phrase_key = phrase_text.lower()
+                if not phrase_text or phrase_key in {"key expression", "n/a"} or phrase_key in seen_phrase_keys:
+                    continue
+                seen_phrase_keys.add(phrase_key)
+                phrase_tts_name = f"{media_prefix}_phrase_{media_text_hash(phrase_text)}.mp3"
+                phrase_tts_tasks.append(
+                    {
+                        "kind": "phrase",
+                        "key": phrase_key,
+                        "segment": segment,
+                        "file_name": phrase_tts_name,
+                        "output_path": media_dir / phrase_tts_name,
+                        "tts_text": phrase_text,
+                        "text_override": phrase_text,
+                    }
+                )
+        sentence_tts_total = len(sentence_tts_tasks)
+        phrase_tts_total = len(phrase_tts_tasks)
+        for item in synthesize_tts_tasks(
+            sentence_tts_tasks,
+            stage="sentence_tts",
+            label="整句 TTS",
+            progress_start=12,
+            progress_end=26,
+        ):
+            if item.get("error"):
+                warnings.append(f"{item.get('key')} TTS 失败：{item.get('error')}")
+                continue
+            tts_result = item.get("result")
+            if not tts_result:
+                continue
+            cache_hit = bool(tts_result.get("cache_hit")) if isinstance(tts_result, dict) else False
+            if cache_hit:
+                tts_cache_hit_count += 1
+            file_name = str(item.get("file_name") or "")
+            media_files.append(str(item["output_path"]))
+            tts_by_segment[str(item.get("key") or "")] = file_name
+            ledger_add(
+                file_name,
+                role="sentence_tts",
+                segment=item["segment"],
+                field="TtsAudio",
+                tts_text=str(item.get("tts_text") or ""),
+                cache_hit=cache_hit,
+            )
+        sentence_tts_done = len(tts_by_segment)
+
+        for item in synthesize_tts_tasks(
+            phrase_tts_tasks,
+            stage="phrase_tts",
+            label="表达 TTS",
+            progress_start=26,
+            progress_end=40,
+        ):
+            if item.get("error"):
+                warnings.append(f"{item.get('key')} 表达 TTS 失败：{item.get('error')}")
+                continue
+            tts_result = item.get("result")
+            if not tts_result:
+                continue
+            cache_hit = bool(tts_result.get("cache_hit")) if isinstance(tts_result, dict) else False
+            if cache_hit:
+                tts_cache_hit_count += 1
+            phrase_key = str(item.get("key") or "")
+            file_name = str(item.get("file_name") or "")
+            media_files.append(str(item["output_path"]))
+            phrase_tts_by_phrase[phrase_key] = file_name
+            phrase_tts_cache_hit_by_phrase[phrase_key] = cache_hit
+        phrase_tts_done = len(phrase_tts_by_phrase)
 
     for index, segment in enumerate(export_segments):
         enabled_cards = [card for card in segment.get("cards", []) if card.get("enabled", True)]
@@ -13412,50 +15680,20 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         video_mp4_name = "" if skip_video_media else f"{media_segment_id}.mp4"
         poster_name = "" if skip_video_media else f"{media_segment_id}.jpg"
         audio_name = "" if skip_video_media else f"{media_segment_id}.mp3"
-        segment_tts_text = str(segment.get("text") or "")
-        tts_name = f"{media_segment_id}_tts_{media_text_hash(segment_tts_text)}.mp3"
         video_webm_out = media_dir / video_webm_name
         video_mp4_out = media_dir / video_mp4_name
         poster_out = media_dir / poster_name
         audio_out = media_dir / audio_name
-        tts_out = media_dir / tts_name
         segment_percent = 15 + int((index / max(1, len(export_segments))) * 68)
 
         if skip_video_media:
-            emit_progress(
-                "export",
+            emit_export_progress(
                 "notes",
                 segment_percent,
                 f"正在整理无视频卡 {index + 1}/{len(export_segments)}：{segment.get('source_time', segment_id)}",
             )
-            if tts_requested and not is_document_project:
-                try:
-                    emit_progress("export", "tts", min(86, segment_percent + 4), f"正在生成整句朗读：{segment_id}")
-                    tts_result = synthesize_tts(project, segment, tts_out)
-                    if tts_result:
-                        cache_hit = bool(tts_result.get("cache_hit")) if isinstance(tts_result, dict) else False
-                        if cache_hit:
-                            tts_cache_hit_count += 1
-                        media_files.append(str(tts_out))
-                        tts_by_segment[segment_id] = tts_name
-                        ledger_add(
-                            tts_name,
-                            role="sentence_tts",
-                            segment=segment,
-                            field="TtsAudio",
-                            tts_text=segment_tts_text,
-                            cache_hit=cache_hit,
-                        )
-                except Exception as err:
-                    warnings.append(f"{segment_id} TTS 失败：{err}")
             cut_segments.add(segment_id)
         elif segment_id not in cut_segments:
-            emit_progress(
-                "export",
-                "media",
-                segment_percent,
-                f"正在切片 {index + 1}/{len(export_segments)}：{segment.get('source_time', segment_id)}",
-            )
             clip_start = float(segment.get("media_start", segment.get("start", 0)) or 0)
             clip_end = float(segment.get("media_end", segment.get("end", 0)) or 0)
             if clip_end <= clip_start:
@@ -13463,236 +15701,253 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                 clip_end = float(segment.get("end", clip_start + 0.5) or clip_start + 0.5)
             start = str(max(0.0, clip_start))
             duration = str(max(0.5, clip_end - clip_start))
-            media_commands = []
-            if export_webm_media:
-                media_commands.append(
-                    (
-                        video_webm_out,
-                        "video_webm",
-                        "webm",
-                        "vp9-crf36-opus64",
-                        [
-                            "-ss",
-                            start,
-                            "-t",
-                            duration,
-                            "-i",
-                            str(video_path),
-                            "-map",
-                            "0:v:0?",
-                            "-map",
-                            "0:a:0?",
-                            "-c:v",
-                            "libvpx-vp9",
-                            "-b:v",
-                            "0",
-                            "-crf",
-                            "36",
-                            "-row-mt",
-                            "1",
-                            "-deadline",
-                            "good",
-                            "-cpu-used",
-                            "4",
-                            "-pix_fmt",
-                            "yuv420p",
-                            "-ac",
-                            "2",
-                            "-c:a",
-                            "libopus",
-                            "-b:a",
-                            "64k",
-                            str(video_webm_out),
-                        ],
-                    )
+            media_clip_key = (video_source_fingerprint, start, duration, bool(export_webm_media))
+            reused_media_names = media_by_clip_key.get(media_clip_key)
+            if reused_media_names:
+                emit_export_progress(
+                    "media",
+                    segment_percent,
+                    f"媒体复用 {index + 1}/{len(export_segments)}：{segment.get('source_time', segment_id)}",
                 )
-            media_commands.extend(
-                [
-                    (
-                        video_mp4_out,
-                        "video_mp4",
-                        "mp4",
-                        "x264-crf26-aac96",
-                        [
-                            "-ss",
-                            start,
-                            "-t",
-                            duration,
-                            "-i",
-                            str(video_path),
-                            "-map",
-                            "0:v:0?",
-                            "-map",
-                            "0:a:0?",
-                            "-c:v",
-                            "libx264",
-                            "-preset",
-                            "veryfast",
-                            "-crf",
-                            "26",
-                            "-ac",
-                            "2",
-                            "-c:a",
-                            "aac",
-                            "-b:a",
-                            "96k",
-                            "-movflags",
-                            "+faststart",
-                            str(video_mp4_out),
-                        ],
-                    ),
-                    (
-                        audio_out,
-                        "original_audio",
-                        "mp3",
-                        "mp3-q5-stereo",
-                        [
-                            "-ss",
-                            start,
-                            "-t",
-                            duration,
-                            "-i",
-                            str(video_path),
-                            "-vn",
-                            "-ac",
-                            "2",
-                            "-acodec",
-                            "libmp3lame",
-                            "-q:a",
-                            "5",
-                            str(audio_out),
-                        ],
-                    ),
-                ]
-            )
-            media_errors = []
-            for output_path, role, extension, profile, command in media_commands:
-                cache_path, _ = media_clip_cache_path(
-                    video_source_fingerprint,
-                    start,
-                    duration,
-                    role,
-                    extension,
-                    profile,
-                )
-                if copy_cached_file(cache_path, output_path):
-                    media_cache_hit_count += 1
-                    continue
-                error = try_run_ffmpeg(command)
-                if error:
-                    media_errors.append(error)
-                else:
-                    store_cached_file(output_path, cache_path)
-            if media_errors:
-                for output_path, *_ in media_commands:
-                    output_path.unlink(missing_ok=True)
-                video_webm_name = ""
-                video_mp4_name = ""
-                poster_name = ""
-                audio_name = ""
-                warnings.append(f"{segment_id} 视频/原声切片失败，已保留文字卡：{media_errors[0]}")
-            else:
-                poster_at = str(float(start) + min(0.75, max(0.1, float(duration) / 2)))
-                poster_cache_path, _ = media_clip_cache_path(
-                    video_source_fingerprint,
-                    poster_at,
-                    "poster",
-                    "poster",
-                    "jpg",
-                    "jpg-q3-scale960",
-                )
-                poster_error = ""
-                if copy_cached_file(poster_cache_path, poster_out):
-                    media_cache_hit_count += 1
-                else:
-                    poster_error = try_run_ffmpeg(
-                        [
-                            "-ss",
-                            poster_at,
-                            "-i",
-                            str(video_path),
-                            "-frames:v",
-                            "1",
-                            "-q:v",
-                            "3",
-                            "-vf",
-                            "scale='min(960,iw)':-2",
-                            str(poster_out),
-                        ]
-                    )
-                    if not poster_error:
-                        store_cached_file(poster_out, poster_cache_path)
-                if poster_error:
-                    poster_name = ""
-                    poster_out.unlink(missing_ok=True)
-                    warnings.append(f"{segment_id} 视频封面生成失败：{poster_error}")
-                if video_webm_name and video_webm_out.exists():
-                    media_files.append(str(video_webm_out))
+                video_webm_name = reused_media_names.get("video_webm_name", "") if export_webm_media else ""
+                video_mp4_name = reused_media_names.get("video_mp4_name", "")
+                poster_name = reused_media_names.get("poster_name", "")
+                audio_name = reused_media_names.get("audio_name", "")
+                media_reused_segment_count += 1
+                media_cache_hit_count += len([name for name in [video_webm_name, video_mp4_name, poster_name, audio_name] if name])
+                if video_webm_name:
                     ledger_add(video_webm_name, role="video", segment=segment, field="Video")
-                    video_file_count += 1
-                if video_mp4_name and video_mp4_out.exists():
-                    media_files.append(str(video_mp4_out))
+                if video_mp4_name:
                     ledger_add(video_mp4_name, role="video", segment=segment, field="Video")
-                    video_file_count += 1
-                if audio_name and audio_out.exists():
-                    media_files.append(str(audio_out))
+                if audio_name:
                     ledger_add(audio_name, role="original_audio", segment=segment, field="Audio")
-                    original_audio_count += 1
-                if poster_name and poster_out.exists():
-                    media_files.append(str(poster_out))
+                if poster_name:
                     ledger_add(poster_name, role="poster", segment=segment, field="Video")
-                video_segment_count += 1
-            if tts_requested and not is_document_project:
-                try:
-                    emit_progress("export", "tts", min(86, segment_percent + 4), f"正在生成整句朗读：{segment_id}")
-                    tts_result = synthesize_tts(project, segment, tts_out)
-                    if tts_result:
-                        cache_hit = bool(tts_result.get("cache_hit")) if isinstance(tts_result, dict) else False
-                        if cache_hit:
-                            tts_cache_hit_count += 1
-                        media_files.append(str(tts_out))
-                        tts_by_segment[segment_id] = tts_name
-                        ledger_add(
-                            tts_name,
-                            role="sentence_tts",
-                            segment=segment,
-                            field="TtsAudio",
-                            tts_text=segment_tts_text,
-                            cache_hit=cache_hit,
+            else:
+                media_commands = []
+                if export_webm_media:
+                    media_commands.append(
+                        (
+                            video_webm_out,
+                            "video_webm",
+                            "webm",
+                            "vp9-540p-crf38-opus64",
+                            [
+                                "-ss",
+                                start,
+                                "-t",
+                                duration,
+                                "-i",
+                                str(video_path),
+                                "-map",
+                                "0:v:0?",
+                                "-map",
+                                "0:a:0?",
+                                "-vf",
+                                "scale=-2:540",
+                                "-c:v",
+                                "libvpx-vp9",
+                                "-b:v",
+                                "0",
+                                "-crf",
+                                "38",
+                                "-row-mt",
+                                "1",
+                                "-deadline",
+                                "good",
+                                "-cpu-used",
+                                "4",
+                                "-pix_fmt",
+                                "yuv420p",
+                                "-ac",
+                                "2",
+                                "-c:a",
+                                "libopus",
+                                "-b:a",
+                                "64k",
+                                str(video_webm_out),
+                            ],
                         )
-                except Exception as err:
-                    warnings.append(f"{segment_id} TTS 失败：{err}")
+                    )
+                media_commands.extend(
+                    [
+                        (
+                            video_mp4_out,
+                            "video_mp4",
+                            "mp4",
+                            "x264-540p-crf28-aac80",
+                            [
+                                "-ss",
+                                start,
+                                "-t",
+                                duration,
+                                "-i",
+                                str(video_path),
+                                "-map",
+                                "0:v:0?",
+                                "-map",
+                                "0:a:0?",
+                                "-vf",
+                                "scale=-2:540",
+                                "-c:v",
+                                "libx264",
+                                "-preset",
+                                "veryfast",
+                                "-profile:v",
+                                "baseline",
+                                "-level",
+                                "3.1",
+                                "-pix_fmt",
+                                "yuv420p",
+                                "-crf",
+                                "28",
+                                "-ac",
+                                "2",
+                                "-c:a",
+                                "aac",
+                                "-b:a",
+                                "80k",
+                                "-movflags",
+                                "+faststart",
+                                str(video_mp4_out),
+                            ],
+                        ),
+                        (
+                            audio_out,
+                            "original_audio",
+                            "mp3",
+                            "mp3-q5-stereo",
+                            [
+                                "-ss",
+                                start,
+                                "-t",
+                                duration,
+                                "-i",
+                                str(video_path),
+                                "-vn",
+                                "-ac",
+                                "2",
+                                "-acodec",
+                                "libmp3lame",
+                                "-q:a",
+                                "5",
+                                str(audio_out),
+                            ],
+                        ),
+                    ]
+                )
+                media_command_cache_paths = [
+                    media_clip_cache_path(video_source_fingerprint, start, duration, role, extension, profile)[0]
+                    for _output_path, role, extension, profile, _command in media_commands
+                ]
+                media_action = (
+                    "媒体缓存"
+                    if media_command_cache_paths
+                    and all(cached_media_file_valid(path) for path in media_command_cache_paths)
+                    else "媒体切片"
+                )
+                emit_export_progress(
+                    "media",
+                    segment_percent,
+                    f"{media_action} {index + 1}/{len(export_segments)}：{segment.get('source_time', segment_id)}",
+                )
+                media_errors = []
+                for output_path, role, extension, profile, command in media_commands:
+                    cache_path, _ = media_clip_cache_path(
+                        video_source_fingerprint,
+                        start,
+                        duration,
+                        role,
+                        extension,
+                        profile,
+                    )
+                    if copy_cached_file(cache_path, output_path):
+                        media_cache_hit_count += 1
+                        continue
+                    error = try_run_ffmpeg(command)
+                    if error:
+                        media_errors.append(error)
+                    else:
+                        store_cached_file(output_path, cache_path)
+                if media_errors:
+                    for output_path, *_ in media_commands:
+                        output_path.unlink(missing_ok=True)
+                    video_webm_name = ""
+                    video_mp4_name = ""
+                    poster_name = ""
+                    audio_name = ""
+                    warnings.append(f"{segment_id} 视频/原声切片失败，已保留文字卡：{media_errors[0]}")
+                else:
+                    poster_at = str(float(start) + min(0.75, max(0.1, float(duration) / 2)))
+                    poster_cache_path, _ = media_clip_cache_path(
+                        video_source_fingerprint,
+                        poster_at,
+                        "poster",
+                        "poster",
+                        "jpg",
+                        "jpg-q3-scale960",
+                    )
+                    poster_error = ""
+                    if copy_cached_file(poster_cache_path, poster_out):
+                        media_cache_hit_count += 1
+                    else:
+                        poster_error = try_run_ffmpeg(
+                            [
+                                "-ss",
+                                poster_at,
+                                "-i",
+                                str(video_path),
+                                "-frames:v",
+                                "1",
+                                "-q:v",
+                                "3",
+                                "-vf",
+                                "scale='min(960,iw)':-2",
+                                str(poster_out),
+                            ]
+                        )
+                        if not poster_error:
+                            store_cached_file(poster_out, poster_cache_path)
+                    if poster_error:
+                        poster_name = ""
+                        poster_out.unlink(missing_ok=True)
+                        warnings.append(f"{segment_id} 视频封面生成失败：{poster_error}")
+                    if video_webm_name and video_webm_out.exists():
+                        media_files.append(str(video_webm_out))
+                        ledger_add(video_webm_name, role="video", segment=segment, field="Video")
+                        video_file_count += 1
+                    if video_mp4_name and video_mp4_out.exists():
+                        media_files.append(str(video_mp4_out))
+                        ledger_add(video_mp4_name, role="video", segment=segment, field="Video")
+                        video_file_count += 1
+                    if audio_name and audio_out.exists():
+                        media_files.append(str(audio_out))
+                        ledger_add(audio_name, role="original_audio", segment=segment, field="Audio")
+                        original_audio_count += 1
+                    if poster_name and poster_out.exists():
+                        media_files.append(str(poster_out))
+                        ledger_add(poster_name, role="poster", segment=segment, field="Video")
+                    if video_mp4_name or video_webm_name or audio_name or poster_name:
+                        media_by_clip_key[media_clip_key] = {
+                            "video_webm_name": video_webm_name,
+                            "video_mp4_name": video_mp4_name,
+                            "poster_name": poster_name,
+                            "audio_name": audio_name,
+                        }
+                    video_segment_count += 1
             cut_segments.add(segment_id)
 
         for card in enabled_cards:
-            front_fields = card_front_fields(card, repetition_mode=use_v11_template)
+            front_fields = card_front_fields(card, repetition_mode=use_v11_repetition_front)
             template_labels = card_template_labels(card, deck_kind_code)
             export_card_id = f"{project_card_prefix}_{card.get('id', '')}"
             phrase_text = card_phrase_tts_text(card, front_fields)
             phrase_tts_name = ""
             phrase_key = phrase_text.lower()
-            if tts_requested and phrase_text and phrase_key not in {"key expression", "n/a"}:
+            if tts_generation_enabled and phrase_text and phrase_key not in {"key expression", "n/a"}:
                 expected_phrase_tts_keys.add(phrase_key)
                 if phrase_key in phrase_tts_by_phrase:
                     phrase_tts_name = phrase_tts_by_phrase[phrase_key]
-                else:
-                    phrase_tts_name = f"{media_prefix}_phrase_{media_text_hash(phrase_text)}.mp3"
-                    phrase_tts_out = media_dir / phrase_tts_name
-                    try:
-                        emit_progress("export", "tts", min(88, segment_percent + 5), f"正在生成表达发音：{phrase_text}")
-                        tts_result = synthesize_tts(project, segment, phrase_tts_out, text_override=phrase_text)
-                        if tts_result:
-                            cache_hit = bool(tts_result.get("cache_hit")) if isinstance(tts_result, dict) else False
-                            if cache_hit:
-                                tts_cache_hit_count += 1
-                            media_files.append(str(phrase_tts_out))
-                            phrase_tts_by_phrase[phrase_key] = phrase_tts_name
-                            phrase_tts_cache_hit_by_phrase[phrase_key] = cache_hit
-                        else:
-                            phrase_tts_name = ""
-                    except Exception as err:
-                        phrase_tts_name = ""
-                        warnings.append(f"{segment_id} 表达 TTS 失败：{err}")
             if phrase_tts_name:
                 ledger_add(
                     phrase_tts_name,
@@ -13703,22 +15958,32 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     tts_text=phrase_text,
                     cache_hit=phrase_tts_cache_hit_by_phrase.get(phrase_key, False),
                 )
-            meaning_field = v11_meaning_text(card) if use_v11_template else card_chinese_core(card)
-            definition_field = v11_usage_text(card) if use_v11_template else card.get("definition", "")
-            collocations_field = v11_self_sentence_text(card) if use_v11_template else card.get("collocations", "")
-            context_field = v11_source_translation_text(card) if use_v11_template else card.get("context", "")
-            teacher_note_field = v11_misuse_text(card) if use_v11_template else card.get("teacher_note", "")
-            chinese_feel_field = v11_answer_note_text(card) if use_v11_template else card.get("chinese_feel", "")
+            if is_ciba_template:
+                meaning_field = ciba_contextual_meaning_text(card)
+                definition_field = ciba_language_action_text(card)
+                collocations_field = ciba_transfer_text(card)
+                context_field = ciba_source_context_text(card)
+                teacher_note_field = ciba_boundary_text(card)
+                chinese_feel_field = v11_answer_note_text(card)
+                why_field = ciba_reason_text(card) or clean_study_text(card.get("why"))
+            else:
+                meaning_field = export_meaning_text(card, use_v11_repetition_front)
+                definition_field = export_definition_text(card, use_v11_repetition_front)
+                collocations_field = v11_self_sentence_text(card) if use_v11_repetition_front else card.get("collocations", "")
+                context_field = export_context_text(card, use_v11_repetition_front)
+                teacher_note_field = export_teacher_note_text(card, use_v11_repetition_front)
+                chinese_feel_field = v11_answer_note_text(card) if use_v11_repetition_front else card.get("chinese_feel", "")
+                why_field = card.get("why", "")
             pronunciation_meta = ensure_card_pronunciation_meta(card, project.get("language", "en"))
             note = genanki.Note(
                 model=model,
                 fields=[
                     anki_text(export_card_id),
                     anki_study_text(card.get("type_label", card.get("type", ""))),
-                    anki_video_html(video_webm_name, video_mp4_name, poster_name, controls=not use_v11_template, muted=False),
-                    anki_audio_html(audio_name, controls=not use_v11_template, role="original"),
-                    anki_audio_html(tts_by_segment.get(segment_id, ""), controls=not use_v11_template, role="slow"),
-                    anki_audio_html(phrase_tts_name, controls=not use_v11_template, role="phrase"),
+                    anki_video_html(video_webm_name, video_mp4_name, poster_name, controls=not use_v11_repetition_front, muted=False),
+                    anki_audio_html(audio_name, controls=not use_v11_repetition_front, role="original"),
+                    anki_audio_html(tts_by_segment.get(segment_id, ""), controls=not use_v11_repetition_front, role="slow"),
+                    anki_audio_html(phrase_tts_name, controls=not use_v11_repetition_front, role="phrase"),
                     "1" if card.get("type") == "listening" else "",
                     anki_study_text(front_fields["front_prompt"]),
                     anki_study_text(front_fields["front_content"]),
@@ -13728,24 +15993,29 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     anki_study_text(card.get("source_spoken_ipa", "")),
                     anki_study_text(card.get("pronunciation_note", "")),
                     anki_text(card.get("pronunciation_confidence", "")),
+                    anki_study_text(card.get("pronunciation_status", "")),
+                    anki_study_text(card.get("source_pronunciation_status", "")),
                     anki_text(json.dumps(pronunciation_meta, ensure_ascii=False, separators=(",", ":"))),
                     anki_text(spoken_label_for_meta(pronunciation_meta)),
                     anki_text(standard_hint_for_meta(pronunciation_meta, project.get("language", "en"))),
                     anki_study_text(card.get("english", "")),
-                    anki_study_text(meaning_field),
+                    anki_text(meaning_field),
                     anki_study_text(card.get("phrase", "")),
                     anki_study_text(definition_field),
                     anki_study_text(collocations_field),
                     anki_study_text(context_field),
                     anki_study_text(card.get("example", "")),
                     anki_study_text(chinese_feel_field),
-                    anki_study_text(card.get("why", "")),
+                    anki_study_text(why_field),
                     anki_study_text(card.get("difficulty", "")),
                     anki_text(segment_display_source_time(segment)),
                     anki_study_text(teacher_note_field),
+                    anki_text(learning_action_for_card(card)),
+                    anki_study_text(ciba_conceptual_action_text(card) if is_ciba_template else card.get("conceptual_action", "")),
+                    anki_study_text(ciba_chinese_learner_trap_text(card) if is_ciba_template else card.get("chinese_learner_trap", "")),
                     anki_study_text(card.get("cloze", "")),
                     anki_text(template_labels["card_layout"]),
-                    anki_text("repetition" if use_v11_template else template_labels["card_layout"]),
+                    anki_text("repetition" if use_v11_repetition_front else template_labels["card_layout"]),
                     anki_text(template_labels["front_kicker"]),
                     anki_text(template_labels["source_label"]),
                     anki_text(template_labels["understand_label"]),
@@ -13760,24 +16030,36 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     template_labels["card_layout"],
                 ],
             )
-            deck.add_note(note)
+            target_deck = default_deck
+            if is_batch_export:
+                batch_item_id = str(segment.get("batch_item_id") or card.get("batch_item_id") or "").strip()
+                target_deck = batch_decks_by_item_id.get(batch_item_id) if batch_item_id else None
+                if target_deck is None:
+                    target_deck = fallback_batch_deck
+                    if not fallback_batch_deck_used:
+                        decks_for_package.append(fallback_batch_deck)
+                        deck_names_for_result.append(fallback_batch_deck.name)
+                        fallback_batch_deck_used = True
+                elif batch_item_id:
+                    exported_batch_item_ids.add(batch_item_id)
+            target_deck.add_note(note)
             exported_cards += 1
 
     if exported_cards == 0:
         fail("没有可导出的卡片。请在预览页至少启用一张卡。")
-    if tts_requested and not is_document_project:
-        expected_sentence_tts = len(cut_segments)
+    if tts_generation_enabled and not is_document_project:
+        expected_sentence_tts = sentence_tts_total
         if expected_sentence_tts and not tts_by_segment:
             warnings.append("TTS 已启用，但整句 AI 朗读生成 0 条；请先测试 TTS 配置后再导出。")
         elif len(tts_by_segment) < expected_sentence_tts:
             warnings.append(f"整句 AI 朗读只生成 {len(tts_by_segment)}/{expected_sentence_tts} 条，请检查导出日志。")
-        expected_phrase_tts = len(expected_phrase_tts_keys)
+        expected_phrase_tts = phrase_tts_total
         if expected_phrase_tts and not phrase_tts_by_phrase:
             warnings.append("TTS 已启用，但表达小喇叭生成 0 条；请先测试 TTS 配置后再导出。")
         elif len(phrase_tts_by_phrase) < expected_phrase_tts:
             warnings.append(f"表达小喇叭只生成 {len(phrase_tts_by_phrase)}/{expected_phrase_tts} 条，请检查导出日志。")
 
-    emit_progress("export", "package", 92, "正在写入 .apkg。")
+    emit_export_progress("package", 92, "正在写入 APKG。")
     media_files = list(dict.fromkeys(media_files))
     exported_media_manifest = media_manifest(media_files, media_ledger)
     media_bytes = 0
@@ -13786,17 +16068,19 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             media_bytes += Path(media_file).stat().st_size
         except OSError:
             warnings.append(f"媒体文件统计失败：{Path(media_file).name}")
-    package = genanki.Package(deck)
+    package_decks: Any = decks_for_package[0] if len(decks_for_package) == 1 else decks_for_package
+    package = genanki.Package(package_decks)
     package.media_files = media_files
     apkg_path = export_root / f"{safe_filename(project.get('title', 'anki-card'))}.apkg"
     package.write_to_file(str(apkg_path))
 
-    emit_progress("export", "done", 100, f"导出完成：{exported_cards} 张卡。")
+    emit_export_progress("done", 100, f"导出完成：{exported_cards} 张卡。")
     anki_tag = f"anki_card_generator_{template_version.lower()}"
     return {
         "apkg_path": str(apkg_path),
         "media_dir": str(media_dir),
         "deck_name": deck_name,
+        "deck_names": deck_names_for_result,
         "deck_kind": deck_kind_code,
         "template_version": template_version,
         "anki_tag": anki_tag,
@@ -13811,12 +16095,23 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             "original_audio_files": original_audio_count,
             "sentence_tts_files": len(tts_by_segment),
             "phrase_tts_files": len(phrase_tts_by_phrase),
+            "sentence_tts_requested": sentence_tts_total,
+            "phrase_tts_requested": phrase_tts_total,
+            "tts_concurrency": export_tts_concurrency(project) if tts_generation_enabled else 0,
             "tts_cache_hits": tts_cache_hit_count,
             "media_cache_hits": media_cache_hit_count,
+            "media_reused_segments": media_reused_segment_count,
             "media_files": len(media_files),
             "media_bytes": media_bytes,
             "media_mb": round(media_bytes / (1024 * 1024), 1),
         },
+        "batch_summary": {
+            "enabled": is_batch_export,
+            "items": len(batch_deck_specs) if is_batch_export else 0,
+            "exported_items": len(exported_batch_item_ids) if is_batch_export else 0,
+            "deck_names": deck_names_for_result if is_batch_export else [],
+        },
+        "quality_audit": quality_audit,
         "warnings": warnings,
     }
 
@@ -14006,8 +16301,11 @@ def anki_executable_candidates() -> list[Path]:
 
 def find_anki_executable() -> str:
     for candidate in anki_executable_candidates():
-        if candidate.exists():
-            return str(candidate)
+        try:
+            if candidate.exists():
+                return str(candidate)
+        except OSError:
+            continue
     return ""
 
 

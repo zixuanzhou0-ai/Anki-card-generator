@@ -12,9 +12,9 @@ import {
 } from 'lucide-react'
 
 import type {
-  CardKind,
   ContentToggles,
   DocumentFocus,
+  EnvRepairTarget,
   GenerateRequest,
   LanguageFocus,
   Level,
@@ -25,6 +25,8 @@ import type {
   WorkspaceStage,
 } from '../../domain/types'
 import type { WorkerErrorAction, WorkerErrorActionId } from '../../domain/workerErrors'
+import { batchItemsForSource } from '../../domain/batch'
+import { sourceRequirementMessage } from '../../domain/sourceValidation'
 import { CardTemplatePanel } from '../generation/CardTemplatePanel'
 import { ReadinessPanel } from '../generation/ReadinessPanel'
 import type { ReadinessItem } from '../generation/ReadinessPanel'
@@ -66,12 +68,6 @@ type DocumentFocusOption = {
   defaultOn: boolean
 }
 
-type CardOption = {
-  id: CardKind
-  label: string
-  note: string
-}
-
 type TemplateOption = {
   id: TemplateId
   label: string
@@ -85,13 +81,12 @@ type InspectorPanelProps = {
   activeWorkspaceStage: WorkspaceStage
   activeTemplateLabel: string
   appBusy: boolean
-  cardOptions: CardOption[]
-  cardTypes: CardKind[]
   contentOptions: ContentOption[]
   diagnosticCount: number
   documentFocusOptions: DocumentFocusOption[]
   generatedCardCount: number
   hasExportableCards: boolean
+  hasLearningPointResult: boolean
   hasProject: boolean
   inspectorSheetOpen: boolean
   languageFocusOptions: LanguageFocusOption[]
@@ -101,6 +96,7 @@ type InspectorPanelProps = {
   request: GenerateRequest
   requestEditedDuringRun: boolean
   selectedCardCount: number
+  selectedLearningPointCount: number
   status: string
   statusTone: string
   templateId: TemplateId
@@ -111,15 +107,17 @@ type InspectorPanelProps = {
   workerProgress: WorkerProgress | null
   onApplyCollectionPreset: (preset: CollectionPreset) => void
   onCloseSheet: () => void
+  onCheckEnv: () => void
   onExport: () => void
   onGenerate: () => void
+  onOpenEnvSettings: () => void
   onPatchRequest: (patch: Partial<GenerateRequest>) => void
   onPreviewRateChange: (rate: number) => void
+  onRepairEnv: (target: EnvRepairTarget) => void
   onSelectCurrentLevel: (level: Level) => void
-  onSelectPath: (kind: 'video' | 'subtitle' | 'document') => void
+  onSelectPath: (kind: 'video' | 'subtitle' | 'document' | 'video-folder' | 'document-folder') => void
   onSelectSourceMode: (mode: SourceMode) => void
   onSelectTemplate: (templateId: TemplateId) => void
-  onToggleCardType: (type: CardKind) => void
   onToggleCollectionLevel: (level: Level) => void
   onToggleContent: (key: keyof ContentToggles) => void
   onToggleDocumentFocus: (focus: DocumentFocus) => void
@@ -132,13 +130,12 @@ export function InspectorPanel({
   activeWorkspaceStage,
   activeTemplateLabel,
   appBusy,
-  cardOptions,
-  cardTypes,
   contentOptions,
   diagnosticCount,
   documentFocusOptions,
   generatedCardCount,
   hasExportableCards,
+  hasLearningPointResult,
   hasProject,
   inspectorSheetOpen,
   languageFocusOptions,
@@ -148,6 +145,7 @@ export function InspectorPanel({
   request,
   requestEditedDuringRun,
   selectedCardCount,
+  selectedLearningPointCount,
   status,
   statusTone,
   templateId,
@@ -158,15 +156,17 @@ export function InspectorPanel({
   workerProgress,
   onApplyCollectionPreset,
   onCloseSheet,
+  onCheckEnv,
   onExport,
   onGenerate,
+  onOpenEnvSettings,
   onPatchRequest,
   onPreviewRateChange,
+  onRepairEnv,
   onSelectCurrentLevel,
   onSelectPath,
   onSelectSourceMode,
   onSelectTemplate,
-  onToggleCardType,
   onToggleCollectionLevel,
   onToggleContent,
   onToggleDocumentFocus,
@@ -175,10 +175,45 @@ export function InspectorPanel({
   onWorkerErrorAction,
 }: InspectorPanelProps) {
   const sourceReady = readiness.find((item) => item.id === 'source')?.done ?? false
-  const incompleteReadiness = readiness.filter((item) => !item.done)
-  const sourceLabel =
-    request.source_mode === 'document' ? '文档资料' : request.source_mode === 'url' ? '视频链接' : '本地视频'
+  const extractionReadinessIds = new Set(['source', 'env', 'api'])
+  const cardGenerationReadinessIds = new Set(['source', 'env', 'api'])
+  const incompleteReadiness = readiness.filter((item) => {
+    if (hasProject) return !item.done
+    if (hasLearningPointResult) return cardGenerationReadinessIds.has(item.id) && !item.done
+    return extractionReadinessIds.has(item.id) && !item.done
+  })
+  const envPreflight = incompleteReadiness.find((item) => item.id === 'env')
+  const envUnchecked = envPreflight?.detail === '未检查'
+  const showEnvRepair = Boolean(envPreflight && !envUnchecked)
+  const activeBatchItems = request.batch_enabled ? batchItemsForSource(request.batch_items ?? [], request.source_mode) : []
+  const batchSubdeckSummary = `${activeBatchItems.length} 个子牌组`
+  const batchPackageTitle = request.title.trim() || '未命名学习包'
+  const sourceLabel = request.batch_enabled
+    ? '批量学习包'
+    : request.source_mode === 'document'
+      ? '文档资料'
+      : request.source_mode === 'url'
+        ? '视频链接'
+        : '本地视频'
+  const sourceStageSummary = request.batch_enabled
+    ? activeBatchItems.length
+      ? `${batchPackageTitle} · ${batchSubdeckSummary}`
+      : '先添加批量素材'
+    : sourceReady
+      ? `${sourceLabel}已就绪`
+      : `先选择${sourceLabel}`
   const levelSummary = request.level_mode === 'auto' ? '自动判断' : request.level
+  const runningCommand = workerProgress?.command
+  const workerStageLabel = runningCommand === 'extract_learning_points' ? '抽取中' : '生成中'
+  const reviewStageLabel = workerBusy && !hasProject ? workerStageLabel : hasProject ? '审核导出' : hasLearningPointResult ? '生成卡片' : '确认抽取'
+  const reviewStageSummary =
+    workerBusy && !hasProject
+      ? `${Math.round(workerProgress?.percent ?? 0)}% · 进度在右侧`
+      : hasProject
+        ? `将导出 ${selectedCardCount} 张`
+        : hasLearningPointResult
+          ? `已选 ${selectedLearningPointCount} 个学习点`
+          : '确认后抽取学习点'
   const stageItems: Array<{
     id: WorkspaceStage
     label: string
@@ -189,7 +224,7 @@ export function InspectorPanel({
     {
       id: 'source',
       label: '素材配置',
-      summary: sourceReady ? `${sourceLabel}已就绪` : `先选择${sourceLabel}`,
+      summary: sourceStageSummary,
       icon: FileVideo2,
       complete: sourceReady,
     },
@@ -202,13 +237,8 @@ export function InspectorPanel({
     },
     {
       id: 'review',
-      label: workerBusy && !hasProject ? '生成中' : hasProject ? '审核导出' : '确认生成',
-      summary:
-        workerBusy && !hasProject
-          ? `${Math.round(workerProgress?.percent ?? 0)}% · 进度在右侧`
-          : hasProject
-            ? `将导出 ${selectedCardCount} 张`
-            : '确认后开始生成',
+      label: reviewStageLabel,
+      summary: reviewStageSummary,
       icon: ClipboardCheck,
       complete: hasProject && selectedCardCount > 0,
     },
@@ -228,6 +258,8 @@ export function InspectorPanel({
   const goToConfirmGenerate = () => {
     if (!workerBusy) onWorkspaceStageChange('review')
   }
+  const sourceActionLabel = sourceReady ? '下一步：学习设置' : '选择素材后继续'
+  const sourceActionNote = sourceRequirementMessage(request)
 
   return (
     <aside className={`control-column ${inspectorSheetOpen ? 'sheet-open' : ''}`} aria-label="制卡流程控制台">
@@ -299,9 +331,9 @@ export function InspectorPanel({
             <div className="workflow-stage-actions">
               <button type="button" className="primary-button" onClick={goToGenerateSettings} disabled={!sourceReady}>
                 <ArrowRight size={18} />
-                下一步：学习设置
+                {sourceActionLabel}
               </button>
-              {!sourceReady ? <small className="workflow-action-note">先选择视频、字幕、链接或文档。</small> : null}
+              {!sourceReady ? <small className="workflow-action-note">{sourceActionNote}</small> : null}
             </div>
           </>
         ) : null}
@@ -347,14 +379,15 @@ export function InspectorPanel({
             )}
             <CardTemplatePanel
               activeTemplateLabel={activeTemplateLabel}
-              cardOptions={cardOptions}
-              cardTypes={cardTypes}
+              cardStyleId={request.card_style}
               documentStudyMode={request.document_study_mode}
+              reviewDensity={request.review_density}
               sourceMode={request.source_mode}
               templateId={templateId}
               templateOptions={templateOptions}
+              onSelectCardStyle={(styleId) => onPatchRequest({ card_style: styleId })}
+              onSelectReviewDensity={(reviewDensity) => onPatchRequest({ review_density: reviewDensity })}
               onSelectTemplate={onSelectTemplate}
-              onToggleCardType={onToggleCardType}
             />
             <div className="workflow-stage-actions split">
               <button type="button" className="ghost-button" onClick={() => onWorkspaceStageChange('source')}>
@@ -363,7 +396,7 @@ export function InspectorPanel({
               </button>
               <button type="button" className="primary-button" onClick={goToConfirmGenerate} disabled={appBusy}>
                 <ArrowRight size={18} />
-                下一步：确认生成
+                下一步：确认抽取
               </button>
             </div>
           </>
@@ -384,9 +417,17 @@ export function InspectorPanel({
             ) : null}
             <div className="panel workflow-review-card">
               <div className="workflow-review-title">
-                <span>{workerBusy && !hasProject ? '生成中' : hasProject ? '审核导出' : '确认生成'}</span>
+                <span>{reviewStageLabel}</span>
                 <strong>
-                  {workerBusy && !hasProject ? '正在按当前设置制作卡片' : hasProject ? '检查卡片后导出 APKG' : '设置完成后开始生成卡片'}
+                  {workerBusy && !hasProject
+                    ? runningCommand === 'extract_learning_points'
+                      ? '正在从字幕抽取学习点'
+                      : '正在把学习点生成完整卡片'
+                    : hasProject
+                      ? '检查卡片后导出 APKG'
+                      : hasLearningPointResult
+                        ? '选择学习点后生成完整卡片'
+                        : '设置完成后先抽取学习点'}
                 </strong>
               </div>
               {workerBusy && !hasProject ? (
@@ -422,25 +463,50 @@ export function InspectorPanel({
                     <span>
                       <strong>素材</strong>
                       <small>{sourceLabel}</small>
+                      {request.batch_enabled ? <small>{batchPackageTitle}</small> : null}
+                      {request.batch_enabled ? <small>{batchSubdeckSummary}</small> : null}
                     </span>
                     <span>
                       <strong>学习</strong>
                       <small>{levelSummary}</small>
                     </span>
                     <span>
-                      <strong>模板</strong>
-                      <small>{activeTemplateLabel}</small>
+                      <strong>{hasLearningPointResult ? '已选学习点' : '模板'}</strong>
+                      <small>{hasLearningPointResult ? `${selectedLearningPointCount} 个` : activeTemplateLabel}</small>
                     </span>
                   </div>
                   {incompleteReadiness.length ? (
                     <div className="workflow-preflight-warning" role="status">
-                      <strong>生成前还需要完成</strong>
+                      <strong>{hasLearningPointResult ? '生成完整卡片前还需要完成' : '抽取学习点前还需要完成'}</strong>
                       <small>{incompleteReadiness.map((item) => `${item.label}：${item.detail}`).join(' / ')}</small>
+                      {envPreflight ? (
+                        <div className="workflow-preflight-actions" aria-label="环境快捷处理">
+                          {envUnchecked ? (
+                            <button type="button" className="preflight-primary-action" onClick={onCheckEnv} disabled={appBusy}>
+                              立即检查
+                            </button>
+                          ) : null}
+                          {showEnvRepair ? (
+                            <button type="button" className="preflight-primary-action" onClick={() => onRepairEnv('all')} disabled={appBusy}>
+                              一键修复
+                            </button>
+                          ) : null}
+                          <button type="button" className="preflight-secondary-action" onClick={onOpenEnvSettings} disabled={appBusy}>
+                            查看详情
+                          </button>
+                        </div>
+                      ) : null}
                     </div>
                   ) : (
                     <div className="workflow-preflight-ok" role="status">
-                      <strong>配置已就绪</strong>
-                      <small>环境、模型 API、TTS 和卡片设置都可以开始正式制卡。</small>
+                      <strong>{hasLearningPointResult ? '可以生成完整卡片' : '可以抽取学习点'}</strong>
+                      <small>
+                        {hasLearningPointResult
+                          ? '环境和模型 API 已就绪。TTS 可在导出前继续测试或配置。'
+                          : request.batch_enabled
+                            ? `本轮会按 ${batchSubdeckSummary} 逐项制卡，最终导出一个保留层级的 APKG。`
+                            : '本轮会先读取字幕，再调用模型 API 精筛词伙、口语、单词用法、语法和听力点。'}
+                      </small>
                     </div>
                   )}
                   <div className="workflow-stage-actions split">
@@ -448,9 +514,14 @@ export function InspectorPanel({
                       <ArrowLeft size={18} />
                       返回学习设置
                     </button>
-                    <button type="button" className="primary-button" onClick={onGenerate} disabled={appBusy || !sourceReady}>
+                    <button
+                      type="button"
+                      className="primary-button"
+                      onClick={onGenerate}
+                      disabled={appBusy || !sourceReady || (hasLearningPointResult && selectedLearningPointCount === 0)}
+                    >
                       <PlayCircle size={18} />
-                      开始生成卡片
+                      {hasLearningPointResult ? '生成选中卡片' : '开始抽取学习点'}
                     </button>
                   </div>
                 </>

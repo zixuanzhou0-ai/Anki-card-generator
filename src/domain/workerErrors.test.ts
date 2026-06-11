@@ -22,6 +22,13 @@ describe('worker error actions', () => {
     expect(getWorkerErrorActions('TTS_AUTH_FAILED').map((action) => action.id)).toEqual(['open-tts-settings'])
   })
 
+  it('offers recovery actions for AI review JSON failures', () => {
+    expect(getWorkerErrorActions('MODEL_REVIEW_BAD_JSON').map((action) => action.id)).toEqual([
+      'open-api-settings',
+      'retry',
+    ])
+  })
+
   it('keeps an explicit retry path for unknown worker failures', () => {
     expect(getWorkerErrorActions('UNKNOWN_WORKER_ERROR').map((action) => action.id)).toEqual(['retry'])
   })

@@ -179,7 +179,7 @@ export function EnvSettingsPanel({
     <section className="settings-section settings-section-single">
       <div className="panel-heading">
         <Settings2 size={20} />
-        <h3>本地环境</h3>
+        <h3>本地环境诊断</h3>
       </div>
       <div className={`env-readiness-card ${readiness.tone}`}>
         <div className="env-readiness-icon" aria-hidden="true">
@@ -194,7 +194,7 @@ export function EnvSettingsPanel({
           )}
         </div>
         <div className="env-readiness-copy">
-          <span className="label">本地环境体检</span>
+          <span className="label">本地环境诊断中心</span>
           <strong>{readiness.title}</strong>
           <p>{readiness.detail}</p>
           <small>{readiness.meta}</small>

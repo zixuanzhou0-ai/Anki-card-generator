@@ -117,7 +117,7 @@ function getSettingsHealthCards({
             : apiTone === 'testing'
               ? '正在验证服务商、模型和授权。'
               : apiSettings.apiConfig.provider === 'local'
-                ? '本地草稿能预览流程，正式生成建议配置 API。'
+                ? '预览模式只能演示流程，正式抽取学习点和制卡必须配置 API。'
                 : '选好服务商后先测试连接。',
       meta: apiSettings.apiTestMeta,
       status: getServiceStatus(apiTone),

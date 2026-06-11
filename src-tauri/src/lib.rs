@@ -12,7 +12,7 @@ use std::{
 
 use serde::Serialize;
 use serde_json::{json, Value};
-use tauri::{Emitter, LogicalSize, Manager, Size, State};
+use tauri::{Emitter, LogicalSize, Manager, Size, State, WebviewUrl, WebviewWindowBuilder};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -308,6 +308,8 @@ fn worker_command_allowed(command: &str) -> bool {
         command,
         "check_env"
             | "repair_env"
+            | "extract_learning_points"
+            | "generate_cards_from_learning_points"
             | "generate"
             | "export"
             | "test_api"
@@ -479,7 +481,8 @@ fn make_job_id(command: &str) -> String {
 
 fn worker_idle_timeout(command: &str) -> Duration {
     match command {
-        "generate" | "export" => Duration::from_secs(300),
+        "extract_learning_points" | "generate_cards_from_learning_points" => Duration::from_secs(900),
+        "generate" | "export" => Duration::from_secs(600),
         "test_api" | "test_tts" | "verify_anki_import" => Duration::from_secs(120),
         _ => Duration::from_secs(180),
     }
@@ -944,26 +947,99 @@ fn cancel_worker_job(
     }
 }
 
-fn anki_candidates() -> Vec<PathBuf> {
+fn push_unique_path(candidates: &mut Vec<PathBuf>, path: PathBuf) {
+    if !path.as_os_str().is_empty() && !candidates.iter().any(|candidate| candidate == &path) {
+        candidates.push(path);
+    }
+}
+
+fn parse_windows_open_command_executable(command: &str) -> Option<PathBuf> {
+    let command = command.trim();
+    if command.is_empty() {
+        return None;
+    }
+    if let Some(rest) = command.strip_prefix('"') {
+        let end = rest.find('"')?;
+        return Some(PathBuf::from(&rest[..end]));
+    }
+    let lower = command.to_ascii_lowercase();
+    let exe_end = lower.find(".exe").map(|index| index + 4)?;
+    Some(PathBuf::from(command[..exe_end].trim()))
+}
+
+#[cfg(windows)]
+fn registered_anki_candidates() -> Vec<PathBuf> {
+    let script = r#"$class = (Get-ItemProperty -Path 'Registry::HKEY_CLASSES_ROOT\.apkg' -ErrorAction SilentlyContinue).'(default)'; if ($class) { (Get-ItemProperty -Path "Registry::HKEY_CLASSES_ROOT\$class\shell\open\command" -ErrorAction SilentlyContinue).'(default)' }"#;
+    let mut command = Command::new("powershell.exe");
+    command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+    hide_console_window(&mut command);
+    command
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter_map(parse_windows_open_command_executable)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(not(windows))]
+fn registered_anki_candidates() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+fn anki_candidates_from_parts(
+    env_anki_exe: Option<String>,
+    local_app_data: Option<String>,
+    registered_candidates: Vec<PathBuf>,
+) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
-    if let Ok(path) = env::var("ANKI_EXE") {
-        candidates.push(PathBuf::from(path));
+    if let Some(path) = env_anki_exe {
+        push_unique_path(&mut candidates, PathBuf::from(path));
     }
-    if let Ok(local_app_data) = env::var("LOCALAPPDATA") {
+    for path in registered_candidates {
+        push_unique_path(&mut candidates, path);
+    }
+    if let Some(local_app_data) = local_app_data {
         let base = PathBuf::from(local_app_data);
-        candidates.push(
+        push_unique_path(
+            &mut candidates,
+            base.join("Programs").join("Anki").join("anki.exe"),
+        );
+        push_unique_path(
+            &mut candidates,
+            base.join("AnkiProgramFiles")
+                .join(".venv")
+                .join("Scripts")
+                .join("ankiw.exe"),
+        );
+        push_unique_path(
+            &mut candidates,
             base.join("AnkiProgramFiles")
                 .join(".venv")
                 .join("Scripts")
                 .join("anki.exe"),
         );
-        candidates.push(base.join("Programs").join("Anki").join("anki.exe"));
     }
-    candidates.push(PathBuf::from(r"C:\Program Files\Anki\anki.exe"));
-    candidates.push(PathBuf::from(r"C:\Program Files (x86)\Anki\anki.exe"));
+    push_unique_path(&mut candidates, PathBuf::from(r"C:\Program Files\Anki\anki.exe"));
+    push_unique_path(
+        &mut candidates,
+        PathBuf::from(r"C:\Program Files (x86)\Anki\anki.exe"),
+    );
 
     candidates
+}
+
+fn anki_candidates() -> Vec<PathBuf> {
+    anki_candidates_from_parts(
+        env::var("ANKI_EXE").ok(),
+        env::var("LOCALAPPDATA").ok(),
+        registered_anki_candidates(),
+    )
 }
 
 fn find_anki() -> Result<PathBuf, String> {
@@ -1431,6 +1507,32 @@ fn suggest_subtitle_path(video_path: String, language: String) -> Result<Option<
         .map(|(_, _, _, path)| path.display().to_string()))
 }
 
+#[tauri::command]
+fn list_directory_files(directory: String) -> Result<Vec<String>, String> {
+    let root = PathBuf::from(clean_user_path(&directory));
+    if !root.exists() || !root.is_dir() {
+        return Err(format!("目录不存在或不是文件夹：{}", root.display()));
+    }
+    let mut files = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(current) = stack.pop() {
+        let entries = fs::read_dir(&current).map_err(|err| format!("无法读取目录 {}：{err}", current.display()))?;
+        for entry in entries {
+            let path = entry.map_err(|err| format!("无法读取目录项：{err}"))?.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.is_file() {
+                files.push(path.display().to_string());
+            }
+            if files.len() > 2000 {
+                return Err("文件夹内文件超过 2000 个，请先拆成更小的学习包。".to_string());
+            }
+        }
+    }
+    files.sort_by(|left, right| left.to_lowercase().cmp(&right.to_lowercase()));
+    Ok(files)
+}
+
 fn path_is_within(target: &Path, root: &Path) -> bool {
     let Ok(target) = target.canonicalize() else {
         return false;
@@ -1584,6 +1686,7 @@ pub fn run() {
             start_worker_job,
             cancel_worker_job,
             suggest_subtitle_path,
+            list_directory_files,
             reveal_path,
             open_anki_import,
             save_secret,
@@ -1591,20 +1694,26 @@ pub fn run() {
             delete_secret
         ])
         .setup(|app| {
-            if let Some(window) = app.get_webview_window("main") {
-                window.set_min_size(Some(Size::Logical(LogicalSize {
-                    width: MIN_WINDOW_WIDTH,
-                    height: MIN_WINDOW_HEIGHT,
-                })))?;
-            }
+            let window = match app.get_webview_window("main") {
+                Some(window) => window,
+                None => {
+                    WebviewWindowBuilder::new(app, "main", WebviewUrl::App("/".into()))
+                        .title("Anki 卡片生成器")
+                        .inner_size(1540.0, 1080.0)
+                        .min_inner_size(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
+                        .resizable(true)
+                        .decorations(false)
+                        .visible(true)
+                        .build()?
+                }
+            };
+            window.set_min_size(Some(Size::Logical(LogicalSize {
+                width: MIN_WINDOW_WIDTH,
+                height: MIN_WINDOW_HEIGHT,
+            })))?;
+            window.show()?;
+            window.set_focus()?;
 
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -1614,6 +1723,42 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_windows_open_command_extracts_registered_anki_executable() {
+        assert_eq!(
+            parse_windows_open_command_executable(r#"D:\Anki\anki.exe "%L""#),
+            Some(PathBuf::from(r"D:\Anki\anki.exe")),
+        );
+        assert_eq!(
+            parse_windows_open_command_executable(r#""C:\Program Files\Anki\anki.exe" "%1""#),
+            Some(PathBuf::from(r"C:\Program Files\Anki\anki.exe")),
+        );
+    }
+
+    #[test]
+    fn anki_candidates_prefer_registered_launcher_over_embedded_venv_shim() {
+        let candidates = anki_candidates_from_parts(
+            None,
+            Some(r"C:\Users\Administrator\AppData\Local".to_string()),
+            vec![PathBuf::from(r"D:\Anki\anki.exe")],
+        );
+
+        let registered_index = candidates
+            .iter()
+            .position(|path| path == &PathBuf::from(r"D:\Anki\anki.exe"))
+            .expect("registered launcher candidate");
+        let embedded_shim_index = candidates
+            .iter()
+            .position(|path| {
+                path == &PathBuf::from(
+                    r"C:\Users\Administrator\AppData\Local\AnkiProgramFiles\.venv\Scripts\anki.exe",
+                )
+            })
+            .expect("embedded venv shim candidate");
+
+        assert!(registered_index < embedded_shim_index);
+    }
 
     #[test]
     #[ignore = "writes a temporary credential to the local OS keyring"]

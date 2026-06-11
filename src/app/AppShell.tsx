@@ -2,6 +2,7 @@ import { InspectorPanel } from '../features/app/InspectorPanel'
 import { Topbar } from '../features/app/Topbar'
 import { ReviewWorkspace } from '../features/review/ReviewWorkspace'
 import { SettingsDialog } from '../features/settings/SettingsDialog'
+import { defaultSelectedLearningPointIds } from '../domain/learningPoints'
 import type { AppController } from './useAppController'
 
 type AppShellProps = {
@@ -38,7 +39,6 @@ export function AppShell({ controller }: AppShellProps) {
     cancelCurrentWorker,
     capabilityHelp,
     capabilityLabels,
-    cardOptions,
     checkEnv,
     contentOptions,
     deepseekTextModels,
@@ -51,6 +51,7 @@ export function AppShell({ controller }: AppShellProps) {
     featuredTtsPresets,
     geminiVertexTextModels,
     generate,
+    generateCardsFromLearningPoints,
     handleTopbarDoubleClick,
     handleWorkerErrorAction,
     inspectorActionLabel,
@@ -59,6 +60,7 @@ export function AppShell({ controller }: AppShellProps) {
     isCancelling,
     isDesktopRuntime,
     lastExport,
+    learningPointResult,
     languageFocusOptions,
     levels,
     MIMO_OPENAI_BASE_URL,
@@ -96,6 +98,8 @@ export function AppShell({ controller }: AppShellProps) {
     segmentFilter,
     segmentReviewCounts,
     selectedCardCount,
+    selectedLearningPointCount,
+    selectedLearningPointIds,
     invertCardSelection,
     selectCurrentLevel,
     selectPath,
@@ -107,6 +111,7 @@ export function AppShell({ controller }: AppShellProps) {
     setInspectorState,
     setPreviewRate,
     setSegmentFilter,
+    setSelectedLearningPointIds,
     setSettingsOpen,
     setSettingsTab,
     setShowAdvancedApi,
@@ -125,7 +130,6 @@ export function AppShell({ controller }: AppShellProps) {
     templateOptions,
     testApi,
     testTts,
-    toggleCardType,
     toggleCollectionLevel,
     toggleContent,
     toggleDocumentFocus,
@@ -147,11 +151,29 @@ export function AppShell({ controller }: AppShellProps) {
     workerErrorActions,
     workerProgress,
   } = controller
+  const hasLearningPointResult = Boolean(learningPointResult && !project)
+  const sourceReady = readiness.find((item) => item.id === 'source')?.done ?? false
+  const topbarGenerateDisabled =
+    workerBusy ||
+    (!project && !hasLearningPointResult && !sourceReady) ||
+    (hasLearningPointResult && selectedLearningPointCount === 0)
+  const primaryGenerateAction = hasLearningPointResult ? generateCardsFromLearningPoints : generate
+  const primaryGenerateLabel =
+    request.source_mode === 'document'
+      ? project
+        ? '重新生成'
+        : '生成卡片'
+      : project
+        ? '重新抽取'
+        : hasLearningPointResult
+          ? '生成选中卡片'
+          : '抽取学习点'
 
   return (
     <div className="app-shell">
       <Topbar
         appBusy={appBusy}
+        generateDisabled={topbarGenerateDisabled}
         hasExportableCards={selectedCardCount > 0}
         hasProject={Boolean(project)}
         inspectorActionLabel={inspectorActionLabel}
@@ -163,7 +185,8 @@ export function AppShell({ controller }: AppShellProps) {
         onCancelCurrentWorker={cancelCurrentWorker}
         onDoubleClick={handleTopbarDoubleClick}
         onExport={exportApkg}
-        onGenerate={generate}
+        generateLabel={primaryGenerateLabel}
+        onGenerate={primaryGenerateAction}
         onMouseDown={startWindowDrag}
         onOpenSettings={() => setSettingsOpen(true)}
         onToggleInspector={toggleInspector}
@@ -184,8 +207,6 @@ export function AppShell({ controller }: AppShellProps) {
             activeWorkspaceStage={activeWorkspaceStage}
             activeTemplateLabel={activeTemplate?.label ?? '沉浸视频'}
             appBusy={appBusy}
-            cardOptions={cardOptions}
-            cardTypes={request.card_types}
             contentOptions={contentOptions}
             diagnosticCount={
               (qualityFunnel.candidate_only_learning_point_count ?? 0) +
@@ -195,12 +216,14 @@ export function AppShell({ controller }: AppShellProps) {
             documentFocusOptions={documentFocusOptions}
             generatedCardCount={qualityCounts.total}
             hasExportableCards={selectedCardCount > 0}
+            hasLearningPointResult={hasLearningPointResult}
             hasProject={Boolean(project)}
             inspectorSheetOpen={inspectorSheetOpen}
             languageFocusOptions={languageFocusOptions}
             levels={levels}
             previewRate={previewRate}
             selectedCardCount={selectedCardCount}
+            selectedLearningPointCount={selectedLearningPointCount}
             readiness={readiness}
             request={request}
             requestEditedDuringRun={requestEditedDuringRun}
@@ -213,16 +236,21 @@ export function AppShell({ controller }: AppShellProps) {
             workerErrorActions={workerErrorActions}
             workerProgress={workerProgress}
             onApplyCollectionPreset={applyCollectionPreset}
+            onCheckEnv={checkEnv}
             onCloseSheet={() => setInspectorState('collapsed')}
             onExport={exportApkg}
-            onGenerate={generate}
+            onGenerate={primaryGenerateAction}
+            onOpenEnvSettings={() => {
+              setSettingsTab('env')
+              setSettingsOpen(true)
+            }}
             onPatchRequest={patchRequest}
             onPreviewRateChange={setPreviewRate}
+            onRepairEnv={repairEnv}
             onSelectCurrentLevel={selectCurrentLevel}
             onSelectPath={selectPath}
             onSelectSourceMode={selectSourceMode}
             onSelectTemplate={selectTemplate}
-            onToggleCardType={toggleCardType}
             onToggleCollectionLevel={toggleCollectionLevel}
             onToggleContent={toggleContent}
             onToggleDocumentFocus={toggleDocumentFocus}
@@ -241,6 +269,7 @@ export function AppShell({ controller }: AppShellProps) {
             lastExport={lastExport}
             language={request.language}
             level={request.level}
+            learningPointResult={learningPointResult}
             maxSegments={request.max_segments}
             motionDuration={motionDuration}
             prefersReducedMotion={Boolean(prefersReducedMotion)}
@@ -251,6 +280,7 @@ export function AppShell({ controller }: AppShellProps) {
             qualityDiagnostics={qualityDiagnostics}
             qualityFunnel={qualityFunnel}
             selectedCardCount={selectedCardCount}
+            selectedLearningPointIds={selectedLearningPointIds}
             segmentFilter={segmentFilter}
             segmentReviewCounts={segmentReviewCounts}
             sourceMode={request.source_mode}
@@ -263,8 +293,15 @@ export function AppShell({ controller }: AppShellProps) {
             onRevealExport={revealExport}
             onSegmentFilterChange={setSegmentFilter}
             onInvertCardSelection={invertCardSelection}
+            onGenerateCardsFromLearningPoints={generateCardsFromLearningPoints}
             onSelectSegment={selectSegment}
             onSetCardsEnabled={setCardsEnabled}
+            onSetSelectedLearningPointIds={setSelectedLearningPointIds}
+            onSelectDefaultLearningPoints={() =>
+              setSelectedLearningPointIds(
+                defaultSelectedLearningPointIds(learningPointResult?.learning_points ?? [], { reviewDensity: request.review_density }),
+              )
+            }
             onUpdateCard={updateCard}
             onVerifyAnkiImport={verifyAnkiImport}
           />

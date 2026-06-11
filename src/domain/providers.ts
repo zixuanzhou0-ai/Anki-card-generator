@@ -54,12 +54,12 @@ export const capabilityHelp: Record<string, string> = {
 export const apiPresets: ApiPreset[] = [
   {
     id: 'local',
-    label: '本地草稿',
+    label: '预览模式',
     provider: 'local',
     base_url: '',
     model: 'local-fallback',
     capabilities: ['structured_json'],
-    note: '不用 API Key，先用本地规则生成草稿，适合测试流程。',
+    note: '不用 API Key，只用于浏览器演示和流程预览；正式抽取学习点与制卡必须配置模型 API。',
     key_hint: '不需要填写',
   },
   {

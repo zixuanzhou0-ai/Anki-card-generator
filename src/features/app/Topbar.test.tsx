@@ -9,6 +9,8 @@ afterEach(() => cleanup())
 function renderTopbar(overrides: Partial<Parameters<typeof Topbar>[0]> = {}) {
   const props: Parameters<typeof Topbar>[0] = {
     appBusy: false,
+    generateLabel: '抽取学习点',
+    generateDisabled: false,
     hasExportableCards: false,
     hasProject: false,
     inspectorActionLabel: '收起面板',
@@ -36,7 +38,7 @@ describe('Topbar', () => {
     const props = renderTopbar()
 
     fireEvent.click(screen.getByRole('button', { name: '设置' }))
-    fireEvent.click(screen.getByRole('button', { name: '生成卡片' }))
+    fireEvent.click(screen.getByRole('button', { name: '抽取学习点' }))
     fireEvent.click(screen.getByRole('button', { name: '最小化' }))
 
     expect(screen.getByRole('heading', { name: 'Anki 卡片生成器' })).toBeVisible()
@@ -66,5 +68,14 @@ describe('Topbar', () => {
     fireEvent.click(screen.getByRole('button', { name: '导出' }))
 
     expect(props.onExport).toHaveBeenCalledOnce()
+  })
+
+  it('disables the top generate action until the current workflow can run', () => {
+    const props = renderTopbar({ generateDisabled: true })
+
+    fireEvent.click(screen.getByRole('button', { name: '抽取学习点' }))
+
+    expect(screen.getByRole('button', { name: '抽取学习点' })).toBeDisabled()
+    expect(props.onGenerate).not.toHaveBeenCalled()
   })
 })

@@ -5,6 +5,8 @@ import json
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
@@ -40,6 +42,1389 @@ verify_apkg = load_verify_apkg()
 
 
 class WorkerQualityTests(unittest.TestCase):
+    def _ai_config(self):
+        return {
+            "provider": "gemini-vertex",
+            "model": "gemini-3.1-pro-preview",
+            "project": "test-project",
+            "location": "global",
+            "disable_ai_review_cache": True,
+            "disable_card_generation_cache": True,
+        }
+
+    def _patch_learning_point_ai_review(self):
+        original = worker._legacy_worker.gemini_vertex_generate_content
+
+        def fake_gemini_vertex_generate_content(api, prompt, **kwargs):
+            marker = "字幕和候选_JSON_START"
+            compact = json.loads(prompt.split(marker, 1)[1].strip())
+            sources = []
+            for source in compact:
+                reviews = []
+                for candidate in source.get("local_candidates", []):
+                    answer = candidate.get("answer_core") or candidate.get("exact_span")
+                    value = float(candidate.get("local_value_score") or 3)
+                    decision = "candidate" if answer == "right now" or value < 4 else "recommend"
+                    reviews.append(
+                        {
+                            "id": candidate["id"],
+                            "decision": decision,
+                            "value_score": 3 if decision == "candidate" else max(4, value),
+                            "estimated_level": "A1" if answer == "right now" else "B2" if answer == "messing with us" else candidate.get("local_level") or "B1",
+                            "exact_span": candidate.get("exact_span"),
+                            "answer_core": answer,
+                            "normalized_answer": candidate.get("normalized_answer") or answer,
+                            "candidate_kind": candidate.get("candidate_kind"),
+                            "phrase_type": candidate.get("phrase_type"),
+                            "learning_action": candidate.get("learning_action") or f"训练 {answer}。",
+                            "reason": "AI mock 精筛通过。",
+                            "status_reason": "AI mock 推荐。" if decision == "recommend" else "AI mock 候选。",
+                        }
+                    )
+                sources.append({"source_segment_id": source["source_segment_id"], "reviews": reviews, "new_learning_points": []})
+            return json.dumps({"sources": sources}, ensure_ascii=False)
+
+        worker._legacy_worker.gemini_vertex_generate_content = fake_gemini_vertex_generate_content
+        return original
+
+    def test_extract_learning_points_finds_core_subtitle_points(self):
+        original = self._patch_learning_point_ai_review()
+        cues = [
+            worker.Cue(1, 1.0, 3.0, "I'm not really in the mood for this right now."),
+            worker.Cue(2, 4.0, 6.0, "It turns out he was just messing with us."),
+            worker.Cue(3, 7.0, 9.0, "It's not that I don't like it, it's just that I'm tired."),
+            worker.Cue(4, 10.0, 12.0, "Can you run the register for a minute?"),
+        ]
+
+        try:
+            result = worker.extract_learning_points_from_subtitles(
+                {
+                    "language": "en",
+                    "level": "B1",
+                    "language_focus": ["phrases", "vocabulary", "grammar", "listening"],
+                    "api_config": self._ai_config(),
+                },
+                cues,
+            )
+        finally:
+            worker._legacy_worker.gemini_vertex_generate_content = original
+        points = result["learning_points"]
+        answers = {point["answer_core"]: point for point in points}
+
+        self.assertEqual(result["review_basis"], "ai_reviewed")
+        self.assertIn("in the mood for", answers)
+        self.assertEqual(answers["in the mood for"]["type"], "phrase")
+        self.assertEqual(answers["in the mood for"]["review_source"], "ai")
+        self.assertIn("messing with us", answers)
+        self.assertEqual(answers["messing with us"]["level"], "B2")
+        self.assertIn("run the register", answers)
+        self.assertIn("register", answers)
+        self.assertEqual(answers["register"]["type"], "vocab_usage")
+        self.assertTrue(any(point["type"] == "grammar" for point in points))
+        self.assertGreaterEqual(result["learning_point_summary"]["recommended"], 5)
+
+    def test_extract_learning_points_keeps_basic_points_as_candidates(self):
+        original = self._patch_learning_point_ai_review()
+        cues = [worker.Cue(1, 1.0, 3.0, "I'm not really in the mood for this right now.")]
+
+        try:
+            result = worker.extract_learning_points_from_subtitles(
+                {
+                    "language": "en",
+                    "level": "B1",
+                    "language_focus": ["phrases", "vocabulary", "grammar", "listening"],
+                    "api_config": self._ai_config(),
+                },
+                cues,
+            )
+        finally:
+            worker._legacy_worker.gemini_vertex_generate_content = original
+        answers = {point["answer_core"]: point for point in result["learning_points"]}
+
+        self.assertEqual(answers["right now"]["status"], "candidate_only")
+        self.assertEqual(answers["right now"]["level"], "A1")
+        self.assertEqual(answers["in the mood for"]["status"], "recommended")
+
+    def test_extract_learning_points_soft_ai_rejects_remain_candidates(self):
+        original = worker._legacy_worker.gemini_vertex_generate_content
+
+        def fake_gemini_vertex_generate_content(api, prompt, **kwargs):
+            marker = "字幕和候选_JSON_START"
+            compact = json.loads(prompt.split(marker, 1)[1].strip())
+            sources = []
+            for source in compact:
+                reviews = []
+                for candidate in source.get("local_candidates", []):
+                    answer = candidate.get("answer_core") or candidate.get("exact_span")
+                    decision = "reject" if answer == "gonna" else "recommend"
+                    reviews.append(
+                        {
+                            "id": candidate["id"],
+                            "decision": decision,
+                            "value_score": 2 if decision == "reject" else 4,
+                            "estimated_level": "A1" if answer == "gonna" else "B1",
+                            "exact_span": candidate.get("exact_span"),
+                            "answer_core": answer,
+                            "normalized_answer": candidate.get("normalized_answer") or answer,
+                            "candidate_kind": candidate.get("candidate_kind"),
+                            "phrase_type": candidate.get("phrase_type"),
+                            "learning_action": candidate.get("learning_action") or f"训练 {answer}。",
+                            "reason": "过于基础，无需单独制卡。" if decision == "reject" else "值得推荐。",
+                            "status_reason": "太基础，保留为候选。" if decision == "reject" else "推荐。",
+                        }
+                    )
+                sources.append({"source_segment_id": source["source_segment_id"], "reviews": reviews, "new_learning_points": []})
+            return json.dumps({"sources": sources}, ensure_ascii=False)
+
+        worker._legacy_worker.gemini_vertex_generate_content = fake_gemini_vertex_generate_content
+        try:
+            result = worker.extract_learning_points_from_subtitles(
+                {
+                    "language": "en",
+                    "level": "B1",
+                    "language_focus": ["phrases", "vocabulary", "grammar", "listening"],
+                    "api_config": self._ai_config(),
+                },
+                [worker.Cue(1, 1.0, 3.0, "I'm gonna run the register.")],
+            )
+        finally:
+            worker._legacy_worker.gemini_vertex_generate_content = original
+
+        answers = {point["answer_core"]: point for point in result["learning_points"]}
+        self.assertEqual(answers["gonna"]["status"], "candidate_only")
+        self.assertEqual(answers["gonna"]["ai_decision"], "candidate")
+        self.assertNotEqual(answers["gonna"].get("validation_status"), "hard_blocked")
+
+    def test_extract_learning_points_reviews_nontrivial_sentences_without_local_candidates(self):
+        original = worker._legacy_worker.gemini_vertex_generate_content
+        reviewed_batch_sizes: list[int] = []
+
+        def fake_gemini_vertex_generate_content(api, prompt, **kwargs):
+            marker = "字幕和候选_JSON_START"
+            compact = json.loads(prompt.split(marker, 1)[1].strip())
+            reviewed_batch_sizes.append(len(compact))
+            sources = []
+            for source in compact:
+                reviews = []
+                for candidate in source.get("local_candidates", []):
+                    answer = candidate.get("answer_core") or candidate.get("exact_span")
+                    reviews.append(
+                        {
+                            "id": candidate["id"],
+                            "decision": "recommend",
+                            "value_score": 4,
+                            "estimated_level": "B1",
+                            "exact_span": candidate.get("exact_span"),
+                            "answer_core": answer,
+                            "normalized_answer": candidate.get("normalized_answer") or answer,
+                            "candidate_kind": candidate.get("candidate_kind"),
+                            "phrase_type": candidate.get("phrase_type"),
+                            "learning_action": candidate.get("learning_action") or f"训练 {answer}。",
+                            "reason": "AI mock 精筛通过。",
+                            "status_reason": "推荐。",
+                        }
+                    )
+                sources.append({"source_segment_id": source["source_segment_id"], "reviews": reviews, "new_learning_points": []})
+            return json.dumps({"sources": sources}, ensure_ascii=False)
+
+        worker._legacy_worker.gemini_vertex_generate_content = fake_gemini_vertex_generate_content
+        try:
+            result = worker.extract_learning_points_from_subtitles(
+                {
+                    "language": "en",
+                    "level": "B1",
+                    "language_focus": ["phrases", "vocabulary", "grammar", "listening"],
+                    "api_config": self._ai_config(),
+                },
+                [
+                    worker.Cue(1, 1.0, 2.0, "Hello."),
+                    worker.Cue(2, 3.0, 4.0, "Can you run the register for a minute?"),
+                    worker.Cue(3, 5.0, 6.0, "This is a perfectly ordinary sentence."),
+                    worker.Cue(4, 7.0, 8.0, "Good night."),
+                ],
+            )
+        finally:
+            worker._legacy_worker.gemini_vertex_generate_content = original
+
+        self.assertEqual(reviewed_batch_sizes, [2])
+        self.assertEqual(result["quality_funnel"]["source_sentence_count"], 4)
+        self.assertEqual(result["ai_reviewed_source_count"], 2)
+        self.assertGreaterEqual(result["learning_point_summary"]["recommended"], 1)
+
+    def test_extract_learning_points_reuses_ai_review_batch_cache_when_explicitly_enabled(self):
+        original = worker._legacy_worker.gemini_vertex_generate_content
+        calls = {"count": 0}
+        cwd = os.getcwd()
+
+        def fake_gemini_vertex_generate_content(api, prompt, **kwargs):
+            calls["count"] += 1
+            marker = "字幕和候选_JSON_START"
+            compact = json.loads(prompt.split(marker, 1)[1].strip())
+            sources = []
+            for source in compact:
+                reviews = []
+                for candidate in source.get("local_candidates", []):
+                    answer = candidate.get("answer_core") or candidate.get("exact_span")
+                    reviews.append(
+                        {
+                            "id": candidate["id"],
+                            "decision": "recommend",
+                            "value_score": 4,
+                            "estimated_level": "B1",
+                            "exact_span": candidate.get("exact_span"),
+                            "answer_core": answer,
+                            "normalized_answer": candidate.get("normalized_answer") or answer,
+                            "candidate_kind": candidate.get("candidate_kind"),
+                            "phrase_type": candidate.get("phrase_type"),
+                            "learning_action": candidate.get("learning_action") or f"训练 {answer}。",
+                            "reason": "首次 AI 精筛结果。",
+                            "status_reason": "推荐。",
+                        }
+                    )
+                sources.append({"source_segment_id": source["source_segment_id"], "reviews": reviews, "new_learning_points": []})
+            return json.dumps({"sources": sources}, ensure_ascii=False)
+
+        worker._legacy_worker.gemini_vertex_generate_content = fake_gemini_vertex_generate_content
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                os.chdir(temp_dir)
+                payload = {
+                    "language": "en",
+                    "level": "B1",
+                    "reuse_ai_review_cache": True,
+                    "language_focus": ["phrases", "vocabulary", "grammar", "listening"],
+                    "api_config": {
+                        "provider": "gemini-vertex",
+                        "model": "gemini-3.1-pro-preview",
+                        "project": "test-project",
+                        "location": "global",
+                    },
+                }
+                cues = [worker.Cue(1, 1.0, 3.0, "Can you run the register for a minute?")]
+                first = worker.extract_learning_points_from_subtitles(payload, cues)
+                second = worker.extract_learning_points_from_subtitles(payload, cues)
+                os.chdir(cwd)
+        finally:
+            os.chdir(cwd)
+            worker._legacy_worker.gemini_vertex_generate_content = original
+
+        self.assertEqual(calls["count"], 1)
+        self.assertEqual(first["ai_reviewed_source_count"], 1)
+        self.assertEqual(second["ai_reviewed_source_count"], 1)
+        self.assertEqual(first["quality_funnel"]["ai_review_cache_hits"], 0)
+        self.assertEqual(second["quality_funnel"]["ai_review_cache_hits"], 1)
+        self.assertGreaterEqual(second["learning_point_summary"]["recommended"], 1)
+
+    def test_extract_learning_points_does_not_read_ai_review_cache_by_default(self):
+        original = worker._legacy_worker.gemini_vertex_generate_content
+        calls = {"count": 0}
+        cwd = os.getcwd()
+
+        def fake_gemini_vertex_generate_content(api, prompt, **kwargs):
+            calls["count"] += 1
+            marker = "字幕和候选_JSON_START"
+            compact = json.loads(prompt.split(marker, 1)[1].strip())
+            sources = []
+            for source in compact:
+                reviews = []
+                for candidate in source.get("local_candidates", []):
+                    answer = candidate.get("answer_core") or candidate.get("exact_span")
+                    reviews.append(
+                        {
+                            "id": candidate["id"],
+                            "decision": "recommend",
+                            "value_score": 4,
+                            "estimated_level": "B1",
+                            "exact_span": candidate.get("exact_span"),
+                            "answer_core": answer,
+                            "normalized_answer": candidate.get("normalized_answer") or answer,
+                            "candidate_kind": candidate.get("candidate_kind"),
+                            "phrase_type": candidate.get("phrase_type"),
+                            "learning_action": candidate.get("learning_action") or f"训练 {answer}。",
+                            "reason": "AI 重新精筛结果。",
+                            "status_reason": "推荐。",
+                        }
+                    )
+                sources.append({"source_segment_id": source["source_segment_id"], "reviews": reviews, "new_learning_points": []})
+            return json.dumps({"sources": sources}, ensure_ascii=False)
+
+        worker._legacy_worker.gemini_vertex_generate_content = fake_gemini_vertex_generate_content
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                os.chdir(temp_dir)
+                payload = {
+                    "language": "en",
+                    "level": "B1",
+                    "language_focus": ["phrases", "vocabulary", "grammar", "listening"],
+                    "api_config": {
+                        "provider": "gemini-vertex",
+                        "model": "gemini-3.1-pro-preview",
+                        "project": "test-project",
+                        "location": "global",
+                    },
+                }
+                cues = [worker.Cue(1, 1.0, 3.0, "Can you run the register for a minute?")]
+                first = worker.extract_learning_points_from_subtitles(payload, cues)
+                second = worker.extract_learning_points_from_subtitles(payload, cues)
+                os.chdir(cwd)
+        finally:
+            os.chdir(cwd)
+            worker._legacy_worker.gemini_vertex_generate_content = original
+
+        self.assertEqual(calls["count"], 2)
+        self.assertEqual(first["quality_funnel"]["ai_review_cache_hits"], 0)
+        self.assertEqual(second["quality_funnel"]["ai_review_cache_hits"], 0)
+        self.assertGreaterEqual(second["learning_point_summary"]["recommended"], 1)
+
+    def test_extract_learning_points_hides_global_duplicate_learning_actions(self):
+        original = worker._legacy_worker.gemini_vertex_generate_content
+
+        def fake_gemini_vertex_generate_content(api, prompt, **kwargs):
+            marker = "字幕和候选_JSON_START"
+            compact = json.loads(prompt.split(marker, 1)[1].strip())
+            sources = []
+            for source in compact:
+                sources.append(
+                    {
+                        "source_segment_id": source["source_segment_id"],
+                        "reviews": [],
+                        "new_learning_points": [
+                            {
+                                "decision": "recommend",
+                                "value_score": 5,
+                                "estimated_level": "B1",
+                                "exact_span": "What the hell",
+                                "answer_core": "What the hell",
+                                "normalized_answer": "what the hell",
+                                "candidate_kind": "expression",
+                                "phrase_type": "spoken_phrase",
+                                "learning_action": "训练情绪化口语表达",
+                                "reason": "高频口语表达。",
+                                "status_reason": "推荐。",
+                            }
+                        ],
+                    }
+                )
+            return json.dumps({"sources": sources}, ensure_ascii=False)
+
+        worker._legacy_worker.gemini_vertex_generate_content = fake_gemini_vertex_generate_content
+        try:
+            result = worker.extract_learning_points_from_subtitles(
+                {
+                    "language": "en",
+                    "level": "B1",
+                    "language_focus": ["phrases", "vocabulary", "grammar", "listening"],
+                    "api_config": self._ai_config(),
+                },
+                [
+                    worker.Cue(1, 1.0, 3.0, "What the hell is this?"),
+                    worker.Cue(2, 4.0, 6.0, "- What the hell is this? - Lab safety equipment."),
+                ],
+            )
+        finally:
+            worker._legacy_worker.gemini_vertex_generate_content = original
+
+        matches = [point for point in result["learning_points"] if str(point.get("answer_core") or "").lower() == "what the hell"]
+        self.assertEqual(sum(1 for point in matches if point["status"] == "recommended"), 1)
+        self.assertGreaterEqual(sum(1 for point in matches if point["status"] == "hidden_duplicate"), 1)
+        self.assertEqual(sum(1 for point in matches if point["status"] in {"recommended", "candidate_only"}), 1)
+
+    def test_extract_learning_points_requires_model_api(self):
+        cues = [worker.Cue(1, 1.0, 3.0, "Can you run the register for a minute?")]
+
+        with self.assertRaises(SystemExit):
+            worker.extract_learning_points_from_subtitles(
+                {
+                    "language": "en",
+                    "level": "B1",
+                    "language_focus": ["phrases", "vocabulary", "grammar", "listening"],
+                    "api_config": {"provider": "local", "model": ""},
+                },
+                cues,
+            )
+
+    def test_extract_learning_points_retries_bad_ai_review_json(self):
+        original = worker._legacy_worker.gemini_vertex_generate_content
+        calls = {"count": 0}
+
+        def fake_gemini_vertex_generate_content(api, prompt, **kwargs):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                return "not json"
+            marker = "字幕和候选_JSON_START"
+            compact = json.loads(prompt.split(marker, 1)[1].strip())
+            sources = []
+            for source in compact:
+                reviews = []
+                for candidate in source.get("local_candidates", []):
+                    answer = candidate.get("answer_core") or candidate.get("exact_span")
+                    reviews.append(
+                        {
+                            "id": candidate["id"],
+                            "decision": "recommend",
+                            "value_score": 4,
+                            "estimated_level": "B1",
+                            "exact_span": candidate.get("exact_span"),
+                            "answer_core": answer,
+                            "normalized_answer": candidate.get("normalized_answer") or answer,
+                            "candidate_kind": candidate.get("candidate_kind"),
+                            "phrase_type": candidate.get("phrase_type"),
+                            "learning_action": candidate.get("learning_action") or f"训练 {answer}。",
+                            "reason": "重试后 JSON 正常。",
+                            "status_reason": "重试后推荐。",
+                        }
+                    )
+                sources.append({"source_segment_id": source["source_segment_id"], "reviews": reviews, "new_learning_points": []})
+            return json.dumps({"sources": sources}, ensure_ascii=False)
+
+        worker._legacy_worker.gemini_vertex_generate_content = fake_gemini_vertex_generate_content
+        try:
+            result = worker.extract_learning_points_from_subtitles(
+                {
+                    "language": "en",
+                    "level": "B1",
+                    "language_focus": ["phrases", "vocabulary", "grammar", "listening"],
+                    "api_config": self._ai_config(),
+                },
+                [worker.Cue(1, 1.0, 3.0, "Can you run the register for a minute?")],
+            )
+        finally:
+            worker._legacy_worker.gemini_vertex_generate_content = original
+
+        self.assertGreaterEqual(calls["count"], 2)
+        self.assertEqual(result["ai_model_errors"], [])
+        self.assertGreaterEqual(result["learning_point_summary"]["recommended"], 1)
+
+    def test_extract_learning_points_degrades_failed_ai_review_batch_to_diagnostics(self):
+        original = worker._legacy_worker.gemini_vertex_generate_content
+
+        def fake_gemini_vertex_generate_content(api, prompt, **kwargs):
+            return "not json"
+
+        worker._legacy_worker.gemini_vertex_generate_content = fake_gemini_vertex_generate_content
+        try:
+            result = worker.extract_learning_points_from_subtitles(
+                {
+                    "language": "en",
+                    "level": "B1",
+                    "language_focus": ["phrases", "vocabulary", "grammar", "listening"],
+                    "api_config": self._ai_config(),
+                },
+                [
+                    worker.Cue(1, 1.0, 3.0, "Can you run the register for a minute?"),
+                    worker.Cue(2, 4.0, 6.0, "I'm not really in the mood for this right now."),
+                ],
+            )
+        finally:
+            worker._legacy_worker.gemini_vertex_generate_content = original
+
+        self.assertGreaterEqual(len(result["ai_model_errors"]), 1)
+        self.assertGreaterEqual(result["learning_point_summary"]["hard_blocked"], 1)
+        self.assertTrue(
+            any(point.get("ai_decision") == "model_batch_failed" for point in result["learning_points"])
+        )
+
+    def test_generate_cards_from_selected_learning_points_only_uses_selected_ids(self):
+        original_call_model_batches = worker._legacy_worker.call_model_batches
+
+        def fake_call_model_batches(project, segments):
+            self.assertEqual(project.get("_progress_command"), "generate_cards_from_learning_points")
+            return {
+                "segments": [
+                    {
+                        "id": segment["id"],
+                        "cards": [
+                            {
+                                "type": "phrase",
+                                "learning_point_id": segment["learning_point_id"],
+                                "phrase": segment["answer_core"],
+                                "chinese": "收银机",
+                                "definition": "cash register in a store context",
+                                "collocations": "run the register",
+                                "context": segment["text"],
+                                "example": "Can you run the register?",
+                                "chinese_feel": "负责收银",
+                                "why": "服务业高频场景表达。",
+                                "difficulty": "B1",
+                                "teacher_note": "AI mock 完整制卡。",
+                                "cloze": "Can you ____ for a minute?",
+                            }
+                        ],
+                    }
+                    for segment in segments
+                ]
+            }
+
+        worker._legacy_worker.call_model_batches = fake_call_model_batches
+        learning_points = [
+            {
+                "id": "lp-1",
+                "source_segment_id": "src-1",
+                "source_sentence": "Can you run the register for a minute?",
+                "source_time": "00:00:10.000 - 00:00:12.000",
+                "start": 10.0,
+                "end": 12.0,
+                "exact_span": "run the register",
+                "answer_core": "run the register",
+                "normalized_answer": "run the register",
+                "type": "phrase",
+                "candidate_kind": "expression",
+                "phrase_type": "collocation",
+                "level": "B1",
+                "learning_action": "训练服务业场景搭配。",
+                "learning_action_key": "expression:run the register",
+                "value_score": 4.6,
+                "reason": "可迁移词伙。",
+                "confidence": "high",
+                "status": "recommended",
+            },
+            {
+                "id": "lp-2",
+                "source_segment_id": "src-1",
+                "source_sentence": "Can you run the register for a minute?",
+                "source_time": "00:00:10.000 - 00:00:12.000",
+                "start": 10.0,
+                "end": 12.0,
+                "exact_span": "register",
+                "answer_core": "register",
+                "normalized_answer": "register",
+                "type": "vocab_usage",
+                "candidate_kind": "contextual_vocab",
+                "phrase_type": "vocabulary_usage",
+                "level": "B1",
+                "learning_action": "理解 register 的收银机语境义。",
+                "learning_action_key": "contextual_vocab:register",
+                "value_score": 4.2,
+                "reason": "熟词语境义。",
+                "confidence": "high",
+                "status": "recommended",
+            },
+        ]
+
+        try:
+            project = worker.handle_generate_cards_from_learning_points(
+                {
+                    "project_id": "project-test",
+                    "title": "test",
+                    "language": "en",
+                    "level": "B1",
+                    "api_config": self._ai_config(),
+                    "selected_learning_point_ids": ["lp-2"],
+                    "learning_points": learning_points,
+                    "card_types": ["phrase"],
+                }
+            )
+        finally:
+            worker._legacy_worker.call_model_batches = original_call_model_batches
+
+        self.assertEqual(len(project["segments"]), 1)
+        self.assertEqual(project["segments"][0]["learning_point_id"], "lp-2")
+        self.assertEqual(project["segments"][0]["cards"][0]["phrase"], "register")
+        self.assertEqual(project["segments"][0]["cards"][0]["chinese"], "收银机")
+
+    def test_generate_cards_from_learning_points_preserves_fast_review_density_and_slims_cards(self):
+        original_call_model_batches = worker._legacy_worker.call_model_batches
+
+        def fake_call_model_batches(project, segments):
+            return {
+                "segments": [
+                    {
+                        "id": segment["id"],
+                        "cards": [
+                            {
+                                "type": "phrase",
+                                "learning_point_id": segment["learning_point_id"],
+                                "phrase": segment["answer_core"],
+                                "answer_core": segment["answer_core"],
+                                "english": segment["text"],
+                                "chinese": "负责收银",
+                                "definition": "在零售或餐饮业中，指操作收银机、负责结账的工作。这是一个很长的解释，快速背卡不应该保留。",
+                                "collocations": "run the register / cover the register / operate the cash register",
+                                "context": "在商店、餐厅等服务业场景中，安排或请求某人负责收银时使用。",
+                                "example": "I'll run the register while you take a break.",
+                                "chinese_feel": "安排某人暂时看收银台。",
+                                "why": "服务业高频场景表达，值得学习。",
+                                "teacher_note": "下次想说负责收银时，用 run the register，比 operate the cash register 更自然；使用边界：主要用于零售、餐饮等需要结账的服务业场景；易错提醒：register 是收银机，不是注册；中文误区：不要翻成跑登记。",
+                                "why_it_matters": "是海外生活、打工或购物时极高频的真实场景表达。",
+                                "how_to_use_it": "I used to run the register at a coffee shop.",
+                                "usage_boundary": "主要用于零售、餐饮等需要结账的服务业场景。",
+                                "confusable_note": "这里的 register 是 cash register 的简称，不是注册。",
+                            }
+                        ],
+                    }
+                    for segment in segments
+                ]
+            }
+
+        worker._legacy_worker.call_model_batches = fake_call_model_batches
+        try:
+            project = worker.handle_generate_cards_from_learning_points(
+                {
+                    "project_id": "project-test",
+                    "title": "test",
+                    "language": "en",
+                    "level": "B1",
+                    "api_config": self._ai_config(),
+                    "review_density": "fast",
+                    "learning_points": [
+                        {
+                            "id": "lp-1",
+                            "source_segment_id": "src-1",
+                            "source_sentence": "Can you run the register for a minute?",
+                            "source_time": "00:00:10.000 - 00:00:12.000",
+                            "start": 10.0,
+                            "end": 12.0,
+                            "exact_span": "run the register",
+                            "answer_core": "run the register",
+                            "candidate_kind": "expression",
+                            "phrase_type": "collocation",
+                            "learning_action": "训练服务业场景搭配。",
+                            "value_score": 4.6,
+                            "status": "recommended",
+                        }
+                    ],
+                    "card_types": ["phrase"],
+                }
+            )
+        finally:
+            worker._legacy_worker.call_model_batches = original_call_model_batches
+
+        card = project["segments"][0]["cards"][0]
+        self.assertEqual(project["review_density"], "fast")
+        self.assertEqual(worker.anki_template_family(project["template_id"], "video_language", project["card_style"], project["review_density"]), "language-immersive-v11-fast")
+        self.assertLessEqual(len(card.get("teacher_note") or ""), 48)
+        self.assertLessEqual(len(card.get("definition") or ""), 48)
+        self.assertEqual(card.get("usage_boundary") or "", "")
+        self.assertEqual(card.get("confusable_note") or "", "")
+        self.assertEqual(card.get("why_it_matters") or "", "")
+        self.assertEqual(card.get("how_to_use_it") or "", "")
+
+    def test_fast_review_minimal_model_cards_are_exportable(self):
+        original_call_model_batches = worker._legacy_worker.call_model_batches
+
+        def fake_call_model_batches(project, segments):
+            return {
+                "segments": [
+                    {
+                        "id": segment["id"],
+                        "cards": [
+                            {
+                                "type": "phrase",
+                                "learning_point_id": segment["learning_point_id"],
+                                "candidate_kind": segment.get("candidate_kind") or "expression",
+                                "exact_span": segment.get("exact_span") or segment["answer_core"],
+                                "phrase": segment["answer_core"],
+                                "answer_core": segment["answer_core"],
+                                "english": segment["text"],
+                                "chinese": "负责收银",
+                                "definition": "在店里操作收银机，负责顾客结账。",
+                                "chinese_feel": "临时顶替或负责收银的动作感。",
+                                "teacher_note": "run 在这里是操作机器，不是跑步。",
+                                "retrieval_prompt": "这句里表示负责收银的表达是什么？",
+                            }
+                        ],
+                    }
+                    for segment in segments
+                ]
+            }
+
+        worker._legacy_worker.call_model_batches = fake_call_model_batches
+        try:
+            project = worker.handle_generate_cards_from_learning_points(
+                {
+                    "project_id": "project-test",
+                    "title": "test",
+                    "language": "en",
+                    "level": "B1",
+                    "api_config": self._ai_config(),
+                    "review_density": "fast",
+                    "learning_points": [
+                        {
+                            "id": "lp-1",
+                            "source_segment_id": "src-1",
+                            "source_sentence": "Can you run the register for a minute?",
+                            "source_time": "00:00:10.000 - 00:00:12.000",
+                            "start": 10.0,
+                            "end": 12.0,
+                            "exact_span": "run the register",
+                            "answer_core": "run the register",
+                            "candidate_kind": "expression",
+                            "phrase_type": "collocation",
+                            "learning_action": "训练服务业场景搭配。",
+                            "value_score": 4.9,
+                            "final_score": 4.9,
+                            "status": "recommended",
+                        }
+                    ],
+                    "card_types": ["phrase"],
+                }
+            )
+        finally:
+            worker._legacy_worker.call_model_batches = original_call_model_batches
+
+        self.assertEqual(len(project["segments"]), 1)
+        card = project["segments"][0]["cards"][0]
+        self.assertEqual(card["quality"]["status"], "recommended")
+        self.assertGreaterEqual(card["quality"]["score"], 80)
+        self.assertNotIn("字段像模板废话", card["quality"].get("issues", []))
+        self.assertNotIn("例句只是照抄原句", card["quality"].get("issues", []))
+        self.assertEqual(card.get("why") or "", "")
+        self.assertEqual(card.get("example") or "", "")
+
+    def test_generate_cards_from_learning_points_empty_explicit_selection_fails(self):
+        original_call_model_batches = worker._legacy_worker.call_model_batches
+        calls = {"count": 0}
+
+        def fake_call_model_batches(project, segments):
+            calls["count"] += 1
+            return {"segments": []}
+
+        worker._legacy_worker.call_model_batches = fake_call_model_batches
+        try:
+            with self.assertRaises(SystemExit):
+                worker.handle_generate_cards_from_learning_points(
+                    {
+                        "project_id": "project-test",
+                        "title": "test",
+                        "language": "en",
+                        "level": "B1",
+                        "api_config": self._ai_config(),
+                        "selected_learning_point_ids": [],
+                        "learning_points": [
+                            {
+                                "id": "lp-1",
+                                "source_segment_id": "src-1",
+                                "source_sentence": "Can you run the register for a minute?",
+                                "source_time": "00:00:10.000 - 00:00:12.000",
+                                "start": 10.0,
+                                "end": 12.0,
+                                "exact_span": "run the register",
+                                "answer_core": "run the register",
+                                "candidate_kind": "expression",
+                                "phrase_type": "collocation",
+                                "learning_action": "训练服务业场景搭配。",
+                                "value_score": 4.6,
+                                "status": "recommended",
+                            }
+                        ],
+                        "card_types": ["phrase"],
+                    }
+                )
+        finally:
+            worker._legacy_worker.call_model_batches = original_call_model_batches
+
+        self.assertEqual(calls["count"], 0)
+
+    def test_generate_cards_from_learning_points_legacy_payload_defaults_to_recommended_only(self):
+        original_call_model_batches = worker._legacy_worker.call_model_batches
+        seen_learning_point_ids: list[str] = []
+
+        def fake_call_model_batches(project, segments):
+            seen_learning_point_ids.extend(str(segment["learning_point_id"]) for segment in segments)
+            return {
+                "segments": [
+                    {
+                        "id": segment["id"],
+                        "cards": [
+                            {
+                                "type": "phrase",
+                                "learning_point_id": segment["learning_point_id"],
+                                "phrase": segment["answer_core"],
+                                "answer_core": segment["answer_core"],
+                                "english": segment["text"],
+                                "chinese": "负责收银",
+                                "definition": "表示操作收银机或负责收银。",
+                                "collocations": "run the register / cover the register",
+                                "context": segment["text"],
+                                "example": "Could you run the register while I take inventory?",
+                                "chinese_feel": "口语里是在安排店铺工作，不是字面“跑”。",
+                                "teacher_note": "常见于店铺、餐厅等工作分工场景。",
+                                "why": "服务业场景高频表达。",
+                                "how_to_use_it": "用在需要某人暂时负责收银台的场景。",
+                                "usage_boundary": "不要把 register 理解成登记动作，这里是收银机。",
+                            }
+                        ],
+                    }
+                    for segment in segments
+                ]
+            }
+
+        worker._legacy_worker.call_model_batches = fake_call_model_batches
+        try:
+            project = worker.handle_generate_cards_from_learning_points(
+                {
+                    "project_id": "project-test",
+                    "title": "test",
+                    "language": "en",
+                    "level": "B1",
+                    "api_config": self._ai_config(),
+                    "learning_points": [
+                        {
+                            "id": "lp-recommended",
+                            "source_segment_id": "src-1",
+                            "source_sentence": "Can you run the register for a minute?",
+                            "source_time": "00:00:10.000 - 00:00:12.000",
+                            "start": 10.0,
+                            "end": 12.0,
+                            "exact_span": "run the register",
+                            "answer_core": "run the register",
+                            "candidate_kind": "expression",
+                            "phrase_type": "collocation",
+                            "learning_action": "训练服务业场景搭配。",
+                            "value_score": 4.6,
+                            "status": "recommended",
+                        },
+                        {
+                            "id": "lp-candidate",
+                            "source_segment_id": "src-1",
+                            "source_sentence": "Can you run the register for a minute?",
+                            "source_time": "00:00:10.000 - 00:00:12.000",
+                            "start": 10.0,
+                            "end": 12.0,
+                            "exact_span": "register",
+                            "answer_core": "register",
+                            "candidate_kind": "contextual_vocab",
+                            "phrase_type": "vocabulary_usage",
+                            "learning_action": "理解 register 的收银机语境义。",
+                            "value_score": 3.2,
+                            "status": "candidate_only",
+                        },
+                    ],
+                    "card_types": ["phrase"],
+                }
+            )
+        finally:
+            worker._legacy_worker.call_model_batches = original_call_model_batches
+
+        self.assertEqual(seen_learning_point_ids, ["lp-recommended"])
+        self.assertEqual(len(project["segments"]), 1)
+
+    def test_fast_review_density_defaults_to_one_best_recommended_point_per_source(self):
+        original_call_model_batches = worker._legacy_worker.call_model_batches
+        seen_learning_point_ids: list[str] = []
+
+        def fake_call_model_batches(project, segments):
+            seen_learning_point_ids.extend(str(segment["learning_point_id"]) for segment in segments)
+            return {
+                "segments": [
+                    {
+                        "id": segment["id"],
+                        "cards": [
+                            {
+                                "type": "phrase",
+                                "learning_point_id": segment["learning_point_id"],
+                                "candidate_kind": segment.get("candidate_kind") or "expression",
+                                "phrase_type": segment.get("phrase_type") or "spoken_phrase",
+                                "exact_span": segment.get("exact_span") or segment["answer_core"],
+                                "normalized_answer": segment["answer_core"],
+                                "phrase": segment["answer_core"],
+                                "answer_core": segment["answer_core"],
+                                "english": segment["text"],
+                                "chinese": "语境义：负责收银。",
+                                "definition": "表示在店里负责收银或操作收银机。",
+                                "context": segment["text"],
+                                "example": "I can run the register for ten minutes.",
+                                "chinese_feel": "店铺工作分工里的自然说法。",
+                                "why": "服务业场景高频。",
+                                "difficulty": "B1 日常交流",
+                                "estimated_level": "B1",
+                                "difficulty_reason": "服务业场景搭配。",
+                                "teacher_note": "把 run the register 当整体记，表示负责收银。",
+                                "learning_target": "训练一个服务业场景高频搭配。",
+                                "learning_action": "expression_recall",
+                                "retrieval_prompt": "这句里表示负责收银的表达是什么？",
+                                "quality": {"score": 90, "status": "recommended", "issues": []},
+                            }
+                        ],
+                    }
+                    for segment in segments
+                ]
+            }
+
+        worker._legacy_worker.call_model_batches = fake_call_model_batches
+        try:
+            try:
+                worker.handle_generate_cards_from_learning_points(
+                    {
+                        "project_id": "project-test",
+                        "title": "test",
+                        "language": "en",
+                        "level": "B1",
+                        "api_config": self._ai_config(),
+                        "review_density": "fast",
+                        "learning_points": [
+                            {
+                                "id": "lp-register",
+                                "source_segment_id": "src-1",
+                                "source_sentence": "Can you run the register for a minute?",
+                                "source_time": "00:00:10.000 - 00:00:12.000",
+                                "start": 10.0,
+                                "end": 12.0,
+                                "exact_span": "register",
+                                "answer_core": "register",
+                                "candidate_kind": "contextual_vocab",
+                                "phrase_type": "vocabulary_usage",
+                                "learning_action": "理解 register 的收银机语境义。",
+                                "value_score": 4.2,
+                                "final_score": 4.2,
+                                "status": "recommended",
+                            },
+                            {
+                                "id": "lp-run-register",
+                                "source_segment_id": "src-1",
+                                "source_sentence": "Can you run the register for a minute?",
+                                "source_time": "00:00:10.000 - 00:00:12.000",
+                                "start": 10.0,
+                                "end": 12.0,
+                                "exact_span": "run the register",
+                                "answer_core": "run the register",
+                                "candidate_kind": "expression",
+                                "phrase_type": "collocation",
+                                "learning_action": "训练服务业场景搭配。",
+                                "value_score": 4.9,
+                                "final_score": 4.9,
+                                "status": "recommended",
+                            },
+                            {
+                                "id": "lp-turns-out",
+                                "source_segment_id": "src-2",
+                                "source_sentence": "It turns out I was looking at it the wrong way.",
+                                "source_time": "00:00:13.000 - 00:00:15.000",
+                                "start": 13.0,
+                                "end": 15.0,
+                                "exact_span": "turns out",
+                                "answer_core": "turns out",
+                                "candidate_kind": "expression",
+                                "phrase_type": "spoken_phrase",
+                                "learning_action": "训练引出结果的口语表达。",
+                                "value_score": 4.6,
+                                "final_score": 4.6,
+                                "status": "recommended",
+                            },
+                        ],
+                        "card_types": ["phrase"],
+                    }
+                )
+            except SystemExit:
+                # This test is about fast-mode default selection before model generation.
+                # Later quality gates are covered by separate card-output tests.
+                pass
+        finally:
+            worker._legacy_worker.call_model_batches = original_call_model_batches
+
+        self.assertEqual(seen_learning_point_ids, ["lp-run-register", "lp-turns-out"])
+
+    def test_generate_cards_from_learning_points_reports_missing_and_filtered_selected_points(self):
+        original_call_model_batches = worker._legacy_worker.call_model_batches
+
+        def fake_call_model_batches(project, segments):
+            output_segments = []
+            for segment in segments:
+                lp_id = segment["learning_point_id"]
+                if lp_id == "lp-missing":
+                    continue
+                if lp_id == "lp-filtered":
+                    output_segments.append(
+                        {
+                            "id": segment["id"],
+                            "cards": [
+                                {
+                                    "type": "phrase",
+                                    "learning_point_id": lp_id,
+                                    "phrase": segment["answer_core"],
+                                    "answer_core": segment["answer_core"],
+                                    "english": segment["text"],
+                                    "chinese": "待精修：先把 bad point 当作目标表达。",
+                                    "definition": "本地草稿",
+                                    "teacher_note": "本地 fallback 只保证结构完整。",
+                                }
+                            ],
+                        }
+                    )
+                    continue
+                output_segments.append(
+                    {
+                        "id": segment["id"],
+                        "cards": [
+                            {
+                                "type": "phrase",
+                                "learning_point_id": lp_id,
+                                "phrase": segment["answer_core"],
+                                "answer_core": segment["answer_core"],
+                                "english": segment["text"],
+                                "chinese": "负责收银。",
+                                "definition": "表示操作收银机或暂时负责收银。",
+                                "collocations": "run the register / cover the register",
+                                "context": segment["text"],
+                                "example": "Could you run the register while I help the customer?",
+                                "chinese_feel": "店铺工作分工里的自然口语说法。",
+                                "why": "服务业和日常帮忙场景都可迁移。",
+                                "teacher_note": "这里的 register 是收银机，不是登记这个动作。",
+                                "how_to_use_it": "用在请别人暂时看收银台或操作收银机的场景。",
+                                "usage_boundary": "不要把它理解成跑步，也不要泛化到所有登记场景。",
+                            }
+                        ],
+                    }
+                )
+            return {"segments": output_segments}
+
+        worker._legacy_worker.call_model_batches = fake_call_model_batches
+        points = [
+            {
+                "id": "lp-good",
+                "source_segment_id": "src-1",
+                "source_sentence": "Can you run the register for a minute?",
+                "source_time": "00:00:10.000 - 00:00:12.000",
+                "start": 10.0,
+                "end": 12.0,
+                "exact_span": "run the register",
+                "answer_core": "run the register",
+                "candidate_kind": "expression",
+                "phrase_type": "collocation",
+                "learning_action": "训练服务业场景搭配。",
+                "value_score": 4.8,
+                "status": "recommended",
+            },
+            {
+                "id": "lp-missing",
+                "source_segment_id": "src-2",
+                "source_sentence": "Let's get this over with.",
+                "source_time": "00:00:13.000 - 00:00:15.000",
+                "start": 13.0,
+                "end": 15.0,
+                "exact_span": "get this over with",
+                "answer_core": "get this over with",
+                "candidate_kind": "expression",
+                "phrase_type": "spoken_phrase",
+                "learning_action": "训练不情愿地把事情做完的表达。",
+                "value_score": 4.5,
+                "status": "recommended",
+            },
+            {
+                "id": "lp-filtered",
+                "source_segment_id": "src-3",
+                "source_sentence": "This is a bad point.",
+                "source_time": "00:00:16.000 - 00:00:18.000",
+                "start": 16.0,
+                "end": 18.0,
+                "exact_span": "bad point",
+                "answer_core": "bad point",
+                "candidate_kind": "expression",
+                "phrase_type": "spoken_phrase",
+                "learning_action": "训练一个会被过滤的坏样例。",
+                "value_score": 4.0,
+                "status": "recommended",
+            },
+        ]
+
+        try:
+            project = worker.handle_generate_cards_from_learning_points(
+                {
+                    "project_id": "project-test",
+                    "title": "test",
+                    "language": "en",
+                    "level": "B1",
+                    "api_config": self._ai_config(),
+                    "selected_learning_point_ids": [point["id"] for point in points],
+                    "learning_points": points,
+                    "card_types": ["phrase"],
+                }
+            )
+        finally:
+            worker._legacy_worker.call_model_batches = original_call_model_batches
+
+        self.assertEqual(len(project["segments"]), 1)
+        funnel = project["quality_funnel"]
+        self.assertEqual(funnel["selected_learning_point_count"], 3)
+        self.assertEqual(funnel["eligible_learning_point_count"], 3)
+        self.assertEqual(funnel["successful_learning_point_count"], 1)
+        self.assertEqual(funnel["card_generation_missing_learning_point_count"], 1)
+        self.assertEqual(funnel["card_generation_filtered_card_count"], 1)
+        self.assertEqual(funnel["card_generation_skipped_learning_point_count"], 0)
+        self.assertEqual(
+            funnel["successful_learning_point_count"]
+            + funnel["card_generation_missing_learning_point_count"]
+            + funnel["card_generation_filtered_card_count"]
+            + funnel["card_generation_skipped_learning_point_count"],
+            funnel["selected_learning_point_count"],
+        )
+        diagnostics = project["card_generation_diagnostics"]
+        self.assertEqual(diagnostics["selected_learning_point_count"], 3)
+        self.assertEqual(diagnostics["model_missing_learning_point_count"], 1)
+        self.assertEqual(diagnostics["filtered_learning_point_count"], 1)
+        self.assertEqual(diagnostics["skipped_learning_point_count"], 0)
+        items_by_id = {item["learning_point_id"]: item for item in diagnostics["items"]}
+        self.assertEqual(items_by_id["lp-missing"]["status"], "model_missing")
+        self.assertEqual(items_by_id["lp-filtered"]["status"], "filtered")
+        self.assertIn("模型没有返回", items_by_id["lp-missing"]["reason"])
+        self.assertTrue(items_by_id["lp-filtered"]["reason"])
+
+    def test_generate_cards_from_learning_points_preserves_ai_scan_stats(self):
+        original_call_model_batches = worker._legacy_worker.call_model_batches
+
+        def fake_call_model_batches(project, segments):
+            return {
+                "segments": [
+                    {
+                        "id": segments[0]["id"],
+                        "cards": [
+                            {
+                                "type": "phrase",
+                                "learning_point_id": segments[0]["learning_point_id"],
+                                "phrase": "run the register",
+                                "answer_core": "run the register",
+                                "english": segments[0]["text"],
+                                "chinese": "负责收银",
+                                "definition": "operate the cash register",
+                                "collocations": "run the register",
+                                "context": segments[0]["text"],
+                                "example": "Can you run the register?",
+                                "chinese_feel": "负责收银",
+                                "why": "服务业高频场景表达。",
+                                "difficulty": "B1",
+                                "teacher_note": "AI mock 完整制卡。",
+                                "cloze": "Can you ____ for a minute?",
+                            }
+                        ],
+                    }
+                ]
+            }
+
+        worker._legacy_worker.call_model_batches = fake_call_model_batches
+        try:
+            project = worker.handle_generate_cards_from_learning_points(
+                {
+                    "project_id": "project-test",
+                    "title": "test",
+                    "language": "en",
+                    "level": "B1",
+                    "api_config": self._ai_config(),
+                    "review_basis": "ai_reviewed",
+                    "ai_model_provider": "gemini-vertex",
+                    "ai_model_name": "gemini-3.1-pro-preview",
+                    "ai_reviewed_source_count": 538,
+                    "ai_reviewed_candidate_count": 168,
+                    "local_candidate_count": 195,
+                    "quality_funnel": {
+                        "source_sentence_count": 544,
+                        "ai_reviewed_source_count": 538,
+                        "ai_reviewed_candidate_count": 168,
+                        "local_candidate_count": 195,
+                        "learning_point_count": 391,
+                        "recommended_learning_point_count": 239,
+                        "candidate_only_learning_point_count": 152,
+                        "hidden_duplicate_learning_point_count": 11,
+                        "hard_blocked_learning_point_count": 7,
+                        "ai_recommended_count": 239,
+                        "ai_candidate_count": 152,
+                        "ai_rejected_count": 62,
+                    },
+                    "selected_learning_point_ids": ["lp-1"],
+                    "learning_points": [
+                        {
+                            "id": "lp-1",
+                            "source_segment_id": "src-1",
+                            "source_sentence": "Can you run the register for a minute?",
+                            "source_time": "00:00:10.000 - 00:00:12.000",
+                            "start": 10.0,
+                            "end": 12.0,
+                            "exact_span": "run the register",
+                            "answer_core": "run the register",
+                            "normalized_answer": "run the register",
+                            "candidate_kind": "expression",
+                            "phrase_type": "collocation",
+                            "learning_action": "训练服务业场景搭配。",
+                            "learning_action_key": "expression:run the register",
+                            "value_score": 4.6,
+                            "reason": "可迁移词伙。",
+                            "confidence": "high",
+                            "status": "recommended",
+                        }
+                    ],
+                    "card_types": ["phrase"],
+                }
+            )
+        finally:
+            worker._legacy_worker.call_model_batches = original_call_model_batches
+
+        self.assertEqual(project["quality_funnel"]["source_sentence_count"], 544)
+        self.assertEqual(project["quality_funnel"]["ai_reviewed_source_count"], 538)
+        self.assertEqual(project["quality_funnel"]["learning_point_count"], 391)
+        self.assertEqual(project["quality_funnel"]["candidate_only_learning_point_count"], 152)
+        self.assertEqual(project["quality_funnel"]["hidden_duplicate_learning_point_count"], 11)
+        self.assertEqual(project["quality_funnel"]["hard_blocked_learning_point_count"], 7)
+        self.assertEqual(project["ai_reviewed_source_count"], 538)
+        self.assertEqual(project["ai_model_name"], "gemini-3.1-pro-preview")
+
+    def test_generate_cards_from_learning_points_reuses_card_generation_cache(self):
+        original_call_model_batches = worker._legacy_worker.call_model_batches
+        calls = {"count": 0}
+        cwd = os.getcwd()
+
+        def fake_call_model_batches(project, segments):
+            calls["count"] += 1
+            return {
+                "segments": [
+                    {
+                        "id": segment["id"],
+                        "cards": [
+                            {
+                                "type": "phrase",
+                                "learning_point_id": segment["learning_point_id"],
+                                "phrase": segment["answer_core"],
+                                "answer_core": segment["answer_core"],
+                                "english": segment["text"],
+                                "chinese": "操作收银机",
+                                "definition": "operate the cash register",
+                                "collocations": "run the register",
+                                "context": segment["text"],
+                                "example": "Can you run the register?",
+                                "chinese_feel": "负责收银",
+                                "why": "服务业高频场景表达。",
+                                "difficulty": "B1",
+                                "teacher_note": "AI mock 完整制卡。",
+                                "cloze": "Can you ____ for a minute?",
+                            }
+                        ],
+                    }
+                    for segment in segments
+                ]
+            }
+
+        worker._legacy_worker.call_model_batches = fake_call_model_batches
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                os.chdir(temp_dir)
+                payload = {
+                    "project_id": "project-test",
+                    "title": "test",
+                    "language": "en",
+                    "level": "B1",
+                    "api_config": {
+                        "provider": "gemini-vertex",
+                        "model": "gemini-3.1-pro-preview",
+                        "project": "test-project",
+                        "location": "global",
+                    },
+                    "selected_learning_point_ids": ["lp-1"],
+                    "learning_points": [
+                        {
+                            "id": "lp-1",
+                            "source_segment_id": "src-1",
+                            "source_sentence": "Can you run the register for a minute?",
+                            "source_time": "00:00:10.000 - 00:00:12.000",
+                            "start": 10.0,
+                            "end": 12.0,
+                            "exact_span": "run the register",
+                            "answer_core": "run the register",
+                            "normalized_answer": "run the register",
+                            "type": "phrase",
+                            "candidate_kind": "expression",
+                            "phrase_type": "collocation",
+                            "level": "B1",
+                            "learning_action": "训练服务业场景搭配。",
+                            "learning_action_key": "expression:run the register",
+                            "value_score": 4.6,
+                            "reason": "可迁移词伙。",
+                            "confidence": "high",
+                            "status": "recommended",
+                        }
+                    ],
+                    "card_types": ["phrase"],
+                }
+                first = worker.handle_generate_cards_from_learning_points(payload)
+                second = worker.handle_generate_cards_from_learning_points(payload)
+                os.chdir(cwd)
+        finally:
+            os.chdir(cwd)
+            worker._legacy_worker.call_model_batches = original_call_model_batches
+
+        self.assertEqual(calls["count"], 1)
+        self.assertEqual(first["segments"][0]["cards"][0]["phrase"], "run the register")
+        self.assertEqual(second["segments"][0]["cards"][0]["phrase"], "run the register")
+        self.assertFalse(first["quality_funnel"]["card_generation_cache_hit"])
+        self.assertTrue(second["quality_funnel"]["card_generation_cache_hit"])
+
+    def test_output_filter_removes_exact_duplicate_enabled_cards(self):
+        segments = [
+            {
+                "id": "seg-a",
+                "text": "I'm shorthanded, Walter. What am I to do?",
+                "cards": [
+                    {
+                        "id": "card-a",
+                        "type": "phrase",
+                        "english": "I'm shorthanded, Walter. What am I to do?",
+                        "phrase": "shorthanded",
+                        "answer_core": "shorthanded",
+                        "quality": {"status": "recommended", "score": 5, "issues": []},
+                    }
+                ],
+            },
+            {
+                "id": "seg-b",
+                "text": "I'm shorthanded, Walter. What am I to do?",
+                "cards": [
+                    {
+                        "id": "card-b",
+                        "type": "phrase",
+                        "english": "I'm shorthanded, Walter. What am I to do?",
+                        "phrase": "shorthanded",
+                        "answer_core": "shorthanded",
+                        "quality": {"status": "recommended", "score": 5, "issues": []},
+                    }
+                ],
+            },
+        ]
+
+        filtered, stats = worker._legacy_worker.filter_usable_segments_for_output(segments, [])
+
+        cards = [card for segment in filtered for card in segment["cards"]]
+        self.assertEqual([card["id"] for card in cards], ["card-a"])
+        self.assertEqual(stats["duplicate_learning_point_count"], 1)
+
+    def test_output_filter_blocks_local_fallback_drafts_from_export(self):
+        segments = [
+            {
+                "id": "seg-a",
+                "text": "Tell you what, I'll let you off for a 10.",
+                "cards": [
+                    {
+                        "id": "draft-card",
+                        "type": "phrase",
+                        "english": "Tell you what, I'll let you off for a 10.",
+                        "phrase": "Tell you what",
+                        "answer_core": "Tell you what",
+                        "chinese": "待精修：先把 Tell you what 当作本句目标表达。",
+                        "definition": "本地待审：正式导出前需要用 AI 精修释义。",
+                        "teacher_note": "本地 fallback 只保证结构完整；正式导出前应使用模型精修内容。",
+                        "quality": {
+                            "status": "needs_review",
+                            "score": 42,
+                            "issues": ["本地草稿，需要人工确认", "字段像模板废话"],
+                        },
+                    },
+                    {
+                        "id": "good-card",
+                        "type": "phrase",
+                        "english": "Tell you what, I'll let you off for a 10.",
+                        "phrase": "let you off",
+                        "answer_core": "let you off",
+                        "chinese": "放过某人；从轻处理。",
+                        "definition": "表示不惩罚某人，或只给较轻的惩罚/要求。",
+                        "teacher_note": "常接 with a warning，说明从轻处理的方式。",
+                        "quality": {"status": "recommended", "score": 82, "issues": []},
+                    },
+                ],
+            }
+        ]
+
+        filtered, stats = worker._legacy_worker.filter_usable_segments_for_output(segments, [])
+
+        cards = [card for segment in filtered for card in segment["cards"]]
+        self.assertEqual([card["id"] for card in cards], ["good-card"])
+        self.assertEqual(stats["blocked_quality_issue_count"], 1)
+
     def test_mimo_token_plan_key_uses_token_plan_base_url(self):
         base_url = worker.compatible_base_url(
             {
@@ -404,7 +1789,7 @@ class WorkerQualityTests(unittest.TestCase):
 
         def fake_call_tts_audio(tts, text, language):
             calls["count"] += 1
-            return f"ID3:{text}:{language}".encode("utf-8")
+            return f"ID3:{text}:{language}".encode("utf-8") + (b"\x00" * 8192)
 
         project = {
             "language": "en",
@@ -446,6 +1831,42 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertTrue(second["cache_hit"])
         self.assertEqual(first_bytes, second_bytes)
 
+    def test_media_cache_rejects_tiny_invalid_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cache_path = root / "bad.mp4"
+            output_path = root / "out" / "clip.mp4"
+            cache_path.write_bytes(b"media")
+
+            copied = worker._legacy_worker.copy_cached_file(cache_path, output_path)
+
+            self.assertFalse(copied)
+            self.assertFalse(output_path.exists())
+            self.assertFalse(cache_path.exists())
+
+    def test_media_cache_does_not_store_invalid_outputs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_path = root / "clip.jpg"
+            cache_path = root / "cache" / "clip.jpg"
+            output_path.write_bytes(b"media")
+
+            worker._legacy_worker.store_cached_file(output_path, cache_path)
+
+            self.assertFalse(cache_path.exists())
+
+    def test_media_cache_copies_valid_mp4_signature(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cache_path = root / "valid.mp4"
+            output_path = root / "out" / "clip.mp4"
+            cache_path.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 8192)
+
+            copied = worker._legacy_worker.copy_cached_file(cache_path, output_path)
+
+            self.assertTrue(copied)
+            self.assertEqual(output_path.read_bytes(), cache_path.read_bytes())
+
     def test_tts_cache_key_includes_vertex_scope(self):
         base = {
             "enabled": True,
@@ -479,8 +1900,12 @@ class WorkerQualityTests(unittest.TestCase):
         report = verify_apkg.offline_field_report(
             [
                 {
+                    "CardId": "card-1",
                     "English": "You won't even taste the difference.",
                     "Answer": "taste the difference",
+                    "Chinese": "",
+                    "Definition": "待精修：先把 taste the difference 当作本句目标表达。",
+                    "TeacherNote": "本地 fallback 只保证结构完整。",
                     "TtsAudio": '<audio><source src="deck_tts_deadbeef0000.mp3"></audio>',
                     "PhraseTtsAudio": '<audio><source src="deck_phrase_deadbeef0000.mp3"></audio>',
                     "PronunciationMeta": "{not-json}",
@@ -493,6 +1918,104 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(len(report["pronunciation_meta_parse_errors"]), 1)
         self.assertEqual(len(report["tts_text_hash_mismatches"]), 1)
         self.assertEqual(len(report["phrase_tts_text_hash_mismatches"]), 1)
+        self.assertEqual(len(report["empty_required_text_fields"]), 1)
+        self.assertEqual(len(report["blocked_study_text_values"]), 2)
+
+    def test_apkg_media_header_validator_rejects_invalid_video_bytes(self):
+        self.assertFalse(verify_apkg.media_header_valid("clip.mp4", 5, b"media"))
+        self.assertTrue(
+            verify_apkg.media_header_valid(
+                "clip.mp4",
+                8204,
+                b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 8192,
+            )
+        )
+
+    def test_apkg_offline_field_report_flags_video_without_webm_fallback(self):
+        report = verify_apkg.offline_field_report(
+            [
+                {
+                    "CardId": "card-video",
+                    "English": "You won't even taste the difference.",
+                    "Answer": "taste the difference",
+                    "Chinese": "你根本尝不出区别。",
+                    "Definition": "notice a difference by taste",
+                    "TeacherNote": "注意 taste 的语境搭配。",
+                    "Video": '<video><source src="clip.mp4" type="video/mp4"></video>',
+                    "Audio": "",
+                    "TtsAudio": "",
+                    "PhraseTtsAudio": "",
+                    "PronunciationMeta": "{}",
+                }
+            ],
+            {"clip.mp4"},
+        )
+
+        self.assertEqual(len(report["video_reference_compatibility_issues"]), 1)
+        self.assertEqual(report["video_reference_compatibility_issues"][0]["code"], "NO_WEBM_FALLBACK")
+
+    def test_video_compatibility_issues_flag_high_profile_1080p_mp4(self):
+        issues = verify_apkg.video_compatibility_issues(
+            "clip.mp4",
+            {
+                "ok": True,
+                "codec": "h264",
+                "profile": "High",
+                "width": 1920,
+                "height": 1080,
+            },
+        )
+
+        self.assertEqual(
+            {issue["code"] for issue in issues},
+            {"VIDEO_RESOLUTION_TOO_HIGH", "MP4_PROFILE_NOT_ANKI_FRIENDLY"},
+        )
+
+    def test_apkg_offline_field_report_accepts_pronunciation_meta_with_arrays_and_ipa(self):
+        meta = {
+            "language_code": "en",
+            "accent_profile": "en-US-general",
+            "notation_system": "ipa_en_connected",
+            "generation_basis": "dictionary_only",
+            "field_confidence": {"phonetic_ipa": "medium"},
+            "validation_issues": [
+                {
+                    "field": "source_spoken_ipa",
+                    "severity": "block",
+                    "code": "DICTIONARY_ONLY_NO_SPOKEN",
+                    "message": "只保留标准读法。",
+                }
+            ],
+            "field_changes": [
+                {
+                    "field": "source_spoken_ipa",
+                    "action": "hidden",
+                    "code": "DICTIONARY_ONLY_NO_SPOKEN",
+                    "message": "原句听感已隐藏。",
+                    "original_value": "/ju woʊnt ˈivən teɪst ðə ˈdɪfərəns/",
+                }
+            ],
+        }
+        report = verify_apkg.offline_field_report(
+            [
+                {
+                    "CardId": "card-1",
+                    "English": "You won't even taste the difference.",
+                    "Answer": "taste the difference",
+                    "Chinese": "你根本尝不出区别。",
+                    "Definition": "taste the difference 表示尝出两者之间的差别。",
+                    "TeacherNote": "常用于食品、饮料或质量对比场景。",
+                    "TtsAudio": "",
+                    "PhraseTtsAudio": "",
+                    "PronunciationMeta": json.dumps(meta, ensure_ascii=False),
+                }
+            ],
+            set(),
+        )
+
+        self.assertEqual(report["pronunciation_meta_parse_errors"], [])
+        self.assertEqual(report["empty_required_text_fields"], [])
+        self.assertEqual(report["blocked_study_text_values"], [])
 
     def test_material_context_accepts_direct_gemini_vertex_context_payload(self):
         original_generate = worker._legacy_worker.gemini_vertex_generate_content
@@ -769,6 +2292,9 @@ class WorkerQualityTests(unittest.TestCase):
                             "retrieval_prompt": "这句里表示“负责收银”的自然表达是什么？",
                             "usage_boundary": "适合商店、餐厅收银场景。",
                             "confusable_note": "register 这里是收银机，不是注册。",
+                            "learning_action": "expression_recall",
+                            "conceptual_action": "把 run 当成临时负责一台设备或岗位的动作。",
+                            "chinese_learner_trap": "不要按中文把 run 理解成跑步或运行程序。",
                         },
                         {
                             "type": "phrase",
@@ -809,7 +2335,69 @@ class WorkerQualityTests(unittest.TestCase):
 
         self.assertIn("run the register", phrases)
         self.assertIn("register", phrases)
+        expression_card = next(card for card in merged[0]["cards"] if card["phrase"] == "run the register")
+        self.assertEqual(expression_card["learning_action"], "expression_recall")
+        self.assertIn("临时负责", expression_card["conceptual_action"])
+        self.assertIn("跑步", expression_card["chinese_learner_trap"])
         self.assertEqual(len([card for card in merged[0]["cards"] if card["type"] == "phrase"]), 2)
+
+    def test_merge_ai_cards_extra_card_does_not_inherit_fallback_phrase(self):
+        segments = [
+            {
+                "id": "seg_0001",
+                "text": "Star snitch says some dude goes by cap'n Cook lives up to his name in there.",
+                "phrase": "goes by",
+                "exact_span": "goes by",
+                "normalized_answer": "goes by",
+                "answer_core": "goes by",
+                "candidate_kind": "expression",
+                "phrase_type": "spoken_phrase",
+                "content_kind": "phrase",
+                "source_time": "00:00:01.000 - 00:00:04.000",
+            }
+        ]
+        ai_payload = {
+            "segments": [
+                {
+                    "id": "seg_0001",
+                    "cards": [
+                        {
+                            "type": "phrase",
+                            "phrase": "goes by",
+                            "exact_span": "goes by",
+                            "normalized_answer": "goes by",
+                            "answer_core": "goes by",
+                            "candidate_kind": "expression",
+                            "phrase_type": "spoken_phrase",
+                            "content_kind": "phrase",
+                            "chinese": "自称 / 叫作",
+                            "definition": "Use this to say what name someone uses.",
+                            "context": "Someone is describing an alias.",
+                            "teacher_note": "常见于介绍绰号或化名。",
+                        },
+                        {
+                            "type": "phrase",
+                            "exact_span": "lives up to his name",
+                            "normalized_answer": "live up to one's name",
+                            "answer_core": "lives up to his name",
+                            "candidate_kind": "expression",
+                            "phrase_type": "idiom",
+                            "content_kind": "phrase",
+                            "chinese": "名副其实",
+                            "definition": "Use this when someone's behavior matches their name or reputation.",
+                            "context": "The nickname Cook matches what the person does.",
+                            "teacher_note": "这里是评价绰号和行为相符。",
+                        },
+                    ],
+                }
+            ]
+        }
+
+        merged, _ = worker.merge_ai_cards(segments, ai_payload, ["phrase"], "B2")
+        extra = next(card for card in merged[0]["cards"] if card["answer_core"] == "lives up to his name")
+
+        self.assertEqual(extra["phrase"], "lives up to his name")
+        self.assertNotEqual(extra["phrase"], "goes by")
 
     def test_sparse_ai_phrase_card_is_not_recommended(self):
         segments = [
@@ -950,7 +2538,7 @@ class WorkerQualityTests(unittest.TestCase):
             self.assertIn("点画面开始复读", template["qfmt"])
             self.assertIn("复读循环中", template["qfmt"])
             self.assertIn("video.muted = false", template["qfmt"])
-            self.assertIn("表达 / 词义", template["afmt"])
+            self.assertIn('<div class="v11-label">{{CardType}}</div>', template["afmt"])
             self.assertIn("原句</div>", template["afmt"])
             self.assertIn("别误用", template["afmt"])
             self.assertNotIn("<audio controls", template["qfmt"] + template["afmt"])
@@ -962,17 +2550,413 @@ class WorkerQualityTests(unittest.TestCase):
             self.assertIn("SpokenIpa", field_names)
             self.assertIn("SourceSpokenIpa", field_names)
             self.assertIn("PronunciationNote", field_names)
+            self.assertIn("PronunciationStatus", field_names)
+            self.assertIn("SourcePronunciationStatus", field_names)
             self.assertIn("PronunciationMeta", field_names)
             self.assertIn("SpokenPronunciationLabel", field_names)
             self.assertIn("StandardPronunciationHint", field_names)
             self.assertIn("标准读法", template["afmt"])
             self.assertIn("{{SpokenPronunciationLabel}}", template["afmt"])
             self.assertIn("{{^SourceSpokenIpa}}", template["afmt"])
-            self.assertIn("原句听感</span><strong>未单独标注</strong>", template["afmt"])
+            self.assertIn("{{SourcePronunciationStatus}}", template["afmt"])
+            self.assertNotIn("原句听感</span><strong>未单独标注</strong>", template["afmt"])
             exported_fields = note_fields.split("\x1f")
             meta = json.loads(exported_fields[field_names.index("PronunciationMeta")])
             self.assertIn(meta["language_code"], {"en", "fr", "es", "ja", "ru"})
             self.assertIn("generation_basis", meta)
+
+    def test_export_batch_project_writes_nested_subdecks(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "out"
+            output_dir.mkdir()
+            project = {
+                "id": "batch-shameless-s1",
+                "title": "无耻之徒 第一季",
+                "source_mode": "local",
+                "video_path": "",
+                "subtitle_path": "",
+                "language": "en",
+                "level": "B1",
+                "template_id": "immersive_v11",
+                "skip_video_slicing": True,
+                "batch_enabled": True,
+                "batch_items": [
+                    {
+                        "id": "ep1",
+                        "enabled": True,
+                        "source_mode": "local",
+                        "subdeck_title": "S01E01 - Pilot",
+                        "deck_name": "无耻之徒 第一季::S01E01 - Pilot",
+                    },
+                    {
+                        "id": "ep2",
+                        "enabled": True,
+                        "source_mode": "local",
+                        "subdeck_title": "S01E02 - Frank the Plank",
+                        "deck_name": "无耻之徒 第一季::S01E02 - Frank the Plank",
+                    },
+                ],
+                "segments": [
+                    {
+                        "id": "seg-ep1",
+                        "batch_item_id": "ep1",
+                        "text": "I am in the mood to help today.",
+                        "start": 1.0,
+                        "end": 2.0,
+                        "source_time": "00:00:01.000 - 00:00:02.000",
+                        "cards": [
+                            {
+                                "id": "card-ep1",
+                                "type": "phrase",
+                                "enabled": True,
+                                "english": "I am in the mood to help today.",
+                                "answer_core": "in the mood",
+                                "phrase": "in the mood",
+                                "chinese": "有心情",
+                                "definition": "ready or willing to do something",
+                                "context": "Someone is willing to help.",
+                                "teacher_note": "不是 mood 本身的普通名词用法。",
+                                "pronunciation_meta": {},
+                            }
+                        ],
+                    },
+                    {
+                        "id": "seg-ep2",
+                        "batch_item_id": "ep2",
+                        "text": "Can you run the register for a minute?",
+                        "start": 3.0,
+                        "end": 4.0,
+                        "source_time": "00:00:03.000 - 00:00:04.000",
+                        "cards": [
+                            {
+                                "id": "card-ep2",
+                                "type": "phrase",
+                                "enabled": True,
+                                "english": "Can you run the register for a minute?",
+                                "answer_core": "run the register",
+                                "phrase": "run the register",
+                                "chinese": "负责收银",
+                                "definition": "operate the cash register",
+                                "context": "A store work task.",
+                                "teacher_note": "服务业场景搭配。",
+                                "pronunciation_meta": {},
+                            }
+                        ],
+                    },
+                ],
+            }
+
+            result = worker.handle_export({"project": project, "output_dir": str(output_dir)})
+
+            self.assertTrue(Path(result["apkg_path"]).exists())
+            self.assertEqual(result["cards"], 2)
+            self.assertEqual(result["deck_name"], "无耻之徒 第一季")
+            self.assertEqual(
+                result["deck_names"],
+                ["无耻之徒 第一季::S01E01 - Pilot", "无耻之徒 第一季::S01E02 - Frank the Plank"],
+            )
+            self.assertEqual(result["batch_summary"]["items"], 2)
+            self.assertEqual(result["batch_summary"]["exported_items"], 2)
+
+            import sqlite3
+            import zipfile
+
+            with zipfile.ZipFile(result["apkg_path"]) as apkg:
+                apkg.extract("collection.anki2", root)
+            connection = sqlite3.connect(root / "collection.anki2")
+            try:
+                decks_json = connection.execute("select decks from col").fetchone()[0]
+                card_deck_ids = [row[0] for row in connection.execute("select did from cards order by id").fetchall()]
+            finally:
+                connection.close()
+            decks_by_id = json.loads(decks_json)
+            exported_deck_names = {deck["name"] for deck in decks_by_id.values()}
+            self.assertIn("无耻之徒 第一季::S01E01 - Pilot", exported_deck_names)
+            self.assertIn("无耻之徒 第一季::S01E02 - Frank the Plank", exported_deck_names)
+            self.assertEqual(len(set(card_deck_ids)), 2)
+
+    def test_batch_export_smoke_for_url_and_document_projects(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
+
+        import sqlite3
+        import zipfile
+
+        def assert_batch_export(project, expected_kind: str, expected_decks: list[str]) -> None:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                output_dir = root / "out"
+                unpacked = root / "unpacked"
+                output_dir.mkdir()
+                unpacked.mkdir()
+
+                result = worker.handle_export({"project": project, "output_dir": str(output_dir)})
+
+                self.assertTrue(Path(result["apkg_path"]).exists())
+                self.assertEqual(result["deck_kind"], expected_kind)
+                self.assertEqual(result["deck_names"], expected_decks)
+                self.assertEqual(result["batch_summary"]["items"], len(expected_decks))
+                self.assertEqual(result["batch_summary"]["exported_items"], len(expected_decks))
+                self.assertEqual(result["media_summary"]["video_segments"], 0)
+                self.assertEqual(result["quality_audit"]["empty_required_fields"], 0)
+
+                with zipfile.ZipFile(result["apkg_path"]) as apkg:
+                    apkg.extract("collection.anki2", unpacked)
+                connection = sqlite3.connect(unpacked / "collection.anki2")
+                try:
+                    decks_json = connection.execute("select decks from col").fetchone()[0]
+                    card_deck_ids = [row[0] for row in connection.execute("select did from cards order by id").fetchall()]
+                finally:
+                    connection.close()
+                exported_names = {deck["name"] for deck in json.loads(decks_json).values()}
+                for deck_name in expected_decks:
+                    self.assertIn(deck_name, exported_names)
+                self.assertEqual(len(set(card_deck_ids)), len(expected_decks))
+
+        url_project = {
+            "id": "batch-url-smoke",
+            "title": "TED Links",
+            "source_mode": "url",
+            "source_url": "",
+            "video_path": "",
+            "subtitle_path": "",
+            "language": "en",
+            "level": "B1",
+            "template_id": "immersive_v11",
+            "skip_video_slicing": True,
+            "batch_enabled": True,
+            "batch_items": [
+                {"id": "url1", "enabled": True, "source_mode": "url", "subdeck_title": "001 - First talk", "deck_name": "TED Links::001 - First talk"},
+                {"id": "url2", "enabled": True, "source_mode": "url", "subdeck_title": "002 - Second talk", "deck_name": "TED Links::002 - Second talk"},
+            ],
+            "segments": [
+                {
+                    "id": "url-seg-1",
+                    "batch_item_id": "url1",
+                    "text": "Let me look it up before the meeting.",
+                    "start": 1,
+                    "end": 2,
+                    "source_time": "00:00:01.000 - 00:00:02.000",
+                    "cards": [
+                        {
+                            "id": "url-card-1",
+                            "type": "phrase",
+                            "enabled": True,
+                            "english": "Let me look it up before the meeting.",
+                            "answer_core": "look it up",
+                            "phrase": "look it up",
+                            "chinese": "查一下",
+                            "definition": "search for information",
+                            "context": "Someone checks information before a meeting.",
+                            "teacher_note": "up 是短语动词的一部分，不是方向。",
+                            "pronunciation_meta": {},
+                        }
+                    ],
+                },
+                {
+                    "id": "url-seg-2",
+                    "batch_item_id": "url2",
+                    "text": "We need to figure it out together.",
+                    "start": 3,
+                    "end": 4,
+                    "source_time": "00:00:03.000 - 00:00:04.000",
+                    "cards": [
+                        {
+                            "id": "url-card-2",
+                            "type": "phrase",
+                            "enabled": True,
+                            "english": "We need to figure it out together.",
+                            "answer_core": "figure it out",
+                            "phrase": "figure it out",
+                            "chinese": "弄明白",
+                            "definition": "understand or solve something",
+                            "context": "A team solves a problem.",
+                            "teacher_note": "不是 figure 的数字/身材含义。",
+                            "pronunciation_meta": {},
+                        }
+                    ],
+                },
+            ],
+        }
+        assert_batch_export(url_project, "subtitle_language", ["TED Links::001 - First talk", "TED Links::002 - Second talk"])
+
+        document_project = {
+            "id": "batch-doc-smoke",
+            "title": "Learning Science Notes",
+            "source_mode": "document",
+            "document_path": "",
+            "language": "en",
+            "level": "B1",
+            "template_id": "immersive",
+            "document_study_mode": "knowledge",
+            "batch_enabled": True,
+            "batch_items": [
+                {"id": "doc1", "enabled": True, "source_mode": "document", "subdeck_title": "001 - Retrieval", "deck_name": "Learning Science Notes::001 - Retrieval"},
+                {"id": "doc2", "enabled": True, "source_mode": "document", "subdeck_title": "002 - Spacing", "deck_name": "Learning Science Notes::002 - Spacing"},
+            ],
+            "segments": [
+                {
+                    "id": "doc-seg-1",
+                    "batch_item_id": "doc1",
+                    "text": "Retrieval practice strengthens later access better than rereading.",
+                    "source_time": "文档知识点 1",
+                    "cards": [
+                        {
+                            "id": "doc-card-1",
+                            "type": "knowledge",
+                            "enabled": True,
+                            "english": "为什么 retrieval practice 比重读更有效？",
+                            "answer_core": "retrieval practice",
+                            "phrase": "retrieval practice",
+                            "chinese": "主动回忆会练习从记忆中取回信息，而不只是再次看到信息。",
+                            "definition": "通过尝试回答来强化长期记忆的学习方式。",
+                            "context": "The note contrasts retrieval practice with rereading.",
+                            "teacher_note": "它不是简单重读；没有取回动作就不算主动回忆。",
+                            "why": "能避免熟悉感误导学习者。",
+                            "pronunciation_meta": {},
+                        }
+                    ],
+                },
+                {
+                    "id": "doc-seg-2",
+                    "batch_item_id": "doc2",
+                    "text": "The spacing effect improves long-term retention when reviews are spread across time.",
+                    "source_time": "文档知识点 2",
+                    "cards": [
+                        {
+                            "id": "doc-card-2",
+                            "type": "knowledge",
+                            "enabled": True,
+                            "english": "spacing effect 的关键是什么？",
+                            "answer_core": "spacing effect",
+                            "phrase": "spacing effect",
+                            "chinese": "把复习分散到不同时间点，利用遗忘与重新取回来巩固记忆。",
+                            "definition": "间隔安排复习比集中重复更利于长期保持。",
+                            "context": "The note links review spacing to long-term retention.",
+                            "teacher_note": "它不是拖延复习，而是有意拉开复习间隔。",
+                            "why": "能让卡片复习更符合记忆规律。",
+                            "pronunciation_meta": {},
+                        }
+                    ],
+                },
+            ],
+        }
+        assert_batch_export(
+            document_project,
+            "document_knowledge",
+            ["Learning Science Notes::001 - Retrieval", "Learning Science Notes::002 - Spacing"],
+        )
+
+    def test_export_reuses_media_for_identical_clip_windows(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            video_path = root / "source.mkv"
+            output_dir = root / "out"
+            video_path.write_bytes(b"fake video bytes for fingerprint")
+            output_dir.mkdir()
+            project = {
+                "title": "media reuse",
+                "source_mode": "local",
+                "video_path": str(video_path),
+                "language": "en",
+                "level": "B1",
+                "template_id": "immersive_v11",
+                "segments": [
+                    {
+                        "id": "seg-a",
+                        "text": "Can you calibrate the nozzle before we start?",
+                        "start": 10.0,
+                        "end": 12.0,
+                        "media_start": 10.0,
+                        "media_end": 12.0,
+                        "source_time": "00:00:10.000 - 00:00:12.000",
+                        "cards": [
+                            {
+                                "id": "card-a",
+                                "type": "phrase",
+                                "enabled": True,
+                                "english": "Can you run the register for a minute?",
+                                "answer_core": "run the register",
+                                "phrase": "run the register",
+                                "chinese": "负责收银",
+                                "definition": "operate the cash register",
+                                "context": "A store work task.",
+                                "teacher_note": "服务业场景搭配。",
+                                "pronunciation_meta": {},
+                            }
+                        ],
+                    },
+                    {
+                        "id": "seg-b",
+                        "text": "Can you run the register for a minute?",
+                        "start": 10.0,
+                        "end": 12.0,
+                        "media_start": 10.0,
+                        "media_end": 12.0,
+                        "source_time": "00:00:10.000 - 00:00:12.000",
+                        "cards": [
+                            {
+                                "id": "card-b",
+                                "type": "phrase",
+                                "enabled": True,
+                                "english": "Can you run the register for a minute?",
+                                "answer_core": "register",
+                                "phrase": "register",
+                                "chinese": "收银机",
+                                "definition": "cash register in this context",
+                                "context": "A store work task.",
+                                "teacher_note": "熟词语境义。",
+                                "pronunciation_meta": {},
+                            }
+                        ],
+                    },
+                ],
+            }
+            original_try_run_ffmpeg = worker._legacy_worker.try_run_ffmpeg
+            original_cwd = os.getcwd()
+
+            def fake_try_run_ffmpeg(command):
+                output_path = Path(command[-1])
+                if output_path.suffix == ".mp4":
+                    output_path.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 8192)
+                elif output_path.suffix == ".webm":
+                    output_path.write_bytes(b"\x1a\x45\xdf\xa3" + b"\x00" * 8192)
+                elif output_path.suffix == ".jpg":
+                    output_path.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 8192)
+                elif output_path.suffix == ".mp3":
+                    output_path.write_bytes(b"ID3" + b"\x00" * 8192)
+                else:
+                    output_path.write_bytes(b"media")
+                return ""
+
+            try:
+                os.chdir(root)
+                worker._legacy_worker.try_run_ffmpeg = fake_try_run_ffmpeg
+                result = worker.handle_export({"project": project, "output_dir": str(output_dir)})
+            finally:
+                os.chdir(original_cwd)
+                worker._legacy_worker.try_run_ffmpeg = original_try_run_ffmpeg
+
+            self.assertEqual(result["cards"], 2)
+            self.assertEqual(result["segments"], 2)
+            self.assertEqual(result["media_summary"]["video_segments"], 1)
+            self.assertEqual(result["media_summary"]["video_files"], 2)
+            self.assertEqual(result["media_summary"]["original_audio_files"], 1)
+            self.assertEqual(result["media_summary"]["media_reused_segments"], 1)
+            self.assertEqual(result["media_summary"]["media_files"], 4)
 
     def test_export_phrase_tts_matches_visible_answer_for_repetition_cards(self):
         try:
@@ -1036,7 +3020,7 @@ class WorkerQualityTests(unittest.TestCase):
 
             def fake_synthesize_tts(project_arg, segment_arg, output_path, text_override=None):
                 captured.append(text_override)
-                Path(output_path).write_bytes(b"ID3")
+                Path(output_path).write_bytes(b"ID3" + b"\x00" * 8192)
                 return True
 
             try:
@@ -1059,6 +3043,176 @@ class WorkerQualityTests(unittest.TestCase):
             self.assertIn(sentence_entries[0]["text_hash"], sentence_entries[0]["file"])
             manifest_entry = result["media_manifest"][phrase_entries[0]["file"]]
             self.assertEqual(manifest_entry["role"], "phrase_tts")
+
+    def test_export_tts_uses_bounded_concurrency(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "out"
+            output_dir.mkdir()
+            segments = []
+            for index in range(3):
+                phrase = f"phrase {index}"
+                segments.append(
+                    {
+                        "id": f"seg_{index}",
+                        "start": index * 2,
+                        "end": index * 2 + 1,
+                        "source_time": f"00:00:0{index}.000 - 00:00:0{index + 1}.000",
+                        "text": f"They say {phrase} in this line.",
+                        "cards": [
+                            {
+                                "id": f"card_{index}",
+                                "type": "expression",
+                                "type_label": "表达卡",
+                                "enabled": True,
+                                "english": f"They say {phrase} in this line.",
+                                "chinese": "这句话在训练一个表达。",
+                                "phrase": phrase,
+                                "answer_core": phrase,
+                                "definition": "一个可练习的表达。",
+                                "teacher_note": "关注表达在原句中的用法。",
+                                "context": "来自测试字幕。",
+                            }
+                        ],
+                    }
+                )
+            project = {
+                "id": "tts-concurrency",
+                "title": "tts concurrency",
+                "source_mode": "local",
+                "video_path": "",
+                "subtitle_path": "",
+                "language": "English",
+                "level": "B1",
+                "template_id": "immersive_v11",
+                "skip_video_slicing": True,
+                "tts_concurrency": 2,
+                "api_config": {
+                    "provider": "local",
+                    "tts_config": {
+                        "enabled": True,
+                        "provider": "openai-compatible",
+                        "base_url": "https://api.example.com/v1",
+                        "api_key": "sk-test",
+                        "model": "tts-test",
+                        "voice": "alloy",
+                        "language": "en-US",
+                        "sample_rate": 24000,
+                        "bit_rate": 128000,
+                    },
+                },
+                "segments": segments,
+            }
+            active = 0
+            max_active = 0
+            lock = threading.Lock()
+            original_synthesize_tts = worker._legacy_worker.synthesize_tts
+
+            def fake_synthesize_tts(project_arg, segment_arg, output_path, text_override=None):
+                nonlocal active, max_active
+                with lock:
+                    active += 1
+                    max_active = max(max_active, active)
+                try:
+                    time.sleep(0.05)
+                    Path(output_path).write_bytes(b"ID3" + b"\x00" * 8192)
+                    return {"ok": True, "cache_hit": False}
+                finally:
+                    with lock:
+                        active -= 1
+
+            try:
+                worker._legacy_worker.synthesize_tts = fake_synthesize_tts
+                result = worker.handle_export({"project": project, "output_dir": str(output_dir)})
+            finally:
+                worker._legacy_worker.synthesize_tts = original_synthesize_tts
+
+            self.assertTrue(Path(result["apkg_path"]).exists())
+            self.assertEqual(result["media_summary"]["tts_concurrency"], 2)
+            self.assertEqual(result["media_summary"]["sentence_tts_requested"], 3)
+            self.assertEqual(result["media_summary"]["phrase_tts_requested"], 3)
+            self.assertEqual(result["media_summary"]["sentence_tts_files"], 3)
+            self.assertEqual(result["media_summary"]["phrase_tts_files"], 3)
+            self.assertGreaterEqual(max_active, 2)
+            self.assertLessEqual(max_active, 2)
+            report = verify_apkg.sqlite_fallback_report(Path(result["apkg_path"]))
+            self.assertEqual(report["empty_required_text_fields"], [])
+            self.assertEqual(report["tts_text_hash_mismatches"], [])
+            self.assertEqual(report["phrase_tts_text_hash_mismatches"], [])
+
+    def test_export_v11_required_fields_use_safe_fallbacks_after_generic_filter(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "out"
+            output_dir.mkdir()
+            project = {
+                "id": "v11-required-fallbacks",
+                "title": "v11 required fallbacks",
+                "source_mode": "local",
+                "video_path": "",
+                "subtitle_path": "",
+                "language": "English",
+                "level": "B1",
+                "template_id": "immersive_v11",
+                "skip_video_slicing": True,
+                "segments": [
+                    {
+                        "id": "seg_1",
+                        "start": 0,
+                        "end": 1,
+                        "source_time": "00:00:00.000 - 00:00:01.000",
+                        "text": "Can you run the register for a minute?",
+                        "cards": [
+                            {
+                                "id": "card_1",
+                                "type": "expression",
+                                "type_label": "表达卡",
+                                "enabled": True,
+                                "english": "Can you calibrate the nozzle before we start?",
+                                "chinese": "开始前你能校准一下喷嘴吗？",
+                                "phrase": "calibrate the nozzle",
+                                "answer_core": "calibrate the nozzle",
+                                "definition": "很常见，先抓住表达再回看上下文。",
+                                "how_to_use_it": "不要只背中文翻译。",
+                                "teacher_note": "复习时先听语气。",
+                                "usage_boundary": "注意语境。",
+                                "context": "请求别人开始前校准设备。",
+                            }
+                        ],
+                    }
+                ],
+            }
+
+            result = worker.handle_export({"project": project, "output_dir": str(output_dir)})
+            self.assertEqual(result["quality_audit"]["empty_required_fields"], 0)
+            report = verify_apkg.sqlite_fallback_report(Path(result["apkg_path"]))
+            self.assertEqual(report["empty_required_text_fields"], [])
+
+            import sqlite3
+            import zipfile
+
+            with tempfile.TemporaryDirectory() as unpacked:
+                with zipfile.ZipFile(result["apkg_path"]) as package:
+                    package.extract("collection.anki2", unpacked)
+                con = sqlite3.connect(Path(unpacked) / "collection.anki2")
+                try:
+                    models = json.loads(con.execute("select models from col").fetchone()[0])
+                    notes = verify_apkg.note_field_dicts(con, models)
+                finally:
+                    con.close()
+            self.assertEqual(len(notes), 1)
+            self.assertIn("calibrate the nozzle", verify_apkg.plain_field_text(notes[0]["Definition"]))
+            self.assertIn("calibrate the nozzle", verify_apkg.plain_field_text(notes[0]["TeacherNote"]))
+            self.assertNotIn("很常见", verify_apkg.plain_field_text(notes[0]["Definition"]))
+            self.assertNotIn("注意语境", verify_apkg.plain_field_text(notes[0]["TeacherNote"]))
 
     def test_worker_fail_emits_machine_readable_error(self):
         from acg.protocol import ERROR_PREFIX, fail
@@ -1140,7 +3294,107 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("详细答案", prompt)
         self.assertIn("读书笔记老师", prompt)
         self.assertIn("不要照抄整段原文", prompt)
+        self.assertIn("最小信息原则", prompt)
+        self.assertIn("先理解再记忆", prompt)
+        self.assertIn("原文依据", prompt)
+        self.assertIn("边界/反例", prompt)
+        self.assertIn("不要把标题、目录、铺垫做成卡", prompt)
+        self.assertIn("cloze 只能有一个 ____", prompt)
         self.assertIn('"knowledge_type":"concepts|arguments|terms|examples"', prompt)
+
+    def test_document_prompt_requires_atomic_retrieval_and_transfer_fields(self):
+        prompt = worker.build_document_prompt(
+            {
+                "level": "B1",
+                "document_focus": ["concepts", "arguments"],
+                "document_depth": "standard",
+                "document_answer_length": "medium",
+            },
+            [
+                {
+                    "id": "doc_0001",
+                    "source_time": "文档知识点 1",
+                    "text": "Why does retrieval practice improve retention?",
+                    "document_excerpt": "Retrieval practice strengthens later access better than rereading.",
+                }
+            ],
+        )
+
+        self.assertIn("主动回忆", prompt)
+        self.assertIn("最小信息原则", prompt)
+        self.assertIn("原文依据", prompt)
+        self.assertIn("迁移检查", prompt)
+        self.assertIn("边界/反例", prompt)
+        self.assertIn('"retrieval_task":"正面主动回忆问题"', prompt)
+        self.assertIn('"atomic_answer":"背面第一屏短答案"', prompt)
+        self.assertIn('"memory_hook":"记忆钩子"', prompt)
+        self.assertIn('"transfer_check":"迁移检查"', prompt)
+        self.assertIn('"boundary":"边界/反例"', prompt)
+
+    def test_document_merge_preserves_learning_card_fields(self):
+        segments = [
+            {
+                "id": "doc_0001",
+                "source_time": "文档知识点 1",
+                "text": "Why does retrieval practice improve retention?",
+                "phrase": "retrieval practice",
+                "document_excerpt": "Retrieval practice strengthens later access better than rereading.",
+            }
+        ]
+        ai_payload = {
+            "segments": [
+                {
+                    "id": "doc_0001",
+                    "cards": [
+                        {
+                            "type": "knowledge",
+                            "knowledge_type": "concepts",
+                            "retrieval_task": "为什么主动回忆比重读更能帮助长期记忆？",
+                            "atomic_answer": "主动回忆会练习从记忆中取回信息，而不只是再次看到信息。",
+                            "phrase": "retrieval practice",
+                            "definition": "一种通过尝试取回答案来巩固记忆的学习方式。",
+                            "source_evidence": "Retrieval practice strengthens later access better than rereading.",
+                            "memory_hook": "把大脑当成搜索系统：越练搜索，越容易搜到。",
+                            "transfer_check": "复习时先合上资料说答案，再打开核对，而不是边看边点头。",
+                            "boundary": "它不是简单重读；如果只看答案没有取回动作，就不算主动回忆。",
+                            "why_it_matters": "能区分真正复习和熟悉感，避免假会。",
+                            "cloze": "主动回忆训练的是从记忆中 ____ 信息。",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        merged, _ = worker.merge_document_cards(segments, ai_payload, "B1")
+        card = merged[0]["cards"][0]
+
+        self.assertEqual(card["english"], "为什么主动回忆比重读更能帮助长期记忆？")
+        self.assertEqual(card["chinese"], "主动回忆会练习从记忆中取回信息，而不只是再次看到信息。")
+        self.assertIn("搜索系统", card["chinese_feel"])
+        self.assertIn("合上资料", card["how_to_use_it"])
+        self.assertIn("不是简单重读", card["teacher_note"])
+        self.assertEqual(card["quality"]["status"], "recommended")
+
+    def test_document_quality_flags_missing_transfer_or_boundary(self):
+        quality = worker.document_card_quality(
+            {
+                "type": "knowledge",
+                "knowledge_type": "concepts",
+                "english": "为什么主动回忆有助于长期记忆？",
+                "chinese": "它训练从记忆中取回信息。",
+                "phrase": "主动回忆",
+                "definition": "通过尝试回答来强化记忆的学习方式。",
+                "source_evidence": "Retrieval practice strengthens later access better than rereading.",
+                "why_it_matters": "能避免把熟悉感误当成掌握。",
+                "teacher_note": "复习时不要直接看答案。",
+                "cloze": "主动回忆训练从记忆中 ____ 信息。",
+            }
+        )
+
+        joined = " / ".join(quality["issues"])
+        self.assertIn("缺少迁移检查", joined)
+        self.assertIn("缺少边界/反例", joined)
+        self.assertNotEqual(quality["status"], "recommended")
 
     def test_document_language_reading_prompt_excludes_listening_focus(self):
         prompt = worker.build_document_prompt(
@@ -1231,6 +3485,203 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertTrue(project["segments"][0]["source_time"].startswith("文档精读点"))
         self.assertEqual(project["segments"][0]["cards"][0]["type_label"], "文档精读卡")
 
+    def test_document_knowledge_generation_exports_apkg_without_media_steps(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for document export smoke")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            document = root / "retrieval.md"
+            document.write_text(
+                "# Retrieval practice\n\n"
+                "Retrieval practice strengthens later access better than rereading. "
+                "Learners should first try to answer from memory, then check the source.",
+                encoding="utf-8",
+            )
+            output_dir = root / "out"
+            output_dir.mkdir()
+
+            original_call_document_model = worker._legacy_worker.call_document_model
+
+            def fake_call_document_model(project, segments):
+                first_id = segments[0]["id"]
+                return {
+                    "segments": [
+                        {
+                            "id": first_id,
+                            "cards": [
+                                {
+                                    "type": "knowledge",
+                                    "knowledge_type": "concepts",
+                                    "retrieval_task": "为什么主动回忆比重读更能帮助长期记忆？",
+                                    "atomic_answer": "主动回忆训练从记忆中取回信息，而不只是再次看到信息。",
+                                    "phrase": "retrieval practice",
+                                    "definition": "通过尝试回答来强化长期记忆的学习方式。",
+                                    "source_evidence": "Retrieval practice strengthens later access better than rereading.",
+                                    "memory_hook": "把大脑当成搜索系统：越练搜索越容易搜到。",
+                                    "transfer_check": "复习时先合上资料说答案，再打开核对原文。",
+                                    "boundary": "它不是简单重读；只看答案没有取回动作，就不算主动回忆。",
+                                    "why_it_matters": "能避免把熟悉感误当成掌握。",
+                                    "cloze": "主动回忆训练从记忆中 ____ 信息。",
+                                }
+                            ],
+                        }
+                    ]
+                }
+
+            try:
+                worker._legacy_worker.call_document_model = fake_call_document_model
+                project = worker.handle_generate_document(
+                    {
+                        "title": "retrieval doc smoke",
+                        "source_mode": "document",
+                        "document_path": str(document),
+                        "document_study_mode": "knowledge",
+                        "document_focus": ["concepts"],
+                        "document_depth": "standard",
+                        "document_answer_length": "medium",
+                        "api_config": {"provider": "openai-compatible", "base_url": "http://example.invalid/v1", "api_key": "test", "model": "fake"},
+                        "level": "B1",
+                        "template_id": "immersive",
+                        "max_segments": 1,
+                    }
+                )
+            finally:
+                worker._legacy_worker.call_document_model = original_call_document_model
+
+            self.assertEqual(project["source_mode"], "document")
+            self.assertEqual(project["document_study_mode"], "knowledge")
+            self.assertEqual(project["segments"][0]["cards"][0]["quality"]["status"], "recommended")
+            self.assertTrue(project["segments"][0]["cards"][0]["enabled"])
+
+            result = worker.handle_export({"project": project, "output_dir": str(output_dir)})
+
+            self.assertTrue(Path(result["apkg_path"]).exists())
+            self.assertEqual(result["deck_kind"], "document_knowledge")
+            self.assertEqual(result["cards"], 1)
+            self.assertEqual(result["media_summary"]["video_segments"], 0)
+            self.assertEqual(result["media_summary"]["media_files"], 0)
+
+            import sqlite3
+            import zipfile
+
+            with zipfile.ZipFile(result["apkg_path"]) as apkg:
+                apkg.extract("collection.anki2", root)
+            connection = sqlite3.connect(root / "collection.anki2")
+            try:
+                models_json = connection.execute("select models from col").fetchone()[0]
+                note_fields = connection.execute("select flds from notes limit 1").fetchone()[0]
+            finally:
+                connection.close()
+
+            model = next(iter(json.loads(models_json).values()))
+            template = model["tmpls"][0]
+            field_names = [field["name"] for field in model["flds"]]
+            exported_fields = note_fields.split("\x1f")
+
+            self.assertIn("文档知识 V10", model["name"])
+            self.assertIn("迁移检查", template["afmt"])
+            self.assertEqual(exported_fields[field_names.index("FrontPrompt")], "为什么主动回忆比重读更能帮助长期记忆？")
+            self.assertIn("训练从记忆中取回信息", exported_fields[field_names.index("Chinese")])
+            self.assertIn("合上资料", exported_fields[field_names.index("Why")])
+            self.assertIn("不是简单重读", exported_fields[field_names.index("TeacherNote")])
+
+    def test_generate_document_batch_merges_items_with_batch_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            first = root / "01 retrieval.md"
+            second = root / "02 spacing.md"
+            first.write_text(
+                "# Retrieval practice\nRetrieval practice strengthens later access better than rereading.",
+                encoding="utf-8",
+            )
+            second.write_text(
+                "# Spacing effect\nSpacing reviews across time improves long-term retention.",
+                encoding="utf-8",
+            )
+
+            original_call_document_model = worker._legacy_worker.call_document_model
+
+            def fake_call_document_model(project, segments):
+                first_id = segments[0]["id"]
+                phrase = "spacing effect" if "spacing" in str(project.get("title", "")).lower() else "retrieval practice"
+                question = "为什么间隔复习能提升长期保持？" if phrase == "spacing effect" else "为什么主动回忆比重读更有效？"
+                answer = "间隔能让大脑在遗忘前后重新取回信息。" if phrase == "spacing effect" else "主动回忆训练从记忆中取回信息。"
+                evidence = "Spacing reviews across time improves long-term retention." if phrase == "spacing effect" else "Retrieval practice strengthens later access better than rereading."
+                return {
+                    "segments": [
+                        {
+                            "id": first_id,
+                            "cards": [
+                                {
+                                    "type": "knowledge",
+                                    "knowledge_type": "concepts",
+                                    "retrieval_task": question,
+                                    "atomic_answer": answer,
+                                    "phrase": phrase,
+                                    "definition": answer,
+                                    "source_evidence": evidence,
+                                    "memory_hook": "把复习当成主动搜索，而不是重看。",
+                                    "transfer_check": "合上资料先回答，再打开核对原文。",
+                                    "boundary": "只看答案或机械重读不算。",
+                                    "why_it_matters": "避免熟悉感伪装成掌握。",
+                                    "cloze": "有效复习需要从记忆中 ____ 信息。",
+                                }
+                            ],
+                        }
+                    ]
+                }
+
+            try:
+                worker._legacy_worker.call_document_model = fake_call_document_model
+                project = worker.handle_generate(
+                    {
+                        "title": "学习方法资料包",
+                        "source_mode": "document",
+                        "batch_enabled": True,
+                        "batch_items": [
+                            {
+                                "id": "doc1",
+                                "enabled": True,
+                                "source_mode": "document",
+                                "subdeck_title": "01 - Retrieval",
+                                "deck_name": "学习方法资料包::01 - Retrieval",
+                                "document_path": str(first),
+                            },
+                            {
+                                "id": "doc2",
+                                "enabled": True,
+                                "source_mode": "document",
+                                "subdeck_title": "02 - Spacing",
+                                "deck_name": "学习方法资料包::02 - Spacing",
+                                "document_path": str(second),
+                            },
+                        ],
+                        "document_study_mode": "knowledge",
+                        "document_focus": ["concepts"],
+                        "api_config": {"provider": "openai-compatible", "base_url": "http://example.invalid/v1", "api_key": "test", "model": "fake"},
+                        "level": "B1",
+                        "template_id": "immersive",
+                        "max_segments": 1,
+                    }
+                )
+            finally:
+                worker._legacy_worker.call_document_model = original_call_document_model
+
+            self.assertEqual(project["title"], "学习方法资料包")
+            self.assertTrue(project["batch_enabled"])
+            self.assertEqual(len(project["batch_items"]), 2)
+            self.assertEqual(project["source_mode"], "document")
+            self.assertEqual(project["document_path"], "")
+            self.assertEqual(len(project["segments"]), 2)
+            self.assertEqual({segment["batch_item_id"] for segment in project["segments"]}, {"doc1", "doc2"})
+            self.assertTrue(all(segment["id"].startswith(("doc1_", "doc2_")) for segment in project["segments"]))
+            self.assertEqual({card["batch_item_id"] for segment in project["segments"] for card in segment["cards"]}, {"doc1", "doc2"})
+            self.assertEqual(project["quality_funnel"]["card_count"], 2)
+            self.assertEqual(project["quality_funnel"]["selected_card_count"], 2)
+
     def test_fallback_document_card_is_review_only(self):
         card = worker.fallback_document_card(
             {
@@ -1282,6 +3733,31 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertFalse(card["enabled"])
         self.assertEqual(card["quality"]["status"], "reject")
         self.assertIn("概念名是占位词", " / ".join(card["quality"]["issues"]))
+
+    def test_document_quality_flags_summary_like_or_source_less_cards(self):
+        quality = worker.document_card_quality(
+            {
+                "type": "knowledge",
+                "knowledge_type": "concepts",
+                "english": "这段主要讲什么？",
+                "chinese": "这段文字主要介绍间隔重复，并且继续补充很多不适合直接复习的摘要性背景。" * 6,
+                "phrase": "章节标题",
+                "definition": "间隔重复是一种复习安排方法。",
+                "context": "",
+                "source_evidence": "",
+                "why_it_matters": "能解释为什么复习时间需要被安排。",
+                "teacher_note": "要能区分复习计划和普通重复阅读。",
+                "cloze": "间隔重复在 ____ 前安排复习，并通过 ____ 降低遗忘。",
+            }
+        )
+
+        joined = " / ".join(quality["issues"])
+        self.assertIn("正面问题太泛", joined)
+        self.assertIn("缺少原文依据", joined)
+        self.assertIn("答案过长", joined)
+        self.assertIn("cloze 只能有一个空", joined)
+        self.assertIn("概念名像标题", joined)
+        self.assertNotEqual(quality["status"], "recommended")
 
     def test_cached_url_source_can_be_subtitle_only(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1374,11 +3850,12 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn('type="video/mp4"', html)
         self.assertIn('src="clip.webm"', html)
         self.assertIn('type="video/webm"', html)
+        self.assertLess(html.index('src="clip.webm"'), html.index('src="clip.mp4"'))
 
     def test_extract_media_references_reads_sources_and_poster(self):
         html = worker.anki_video_html("clip.webm", "clip.mp4", "clip.jpg") + worker.anki_audio_html("clip_tts.mp3")
 
-        self.assertEqual(worker.extract_media_references(html), ["clip.jpg", "clip.mp4", "clip.webm", "clip_tts.mp3"])
+        self.assertEqual(worker.extract_media_references(html), ["clip.jpg", "clip.webm", "clip.mp4", "clip_tts.mp3"])
 
     def test_compare_media_manifest_detects_media_collision(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1736,6 +4213,10 @@ class WorkerQualityTests(unittest.TestCase):
     def test_phrase_match_supports_placeholder_patterns(self):
         self.assertTrue(worker.phrase_in_text("You really let me down.", "let someone down"))
         self.assertTrue(worker.phrase_in_text("We can work it out.", "work something out"))
+
+    def test_phrase_match_supports_contractions_and_gap_patterns(self):
+        self.assertTrue(worker.phrase_in_text("I've been uh thinking about that offer...", "have been thinking about"))
+        self.assertTrue(worker.phrase_in_text("That's what a boiling flask is for.", "That's what ... is for"))
 
     def test_subtitle_cleaning_removes_youtube_speaker_markers(self):
         self.assertEqual(
@@ -2339,6 +4820,113 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("全局素材理解", card_prompt)
         self.assertIn('"content_kind":"phrase|vocabulary|grammar|listening"', card_prompt)
 
+    def test_ciba_tianxia_card_prompt_is_template_isolated(self):
+        project = {
+            "language": "en",
+            "level": "B1",
+            "card_types": ["phrase"],
+        }
+        segment = {
+            "id": "seg_0001",
+            "start": 0.0,
+            "end": 2.0,
+            "source_time": "00:00:00.000 - 00:00:02.000",
+            "text": "Can you run the register for a minute?",
+            "phrase": "run the register",
+            "recommendation": 4,
+            "learning_points": [
+                {
+                    "id": "lp-1",
+                    "answer_core": "run the register",
+                    "exact_span": "run the register",
+                    "candidate_kind": "expression",
+                    "phrase_type": "collocation",
+                }
+            ],
+        }
+
+        default_prompt = worker.build_prompt({**project, "template_id": "immersive_v11"}, [segment])
+        ciba_prompt = worker.build_prompt({**project, "template_id": "ciba_tianxia_v1"}, [segment])
+
+        self.assertNotIn("词霸天下实验 V1", default_prompt)
+        self.assertNotIn("为说而思考", default_prompt)
+        self.assertIn("词霸天下实验 V1", ciba_prompt)
+        self.assertIn("为说而思考", ciba_prompt)
+        self.assertIn("每张卡只训练一个真实语言动作", ciba_prompt)
+        self.assertIn("搭配边界", ciba_prompt)
+        self.assertIn('"learning_action":"contextual_meaning|expression_recall|listening_discrimination|collocation_boundary|chinese_learner_trap|conceptual_action|grammar_pattern"', ciba_prompt)
+        self.assertIn('"conceptual_action":"概念动作感"', ciba_prompt)
+        self.assertIn('"chinese_learner_trap":"中文学习者误区"', ciba_prompt)
+
+    def test_ciba_tianxia_ai_review_prompt_is_template_isolated(self):
+        from acg.pipeline import learning_point_pipeline
+
+        source_batch = [
+            {
+                "source_segment_id": "src-1",
+                "source_time": "00:00:01.000 - 00:00:02.000",
+                "source_sentence": "Can you run the register for a minute?",
+            }
+        ]
+        local_by_source = {
+            "src-1": [
+                {
+                    "id": "lp-1",
+                    "candidate_kind": "expression",
+                    "phrase_type": "collocation",
+                    "exact_span": "run the register",
+                    "answer_core": "run the register",
+                    "normalized_answer": "run the register",
+                    "learning_action": "训练 run + the register 表示负责收银的搭配。",
+                    "value_score": 4,
+                }
+            ]
+        }
+
+        default_prompt = learning_point_pipeline._build_ai_learning_point_review_prompt(
+            {"language": "en", "level": "B1", "template_id": "immersive_v11"}, source_batch, local_by_source
+        )
+        ciba_prompt = learning_point_pipeline._build_ai_learning_point_review_prompt(
+            {"language": "en", "level": "B1", "template_id": "ciba_tianxia_v1"}, source_batch, local_by_source
+        )
+
+        self.assertNotIn("词霸天下实验 V1", default_prompt)
+        self.assertNotIn("为说而思考", default_prompt)
+        self.assertIn("词霸天下实验 V1", ciba_prompt)
+        self.assertIn("真实语言动作", ciba_prompt)
+        self.assertIn("run the register", ciba_prompt)
+
+    def test_ciba_tianxia_scoring_boosts_language_actions_without_changing_default(self):
+        from acg.scoring.learning_value import score_learning_point
+
+        point = {
+            "candidate_kind": "expression",
+            "phrase_type": "collocation",
+            "answer_core": "run the register",
+            "estimated_level": "B1",
+            "value_score": 3.5,
+            "learning_action": "训练 run + the register 表示负责收银的搭配边界。",
+            "usage_boundary": "用于收银台工作或店员职责，不是普通登记。",
+            "confusable_note": "register 在这里不是登记，而是收银机。",
+        }
+        default_score = score_learning_point(point, "B1", {"template_id": "immersive_v11"})
+        ciba_score = score_learning_point(point, "B1", {"template_id": "ciba_tianxia_v1"})
+        noise_score = score_learning_point(
+            {
+                **point,
+                "answer_core": "talk about",
+                "phrase_type": "spoken_phrase",
+                "learning_action": "学习这个表达",
+                "usage_boundary": "",
+                "confusable_note": "",
+            },
+            "B1",
+            {"template_id": "ciba_tianxia_v1"},
+        )
+
+        self.assertGreater(ciba_score["value_score"], default_score["value_score"])
+        self.assertLess(noise_score["value_score"], ciba_score["value_score"])
+
     def test_vocabulary_usage_cards_get_contextual_label(self):
         segments = [
             {
@@ -2428,6 +5016,61 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(worker.card_label_for_learning_card("", "vocabulary"), "语境生词卡")
         self.assertEqual(worker.card_label_for_learning_card("idiom", "phrase"), "表达卡")
 
+    def test_ciba_tianxia_does_not_use_v11_repetition_front_mode(self):
+        self.assertTrue(worker.uses_v11_repetition_front("immersive_v11", "video_language"))
+        self.assertTrue(worker.uses_v11_repetition_front("immersive_v11", "subtitle_language"))
+        self.assertFalse(worker.uses_v11_repetition_front("ciba_tianxia_v1", "video_language"))
+        self.assertFalse(worker.uses_v11_repetition_front("ciba_tianxia_v1", "subtitle_language"))
+        self.assertFalse(worker.uses_v11_repetition_front("ciba_tianxia_v1", "document_reading"))
+
+    def test_ciba_front_should_preserve_retrieval_prompt_when_not_repetition_mode(self):
+        card = {
+            "type": "phrase",
+            "retrieval_prompt": "这句里表示“负责收银”的自然表达是什么？",
+            "phrase": "run the register",
+            "answer_core": "run the register",
+            "chinese": "负责收银",
+        }
+
+        front = worker.card_front_fields(card, repetition_mode=False)
+
+        self.assertEqual(front["front_prompt"], "这句里表示“负责收银”的自然表达是什么？")
+        self.assertEqual(front["answer"], "run the register")
+
+    def test_ciba_tianxia_export_fields_prefer_language_action_mapping(self):
+        card = {
+            "answer_core": "run the register",
+            "phrase": "run the register",
+            "chinese": "负责收银",
+            "learning_target": "把 run the register 当作“负责收银”的整体搭配来识别。",
+            "how_to_use_it": "用于店员临时负责收银台。",
+            "replacement_examples": "Can you run the register for a minute?\nI’ll run the register while you restock.",
+            "usage_boundary": "用于商店、收银台、店员职责。",
+            "confusable_note": "register 这里不是“登记”，而是收银机。",
+            "learning_action": "expression_recall",
+            "conceptual_action": "把 run 理解成临时负责/运转一个岗位或设备。",
+            "chinese_learner_trap": "中文容易把 run 直译成跑步或运行程序。",
+        }
+
+        self.assertIn("负责收银", worker.ciba_contextual_meaning_text(card))
+        self.assertIn("整体搭配", worker.ciba_language_action_text(card))
+        self.assertIn("临时负责", worker.ciba_conceptual_action_text(card))
+        self.assertIn("直译成跑步", worker.ciba_chinese_learner_trap_text(card))
+        self.assertIn("run the register", worker.ciba_transfer_text(card))
+        self.assertIn("中文容易", worker.ciba_boundary_text(card))
+
+    def test_ciba_contextual_meaning_prefers_core_meaning_over_sentence_translation(self):
+        card = {
+            "answer_core": "run the register",
+            "phrase": "run the register",
+            "chinese": "负责收银 / 操作收银机",
+            "natural_chinese": "我来负责收银。",
+            "chinese_feel": "中文像“我来负责收银”。",
+        }
+
+        self.assertEqual(worker.ciba_contextual_meaning_text(card), "负责收银 / 操作收银机")
+        self.assertEqual(worker.ciba_source_context_text(card), "我来负责收银。")
+
     def test_internal_fallback_text_is_not_used_in_study_fields(self):
         card = {
             "type": "phrase",
@@ -2479,9 +5122,22 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("只用于工作职责", worker.v11_misuse_text(card))
         self.assertIn("register 这里不是", worker.v11_misuse_text(card))
 
+        no_matter = {
+            "type": "phrase",
+            "phrase": "no matter how",
+            "teacher_note": "注意 no matter how 后面通常紧跟形容词或副词。",
+            "usage_boundary": "适用于各种正式和非正式场合。",
+            "confusable_note": "注意 no matter how 后面通常紧跟形容词或副词。",
+        }
+        misuse = worker.v11_misuse_text(no_matter)
+        self.assertEqual(misuse.count("no matter how 后面通常紧跟"), 1)
+        self.assertIn("适用于各种正式和非正式场合", misuse)
+
     def test_v11_back_template_labels_pronunciation_note_and_empty_spoken_status(self):
         self.assertIn("发音说明", worker.LANGUAGE_BACK_TEMPLATE_V11)
-        self.assertIn("未单独标注", worker.LANGUAGE_BACK_TEMPLATE_V11)
+        self.assertIn("{{PronunciationStatus}}", worker.LANGUAGE_BACK_TEMPLATE_V11)
+        self.assertIn("{{SourcePronunciationStatus}}", worker.LANGUAGE_BACK_TEMPLATE_V11)
+        self.assertNotIn("未单独标注", worker.LANGUAGE_BACK_TEMPLATE_V11)
         self.assertIn("{{^SpokenIpa}}", worker.LANGUAGE_BACK_TEMPLATE_V11)
 
     def test_v11_long_answer_strips_listening_note_for_layout(self):
@@ -2622,6 +5278,53 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("typed learning point", prompt)
         self.assertIn("某个词在这句里是什么意思/怎么用", prompt)
 
+    def test_fast_review_prompt_requests_minimal_fields_to_reduce_tokens(self):
+        prompt = worker.build_prompt(
+            {
+                "language": "English",
+                "level": "B1",
+                "collection_levels": ["B1", "B2"],
+                "card_types": ["phrase"],
+                "review_density": "fast",
+            },
+            [
+                {
+                    "id": "seg_0001",
+                    "text": "I'm gonna run the register.",
+                    "phrase": "run the register",
+                    "source_time": "00:00:01.000 - 00:00:03.000",
+                    "recommendation": 5,
+                }
+            ],
+        )
+
+        self.assertIn("快速背卡模式", prompt)
+        self.assertIn("减少 token", prompt)
+        self.assertIn("不要输出长段落", prompt)
+        self.assertIn("definition/context/example/collocations/why/why_it_matters/how_to_use_it/usage_boundary/confusable_note", prompt)
+        self.assertIn("每张卡只生成最小复习字段", prompt)
+        full_prompt = worker.build_prompt(
+            {
+                "language": "English",
+                "level": "B1",
+                "collection_levels": ["B1", "B2"],
+                "card_types": ["phrase"],
+                "review_density": "full",
+            },
+            [
+                {
+                    "id": "seg_0001",
+                    "text": "I'm gonna run the register.",
+                    "phrase": "run the register",
+                    "source_time": "00:00:01.000 - 00:00:03.000",
+                    "recommendation": 5,
+                }
+            ],
+        )
+        self.assertLess(len(prompt), len(full_prompt) * 0.7)
+        self.assertNotIn("pronunciation_meta", prompt)
+        self.assertNotIn("source_spoken_ipa", prompt)
+
     def test_partial_source_spoken_ipa_is_cleared(self):
         card = {
             "english": "We will produce a chemically pure And stable product that performs as advertised.",
@@ -2741,7 +5444,8 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(meta["field_confidence"]["spoken_ipa"], "medium")
         self.assertEqual(meta["field_confidence"]["source_spoken_ipa"], "medium")
         self.assertEqual(card["pronunciation_confidence"], "medium")
-        self.assertIn("未实听", card["pronunciation_note"])
+        self.assertNotIn("未实听", card.get("pronunciation_note", ""))
+        self.assertIn("未实听", card["pronunciation_status"])
 
     def test_dictionary_only_global_confidence_uses_lowest_field_confidence(self):
         card = {
@@ -2789,6 +5493,33 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(card["pronunciation_meta"]["field_confidence"]["source_spoken_ipa"], "low")
         self.assertEqual(card["pronunciation_confidence"], "low")
 
+    def test_dictionary_only_without_any_pronunciation_shows_visible_missing_status(self):
+        card = {
+            "english": "I'm shorthanded, Walter. What am I to do?",
+            "answer_core": "shorthanded",
+            "phrase": "shorthanded",
+            "pronunciation_meta": {
+                "generation_basis": "dictionary_only",
+                "field_confidence": {
+                    "phonetic_ipa": "low",
+                    "spoken_ipa": "low",
+                    "source_spoken_ipa": "low",
+                    "pronunciation_note": "low",
+                },
+                "validation_issues": [],
+            },
+        }
+
+        issues = worker.sanitize_pronunciation_fields(card, "en")
+
+        self.assertIn("读法未可靠生成，已隐藏。", issues)
+        self.assertNotIn("pronunciation_note", card)
+        self.assertEqual(card["pronunciation_status"], "未实听，仅提供标准读法；读法未可靠生成，已隐藏")
+        self.assertEqual(card["source_pronunciation_status"], "原句听感未可靠生成，已隐藏")
+        self.assertEqual(card["pronunciation_confidence"], "low")
+        self.assertIn("PRONUNCIATION_NOT_GENERATED", [issue["code"] for issue in card["pronunciation_meta"]["validation_issues"]])
+        self.assertIn("PRONUNCIATION_NOT_GENERATED", [change["code"] for change in card["pronunciation_meta"]["field_changes"]])
+
     def test_blocked_source_spoken_ipa_sets_low_confidence(self):
         card = {
             "english": "Red Phosphorus in the presence of moisture And accelerated by heat yields Phosphorus Hydride.",
@@ -2817,8 +5548,32 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(changes[0]["field"], "source_spoken_ipa")
         self.assertEqual(changes[0]["action"], "hidden")
         self.assertEqual(changes[0]["code"], "SOURCE_PRONUNCIATION_TOO_SHORT")
-        self.assertIn("原句听感未可靠生成", card["pronunciation_note"])
+        self.assertNotIn("原句听感未可靠生成", card.get("pronunciation_note", ""))
+        self.assertIn("原句听感未可靠生成", card["source_pronunciation_status"])
         self.assertEqual(card["pronunciation_confidence"], "low")
+
+    def test_export_quality_audit_detects_drafts_duplicates_and_bad_meta(self):
+        card = {
+            "id": "c1",
+            "type": "phrase",
+            "enabled": True,
+            "english": "Can you run the register for a minute?",
+            "answer_core": "run the register",
+            "phrase": "run the register",
+            "chinese": "操作收银机",
+            "definition": "本地草稿",
+            "teacher_note": "正式卡片不能包含内部草稿提示。",
+            "context": "你能帮忙收一下银吗？",
+            "pronunciation_meta": "{bad-json}",
+        }
+        duplicate = {**card, "id": "c2", "definition": "operate the cash register"}
+
+        audit = worker.export_quality_audit({}, [{"id": "s1", "text": card["english"], "cards": [card, duplicate]}])
+
+        self.assertEqual(audit["card_count"], 2)
+        self.assertGreaterEqual(audit["blocked_text_values"], 1)
+        self.assertEqual(audit["duplicate_visible_cards"], 1)
+        self.assertEqual(audit["pronunciation_meta_errors"], 2)
 
     def test_existing_blocked_empty_source_keeps_low_confidence_on_resanitize(self):
         card = {
@@ -2941,19 +5696,84 @@ class WorkerQualityTests(unittest.TestCase):
 
     def test_template_assets_split_by_project_kind(self):
         v11 = worker.anki_template_assets("immersive_v11", "video_language")
+        v11_fast = worker.anki_template_assets("immersive_v11", "video_language", None, "fast")
+        ciba = worker.anki_template_assets("ciba_tianxia_v1", "video_language")
         language = worker.anki_template_assets("immersive", "video_language")
         knowledge = worker.anki_template_assets("immersive", "document_knowledge")
         reading = worker.anki_template_assets("immersive", "document_reading")
 
         self.assertEqual(v11[0], "沉浸复读 V12")
+        self.assertEqual(ciba[0], "词霸天下实验 V1 · 暖色纸感")
+        minimal_ciba = worker.anki_template_assets("ciba_tianxia_v1", "video_language", "minimal_white")
+        dark_ciba = worker.anki_template_assets("ciba_tianxia_v1", "video_language", "dark_immersive")
+        self.assertEqual(minimal_ciba[0], "词霸天下实验 V1 · 极简白卡")
+        self.assertEqual(dark_ciba[0], "词霸天下实验 V1 · 深色沉浸")
+        self.assertIn("ciba-style-warm-paper", ciba[1])
+        self.assertIn("ciba-style-minimal-white", minimal_ciba[1])
+        self.assertIn("ciba-style-dark-immersive", dark_ciba[1])
+        self.assertNotEqual(ciba[1], minimal_ciba[1])
+        self.assertNotEqual(ciba[1], dark_ciba[1])
+        self.assertEqual(worker.normalize_card_style("unknown-style"), "warm_paper")
+        self.assertEqual(worker.anki_template_version("ciba_tianxia_v1", "video_language"), "V12")
+        self.assertNotEqual(ciba[2], v11[2])
+        self.assertNotEqual(ciba[3], v11[3])
+        self.assertIn("语言动作卡", ciba[2] + ciba[3])
+        self.assertIn("核心答案", ciba[3])
+        self.assertIn("语境义", ciba[3])
+        self.assertIn("语言动作", ciba[3])
+        self.assertIn("为什么选它", ciba[3])
+        self.assertIn("迁移句", ciba[3])
+        self.assertIn("搭配边界", ciba[3])
+        self.assertIn("原句场景", ciba[3])
+        self.assertIn("真实听辨", ciba[3])
+        self.assertIn("--ciba-paper", ciba[1])
+        self.assertIn("ciba-focus-card", ciba[2] + ciba[3])
+        self.assertIn("ciba-core-group", ciba[3])
+        self.assertIn("理解核心", ciba[3])
+        self.assertIn("ciba-priority-grid", ciba[3])
+        self.assertIn("ciba-study-stack", ciba[3])
+        self.assertIn("ciba-transfer-group", ciba[3])
+        self.assertIn("迁移使用", ciba[3])
+        self.assertIn("ciba-essential-block", ciba[3])
+        self.assertIn("ciba-conceptual-block", ciba[3])
+        self.assertIn("ConceptualAction", ciba[3])
+        self.assertIn("ChineseLearnerTrap", ciba[3])
+        self.assertIn("ciba-group-label", ciba[1])
+        self.assertIn("ciba-core-group", ciba[1])
+        self.assertIn("ciba-transfer-group", ciba[1])
+        self.assertIn("ciba-inline-audio-row", ciba[3])
+        self.assertIn("ciba-compact-audio-item", ciba[1])
+        self.assertLess(ciba[3].index("ciba-source-block"), ciba[3].index("ciba-core-group"))
+        self.assertLess(ciba[3].index("ciba-video-stage"), ciba[3].index("ciba-core-group"))
+        self.assertLess(ciba[3].index("ciba-core-group"), ciba[3].index("ciba-priority-grid"))
+        self.assertLess(ciba[3].index("ciba-priority-grid"), ciba[3].index("ciba-conceptual-stack"))
+        self.assertLess(ciba[3].index("ciba-conceptual-stack"), ciba[3].index("ciba-transfer-group"))
+        self.assertLess(ciba[3].index("ciba-transfer-group"), ciba[3].index("ciba-study-stack"))
+        self.assertLess(ciba[3].index("ciba-video-stage"), ciba[3].index("ciba-source-context"))
+        self.assertIn("ciba-audio-row ciba-inline-audio-row", ciba[3])
+        self.assertNotIn("怎么用", ciba[3])
+        self.assertNotIn("别误用", ciba[3])
+        self.assertNotIn("自己造句", ciba[3])
         self.assertIn("v11-video-stage", v11[2])
+        self.assertEqual(v11_fast[0], "沉浸复读 V12 · 快速背卡")
+        self.assertIn("fast-review-card", v11_fast[1] + v11_fast[2] + v11_fast[3])
+        self.assertIn("快速背卡", v11_fast[2] + v11_fast[3])
+        self.assertIn("语境义", v11_fast[3])
+        self.assertIn("{{PhraseTtsAudio}}", v11_fast[3])
+        self.assertLess(v11_fast[3].index("v11-video-stage"), v11_fast[3].index("fast-answer-focus"))
+        self.assertNotIn("怎么用", v11_fast[3])
+        self.assertNotIn("别误用", v11_fast[3])
+        self.assertNotIn("自己造句", v11_fast[3])
+        self.assertNotIn("v11-info-grid", v11_fast[3])
+        self.assertIn("v11-video-stage", v11[2])
+        self.assertIn("▮ 复读卡", v11[2] + v11[3])
         self.assertIn("playV11Audio", v11[2] + v11[3])
         self.assertIn("toggleV11Video", v11[2] + v11[3])
         self.assertIn("点画面开始复读", v11[2] + v11[3])
         self.assertIn("复读循环中", v11[2] + v11[3])
         self.assertIn("只听原声", v11[2] + v11[3])
         self.assertIn("慢读跟读", v11[2] + v11[3])
-        self.assertIn("表达 / 词义", v11[3])
+        self.assertIn('<div class="v11-label">{{CardType}}</div>', v11[3])
         self.assertIn("{{#Context}}<p class=\"v11-source-translation\">{{Context}}</p>{{/Context}}", v11[3])
         self.assertIn("怎么用", v11[3])
         self.assertIn("别误用", v11[3])
@@ -2980,9 +5800,53 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(reading[0], "文档精读 V10")
         self.assertIn("{{SourceLabel}}", language[3])
         self.assertIn("{{UnderstandLabel}}", knowledge[3])
+        self.assertIn("knowledge-answer-shell", knowledge[3])
+        self.assertIn("原文依据", knowledge[3])
+        self.assertIn("理解结构", knowledge[3])
+        self.assertIn("复习动作", knowledge[3])
+        self.assertIn("knowledge-evidence-card", knowledge[1])
+        self.assertIn("knowledge-action-card", knowledge[1])
+        self.assertIn("knowledge-transfer-check", knowledge[1] + knowledge[3])
+        self.assertIn("@media (max-width: 560px)", knowledge[1])
+        self.assertIn(".knowledge-card .answer { font-size: clamp(24px, 6.8vw, 32px); }", knowledge[1])
+        self.assertIn("迁移检查", knowledge[3])
+        self.assertLess(knowledge[3].index("核心答案"), knowledge[3].index("原文依据"))
+        self.assertLess(knowledge[3].index("原文依据"), knowledge[3].index("理解结构"))
+        self.assertLess(knowledge[3].index("理解结构"), knowledge[3].index("迁移检查"))
+        self.assertLess(knowledge[3].index("迁移检查"), knowledge[3].index("复习动作"))
         self.assertIn("边界 / 易错", reading[3])
         self.assertNotEqual(worker.anki_template_family("immersive_v11", "video_language"), worker.anki_template_family("immersive", "video_language"))
+        self.assertNotEqual(worker.anki_template_family("ciba_tianxia_v1", "video_language"), worker.anki_template_family("immersive_v11", "video_language"))
         self.assertNotEqual(worker.anki_template_family("immersive", "video_language"), worker.anki_template_family("immersive", "document_knowledge"))
+
+    def test_all_templates_follow_recall_first_visual_hierarchy(self):
+        variants = [
+            ("immersive", "video_language", None),
+            ("dictionary", "video_language", None),
+            ("minimal", "video_language", None),
+            ("immersive", "document_knowledge", None),
+            ("immersive", "document_reading", None),
+            ("immersive_v11", "video_language", None),
+            ("ciba_tianxia_v1", "video_language", "warm_paper"),
+            ("ciba_tianxia_v1", "video_language", "minimal_white"),
+            ("ciba_tianxia_v1", "video_language", "dark_immersive"),
+        ]
+
+        for template_id, project_kind, card_style in variants:
+            with self.subTest(template_id=template_id, project_kind=project_kind, card_style=card_style):
+                name, css, front, back = worker.anki_template_assets(template_id, project_kind, card_style)
+                combined = css + front + back
+                self.assertIn("learning-hierarchy-system", css, name)
+                self.assertIn("recall-task", front, name)
+                self.assertIn("answer-anchor", back, name)
+                self.assertIn("evidence-anchor", back, name)
+                self.assertIn("understanding-block", back, name)
+                self.assertIn("boundary-block", back, name)
+                self.assertIn("transfer-block", back, name)
+                self.assertIn("font-weight: 950", css, name)
+                self.assertLess(back.index("answer-anchor"), back.index("evidence-anchor"), name)
+                self.assertNotIn("#0D1117", combined, name)
+                self.assertNotIn("cyber", combined.lower(), name)
 
     def test_phrase_review_skip_does_not_generate_candidate(self):
         segment = {
@@ -3149,8 +6013,17 @@ class WorkerQualityTests(unittest.TestCase):
 
     def test_vertex_thinking_final_card_batch_size_is_not_clamped_to_three(self):
         api = {"provider": "gemini-vertex", "model": "gemini-3.1-pro-preview"}
-        self.assertEqual(worker.final_card_batch_size(api, 10), 16)
+        self.assertEqual(worker.final_card_batch_size(api, 10), 8)
         self.assertEqual(worker.final_card_generation_concurrency(api, 4), 3)
+
+    def test_vertex_thinking_budget_exhaustion_is_retryable(self):
+        details = worker._legacy_worker.classify_service_error(
+            RuntimeError("Gemini Vertex 没有返回正文：输出预算被 thinking 消耗完，请提高 maxOutputTokens。"),
+            kind="model",
+        )
+
+        self.assertEqual(details["error_code"], worker._legacy_worker.worker_errors.MODEL_TIMEOUT)
+        self.assertTrue(details["retryable"])
 
     def test_learning_point_inventory_exposes_generated_candidates_duplicates_and_blocks(self):
         segment = {
@@ -4190,7 +7063,7 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual([card["type"] for card in cards], ["listening"])
         self.assertEqual(cards[0]["quality"]["status"], "needs_review")
         self.assertFalse(cards[0]["enabled"])
-        self.assertIn("本地草稿，需要人工确认", cards[0]["quality"]["issues"])
+        self.assertIn("预览草稿，需要人工确认", cards[0]["quality"]["issues"])
         self.assertNotIn("缺少明确目标表达", cards[0]["quality"]["issues"])
         self.assertNotIn("例句只是照抄原句", cards[0]["quality"]["issues"])
 
@@ -4207,7 +7080,7 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(phrase_card["quality"]["status"], "recommended")
         self.assertTrue(phrase_card["enabled"])
         self.assertIn("本地规则卡，需要人工确认", phrase_card["quality"]["issues"])
-        self.assertNotIn("本地草稿，需要人工确认", phrase_card["quality"]["issues"])
+        self.assertNotIn("预览草稿，需要人工确认", phrase_card["quality"]["issues"])
         self.assertNotIn("字段像模板废话", phrase_card["quality"]["issues"])
 
     def test_local_generate_warning_counts_curated_recommendations(self):
@@ -4249,8 +7122,8 @@ class WorkerQualityTests(unittest.TestCase):
             )
 
         self.assertGreaterEqual(project["quality_funnel"]["recommended_cards"], 1)
-        self.assertIn("本地可用卡", project["warning"])
-        self.assertIn("可用卡已默认全选", project["warning"])
+        self.assertIn("预览卡", project["warning"])
+        self.assertIn("正式抽取学习点和制卡请先配置并测试模型 API", project["warning"])
 
     def test_merge_ai_cards_does_not_inflate_to_all_requested_types(self):
         segments = [

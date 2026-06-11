@@ -23,7 +23,7 @@ describe('EnvSettingsPanel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /检查环境/ }))
 
-    expect(screen.getByText('本地环境体检')).toBeInTheDocument()
+    expect(screen.getByText('本地环境诊断中心')).toBeInTheDocument()
     expect(screen.getAllByText('尚未检查').length).toBeGreaterThan(0)
     expect(screen.getByText('一键修复依赖')).toBeInTheDocument()
     expect(onCheckEnv).toHaveBeenCalledOnce()

@@ -10,8 +10,10 @@ import {
 import { defaultCollectionLevels } from './levels'
 import { defaultLanguageFocus } from './learningFocus'
 import { DEEPSEEK_DEFAULT_MODEL, DEEPSEEK_OPENAI_BASE_URL } from './providers'
+import { defaultReviewDensity } from './reviewDensity'
 import { defaultSelectionStrategy } from './selectionStrategy'
 import { defaultStudyDepth } from './studyDepth'
+import { defaultCardStyle } from './templates'
 
 export const PROJECT_STORAGE_KEY = 'anki-card-generator:last-project'
 export const defaultToggles = contentOptions.reduce((result, item) => {
@@ -26,6 +28,8 @@ export const defaultRequest: GenerateRequest = {
   url_import_mode: 'video',
   url_auto_subtitle_fallback: true,
   skip_video_slicing: false,
+  batch_enabled: false,
+  batch_items: [],
   video_path: '',
   subtitle_path: '',
   document_path: '',
@@ -34,6 +38,8 @@ export const defaultRequest: GenerateRequest = {
   level: 'B1',
   collection_levels: defaultCollectionLevels('B1'),
   template_id: 'immersive_v11',
+  card_style: defaultCardStyle,
+  review_density: defaultReviewDensity,
   content_toggles: defaultToggles,
   language_focus: defaultLanguageFocus,
   document_focus: defaultDocumentFocus,
@@ -43,6 +49,7 @@ export const defaultRequest: GenerateRequest = {
   document_answer_length: defaultDocumentAnswerLength,
   study_depth: defaultStudyDepth,
   selection_strategy: defaultSelectionStrategy,
+  reuse_ai_review_cache: false,
   card_types: ['listening', 'phrase', 'cloze'],
   max_segments: 0,
   api_config: {

@@ -40,6 +40,12 @@ import type {
 } from '../domain/types'
 import { createDemoProject } from '../domain/demoProject'
 import {
+  batchItemsForSource,
+  buildBatchPackage,
+  createDocumentBatchItems,
+  createLocalVideoBatchItems,
+} from '../domain/batch'
+import {
   advancedApiPresets,
   advancedTtsPresets,
   capabilityHelp,
@@ -80,6 +86,13 @@ import {
 } from '../domain/projectMetrics'
 import type { WorkerErrorActionId } from '../domain/workerErrors'
 import { getWorkerErrorActions } from '../domain/workerErrors'
+import { buildReadinessItems } from './readiness'
+import { isSourceInputReady } from '../domain/sourceValidation'
+import type { LearningPointExtractionResult } from '../domain/learningPoints'
+import {
+  defaultSelectedLearningPointIds,
+  selectedLearningPoints,
+} from '../domain/learningPoints'
 import {
   isMimoApiConfig,
   isMimoTokenPlanBase,
@@ -125,6 +138,7 @@ import {
 import { isTauriRuntime } from '../services/runtime'
 import {
   openAnkiImport as openAnkiImportFile,
+  listDirectoryFiles,
   revealPath,
   selectDirectory,
   selectSingleFile,
@@ -140,6 +154,8 @@ import {
 
 const INSPECTOR_COLLAPSE_MS = 130
 
+type SourcePathKind = 'video' | 'subtitle' | 'document' | 'video-folder' | 'document-folder'
+
 function cleanLocalPath(value: string) {
   return value.trim().replace(/^["'](.+)["']$/, '$1')
 }
@@ -147,6 +163,13 @@ function cleanLocalPath(value: string) {
 function titleFromPath(value: string) {
   const fileName = cleanLocalPath(value).split(/[\\/]/).pop() ?? ''
   return fileName.replace(/\.[^.]+$/, '')
+}
+
+function pathLines(value: string) {
+  return value
+    .split(/[\r\n]+/u)
+    .map((line) => cleanLocalPath(line))
+    .filter(Boolean)
 }
 
 function mergeRepairResults(left: EnvRepairResult | null, right: EnvRepairResult): EnvRepairResult {
@@ -162,7 +185,7 @@ function mergeRepairResults(left: EnvRepairResult | null, right: EnvRepairResult
 }
 
 function touchesSourceMaterial(patch: Partial<GenerateRequest>) {
-  return ['source_mode', 'source_url', 'video_path', 'subtitle_path', 'document_path'].some((key) =>
+  return ['source_mode', 'source_url', 'video_path', 'subtitle_path', 'document_path', 'batch_enabled', 'batch_items'].some((key) =>
     Object.prototype.hasOwnProperty.call(patch, key),
   )
 }
@@ -213,6 +236,8 @@ export function useAppController() {
   const initialRequest = useMemo(() => loadSavedRequest(), [])
   const [request, setRequest] = useState<GenerateRequest>(initialRequest)
   const [project, setProject] = useState<Project | null>(null)
+  const [learningPointResult, setLearningPointResult] = useState<LearningPointExtractionResult | null>(null)
+  const [selectedLearningPointIds, setSelectedLearningPointIds] = useState<Set<string>>(() => new Set())
   const [envStatus, setEnvStatus] = useState<EnvStatus | null>(null)
   const [envRepairResult, setEnvRepairResult] = useState<EnvRepairResult | null>(null)
   const [envRepairing, setEnvRepairing] = useState(false)
@@ -267,18 +292,41 @@ export function useAppController() {
     return project?.segments.filter((segment) => segmentMatchesFilter(segment, segmentFilter)) ?? []
   }, [project, segmentFilter])
 
+  const selectedLearningPointCount = useMemo(() => {
+    if (!learningPointResult) return 0
+    return selectedLearningPoints(learningPointResult.learning_points, selectedLearningPointIds).length
+  }, [learningPointResult, selectedLearningPointIds])
+
   const activeTemplate = templateOptions.find((template) => template.id === request.template_id)
   const localVideoPath = cleanLocalPath(request.video_path)
   const localSubtitlePath = cleanLocalPath(request.subtitle_path)
-  const sourceReady =
-    request.source_mode === 'url'
-      ? Boolean(request.source_url.trim())
-      : request.source_mode === 'document'
-        ? Boolean(request.document_path?.trim())
-        : Boolean(localVideoPath)
+  const sourceReady = isSourceInputReady(request)
   const tts = request.api_config.tts_config
   const ttsRequired = request.source_mode !== 'document' && tts.enabled && tts.provider !== 'disabled'
-  const apiReady = request.api_config.provider !== 'local' && Boolean(apiTestResult?.ok)
+  const activeApiProfileId = apiProfileIdFromConfig(request.api_config)
+  const activeTtsProfileId = ttsProfileIdFromConfig(tts)
+  const activeApiProfile = savedApiProfiles.find((profile) => profile.id === activeApiProfileId)
+  const activeTtsProfile = savedTtsProfiles.find((profile) => profile.id === activeTtsProfileId)
+  const apiProfileSaved =
+    Boolean(activeApiProfile && apiConfigMatchesProfile(request.api_config, activeApiProfile)) && !apiProfileDirty
+  const ttsProfileSaved =
+    Boolean(activeTtsProfile && ttsConfigMatchesProfile(tts, activeTtsProfile)) && !ttsProfileDirty
+  const savedApiProfileTestOk =
+    apiProfileSaved &&
+    Boolean(activeApiProfile?.last_test_ok) &&
+    (Boolean(activeApiProfile?.has_api_key) || apiAuthMode(request.api_config) !== 'api_key')
+  const effectiveApiTestResult: ApiTestResult | null =
+    apiTestResult ??
+    (savedApiProfileTestOk && activeApiProfile
+      ? {
+          ok: true,
+          provider: activeApiProfile.provider,
+          model: activeApiProfile.model,
+          message: '已保存的模型方案测试通过。配置未改变，无需重复测试。',
+        }
+      : null)
+  const apiReadyForGeneration = request.api_config.provider !== 'local' && Boolean(effectiveApiTestResult?.ok)
+  const apiReady = apiReadyForGeneration
   const ttsDetail = !ttsRequired
     ? '已关闭'
     : ttsTestResult?.ok
@@ -294,64 +342,29 @@ export function useAppController() {
         (request.source_mode === 'url' && request.url_import_mode === 'subtitles' && envStatus.yt_dlp) ||
         (envStatus.ffmpeg && (request.source_mode === 'local' || envStatus.yt_dlp))),
     )
-  const currentSelectionCount = project ? selectedCardCount : request.card_types.length
-  const readiness = [
-    {
-      id: 'source',
-      label: request.source_mode === 'url' ? 'URL' : request.source_mode === 'document' ? '文档' : '素材',
-      done: sourceReady,
-      detail: sourceReady
-        ? '已就绪'
-        : request.source_mode === 'url'
-          ? '待输入链接'
-          : request.source_mode === 'document'
-            ? '待选择 TXT/Markdown'
-            : localVideoPath
-              ? localSubtitlePath
-                ? '视频和字幕已选择'
-                : '已选视频，自动匹配字幕'
-              : '待选择视频；SRT 可自动匹配',
-    },
-    {
-      id: 'env',
-      label: '环境',
-      done: envReady,
-      detail: envReady ? '可用' : envStatus ? '缺少依赖' : '未检查',
-    },
-    {
-      id: 'api',
-      label: 'API',
-      done: apiReady,
-      detail:
-        request.api_config.provider === 'local'
-          ? '请选择正式模型'
-          : apiTestResult?.ok
-            ? '已通过'
-            : apiTestResult
-              ? '失败'
-              : '未测试',
-    },
-    {
-      id: 'tts',
-      label: 'TTS 增强',
-      done: true,
-      detail: ttsDetail,
-    },
-    {
-      id: 'cards',
-      label: '卡片',
-      done: currentSelectionCount > 0,
-      detail: `${currentSelectionCount} 张`,
-    },
-  ]
-  const apiTestTone = apiTesting ? 'testing' : apiTestResult ? (apiTestResult.ok ? 'ok' : 'warn') : 'idle'
-  const apiTestTitle = modelApiTestTitle(apiTestResult, apiTesting)
+  const currentSelectionCount = project ? selectedCardCount : learningPointResult ? selectedLearningPointCount : request.card_types.length
+  const readiness = buildReadinessItems({
+    sourceMode: request.source_mode,
+    sourceReady,
+    localVideoPath,
+    localSubtitlePath,
+    envReady,
+    envStatusChecked: Boolean(envStatus),
+    apiProvider: request.api_config.provider,
+    apiReadyForGeneration: apiReady,
+    hasApiTestResult: Boolean(effectiveApiTestResult),
+    ttsRequired,
+    ttsDetail,
+    currentSelectionCount,
+  })
+  const apiTestTone = apiTesting ? 'testing' : effectiveApiTestResult ? (effectiveApiTestResult.ok ? 'ok' : 'warn') : 'idle'
+  const apiTestTitle = modelApiTestTitle(effectiveApiTestResult, apiTesting)
   const apiTestMessage = apiTesting
     ? '正在向当前接口发送一条短测试消息，通常几秒内会返回。'
-    : (apiTestResult?.message ?? '换 Provider、Base URL、模型名或 API Key 后，都建议点一次测试连接。')
-  const apiTestMeta = apiTestResult
-    ? `${apiTestResult.provider} · ${apiTestResult.model || '未填模型'}${
-        apiTestResult.latency_ms ? ` · ${apiTestResult.latency_ms} ms` : ''
+    : (effectiveApiTestResult?.message ?? '换 Provider、Base URL、模型名或 API Key 后，都建议点一次测试连接。')
+  const apiTestMeta = effectiveApiTestResult
+    ? `${effectiveApiTestResult.provider} · ${effectiveApiTestResult.model || '未填模型'}${
+        effectiveApiTestResult.latency_ms ? ` · ${effectiveApiTestResult.latency_ms} ms` : ''
       }`
     : `${request.api_config.provider} · ${request.api_config.model || '未填模型'}`
   const ttsTestTone = ttsTesting ? 'testing' : ttsTestResult ? (ttsTestResult.ok ? 'ok' : 'warn') : 'idle'
@@ -369,14 +382,6 @@ export function useAppController() {
     : `${tts.provider} · ${tts.model || '无模型名'} · ${tts.voice || '无 voice'}`
   const allApiPresets = [...featuredApiPresets, ...advancedApiPresets]
   const allTtsPresets = [...featuredTtsPresets, ...advancedTtsPresets]
-  const activeApiProfileId = apiProfileIdFromConfig(request.api_config)
-  const activeTtsProfileId = ttsProfileIdFromConfig(tts)
-  const activeApiProfile = savedApiProfiles.find((profile) => profile.id === activeApiProfileId)
-  const activeTtsProfile = savedTtsProfiles.find((profile) => profile.id === activeTtsProfileId)
-  const apiProfileSaved =
-    Boolean(activeApiProfile && apiConfigMatchesProfile(request.api_config, activeApiProfile)) && !apiProfileDirty
-  const ttsProfileSaved =
-    Boolean(activeTtsProfile && ttsConfigMatchesProfile(tts, activeTtsProfile)) && !ttsProfileDirty
   const apiProfileStatus = apiProfileSaved
     ? activeApiProfile?.has_api_key || apiAuthMode(request.api_config) !== 'api_key'
       ? `已保存 · ${activeApiProfile?.last_test_ok ? '测试通过' : '未测试'}`
@@ -560,6 +565,20 @@ export function useAppController() {
     )
   }
 
+  function applyLearningPointResult(result: LearningPointExtractionResult) {
+    setLearningPointResult(result)
+    setProject(null)
+    setLastExport(null)
+    setAnkiVerifyResult(null)
+    setActiveSegmentId(null)
+    setSegmentFilter('all')
+    setSelectedLearningPointIds(defaultSelectedLearningPointIds(result.learning_points ?? [], { reviewDensity: request.review_density }))
+    const summary = result.learning_point_summary
+    setStatus(
+      `已从字幕发现 ${summary.total} 个学习点：推荐 ${summary.recommended} 个，候选 ${summary.candidate_only} 个，重复 ${summary.hidden_duplicate} 个，硬阻断 ${summary.hard_blocked} 个。请先筛选学习点，再生成 Anki 卡。`,
+    )
+  }
+
   function applyExportResult(result: ExportResult) {
     setLastExport(result)
     setAnkiVerifyResult(null)
@@ -614,6 +633,7 @@ export function useAppController() {
         ]
           .filter(Boolean)
           .join('；')
+        setWorkerProgress(null)
         setStatus(`${safeError}${structuredDetails ? `\n${structuredDetails}` : ''}`)
         return
       }
@@ -624,7 +644,15 @@ export function useAppController() {
         percent: 100,
         message: '任务完成。',
       })
-      if (payload.command === 'generate') {
+      if (payload.command === 'extract_learning_points') {
+        applyLearningPointResult(payload.result as LearningPointExtractionResult)
+        setActiveWorkspaceStage('review')
+      } else if (payload.command === 'generate_cards_from_learning_points') {
+        setLearningPointResult(null)
+        setSelectedLearningPointIds(new Set())
+        applyGeneratedProject(payload.result as Project, requestEditedDuringRunRef.current)
+        setActiveWorkspaceStage('review')
+      } else if (payload.command === 'generate') {
         applyGeneratedProject(payload.result as Project, requestEditedDuringRunRef.current)
         setActiveWorkspaceStage('review')
       } else if (payload.command === 'export') {
@@ -731,6 +759,8 @@ export function useAppController() {
     markRequestEditedIfRunning()
     if (touchesSourceMaterial(patch)) {
       setProject(null)
+      setLearningPointResult(null)
+      setSelectedLearningPointIds(new Set())
       setLastExport(null)
       setAnkiVerifyResult(null)
       setActiveSegmentId(null)
@@ -994,7 +1024,18 @@ export function useAppController() {
         api_key: apiKey,
       },
     }))
-    setApiTestResult(null)
+    setApiTestResult(
+      savedProfile?.last_test_ok === undefined
+        ? null
+        : {
+            ok: savedProfile.last_test_ok,
+            provider: savedProfile.provider,
+            model: savedProfile.model,
+            message: savedProfile.last_test_ok
+              ? '已套用保存方案，配置未改变，无需重复测试。'
+              : '已套用保存方案，建议重新测试连接。',
+          },
+    )
     setApiProfileDirty(!savedProfile)
     setStatus(
       savedProfile
@@ -1003,6 +1044,20 @@ export function useAppController() {
           ? `已套用 ${preset.label} 预设，建议保存为我的模型方案。`
           : `已套用 ${preset.label} 预设，请填写 API Key 后保存方案并测试连接。`,
     )
+  }
+
+  const rememberSavedApiTestResult = (api: ApiConfig, result: ApiTestResult) => {
+    if (apiProfileDirty) return
+    const profileId = apiProfileIdFromConfig(api)
+    const existing = savedApiProfiles.find((profile) => profile.id === profileId)
+    if (!existing || !apiConfigMatchesProfile(api, existing)) return
+    const next = upsertSavedApiProfile(savedApiProfiles, {
+      ...existing,
+      updated_at: new Date().toISOString(),
+      last_test_ok: result.ok,
+    })
+    saveSavedApiProfiles(next)
+    setSavedApiProfiles(next)
   }
 
   const applyTtsPreset = async (preset: TtsPreset) => {
@@ -1088,23 +1143,71 @@ export function useAppController() {
     })
   }
 
-  const selectPath = async (kind: 'video' | 'subtitle' | 'document') => {
+  const selectPath = async (kind: SourcePathKind) => {
+    const applyBatchFolder = (directory: string, files: string[], mode: 'local' | 'document') => {
+      const createdItems = mode === 'local' ? createLocalVideoBatchItems(files) : createDocumentBatchItems(files)
+      if (!createdItems.length) {
+        setStatus(mode === 'local' ? '这个文件夹里没有找到可批量制卡的视频文件。' : '这个文件夹里没有找到可批量制卡的文档文件。')
+        return
+      }
+      const title = request.title.trim() || titleFromPath(directory) || (mode === 'local' ? '视频学习包' : '文档学习包')
+      const existingOtherSources = (request.batch_items ?? []).filter((item) => item.source_mode !== mode)
+      const sameSourceItems = batchItemsForSource(request.batch_items ?? [], mode)
+      const seen = new Set<string>()
+      const mergedSameSource = [...sameSourceItems, ...createdItems].filter((item) => {
+        const key = item.video_path || item.document_path || item.source_url || item.id
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+      const batchPackage = buildBatchPackage({ title, source_mode: mode, items: mergedSameSource })
+      patchRequest({
+        title,
+        source_mode: mode,
+        batch_enabled: true,
+        batch_items: [...existingOtherSources, ...batchPackage.items],
+        video_path: mode === 'local' ? '' : request.video_path,
+        subtitle_path: mode === 'local' ? '' : request.subtitle_path,
+        document_path: mode === 'document' ? '' : request.document_path,
+      })
+      setStatus(`已从文件夹添加 ${createdItems.length} 个素材到“${title}”，将导出为嵌套子牌组。`)
+    }
+
     if (!isTauriRuntime()) {
       const prompt =
         kind === 'video'
           ? '输入视频绝对路径'
           : kind === 'subtitle'
             ? '输入 SRT 绝对路径'
-            : '输入 TXT / Markdown / DOCX / EPUB / PDF 绝对路径'
+            : kind === 'document'
+              ? '输入 TXT / Markdown / DOCX / EPUB / PDF 绝对路径'
+              : kind === 'video-folder'
+                ? '每行输入一个视频或字幕绝对路径，用来模拟视频文件夹批量添加'
+                : '每行输入一个文档绝对路径，用来模拟文档文件夹批量添加'
       const value = window.prompt(prompt)
-      if (value) {
-        patchRequest(
-          kind === 'video'
-            ? { video_path: value }
-            : kind === 'subtitle'
-              ? { subtitle_path: value }
-              : { document_path: value },
-        )
+      if (!value) return
+      if (kind === 'video-folder' || kind === 'document-folder') {
+        applyBatchFolder(value, pathLines(value), kind === 'video-folder' ? 'local' : 'document')
+        return
+      }
+      patchRequest(
+        kind === 'video'
+          ? { video_path: value }
+          : kind === 'subtitle'
+            ? { subtitle_path: value }
+            : { document_path: value },
+      )
+      return
+    }
+
+    if (kind === 'video-folder' || kind === 'document-folder') {
+      const selectedDirectory = await selectDirectory()
+      if (typeof selectedDirectory !== 'string') return
+      try {
+        const files = await listDirectoryFiles(selectedDirectory)
+        applyBatchFolder(selectedDirectory, files, kind === 'video-folder' ? 'local' : 'document')
+      } catch (error) {
+        setStatus(redactSensitiveText(error))
       }
       return
     }
@@ -1270,7 +1373,7 @@ export function useAppController() {
       setStatus('已自动修正模型 API 配置，再开始测试连接。')
     }
     const failBeforeRequest = (message: string, errorCode: string = 'MODEL_AUTH_FAILED') => {
-      setApiTestResult({
+      const result: ApiTestResult = {
         ok: false,
         provider: api.provider,
         model: api.model,
@@ -1278,7 +1381,9 @@ export function useAppController() {
         error_code: errorCode,
         stage: 'model_api',
         retryable: false,
-      })
+      }
+      setApiTestResult(result)
+      rememberSavedApiTestResult(api, result)
       setStatus(`API 测试失败：${message}`)
     }
 
@@ -1303,18 +1408,19 @@ export function useAppController() {
           ok: api.provider === 'local',
           provider: api.provider,
           model: api.model,
-          message: api.provider === 'local' ? '本地草稿模式可用。' : '浏览器预览模式不能真实测试 API，请运行桌面端。',
+          message: api.provider === 'local' ? '预览模式可用，但不能用于正式抽取学习点或制卡。' : '浏览器预览模式不能真实测试 API，请运行桌面端。',
         }
         setApiTestResult(result)
         setStatus(result.message)
       } else {
         const result = await runWorker<ApiTestResult>('test_api', { api_config: api })
         setApiTestResult(result)
+        rememberSavedApiTestResult(api, result)
         setStatus(result.ok ? `API 测试通过：${result.message}` : `API 测试失败：${result.message}`)
       }
     } catch (error) {
       const message = redactSensitiveText(error)
-      setApiTestResult({
+      const result: ApiTestResult = {
         ok: false,
         provider: api.provider,
         model: api.model,
@@ -1322,7 +1428,9 @@ export function useAppController() {
         error_code: 'MODEL_CONNECTION_FAILED',
         stage: 'model_api',
         retryable: true,
-      })
+      }
+      setApiTestResult(result)
+      rememberSavedApiTestResult(api, result)
       setStatus(`API 测试失败：${message}`)
     } finally {
       setApiTesting(false)
@@ -1438,7 +1546,7 @@ export function useAppController() {
     }
   }
 
-  const generate = async () => {
+  const extractLearningPoints = async () => {
     const generateRequest: GenerateRequest = {
       ...request,
       video_path: cleanLocalPath(request.video_path),
@@ -1453,11 +1561,208 @@ export function useAppController() {
       setStatus('请先输入 YouTube / 视频 URL。')
       return
     }
-    if (generateRequest.source_mode === 'document' && !generateRequest.document_path.trim()) {
-      setStatus('请先选择 TXT、Markdown、DOCX、EPUB 或 PDF 文档。')
+    if (generateRequest.source_mode === 'local' && !generateRequest.video_path) {
+      setStatus('请先选择视频文件。SRT 可以手动选择，也可以放在视频同目录自动匹配。')
       return
     }
-    if (generateRequest.source_mode === 'local' && !generateRequest.video_path) {
+    const resolvedApi = resolveGenerateApiConfig(generateRequest.api_config, generateRequest.source_mode)
+    if (isTauriRuntime()) {
+      const openApiSettings = (message: string) => {
+        setActiveWorkspaceStage('generate')
+        setSettingsTab('api')
+        setSettingsOpen(true)
+        setStatus(message)
+      }
+      if (generateRequest.api_config.provider === 'local') {
+        openApiSettings('AI 精筛学习点需要正式模型 API。请先在“模型 API”里选择服务商、保存配置并测试连接。')
+        return
+      }
+      if (resolvedApi.error) {
+        openApiSettings(`AI 精筛学习点前模型 API 配置未通过：${resolvedApi.error}`)
+        return
+      }
+      if (resolvedApi.fallbackReason) {
+        const fallbackIssue = resolvedApi.fallbackReason.replace(/[。.!！?？]+$/u, '')
+        openApiSettings(`模型 API 未就绪：${fallbackIssue}。学习点抽取不会退回本地半成品，请先测试模型 API。`)
+        return
+      }
+      if (!apiReadyForGeneration) {
+        openApiSettings('模型 API 尚未通过测试，不能进行 AI 学习点精筛。保存过且测试通过的模型方案无需重复测试；如果改过配置，请重新保存并测试。')
+        return
+      }
+      if (
+        resolvedApi.api.base_url !== request.api_config.base_url ||
+        resolvedApi.api.model !== request.api_config.model ||
+        resolvedApi.api.provider !== request.api_config.provider
+      ) {
+        patchRequest({ api_config: resolvedApi.api })
+      }
+    }
+    if (isTauriRuntime() && !envStatus) {
+      setActiveWorkspaceStage('review')
+      setSettingsOpen(false)
+      setStatus('抽取学习点前需要先检查本地环境。请在左侧确认卡片点击“立即检查”，需要完整诊断时再查看详情。')
+      return
+    }
+    if (!isTauriRuntime()) {
+      const demoLearningPoints: LearningPointExtractionResult = {
+        id: `lp_demo_${Date.now()}`,
+        title: generateRequest.title || '浏览器演示字幕',
+        source_mode: generateRequest.source_mode,
+        video_path: '',
+        subtitle_path: '',
+        language: generateRequest.language,
+        level_mode: generateRequest.level_mode,
+        level: generateRequest.level,
+        review_basis: 'ai_reviewed',
+        ai_model_provider: 'browser-demo',
+        ai_model_name: 'demo-ai-review',
+        local_candidate_count: 1,
+        ai_reviewed_source_count: 1,
+        ai_reviewed_candidate_count: 1,
+        ai_recommended_count: 1,
+        ai_candidate_count: 0,
+        ai_rejected_count: 0,
+        source_sentences: [
+          {
+            id: 'src_demo_001',
+            source_segment_id: 'src_demo_001',
+            source_sentence: "I'm not really in the mood right now.",
+            text: "I'm not really in the mood right now.",
+            start: 1,
+            end: 3,
+            source_time: '00:00:01.000 - 00:00:03.000',
+          },
+        ],
+        learning_points: [
+          {
+            id: 'lp_demo_mood',
+            source_segment_id: 'src_demo_001',
+            source_sentence: "I'm not really in the mood right now.",
+            source_time: '00:00:01.000 - 00:00:03.000',
+            start: 1,
+            end: 3,
+            exact_span: 'in the mood',
+            answer_core: 'in the mood',
+            normalized_answer: 'in the mood',
+            type: 'phrase',
+            candidate_kind: 'expression',
+            phrase_type: 'collocation',
+            level: 'B1',
+            estimated_level: 'B1',
+            level_reason: 'B1：高频自然口语词伙。',
+            learning_action: '训练表达“有/没心情”。',
+            learning_action_key: 'expression:in the mood',
+            value_score: 4.4,
+            level_fit_score: 5,
+            final_score: 8.1,
+            reason: '高频口语词伙，可迁移。',
+            confidence: 'high',
+            status: 'recommended',
+            status_reason: '高价值、合法、不重复，默认推荐。',
+            source: 'local_rule',
+            review_source: 'ai',
+            ai_decision: 'recommend',
+            ai_value_score: 4.4,
+            ai_reason: '浏览器演示精筛通过。',
+            ai_batch_id: 'demo_ai_review_1',
+            validation_issues: [],
+            repair_history: [],
+          },
+        ],
+        learning_point_summary: {
+          total: 1,
+          recommended: 1,
+          candidate_only: 0,
+          hidden_duplicate: 0,
+          hard_blocked: 0,
+          by_type: { phrase: 1 },
+          by_level: { B1: 1 },
+        },
+      }
+      applyLearningPointResult(demoLearningPoints)
+      setActiveWorkspaceStage('review')
+      setWorkerProgress({ command: 'extract_learning_points', stage: 'done', percent: 100, message: '演示学习点抽取完成。' })
+      setWorkerOperation({ status: 'succeeded', command: 'extract_learning_points' })
+      setStatus('已生成浏览器演示学习点。真实字幕抽取请用 Tauri 桌面端。')
+      return
+    }
+
+    setProject(null)
+    setLearningPointResult(null)
+    setSelectedLearningPointIds(new Set())
+    setLastExport(null)
+    setAnkiVerifyResult(null)
+    setActiveSegmentId(null)
+    setActiveWorkspaceStage('review')
+    setBusy(true)
+    setLastWorkerError(null)
+    setRequestEditedDuringRun(false)
+    setWorkerProgress({
+      command: 'extract_learning_points',
+      stage: 'start',
+      percent: 1,
+      message: '准备从字幕抽取学习点。',
+    })
+    setStatus('正在读取字幕并抽取词伙、口语、单词用法、语法和听力学习点。')
+    try {
+      const requestSnapshot = JSON.parse(
+        JSON.stringify({
+          ...generateRequest,
+          source_url: generateRequest.source_mode === 'url' ? generateRequest.source_url : '',
+          video_path: generateRequest.source_mode === 'local' ? generateRequest.video_path : '',
+          subtitle_path: generateRequest.source_mode === 'local' ? generateRequest.subtitle_path : '',
+          document_path: '',
+          reuse_ai_review_cache: generateRequest.reuse_ai_review_cache,
+          api_config: resolvedApi.api,
+        }),
+      ) as GenerateRequest
+      const job = await startWorkerJob('extract_learning_points', requestSnapshot)
+      setWorkerOperation({ status: 'running', command: 'extract_learning_points', jobId: job.job_id })
+      setWorkerProgress({
+        job_id: job.job_id,
+        command: 'extract_learning_points',
+        stage: 'start',
+        percent: 1,
+        message: '学习点抽取任务已在后台运行。',
+      })
+      setStatus('学习点抽取任务已在后台运行。完成后你可以按类型和级别筛选，再生成卡片。')
+    } catch (error) {
+      setBusy(false)
+      setWorkerOperation({ status: 'failed', command: 'extract_learning_points' })
+      setLastWorkerError(null)
+      setStatus(redactSensitiveText(error))
+    }
+  }
+
+  const generate = async () => {
+    if (request.source_mode !== 'document' && !request.batch_enabled) {
+      await extractLearningPoints()
+      return
+    }
+    const generateRequest: GenerateRequest = {
+      ...request,
+      video_path: cleanLocalPath(request.video_path),
+      subtitle_path: cleanLocalPath(request.subtitle_path),
+      document_path: cleanLocalPath(request.document_path),
+    }
+    const activeBatchItems = batchItemsForSource(generateRequest.batch_items ?? [], generateRequest.source_mode)
+    if (workerBusy) {
+      setStatus('已有任务正在运行，请先取消或等待完成。')
+      return
+    }
+    if (generateRequest.batch_enabled) {
+      if (!activeBatchItems.length) {
+        setStatus('批量模式下还没有可生成的素材。请先选择文件夹、添加文档或把链接加入批量列表。')
+        return
+      }
+    } else if (generateRequest.source_mode === 'url' && !generateRequest.source_url.trim()) {
+      setStatus('请先输入 YouTube / 视频 URL。')
+      return
+    } else if (generateRequest.source_mode === 'document' && !generateRequest.document_path.trim()) {
+      setStatus('请先选择 TXT、Markdown、DOCX、EPUB 或 PDF 文档。')
+      return
+    } else if (generateRequest.source_mode === 'local' && !generateRequest.video_path) {
       setStatus('请先选择视频文件。SRT 可以手动选择，也可以放在视频同目录自动匹配。')
       return
     }
@@ -1471,17 +1776,21 @@ export function useAppController() {
       }
 
       if (!envStatus) {
-        openPreflightSettings('env', '生成前需要先检查本地环境。已打开“本地环境”设置，请完成检测后再开始正式制卡。')
+        setActiveWorkspaceStage('review')
+        setSettingsOpen(false)
+        setStatus('生成前需要先检查本地环境。请在左侧确认卡片点击“立即检查”，需要完整诊断时再查看详情。')
         return
       }
       if (!envReady) {
-        openPreflightSettings('env', '本地环境还没准备好，不能开始正式制卡。请先修复 Python、FFmpeg、genanki 或导入相关依赖。')
+        setActiveWorkspaceStage('review')
+        setSettingsOpen(false)
+        setStatus('本地环境还没准备好，不能开始正式制卡。请在左侧确认卡片点击“一键修复”，或查看详情处理单项依赖。')
         return
       }
       if (generateRequest.api_config.provider === 'local') {
         openPreflightSettings(
           'api',
-          '当前选择的是本地草稿模型，不能作为正式制卡结果。请先在“模型 API”里选择服务商、保存配置并测试连接。',
+          '当前选择的是预览模式，不能作为正式制卡结果。请先在“模型 API”里选择服务商、保存配置并测试连接。',
         )
         return
       }
@@ -1497,8 +1806,8 @@ export function useAppController() {
         )
         return
       }
-      if (!apiTestResult?.ok) {
-        openPreflightSettings('api', '模型 API 尚未通过测试，不能开始正式制卡。请保存配置并点击“测试连接”。')
+      if (!apiReadyForGeneration) {
+        openPreflightSettings('api', '模型 API 尚未通过测试，不能开始正式制卡。保存过且测试通过的模型方案无需重复测试；如果改过配置，请重新保存并测试。')
         return
       }
 
@@ -1515,9 +1824,12 @@ export function useAppController() {
     setActiveWorkspaceStage('review')
     setWorkerProgress({ command: 'generate', stage: 'start', percent: 1, message: '准备开始生成。' })
     setBusy(true)
+    setLastWorkerError(null)
     setRequestEditedDuringRun(false)
     setStatus(
-      generateRequest.source_mode === 'url'
+      generateRequest.batch_enabled
+        ? `正在批量生成 ${activeBatchItems.length} 个子素材，并整理成嵌套 Anki 子牌组。`
+        : generateRequest.source_mode === 'url'
         ? generateRequest.url_import_mode === 'subtitles'
           ? '正在下载 URL 字幕并跳过视频切片，然后生成卡片草稿。'
           : '正在下载 URL 视频和字幕，然后生成卡片草稿。'
@@ -1590,6 +1902,142 @@ export function useAppController() {
       }
     } catch (error) {
       setWorkerOperation((current) => ({ ...current, status: 'failed' }))
+      setLastWorkerError(null)
+      setStatus(redactSensitiveText(error))
+    }
+  }
+
+  const generateCardsFromLearningPoints = async () => {
+    if (workerBusy) {
+      setStatus('已有任务正在运行，请先取消或等待完成。')
+      return
+    }
+    if (!learningPointResult) {
+      setStatus('还没有学习点清单。请先从字幕抽取学习点。')
+      return
+    }
+    const generateRequest: GenerateRequest = {
+      ...request,
+      video_path: cleanLocalPath(request.video_path),
+      subtitle_path: cleanLocalPath(request.subtitle_path),
+      document_path: cleanLocalPath(request.document_path),
+    }
+    const selectedPoints = selectedLearningPoints(learningPointResult.learning_points, selectedLearningPointIds)
+    if (selectedPoints.length === 0) {
+      setStatus('请先选择至少一个推荐或候选学习点。')
+      return
+    }
+    const resolvedApi = resolveGenerateApiConfig(generateRequest.api_config, generateRequest.source_mode)
+    if (isTauriRuntime()) {
+      const openPreflightSettings = (tab: SettingsTab, message: string) => {
+        setActiveWorkspaceStage('generate')
+        setSettingsTab(tab)
+        setSettingsOpen(true)
+        setStatus(message)
+      }
+
+      if (!envStatus) {
+        setActiveWorkspaceStage('review')
+        setSettingsOpen(false)
+        setStatus('生成完整卡片前需要先检查本地环境。请在左侧确认卡片点击“立即检查”，需要完整诊断时再查看详情。')
+        return
+      }
+      if (!envReady) {
+        setActiveWorkspaceStage('review')
+        setSettingsOpen(false)
+        setStatus('本地环境还没准备好，不能生成完整卡片。请在左侧确认卡片点击“一键修复”，或查看详情处理单项依赖。')
+        return
+      }
+      if (generateRequest.api_config.provider === 'local') {
+        openPreflightSettings(
+          'api',
+          '当前选择的是预览模式，不能作为正式卡片结果。请先在“模型 API”里选择服务商、保存配置并测试连接。',
+        )
+        return
+      }
+      if (resolvedApi.error) {
+        openPreflightSettings('api', `生成完整卡片前模型 API 配置未通过：${resolvedApi.error}`)
+        return
+      }
+      if (resolvedApi.fallbackReason) {
+        const fallbackIssue = resolvedApi.fallbackReason.replace(/[。.!！?？]+$/u, '')
+        openPreflightSettings('api', `模型 API 未就绪：${fallbackIssue}。已禁止退回本地字幕草稿，请先测试模型 API。`)
+        return
+      }
+      if (!apiReadyForGeneration) {
+        openPreflightSettings('api', '模型 API 尚未通过测试，不能生成完整卡片。保存过且测试通过的模型方案无需重复测试；如果改过配置，请重新保存并测试。')
+        return
+      }
+      if (ttsRequired && !ttsTestResult?.ok) {
+        setStatus('TTS 还没有通过测试。本轮可以先生成卡片，导出时会提示或跳过 TTS 增强。')
+      }
+
+      if (
+        resolvedApi.api.base_url !== request.api_config.base_url ||
+        resolvedApi.api.model !== request.api_config.model ||
+        resolvedApi.api.provider !== request.api_config.provider
+      ) {
+        patchRequest({ api_config: resolvedApi.api })
+      }
+    }
+    if (!isTauriRuntime()) {
+      const demo = createDemoProject(request)
+      setProject(demo)
+      setLearningPointResult(null)
+      setSelectedLearningPointIds(new Set())
+      setSegmentFilter('all')
+      setActiveSegmentId(demo.segments[0]?.id ?? null)
+      setWorkerProgress({
+        command: 'generate_cards_from_learning_points',
+        stage: 'done',
+        percent: 100,
+        message: '演示卡片生成完成。',
+      })
+      setWorkerOperation({ status: 'succeeded', command: 'generate_cards_from_learning_points' })
+      setStatus(`演示卡片生成完成。已把 ${selectedPoints.length} 个演示学习点生成浏览器演示卡片；真实制卡请用 Tauri 桌面端。`)
+      return
+    }
+    setBusy(true)
+    setLastWorkerError(null)
+    setLastExport(null)
+    setAnkiVerifyResult(null)
+    setWorkerProgress({
+      command: 'generate_cards_from_learning_points',
+      stage: 'start',
+      percent: 1,
+      message: '准备把选中学习点生成 Anki 卡。',
+    })
+    setStatus(`正在把 ${selectedPoints.length} 个学习点生成 Anki 卡片。`)
+    try {
+      const payload = {
+        ...learningPointResult,
+        project_id: `project_${Date.now()}`,
+        selected_learning_point_ids: selectedPoints.map((point) => point.id),
+        learning_points: learningPointResult.learning_points,
+        card_types: request.card_types,
+        template_id: request.template_id,
+        card_style: request.card_style,
+        review_density: request.review_density,
+        api_config: resolvedApi.api,
+        content_toggles: request.content_toggles,
+        language_focus: request.language_focus,
+        study_depth: request.study_depth,
+        level_mode: request.level_mode,
+        level: request.level,
+      }
+      const job = await startWorkerJob('generate_cards_from_learning_points', payload)
+      setWorkerOperation({ status: 'running', command: 'generate_cards_from_learning_points', jobId: job.job_id })
+      setWorkerProgress({
+        job_id: job.job_id,
+        command: 'generate_cards_from_learning_points',
+        stage: 'start',
+        percent: 1,
+        message: '卡片生成任务已在后台运行。',
+      })
+      setStatus('卡片生成任务已在后台运行。完成后进入审核导出。')
+    } catch (error) {
+      setBusy(false)
+      setWorkerOperation({ status: 'failed', command: 'generate_cards_from_learning_points' })
       setLastWorkerError(null)
       setStatus(redactSensitiveText(error))
     }
@@ -1924,6 +2372,7 @@ export function useAppController() {
     featuredTtsPresets,
     geminiVertexTextModels,
     generate,
+    generateCardsFromLearningPoints,
     handleTopbarDoubleClick,
     handleWorkerErrorAction,
     inspectorActionLabel,
@@ -1932,6 +2381,7 @@ export function useAppController() {
     isCancelling,
     isDesktopRuntime: isTauriRuntime(),
     lastExport,
+    learningPointResult,
     languageFocusOptions,
     levels,
     MIMO_OPENAI_BASE_URL,
@@ -1975,6 +2425,8 @@ export function useAppController() {
     segmentFilter,
     segmentReviewCounts,
     selectedCardCount,
+    selectedLearningPointCount,
+    selectedLearningPointIds,
     invertCardSelection,
     selectCurrentLevel,
     selectPath,
@@ -1986,6 +2438,7 @@ export function useAppController() {
     setInspectorState,
     setPreviewRate,
     setSegmentFilter,
+    setSelectedLearningPointIds,
     setSettingsOpen,
     setSettingsTab,
     setShowAdvancedApi,

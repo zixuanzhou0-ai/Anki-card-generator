@@ -155,14 +155,14 @@ export function ApiSettingsPanel({
     claude: 'Claude 原生',
     gemini: 'Gemini 原生',
     'gemini-vertex': 'Gemini Vertex',
-    local: '本地草稿',
+    local: '预览模式',
     mimo: 'MIMO / 小米',
     'openai-compatible': 'OpenAI-compatible',
   }
   const currentModelTitle = selectedPreset?.label ?? providerLabel[apiConfig.provider]
   const currentModelMeta =
     apiConfig.provider === 'local'
-      ? '无需 API Key，适合快速预览流程'
+      ? '无需 API Key，仅用于演示预览，不可正式制卡'
       : apiConfig.provider === 'gemini-vertex'
         ? `${apiConfig.model || GEMINI_VERTEX_DEFAULT_MODEL} · 使用本机 gcloud OAuth`
         : `${apiConfig.model || '未填写模型名'} · ${apiConfig.base_url || '原生端点'}`
@@ -346,7 +346,7 @@ export function ApiSettingsPanel({
               value={apiConfig.provider}
               onChange={(event) => handleProviderChange(event.target.value as Provider)}
             >
-              <option value="local">本地草稿</option>
+              <option value="local">预览模式（不可正式制卡）</option>
               <option value="mimo">MIMO / 小米</option>
               <option value="openai-compatible">OpenAI-compatible</option>
               <option value="claude">Claude 原生</option>

@@ -15,9 +15,11 @@ import type {
   SourceMode,
   WorkerProgress,
 } from '../../domain/types'
+import type { LearningPointExtractionResult } from '../../domain/learningPoints'
 import type { QualityCounts, QualityDiagnostics } from '../../domain/projectMetrics'
 import { candidateKindLabel, clipText, phraseTypeLabel } from '../../domain/quality'
 import { WorkerProgressPanel } from '../generation/WorkerProgressPanel'
+import { LearningPointOverview } from '../learningPoints/LearningPointOverview'
 import { EmptyWorkbench } from './EmptyWorkbench'
 import { ExportResultPanel } from './ExportResultPanel'
 import { ReviewSummaryPanel } from './ReviewSummaryPanel'
@@ -36,6 +38,7 @@ type ReviewWorkspaceProps = {
   lastExport: ExportResult | null
   language: string
   level: Level
+  learningPointResult: LearningPointExtractionResult | null
   maxSegments: number
   motionDuration: number
   prefersReducedMotion: boolean
@@ -46,6 +49,7 @@ type ReviewWorkspaceProps = {
   qualityDiagnostics: QualityDiagnostics
   qualityFunnel: QualityFunnel
   selectedCardCount: number
+  selectedLearningPointIds: Set<string>
   segmentFilter: SegmentFilter
   segmentReviewCounts: SegmentReviewCounts
   sourceMode: SourceMode
@@ -57,9 +61,12 @@ type ReviewWorkspaceProps = {
   onOpenAnkiImport: () => void
   onRevealExport: () => void
   onSegmentFilterChange: (filter: SegmentFilter) => void
+  onGenerateCardsFromLearningPoints: () => void
   onInvertCardSelection: () => void
+  onSelectDefaultLearningPoints: () => void
   onSelectSegment: (segmentId: string) => void
   onSetCardsEnabled: (enabled: boolean, segmentId?: string) => void
+  onSetSelectedLearningPointIds: (ids: Set<string>) => void
   onUpdateCard: (segmentId: string, cardId: string, patch: Partial<Card>) => void
   onVerifyAnkiImport: () => void
 }
@@ -74,6 +81,7 @@ export function ReviewWorkspace({
   lastExport,
   language,
   level,
+  learningPointResult,
   maxSegments,
   motionDuration,
   prefersReducedMotion,
@@ -84,6 +92,7 @@ export function ReviewWorkspace({
   qualityDiagnostics,
   qualityFunnel,
   selectedCardCount,
+  selectedLearningPointIds,
   segmentFilter,
   segmentReviewCounts,
   sourceMode,
@@ -95,9 +104,12 @@ export function ReviewWorkspace({
   onOpenAnkiImport,
   onRevealExport,
   onSegmentFilterChange,
+  onGenerateCardsFromLearningPoints,
   onInvertCardSelection,
+  onSelectDefaultLearningPoints,
   onSelectSegment,
   onSetCardsEnabled,
+  onSetSelectedLearningPointIds,
   onUpdateCard,
   onVerifyAnkiImport,
 }: ReviewWorkspaceProps) {
@@ -115,13 +127,17 @@ export function ReviewWorkspace({
         <div className="panel-heading">
           <MessageSquareText size={20} />
           <div>
-            <h3 id="preview-title">{workerBusy && !project ? '生成中' : project ? '审核导出' : '生成工作台'}</h3>
+            <h3 id="preview-title">
+              {workerBusy && !project ? '生成中' : project ? '审核导出' : learningPointResult ? '学习点总览' : '生成工作台'}
+            </h3>
             <p className="panel-subtitle">
               {workerBusy && !project
-                ? '正在按当前素材和学习设置制作卡片，完成后会自动进入审核导出。'
+                ? '正在按当前素材和学习设置处理字幕，完成后会自动进入下一步。'
                 : project
                   ? '按片段检查卡片、音频和更多学习点，导出时只包含已选卡片。'
-                  : '先选择素材，再生成卡片；结果会在这里展开。'}
+                  : learningPointResult
+                    ? 'AI 已精筛学习点；推荐项默认已选，候选项可手动加选。'
+                    : '先选择素材，再抽取学习点；结果会在这里展开。'}
             </p>
           </div>
         </div>
@@ -197,7 +213,7 @@ export function ReviewWorkspace({
 
       <AnimatePresence mode="wait">
         <motion.div
-          key={project ? reviewView : workerBusy ? 'generating' : 'empty'}
+          key={project ? reviewView : learningPointResult ? 'learning-points' : workerBusy ? 'generating' : 'empty'}
           className="review-view-body"
           initial={{ opacity: 0, y: prefersReducedMotion ? 0 : 5 }}
           animate={{ opacity: 1, y: 0 }}
@@ -206,6 +222,15 @@ export function ReviewWorkspace({
         >
           {!project && workerBusy && workerProgress ? (
             <GenerationProgressWorkbench progress={workerProgress} status={status} />
+          ) : !project && learningPointResult ? (
+            <LearningPointOverview
+              result={learningPointResult}
+              selectedIds={selectedLearningPointIds}
+              workerBusy={workerBusy}
+              onGenerateCards={onGenerateCardsFromLearningPoints}
+              onSelectDefaults={onSelectDefaultLearningPoints}
+              onSetSelectedIds={onSetSelectedLearningPointIds}
+            />
           ) : !project ? (
             <EmptyWorkbench
               level={level}
@@ -249,12 +274,13 @@ export function ReviewWorkspace({
 }
 
 function GenerationProgressWorkbench({ progress, status }: { progress: WorkerProgress; status: string }) {
-  const stepLabel = progress.command === 'export' ? '正在导出' : '正在生成'
+  const isExtracting = progress.command === 'extract_learning_points'
+  const stepLabel = progress.command === 'export' ? '正在导出' : isExtracting ? '正在筛选' : '正在生成'
   return (
     <div className="generation-progress-workbench" aria-label="生成进度">
       <div className="generation-progress-hero">
         <span className="hero-kicker">{stepLabel}</span>
-        <h2>{progress.command === 'export' ? '正在导出 APKG' : '正在制作 Anki 卡片'}</h2>
+        <h2>{progress.command === 'export' ? '正在导出 APKG' : isExtracting ? '正在抽取学习点' : '正在制作 Anki 卡片'}</h2>
         <p>{status}</p>
       </div>
       <WorkerProgressPanel progress={progress} variant="wide" />
@@ -268,8 +294,8 @@ function GenerationProgressWorkbench({ progress, status }: { progress: WorkerPro
           <small>生成期间不会再打开学习设置，避免参数混乱。</small>
         </span>
         <span>
-          <strong>完成后审核</strong>
-          <small>卡片生成完成后，这里会自动切换到审核导出。</small>
+          <strong>完成后筛选</strong>
+          <small>{isExtracting ? '学习点清单完成后，你可以先筛选再制卡。' : '卡片生成完成后，这里会自动切换到审核导出。'}</small>
         </span>
       </div>
     </div>

@@ -7,25 +7,27 @@ This document describes the current desktop app architecture for maintenance and
 ```mermaid
 flowchart TB
   A["Local video / URL / document"] --> B["Source parsing"]
-  B --> C["Material understanding"]
-  C --> D["Learning point recall"]
+  B --> C["Local high-recall learning point seeds"]
+  C --> D["AI review + missing point expansion"]
   D --> E["Contract sanitize + validation"]
-  E --> F["Dedupe and quality gate"]
-  F --> G["Usable cards"]
-  F --> H["Learning point inventory"]
-  G --> I["Media slicing / TTS / PronunciationMeta"]
-  I --> J["Review and selection"]
-  J --> K["APKG export"]
-  K --> L["APKG verify / AnkiConnect verify"]
+  E --> F["Recommended / candidate / diagnostics"]
+  F --> G["User learning point selection"]
+  G --> H["AI full card generation"]
+  H --> I["Usable cards"]
+  H --> J["Card generation diagnostics"]
+  I --> K["Review and card selection"]
+  K --> L["Media slicing / TTS / PronunciationMeta"]
+  L --> M["APKG export"]
+  M --> N["APKG verify / AnkiConnect verify"]
 ```
 
 The user-facing workflow is intentionally simple:
 
 ```text
-素材配置 -> 生成设置 -> 审核导出
+素材配置 -> 学习设置 -> 确认抽取 -> 审核导出
 ```
 
-Internally, the worker still keeps quality status, diagnostics, duplicate folding, hard blockers, and validation issues. The UI no longer asks users to choose between catch_all/curated/exhaustive or recommended/review/reject.
+Internally, the worker still keeps quality status, diagnostics, duplicate folding, hard blockers, and validation issues. The UI no longer asks users to choose between catch_all/curated/exhaustive. Learning point extraction is now AI-reviewed: local rules produce seeds, but formal extraction requires a tested model API.
 
 ## Frontend
 
@@ -50,7 +52,7 @@ The left workflow console is informational and operational. The right workspace 
 
 ## Learning Point Inventory
 
-The worker returns both generated cards and inventory diagnostics.
+The worker returns AI-reviewed learning points before full cards are generated. Recommended learning points are selected by default; candidate learning points remain selectable; reject/duplicate/hard-blocked items stay in diagnostics.
 
 Inventory statuses:
 
@@ -66,7 +68,26 @@ Hard blockers include:
 - hallucinated or malformed learning point.
 - true duplicate with same learning action.
 
-The review UI defaults all usable cards to selected. Candidate-only learning points are visible but not exported in V1.
+The review UI defaults all usable cards to selected. Candidate-only learning points are visible in diagnostics/learning-point selection, but are not exported unless the user selects them and generates full cards.
+
+## Card Templates
+
+Current video/subtitle templates:
+
+- `immersive_v11`: default stable template.
+- `ciba_tianxia_v1`: experimental language-action mode.
+
+`ciba_tianxia_v1` is intentionally isolated by `template_id`. It changes:
+
+- AI learning point review prompt.
+- learning value scoring preference.
+- final card-generation prompt.
+- Anki model family/tag label.
+- exported Anki front/back card face.
+
+It uses independent exported Anki front/back assets for the visible card face. The front prioritizes retrieval prompts, while the back organizes existing note fields as language action, contextual meaning, transfer examples, collocation boundary, listening evidence, and source scene.
+
+It still reuses the same genanki note field schema as the other language templates; `ciba_tianxia_v1` is a template/prompt/export-layout mode, not a separate learning-point data model.
 
 ## Language And Pronunciation
 

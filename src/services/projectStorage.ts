@@ -9,6 +9,7 @@ import type {
   TtsProvider,
   UrlImportMode,
 } from '../domain/types'
+import { normalizeBatchItems } from '../domain/batch'
 import {
   DEEPSEEK_DEFAULT_MODEL,
   DEEPSEEK_OPENAI_BASE_URL,
@@ -18,12 +19,15 @@ import {
   normalizeDocumentAnswerLength,
   normalizeDocumentDepth,
   normalizeCollectionLevels,
+  normalizeCardStyleId,
   normalizeDocumentFocus,
   normalizeDocumentStudyMode,
   normalizeLanguageFocus,
   normalizeLearningLanguage,
+  normalizeReviewDensity,
   normalizeSelectionStrategy,
   normalizeStudyDepth,
+  normalizeTemplateId,
   PROJECT_STORAGE_KEY,
   REQUEST_STORAGE_KEY,
   SECRET_PREFS_STORAGE_KEY,
@@ -109,10 +113,14 @@ export function loadSavedRequest(): GenerateRequest {
       normalizeSavedApiConfig({
         ...defaultRequest,
         ...saved,
-        template_id: 'immersive_v11',
+        template_id: normalizeTemplateId(saved.template_id),
+        card_style: normalizeCardStyleId(saved.card_style),
+        review_density: normalizeReviewDensity(saved.review_density),
         url_import_mode: (saved.url_import_mode ?? defaultRequest.url_import_mode) as UrlImportMode,
         url_auto_subtitle_fallback: saved.url_auto_subtitle_fallback ?? defaultRequest.url_auto_subtitle_fallback,
         skip_video_slicing: saved.skip_video_slicing ?? defaultRequest.skip_video_slicing,
+        batch_enabled: saved.batch_enabled ?? defaultRequest.batch_enabled,
+        batch_items: normalizeBatchItems(saved.batch_items, saved.source_mode),
         language: normalizeLearningLanguage(saved.language),
         level_mode: normalizeLevelMode(saved.level_mode),
         collection_levels: normalizeCollectionLevels(
@@ -134,6 +142,7 @@ export function loadSavedRequest(): GenerateRequest {
         document_answer_length: normalizeDocumentAnswerLength(saved.document_answer_length),
         study_depth: normalizeStudyDepth(saved.study_depth),
         selection_strategy: normalizeSelectionStrategy(saved.selection_strategy),
+        reuse_ai_review_cache: saved.reuse_ai_review_cache ?? defaultRequest.reuse_ai_review_cache,
         api_config: {
           ...defaultRequest.api_config,
           ...savedApi,
@@ -165,7 +174,11 @@ export function loadSavedProject(): Project | null {
     const documentStudyMode = normalizeDocumentStudyMode(saved.document_study_mode)
     const project: Project = {
       ...saved,
-      template_id: 'immersive_v11',
+      template_id: normalizeTemplateId(saved.template_id),
+      card_style: normalizeCardStyleId(saved.card_style),
+      review_density: normalizeReviewDensity(saved.review_density),
+      batch_enabled: saved.batch_enabled ?? false,
+      batch_items: normalizeBatchItems(saved.batch_items, saved.source_mode),
       source_mode: saved.source_mode ?? 'local',
       language: normalizeLearningLanguage(saved.language),
       level_mode: normalizeLevelMode(saved.level_mode),
@@ -214,6 +227,20 @@ function projectSourceMode(project: Project) {
 export function projectMatchesRequest(project: Project, request: GenerateRequest) {
   const sourceInfo = project.source_info ?? {}
   if (projectSourceMode(project) !== request.source_mode) return false
+
+  if (request.batch_enabled) {
+    if (!project.batch_enabled) return false
+    const requestItems = normalizeBatchItems(request.batch_items, request.source_mode)
+    const projectItems = normalizeBatchItems(project.batch_items, request.source_mode)
+    if (!requestItems.length || requestItems.length !== projectItems.length) return false
+    const sourceKey = (item: (typeof requestItems)[number]) =>
+      normalizeMaterialUrl(item.source_url ?? '') || normalizeMaterialPath(item.video_path ?? '') || normalizeMaterialPath(item.document_path ?? '')
+    const projectKeys = new Set(projectItems.map(sourceKey).filter(Boolean))
+    return requestItems.every((item) => {
+      const key = sourceKey(item)
+      return Boolean(key && projectKeys.has(key))
+    })
+  }
 
   if (request.source_mode === 'url') {
     const requestUrl = normalizeMaterialUrl(request.source_url)

@@ -5,6 +5,8 @@ type WindowAction = 'minimize' | 'toggleMaximize' | 'close'
 
 type TopbarProps = {
   appBusy: boolean
+  generateDisabled: boolean
+  generateLabel: string
   hasExportableCards: boolean
   hasProject: boolean
   inspectorActive: boolean
@@ -25,6 +27,8 @@ type TopbarProps = {
 
 export function Topbar({
   appBusy,
+  generateDisabled,
+  generateLabel,
   hasExportableCards,
   hasProject,
   inspectorActive,
@@ -46,7 +50,7 @@ export function Topbar({
     <header className="topbar" onMouseDown={onMouseDown} onDoubleClick={onDoubleClick}>
       <div className="brand-lockup">
         <div className="app-mark" aria-hidden="true">
-          <img src="/app-icon.png" alt="" />
+          <img src="app-icon.png" alt="" />
         </div>
         <div>
           <p className="eyebrow">Anki Card Generator</p>
@@ -85,9 +89,9 @@ export function Topbar({
             导出
           </button>
         ) : null}
-        <button className="primary-button" type="button" onClick={onGenerate} disabled={appBusy}>
+        <button className="primary-button" type="button" onClick={onGenerate} disabled={appBusy || generateDisabled}>
           {appBusy ? <Loader2 className="spin" size={18} /> : <Wand2 size={18} />}
-          {hasProject ? '重新生成' : '生成卡片'}
+          {generateLabel}
         </button>
       </div>
       <div className="window-controls" aria-label="窗口控制">

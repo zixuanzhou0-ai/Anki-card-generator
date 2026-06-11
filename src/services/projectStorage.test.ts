@@ -50,6 +50,65 @@ describe('projectStorage document focus migration', () => {
     expect(loadSavedRequest().language).toBe('fr')
   })
 
+  it('preserves the experimental ciba template in saved requests', () => {
+    window.localStorage.setItem(REQUEST_STORAGE_KEY, JSON.stringify({ template_id: 'ciba_tianxia_v1' }))
+
+    expect(loadSavedRequest().template_id).toBe('ciba_tianxia_v1')
+  })
+
+  it('preserves fast review density in saved requests and defaults legacy values to full study', () => {
+    window.localStorage.setItem(REQUEST_STORAGE_KEY, JSON.stringify({ review_density: 'fast' }))
+    expect(loadSavedRequest().review_density).toBe('fast')
+
+    window.localStorage.setItem(REQUEST_STORAGE_KEY, JSON.stringify({ review_density: 'noisy' }))
+    expect(loadSavedRequest().review_density).toBe(defaultRequest.review_density)
+    expect(defaultRequest.review_density).toBe('full')
+  })
+
+  it('preserves batch mode and normalizes batch items in saved requests', () => {
+    window.localStorage.setItem(
+      REQUEST_STORAGE_KEY,
+      JSON.stringify({
+        source_mode: 'local',
+        batch_enabled: true,
+        batch_items: [
+          {
+            id: 'ep1',
+            source_mode: 'local',
+            enabled: true,
+            title: 'Pilot',
+            subdeck_title: 'Pilot',
+            video_path: 'D:/Shows/S01E01 Pilot.mp4',
+            subtitle_path: 'D:/Shows/S01E01 Pilot.srt',
+          },
+          {
+            id: 'bad',
+            source_mode: 'document',
+            enabled: true,
+            title: '',
+            subdeck_title: '',
+          },
+        ],
+      }),
+    )
+
+    const saved = loadSavedRequest()
+    expect(saved.batch_enabled).toBe(true)
+    expect(saved.batch_items).toHaveLength(1)
+    expect(saved.batch_items[0]).toMatchObject({
+      source_mode: 'local',
+      subdeck_title: 'Pilot',
+      video_path: 'D:/Shows/S01E01 Pilot.mp4',
+      subtitle_path: 'D:/Shows/S01E01 Pilot.srt',
+    })
+  })
+
+  it('falls back to immersive v11 for invalid saved template ids', () => {
+    window.localStorage.setItem(REQUEST_STORAGE_KEY, JSON.stringify({ template_id: 'unknown-template' }))
+
+    expect(loadSavedRequest().template_id).toBe('immersive_v11')
+  })
+
   it('normalizes saved document study path settings', () => {
     window.localStorage.setItem(
       REQUEST_STORAGE_KEY,
@@ -160,6 +219,60 @@ describe('projectStorage document focus migration', () => {
     expect(project?.source_info).toMatchObject({ document_study_mode: 'language_reading' })
   })
 
+  it('preserves the experimental ciba template in saved projects', () => {
+    window.localStorage.setItem(
+      PROJECT_STORAGE_KEY,
+      JSON.stringify({
+        ...defaultRequest,
+        id: 'ciba-project',
+        template_id: 'ciba_tianxia_v1',
+        segments: [
+          {
+            id: 'seg_0001',
+            start: 1,
+            end: 2,
+            source_time: '00:00:01.000 - 00:00:02.000',
+            text: 'Can you run the register for a minute?',
+            duration: 1,
+            recommendation: 4,
+            phrase: 'run the register',
+            cards: [],
+          },
+        ],
+        created_at: 1,
+      }),
+    )
+
+    expect(loadSavedProject()?.template_id).toBe('ciba_tianxia_v1')
+  })
+
+  it('preserves fast review density in saved projects', () => {
+    window.localStorage.setItem(
+      PROJECT_STORAGE_KEY,
+      JSON.stringify({
+        ...defaultRequest,
+        id: 'fast-project',
+        review_density: 'fast',
+        segments: [
+          {
+            id: 'seg_0001',
+            start: 1,
+            end: 2,
+            source_time: '00:00:01.000 - 00:00:02.000',
+            text: "I'm not really in the mood right now.",
+            duration: 1,
+            recommendation: 4,
+            phrase: 'in the mood',
+            cards: [],
+          },
+        ],
+        created_at: 1,
+      }),
+    )
+
+    expect(loadSavedProject()?.review_density).toBe('fast')
+  })
+
   it('drops a saved URL project when the current request is local video', () => {
     window.localStorage.setItem(
       PROJECT_STORAGE_KEY,
@@ -242,6 +355,50 @@ describe('projectStorage document focus migration', () => {
     expect(loadSavedProjectForRequest(matchingRequest)?.id).toBe('local-project')
     expect(projectMatchesRequest(project, matchingRequest)).toBe(true)
     expect(projectMatchesRequest(project, otherRequest)).toBe(false)
+  })
+
+  it('matches saved batch projects by their batch item source paths', () => {
+    const project = {
+      ...defaultRequest,
+      id: 'batch-project',
+      source_mode: 'document' as const,
+      document_path: '',
+      batch_enabled: true,
+      batch_items: [
+        {
+          id: 'doc1',
+          source_mode: 'document' as const,
+          enabled: true,
+          title: 'Retrieval',
+          subdeck_title: 'Retrieval',
+          document_path: 'E:\\Docs\\retrieval.md',
+        },
+        {
+          id: 'doc2',
+          source_mode: 'document' as const,
+          enabled: true,
+          title: 'Spacing',
+          subdeck_title: 'Spacing',
+          document_path: 'E:\\Docs\\spacing.md',
+        },
+      ],
+      segments: [],
+      created_at: 1,
+    }
+    const matchingRequest = {
+      ...defaultRequest,
+      source_mode: 'document' as const,
+      document_path: '',
+      batch_enabled: true,
+      batch_items: project.batch_items,
+    }
+    const changedRequest = {
+      ...matchingRequest,
+      batch_items: [project.batch_items[0]],
+    }
+
+    expect(projectMatchesRequest(project, matchingRequest)).toBe(true)
+    expect(projectMatchesRequest(project, changedRequest)).toBe(false)
   })
 
   it('keeps secret persistence opt-in for browser previews', () => {

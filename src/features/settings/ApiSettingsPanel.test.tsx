@@ -43,7 +43,7 @@ function renderPanel(overrides: Partial<ComponentProps<typeof ApiSettingsPanel>>
     advancedApiPresets: [],
     apiConfig,
     apiTestMessage: '请先测试连接。',
-    apiTestMeta: 'local · 本地草稿',
+    apiTestMeta: 'local · 预览模式',
     apiTestTitle: '未测试',
     apiTestTone: 'idle',
     apiTesting: false,

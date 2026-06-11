@@ -213,7 +213,7 @@ export function LearningSettingsPanel({
             <SlidersHorizontal size={16} aria-hidden="true" />
             <span>
               <strong>高级学习设置</strong>
-              <small>理解深度、难度范围、内容偏好</small>
+              <small>素材解析、难度范围、内容偏好</small>
             </span>
           </span>
           <span className="advanced-learning-summary-meta">
@@ -229,10 +229,10 @@ export function LearningSettingsPanel({
         <div className="advanced-learning-body">
           <div className="learning-setting-row compact-learning-row">
             <span>
-              <strong>理解深度</strong>
-              <small>深度理解会先读懂整段素材，再筛选词伙、生词和句型</small>
+              <strong>素材解析方式</strong>
+              <small>影响生成前 AI 如何理解素材，不直接决定卡片背面信息量</small>
             </span>
-            <div className="study-depth-toggle" aria-label="理解深度">
+            <div className="study-depth-toggle" aria-label="素材解析方式">
               {studyDepthOptions.map((item) => (
                 <button
                   type="button"
@@ -243,11 +243,28 @@ export function LearningSettingsPanel({
                   onClick={() => onPatchRequest({ study_depth: item.id })}
                 >
                   <strong>{item.label}</strong>
-                  <small>{item.id === 'deep' ? '推荐' : '快'}</small>
+                  <small>{item.id === 'deep' ? '推荐' : '提速'}</small>
                 </button>
               ))}
             </div>
           </div>
+          <label className="learning-setting-row compact-learning-row cache-learning-row">
+            <span>
+              <strong>复用上次 AI 精筛结果</strong>
+              <small>
+                默认关闭。打开后，同一字幕、语言和模型会优先用缓存，速度更快，但不是重新调用 AI。
+              </small>
+            </span>
+            <span className="toggle inline-toggle">
+              <input
+                aria-label="复用上次 AI 精筛结果"
+                type="checkbox"
+                checked={request.reuse_ai_review_cache}
+                onChange={(event) => onPatchRequest({ reuse_ai_review_cache: event.target.checked })}
+              />
+              <span>{request.reuse_ai_review_cache ? '允许复用缓存' : '每次重新精筛'}</span>
+            </span>
+          </label>
           {request.source_mode !== 'document' ? (
             <div className="advanced-subsection">
               <div className="settings-subheading">

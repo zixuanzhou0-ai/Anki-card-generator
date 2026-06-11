@@ -41,6 +41,22 @@ describe('ReviewSummaryPanel', () => {
           ...project,
           source_mode: 'local',
           source_info: { subtitle_source: 'auto_matched', subtitle_path: 'F:\\demo.srt' },
+          card_generation_diagnostics: {
+            items: [
+              {
+                learning_point_id: 'lp-missing',
+                answer_core: 'get this over with',
+                status: 'model_missing',
+                reason: '模型没有返回这个学习点的完整卡片内容。',
+              },
+              {
+                learning_point_id: 'lp-filtered',
+                answer_core: 'bad point',
+                status: 'filtered',
+                reason: '字段像模板废话。',
+              },
+            ],
+          },
         }}
         qualityCounts={{ total: 4, recommended: 2, review: 1, rejected: 1 }}
         qualityDiagnostics={{
@@ -62,6 +78,10 @@ describe('ReviewSummaryPanel', () => {
           candidate_only_learning_point_count: 2,
           hidden_duplicate_learning_point_count: 1,
           hard_blocked_learning_point_count: 0,
+          selected_learning_point_count: 5,
+          successful_learning_point_count: 3,
+          card_generation_missing_learning_point_count: 1,
+          card_generation_filtered_card_count: 1,
         }}
         selectedCardCount={3}
         segmentFilter="all"
@@ -79,6 +99,11 @@ describe('ReviewSummaryPanel', () => {
     expect(screen.getByText(/智能筛选过程 · 发现 8 个学习点/)).toBeInTheDocument()
     expect(screen.getAllByText('更多学习点').length).toBeGreaterThan(0)
     expect(screen.getByText(/重复 1 · 阻断 0/)).toBeInTheDocument()
+    expect(screen.getByText(/学习点制卡：已选 5 · 成功 3 · 模型未返回 1 · 质量过滤 1/)).toBeInTheDocument()
+    expect(screen.getByText('get this over with')).toBeInTheDocument()
+    expect(screen.getByText(/模型未返回：模型没有返回这个学习点的完整卡片内容/)).toBeInTheDocument()
+    expect(screen.getByText('bad point')).toBeInTheDocument()
+    expect(screen.getByText(/质量过滤：字段像模板废话/)).toBeInTheDocument()
     expect(screen.getByText('片段筛选')).toBeInTheDocument()
     expect(screen.getByText(/一个片段里可能包含多张卡/)).toBeInTheDocument()
     expect(screen.getByText('字幕句')).toBeInTheDocument()

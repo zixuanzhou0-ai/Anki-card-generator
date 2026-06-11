@@ -78,6 +78,16 @@ export function DocumentStudyPanel({
         </div>
       </div>
 
+      <div className="document-recommendation-card" aria-label="文档推荐路径">
+        <span>推荐路径</span>
+        <strong>{isLanguageReading ? '语言精读 · 表达/词汇/语法 · 自动判断' : '知识吸收 · 标准理解 · 中等答案'}</strong>
+        <p>
+          {isLanguageReading
+            ? '适合英文资料精读：只抽文档里的表达、词汇和语法框架，不做听力卡。'
+            : '适合书籍、论文、课程讲义：一张卡只记一个可回忆点，先问自己再看解释。'}
+        </p>
+      </div>
+
       <div className="document-study-mode-grid" aria-label="文档学习路径">
         {documentStudyModeOptions.map((item) => (
           <button
@@ -183,10 +193,10 @@ export function DocumentStudyPanel({
           </details>
         </div>
       ) : (
-        <div className="document-knowledge-settings" aria-label="文档吸收设置">
+        <div className="document-knowledge-settings" aria-label="文档知识卡设置">
           <details className="compact-details document-focus-panel" open>
             <summary>
-              <span>文档吸收设置</span>
+              <span>知识卡重点</span>
               <strong>{documentFocusSummary(request.document_focus)}</strong>
             </summary>
             <div className="document-focus-grid">
@@ -230,10 +240,10 @@ export function DocumentStudyPanel({
 
           <div className="document-option-block">
             <div className="settings-subheading">
-              <strong>卡片深度</strong>
+              <strong>理解深度</strong>
               <span>{documentDepthLabel(request.document_depth)}</span>
             </div>
-            <div className="document-mini-choice-grid" aria-label="文档卡片深度">
+            <div className="document-mini-choice-grid" aria-label="文档理解深度">
               {documentDepthOptions.map((item) => (
                 <button
                   type="button"

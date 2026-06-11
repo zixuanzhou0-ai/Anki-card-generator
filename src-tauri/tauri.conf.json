@@ -12,7 +12,10 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Anki 卡片生成器",
+        "url": "/",
+        "visible": true,
         "width": 1540,
         "height": 1080,
         "minWidth": 1180,

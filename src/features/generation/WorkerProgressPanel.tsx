@@ -7,11 +7,26 @@ type WorkerProgressPanelProps = {
   variant?: 'compact' | 'wide'
 }
 
+function progressLabel(command: string) {
+  switch (command) {
+    case 'extract_learning_points':
+      return '学习点筛选进度'
+    case 'generate_cards_from_learning_points':
+      return '制卡进度'
+    case 'export':
+      return '导出进度'
+    case 'repair_env':
+      return '环境修复进度'
+    default:
+      return '生成进度'
+  }
+}
+
 export function WorkerProgressPanel({ progress, variant = 'compact' }: WorkerProgressPanelProps) {
   return (
     <section className={`progress-panel ${variant === 'wide' ? 'wide' : ''} ${progress.percent >= 100 ? 'done' : ''}`}>
       <div className="progress-head">
-        <span>{progress.command === 'export' ? '导出进度' : '生成进度'}</span>
+        <span>{progressLabel(progress.command)}</span>
         <strong>{progress.percent}%</strong>
       </div>
       <div className="progress-bar" aria-label="任务进度">

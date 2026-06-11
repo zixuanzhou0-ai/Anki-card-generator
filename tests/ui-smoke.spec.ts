@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 
 test('desktop workflow shell supports simplified settings, URL mode, document mode, and generation', async ({ page }) => {
-  test.setTimeout(60_000)
+  test.setTimeout(90_000)
 
   await page.addInitScript(() => window.localStorage.clear())
   await page.goto('/')
@@ -70,22 +70,27 @@ test('desktop workflow shell supports simplified settings, URL mode, document mo
   await expect(page.getByRole('button', { name: '只用字幕生成' })).toBeVisible()
   await expect(page.getByText('视频下载失败时自动 fallback 到字幕-only')).toBeVisible()
   await page.getByPlaceholder('https://www.youtube.com/watch?v=...').fill('https://www.youtube.com/watch?v=UV1WDNe4J5w')
-  await page.getByRole('button', { name: /生成卡片/ }).click()
+  await page.getByRole('button', { name: /抽取学习点/ }).click()
 
+  await expect(page.getByRole('heading', { name: '学习点总览' })).toBeVisible()
+  await expect(page.getByText('AI 已扫描 1/1 句字幕')).toBeVisible()
+  await expect(page.getByText('推荐 1 个，默认已选；候选 0 个，可手动加入制卡')).toBeVisible()
   await expect(page.getByText('in the mood').first()).toBeVisible()
   await expect(page.getByText("I'm not really in the mood right now.")).toBeVisible()
+  await page.getByLabel('学习点总览').getByRole('button', { name: '生成选中卡片' }).click()
+
   await expect(page.getByText('本次将导出')).toBeVisible()
   await expect(page.locator('.export-count-card')).toContainText('6')
-  await expect(page.getByText('演示卡片生成完成。', { exact: true })).toBeVisible()
+  await expect(page.getByText(/演示卡片生成完成/).first()).toBeVisible()
   await expect(page.getByText('智能筛选过程')).toBeVisible()
   await expect(page.getByLabel('导出数量概览').getByText('更多学习点')).toBeVisible()
   await expect(page.getByText(/智能筛选过程 · 发现 \d+ 个学习点 · 重复 \d+ · 阻断 \d+/)).toBeVisible()
 
   await page.getByRole('button', { name: /2 学习设置/ }).click()
   await page.locator('.preference-details summary').click()
-  await expect(page.getByRole('button', { name: /沉浸复读 V11/ })).toBeVisible()
-  await expect(page.getByRole('button', { name: /词典解释/ })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: /极简复习/ })).toHaveCount(0)
+  await expect(page.getByRole('radio', { name: /沉浸复读 V11/ })).toBeVisible()
+  await expect(page.getByRole('radio', { name: /词典解释/ })).toHaveCount(0)
+  await expect(page.getByRole('radio', { name: /极简复习/ })).toHaveCount(0)
   await expect(page.locator('.preview-panel.template-immersive_v11')).toBeVisible()
 
   await page.getByRole('button', { name: '本段停用' }).click()
@@ -101,7 +106,7 @@ test('desktop workflow shell supports simplified settings, URL mode, document mo
   await expect(page.getByText('文档目标').first()).toBeVisible()
   await expect(page.getByText('知识吸收').first()).toBeVisible()
   await expect(page.getByText('知识问答卡').first()).toBeVisible()
-  await page.getByRole('banner').getByRole('button', { name: /重新生成|生成卡片/ }).click()
+  await page.getByRole('banner').getByRole('button', { name: /重新生成|生成卡片|抽取学习点/ }).click()
   await expect(page.getByText('spaced repetition').first()).toBeVisible()
   await expect(page.getByText('已生成浏览器演示文档卡').first()).toBeVisible()
 

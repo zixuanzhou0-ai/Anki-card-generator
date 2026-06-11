@@ -14,6 +14,11 @@ export async function selectDirectory() {
   return openDialog({ directory: true, multiple: false })
 }
 
+export async function listDirectoryFiles(directory: string) {
+  if (!isTauriRuntime()) return []
+  return invoke<string[]>('list_directory_files', { directory })
+}
+
 export function toAssetUrl(path: string) {
   return isTauriRuntime() ? convertFileSrc(path) : ''
 }
