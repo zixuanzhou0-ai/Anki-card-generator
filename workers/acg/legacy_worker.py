@@ -11466,7 +11466,7 @@ KNOWLEDGE_BACK_TEMPLATE = """
     <div class="block-grid knowledge-grid">
       <div class="info-block understanding-block"><strong>理解结构</strong><small>{{UnderstandLabel}}</small><p>{{Definition}}</p></div>
       {{#Example}}<div class="info-block transfer-block"><strong>例子</strong><p>{{Example}}</p></div>{{/Example}}
-      <div class="info-block warning-block boundary-block"><strong>边界 / 易混点</strong>{{#TeacherNote}}<p>{{TeacherNote}}</p>{{/TeacherNote}}{{#Collocations}}<p>{{Collocations}}</p>{{/Collocations}}</div>
+      <div class="info-block warning-block boundary-block"><strong>边界 / 易混点</strong>{{#TeacherNote}}<p>{{TeacherNote}}</p>{{/TeacherNote}}</div>
     </div>
   </section>
   <section class="card-section knowledge-transfer-check transfer-block">
@@ -14872,7 +14872,7 @@ def ciba_boundary_text(card: dict[str, Any]) -> str:
         _specific_v11_text(card.get("teacher_note")),
         _export_teacher_note_fallback(card),
     )
-    return "\n".join(lines[:3])
+    return "\n".join(lines[:1])
 
 
 def ciba_source_context_text(card: dict[str, Any]) -> str:
@@ -15007,10 +15007,13 @@ def card_front_fields(card: dict[str, Any], *, repetition_mode: bool = False) ->
             "answer": card_answer_core(card),
         }
     if card_type == "knowledge":
+        short_answer = phrase if phrase and len(phrase) <= 32 else clean_study_text(card.get("answer_core"))
+        if len(short_answer) > 48:
+            short_answer = ""
         return {
             "front_prompt": english or "回忆这段资料的核心知识点。",
             "front_content": "先用自己的话回答，再翻面核对结构化解释。",
-            "answer": chinese or phrase,
+            "answer": short_answer or chinese or phrase,
         }
     return {
         "front_prompt": "回忆这张卡的核心表达。",

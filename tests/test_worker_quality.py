@@ -7438,18 +7438,78 @@ class WorkerQualityTests(unittest.TestCase):
 
         self.assertEqual(audit["answer_not_in_source"], 0)
 
-    def test_azw3_document_error_is_actionable(self):
+    def test_azw3_document_auto_converts_with_ebook_convert_when_available(self):
+        import subprocess
+        import zipfile
+        from unittest.mock import patch
+
+        readers = importlib.import_module("acg.documents.readers")
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "book.azw3"
+            source.write_bytes(b"BOOKMOBI")
+
+            def fake_run(command, **kwargs):
+                self.assertEqual(command[0], "ebook-convert")
+                self.assertEqual(Path(command[1]), source)
+                output_epub = Path(command[2])
+                with zipfile.ZipFile(output_epub, "w") as archive:
+                    archive.writestr(
+                        "chapter.xhtml",
+                        "<html><body><p>run the register means operate the cash register.</p></body></html>",
+                    )
+                return subprocess.CompletedProcess(command, 0, stdout="converted", stderr="")
+
+            with patch.object(readers.shutil, "which", return_value="ebook-convert"), patch.object(
+                readers.subprocess, "run", side_effect=fake_run
+            ):
+                text = worker.read_document_source(str(source))
+
+        self.assertIn("run the register", text)
+        self.assertIn("operate the cash register", text)
+
+    def test_azw3_document_error_is_actionable_without_converter(self):
+        from unittest.mock import patch
+
+        readers = importlib.import_module("acg.documents.readers")
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "book.azw3"
             path.write_bytes(b"BOOKMOBI")
             stderr = io.StringIO()
-            with self.assertRaises(SystemExit):
-                with redirect_stderr(stderr):
-                    worker.read_document_source(str(path))
+            with patch.object(readers.shutil, "which", return_value=None):
+                with self.assertRaises(SystemExit):
+                    with redirect_stderr(stderr):
+                        worker.read_document_source(str(path))
         message = stderr.getvalue()
         self.assertIn("AZW3", message)
         self.assertIn("EPUB", message)
         self.assertIn("Calibre", message)
+        self.assertIn("ebook-convert", message)
+
+    def test_ciba_knowledge_back_keeps_boundary_compact(self):
+        card = {
+            "chinese_learner_trap": "不要把 run 当成“跑”，register 当成“注册”。",
+            "usage_boundary": "只在操作机器、系统或收银机这类语境里用。",
+            "confusable_note": "不要写成 do the register。",
+            "teacher_note": "复习时先看原句再判断动作。",
+        }
+
+        self.assertEqual(worker._legacy_worker.ciba_boundary_text(card), "不要把 run 当成“跑”，register 当成“注册”")
+        self.assertNotIn("{{#Collocations}}<p>{{Collocations}}</p>{{/Collocations}}", worker.KNOWLEDGE_BACK_TEMPLATE)
+
+    def test_document_knowledge_front_answer_prefers_short_concept_label(self):
+        fields = worker._legacy_worker.card_front_fields(
+            {
+                "type": "knowledge",
+                "document_card_kind": "knowledge",
+                "english": "为什么在真实英语中，不能孤立地背单词的中文意思？",
+                "phrase": "语境义优先",
+                "chinese": "词的意义是在句子关系、场景动作和搭配中被激活的。例如 run the register 中 run 是操作/负责。",
+                "definition": "单词意义由句子、场景和搭配决定。",
+            }
+        )
+
+        self.assertEqual(fields["answer"], "语境义优先")
+        self.assertLessEqual(len(fields["answer"]), 24)
 
     def test_card_template_uses_responsive_canvas_and_fit_text(self):
         self.assertIn(".review-card", worker.CARD_CSS)
