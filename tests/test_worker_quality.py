@@ -7271,11 +7271,194 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertNotEqual(first, third)
         self.assertTrue(first.startswith("Deck_"))
 
+    def _first_apkg_note_fields(self, apkg_path: str) -> dict[str, str]:
+        import sqlite3
+        import zipfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with zipfile.ZipFile(apkg_path) as apkg:
+                apkg.extract("collection.anki2", root)
+            connection = sqlite3.connect(root / "collection.anki2")
+            try:
+                models = json.loads(connection.execute("select models from col").fetchone()[0])
+                mid, flds = connection.execute("select mid, flds from notes order by id limit 1").fetchone()
+            finally:
+                connection.close()
+        names = [field["name"] for field in models[str(mid)]["flds"]]
+        values = flds.split("\x1f")
+        return {name: values[index] if index < len(values) else "" for index, name in enumerate(names)}
+
+    def test_document_reading_export_does_not_put_full_source_evidence_in_usage_context(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
+
+        source_evidence = (
+            "Chapter 1 Why English cards need source evidence "
+            "A learner can recognize a phrase in a textbook and still fail to use it in conversation. "
+            "Chapter 2 Boundaries prevent fake fluency If a learner writes I'm not in mood, the missing article matters."
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "out"
+            output_dir.mkdir()
+            result = worker.handle_export(
+                {
+                    "project": {
+                        "id": "doc-reading-context-regression",
+                        "title": "EPUB 精读字段回归",
+                        "source_mode": "document",
+                        "document_study_mode": "language_reading",
+                        "template_id": "immersive_v11",
+                        "language": "en",
+                        "level": "B1",
+                        "segments": [
+                            {
+                                "id": "doc_0001",
+                                "text": "这段资料里值得精读的表达是什么：in the mood",
+                                "source_time": "文档精读点 1",
+                                "cards": [
+                                    {
+                                        "id": "doc_0001_knowledge",
+                                        "type": "knowledge",
+                                        "enabled": True,
+                                        "document_card_kind": "language_reading",
+                                        "english": "I'm not in the mood.",
+                                        "answer_core": "我没心情（做这件事）。",
+                                        "phrase": "in the mood",
+                                        "chinese": "我没心情（做这件事）。",
+                                        "definition": "表示当前有做某事的意愿或心情。",
+                                        "collocations": "be in the mood for sth / be in the mood to do sth",
+                                        "context": "用于委婉拒绝或推迟某事。",
+                                        "source_evidence": source_evidence,
+                                        "example": "I'm not in the mood for pizza tonight.",
+                                        "teacher_note": "不要漏掉 the；不说 in mood。",
+                                        "quality": {"score": 82, "status": "recommended", "issues": []},
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    "output_dir": str(output_dir),
+                }
+            )
+            fields = self._first_apkg_note_fields(result["apkg_path"])
+
+        self.assertIn("用于委婉拒绝或推迟某事", fields["Context"])
+        self.assertNotIn("Chapter 1", fields["Context"])
+        self.assertLessEqual(len(fields["Context"]), 80)
+
+    def test_document_knowledge_export_uses_source_evidence_even_when_ciba_template_selected(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "out"
+            output_dir.mkdir()
+            result = worker.handle_export(
+                {
+                    "project": {
+                        "id": "doc-knowledge-evidence-regression",
+                        "title": "词霸文档知识字段回归",
+                        "source_mode": "document",
+                        "document_study_mode": "knowledge",
+                        "template_id": "ciba_tianxia_v1",
+                        "language": "en",
+                        "level": "B2",
+                        "segments": [
+                            {
+                                "id": "doc_0001",
+                                "text": "这段资料的核心知识点是什么：语境义优先",
+                                "source_time": "文档知识点 1",
+                                "cards": [
+                                    {
+                                        "id": "doc_0001_knowledge",
+                                        "type": "knowledge",
+                                        "enabled": True,
+                                        "document_card_kind": "knowledge",
+                                        "english": "run 在这句里为什么不是“跑”？",
+                                        "answer_core": "run = 操作/负责",
+                                        "phrase": "run the register",
+                                        "chinese": "run 是操作、负责；register 是收银机。",
+                                        "definition": "掌握 run the register 的地道搭配。",
+                                        "context": "零售、餐饮等需要操作收银机的场景。",
+                                        "source_evidence": "run 不是跑步，而是“操作、负责”，register 也不是注册，而是收银机。",
+                                        "teacher_note": "不要翻译成跑去注册。",
+                                        "quality": {"score": 86, "status": "recommended", "issues": []},
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    "output_dir": str(output_dir),
+                }
+            )
+            fields = self._first_apkg_note_fields(result["apkg_path"])
+
+        self.assertIn("run 不是跑步", fields["Context"])
+        self.assertNotEqual(fields["Context"], "零售、餐饮等需要操作收银机的场景。")
+
+    def test_document_knowledge_audit_accepts_concept_answer_when_source_evidence_exists(self):
+        audit = worker._legacy_worker.export_quality_audit(
+            {
+                "source_mode": "document",
+                "document_study_mode": "knowledge",
+                "template_id": "ciba_tianxia_v1",
+                "language": "en",
+                "level": "B2",
+            },
+            [
+                {
+                    "id": "doc_0003",
+                    "text": "这段资料的核心知识点是什么：中文脑子最容易错的地方",
+                    "document_excerpt": "中文母语者常把中文词逐字搬到英文里：负责收银会想成 do the register，看问题的方式不对会硬说 see it wrong。",
+                    "source_time": "文档知识点 3",
+                    "cards": [
+                        {
+                            "id": "doc_0003_knowledge",
+                            "type": "knowledge",
+                            "enabled": True,
+                            "english": "中文母语者最容易犯的根本错误是什么？",
+                            "answer_core": "中文脑子易错点",
+                            "phrase": "中文脑子易错点",
+                            "chinese": "把中文词逐字搬到英文里。",
+                            "definition": "识别中文母语负迁移。",
+                            "context": "输出英语时容易逐字直译。",
+                            "source_evidence": "中文母语者常把中文词逐字搬到英文里：负责收银会想成 do the register，看问题的方式不对会硬说 see it wrong。",
+                            "teacher_note": "不是每个中文概念都要逐字出现在英文原句里；看 source evidence 是否支撑即可。",
+                            "quality": {"score": 86, "status": "recommended", "issues": []},
+                        }
+                    ],
+                }
+            ],
+        )
+
+        self.assertEqual(audit["answer_not_in_source"], 0)
+
+    def test_azw3_document_error_is_actionable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "book.azw3"
+            path.write_bytes(b"BOOKMOBI")
+            stderr = io.StringIO()
+            with self.assertRaises(SystemExit):
+                with redirect_stderr(stderr):
+                    worker.read_document_source(str(path))
+        message = stderr.getvalue()
+        self.assertIn("AZW3", message)
+        self.assertIn("EPUB", message)
+        self.assertIn("Calibre", message)
+
     def test_card_template_uses_responsive_canvas_and_fit_text(self):
         self.assertIn(".review-card", worker.CARD_CSS)
         self.assertIn("overflow-y: auto !important", worker.CARD_CSS)
         self.assertIn("height: auto", worker.CARD_CSS)
         self.assertIn("grid-template-columns: repeat(auto-fit, minmax(220px, 1fr))", worker.CARD_CSS)
+        self.assertNotIn("calc(100vw - 18px)", worker.CARD_CSS)
+        self.assertIn("width: min(900px, 100%)", worker.CARD_CSS)
+        self.assertIn("overflow-wrap: anywhere", worker.CARD_CSS)
         self.assertIn("media-strip", worker.BACK_TEMPLATE)
         self.assertIn("audio-actions", worker.BACK_TEMPLATE)
         self.assertNotIn("data-fit", worker.BACK_TEMPLATE)

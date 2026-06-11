@@ -11049,7 +11049,8 @@ body,
   overflow-y: auto !important;
 }
 .review-card {
-  width: min(900px, calc(100vw - 18px));
+  width: min(900px, 100%);
+  max-width: 100%;
   margin: 0 auto;
   border: 1px solid rgba(60, 60, 67, 0.13);
   border-radius: 16px;
@@ -11112,6 +11113,10 @@ body,
   color: #6e6e73;
   font-size: clamp(12px, 2.8vw, 14px);
   font-weight: 800;
+}
+.meta > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .tag {
   display: inline-flex;
@@ -11356,7 +11361,7 @@ audio {
 }
 @media (max-width: 560px) {
   .card { padding: 8px; }
-  .review-card { width: calc(100vw - 16px); border-radius: 14px; }
+  .review-card { width: 100%; max-width: 100%; border-radius: 14px; }
   .card-section { padding: 18px; }
   .prompt { font-size: clamp(24px, 7vw, 32px); line-height: 1.16; }
   .answer { font-size: clamp(26px, 8vw, 36px); line-height: 1.12; }
@@ -14779,6 +14784,26 @@ def export_context_text(card: dict[str, Any], use_v11_template: bool) -> str:
     )
 
 
+def document_reading_context_text(card: dict[str, Any]) -> str:
+    """Short usage context for EPUB/document language-reading cards.
+
+    Document reading cards often carry a full source_evidence excerpt for model
+    judgement. That excerpt can be multiple paragraphs long and must not be
+    exported into the back-side "怎么用" block.
+    """
+    direct_context = _study_lines(
+        clean_study_text(card.get("context")),
+        clean_study_text(card.get("source_chinese")),
+        clean_study_text(card.get("sentence_chinese")),
+    )
+    if direct_context:
+        return direct_context[0]
+    evidence = clean_study_text(card.get("source_evidence"))
+    if evidence and len(evidence) <= 160:
+        return evidence
+    return "结合上方原句和文档语境复习这个表达。"
+
+
 def ciba_contextual_meaning_text(card: dict[str, Any]) -> str:
     return (
         _specific_v11_text(card.get("chinese"))
@@ -14852,7 +14877,8 @@ def ciba_boundary_text(card: dict[str, Any]) -> str:
 
 def ciba_source_context_text(card: dict[str, Any]) -> str:
     return (
-        v11_source_translation_text(card)
+        clean_study_text(card.get("source_evidence"))
+        or v11_source_translation_text(card)
         or clean_study_text(card.get("context"))
         or clean_study_text(card.get("source_chinese"))
         or clean_study_text(card.get("sentence_chinese"))
@@ -15226,7 +15252,12 @@ def export_quality_audit(project: dict[str, Any], export_segments: list[dict[str
     pronunciation_meta_errors = 0
     answer_not_in_source = 0
     seen_cards: set[str] = set()
-    deck_kind_code = str(project.get("deck_kind") or project.get("project_kind") or "video_language")
+    deck_kind_code = str(project.get("deck_kind") or project.get("project_kind") or "")
+    if not deck_kind_code:
+        if project.get("source_mode") == "document":
+            deck_kind_code = "document_reading" if project.get("document_study_mode") == "language_reading" else "document_knowledge"
+        else:
+            deck_kind_code = "video_language"
     project_template_id = str(project.get("template_id") or "immersive_v11")
     project_is_ciba_template = normalize_template_id(project_template_id) == "ciba_tianxia_v1"
     project_uses_v11_repetition_front = uses_v11_repetition_front(project_template_id, deck_kind_code)
@@ -15245,7 +15276,7 @@ def export_quality_audit(project: dict[str, Any], export_segments: list[dict[str
                 meaning_field = export_meaning_text(card, use_v11_template)
                 definition_field = export_definition_text(card, use_v11_template)
                 teacher_note_field = export_teacher_note_text(card, use_v11_template)
-                context_field = export_context_text(card, use_v11_template)
+                context_field = document_reading_context_text(card) if deck_kind_code == "document_reading" else export_context_text(card, use_v11_template)
             required_values = {
                 "English": card.get("english") or source_text,
                 "Answer": card.get("answer_core") or card.get("phrase"),
@@ -15266,7 +15297,20 @@ def export_quality_audit(project: dict[str, Any], export_segments: list[dict[str
             ]
             blocked_text_values += sum(1 for value in study_values if contains_internal_placeholder(value))
             answer = answer_display_text(card.get("answer_core") or card.get("phrase") or "")
-            if answer and source_text and not phrase_in_text(source_text, answer) and str(card.get("type") or "") != "listening":
+            evidence_text = " ".join(
+                clean_study_text(value)
+                for value in [source_text, segment.get("document_excerpt"), card.get("source_evidence"), card.get("english")]
+                if clean_study_text(value)
+            )
+            answer_to_check = answer_display_text(card.get("phrase") or card.get("normalized_answer") or card.get("answer_core") or "")
+            has_document_source_evidence = deck_kind_code == "document_knowledge" and bool(clean_study_text(card.get("source_evidence")))
+            if (
+                not has_document_source_evidence
+                and answer_to_check
+                and evidence_text
+                and not phrase_in_text(evidence_text, answer_to_check)
+                and str(card.get("type") or "") != "listening"
+            ):
                 answer_not_in_source += 1
             duplicate_key = f"{segment.get('id')}:{str(card.get('type') or '')}:{answer.lower()}"
             if duplicate_key in seen_cards:
@@ -15970,7 +16014,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                 meaning_field = export_meaning_text(card, use_v11_repetition_front)
                 definition_field = export_definition_text(card, use_v11_repetition_front)
                 collocations_field = v11_self_sentence_text(card) if use_v11_repetition_front else card.get("collocations", "")
-                context_field = export_context_text(card, use_v11_repetition_front)
+                context_field = document_reading_context_text(card) if deck_kind_code == "document_reading" else export_context_text(card, use_v11_repetition_front)
                 teacher_note_field = export_teacher_note_text(card, use_v11_repetition_front)
                 chinese_feel_field = v11_answer_note_text(card) if use_v11_repetition_front else card.get("chinese_feel", "")
                 why_field = card.get("why", "")

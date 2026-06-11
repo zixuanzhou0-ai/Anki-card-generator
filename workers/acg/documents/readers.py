@@ -22,6 +22,11 @@ def read_document_source(path: str) -> str:
         return read_epub_document(document_path)
     if suffix == ".pdf":
         return read_pdf_document(document_path)
+    if suffix in {".azw", ".azw3", ".mobi", ".kindle"}:
+        fail(
+            "暂不直接读取 Kindle/AZW3/MOBI 电子书。请先用 Calibre 或 ebook-convert 转成 EPUB，"
+            "再在文档资料里选择转换后的 .epub 文件。"
+        )
     fail("暂不支持这个文档格式。请使用 TXT、Markdown、DOCX、EPUB 或 PDF。")
 
 
