@@ -11469,10 +11469,10 @@ KNOWLEDGE_BACK_TEMPLATE = """
       <div class="info-block warning-block boundary-block"><strong>边界 / 易混点</strong>{{#TeacherNote}}<p>{{TeacherNote}}</p>{{/TeacherNote}}</div>
     </div>
   </section>
-  <section class="card-section knowledge-transfer-check transfer-block">
+  {{#Why}}<section class="card-section knowledge-transfer-check transfer-block">
     <strong class="subtle">迁移检查</strong>
-    {{#Why}}<p>{{Why}}</p>{{/Why}}
-  </section>
+    <p>{{Why}}</p>
+  </section>{{/Why}}
   <section class="card-section knowledge-action-card transfer-block">
     <strong class="subtle">复习动作</strong>
     {{#Cloze}}<div class="cue knowledge-cloze-cue">{{Cloze}}</div>{{/Cloze}}
@@ -14825,7 +14825,7 @@ def ciba_language_action_text(card: dict[str, Any]) -> str:
         _specific_v11_text(card.get("learning_goal")),
         _export_definition_fallback(card),
     )
-    return "\n".join(lines[:2])
+    return "。".join(lines[:2])
 
 
 def ciba_conceptual_action_text(card: dict[str, Any]) -> str:
@@ -14851,7 +14851,34 @@ def ciba_reason_text(card: dict[str, Any]) -> str:
         _specific_v11_text(card.get("value_reason")),
         _specific_v11_text(card.get("reason")),
     )
-    return "\n".join(lines[:2])
+    duplicate_markers = {
+        _normalized_study_compare(value)
+        for value in _study_lines(
+            ciba_boundary_text(card),
+            _specific_v11_text(card.get("definition")),
+            _specific_v11_text(card.get("collocations")),
+        )
+    }
+    unique_lines: list[str] = []
+    for line in lines:
+        marker = _normalized_study_compare(line)
+        if not marker:
+            continue
+        if any(
+            marker == duplicate
+            or (len(marker) > 16 and len(duplicate) > 16 and (marker in duplicate or duplicate in marker))
+            for duplicate in duplicate_markers
+        ):
+            continue
+        unique_lines.append(line)
+    return "\n".join(unique_lines[:1])
+
+
+def export_cloze_text(card: dict[str, Any], deck_kind_code: str = "") -> str:
+    cloze = clean_study_text(card.get("cloze"))
+    if deck_kind_code == "document_knowledge":
+        cloze = re.sub(r"[（(][^）)]*[\u4e00-\u9fff][^）)]*[）)]", "", cloze).strip()
+    return cloze
 
 
 def ciba_transfer_text(card: dict[str, Any]) -> str:
@@ -14869,6 +14896,7 @@ def ciba_boundary_text(card: dict[str, Any]) -> str:
         _specific_v11_text(card.get("usage_boundary")),
         _specific_v11_text(card.get("confusable_note")),
         _specific_v11_text(card.get("avoid_reason")),
+        _specific_v11_text(card.get("boundary")),
         _specific_v11_text(card.get("teacher_note")),
         _export_teacher_note_fallback(card),
     )
@@ -16012,7 +16040,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                 context_field = ciba_source_context_text(card)
                 teacher_note_field = ciba_boundary_text(card)
                 chinese_feel_field = v11_answer_note_text(card)
-                why_field = ciba_reason_text(card) or clean_study_text(card.get("why"))
+                why_field = ciba_reason_text(card)
             else:
                 meaning_field = export_meaning_text(card, use_v11_repetition_front)
                 definition_field = export_definition_text(card, use_v11_repetition_front)
@@ -16060,7 +16088,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     anki_text(learning_action_for_card(card)),
                     anki_study_text(ciba_conceptual_action_text(card) if is_ciba_template else card.get("conceptual_action", "")),
                     anki_study_text(ciba_chinese_learner_trap_text(card) if is_ciba_template else card.get("chinese_learner_trap", "")),
-                    anki_study_text(card.get("cloze", "")),
+                    anki_study_text(export_cloze_text(card, deck_kind_code)),
                     anki_text(template_labels["card_layout"]),
                     anki_text("repetition" if use_v11_repetition_front else template_labels["card_layout"]),
                     anki_text(template_labels["front_kicker"]),

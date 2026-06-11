@@ -7511,6 +7511,94 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(fields["answer"], "语境义优先")
         self.assertLessEqual(len(fields["answer"]), 24)
 
+    def test_ciba_language_action_joins_lines_as_sentences(self):
+        text = worker._legacy_worker.ciba_language_action_text(
+            {
+                "learning_target": "掌握 run 在特定搭配中的语境义。",
+                "how_to_use_it": "当你想表达“操作某个机器/负责某个岗位”时，检查是否能用 run 而不是机械翻译“负责”。",
+                "definition": "操作或负责某项设备/岗位。",
+            }
+        )
+
+        self.assertEqual(
+            text,
+            "掌握 run 在特定搭配中的语境义。当你想表达“操作某个机器/负责某个岗位”时，检查是否能用 run 而不是机械翻译“负责”",
+        )
+        self.assertNotIn("语境义 当你", text)
+
+    def test_ciba_boundary_prefers_compact_boundary_field(self):
+        card = {
+            "boundary": "易错点：不要孤立地把 run 翻译成“跑”，也不要用 do 来搭配 register。",
+            "teacher_note": "记住，动词的意义是由它后面的宾语决定的，不要脱离搭配背单词。；易错点：不要孤立地把 run 翻译成“跑”，也不要用 do 来搭配 register。",
+        }
+
+        self.assertEqual(
+            worker._legacy_worker.ciba_boundary_text(card),
+            "易错点：不要孤立地把 run 翻译成“跑”，也不要用 do 来搭配 register",
+        )
+        self.assertNotIn("；", worker._legacy_worker.ciba_boundary_text(card))
+
+    def test_document_knowledge_export_removes_duplicate_transfer_and_direct_cloze_hint(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "out"
+            output_dir.mkdir()
+            result = worker.handle_export(
+                {
+                    "project": {
+                        "id": "doc-knowledge-dedupe-regression",
+                        "title": "知识卡去重复回归",
+                        "source_mode": "document",
+                        "document_study_mode": "knowledge",
+                        "template_id": "ciba_tianxia_v1",
+                        "language": "en",
+                        "level": "B2",
+                        "segments": [
+                            {
+                                "id": "doc_0001",
+                                "text": "这段资料的核心知识点是什么：run the register",
+                                "source_time": "文档知识点 1",
+                                "cards": [
+                                    {
+                                        "id": "doc_0001_knowledge",
+                                        "type": "knowledge",
+                                        "enabled": True,
+                                        "document_card_kind": "knowledge",
+                                        "english": "run the register 在真实语境里是什么意思？",
+                                        "answer_core": "操作收银机",
+                                        "phrase": "run the register",
+                                        "chinese": "操作/负责收银机。",
+                                        "definition": "听到 run the register 时，应反应为操作收银机，而不是跑。",
+                                        "context": "零售或餐饮场景。",
+                                        "source_evidence": "run 不是跑步，而是“操作、负责”，register 也不是注册，而是收银机。",
+                                        "teacher_note": "不要把 run 固定理解为“跑”，也不要把 register 固定理解为“注册”。",
+                                        "collocations": "run a business；run the register",
+                                        "why": "不要把 run 固定理解为“跑”，也不要把 register 固定理解为“注册”。",
+                                        "cloze": "Can you ___ the register for a minute?（负责操作收银机）",
+                                        "quality": {"score": 88, "status": "recommended", "issues": []},
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    "output_dir": str(output_dir),
+                }
+            )
+            fields = self._first_apkg_note_fields(result["apkg_path"])
+
+        self.assertEqual(fields["Why"], "")
+        self.assertIn("___", fields["Cloze"])
+        self.assertNotIn("负责操作收银机", fields["Cloze"])
+        self.assertLessEqual(fields["Cloze"].count("___"), 1)
+
+    def test_knowledge_back_hides_transfer_section_when_why_is_empty(self):
+        self.assertIn('{{#Why}}<section class="card-section knowledge-transfer-check transfer-block">', worker.KNOWLEDGE_BACK_TEMPLATE)
+        self.assertNotIn('<section class="card-section knowledge-transfer-check transfer-block">\n    <strong class="subtle">迁移检查</strong>\n    {{#Why}}', worker.KNOWLEDGE_BACK_TEMPLATE)
+
     def test_card_template_uses_responsive_canvas_and_fit_text(self):
         self.assertIn(".review-card", worker.CARD_CSS)
         self.assertIn("overflow-y: auto !important", worker.CARD_CSS)
