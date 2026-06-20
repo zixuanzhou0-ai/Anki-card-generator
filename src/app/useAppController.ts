@@ -39,12 +39,7 @@ import type {
   WorkspaceStage,
 } from '../domain/types'
 import { createDemoProject } from '../domain/demoProject'
-import {
-  batchItemsForSource,
-  buildBatchPackage,
-  createDocumentBatchItems,
-  createLocalVideoBatchItems,
-} from '../domain/batch'
+import { batchItemsForSource, buildBatchPackage, createLocalVideoBatchItems } from '../domain/batch'
 import {
   advancedApiPresets,
   advancedTtsPresets,
@@ -71,12 +66,42 @@ import {
   qwenTtsVoices,
   normalizeCollectionLevels,
   PROJECT_STORAGE_KEY,
+  publicTemplateIdFor,
   REQUEST_STORAGE_KEY,
   selectionStrategyOptions,
   templateOptions,
 } from '../domain/options'
 import { materializeLearningPointInventory } from '../domain/inventoryDrafts'
-import { applyUsableCardSelection, segmentMatchesFilter } from '../domain/quality'
+import {
+  applyUsableCardSelection,
+  getExportSelectionStats,
+  segmentMatchesFilter,
+  isUsableCardForExport,
+} from '../domain/quality'
+import {
+  ankiOpenImportRequestedStatusMessage,
+  ankiOpenImportStartingStatusMessage,
+  ankiVerifyStartingStatusMessage,
+  ankiVerifyWorkerStartedMessage,
+  buildAnkiVerifyPayload,
+  exportResultForAnkiVerify,
+  prepareAnkiVerifyStart,
+} from './ankiVerifyState'
+import {
+  APKG_EXPORT_DIRECTORY_DIALOG_TITLE,
+  buildProjectExportPayloadProject,
+  defaultExportDirectoryForProject,
+  defaultExportDirectoryForRequest,
+  exportStartingStatusMessage,
+  exportWorkerStartedProgressMessage,
+  exportWorkerStartedStatusMessage,
+  normalizeProjectForExportWorker,
+  prepareProjectForExport,
+  releaseApkgOutputGuardForProject,
+  releaseTargetRequiresColdMediaCacheReadsDisabled,
+  type ReleaseApkgTarget,
+  videoExportTtsBlockReason,
+} from './exportPreparation'
 import {
   countSelectedCards,
   getQualityCounts,
@@ -86,11 +111,12 @@ import {
 } from '../domain/projectMetrics'
 import type { WorkerErrorActionId } from '../domain/workerErrors'
 import { getWorkerErrorActions } from '../domain/workerErrors'
-import { buildReadinessItems } from './readiness'
+import { buildReadinessItems, buildTtsReadinessDetail, isEnvironmentReadyForGeneration } from './readiness'
 import { isSourceInputReady } from '../domain/sourceValidation'
 import type { LearningPointExtractionResult } from '../domain/learningPoints'
 import {
   defaultSelectedLearningPointIds,
+  learningPointGenerationBatchSize,
   selectedLearningPoints,
 } from '../domain/learningPoints'
 import {
@@ -121,15 +147,14 @@ import {
   upsertSavedApiProfile,
   upsertSavedTtsProfile,
 } from '../services/settingsProfiles'
-import {
-  loadSavedRequest,
-  projectMatchesRequest,
-  stripRequestSecrets,
-} from '../services/projectStorage'
+import { loadSavedRequest, projectMatchesRequest, stripRequestSecrets } from '../services/projectStorage'
 import {
   cancelWorkerJob,
   checkBootstrapEnv,
+  getWorkerJobStatus,
   loadSecret,
+  readWorkerJobResult,
+  recordRendererError,
   repairBootstrapEnv,
   runWorker,
   saveSecret,
@@ -151,84 +176,130 @@ import {
   startWindowDrag as startNativeWindowDrag,
   startWindowResize as startNativeWindowResize,
 } from '../services/windowChrome'
+import {
+  buildDirectGenerationPayload,
+  buildLearningPointExtractionPayload,
+  buildLearningPointGenerationPayload,
+} from './learningPointGenerationPayload'
+import {
+  generatedLearningPointIdsFromProject,
+  generationBatchProgressSnapshot,
+  mergeGeneratedBatchProject,
+  retryLearningPointIdsAfterBatchFailure,
+} from './generationBatch'
+import type { GenerationBatchProgress, GenerationBatchRuntime } from './generationBatch'
+import {
+  fallbackWorkerOperationFromFinish,
+  resolveWorkerFinishedResult,
+  workerFinishInvalidatedByEditedRequest,
+  workerFinishMatchesActiveJob,
+} from './workerFinished'
+import { requestPatchInvalidatesExportArtifacts, requestPatchInvalidatesLearningArtifacts } from './requestInvalidation'
+import { clearStaleReviewWorkerError, workerFailureStatusMessage } from './exportFailureState'
+import { compactExportResultForUi } from './exportResultState'
+import { buildAppStatusTone } from './appStatusTone'
+import { buildInspectorUiState } from './inspectorUiState'
+import {
+  cleanLocalPath,
+  directGenerationSourceError,
+  learningPointExtractionSourceError,
+  localPathAccessPromptForRequest,
+  mergeRepairResults,
+  normalizeProjectTemplateForPublicSource,
+  pathLines,
+  stripProjectRuntimeSecrets,
+  titleFromPath,
+  workerFailureDetailsSummary,
+} from './controllerHelpers'
+import { buildGenerationQueueSummary } from './generationQueueSummary'
+import { buildGenerationRunState } from './generationRunState'
+import { buildReleaseEvidenceSummary } from './releaseEvidenceSummary'
+import {
+  buildReleaseObservedRawSnapshotHandoffArtifact,
+  buildReleaseObservedSnapshotFromRawCapture,
+  emptyReleaseEvidenceRawSnapshot,
+  reduceReleaseEvidenceRawSnapshot,
+  type BuildReleaseObservedSnapshotFromRawCaptureInput,
+  type ReleaseEvidenceRawSnapshotEvent,
+} from './releaseEvidenceObservedCapture'
+import { buildSettingsProfileStatus } from './settingsProfileStatus'
+import { buildApiTestStatus, buildEffectiveApiTestResult, buildTtsTestStatus } from './settingsTestStatus'
 
 const INSPECTOR_COLLAPSE_MS = 130
+type SourcePathKind = 'video' | 'subtitle' | 'video-folder'
 
-type SourcePathKind = 'video' | 'subtitle' | 'document' | 'video-folder' | 'document-folder'
-
-function cleanLocalPath(value: string) {
-  return value.trim().replace(/^["'](.+)["']$/, '$1')
+type StartExportOptions = {
+  projectOverride?: Project
+  outputDir?: string
+  auto?: boolean
 }
 
-function titleFromPath(value: string) {
-  const fileName = cleanLocalPath(value).split(/[\\/]/).pop() ?? ''
-  return fileName.replace(/\.[^.]+$/, '')
+function waitForNextPaint() {
+  return new Promise<void>((resolve) => {
+    if (typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
+      globalThis.setTimeout(resolve, 0)
+      return
+    }
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => resolve())
+    })
+  })
 }
 
-function pathLines(value: string) {
-  return value
-    .split(/[\r\n]+/u)
-    .map((line) => cleanLocalPath(line))
-    .filter(Boolean)
-}
+type ReleaseApkgBlockedGuard = Extract<ReturnType<typeof releaseApkgOutputGuardForProject>, { status: 'blocked' }>
+type ReleaseExportExpectedTarget = Pick<ReleaseApkgTarget, 'caseId' | 'runSegment' | 'outputDir' | 'canonicalApkgPath'>
 
-function mergeRepairResults(left: EnvRepairResult | null, right: EnvRepairResult): EnvRepairResult {
-  if (!left) return right
-  const failed = [...left.actions, ...right.actions].filter((action) => action.status === 'failed').length
-  const manual = [...left.actions, ...right.actions].filter((action) => action.status === 'manual').length
+function releaseApkgTargetGuardFailureEvent(guard: ReleaseApkgBlockedGuard): WorkerFinishedEvent {
   return {
-    ok: left.ok && right.ok,
-    target: left.target === right.target ? left.target : 'all',
-    summary: `${left.summary}；${right.summary}；合计失败 ${failed} 个，需手动处理 ${manual} 个。`,
-    actions: [...left.actions, ...right.actions],
+    job_id: `release-apkg-target-${Date.now()}`,
+    command: 'export',
+    ok: false,
+    error: guard.statusMessage,
+    error_code: 'RELEASE_APKG_TARGET_INVALID',
+    stage: 'select_output_dir',
+    retryable: true,
+    details: {
+      release_case_id: guard.releaseCaseId,
+      selected_output_dir: guard.selectedOutputDir,
+      expected_directory_pattern: guard.expectedDirectoryPattern,
+      selected_release_case_id: guard.releaseTarget?.caseId ?? null,
+      selected_canonical_apkg_path: guard.releaseTarget?.canonicalApkgPath ?? null,
+    },
   }
 }
 
-function touchesSourceMaterial(patch: Partial<GenerateRequest>) {
-  return ['source_mode', 'source_url', 'video_path', 'subtitle_path', 'document_path', 'batch_enabled', 'batch_items'].some((key) =>
-    Object.prototype.hasOwnProperty.call(patch, key),
-  )
+function normalizedComparablePath(pathValue: string | null | undefined): string {
+  return typeof pathValue === 'string'
+    ? pathValue.trim().replace(/[/\\]+/g, '/').replace(/\/+$/, '').toLowerCase()
+    : ''
 }
 
-function modelApiTestTitle(result: ApiTestResult | null, testing: boolean) {
-  if (testing) return '正在测试连接'
-  if (!result) return '尚未测试'
-  if (result.ok) return '连接成功'
-  switch (result.error_code) {
-    case 'MODEL_AUTH_FAILED':
-      return '授权失败'
-    case 'MODEL_TIMEOUT':
-      return '请求超时'
-    case 'MODEL_QUOTA_EXCEEDED':
-      return '配额或限流'
-    case 'MODEL_NOT_FOUND':
-      return '模型或端点不存在'
-    case 'MODEL_CONNECTION_FAILED':
-      return '网络连接异常'
-    case 'MODEL_JSON_INVALID':
-      return '模型输出格式异常'
-    default:
-      return '测试失败'
-  }
-}
-
-function ttsApiTestTitle(result: TtsTestResult | null, testing: boolean, enabled: boolean) {
-  if (testing) return '正在测试 TTS'
-  if (!result) return enabled ? 'TTS 已开启，尚未测试' : 'TTS 已关闭'
-  if (result.ok) return 'TTS 连接成功'
-  switch (result.error_code) {
-    case 'TTS_AUTH_FAILED':
-      return 'TTS 授权失败'
-    case 'TTS_TIMEOUT':
-      return 'TTS 请求超时'
-    case 'TTS_QUOTA_EXCEEDED':
-      return 'TTS 配额或限流'
-    case 'TTS_NOT_FOUND':
-      return 'TTS 模型或端点不存在'
-    case 'TTS_CONNECTION_FAILED':
-      return 'TTS 网络异常'
-    default:
-      return 'TTS 测试失败'
+function releaseApkgReturnedPathGuardFailureEvent({
+  jobId,
+  expected,
+  actualApkgPath,
+}: {
+  jobId: string
+  expected: ReleaseExportExpectedTarget
+  actualApkgPath: string | null | undefined
+}): WorkerFinishedEvent {
+  return {
+    job_id: jobId,
+    command: 'export',
+    ok: false,
+    error:
+      `导出已停止：worker 返回的 APKG 路径不是本次 release case 的 canonical 路径。` +
+      ` expected=${expected.canonicalApkgPath} actual=${actualApkgPath || 'missing'}`,
+    error_code: 'RELEASE_APKG_TARGET_INVALID',
+    stage: 'export_result',
+    retryable: true,
+    details: {
+      release_case_id: expected.caseId,
+      release_run_segment: expected.runSegment,
+      selected_output_dir: expected.outputDir,
+      expected_canonical_apkg_path: expected.canonicalApkgPath,
+      returned_apkg_path: actualApkgPath ?? null,
+    },
   }
 }
 
@@ -238,6 +309,8 @@ export function useAppController() {
   const [project, setProject] = useState<Project | null>(null)
   const [learningPointResult, setLearningPointResult] = useState<LearningPointExtractionResult | null>(null)
   const [selectedLearningPointIds, setSelectedLearningPointIds] = useState<Set<string>>(() => new Set())
+  const [generationConfirmOpen, setGenerationConfirmOpen] = useState(false)
+  const [generationQueueSelectedIds, setGenerationQueueSelectedIds] = useState<Set<string> | null>(null)
   const [envStatus, setEnvStatus] = useState<EnvStatus | null>(null)
   const [envRepairResult, setEnvRepairResult] = useState<EnvRepairResult | null>(null)
   const [envRepairing, setEnvRepairing] = useState(false)
@@ -252,11 +325,14 @@ export function useAppController() {
   const [ttsTesting, setTtsTesting] = useState(false)
   const [ttsTestResult, setTtsTestResult] = useState<TtsTestResult | null>(null)
   const [lastExport, setLastExport] = useState<ExportResult | null>(null)
+  const lastExportFullRef = useRef<ExportResult | null>(null)
   const [lastWorkerError, setLastWorkerError] = useState<WorkerFinishedEvent | null>(null)
   const [ankiVerifying, setAnkiVerifying] = useState(false)
   const [ankiVerifyResult, setAnkiVerifyResult] = useState<AnkiVerifyResult | null>(null)
   const [previewRate, setPreviewRate] = useState(0.75)
   const [workerProgress, setWorkerProgress] = useState<WorkerProgress | null>(null)
+  const [generationBatchProgress, setGenerationBatchProgress] = useState<GenerationBatchProgress | null>(null)
+  const [cardGenerationCacheNamespace, setCardGenerationCacheNamespace] = useState<string | null>(null)
   const [showAdvancedApi, setShowAdvancedApi] = useState(false)
   const [showAdvancedTts, setShowAdvancedTts] = useState(false)
   const [showCapabilities, setShowCapabilities] = useState(false)
@@ -274,9 +350,54 @@ export function useAppController() {
   const settingsDialogRef = useRef<HTMLElement | null>(null)
   const inspectorCollapseTimerRef = useRef<number | null>(null)
   const workerOperationRef = useRef<WorkerOperation>(workerOperation)
+  const workerProgressRef = useRef<WorkerProgress | null>(workerProgress)
   const requestEditedDuringRunRef = useRef(requestEditedDuringRun)
+  const learningPointResultRef = useRef<LearningPointExtractionResult | null>(learningPointResult)
+  const lastLearningPointResultRef = useRef<LearningPointExtractionResult | null>(null)
+  const generationRetryBaseProjectRef = useRef<Project | null>(null)
+  const generationBatchRef = useRef<GenerationBatchRuntime | null>(null)
+  const generationAutoExportOutputDirRef = useRef<string | null>(null)
+  const releaseEvidenceRawSnapshotRef = useRef(emptyReleaseEvidenceRawSnapshot())
+  const activeAnkiVerifyApkgPathRef = useRef<string | null>(null)
+  const releaseExportTargetsByJobIdRef = useRef<Map<string, ReleaseExportExpectedTarget>>(new Map())
+  const handledWorkerFinishIdsRef = useRef<Set<string>>(new Set())
+  const processingWorkerFinishIdsRef = useRef<Set<string>>(new Set())
+  const handleWorkerFinishedRef = useRef<(payload: WorkerFinishedEvent) => Promise<void>>(async () => {})
+
+  const captureReleaseEvidenceRawSnapshot = (event: ReleaseEvidenceRawSnapshotEvent) => {
+    releaseEvidenceRawSnapshotRef.current = reduceReleaseEvidenceRawSnapshot(
+      releaseEvidenceRawSnapshotRef.current,
+      event,
+    )
+  }
+
+  const clearStaleReviewResults = () => {
+    lastExportFullRef.current = null
+    activeAnkiVerifyApkgPathRef.current = null
+    captureReleaseEvidenceRawSnapshot({ type: 'invalidate', scope: 'export_and_verify' })
+    setLastExport(null)
+    setAnkiVerifyResult(null)
+    setLastWorkerError(clearStaleReviewWorkerError)
+  }
+
+  const clearLearningArtifactsForRequestChange = () => {
+    setProject(null)
+    setLearningPointResult(null)
+    setSelectedLearningPointIds(new Set())
+    setActiveSegmentId(null)
+    setWorkerProgress(null)
+    setGenerationConfirmOpen(false)
+    setGenerationQueueSelectedIds(null)
+    setGenerationBatchRuntime(null)
+    generationRetryBaseProjectRef.current = null
+    generationAutoExportOutputDirRef.current = null
+    releaseEvidenceRawSnapshotRef.current = emptyReleaseEvidenceRawSnapshot()
+    activeAnkiVerifyApkgPathRef.current = null
+    clearStaleReviewResults()
+  }
 
   const selectedCardCount = useMemo(() => countSelectedCards(project), [project])
+  const exportSelectionStats = useMemo(() => getExportSelectionStats(project), [project])
   const qualityCounts = useMemo(() => getQualityCounts(project), [project])
   const qualityDiagnostics = useMemo(
     () => getQualityDiagnostics(project, qualityCounts.recommended),
@@ -297,6 +418,16 @@ export function useAppController() {
     return selectedLearningPoints(learningPointResult.learning_points, selectedLearningPointIds).length
   }, [learningPointResult, selectedLearningPointIds])
 
+  const activeGenerationQueueIds = generationQueueSelectedIds ?? selectedLearningPointIds
+  const generationQueuePoints = useMemo(() => {
+    if (!learningPointResult) return []
+    return selectedLearningPoints(learningPointResult.learning_points, activeGenerationQueueIds)
+  }, [activeGenerationQueueIds, learningPointResult])
+  const generationQueueSummary = useMemo(
+    () => buildGenerationQueueSummary({ generationQueuePoints, generationBatchProgress, request }),
+    [generationQueuePoints, generationBatchProgress, request],
+  )
+
   const activeTemplate = templateOptions.find((template) => template.id === request.template_id)
   const localVideoPath = cleanLocalPath(request.video_path)
   const localSubtitlePath = cleanLocalPath(request.subtitle_path)
@@ -307,42 +438,92 @@ export function useAppController() {
   const activeTtsProfileId = ttsProfileIdFromConfig(tts)
   const activeApiProfile = savedApiProfiles.find((profile) => profile.id === activeApiProfileId)
   const activeTtsProfile = savedTtsProfiles.find((profile) => profile.id === activeTtsProfileId)
+  const activeApiKeySaved = Boolean(activeApiProfile?.has_api_key && apiAuthMode(request.api_config) === 'api_key')
+  const activeTtsKeySaved = Boolean(activeTtsProfile?.has_api_key && ttsAuthMode(tts) === 'api_key')
+  const loadApiConfigForWorker = async (apiConfig: ApiConfig = request.api_config): Promise<ApiConfig> => {
+    const normalized = normalizeApiConfigForRequest(apiConfig)
+    if (apiAuthMode(normalized) !== 'api_key' || normalized.api_key.trim()) {
+      return normalized
+    }
+    const profileId = apiProfileIdFromConfig(normalized)
+    const profile = savedApiProfiles.find((item) => item.id === profileId && apiConfigMatchesProfile(normalized, item))
+    if (!profile?.has_api_key) return normalized
+    const apiKey = await loadSecret(profileSecretKey('api', profile.id))
+    return apiKey ? { ...normalized, api_key: apiKey } : normalized
+  }
+  const loadTtsConfigForWorker = async (
+    ttsConfig: TtsConfig = request.api_config.tts_config,
+    apiConfig: ApiConfig = request.api_config,
+  ): Promise<{ apiConfig: ApiConfig; ttsConfig: TtsConfig }> => {
+    const apiWithSecret = await loadApiConfigForWorker(apiConfig)
+    const resolvedTts = resolveTtsConfig(ttsConfig, apiWithSecret)
+    if (ttsAuthMode(resolvedTts) !== 'api_key' || resolvedTts.api_key.trim()) {
+      return { apiConfig: apiWithSecret, ttsConfig: resolvedTts }
+    }
+    const profileId = ttsProfileIdFromConfig(resolvedTts)
+    const profile = savedTtsProfiles.find((item) => item.id === profileId && ttsConfigMatchesProfile(resolvedTts, item))
+    if (!profile?.has_api_key) return { apiConfig: apiWithSecret, ttsConfig: resolvedTts }
+    const ttsKey = await loadSecret(profileSecretKey('tts', profile.id))
+    return {
+      apiConfig: apiWithSecret,
+      ttsConfig: ttsKey ? { ...resolvedTts, api_key: ttsKey } : resolvedTts,
+    }
+  }
+  const patchResolvedApiForState = (resolvedApi: ApiConfig, currentApi: ApiConfig) => {
+    patchRequest({
+      api_config: {
+        ...resolvedApi,
+        api_key: currentApi.api_key,
+        tts_config: currentApi.tts_config,
+      },
+    })
+  }
+  const confirmLocalPathAccessForRequest = (generateRequest: GenerateRequest): boolean => {
+    const prompt = localPathAccessPromptForRequest(generateRequest)
+    if (!prompt) return true
+    const ok = !isTauriRuntime() || window.confirm(prompt)
+    if (!ok) {
+      setStatus('已取消本地路径读取。请用文件选择器重新选择素材，或再次确认后生成。')
+      return false
+    }
+    generateRequest.local_path_access_confirmed = true
+    patchRequest({ local_path_access_confirmed: true })
+    return true
+  }
   const apiProfileSaved =
     Boolean(activeApiProfile && apiConfigMatchesProfile(request.api_config, activeApiProfile)) && !apiProfileDirty
   const ttsProfileSaved =
     Boolean(activeTtsProfile && ttsConfigMatchesProfile(tts, activeTtsProfile)) && !ttsProfileDirty
-  const savedApiProfileTestOk =
-    apiProfileSaved &&
-    Boolean(activeApiProfile?.last_test_ok) &&
-    (Boolean(activeApiProfile?.has_api_key) || apiAuthMode(request.api_config) !== 'api_key')
-  const effectiveApiTestResult: ApiTestResult | null =
-    apiTestResult ??
-    (savedApiProfileTestOk && activeApiProfile
-      ? {
-          ok: true,
-          provider: activeApiProfile.provider,
-          model: activeApiProfile.model,
-          message: '已保存的模型方案测试通过。配置未改变，无需重复测试。',
-        }
-      : null)
+  const apiProfileDisplayStatus = buildSettingsProfileStatus({
+    profile: activeApiProfile,
+    profileSaved: apiProfileSaved,
+    auth: apiAuthMode(request.api_config),
+    notSavedLabel: '未保存到我的模型',
+  })
+  const ttsProfileDisplayStatus = buildSettingsProfileStatus({
+    profile: activeTtsProfile,
+    profileSaved: ttsProfileSaved,
+    auth: ttsAuthMode(tts),
+    notSavedLabel: '未保存到我的语音',
+  })
+  const effectiveApiTestResult: ApiTestResult | null = buildEffectiveApiTestResult({
+    result: apiTestResult,
+    savedProfileTestOk: apiProfileDisplayStatus.savedTestOk,
+    activeProfile: activeApiProfile,
+  })
   const apiReadyForGeneration = request.api_config.provider !== 'local' && Boolean(effectiveApiTestResult?.ok)
   const apiReady = apiReadyForGeneration
-  const ttsDetail = !ttsRequired
-    ? '已关闭'
-    : ttsTestResult?.ok
-      ? '导出可用'
-      : ttsTestResult
-        ? '导出会跳过'
-        : '可稍后测试'
-  const envReady =
-    !isTauriRuntime() ||
-    Boolean(
-      envStatus?.genanki &&
-      (request.source_mode === 'document' ||
-        (request.source_mode === 'url' && request.url_import_mode === 'subtitles' && envStatus.yt_dlp) ||
-        (envStatus.ffmpeg && (request.source_mode === 'local' || envStatus.yt_dlp))),
-    )
-  const currentSelectionCount = project ? selectedCardCount : learningPointResult ? selectedLearningPointCount : request.card_types.length
+  const ttsDetail = buildTtsReadinessDetail({ ttsRequired, ttsTestResult })
+  const envReady = isEnvironmentReadyForGeneration({
+    desktopRuntime: isTauriRuntime(),
+    envStatus,
+    sourceMode: request.source_mode,
+  })
+  const currentSelectionCount = project
+    ? selectedCardCount
+    : learningPointResult
+      ? selectedLearningPointCount
+      : request.card_types.length
   const readiness = buildReadinessItems({
     sourceMode: request.source_mode,
     sourceReady,
@@ -357,78 +538,93 @@ export function useAppController() {
     ttsDetail,
     currentSelectionCount,
   })
-  const apiTestTone = apiTesting ? 'testing' : effectiveApiTestResult ? (effectiveApiTestResult.ok ? 'ok' : 'warn') : 'idle'
-  const apiTestTitle = modelApiTestTitle(effectiveApiTestResult, apiTesting)
-  const apiTestMessage = apiTesting
-    ? '正在向当前接口发送一条短测试消息，通常几秒内会返回。'
-    : (effectiveApiTestResult?.message ?? '换 Provider、Base URL、模型名或 API Key 后，都建议点一次测试连接。')
-  const apiTestMeta = effectiveApiTestResult
-    ? `${effectiveApiTestResult.provider} · ${effectiveApiTestResult.model || '未填模型'}${
-        effectiveApiTestResult.latency_ms ? ` · ${effectiveApiTestResult.latency_ms} ms` : ''
-      }`
-    : `${request.api_config.provider} · ${request.api_config.model || '未填模型'}`
-  const ttsTestTone = ttsTesting ? 'testing' : ttsTestResult ? (ttsTestResult.ok ? 'ok' : 'warn') : 'idle'
-  const ttsTestTitle = ttsApiTestTitle(ttsTestResult, ttsTesting, tts.enabled)
-  const ttsTestMessage = ttsTesting
-    ? '正在生成一小段测试音频，用来确认 Key、语音和接口可用。'
-    : (ttsTestResult?.message ??
-      (tts.enabled
-        ? 'MIMO / Grok / Gemini / Vertex TTS / Speech API 都在这里单独测试，和上面的文本模型测试互不影响。'
-        : '关闭时不会生成 AI 朗读，只会把视频原声音频放进卡片。'))
-  const ttsTestMeta = ttsTestResult
-    ? `${ttsTestResult.provider} · ${ttsTestResult.model || '无模型名'} · ${ttsTestResult.voice || '无 voice'}${
-        ttsTestResult.latency_ms ? ` · ${ttsTestResult.latency_ms} ms` : ''
-      }${ttsTestResult.bytes ? ` · ${ttsTestResult.bytes} bytes` : ''}`
-    : `${tts.provider} · ${tts.model || '无模型名'} · ${tts.voice || '无 voice'}`
+  const apiTestStatus = buildApiTestStatus({
+    result: effectiveApiTestResult,
+    testing: apiTesting,
+    apiConfig: request.api_config,
+  })
+  const apiTestTone = apiTestStatus.tone
+  const apiTestTitle = apiTestStatus.title
+  const apiTestMessage = apiTestStatus.message
+  const apiTestMeta = apiTestStatus.meta
+  const ttsTestStatus = buildTtsTestStatus({
+    result: ttsTestResult,
+    testing: ttsTesting,
+    tts,
+  })
+  const ttsTestTone = ttsTestStatus.tone
+  const ttsTestTitle = ttsTestStatus.title
+  const ttsTestMessage = ttsTestStatus.message
+  const ttsTestMeta = ttsTestStatus.meta
   const allApiPresets = [...featuredApiPresets, ...advancedApiPresets]
   const allTtsPresets = [...featuredTtsPresets, ...advancedTtsPresets]
-  const apiProfileStatus = apiProfileSaved
-    ? activeApiProfile?.has_api_key || apiAuthMode(request.api_config) !== 'api_key'
-      ? `已保存 · ${activeApiProfile?.last_test_ok ? '测试通过' : '未测试'}`
-      : '已保存配置 · 未保存 Key'
-    : activeApiProfile
-      ? '有未保存更改'
-      : '未保存到我的模型'
-  const ttsProfileStatus = ttsProfileSaved
-    ? activeTtsProfile?.has_api_key || ttsAuthMode(tts) !== 'api_key'
-      ? `已保存 · ${activeTtsProfile?.last_test_ok ? '测试通过' : '未测试'}`
-      : '已保存配置 · 未保存 Key'
-    : activeTtsProfile
-      ? '有未保存更改'
-      : '未保存到我的语音'
+  const apiProfileStatus = apiProfileDisplayStatus.label
+  const ttsProfileStatus = ttsProfileDisplayStatus.label
   const workerBusy = workerOperation.status === 'running' || workerOperation.status === 'cancelling'
   const appBusy = busy || workerBusy
   const isCancelling = workerOperation.status === 'cancelling'
-  const inspectorSheetOpen = responsiveMode === 'compact' && inspectorState === 'sheet'
-  const inspectorActionLabel =
-    responsiveMode === 'compact'
-      ? inspectorSheetOpen
-        ? '关闭面板'
-        : '素材面板'
-      : inspectorState === 'collapsed'
-        ? '打开面板'
-        : '收起面板'
-  const motionDuration = prefersReducedMotion ? 0 : 0.2
-  const statusTone =
-    appBusy || workerProgress
-      ? 'active'
-      : /失败|缺少|不能|请先|不存在|错误|没有/.test(status)
-        ? 'warn'
-        : /完成|通过|成功|可用|已打开|已切换|已套用|已保留/.test(status)
-          ? 'ok'
-          : 'idle'
+  const inspectorUiState = buildInspectorUiState({
+    responsiveMode,
+    inspectorState,
+    prefersReducedMotion,
+  })
+  const inspectorSheetOpen = inspectorUiState.inspectorSheetOpen
+  const inspectorActionLabel = inspectorUiState.inspectorActionLabel
+  const motionDuration = inspectorUiState.motionDuration
+  const statusTone = buildAppStatusTone({
+    appBusy,
+    hasWorkerProgress: Boolean(workerProgress),
+    status,
+  })
+  const generationRunState = buildGenerationRunState({
+    sourceReady,
+    learningPointResult,
+    generationConfirmOpen,
+    workerOperation,
+    project,
+    lastExport,
+    lastWorkerError,
+    ankiVerifyResult,
+  })
+  const releaseEvidenceSummary = useMemo(
+    () =>
+      buildReleaseEvidenceSummary({
+        learningPointResult,
+        project,
+        exportResult: lastExport,
+        ankiVerifyResult,
+      }),
+    [ankiVerifyResult, lastExport, learningPointResult, project],
+  )
   const workerErrorActions = useMemo(
     () => (lastWorkerError ? getWorkerErrorActions(lastWorkerError.error_code, lastWorkerError.fallbacks) : []),
     [lastWorkerError],
   )
 
   useEffect(() => {
+    const current = workerOperationRef.current
+    if (
+      current.status === 'running' &&
+      current.jobId &&
+      workerOperation.jobId &&
+      current.jobId !== workerOperation.jobId
+    ) {
+      return
+    }
     workerOperationRef.current = workerOperation
   }, [workerOperation])
 
   useEffect(() => {
     requestEditedDuringRunRef.current = requestEditedDuringRun
   }, [requestEditedDuringRun])
+
+  useEffect(() => {
+    learningPointResultRef.current = learningPointResult
+  }, [learningPointResult])
+
+  useEffect(() => {
+    workerProgressRef.current = workerProgress
+  }, [workerProgress])
 
   useEffect(() => {
     return () => {
@@ -466,41 +662,6 @@ export function useAppController() {
   }, [request])
 
   useEffect(() => {
-    if (!isTauriRuntime()) return
-    let cancelled = false
-    const restore = async () => {
-      try {
-        const modelKey =
-          activeApiProfile?.has_api_key && activeApiProfile.auth === 'api_key'
-            ? await loadSecret(profileSecretKey('api', activeApiProfile.id))
-            : ''
-        const ttsKey =
-          activeTtsProfile?.has_api_key && activeTtsProfile.auth === 'api_key'
-            ? await loadSecret(profileSecretKey('tts', activeTtsProfile.id))
-            : ''
-        if (cancelled) return
-        setRequest((current) => ({
-          ...current,
-          api_config: {
-            ...current.api_config,
-            api_key: current.api_config.api_key || modelKey,
-            tts_config: {
-              ...current.api_config.tts_config,
-              api_key: current.api_config.tts_config.api_key || ttsKey,
-            },
-          },
-        }))
-      } catch {
-        setStatus('系统凭据读取失败，请在设置页重新填写 API Key。')
-      }
-    }
-    restore()
-    return () => {
-      cancelled = true
-    }
-  }, [activeApiProfile, activeTtsProfile])
-
-  useEffect(() => {
     if (typeof window === 'undefined') return
     if (project) {
       window.localStorage.setItem(PROJECT_STORAGE_KEY, JSON.stringify(project))
@@ -511,6 +672,9 @@ export function useAppController() {
 
   useEffect(() => {
     if (!project || projectMatchesRequest(project, request)) return
+    lastExportFullRef.current = null
+    activeAnkiVerifyApkgPathRef.current = null
+    captureReleaseEvidenceRawSnapshot({ type: 'invalidate', scope: 'project_export_verify' })
     setProject(null)
     setLastExport(null)
     setAnkiVerifyResult(null)
@@ -529,14 +693,27 @@ export function useAppController() {
     }
   }, [project, activeSegmentId, visibleSegments])
 
-  function applyGeneratedProject(result: Project, editedDuringRun: boolean) {
-    const materialized = materializeLearningPointInventory(result)
+  function applyGeneratedProject(result: Project, editedDuringRun: boolean, jobId?: string) {
+    const safeProject = normalizeProjectTemplateForPublicSource(stripProjectRuntimeSecrets(result))
+    const materialized = materializeLearningPointInventory(safeProject)
     const generatedSelection = applyUsableCardSelection(materialized.project)
     const projectToShow = generatedSelection.project
+    lastExportFullRef.current = null
+    activeAnkiVerifyApkgPathRef.current = null
+    setLastExport(null)
+    setAnkiVerifyResult(null)
+    captureReleaseEvidenceRawSnapshot({
+      type: 'project_result',
+      project: projectToShow,
+      learningPointResult: lastLearningPointResultRef.current,
+      jobId,
+    })
     setProject(projectToShow)
     setSegmentFilter('all')
     setActiveSegmentId(projectToShow.segments[0]?.id ?? null)
-    const usableCount = generatedSelection.selected
+    const projectExportStats = getExportSelectionStats(projectToShow)
+    const usableCount = projectExportStats.selectedExportableCards
+    const repairRequiredCount = projectExportStats.repairRequiredCards
     const candidateOnlyCount = projectToShow.quality_funnel?.candidate_only_learning_point_count ?? 0
     const hiddenDuplicateCount = projectToShow.quality_funnel?.hidden_duplicate_learning_point_count ?? 0
     const hardBlockedCount = projectToShow.quality_funnel?.hard_blocked_learning_point_count ?? 0
@@ -555,86 +732,328 @@ export function useAppController() {
         : ''
     const editedHint = editedDuringRun ? ' 生成期间你修改过设置；下一次生成会使用新配置。' : ''
     const generatedLabel = isReading ? '精读卡' : isDocument ? '知识卡' : '可用卡'
+    const repairHint = repairRequiredCount > 0 ? ` 已隔离 ${repairRequiredCount} 张需修复草稿卡，默认不会导出。` : ''
+    const generationDiagnostics = projectToShow.card_generation_diagnostics
+    const generationMissingCount = generationDiagnostics?.missing_learning_point_count ?? 0
+    const generationProcessedCount =
+      generationDiagnostics?.processed_learning_point_count ?? generationDiagnostics?.selected_learning_point_count ?? 0
+    const generationGeneratedCount =
+      generationDiagnostics?.generated_card_count ??
+      generationDiagnostics?.successful_learning_point_count ??
+      usableCount
+    const generationHint =
+      generationProcessedCount > 0
+        ? generationMissingCount > 0
+          ? ` 处理 ${generationProcessedCount} 个学习点，生成 ${generationGeneratedCount} 张；${generationMissingCount} 个未生成，可在“高级诊断”查看原因。`
+          : ` 处理 ${generationProcessedCount} 个学习点，生成 ${generationGeneratedCount} 张。`
+        : ''
     setStatus(
       (projectToShow.warning ||
         (projectToShow.source_mode === 'url'
-          ? `URL 导入成功，当前将导出 ${usableCount} 张${generatedLabel}。${inventoryHint}${autoAddedHint}${shortHint}`
+          ? `URL 导入成功，当前可导出 ${usableCount} 张${generatedLabel}。${generationHint}${repairHint}${inventoryHint}${autoAddedHint}${shortHint}`
           : projectToShow.source_mode === 'document'
-            ? `文档导入成功，当前将导出 ${usableCount} 张${generatedLabel}。${inventoryHint}${autoAddedHint}${shortHint}`
-            : `当前将导出 ${usableCount} 张${generatedLabel}。${inventoryHint}${autoAddedHint}${shortHint}`)) + editedHint,
+            ? `文档导入成功，当前可导出 ${usableCount} 张${generatedLabel}。${generationHint}${repairHint}${inventoryHint}${autoAddedHint}${shortHint}`
+            : `当前可导出 ${usableCount} 张${generatedLabel}。${generationHint}${repairHint}${inventoryHint}${autoAddedHint}${shortHint}`)) +
+        editedHint,
     )
+    return projectToShow
   }
 
-  function applyLearningPointResult(result: LearningPointExtractionResult) {
+  function applyLearningPointResult(result: LearningPointExtractionResult, jobId?: string) {
+    lastLearningPointResultRef.current = result
+    generationRetryBaseProjectRef.current = null
+    activeAnkiVerifyApkgPathRef.current = null
+    lastExportFullRef.current = null
+    captureReleaseEvidenceRawSnapshot({ type: 'learning_point_result', result, jobId })
     setLearningPointResult(result)
     setProject(null)
     setLastExport(null)
     setAnkiVerifyResult(null)
     setActiveSegmentId(null)
     setSegmentFilter('all')
-    setSelectedLearningPointIds(defaultSelectedLearningPointIds(result.learning_points ?? [], { reviewDensity: request.review_density }))
+    setGenerationConfirmOpen(false)
+    setGenerationQueueSelectedIds(null)
+    setGenerationBatchRuntime(null)
+    setSelectedLearningPointIds(
+      defaultSelectedLearningPointIds(result.learning_points ?? [], {
+        reviewDensity: request.review_density,
+        maxSelected: null,
+      }),
+    )
     const summary = result.learning_point_summary
     setStatus(
       `已从字幕发现 ${summary.total} 个学习点：推荐 ${summary.recommended} 个，候选 ${summary.candidate_only} 个，重复 ${summary.hidden_duplicate} 个，硬阻断 ${summary.hard_blocked} 个。请先筛选学习点，再生成 Anki 卡。`,
     )
   }
+  const applyLearningPointResultRef = useRef(applyLearningPointResult)
+  useEffect(() => {
+    applyLearningPointResultRef.current = applyLearningPointResult
+  })
 
-  function applyExportResult(result: ExportResult) {
-    setLastExport(result)
+  function setGenerationBatchRuntime(runtime: GenerationBatchRuntime | null) {
+    generationBatchRef.current = runtime
+    setGenerationBatchProgress(runtime ? generationBatchProgressSnapshot(runtime) : null)
+  }
+
+  function recordGenerationCheckpoint(stage: string, details: Record<string, unknown> = {}) {
+    void recordRendererError({
+      kind: 'generation_checkpoint',
+      stage,
+      at: new Date().toISOString(),
+      ...details,
+    }).catch(() => {
+      // Best-effort breadcrumb only.
+    })
+  }
+
+  async function startNextLearningPointGenerationBatch(runtime: GenerationBatchRuntime) {
+    const activeResult = learningPointResultRef.current
+    if (!activeResult) throw new Error('学习点结果已经丢失，无法继续分批生成。')
+    const batchStart = runtime.nextIndex
+    const batchIds = runtime.queueIds.slice(batchStart, batchStart + runtime.batchSize)
+    if (batchIds.length === 0) throw new Error('分批生成队列为空。')
+    const nextRuntime: GenerationBatchRuntime = {
+      ...runtime,
+      active: true,
+      activeBatchIds: batchIds,
+      nextIndex: batchStart + batchIds.length,
+    }
+    setGenerationBatchRuntime(nextRuntime)
+    const batchNumber = nextRuntime.completedBatches + 1
+    setBusy(true)
+    setWorkerProgress({
+      command: 'generate_cards_from_learning_points',
+      stage: 'batch_start',
+      percent: Math.max(1, Math.round((nextRuntime.completedCount / Math.max(1, nextRuntime.queueIds.length)) * 100)),
+      message: `正在生成第 ${batchNumber}/${nextRuntime.totalBatches} 批：${batchIds.length} 张。`,
+    })
+    setStatus(`正在生成卡片正文：第 ${batchNumber}/${nextRuntime.totalBatches} 批，当前 ${batchIds.length} 张。`)
+    recordGenerationCheckpoint('before_payload_build', {
+      project_id: nextRuntime.projectId,
+      batch_number: batchNumber,
+      total_batches: nextRuntime.totalBatches,
+      batch_size: batchIds.length,
+      total_count: nextRuntime.queueIds.length,
+    })
+    const payload = buildLearningPointGenerationPayload({
+      learningPointResult: activeResult,
+      request: nextRuntime.request,
+      selectedLearningPointIds: new Set(batchIds),
+      apiConfig: nextRuntime.apiConfig,
+      projectId: nextRuntime.projectId,
+    })
+    if (cardGenerationCacheNamespace) {
+      payload.disable_card_generation_cache_read = true
+      payload.card_generation_cache_namespace = cardGenerationCacheNamespace
+    }
+    const payloadBytes = new TextEncoder().encode(JSON.stringify(payload)).length
+    recordGenerationCheckpoint('payload_built', {
+      project_id: nextRuntime.projectId,
+      batch_number: batchNumber,
+      selected_learning_point_count: payload.selected_learning_point_ids.length,
+      learning_points_in_payload: payload.learning_points.length,
+      source_sentences_in_payload: payload.source_sentences.length,
+      payload_bytes: payloadBytes,
+    })
+    const job = await startWorkerJob('generate_cards_from_learning_points', payload)
+    recordGenerationCheckpoint('job_started', {
+      project_id: nextRuntime.projectId,
+      job_id: job.job_id,
+      batch_number: batchNumber,
+      payload_bytes: payloadBytes,
+    })
+    const nextOperation: WorkerOperation = {
+      status: 'running',
+      command: 'generate_cards_from_learning_points',
+      jobId: job.job_id,
+    }
+    workerOperationRef.current = nextOperation
+    setWorkerOperation(nextOperation)
+    setWorkerProgress({
+      job_id: job.job_id,
+      command: 'generate_cards_from_learning_points',
+      stage: 'start',
+      percent: Math.max(1, Math.round((nextRuntime.completedCount / Math.max(1, nextRuntime.queueIds.length)) * 100)),
+      message: `卡片生成任务已在后台运行：第 ${batchNumber}/${nextRuntime.totalBatches} 批。`,
+    })
+  }
+
+  function applyExportResult(result: ExportResult, jobId?: string) {
+    lastExportFullRef.current = result
+    activeAnkiVerifyApkgPathRef.current = null
+    captureReleaseEvidenceRawSnapshot({ type: 'export_result', result, jobId })
+    setLastExport(compactExportResultForUi(result))
     setAnkiVerifyResult(null)
     const mediaHint = result.media_summary
-      ? `媒体约 ${result.media_summary.media_mb} MB，视频 ${result.media_summary.video_segments} 段，表达 TTS ${result.media_summary.phrase_tts_files} 条。`
+      ? `媒体约 ${result.media_summary.media_mb} MB，视频 ${result.media_summary.video_segments} 段，表达 TTS 文件 ${result.media_summary.phrase_tts_files} 个。`
       : ''
     setStatus(`导出完成：${result.cards} 张卡，${result.segments} 个片段。${mediaHint} ${result.apkg_path}`)
   }
 
-  function applyVerifyResult(result: AnkiVerifyResult) {
+  function applyVerifyResult(result: AnkiVerifyResult, jobId?: string) {
+    captureReleaseEvidenceRawSnapshot({
+      type: 'verify_result',
+      result,
+      verifiedExportApkgPath: activeAnkiVerifyApkgPathRef.current ?? lastExportFullRef.current?.apkg_path ?? null,
+      jobId,
+    })
     setAnkiVerifyResult(result)
     setStatus(result.message)
   }
 
-  useEffect(() => {
-    if (!isTauriRuntime()) return
-    let stopListening: (() => void) | undefined
-    let stopFinishedListening: (() => void) | undefined
-    listen<WorkerProgress>('worker-progress', (event) => {
-      const active = workerOperationRef.current
-      if (event.payload.job_id && event.payload.job_id !== active.jobId) return
-      setWorkerProgress(event.payload)
-      setStatus(event.payload.message)
+  async function maybeStartAutoExport(generatedProject: Project) {
+    const outputDir = generationAutoExportOutputDirRef.current
+    if (!outputDir) return false
+    generationAutoExportOutputDirRef.current = null
+    await startExportForProject({
+      projectOverride: generatedProject,
+      outputDir,
+      auto: true,
     })
-      .then((unlisten) => {
-        stopListening = unlisten
+    return true
+  }
+
+  async function handleWorkerFinished(payloadInput: WorkerFinishedEvent) {
+    const active = workerOperationRef.current
+    if (
+      !workerFinishMatchesActiveJob(payloadInput, {
+        refOperation: active,
+        stateOperation: workerOperation,
+        lastProgress: workerProgressRef.current,
       })
-      .catch(() => {
-        setWorkerProgress(null)
-      })
-    listen<WorkerFinishedEvent>('worker-finished', (event) => {
-      const active = workerOperationRef.current
-      const payload = event.payload
-      if (payload.job_id !== active.jobId) return
+    ) {
+      return
+    }
+    if (payloadInput.job_id !== active.jobId) {
+      workerOperationRef.current =
+        payloadInput.job_id === workerOperation.jobId
+          ? workerOperation
+          : fallbackWorkerOperationFromFinish(payloadInput)
+    }
+    if (handledWorkerFinishIdsRef.current.has(payloadInput.job_id)) return
+    if (processingWorkerFinishIdsRef.current.has(payloadInput.job_id)) return
+    processingWorkerFinishIdsRef.current.add(payloadInput.job_id)
+
+    try {
+      let payload: WorkerFinishedEvent = { ...payloadInput }
+      if (payload.ok && typeof payload.result === 'undefined' && payload.result_ref) {
+        try {
+          payload = await resolveWorkerFinishedResult(payload, readWorkerJobResult)
+        } catch (error) {
+          const failedPayload: WorkerFinishedEvent = {
+            ...payload,
+            ok: false,
+            error: `后台任务已完成，但结果读取失败：${redactSensitiveText(error)}`,
+            retryable: true,
+          }
+          handledWorkerFinishIdsRef.current.add(payload.job_id)
+          setBusy(false)
+          setAnkiVerifying(false)
+          setWorkerProgress(null)
+          setWorkerOperation({ status: 'failed', command: payload.command, jobId: payload.job_id })
+          setLastWorkerError(failedPayload)
+          setStatus(failedPayload.error || '后台任务结果读取失败。')
+          return
+        }
+      }
+
+      handledWorkerFinishIdsRef.current.add(payload.job_id)
       setBusy(false)
       setAnkiVerifying(false)
       if (payload.cancelled) {
+        if (payload.command === 'export') releaseExportTargetsByJobIdRef.current.delete(payload.job_id)
+        if (payload.command === 'generate_cards_from_learning_points') {
+          setGenerationBatchRuntime(null)
+          generationAutoExportOutputDirRef.current = null
+        }
         setWorkerProgress(null)
         setWorkerOperation({ status: 'idle' })
         setLastWorkerError(null)
         setStatus('任务已取消，可以继续调整后重新生成。')
         return
       }
+      if (workerFinishInvalidatedByEditedRequest(payload, requestEditedDuringRunRef.current)) {
+        if (payload.command === 'export') releaseExportTargetsByJobIdRef.current.delete(payload.job_id)
+        if (
+          payload.command === 'extract_learning_points' ||
+          payload.command === 'generate' ||
+          payload.command === 'generate_cards_from_learning_points'
+        ) {
+          setProject(null)
+          setLearningPointResult(null)
+          setSelectedLearningPointIds(new Set())
+          setActiveSegmentId(null)
+          setGenerationConfirmOpen(false)
+          setGenerationQueueSelectedIds(null)
+        }
+        setGenerationBatchRuntime(null)
+        generationRetryBaseProjectRef.current = null
+        generationAutoExportOutputDirRef.current = null
+        lastExportFullRef.current = null
+        activeAnkiVerifyApkgPathRef.current = null
+        captureReleaseEvidenceRawSnapshot({
+          type: 'invalidate',
+          scope: payload.command === 'export' || payload.command === 'verify_anki_import' ? 'export_and_verify' : 'all',
+        })
+        setLastExport(null)
+        setAnkiVerifyResult(null)
+        setWorkerProgress(null)
+        setWorkerOperation({ status: 'idle' })
+        setLastWorkerError(null)
+        setRequestEditedDuringRun(false)
+        setStatus('任务完成，但运行期间素材或设置已变化；已丢弃旧结果，请用当前配置重新开始。')
+        return
+      }
       if (!payload.ok) {
+        if (payload.command === 'export') releaseExportTargetsByJobIdRef.current.delete(payload.job_id)
+        let generationFailureRecoveryHint = ''
+        if (payload.command === 'generate_cards_from_learning_points' && generationBatchRef.current?.active) {
+          generationAutoExportOutputDirRef.current = null
+          const batch = generationBatchRef.current
+          generationRetryBaseProjectRef.current = batch.mergedProject
+          const retryIds = retryLearningPointIdsAfterBatchFailure({
+            queueIds: batch.queueIds,
+            completedCount: batch.completedCount,
+            activeBatchIds: batch.activeBatchIds,
+          })
+          setGenerationBatchRuntime({ ...batch, active: false })
+          setGenerationConfirmOpen(true)
+          setGenerationQueueSelectedIds(new Set(retryIds))
+          setSelectedLearningPointIds(new Set(retryIds))
+          generationFailureRecoveryHint = `已保留已完成的 ${batch.completedCount} 个学习点；可重试失败批和后续 ${retryIds.length} 个学习点。`
+          recordGenerationCheckpoint('job_failed', {
+            project_id: batch.projectId,
+            completed_count: batch.completedCount,
+            total_count: batch.queueIds.length,
+            active_batch_size: batch.activeBatchIds.length,
+            retry_count: retryIds.length,
+            error_code: payload.error_code,
+            stage: payload.stage,
+          })
+        }
         setWorkerOperation({ status: 'failed', command: payload.command, jobId: payload.job_id })
         setLastWorkerError(payload)
-        const safeError = redactSensitiveText(payload.error || '任务失败。')
-        const structuredDetails = [
-          payload.error_code ? `错误码：${payload.error_code}` : '',
-          payload.stage ? `阶段：${payload.stage}` : '',
-          payload.fallbacks?.length ? `可尝试：${payload.fallbacks.join(' / ')}` : '',
-        ]
-          .filter(Boolean)
-          .join('；')
         setWorkerProgress(null)
-        setStatus(`${safeError}${structuredDetails ? `\n${structuredDetails}` : ''}`)
+        setStatus(
+          workerFailureStatusMessage(payload, {
+            redactedError: redactSensitiveText(payload.error || '任务失败。'),
+            detailsSummary: workerFailureDetailsSummary(payload.details),
+            generationFailureRecoveryHint,
+          }),
+        )
+        return
+      }
+      if (typeof payload.result === 'undefined') {
+        const failedPayload: WorkerFinishedEvent = {
+          ...payload,
+          ok: false,
+          error: '后台任务已完成，但没有返回结果。请重试；如果再次出现，请保留日志定位 worker 输出。',
+          retryable: true,
+        }
+        setWorkerProgress(null)
+        setWorkerOperation({ status: 'failed', command: payload.command, jobId: payload.job_id })
+        setLastWorkerError(failedPayload)
+        setStatus(failedPayload.error || '后台任务没有返回结果。')
         return
       }
       setWorkerProgress({
@@ -645,26 +1064,171 @@ export function useAppController() {
         message: '任务完成。',
       })
       if (payload.command === 'extract_learning_points') {
-        applyLearningPointResult(payload.result as LearningPointExtractionResult)
+        applyLearningPointResultRef.current(payload.result as LearningPointExtractionResult, payload.job_id)
         setActiveWorkspaceStage('review')
       } else if (payload.command === 'generate_cards_from_learning_points') {
-        setLearningPointResult(null)
-        setSelectedLearningPointIds(new Set())
-        applyGeneratedProject(payload.result as Project, requestEditedDuringRunRef.current)
-        setActiveWorkspaceStage('review')
+        const activeBatch = generationBatchRef.current
+        if (activeBatch?.active) {
+          const completedBatch: GenerationBatchRuntime = {
+            ...activeBatch,
+            completedBatches: activeBatch.completedBatches + 1,
+            completedCount: activeBatch.completedCount + activeBatch.activeBatchIds.length,
+          }
+          const mergedProject = mergeGeneratedBatchProject(
+            activeBatch.mergedProject,
+            payload.result as Project,
+            completedBatch,
+          )
+          const mergedDiagnostics = mergedProject.card_generation_diagnostics
+          const nextBatch: GenerationBatchRuntime = {
+            ...completedBatch,
+            mergedProject,
+            activeBatchIds: [],
+            generatedCount:
+              mergedDiagnostics?.generated_card_count ?? mergedDiagnostics?.successful_learning_point_count ?? 0,
+            missingCount: mergedDiagnostics?.missing_learning_point_count ?? 0,
+            exportableCount: mergedDiagnostics?.exportable_card_count ?? 0,
+          }
+          recordGenerationCheckpoint('job_finished', {
+            project_id: nextBatch.projectId,
+            job_id: payload.job_id,
+            completed_batches: nextBatch.completedBatches,
+            total_batches: nextBatch.totalBatches,
+            completed_count: nextBatch.completedCount,
+            generated_count: nextBatch.generatedCount,
+            missing_count: nextBatch.missingCount,
+            total_count: nextBatch.queueIds.length,
+          })
+          if (nextBatch.nextIndex < nextBatch.queueIds.length) {
+            setGenerationBatchRuntime(nextBatch)
+            setBusy(true)
+            setWorkerOperation({ status: 'running', command: 'generate_cards_from_learning_points' })
+            try {
+              await startNextLearningPointGenerationBatch(nextBatch)
+            } catch (error) {
+              const failedPayload: WorkerFinishedEvent = {
+                ...payload,
+                ok: false,
+                error: `下一批生成任务启动失败：${redactSensitiveText(error)}`,
+                retryable: true,
+              }
+              setBusy(false)
+              setGenerationBatchRuntime({ ...nextBatch, active: false })
+              setWorkerOperation({
+                status: 'failed',
+                command: 'generate_cards_from_learning_points',
+                jobId: payload.job_id,
+              })
+              setLastWorkerError(failedPayload)
+              setStatus(failedPayload.error || '下一批生成任务启动失败。')
+            }
+            return
+          }
+          setGenerationBatchRuntime(null)
+          generationRetryBaseProjectRef.current = null
+          setLearningPointResult(null)
+          setSelectedLearningPointIds(new Set())
+          setGenerationConfirmOpen(false)
+          setGenerationQueueSelectedIds(null)
+          const projectToShow = applyGeneratedProject(mergedProject, requestEditedDuringRunRef.current, payload.job_id)
+          setActiveWorkspaceStage('review')
+          const missingCount =
+            mergedDiagnostics?.missing_learning_point_count ??
+            Math.max(0, nextBatch.completedCount - nextBatch.generatedCount)
+          const generatedCards = mergedDiagnostics?.generated_card_count ?? nextBatch.generatedCount
+          setStatus(
+            missingCount > 0
+              ? `处理 ${nextBatch.completedCount} 个学习点，生成 ${generatedCards} 张；${missingCount} 个未生成，点击查看原因。`
+              : `处理 ${nextBatch.completedCount} 个学习点，生成 ${generatedCards} 张；全部生成成功。`,
+          )
+          if (await maybeStartAutoExport(projectToShow)) {
+            setLastWorkerError(null)
+            setRequestEditedDuringRun(false)
+            return
+          }
+        } else {
+          const generatedProject = payload.result as Project
+          generationRetryBaseProjectRef.current = null
+          setLearningPointResult(null)
+          setSelectedLearningPointIds(new Set())
+          setGenerationConfirmOpen(false)
+          setGenerationQueueSelectedIds(null)
+          const projectToShow = applyGeneratedProject(
+            generatedProject,
+            requestEditedDuringRunRef.current,
+            payload.job_id,
+          )
+          setActiveWorkspaceStage('review')
+          if (await maybeStartAutoExport(projectToShow)) {
+            setLastWorkerError(null)
+            setRequestEditedDuringRun(false)
+            return
+          }
+        }
       } else if (payload.command === 'generate') {
-        applyGeneratedProject(payload.result as Project, requestEditedDuringRunRef.current)
+        applyGeneratedProject(payload.result as Project, requestEditedDuringRunRef.current, payload.job_id)
         setActiveWorkspaceStage('review')
       } else if (payload.command === 'export') {
-        applyExportResult(payload.result as ExportResult)
+        const exportResult = payload.result as ExportResult
+        const expectedReleaseTarget = releaseExportTargetsByJobIdRef.current.get(payload.job_id)
+        releaseExportTargetsByJobIdRef.current.delete(payload.job_id)
+        if (
+          expectedReleaseTarget &&
+          normalizedComparablePath(exportResult.apkg_path) !==
+            normalizedComparablePath(expectedReleaseTarget.canonicalApkgPath)
+        ) {
+          const failedPayload = releaseApkgReturnedPathGuardFailureEvent({
+            jobId: payload.job_id,
+            expected: expectedReleaseTarget,
+            actualApkgPath: exportResult.apkg_path,
+          })
+          lastExportFullRef.current = null
+          activeAnkiVerifyApkgPathRef.current = null
+          captureReleaseEvidenceRawSnapshot({ type: 'invalidate', scope: 'export_and_verify' })
+          setLastExport(null)
+          setAnkiVerifyResult(null)
+          setWorkerProgress(null)
+          setWorkerOperation({ status: 'failed', command: 'export', jobId: payload.job_id })
+          setLastWorkerError(failedPayload)
+          setStatus(failedPayload.error || '导出没有生成 canonical APKG。')
+          return
+        }
+        applyExportResult(exportResult, payload.job_id)
         setActiveWorkspaceStage('review')
       } else if (payload.command === 'verify_anki_import') {
-        applyVerifyResult(payload.result as AnkiVerifyResult)
+        applyVerifyResult(payload.result as AnkiVerifyResult, payload.job_id)
         setActiveWorkspaceStage('review')
       }
       setLastWorkerError(null)
       setWorkerOperation({ status: 'succeeded', command: payload.command, jobId: payload.job_id })
       setRequestEditedDuringRun(false)
+    } finally {
+      processingWorkerFinishIdsRef.current.delete(payloadInput.job_id)
+    }
+  }
+  useEffect(() => {
+    handleWorkerFinishedRef.current = handleWorkerFinished
+  })
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return
+    let stopListening: (() => void) | undefined
+    let stopFinishedListening: (() => void) | undefined
+    listen<WorkerProgress>('worker-progress', (event) => {
+      const active = workerOperationRef.current
+      if (event.payload.job_id && event.payload.job_id !== active.jobId) return
+      workerProgressRef.current = event.payload
+      setWorkerProgress(event.payload)
+      setStatus(event.payload.message)
+    })
+      .then((unlisten) => {
+        stopListening = unlisten
+      })
+      .catch(() => {
+        setWorkerProgress(null)
+      })
+    listen<WorkerFinishedEvent>('worker-finished', (event) => {
+      void handleWorkerFinishedRef.current(event.payload)
     })
       .then((unlisten) => {
         stopFinishedListening = unlisten
@@ -677,6 +1241,56 @@ export function useAppController() {
       stopFinishedListening?.()
     }
   }, [])
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return
+    const resolvePollingJobId = () => {
+      const active = workerOperationRef.current
+      if (active.status === 'running' && active.jobId) return active.jobId
+      if (workerOperation.status === 'running' && workerOperation.jobId) return workerOperation.jobId
+      if (busy && workerProgressRef.current?.job_id) return workerProgressRef.current.job_id
+      return null
+    }
+    const initialJobId = resolvePollingJobId()
+    if (!initialJobId) return
+    let cancelled = false
+    let pollFailureCount = 0
+    let pollFailureReported = false
+    const pollFinishedJob = async () => {
+      const jobId = resolvePollingJobId()
+      if (!jobId || handledWorkerFinishIdsRef.current.has(jobId)) return
+      try {
+        const status = await getWorkerJobStatus(jobId)
+        pollFailureCount = 0
+        if (!cancelled && status?.job_id) {
+          if (!workerOperationRef.current.jobId && status.job_id === jobId) {
+            workerOperationRef.current = fallbackWorkerOperationFromFinish(status)
+          }
+          void handleWorkerFinishedRef.current(status)
+        }
+      } catch (error) {
+        // Progress events are still the primary path; polling only recovers missed finish events.
+        pollFailureCount += 1
+        if (!cancelled && pollFailureCount >= 3 && !pollFailureReported) {
+          pollFailureReported = true
+          const message = `后台任务完成状态轮询失败：${redactSensitiveText(error)}`
+          setStatus(`${message}。如果进度长时间不动，请取消后重试；诊断日志已保留。`)
+          void recordRendererError({
+            kind: 'worker_status_poll_failed',
+            job_id: jobId,
+            command: workerOperationRef.current.command ?? workerOperation.command,
+            error: redactSensitiveText(error),
+          })
+        }
+      }
+    }
+    void pollFinishedJob()
+    const intervalId = window.setInterval(pollFinishedJob, 2000)
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+    }
+  }, [busy, workerOperation.command, workerOperation.jobId, workerOperation.status, workerProgress?.job_id])
 
   useEffect(() => {
     if (!settingsOpen) return
@@ -756,16 +1370,34 @@ export function useAppController() {
   }
 
   const patchRequest = (patch: Partial<GenerateRequest>) => {
+    const safePatch: Partial<GenerateRequest> =
+      patch.source_mode === 'document'
+        ? {
+            ...patch,
+            source_mode: 'local',
+            document_path: '',
+            card_types: patch.card_types?.filter((type) => type !== 'knowledge').length
+              ? patch.card_types.filter((type) => type !== 'knowledge')
+              : ['listening', 'phrase', 'cloze'],
+          }
+        : patch
     markRequestEditedIfRunning()
-    if (touchesSourceMaterial(patch)) {
-      setProject(null)
-      setLearningPointResult(null)
-      setSelectedLearningPointIds(new Set())
-      setLastExport(null)
-      setAnkiVerifyResult(null)
-      setActiveSegmentId(null)
+    if (requestPatchInvalidatesLearningArtifacts(safePatch)) {
+      clearLearningArtifactsForRequestChange()
+    } else if (requestPatchInvalidatesExportArtifacts(safePatch)) {
+      clearStaleReviewResults()
     }
-    setRequest((current) => ({ ...current, ...patch }))
+    setRequest((current) => {
+      const next = { ...current, ...safePatch }
+      if (next.source_mode !== 'document') {
+        next.skip_video_slicing = false
+      }
+      if (next.source_mode === 'url') {
+        next.url_import_mode = 'video'
+        next.url_auto_subtitle_fallback = false
+      }
+      return next
+    })
   }
 
   const selectCurrentLevel = (level: Level) => {
@@ -778,6 +1410,7 @@ export function useAppController() {
 
   const toggleCollectionLevel = (level: Level) => {
     markRequestEditedIfRunning()
+    clearLearningArtifactsForRequestChange()
     setRequest((current) => {
       const selected = normalizeCollectionLevels(current.collection_levels, current.level)
       const next = selected.includes(level) ? selected.filter((item) => item !== level) : [...selected, level]
@@ -790,6 +1423,7 @@ export function useAppController() {
 
   const applyCollectionPreset = (mode: 'current' | 'below' | 'around') => {
     markRequestEditedIfRunning()
+    clearLearningArtifactsForRequestChange()
     setRequest((current) => {
       const index = Math.max(0, levelOrder.indexOf(current.level))
       const collectionLevels =
@@ -806,44 +1440,54 @@ export function useAppController() {
   }
 
   const selectSourceMode = (mode: SourceMode) => {
-    const nextCardTypes: CardKind[] =
-      mode === 'document'
-        ? ['knowledge']
-        : request.card_types.includes('knowledge')
-          ? ['listening', 'phrase', 'cloze']
-          : request.card_types
+    const publicMode: SourceMode = mode === 'document' ? 'local' : mode
+    const nextCardTypes: CardKind[] = request.card_types.includes('knowledge')
+      ? ['listening', 'phrase', 'cloze']
+      : request.card_types
 
+    lastExportFullRef.current = null
+    activeAnkiVerifyApkgPathRef.current = null
+    releaseEvidenceRawSnapshotRef.current = emptyReleaseEvidenceRawSnapshot()
     setLastExport(null)
     setLastWorkerError(null)
     setAnkiVerifyResult(null)
     setProject(null)
     setActiveSegmentId(null)
     setWorkerProgress(null)
-    const sourcePatch: Partial<GenerateRequest> = { source_mode: mode, card_types: nextCardTypes }
-    if (mode === 'local') {
+    const sourcePatch: Partial<GenerateRequest> = {
+      source_mode: publicMode,
+      card_types: nextCardTypes,
+      document_path: '',
+    }
+    if (publicMode === 'local') {
       sourcePatch.source_url = ''
-      sourcePatch.document_path = ''
-    } else if (mode === 'url') {
+      sourcePatch.skip_video_slicing = false
+      sourcePatch.allow_private_network_url = false
+      sourcePatch.allow_ytdlp_remote_components = false
+      sourcePatch.local_path_access_confirmed = false
+    } else if (publicMode === 'url') {
       sourcePatch.video_path = ''
       sourcePatch.subtitle_path = ''
-      sourcePatch.document_path = ''
-    } else {
-      sourcePatch.source_url = ''
-      sourcePatch.video_path = ''
-      sourcePatch.subtitle_path = ''
+      sourcePatch.url_import_mode = 'video'
+      sourcePatch.url_auto_subtitle_fallback = false
+      sourcePatch.skip_video_slicing = false
+      sourcePatch.allow_private_network_url = false
+      sourcePatch.allow_ytdlp_remote_components = false
+      sourcePatch.local_path_access_confirmed = false
     }
     patchRequest(sourcePatch)
     setStatus(
-      mode === 'url'
-        ? '已切换到视频链接模式，请粘贴 YouTube 或视频 URL。'
-        : mode === 'document'
-          ? '已切换到文档资料模式，请选择 TXT、Markdown、DOCX、EPUB 或 PDF。'
+      mode === 'document'
+        ? '文档资料制卡已从当前发布版隐藏。当前只保留本地视频和视频链接制卡。'
+        : publicMode === 'url'
+          ? '已切换到视频链接模式，请粘贴 YouTube 或视频 URL。'
           : '已切换到本地视频模式，请选择视频；SRT 可留空并自动匹配或提取内嵌字幕。',
     )
   }
 
   const patchApi = (patch: Partial<ApiConfig>) => {
     markRequestEditedIfRunning()
+    clearStaleReviewResults()
     setRequest((current) => ({
       ...current,
       api_config: { ...current.api_config, ...patch },
@@ -854,6 +1498,7 @@ export function useAppController() {
 
   const patchTts = (patch: Partial<TtsConfig>) => {
     markRequestEditedIfRunning()
+    clearStaleReviewResults()
     setRequest((current) => ({
       ...current,
       api_config: {
@@ -877,6 +1522,15 @@ export function useAppController() {
       const next = upsertSavedApiProfile(savedApiProfiles, profile)
       saveSavedApiProfiles(next)
       setSavedApiProfiles(next)
+      if (shouldSaveKey) {
+        setRequest((current) => ({
+          ...current,
+          api_config: {
+            ...current.api_config,
+            api_key: '',
+          },
+        }))
+      }
       setApiProfileDirty(false)
       setStatus(
         profile.auth === 'gcloud'
@@ -902,6 +1556,18 @@ export function useAppController() {
       const next = upsertSavedTtsProfile(savedTtsProfiles, profile)
       saveSavedTtsProfiles(next)
       setSavedTtsProfiles(next)
+      if (shouldSaveKey) {
+        setRequest((current) => ({
+          ...current,
+          api_config: {
+            ...current.api_config,
+            tts_config: {
+              ...current.api_config.tts_config,
+              api_key: '',
+            },
+          },
+        }))
+      }
       setTtsProfileDirty(false)
       setStatus(
         profile.auth === 'gcloud'
@@ -918,15 +1584,8 @@ export function useAppController() {
   const applySavedApiProfile = async (profileId: string) => {
     const profile = savedApiProfiles.find((item) => item.id === profileId)
     if (!profile) return
-    let apiKey = ''
-    try {
-      if (profile.auth === 'api_key' && profile.has_api_key) {
-        apiKey = await loadSecret(profileSecretKey('api', profile.id))
-      }
-    } catch {
-      setStatus('模型方案的 API Key 读取失败，请重新保存这个方案。')
-    }
     markRequestEditedIfRunning()
+    clearStaleReviewResults()
     setRequest((current) => ({
       ...current,
       api_config: {
@@ -935,7 +1594,7 @@ export function useAppController() {
         base_url: profile.base_url,
         model: profile.model,
         capabilities: profile.capabilities,
-        api_key: apiKey,
+        api_key: '',
       },
     }))
     setApiProfileDirty(false)
@@ -952,23 +1611,17 @@ export function useAppController() {
           },
     )
     setStatus(
-      profile.auth === 'api_key' && !apiKey
+      profile.auth === 'api_key' && !profile.has_api_key
         ? `已切换到模型方案：${profile.label}。这个方案没有保存 API Key。`
-        : `已切换到模型方案：${profile.label}。`,
+        : profile.auth === 'api_key'
+          ? `已切换到模型方案：${profile.label}。Key 已保存，测试或生成前会短时读取。`
+          : `已切换到模型方案：${profile.label}。`,
     )
   }
 
   const applySavedTtsProfile = async (profileId: string) => {
     const profile = savedTtsProfiles.find((item) => item.id === profileId)
     if (!profile) return
-    let apiKey = ''
-    try {
-      if (profile.auth === 'api_key' && profile.has_api_key) {
-        apiKey = await loadSecret(profileSecretKey('tts', profile.id))
-      }
-    } catch {
-      setStatus('语音方案的 TTS API Key 读取失败，请重新保存这个方案。')
-    }
     patchTts({
       enabled: profile.enabled,
       provider: profile.provider,
@@ -979,7 +1632,7 @@ export function useAppController() {
       sample_rate: profile.sample_rate,
       bit_rate: profile.bit_rate,
       output_volume: profile.output_volume,
-      api_key: apiKey,
+      api_key: '',
     })
     setTtsProfileDirty(false)
     setTtsTestResult(
@@ -996,14 +1649,17 @@ export function useAppController() {
           },
     )
     setStatus(
-      profile.auth === 'api_key' && !apiKey
+      profile.auth === 'api_key' && !profile.has_api_key
         ? `已切换到语音方案：${profile.label}。这个方案没有保存 TTS API Key。`
-        : `已切换到语音方案：${profile.label}。`,
+        : profile.auth === 'api_key'
+          ? `已切换到语音方案：${profile.label}。Key 已保存，测试或导出前会短时读取。`
+          : `已切换到语音方案：${profile.label}。`,
     )
   }
 
   const applyApiPreset = async (preset: ApiPreset) => {
     markRequestEditedIfRunning()
+    clearStaleReviewResults()
     const nextConfig = {
       provider: preset.provider,
       base_url: preset.base_url,
@@ -1012,16 +1668,12 @@ export function useAppController() {
     }
     const profileId = apiProfileIdFromConfig(nextConfig)
     const savedProfile = savedApiProfiles.find((profile) => profile.id === profileId)
-    const apiKey =
-      savedProfile?.auth === 'api_key' && savedProfile.has_api_key
-        ? await loadSecret(profileSecretKey('api', savedProfile.id)).catch(() => '')
-        : ''
     setRequest((current) => ({
       ...current,
       api_config: {
         ...current.api_config,
         ...nextConfig,
-        api_key: apiKey,
+        api_key: '',
       },
     }))
     setApiTestResult(
@@ -1062,9 +1714,13 @@ export function useAppController() {
 
   const applyTtsPreset = async (preset: TtsPreset) => {
     const shouldReuseMainMimoKey =
-      preset.provider === 'mimo' && isMimoApiConfig(request.api_config) && request.api_config.api_key.trim()
+      preset.provider === 'mimo' &&
+      isMimoApiConfig(request.api_config) &&
+      Boolean(request.api_config.api_key.trim() || activeApiProfile?.has_api_key)
     const shouldReuseMainQwenKey =
-      preset.provider === 'qwen' && isQwenApiConfig(request.api_config) && request.api_config.api_key.trim()
+      preset.provider === 'qwen' &&
+      isQwenApiConfig(request.api_config) &&
+      Boolean(request.api_config.api_key.trim() || activeApiProfile?.has_api_key)
     const usesLocalVertexAuth = preset.provider === 'gemini-vertex'
     const nextConfig = {
       enabled: preset.provider !== 'disabled',
@@ -1079,24 +1735,19 @@ export function useAppController() {
     }
     const profileId = ttsProfileIdFromConfig(nextConfig)
     const savedProfile = savedTtsProfiles.find((profile) => profile.id === profileId)
-    const savedKey =
-      savedProfile?.auth === 'api_key' && savedProfile.has_api_key
-        ? await loadSecret(profileSecretKey('tts', savedProfile.id)).catch(() => '')
-        : ''
     patchTts({
       ...nextConfig,
       api_key:
-        savedKey ||
-        (shouldReuseMainMimoKey || shouldReuseMainQwenKey || usesLocalVertexAuth
+        savedProfile?.has_api_key || shouldReuseMainMimoKey || shouldReuseMainQwenKey || usesLocalVertexAuth
           ? ''
-          : request.api_config.tts_config.api_key),
+          : request.api_config.tts_config.api_key,
     })
     setTtsProfileDirty(!savedProfile)
     setStatus(
       savedProfile
         ? `已套用已保存的 ${preset.label} 语音方案。`
         : preset.provider === 'disabled'
-          ? '已关闭 TTS，导出时只使用视频原声音频。'
+          ? '已关闭 TTS；视频卡导出前需要开启整句 TTS 和表达 TTS。'
           : usesLocalVertexAuth
             ? `已套用 ${preset.label}，会使用本机 gcloud / Vertex AI 授权；建议先测试 TTS。`
             : shouldReuseMainMimoKey || shouldReuseMainQwenKey
@@ -1144,15 +1795,15 @@ export function useAppController() {
   }
 
   const selectPath = async (kind: SourcePathKind) => {
-    const applyBatchFolder = (directory: string, files: string[], mode: 'local' | 'document') => {
-      const createdItems = mode === 'local' ? createLocalVideoBatchItems(files) : createDocumentBatchItems(files)
+    const applyBatchFolder = (directory: string, files: string[]) => {
+      const createdItems = createLocalVideoBatchItems(files)
       if (!createdItems.length) {
-        setStatus(mode === 'local' ? '这个文件夹里没有找到可批量制卡的视频文件。' : '这个文件夹里没有找到可批量制卡的文档文件。')
+        setStatus('这个文件夹里没有找到可批量制卡的视频文件。')
         return
       }
-      const title = request.title.trim() || titleFromPath(directory) || (mode === 'local' ? '视频学习包' : '文档学习包')
-      const existingOtherSources = (request.batch_items ?? []).filter((item) => item.source_mode !== mode)
-      const sameSourceItems = batchItemsForSource(request.batch_items ?? [], mode)
+      const title = request.title.trim() || titleFromPath(directory) || '视频学习包'
+      const existingOtherSources = (request.batch_items ?? []).filter((item) => item.source_mode !== 'local')
+      const sameSourceItems = batchItemsForSource(request.batch_items ?? [], 'local')
       const seen = new Set<string>()
       const mergedSameSource = [...sameSourceItems, ...createdItems].filter((item) => {
         const key = item.video_path || item.document_path || item.source_url || item.id
@@ -1160,15 +1811,16 @@ export function useAppController() {
         seen.add(key)
         return true
       })
-      const batchPackage = buildBatchPackage({ title, source_mode: mode, items: mergedSameSource })
+      const batchPackage = buildBatchPackage({ title, source_mode: 'local', items: mergedSameSource })
       patchRequest({
         title,
-        source_mode: mode,
+        source_mode: 'local',
         batch_enabled: true,
         batch_items: [...existingOtherSources, ...batchPackage.items],
-        video_path: mode === 'local' ? '' : request.video_path,
-        subtitle_path: mode === 'local' ? '' : request.subtitle_path,
-        document_path: mode === 'document' ? '' : request.document_path,
+        local_path_access_confirmed: true,
+        video_path: '',
+        subtitle_path: '',
+        document_path: '',
       })
       setStatus(`已从文件夹添加 ${createdItems.length} 个素材到“${title}”，将导出为嵌套子牌组。`)
     }
@@ -1179,33 +1831,23 @@ export function useAppController() {
           ? '输入视频绝对路径'
           : kind === 'subtitle'
             ? '输入 SRT 绝对路径'
-            : kind === 'document'
-              ? '输入 TXT / Markdown / DOCX / EPUB / PDF 绝对路径'
-              : kind === 'video-folder'
-                ? '每行输入一个视频或字幕绝对路径，用来模拟视频文件夹批量添加'
-                : '每行输入一个文档绝对路径，用来模拟文档文件夹批量添加'
+            : '每行输入一个视频或字幕绝对路径，用来模拟视频文件夹批量添加'
       const value = window.prompt(prompt)
       if (!value) return
-      if (kind === 'video-folder' || kind === 'document-folder') {
-        applyBatchFolder(value, pathLines(value), kind === 'video-folder' ? 'local' : 'document')
+      if (kind === 'video-folder') {
+        applyBatchFolder(value, pathLines(value))
         return
       }
-      patchRequest(
-        kind === 'video'
-          ? { video_path: value }
-          : kind === 'subtitle'
-            ? { subtitle_path: value }
-            : { document_path: value },
-      )
+      patchRequest(kind === 'video' ? { video_path: value } : { subtitle_path: value })
       return
     }
 
-    if (kind === 'video-folder' || kind === 'document-folder') {
+    if (kind === 'video-folder') {
       const selectedDirectory = await selectDirectory()
       if (typeof selectedDirectory !== 'string') return
       try {
         const files = await listDirectoryFiles(selectedDirectory)
-        applyBatchFolder(selectedDirectory, files, kind === 'video-folder' ? 'local' : 'document')
+        applyBatchFolder(selectedDirectory, files)
       } catch (error) {
         setStatus(redactSensitiveText(error))
       }
@@ -1215,14 +1857,12 @@ export function useAppController() {
     const selected = await selectSingleFile(
       kind === 'video'
         ? [{ name: 'Video', extensions: ['mp4', 'mkv', 'mov', 'avi', 'webm'] }]
-        : kind === 'subtitle'
-          ? [{ name: 'Subtitle', extensions: ['srt'] }]
-          : [{ name: 'Document', extensions: ['txt', 'md', 'markdown', 'pdf', 'docx', 'epub'] }],
+        : [{ name: 'Subtitle', extensions: ['srt'] }],
     )
 
     if (typeof selected === 'string') {
       if (kind === 'video') {
-        const patch: Partial<GenerateRequest> = { video_path: selected }
+        const patch: Partial<GenerateRequest> = { video_path: selected, local_path_access_confirmed: true }
         if (!request.title.trim()) {
           patch.title = titleFromPath(selected)
         }
@@ -1238,7 +1878,7 @@ export function useAppController() {
         }
         patchRequest(patch)
       } else {
-        patchRequest(kind === 'subtitle' ? { subtitle_path: selected } : { document_path: selected })
+        patchRequest({ subtitle_path: selected, local_path_access_confirmed: true })
       }
     }
   }
@@ -1249,7 +1889,13 @@ export function useAppController() {
     setStatus('正在检查 Python、ffmpeg 和 genanki。')
     try {
       if (!isTauriRuntime()) {
-        setEnvStatus({ python: 'browser-preview', ffmpeg: false, genanki: false, anki_installed: false, anki_connect: false })
+        setEnvStatus({
+          python: 'browser-preview',
+          ffmpeg: false,
+          genanki: false,
+          anki_installed: false,
+          anki_connect: false,
+        })
         setStatus('当前是浏览器预览模式，真实导出请运行 Tauri 桌面端。')
       } else {
         try {
@@ -1270,6 +1916,15 @@ export function useAppController() {
   }
 
   const repairEnv = async (target: EnvRepairTarget = 'auto') => {
+    if (
+      isTauriRuntime() &&
+      !window.confirm(
+        '环境修复可能会调用 winget、pip 或打开 Anki 插件安装流程，并修改本机运行环境。请确认这是你主动发起的操作。',
+      )
+    ) {
+      setStatus('已取消环境修复。')
+      return
+    }
     setBusy(true)
     setEnvRepairing(true)
     setWorkerProgress(null)
@@ -1279,15 +1934,15 @@ export function useAppController() {
         ? '正在一键修复本机环境：推荐 Python 3.12、Python 依赖、FFmpeg、Deno/Node、Anki 与 AnkiConnect。'
         : target === 'python_runtime'
           ? '正在尝试安装推荐 Python 3.12 运行环境。'
-        : target === 'ffmpeg'
-          ? '正在尝试安装 FFmpeg。'
-        : target === 'js_runtime'
-          ? '正在尝试安装 Deno / Node challenge solver。'
-          : target === 'anki'
-            ? '正在尝试安装 Anki 桌面端。'
-          : target === 'anki_connect'
-            ? '正在打开 Anki 并准备 AnkiConnect 安装步骤。'
-            : '正在修复 Python venv、genanki 和 yt-dlp。'
+          : target === 'ffmpeg'
+            ? '正在尝试安装 FFmpeg。'
+            : target === 'js_runtime'
+              ? '正在尝试安装 Deno / Node challenge solver。'
+              : target === 'anki'
+                ? '正在尝试安装 Anki 桌面端。'
+                : target === 'anki_connect'
+                  ? '正在打开 Anki 并准备 AnkiConnect 安装步骤。'
+                  : '正在修复 Python venv、genanki 和 yt-dlp。'
     setStatus(label)
     try {
       if (!isTauriRuntime()) {
@@ -1363,14 +2018,30 @@ export function useAppController() {
   }
 
   const testApi = async () => {
-    const api = normalizeApiConfigForRequest(request.api_config)
+    const normalizedApi = normalizeApiConfigForRequest(request.api_config)
     if (
-      api.base_url !== request.api_config.base_url ||
-      api.model !== request.api_config.model ||
-      api.provider !== request.api_config.provider
+      normalizedApi.base_url !== request.api_config.base_url ||
+      normalizedApi.model !== request.api_config.model ||
+      normalizedApi.provider !== request.api_config.provider
     ) {
-      patchRequest({ api_config: api })
+      patchRequest({ api_config: { ...normalizedApi, api_key: request.api_config.api_key } })
       setStatus('已自动修正模型 API 配置，再开始测试连接。')
+    }
+    let api: ApiConfig
+    try {
+      api = await loadApiConfigForWorker(normalizedApi)
+    } catch {
+      setApiTestResult({
+        ok: false,
+        provider: normalizedApi.provider,
+        model: normalizedApi.model,
+        message: '系统凭据读取失败，请在设置页重新保存 API Key。',
+        error_code: 'MODEL_AUTH_FAILED',
+        stage: 'model_api',
+        retryable: false,
+      })
+      setStatus('API 测试失败：系统凭据读取失败，请重新保存 API Key。')
+      return
     }
     const failBeforeRequest = (message: string, errorCode: string = 'MODEL_AUTH_FAILED') => {
       const result: ApiTestResult = {
@@ -1408,7 +2079,10 @@ export function useAppController() {
           ok: api.provider === 'local',
           provider: api.provider,
           model: api.model,
-          message: api.provider === 'local' ? '预览模式可用，但不能用于正式抽取学习点或制卡。' : '浏览器预览模式不能真实测试 API，请运行桌面端。',
+          message:
+            api.provider === 'local'
+              ? '预览模式可用，但不能用于正式抽取学习点或制卡。'
+              : '浏览器预览模式不能真实测试 API，请运行桌面端。',
         }
         setApiTestResult(result)
         setStatus(result.message)
@@ -1438,7 +2112,26 @@ export function useAppController() {
   }
 
   const testTts = async () => {
-    const currentTts = resolveTtsConfig(request.api_config.tts_config, request.api_config)
+    let resolvedTtsRuntime: { apiConfig: ApiConfig; ttsConfig: TtsConfig }
+    try {
+      resolvedTtsRuntime = await loadTtsConfigForWorker(request.api_config.tts_config, request.api_config)
+    } catch {
+      const fallbackTts = resolveTtsConfig(request.api_config.tts_config, request.api_config)
+      setTtsTestResult({
+        ok: false,
+        provider: fallbackTts.provider,
+        model: fallbackTts.model,
+        voice: fallbackTts.voice,
+        message: '系统凭据读取失败，请在设置页重新保存 TTS/API Key。',
+        error_code: 'TTS_AUTH_FAILED',
+        stage: 'tts',
+        retryable: false,
+      })
+      setStatus('TTS 测试失败：系统凭据读取失败，请重新保存 TTS/API Key。')
+      return
+    }
+    const apiConfigForTts = resolvedTtsRuntime.apiConfig
+    const currentTts = resolvedTtsRuntime.ttsConfig
     const failBeforeRequest = (message: string, errorCode: string = 'TTS_AUTH_FAILED') => {
       setTtsTestResult({
         ok: false,
@@ -1522,7 +2215,7 @@ export function useAppController() {
       } else {
         const result = await runWorker<TtsTestResult>('test_tts', {
           tts_config: currentTts,
-          api_config: request.api_config,
+          api_config: apiConfigForTts,
           language: request.language,
         })
         setTtsTestResult(result)
@@ -1546,7 +2239,8 @@ export function useAppController() {
     }
   }
 
-  const extractLearningPoints = async () => {
+  const extractLearningPoints = async (options: { bypassCache?: boolean } = {}) => {
+    const bypassCache = Boolean(options.bypassCache)
     const generateRequest: GenerateRequest = {
       ...request,
       video_path: cleanLocalPath(request.video_path),
@@ -1557,15 +2251,20 @@ export function useAppController() {
       setStatus('已有任务正在运行，请先取消或等待完成。')
       return
     }
-    if (generateRequest.source_mode === 'url' && !generateRequest.source_url.trim()) {
-      setStatus('请先输入 YouTube / 视频 URL。')
+    const sourceInputError = learningPointExtractionSourceError(generateRequest)
+    if (sourceInputError) {
+      setStatus(sourceInputError)
       return
     }
-    if (generateRequest.source_mode === 'local' && !generateRequest.video_path) {
-      setStatus('请先选择视频文件。SRT 可以手动选择，也可以放在视频同目录自动匹配。')
+    if (!confirmLocalPathAccessForRequest(generateRequest)) return
+    let apiConfigForWorker: ApiConfig
+    try {
+      apiConfigForWorker = await loadApiConfigForWorker(generateRequest.api_config)
+    } catch {
+      setStatus('模型 API 凭据读取失败，请在设置页重新保存 API Key。')
       return
     }
-    const resolvedApi = resolveGenerateApiConfig(generateRequest.api_config, generateRequest.source_mode)
+    const resolvedApi = resolveGenerateApiConfig(apiConfigForWorker, generateRequest.source_mode)
     if (isTauriRuntime()) {
       const openApiSettings = (message: string) => {
         setActiveWorkspaceStage('generate')
@@ -1587,7 +2286,9 @@ export function useAppController() {
         return
       }
       if (!apiReadyForGeneration) {
-        openApiSettings('模型 API 尚未通过测试，不能进行 AI 学习点精筛。保存过且测试通过的模型方案无需重复测试；如果改过配置，请重新保存并测试。')
+        openApiSettings(
+          '模型 API 尚未通过测试，不能进行 AI 学习点精筛。保存过且测试通过的模型方案无需重复测试；如果改过配置，请重新保存并测试。',
+        )
         return
       }
       if (
@@ -1595,7 +2296,7 @@ export function useAppController() {
         resolvedApi.api.model !== request.api_config.model ||
         resolvedApi.api.provider !== request.api_config.provider
       ) {
-        patchRequest({ api_config: resolvedApi.api })
+        patchResolvedApiForState(resolvedApi.api, generateRequest.api_config)
       }
     }
     if (isTauriRuntime() && !envStatus) {
@@ -1682,7 +2383,12 @@ export function useAppController() {
       }
       applyLearningPointResult(demoLearningPoints)
       setActiveWorkspaceStage('review')
-      setWorkerProgress({ command: 'extract_learning_points', stage: 'done', percent: 100, message: '演示学习点抽取完成。' })
+      setWorkerProgress({
+        command: 'extract_learning_points',
+        stage: 'done',
+        percent: 100,
+        message: '演示学习点抽取完成。',
+      })
       setWorkerOperation({ status: 'succeeded', command: 'extract_learning_points' })
       setStatus('已生成浏览器演示学习点。真实字幕抽取请用 Tauri 桌面端。')
       return
@@ -1691,12 +2397,20 @@ export function useAppController() {
     setProject(null)
     setLearningPointResult(null)
     setSelectedLearningPointIds(new Set())
+    setGenerationConfirmOpen(false)
+    setGenerationQueueSelectedIds(null)
+    setGenerationBatchRuntime(null)
+    generationRetryBaseProjectRef.current = null
+    lastExportFullRef.current = null
+    activeAnkiVerifyApkgPathRef.current = null
+    releaseEvidenceRawSnapshotRef.current = emptyReleaseEvidenceRawSnapshot()
     setLastExport(null)
     setAnkiVerifyResult(null)
     setActiveSegmentId(null)
     setActiveWorkspaceStage('review')
     setBusy(true)
     setLastWorkerError(null)
+    setCardGenerationCacheNamespace(bypassCache ? `cold_${Date.now()}` : null)
     setRequestEditedDuringRun(false)
     setWorkerProgress({
       command: 'extract_learning_points',
@@ -1704,21 +2418,30 @@ export function useAppController() {
       percent: 1,
       message: '准备从字幕抽取学习点。',
     })
-    setStatus('正在读取字幕并抽取词伙、口语、单词用法、语法和听力学习点。')
+    setStatus(
+      bypassCache
+        ? '正在不使用缓存重新抽取学习点：本轮会重新调用模型精筛。'
+        : '正在读取字幕并抽取词伙、口语、单词用法、语法和听力学习点；可能复用同素材缓存。',
+    )
     try {
       const requestSnapshot = JSON.parse(
-        JSON.stringify({
-          ...generateRequest,
-          source_url: generateRequest.source_mode === 'url' ? generateRequest.source_url : '',
-          video_path: generateRequest.source_mode === 'local' ? generateRequest.video_path : '',
-          subtitle_path: generateRequest.source_mode === 'local' ? generateRequest.subtitle_path : '',
-          document_path: '',
-          reuse_ai_review_cache: generateRequest.reuse_ai_review_cache,
-          api_config: resolvedApi.api,
-        }),
+        JSON.stringify(
+          buildLearningPointExtractionPayload({
+            request: generateRequest,
+            apiConfig: resolvedApi.api,
+            reuseAiReviewCache: !bypassCache,
+            disableAiReviewCacheRead: bypassCache,
+          }),
+        ),
       ) as GenerateRequest
       const job = await startWorkerJob('extract_learning_points', requestSnapshot)
-      setWorkerOperation({ status: 'running', command: 'extract_learning_points', jobId: job.job_id })
+      const nextOperation: WorkerOperation = {
+        status: 'running',
+        command: 'extract_learning_points',
+        jobId: job.job_id,
+      }
+      workerOperationRef.current = nextOperation
+      setWorkerOperation(nextOperation)
       setWorkerProgress({
         job_id: job.job_id,
         command: 'extract_learning_points',
@@ -1726,7 +2449,11 @@ export function useAppController() {
         percent: 1,
         message: '学习点抽取任务已在后台运行。',
       })
-      setStatus('学习点抽取任务已在后台运行。完成后你可以按类型和级别筛选，再生成卡片。')
+      setStatus(
+        bypassCache
+          ? '不使用缓存的学习点抽取任务已在后台运行。完成后可以按类型和级别筛选，再生成卡片。'
+          : '学习点抽取任务已在后台运行。完成后你可以按类型和级别筛选，再生成卡片。',
+      )
     } catch (error) {
       setBusy(false)
       setWorkerOperation({ status: 'failed', command: 'extract_learning_points' })
@@ -1751,22 +2478,20 @@ export function useAppController() {
       setStatus('已有任务正在运行，请先取消或等待完成。')
       return
     }
-    if (generateRequest.batch_enabled) {
-      if (!activeBatchItems.length) {
-        setStatus('批量模式下还没有可生成的素材。请先选择文件夹、添加文档或把链接加入批量列表。')
-        return
-      }
-    } else if (generateRequest.source_mode === 'url' && !generateRequest.source_url.trim()) {
-      setStatus('请先输入 YouTube / 视频 URL。')
-      return
-    } else if (generateRequest.source_mode === 'document' && !generateRequest.document_path.trim()) {
-      setStatus('请先选择 TXT、Markdown、DOCX、EPUB 或 PDF 文档。')
-      return
-    } else if (generateRequest.source_mode === 'local' && !generateRequest.video_path) {
-      setStatus('请先选择视频文件。SRT 可以手动选择，也可以放在视频同目录自动匹配。')
+    const sourceInputError = directGenerationSourceError(generateRequest, activeBatchItems.length)
+    if (sourceInputError) {
+      setStatus(sourceInputError)
       return
     }
-    const resolvedApi = resolveGenerateApiConfig(generateRequest.api_config, generateRequest.source_mode)
+    if (!confirmLocalPathAccessForRequest(generateRequest)) return
+    let apiConfigForWorker: ApiConfig
+    try {
+      apiConfigForWorker = await loadApiConfigForWorker(generateRequest.api_config)
+    } catch {
+      setStatus('模型 API 凭据读取失败，请在设置页重新保存 API Key。')
+      return
+    }
+    const resolvedApi = resolveGenerateApiConfig(apiConfigForWorker, generateRequest.source_mode)
     if (isTauriRuntime()) {
       const openPreflightSettings = (tab: SettingsTab, message: string) => {
         setActiveWorkspaceStage('generate')
@@ -1800,14 +2525,14 @@ export function useAppController() {
       }
       if (resolvedApi.fallbackReason) {
         const fallbackIssue = resolvedApi.fallbackReason.replace(/[。.!！?？]+$/u, '')
-        openPreflightSettings(
-          'api',
-          `模型 API 未就绪：${fallbackIssue}。已禁止退回本地字幕草稿，请先测试模型 API。`,
-        )
+        openPreflightSettings('api', `模型 API 未就绪：${fallbackIssue}。已禁止退回本地字幕草稿，请先测试模型 API。`)
         return
       }
       if (!apiReadyForGeneration) {
-        openPreflightSettings('api', '模型 API 尚未通过测试，不能开始正式制卡。保存过且测试通过的模型方案无需重复测试；如果改过配置，请重新保存并测试。')
+        openPreflightSettings(
+          'api',
+          '模型 API 尚未通过测试，不能开始正式制卡。保存过且测试通过的模型方案无需重复测试；如果改过配置，请重新保存并测试。',
+        )
         return
       }
 
@@ -1816,9 +2541,12 @@ export function useAppController() {
         resolvedApi.api.model !== request.api_config.model ||
         resolvedApi.api.provider !== request.api_config.provider
       ) {
-        patchRequest({ api_config: resolvedApi.api })
+        patchResolvedApiForState(resolvedApi.api, generateRequest.api_config)
       }
     }
+    lastExportFullRef.current = null
+    activeAnkiVerifyApkgPathRef.current = null
+    captureReleaseEvidenceRawSnapshot({ type: 'invalidate', scope: 'project_export_verify' })
     setLastExport(null)
     setAnkiVerifyResult(null)
     setActiveWorkspaceStage('review')
@@ -1830,25 +2558,21 @@ export function useAppController() {
       generateRequest.batch_enabled
         ? `正在批量生成 ${activeBatchItems.length} 个子素材，并整理成嵌套 Anki 子牌组。`
         : generateRequest.source_mode === 'url'
-        ? generateRequest.url_import_mode === 'subtitles'
-          ? '正在下载 URL 字幕并跳过视频切片，然后生成卡片草稿。'
-          : '正在下载 URL 视频和字幕，然后生成卡片草稿。'
-        : generateRequest.source_mode === 'document'
-          ? '正在解析文档、总结知识点并生成卡片草稿。'
-          : generateRequest.subtitle_path
-            ? '正在解析字幕、筛选片段并生成卡片草稿。'
-            : '正在自动匹配同目录字幕、筛选片段并生成卡片草稿。',
+          ? '正在下载 URL 视频和字幕，然后生成卡片。'
+          : generateRequest.source_mode === 'document'
+            ? '正在解析文档、总结知识点并生成卡片。'
+            : generateRequest.subtitle_path
+              ? '正在解析字幕、筛选片段并生成卡片。'
+              : '正在自动匹配同目录字幕、筛选片段并生成卡片。',
     )
     try {
       const requestSnapshot = JSON.parse(
-        JSON.stringify({
-          ...generateRequest,
-          source_url: generateRequest.source_mode === 'url' ? generateRequest.source_url : '',
-          video_path: generateRequest.source_mode === 'local' ? generateRequest.video_path : '',
-          subtitle_path: generateRequest.source_mode === 'local' ? generateRequest.subtitle_path : '',
-          document_path: generateRequest.source_mode === 'document' ? generateRequest.document_path : '',
-          api_config: resolvedApi.api,
-        }),
+        JSON.stringify(
+          buildDirectGenerationPayload({
+            request: generateRequest,
+            apiConfig: resolvedApi.api,
+          }),
+        ),
       ) as GenerateRequest
       if (!isTauriRuntime()) {
         const demo = createDemoProject(requestSnapshot)
@@ -1868,7 +2592,9 @@ export function useAppController() {
         setBusy(false)
       } else {
         const job = await startWorkerJob('generate', requestSnapshot)
-        setWorkerOperation({ status: 'running', command: 'generate', jobId: job.job_id })
+        const nextOperation: WorkerOperation = { status: 'running', command: 'generate', jobId: job.job_id }
+        workerOperationRef.current = nextOperation
+        setWorkerOperation(nextOperation)
         setWorkerProgress({
           job_id: job.job_id,
           command: 'generate',
@@ -1886,6 +2612,10 @@ export function useAppController() {
     }
   }
 
+  const extractLearningPointsWithoutCache = async () => {
+    await extractLearningPoints({ bypassCache: true })
+  }
+
   const cancelCurrentWorker = async () => {
     const jobId = workerOperation.jobId
     if (!jobId || !workerBusy) return
@@ -1898,6 +2628,7 @@ export function useAppController() {
         setBusy(false)
         setWorkerOperation({ status: 'idle' })
         setWorkerProgress(null)
+        setGenerationBatchRuntime(null)
         setStatus('当前任务已经结束。')
       }
     } catch (error) {
@@ -1907,7 +2638,7 @@ export function useAppController() {
     }
   }
 
-  const generateCardsFromLearningPoints = async () => {
+  const openGenerationConfirmForLearningPoints = (ids: Set<string>) => {
     if (workerBusy) {
       setStatus('已有任务正在运行，请先取消或等待完成。')
       return
@@ -1916,18 +2647,117 @@ export function useAppController() {
       setStatus('还没有学习点清单。请先从字幕抽取学习点。')
       return
     }
+    const selectedPoints = selectedLearningPoints(learningPointResult.learning_points, ids)
+    if (selectedPoints.length === 0) {
+      setStatus('请先选择至少一个推荐或候选学习点。')
+      return
+    }
+    setGenerationQueueSelectedIds(new Set(selectedPoints.map((point) => point.id)))
+    setGenerationConfirmOpen(true)
+    setActiveWorkspaceStage('review')
+    setStatus(`请确认本轮 APKG 队列：${selectedPoints.length} 个学习点。确认后会自动生成卡片、音频、视频片段并打包。`)
+  }
+
+  const generateCardsFromLearningPoints = () => {
+    generationRetryBaseProjectRef.current = null
+    openGenerationConfirmForLearningPoints(selectedLearningPointIds)
+  }
+
+  const generateSingleLearningPoint = (pointId: string) => {
+    if (!learningPointResult) {
+      setStatus('还没有学习点清单。请先从字幕抽取学习点。')
+      return
+    }
+    const selectedPoint = selectedLearningPoints(learningPointResult.learning_points, new Set([pointId]))[0]
+    if (!selectedPoint) {
+      setStatus('这条学习点当前不可制卡，请换一条推荐或候选学习点。')
+      return
+    }
+    const single = new Set([selectedPoint.id])
+    generationRetryBaseProjectRef.current = null
+    setSelectedLearningPointIds(single)
+    openGenerationConfirmForLearningPoints(single)
+  }
+
+  const closeGenerationConfirm = () => {
+    setGenerationConfirmOpen(false)
+    setGenerationQueueSelectedIds(null)
+    generationAutoExportOutputDirRef.current = null
+    setStatus('已关闭生成确认。本轮还没有调用模型。')
+  }
+
+  const removeGenerationQueueLearningPoint = (pointId: string) => {
+    setGenerationQueueSelectedIds((current) => {
+      const next = new Set(current ?? selectedLearningPointIds)
+      next.delete(pointId)
+      return next
+    })
+  }
+
+  const retryMissingLearningPoints = () => {
+    const source = lastLearningPointResultRef.current
+    const currentProject = project
+    const missingIds = [
+      ...new Set(
+        (currentProject?.card_generation_diagnostics?.items ?? [])
+          .map((item) => item.learning_point_id)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ]
+    if (!source || !currentProject) {
+      setStatus('缺少上一次学习点清单，无法只重试未生成项。请重新抽取后再生成。')
+      return
+    }
+    if (!missingIds.length) {
+      setStatus('当前没有可重试的未生成学习点。')
+      return
+    }
+    generationRetryBaseProjectRef.current = currentProject
+    const missingSelection = new Set(missingIds)
+    lastExportFullRef.current = null
+    activeAnkiVerifyApkgPathRef.current = null
+    captureReleaseEvidenceRawSnapshot({ type: 'invalidate', scope: 'project_export_verify' })
+    setLearningPointResult(source)
+    setProject(null)
+    setLastExport(null)
+    setAnkiVerifyResult(null)
+    setSelectedLearningPointIds(missingSelection)
+    setGenerationQueueSelectedIds(missingSelection)
+    setGenerationConfirmOpen(true)
+    setActiveWorkspaceStage('review')
+    setStatus(`已载入 ${missingIds.length} 个未生成学习点；确认后只重试这些项，已生成卡片会保留。`)
+  }
+
+  const confirmGenerateCardsFromLearningPoints = async () => {
+    if (workerBusy) {
+      setStatus('已有任务正在运行，请先取消或等待完成。')
+      return
+    }
+    if (!learningPointResult) {
+      setStatus('还没有学习点清单。请先从字幕抽取学习点。')
+      return
+    }
+    const activeSelectedIds = generationQueueSelectedIds ?? selectedLearningPointIds
+    const selectedPoints = selectedLearningPoints(learningPointResult.learning_points, activeSelectedIds)
+    if (selectedPoints.length === 0) {
+      setStatus('本轮生成队列为空。请至少保留一个推荐或候选学习点。')
+      return
+    }
     const generateRequest: GenerateRequest = {
       ...request,
       video_path: cleanLocalPath(request.video_path),
       subtitle_path: cleanLocalPath(request.subtitle_path),
       document_path: cleanLocalPath(request.document_path),
     }
-    const selectedPoints = selectedLearningPoints(learningPointResult.learning_points, selectedLearningPointIds)
-    if (selectedPoints.length === 0) {
-      setStatus('请先选择至少一个推荐或候选学习点。')
+    if (!confirmLocalPathAccessForRequest(generateRequest)) return
+    let apiConfigForWorker: ApiConfig
+    try {
+      apiConfigForWorker = await loadApiConfigForWorker(generateRequest.api_config)
+    } catch {
+      setStatus('模型 API 凭据读取失败，请在设置页重新保存 API Key。')
       return
     }
-    const resolvedApi = resolveGenerateApiConfig(generateRequest.api_config, generateRequest.source_mode)
+    const resolvedApi = resolveGenerateApiConfig(apiConfigForWorker, generateRequest.source_mode)
     if (isTauriRuntime()) {
       const openPreflightSettings = (tab: SettingsTab, message: string) => {
         setActiveWorkspaceStage('generate')
@@ -1939,13 +2769,13 @@ export function useAppController() {
       if (!envStatus) {
         setActiveWorkspaceStage('review')
         setSettingsOpen(false)
-        setStatus('生成完整卡片前需要先检查本地环境。请在左侧确认卡片点击“立即检查”，需要完整诊断时再查看详情。')
+        setStatus('生成 APKG 前需要先检查本地环境。请在左侧确认卡片点击“立即检查”，需要完整诊断时再查看详情。')
         return
       }
       if (!envReady) {
         setActiveWorkspaceStage('review')
         setSettingsOpen(false)
-        setStatus('本地环境还没准备好，不能生成完整卡片。请在左侧确认卡片点击“一键修复”，或查看详情处理单项依赖。')
+        setStatus('本地环境还没准备好，不能生成 APKG。请在左侧确认卡片点击“一键修复”，或查看详情处理单项依赖。')
         return
       }
       if (generateRequest.api_config.provider === 'local') {
@@ -1956,7 +2786,7 @@ export function useAppController() {
         return
       }
       if (resolvedApi.error) {
-        openPreflightSettings('api', `生成完整卡片前模型 API 配置未通过：${resolvedApi.error}`)
+        openPreflightSettings('api', `生成 APKG 前模型 API 配置未通过：${resolvedApi.error}`)
         return
       }
       if (resolvedApi.fallbackReason) {
@@ -1965,7 +2795,10 @@ export function useAppController() {
         return
       }
       if (!apiReadyForGeneration) {
-        openPreflightSettings('api', '模型 API 尚未通过测试，不能生成完整卡片。保存过且测试通过的模型方案无需重复测试；如果改过配置，请重新保存并测试。')
+        openPreflightSettings(
+          'api',
+          '模型 API 尚未通过测试，不能生成 APKG。保存过且测试通过的模型方案无需重复测试；如果改过配置，请重新保存并测试。',
+        )
         return
       }
       if (ttsRequired && !ttsTestResult?.ok) {
@@ -1977,7 +2810,7 @@ export function useAppController() {
         resolvedApi.api.model !== request.api_config.model ||
         resolvedApi.api.provider !== request.api_config.provider
       ) {
-        patchRequest({ api_config: resolvedApi.api })
+        patchResolvedApiForState(resolvedApi.api, generateRequest.api_config)
       }
     }
     if (!isTauriRuntime()) {
@@ -1985,6 +2818,8 @@ export function useAppController() {
       setProject(demo)
       setLearningPointResult(null)
       setSelectedLearningPointIds(new Set())
+      setGenerationConfirmOpen(false)
+      setGenerationQueueSelectedIds(null)
       setSegmentFilter('all')
       setActiveSegmentId(demo.segments[0]?.id ?? null)
       setWorkerProgress({
@@ -1994,137 +2829,241 @@ export function useAppController() {
         message: '演示卡片生成完成。',
       })
       setWorkerOperation({ status: 'succeeded', command: 'generate_cards_from_learning_points' })
-      setStatus(`演示卡片生成完成。已把 ${selectedPoints.length} 个演示学习点生成浏览器演示卡片；真实制卡请用 Tauri 桌面端。`)
+      setStatus(
+        `演示卡片生成完成。已把 ${selectedPoints.length} 个演示学习点生成浏览器演示卡片；真实 APKG 导出请用 Tauri 桌面端。`,
+      )
       return
     }
+    setGenerationConfirmOpen(false)
     setBusy(true)
     setLastWorkerError(null)
+    setWorkerProgress({
+      command: 'generate_cards_from_learning_points',
+      stage: 'select_output_dir',
+      percent: 0,
+      message: '正在打开 APKG 保存目录选择器。',
+    })
+    setStatus('正在打开 APKG 保存目录选择器。选择后会自动生成卡片正文、TTS、视频片段并打包。')
+    await waitForNextPaint()
+    const selectedOutputDir = await selectDirectory({
+      title: APKG_EXPORT_DIRECTORY_DIALOG_TITLE,
+      defaultPath: defaultExportDirectoryForRequest(request),
+    })
+    if (typeof selectedOutputDir !== 'string') {
+      generationAutoExportOutputDirRef.current = null
+      setBusy(false)
+      setWorkerProgress(null)
+      setGenerationConfirmOpen(true)
+      setStatus('已取消：未选择 APKG 保存目录，本轮还没有调用模型。')
+      return
+    }
+    const releaseOutputGuard = releaseApkgOutputGuardForProject(learningPointResult, selectedOutputDir)
+    if (releaseOutputGuard.status === 'blocked') {
+      generationAutoExportOutputDirRef.current = null
+      setBusy(false)
+      setWorkerProgress(null)
+      setWorkerOperation({ status: 'failed', command: 'export' })
+      setLastWorkerError(releaseApkgTargetGuardFailureEvent(releaseOutputGuard))
+      setGenerationConfirmOpen(true)
+      setStatus(`已暂停生成：${releaseOutputGuard.statusMessage}`)
+      return
+    }
+    generationAutoExportOutputDirRef.current = selectedOutputDir
+    setGenerationConfirmOpen(false)
+    const queueIds = selectedPoints.map((point) => point.id)
+    const batchSize = learningPointGenerationBatchSize(queueIds.length)
+    const totalBatches = Math.max(1, Math.ceil(queueIds.length / batchSize))
+    const projectId = `project_${Date.now()}`
+    const retryBaseProject = generationRetryBaseProjectRef.current
+    const baseGeneratedLearningPointIds = retryBaseProject ? generatedLearningPointIdsFromProject(retryBaseProject) : []
+    const runtime: GenerationBatchRuntime = {
+      active: true,
+      queueIds,
+      activeBatchIds: [],
+      batchSize,
+      totalBatches,
+      completedBatches: 0,
+      completedCount: 0,
+      generatedCount: 0,
+      missingCount: 0,
+      exportableCount: 0,
+      nextIndex: 0,
+      projectId,
+      baseGeneratedLearningPointIds,
+      mergedProject: retryBaseProject,
+      request: generateRequest,
+      apiConfig: resolvedApi.api,
+    }
+    setGenerationBatchRuntime(runtime)
+    setBusy(true)
+    setLastWorkerError(null)
+    lastExportFullRef.current = null
+    activeAnkiVerifyApkgPathRef.current = null
+    captureReleaseEvidenceRawSnapshot({ type: 'invalidate', scope: 'export_and_verify' })
     setLastExport(null)
     setAnkiVerifyResult(null)
     setWorkerProgress({
       command: 'generate_cards_from_learning_points',
       stage: 'start',
       percent: 1,
-      message: '准备把选中学习点生成 Anki 卡。',
+      message:
+        totalBatches > 1
+          ? `准备分 ${totalBatches} 批生成正文，完成后自动打包 APKG。`
+          : '准备生成正文，完成后自动打包 APKG。',
     })
-    setStatus(`正在把 ${selectedPoints.length} 个学习点生成 Anki 卡片。`)
+    setStatus(
+      totalBatches > 1
+        ? `正在生成 APKG：先把 ${selectedPoints.length} 个学习点分 ${totalBatches} 批生成正文，再自动生成音频、切片并打包。`
+        : `正在生成 APKG：先生成 ${selectedPoints.length} 张卡片正文，再自动生成音频、切片并打包。`,
+    )
     try {
-      const payload = {
-        ...learningPointResult,
-        project_id: `project_${Date.now()}`,
-        selected_learning_point_ids: selectedPoints.map((point) => point.id),
-        learning_points: learningPointResult.learning_points,
-        card_types: request.card_types,
-        template_id: request.template_id,
-        card_style: request.card_style,
-        review_density: request.review_density,
-        api_config: resolvedApi.api,
-        content_toggles: request.content_toggles,
-        language_focus: request.language_focus,
-        study_depth: request.study_depth,
-        level_mode: request.level_mode,
-        level: request.level,
+      await startNextLearningPointGenerationBatch(runtime)
+      if (totalBatches <= 1) {
+        setGenerationQueueSelectedIds(null)
       }
-      const job = await startWorkerJob('generate_cards_from_learning_points', payload)
-      setWorkerOperation({ status: 'running', command: 'generate_cards_from_learning_points', jobId: job.job_id })
-      setWorkerProgress({
-        job_id: job.job_id,
-        command: 'generate_cards_from_learning_points',
-        stage: 'start',
-        percent: 1,
-        message: '卡片生成任务已在后台运行。',
-      })
-      setStatus('卡片生成任务已在后台运行。完成后进入审核导出。')
     } catch (error) {
       setBusy(false)
+      setGenerationBatchRuntime(null)
+      generationAutoExportOutputDirRef.current = null
       setWorkerOperation({ status: 'failed', command: 'generate_cards_from_learning_points' })
       setLastWorkerError(null)
+      setGenerationConfirmOpen(true)
       setStatus(redactSensitiveText(error))
     }
   }
 
-  const exportApkg = async () => {
-    if (workerBusy) {
+  async function startExportForProject(options: StartExportOptions = {}) {
+    if (!options.auto && workerBusy) {
       setStatus('已有任务正在运行，请先取消或等待完成。')
-      return
+      return false
     }
-    if (!project) {
+    const targetProject = options.projectOverride ?? project
+    if (!targetProject) {
       setStatus('还没有可导出的卡片。')
-      return
+      return false
     }
-    let projectForExport = project
-    const materializedForExport = materializeLearningPointInventory(projectForExport)
-    if (materializedForExport.added > 0) {
-      projectForExport = materializedForExport.project
-      setProject(projectForExport)
-      setStatus(`已自动把 ${materializedForExport.added} 个合法学习点补成草稿卡，继续准备导出。`)
+    clearStaleReviewResults()
+    const exportPreparation = prepareProjectForExport(targetProject)
+    const projectForExport = normalizeProjectForExportWorker(exportPreparation.project)
+    captureReleaseEvidenceRawSnapshot({
+      type: 'project_for_export',
+      project: projectForExport,
+      learningPointResult: lastLearningPointResultRef.current,
+    })
+    setProject(projectForExport)
+    if (exportPreparation.status === 'blocked') {
+      setLastWorkerError(null)
+      setStatus(exportPreparation.statusMessage)
+      setWorkerOperation({ status: 'failed', command: 'export' })
+      return false
     }
-    if (selectedCardCount === 0) {
-      const usableSelection = applyUsableCardSelection(projectForExport)
-      if (usableSelection.selected === 0) {
-        setStatus('当前没有启用的卡片，也没有可自动启用的可用卡。请手动检查生成结果或重新生成。')
-        return
-      }
-      projectForExport = usableSelection.project
-      setProject(projectForExport)
-      setStatus(`已自动启用 ${usableSelection.selected} 张可用卡，继续导出。`)
+    if (exportPreparation.statusMessage) {
+      setStatus(exportPreparation.statusMessage)
     }
     if (!isTauriRuntime()) {
       setStatus('浏览器预览模式不能导出 apkg，请运行 npm run tauri:dev。')
-      return
+      return false
     }
-    const resolvedExportTtsConfig = resolveTtsConfig(request.api_config.tts_config, request.api_config)
+    let exportRuntimeConfig: { apiConfig: ApiConfig; ttsConfig: TtsConfig }
+    try {
+      exportRuntimeConfig = await loadTtsConfigForWorker(request.api_config.tts_config, request.api_config)
+    } catch {
+      setStatus('导出前读取 TTS/API 凭据失败，请在设置页重新保存 Key。')
+      return false
+    }
+    const exportApiConfig = exportRuntimeConfig.apiConfig
+    const resolvedExportTtsConfig = exportRuntimeConfig.ttsConfig
     const exportTtsConfigError = validateTtsConfigForRequest(resolvedExportTtsConfig)
+    const exportTtsBlockReason = videoExportTtsBlockReason(
+      projectForExport,
+      resolvedExportTtsConfig,
+      exportTtsConfigError,
+    )
+    if (exportTtsBlockReason) {
+      setLastWorkerError(null)
+      setWorkerOperation({ status: 'failed', command: 'export' })
+      setStatus(exportTtsBlockReason)
+      return false
+    }
     const ttsConfigForExport = exportTtsConfigError
       ? { ...resolvedExportTtsConfig, enabled: false, provider: 'disabled' as const }
       : resolvedExportTtsConfig
 
-    const outputDir = await selectDirectory()
+    const outputDir =
+      options.outputDir ??
+      (await selectDirectory({
+        title: APKG_EXPORT_DIRECTORY_DIALOG_TITLE,
+        defaultPath: defaultExportDirectoryForProject(projectForExport) ?? defaultExportDirectoryForRequest(request),
+      }))
     if (typeof outputDir !== 'string') {
-      return
+      setLastWorkerError(null)
+      setStatus('已取消导出：未选择 APKG 保存目录。')
+      return false
+    }
+    const releaseOutputGuard = releaseApkgOutputGuardForProject(projectForExport, outputDir)
+    if (releaseOutputGuard.status === 'blocked') {
+      setLastWorkerError(releaseApkgTargetGuardFailureEvent(releaseOutputGuard))
+      setWorkerOperation({ status: 'failed', command: 'export' })
+      setStatus(releaseOutputGuard.statusMessage)
+      return false
     }
 
+    lastExportFullRef.current = null
+    activeAnkiVerifyApkgPathRef.current = null
+    captureReleaseEvidenceRawSnapshot({ type: 'invalidate', scope: 'export_and_verify' })
+    setLastExport(null)
+    setAnkiVerifyResult(null)
     setActiveWorkspaceStage('review')
     setBusy(true)
     setLastWorkerError(null)
     setWorkerProgress({ command: 'export', stage: 'start', percent: 1, message: '准备开始导出。' })
     setStatus(
-      exportTtsConfigError
-        ? `TTS 配置未通过，导出会自动跳过 AI 朗读：${exportTtsConfigError}`
-        : projectForExport.source_mode === 'document'
-        ? '正在打包文档知识卡 apkg。'
-        : projectForExport.skip_video_slicing
-          ? '正在打包字幕-only 卡包，并按需生成 TTS。'
-          : '正在切视频、生成音频并打包 apkg。',
+      exportStartingStatusMessage({
+        sourceMode: projectForExport.source_mode,
+        auto: options.auto,
+        ttsConfigError: exportTtsConfigError,
+      }),
     )
     try {
+      const canonicalApkgPath = releaseOutputGuard.canonicalApkgPath
       const exportPayload = {
-        project: {
-          ...projectForExport,
-          template_id: request.template_id,
-          api_config: {
-            ...request.api_config,
-            tts_config: ttsConfigForExport,
-          },
-        },
+        project: buildProjectExportPayloadProject({
+          project: projectForExport,
+          templateId: request.template_id,
+          apiConfig: exportApiConfig,
+          ttsConfig: ttsConfigForExport,
+          disableMediaCacheRead: releaseTargetRequiresColdMediaCacheReadsDisabled(releaseOutputGuard.releaseTarget),
+        }),
         output_dir: outputDir,
+        ...(canonicalApkgPath ? { canonical_apkg_path: canonicalApkgPath } : {}),
       }
       const job = await startWorkerJob('export', exportPayload)
-      setWorkerOperation({ status: 'running', command: 'export', jobId: job.job_id })
+      if (releaseOutputGuard.releaseTarget) {
+        releaseExportTargetsByJobIdRef.current.set(job.job_id, releaseOutputGuard.releaseTarget)
+      }
+      const nextOperation: WorkerOperation = { status: 'running', command: 'export', jobId: job.job_id }
+      workerOperationRef.current = nextOperation
+      setWorkerOperation(nextOperation)
       setWorkerProgress({
         job_id: job.job_id,
         command: 'export',
         stage: 'start',
         percent: 1,
-        message: '导出任务已在后台运行。你可以继续浏览当前草稿。',
+        message: exportWorkerStartedProgressMessage(options.auto),
       })
-      setStatus('导出任务已在后台运行。导出期间不能再次生成或导出。')
+      setStatus(exportWorkerStartedStatusMessage(options.auto))
+      return true
     } catch (error) {
       setBusy(false)
       setWorkerOperation({ status: 'failed', command: 'export' })
       setLastWorkerError(null)
       setStatus(redactSensitiveText(error))
+      return false
     }
+  }
+
+  const exportApkg = async () => {
+    await startExportForProject()
   }
 
   const revealExport = async () => {
@@ -2138,43 +3077,48 @@ export function useAppController() {
 
   const openAnkiImport = async () => {
     if (!lastExport?.apkg_path) return
+    setStatus(ankiOpenImportStartingStatusMessage())
     try {
       await openAnkiImportFile(lastExport.apkg_path)
-      setStatus('已打开 Anki 导入窗口。')
+      setStatus(ankiOpenImportRequestedStatusMessage())
     } catch (error) {
       setStatus(redactSensitiveText(error))
     }
   }
 
   const verifyAnkiImport = async () => {
-    if (workerBusy) {
-      setStatus('已有任务正在运行，请先取消或等待完成。')
+    const exportForVerify = exportResultForAnkiVerify(lastExportFullRef.current, lastExport)
+    const preparation = prepareAnkiVerifyStart({
+      workerBusy,
+      exportResult: exportForVerify,
+      tauriRuntime: isTauriRuntime(),
+    })
+    if (!preparation.ok) {
+      if (preparation.statusMessage) setStatus(preparation.statusMessage)
       return
     }
-    if (!lastExport?.apkg_path) return
-    if (!isTauriRuntime()) {
-      setStatus('浏览器预览模式不能连接 AnkiConnect。')
-      return
-    }
+    activeAnkiVerifyApkgPathRef.current = preparation.exportResult.apkg_path
+    captureReleaseEvidenceRawSnapshot({ type: 'invalidate', scope: 'verify' })
     setAnkiVerifying(true)
     setActiveWorkspaceStage('review')
     setLastWorkerError(null)
     setAnkiVerifyResult(null)
-    setStatus('正在通过 AnkiConnect 核验导入后的卡片和媒体。')
+    setStatus(ankiVerifyStartingStatusMessage())
     try {
-      const job = await startWorkerJob('verify_anki_import', {
-        export_result: lastExport,
-      })
-      setWorkerOperation({ status: 'running', command: 'verify_anki_import', jobId: job.job_id })
+      const job = await startWorkerJob('verify_anki_import', buildAnkiVerifyPayload(preparation.exportResult))
+      const nextOperation: WorkerOperation = { status: 'running', command: 'verify_anki_import', jobId: job.job_id }
+      workerOperationRef.current = nextOperation
+      setWorkerOperation(nextOperation)
       setWorkerProgress({
         job_id: job.job_id,
         command: 'verify_anki_import',
         stage: 'start',
         percent: 1,
-        message: 'Anki 媒体核验已在后台运行。',
+        message: ankiVerifyWorkerStartedMessage(),
       })
-      setStatus('Anki 媒体核验已在后台运行。')
+      setStatus(ankiVerifyWorkerStartedMessage())
     } catch (error) {
+      activeAnkiVerifyApkgPathRef.current = null
       setAnkiVerifying(false)
       setWorkerOperation({ status: 'failed', command: 'verify_anki_import' })
       setLastWorkerError(null)
@@ -2183,8 +3127,7 @@ export function useAppController() {
   }
 
   const setCardsEnabled = (enabled: boolean, segmentId?: string) => {
-    setLastExport(null)
-    setAnkiVerifyResult(null)
+    clearStaleReviewResults()
     setProject((current) => {
       if (!current) return current
       const segments = current.segments.map((segment) =>
@@ -2192,7 +3135,10 @@ export function useAppController() {
           ? segment
           : {
               ...segment,
-              cards: segment.cards.map((card) => ({ ...card, enabled })),
+              cards: segment.cards.map((card) => ({
+                ...card,
+                enabled: enabled ? isUsableCardForExport(segment, card) : false,
+              })),
             },
       )
       const selected = segments.reduce(
@@ -2202,23 +3148,31 @@ export function useAppController() {
       return {
         ...current,
         quality_funnel: current.quality_funnel
-          ? { ...current.quality_funnel, selected_card_count: selected }
-          : { selected_card_count: selected },
+          ? {
+              ...current.quality_funnel,
+              selected_card_count: selected,
+              selected_exportable_card_count: selected,
+              selected_repair_required_card_count: 0,
+            }
+          : {
+              selected_card_count: selected,
+              selected_exportable_card_count: selected,
+              selected_repair_required_card_count: 0,
+            },
         segments,
       }
     })
   }
 
   const invertCardSelection = () => {
-    setLastExport(null)
-    setAnkiVerifyResult(null)
+    clearStaleReviewResults()
     setProject((current) => {
       if (!current) return current
       let selected = 0
       const segments = current.segments.map((segment) => ({
         ...segment,
         cards: segment.cards.map((card) => {
-          const enabled = !card.enabled
+          const enabled = !card.enabled && isUsableCardForExport(segment, card)
           if (enabled) selected += 1
           return { ...card, enabled }
         }),
@@ -2226,8 +3180,17 @@ export function useAppController() {
       return {
         ...current,
         quality_funnel: current.quality_funnel
-          ? { ...current.quality_funnel, selected_card_count: selected }
-          : { selected_card_count: selected },
+          ? {
+              ...current.quality_funnel,
+              selected_card_count: selected,
+              selected_exportable_card_count: selected,
+              selected_repair_required_card_count: 0,
+            }
+          : {
+              selected_card_count: selected,
+              selected_exportable_card_count: selected,
+              selected_repair_required_card_count: 0,
+            },
         segments,
       }
     })
@@ -2235,8 +3198,7 @@ export function useAppController() {
   }
 
   const updateCard = (segmentId: string, cardId: string, patch: Partial<Card>) => {
-    setLastExport(null)
-    setAnkiVerifyResult(null)
+    clearStaleReviewResults()
     setProject((current) => {
       if (!current) return current
       return {
@@ -2254,10 +3216,10 @@ export function useAppController() {
   }
 
   const selectTemplate = (templateId: TemplateId) => {
-    setLastExport(null)
-    setAnkiVerifyResult(null)
-    patchRequest({ template_id: templateId })
-    setProject((current) => (current ? { ...current, template_id: templateId } : current))
+    const publicTemplateId = publicTemplateIdFor(templateId, request.source_mode)
+    clearStaleReviewResults()
+    patchRequest({ template_id: publicTemplateId })
+    setProject((current) => (current ? { ...current, template_id: publicTemplateId } : current))
   }
 
   const handleWorkerErrorAction = (actionId: WorkerErrorActionId) => {
@@ -2283,55 +3245,62 @@ export function useAppController() {
       return
     }
     if (actionId === 'use-subtitle-only') {
-      if (request.source_mode === 'local') {
-        patchRequest({
-          source_mode: 'local',
-          source_url: '',
-          document_path: '',
-          skip_video_slicing: true,
-        })
-        setLastWorkerError(null)
-        setStatus('已切换到本地字幕-only：下次生成仍使用当前本地视频/SRT，不会跳到视频链接。')
-        return
-      }
-      patchRequest(
-        request.source_mode === 'url'
-          ? {
-              source_mode: 'url',
-              video_path: '',
-              subtitle_path: '',
-              document_path: '',
-              url_import_mode: 'subtitles',
-              skip_video_slicing: true,
-              url_auto_subtitle_fallback: true,
-            }
-          : {
-              skip_video_slicing: true,
-            },
-      )
       setLastWorkerError(null)
-      setStatus('已切换到字幕-only：下次生成会跳过视频下载和切片，只用字幕继续制卡。')
+      setStatus('当前发布版只保留视频制卡，不再提供缺视频恢复。请修复下载/FFmpeg 问题后重试，避免生成缺视频卡。')
       return
     }
     if (actionId === 'skip-video-slicing') {
-      patchRequest({
-        skip_video_slicing: true,
-        url_import_mode: request.source_mode === 'url' ? 'subtitles' : request.url_import_mode,
-      })
       setLastWorkerError(null)
-      setStatus('已开启跳过视频切片：下次导出会保留卡片内容，避开 FFmpeg 切片失败。')
+      setStatus('当前发布版不再允许缺视频导出视频卡。请检查 FFmpeg 或重新生成素材后重试。')
+      return
+    }
+    if (actionId === 'allow-private-network-url') {
+      patchRequest({ allow_private_network_url: true })
+      setStatus('已允许本机/内网 URL。本次只应在你信任该链接时继续；请点击重试任务。')
+      return
+    }
+    if (actionId === 'allow-ytdlp-remote-components') {
+      patchRequest({ allow_ytdlp_remote_components: true })
+      setStatus('已允许 yt-dlp remote components。本次只应在你信任该视频来源时继续；请点击重试任务。')
       return
     }
     if (actionId === 'retry') {
-      if (lastWorkerError?.command === 'export') {
+      const failedCommand = lastWorkerError?.command
+      setLastWorkerError(null)
+      setWorkerProgress(null)
+      setWorkerOperation({ status: 'idle' })
+      setBusy(false)
+      setAnkiVerifying(false)
+      if (failedCommand === 'extract_learning_points') {
+        void extractLearningPoints()
+      } else if (failedCommand === 'generate_cards_from_learning_points') {
+        void confirmGenerateCardsFromLearningPoints()
+      } else if (failedCommand === 'export') {
         void exportApkg()
-      } else if (lastWorkerError?.command === 'verify_anki_import') {
+      } else if (failedCommand === 'verify_anki_import') {
         void verifyAnkiImport()
       } else {
         void generate()
       }
+      return
     }
   }
+
+  const buildReleaseObservedTimingCacheSnapshot = (
+    context: Omit<BuildReleaseObservedSnapshotFromRawCaptureInput, 'capture'>,
+  ) =>
+    buildReleaseObservedSnapshotFromRawCapture({
+      ...context,
+      capture: releaseEvidenceRawSnapshotRef.current,
+    })
+
+  const buildReleaseObservedRawSnapshotHandoff = (
+    context: Omit<BuildReleaseObservedSnapshotFromRawCaptureInput, 'capture'>,
+  ) =>
+    buildReleaseObservedRawSnapshotHandoffArtifact({
+      ...context,
+      capture: releaseEvidenceRawSnapshotRef.current,
+    })
 
   const activeSegment = project?.segments.find((segment) => segment.id === activeSegmentId)
   const activeSegmentVideoSrc = activeSegment && project?.video_path ? toAssetUrl(project.video_path) : ''
@@ -2342,6 +3311,7 @@ export function useAppController() {
     activeSegmentId,
     activeSegmentVideoSrc,
     activeTemplate,
+    activeApiKeySaved,
     advancedApiPresets,
     advancedTtsPresets,
     ankiVerifying,
@@ -2368,11 +3338,19 @@ export function useAppController() {
     envRepairing,
     envRepairResult,
     exportApkg,
+    extractLearningPointsWithoutCache,
     featuredApiPresets,
     featuredTtsPresets,
     geminiVertexTextModels,
     generate,
+    generationConfirmOpen,
+    generationQueuePoints,
+    generationQueueSummary,
+    generationRunState,
     generateCardsFromLearningPoints,
+    generateSingleLearningPoint,
+    closeGenerationConfirm,
+    confirmGenerateCardsFromLearningPoints,
     handleTopbarDoubleClick,
     handleWorkerErrorAction,
     inspectorActionLabel,
@@ -2381,6 +3359,7 @@ export function useAppController() {
     isCancelling,
     isDesktopRuntime: isTauriRuntime(),
     lastExport,
+    lastWorkerError,
     learningPointResult,
     languageFocusOptions,
     levels,
@@ -2405,14 +3384,20 @@ export function useAppController() {
     qualityDiagnostics,
     qualityFunnel,
     readiness,
+    buildReleaseObservedRawSnapshotHandoff,
+    buildReleaseObservedTimingCacheSnapshot,
+    releaseEvidenceSummary,
     request,
     requestEditedDuringRun,
     responsiveMode,
     revealExport,
+    removeGenerationQueueLearningPoint,
+    retryMissingLearningPoints,
     repairEnv,
     runWindowAction,
     activeApiProfileId,
     activeTtsProfileId,
+    activeTtsKeySaved,
     apiProfileDirty,
     apiProfileStatus,
     applySavedApiProfile,
@@ -2425,6 +3410,10 @@ export function useAppController() {
     segmentFilter,
     segmentReviewCounts,
     selectedCardCount,
+    selectedExportableCardCount: exportSelectionStats.selectedExportableCards,
+    exportableCardCount: exportSelectionStats.exportableCards,
+    repairRequiredCardCount: exportSelectionStats.repairRequiredCards,
+    selectedRepairRequiredCardCount: exportSelectionStats.selectedRepairRequiredCards,
     selectedLearningPointCount,
     selectedLearningPointIds,
     invertCardSelection,

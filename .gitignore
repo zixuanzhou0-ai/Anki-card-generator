@@ -7,6 +7,21 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Local secrets and credentials
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.secret
+*.secrets
+*secret*.json
+*secrets*.json
+*token*.json
+*tokens*.json
+*apikey*.json
+*api-key*.json
+*credentials*.json
+
 node_modules
 dist
 dist-ssr
@@ -26,6 +41,7 @@ projects/
 test_runs/
 test-results/
 .playwright-mcp/
+.hermes/
 overnight_verify_exports/
 overnight_verify_import/
 quality_verify_exports/
@@ -37,8 +53,26 @@ release/
 runtime_diagnostic.json
 tmp_*.json
 .tauri-dev.err
+.tauri-dev-current.out
+.tauri-dev-current.err
+.tauri-dev-*.out
+.tauri-dev-*.err
+.vite-dev-current.out
+.vite-dev-current.err
+.vite-dev-*.out
+.vite-dev-*.err
+.tauri-launch-current.json
+.tauri-startup-current.json
+.tauri-window-current.json
+.tauri-exit-current.json
+.tauri-exit-monitor-current.ps1
+.tauri-job-current.json
+.renderer-error-current.json
+.tauri-dev-no-before-command.json
 .codex-desktop-screenshot.png
 card-template-panel-after.png
+anki-card-mode-smoke.png
+settings-*-layout.png
 .package/
 NEXT_SESSION_HANDOFF.md
 OVERNIGHT_ACCEPTANCE.md
@@ -46,6 +80,16 @@ UI_REDESIGN_REVIEW.md
 @AutomationLog.txt
 _incoming_ui_redesign/
 tests/animated-bar-chart/
+
+# Internal planning, handoff, and evidence notes kept local
+AGENTS.md
+docs/GOAL*.md
+docs/NEXT*.md
+docs/HANDOFF*.md
+docs/CURRENT_PROJECT_STATE_*.md
+docs/RC_TEST_REPORT_*.md
+docs/VIDEO_MATERIAL_ROTATION_GATE.md
+docs/CLEANUP_BOUNDARIES_*.md
 
 # Python/Rust build output
 .venv/

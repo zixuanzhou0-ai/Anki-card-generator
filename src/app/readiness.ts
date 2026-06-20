@@ -1,5 +1,7 @@
-import type { SourceMode } from '../domain/types'
+import type { EnvStatus, SourceMode, TtsTestResult } from '../domain/types'
 import type { ReadinessItem } from '../features/generation/ReadinessPanel'
+
+const PUBLIC_VIDEO_SOURCE_ONLY_MESSAGE = '当前发布版只支持本地视频和视频链接。请选择视频素材。'
 
 type BuildReadinessItemsInput = {
   sourceMode: SourceMode
@@ -16,6 +18,45 @@ type BuildReadinessItemsInput = {
   currentSelectionCount: number
 }
 
+export function buildTtsReadinessDetail({
+  ttsRequired,
+  ttsTestResult,
+}: {
+  ttsRequired: boolean
+  ttsTestResult: Pick<TtsTestResult, 'ok'> | null
+}): string {
+  if (!ttsRequired) {
+    return '已关闭'
+  }
+  if (ttsTestResult?.ok) {
+    return '导出可用'
+  }
+  if (ttsTestResult) {
+    return '需修复后导出'
+  }
+  return '可稍后测试'
+}
+
+export function isEnvironmentReadyForGeneration({
+  desktopRuntime,
+  envStatus,
+  sourceMode,
+}: {
+  desktopRuntime: boolean
+  envStatus: EnvStatus | null
+  sourceMode: SourceMode
+}): boolean {
+  if (!desktopRuntime) {
+    return true
+  }
+
+  return Boolean(
+    envStatus?.genanki &&
+      envStatus.ffmpeg &&
+      (sourceMode === 'local' || (sourceMode === 'url' && envStatus.yt_dlp)),
+  )
+}
+
 export function buildReadinessItems({
   sourceMode,
   sourceReady,
@@ -30,16 +71,14 @@ export function buildReadinessItems({
   ttsDetail,
   currentSelectionCount,
 }: BuildReadinessItemsInput): ReadinessItem[] {
-  const sourceLabel = sourceMode === 'url' ? 'URL' : sourceMode === 'document' ? '文档' : '素材'
+  const sourceLabel = sourceMode === 'url' ? 'URL' : '素材'
   const sourceDetail =
     sourceMode === 'url'
       ? sourceReady
         ? '已就绪'
         : '待输入链接'
       : sourceMode === 'document'
-        ? sourceReady
-          ? '已就绪'
-          : '待选择 TXT / Markdown / DOCX / PDF'
+        ? PUBLIC_VIDEO_SOURCE_ONLY_MESSAGE
         : localVideoPath
           ? localSubtitlePath
             ? '视频和字幕已选择'

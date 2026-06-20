@@ -13,7 +13,7 @@ This beta refresh focuses on the visible desktop experience and release assets.
 - Refreshed README and user-guide screenshots to match the current interface.
 - Split the frontend entry into an app shell/controller and split option presets into domain modules.
 - Moved the Python worker entrypoint to a small command router and added schema metadata to worker responses.
-- Split document input into a default knowledge-absorption path and an opt-in language-reading path. Knowledge mode hides video-language controls such as CEFR level, listening cards, and phrase-card toggles.
+- Hid document input from the public desktop workflow so this beta can focus on reliable video language cards from local video and video links.
 - Added the first Deep Study pipeline: generation now stores a hidden `material_context` and feeds it into candidate review and card writing, so stronger thinking models can judge the whole material before producing cards.
 - Added contextual vocabulary cards. `vocabulary` is now part of the default video learning focus, and `vocabulary_usage` cards export with the `语境生词卡` label while keeping V10 APKG fields compatible.
 - Added the default `沉浸复读 V12` Anki template for video/subtitle cards. The front is now a focused shadowing card with click-to-play replay video and custom `原声` / `慢读` buttons; the back prioritizes core expression, Chinese intuition, standard IPA, spoken IPA, source-sentence listening notes, phrase TTS, and compact explanation blocks while preserving compatible fields.

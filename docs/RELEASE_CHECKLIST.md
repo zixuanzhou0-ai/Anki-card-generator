@@ -1,95 +1,66 @@
 # Release Checklist
 
-当前发布目标：`v0.9.2-beta`（package version `0.9.2`）。
+当前发布目标：`v0.9.3-beta`（package version `0.9.3`）。
 
-目标：确认用户拿到 Windows 桌面端后，不需要源码和开发服务，也能完成素材导入、智能生成、审核、导出和 Anki 验证。
+## 版本与仓库边界
 
-## 发布前
+- [ ] `package.json`、`package-lock.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 版本一致。
+- [ ] `README.md`、`PRIVACY.md`、`SECURITY.md`、`docs/BETA_LIMITATIONS.md` 都写明 `v0.9.3-beta`。
+- [ ] `.gitignore` 明确排除 `.env*`、key/token/credential 本地文件、生成媒体、APKG、test runs、缓存、日志和内部 handoff/goal 文档。
+- [ ] 使用白名单 staging；不要运行 `git add .`。
+- [ ] `git diff --cached` 人工检查无 API key、私有路径、APKG、视频、音频、`test_runs/` 或内部工作文档。
 
-- [ ] `git status` 只包含本次发布相关文件。
-- [ ] 没有真实 API Key、OAuth token、私人视频、私人字幕、`.apkg` 或测试缓存。
-- [ ] `.gitignore` 已排除 `.playwright-mcp/`、`e2e_regression_*/`、`tmp_*.json`、媒体缓存、构建缓存和虚拟环境。
-- [ ] 版本号已同步：`package.json`、`package-lock.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`。
-- [ ] `workers/` 已作为 Tauri resources 打包。
-- [ ] README、`docs/USER_GUIDE.md`、`docs/TROUBLESHOOTING.md`、`docs/ARCHITECTURE.md`、`docs/BETA_LIMITATIONS.md` 与当前 UI 一致。
-- [ ] `docs/screenshots/` 已用当前 UI 重新截图，README 和用户教程引用的截图都能打开。
-- [ ] 文档说明当前主流程：素材配置、AI 精筛学习点、用户选择学习点、生成完整卡片、审核导出、学习点诊断、发音透明标记、APKG 导出。
-- [ ] 文档说明当前设置页：模型 API 按服务商独立保存、Vertex 使用 gcloud OAuth、TTS 独立保存、本地环境可检测和一键修复。
-- [ ] 文档说明 `词霸天下实验 V1` 已有独立导出 Anki 卡面，但仍复用现有字段 schema，仍是实验模板。
-- [ ] 开发启动说明可用：`npm run tauri:dev` 能启动当前 workspace，不依赖旧 release/portable 包。
+## 产品文档
 
-## 自动测试
+- [ ] README 说明当前公开主流程只包含 `本地视频 + 字幕` 和 `视频链接`。
+- [ ] README 说明完整复读、快速复读、TTS、APKG 导出、Anki 导入核验、缓存/耗时诊断。
+- [ ] `docs/USER_GUIDE.md` 可按普通用户流程完成从设置到导出。
+- [ ] `docs/TROUBLESHOOTING.md` 覆盖 Python、FFmpeg、yt-dlp、Anki、AnkiConnect、TTS、API key 常见问题。
+- [ ] `docs/screenshots/` 只保留可公开截图；截图不含 API key、本机用户名、私有路径或私人素材。
+- [ ] GitHub Release body 使用 `docs/RELEASE_NOTES_v0.9.3-beta.md`。
+
+## 自动验证
 
 ```powershell
-npm run lint
-npm run test:unit
-npm run build
-python -m pytest tests\test_worker_quality.py -q
+npm.cmd run check
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
 发布包前再跑：
 
 ```powershell
-npm run test:ui
-npm run tauri:build
+npm.cmd run tauri:build
 ```
 
-如果 CI 因外部服务、模型接口、YouTube 限流或网络故障失败，release note 需要写明原因和人工复核结果。
+如果环境允许，也跑：
 
-## 桌面端 Smoke Test
+```powershell
+npm.cmd run check:full
+```
 
-建议至少跑一次真实桌面端流程：
+## 桌面端验证
 
-1. 启动最新 Windows 桌面端。
-2. 打开设置，检查模型 API、语音 TTS、本地环境三个页签。
-3. 在本地环境页点击检测；缺失项需要能显示“可修复 / 需手动处理”的明确状态。
-4. 用短视频或本地视频 + SRT 生成项目。
-5. 确认 `抽取学习点` 会调用模型 API，不会把本地规则秒出的候选当正式结果。
-6. 确认学习点页面显示推荐、候选和诊断；推荐默认勾选，候选可手动勾选。
-7. 选择学习点后生成完整卡片。
-8. 确认 Review 页面显示：
-   - 生成卡片数
-   - 已选卡片数
-   - 全部片段
-   - 学习点诊断
-9. 取消选择几张卡，再重新全选。
-10. 打开学习点诊断，确认候选、重复、硬阻断原因可见。
-11. 检查至少 5 张卡：原句、答案、发音字段、TTS、原声、视频预览。
-12. 导出 APKG。
-13. 使用 APKG verify 检查字段、媒体、TTS ledger、PronunciationMeta。
-14. 导入 Anki，抽查音频按钮和卡面顺序。
+- [ ] `npm.cmd run desktop:dev` 只显示桌面 UI，不额外弹出 Tauri/npm 终端窗口。
+- [ ] `.tauri-dev-current.out/.err` 和 `.vite-dev-current.out/.err` 仍写入日志。
+- [ ] `npm.cmd run desktop:dev:debug` 会显示调试终端，方便开发排查。
+- [ ] release 安装包或 portable exe 启动时不显示终端窗口。
 
-## 干净机器验证
+## 视频制卡 Smoke
 
-建议用 Windows Sandbox / 虚拟机 / 另一台电脑。
+至少跑一个小样本，确认本次终端隐藏和版本发布没有影响核心路径：
 
-1. 只复制 release 安装包或 zip，不复制源码。
-2. 安装或解压。
-3. 启动应用。
-4. 打开本地环境页并点击“一键修复全部可修复项”。
-5. 确认 Python 3.12、Python 依赖、FFmpeg、Anki、AnkiConnect 的状态说明可读。
-6. 配置一个模型服务商和一个 TTS 服务商并保存。
-7. 用短素材生成卡片。
-8. 导出 APKG 并导入 Anki。
-9. 删除测试缓存和 APKG，确认 release 目录不包含 API Key、OAuth token 或私人素材。
+- [ ] 本地视频 + 字幕或视频链接可抽取学习点。
+- [ ] 用户可勾选学习点并生成卡。
+- [ ] 可导出 `.apkg`。
+- [ ] Anki 导入核验通过，`failed_checks=[]`。
+- [ ] 抽查卡片里的视频、原声、整句 TTS、表达 TTS 可播放。
 
-## GitHub Release 内容
+完整 release-hardening 证据已在本地 2026-06-20 矩阵完成：8/8 cases passed、202 target cards、112 Anki preview inspections。该证据不直接提交到 GitHub。
 
-- Windows installer / portable package
-- Source archive
-- README
-- `docs/USER_GUIDE.md`
-- `docs/TROUBLESHOOTING.md`
-- `docs/BETA_LIMITATIONS.md`
-- Release notes
+## GitHub Release
 
-Release note 应明确写出：
-
-- 当前是统一智能筛选，不再暴露“精选 / 不漏 / 全量”策略。
-- 当前是先 AI 精筛学习点，再由用户选择学习点生成完整卡。
-- 生成出的完整卡默认全选，用户导出前自行勾选。
-- 学习点诊断只用于解释为什么有些学习点没有生成完整卡。
-- `词霸天下实验 V1` 是实验风格模板，已使用独立导出 Anki 卡面，但仍复用现有字段 schema。
-- 多语言发音默认是字幕推测，不是音频实听。
-- 第三方模型、TTS 和 YouTube 可能产生费用、限流或版权风险。
+- [ ] 从 release 分支开 PR 到 `main`。
+- [ ] PR CI 通过后合并。
+- [ ] 在 `main` 合并 commit 上创建 tag `v0.9.3-beta`。
+- [ ] 创建 GitHub Release 并上传 Windows installer、MSI、portable zip、SHA256SUMS。
+- [ ] Release note 明确这是 beta：第三方模型/TTS/视频下载可能受服务商、网络、费用和版权限制影响。

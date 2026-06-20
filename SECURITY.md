@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-`v0.9.2-beta` is the current Windows beta. Security fixes should be made on `main` and included in the next beta release.
+`v0.9.3-beta` is the current Windows beta. Security fixes should be made on `main` and included in the next beta release.
 
 ## Reporting a vulnerability
 
@@ -26,4 +26,4 @@ Never commit real API keys. Do not paste keys into issues, screenshots, release 
 
 ## Third-party services
 
-When users enable model review or TTS, subtitles, document excerpts, card fields, and TTS text may be sent to the selected provider. Keep `PRIVACY.md` current whenever providers or request payloads change.
+When users enable model review or TTS, subtitles, learning points, card fields, and TTS text may be sent to the selected provider. Keep `PRIVACY.md` current whenever providers or request payloads change.

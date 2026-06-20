@@ -7,12 +7,14 @@ export function badgeText(count: number) {
 }
 
 export function qualityLabel(card: Card) {
+  if (cardHasExportBlockingContent(card)) return '需修复'
   const status = card.quality?.status
   if (status === 'reject') return '已过滤'
   return '可用卡'
 }
 
 export function qualityClass(card: Card) {
+  if (cardHasExportBlockingContent(card)) return 'blocked'
   return card.quality?.status === 'reject' ? 'filtered' : 'usable'
 }
 
@@ -25,6 +27,169 @@ export const segmentFilterOptions: Array<{ id: SegmentFilter; label: string }> =
 export function phraseValueScore(value: number | string | null | undefined) {
   const score = Number(value)
   return Number.isFinite(score) ? score : null
+}
+
+const exportBlockingTextPatterns = [
+  '待精修',
+  '本地 fallback',
+  '本地草稿',
+  '本地文档草稿',
+  '本地文档精读草稿',
+  '自动草稿卡',
+  '预览草稿',
+  '本地待审',
+  '正式导出前',
+  '内部提示',
+  '需要人工确认',
+  '需人工确认',
+  '需要 AI 精修',
+  '只保证结构完整',
+  '不建议直接作为正式学习内容',
+  '当作本句目标表达',
+  'natural object',
+  'complete sentence',
+]
+
+const manualConfirmationOnlyPatterns = ['需要人工确认', '需人工确认']
+
+const exportBlockingCardFields: Array<keyof Card> = [
+  'learning_goal',
+  'decision_reason',
+  'phrase_decision_reason',
+  'phrase_reject_reason',
+  'phrase_card_focus',
+  'learning_action',
+  'chinese',
+  'definition',
+  'collocations',
+  'teacher_note',
+  'context',
+  'example',
+  'chinese_feel',
+  'why',
+  'difficulty_reason',
+  'phrase',
+  'answer_core',
+  'learning_target',
+  'why_it_matters',
+  'how_to_use_it',
+  'natural_chinese',
+  'usage_boundary',
+  'confusable_note',
+  'replacement_examples',
+  'avoid_reason',
+]
+
+export function containsExportBlockingText(value: unknown) {
+  const text = Array.isArray(value) ? value.join(' ') : String(value ?? '')
+  if (!text.trim()) return false
+  const lowered = text.toLowerCase()
+  return exportBlockingTextPatterns.some((pattern) => text.includes(pattern) || lowered.includes(pattern.toLowerCase()))
+}
+
+function exportBlockingPatternsForText(value: unknown) {
+  const text = Array.isArray(value) ? value.join(' ') : String(value ?? '')
+  if (!text.trim()) return []
+  const lowered = text.toLowerCase()
+  return exportBlockingTextPatterns.filter((pattern) => text.includes(pattern) || lowered.includes(pattern.toLowerCase()))
+}
+
+function containsExportBlockingQualityIssue(value: unknown) {
+  const patterns = exportBlockingPatternsForText(value)
+  if (!patterns.length) return false
+  return patterns.some((pattern) => !manualConfirmationOnlyPatterns.includes(pattern))
+}
+
+const exportBlockingCardFieldLabels: Partial<Record<keyof Card, string>> = {
+  chinese: '中文意思',
+  definition: '释义 / 搭配',
+  collocations: '搭配 / 理由',
+  teacher_note: '老师评语',
+  context: '语境',
+  example: '例句',
+  chinese_feel: '中文语感',
+  why: '学习理由',
+  difficulty_reason: '难度说明',
+  phrase: '学习点',
+  answer_core: '答案',
+  learning_goal: '学习目标',
+  decision_reason: '选择理由',
+  phrase_decision_reason: '学习点理由',
+  phrase_reject_reason: '过滤理由',
+  phrase_card_focus: '卡片重点',
+  learning_action: '学习动作',
+  learning_target: '记忆目标',
+  why_it_matters: '重要性',
+  how_to_use_it: '使用方式',
+  natural_chinese: '自然中文',
+  usage_boundary: '使用边界',
+  confusable_note: '易混提醒',
+  replacement_examples: '替换例句',
+  avoid_reason: '过滤原因',
+}
+
+export type ExportRepairItem = {
+  segmentId: string
+  cardId: string
+  sourceTime: string
+  title: string
+  reasons: string[]
+}
+
+export type ExportSelectionStats = {
+  totalCards: number
+  exportableCards: number
+  repairRequiredCards: number
+  selectedCards: number
+  selectedExportableCards: number
+  selectedRepairRequiredCards: number
+}
+
+export function exportBlockingReasonsForCard(card: Card) {
+  const reasons = exportBlockingCardFields
+    .filter((field) => containsExportBlockingText(card[field]))
+    .map((field) => {
+      const label = exportBlockingCardFieldLabels[field] ?? String(field)
+      return `${label}：${clipText(String(card[field] ?? ''), 72)}`
+    })
+  const issueReasons = (card.quality?.issues ?? [])
+    .filter((issue) => containsExportBlockingQualityIssue(issue))
+    .map((issue) => `质量提示：${clipText(issue, 72)}`)
+  return [...reasons, ...issueReasons]
+}
+
+export function cardHasExportBlockingContent(card: Card) {
+  if (exportBlockingCardFields.some((field) => containsExportBlockingText(card[field]))) return true
+  return (card.quality?.issues ?? []).some((issue) => containsExportBlockingQualityIssue(issue))
+}
+
+function exportRepairTitle(segment: Segment, card: Card) {
+  return (
+    card.answer_core ||
+    card.phrase ||
+    segment.phrase ||
+    card.english ||
+    segment.text ||
+    '未命名卡片'
+  )
+}
+
+export function exportRepairItems(project: Project | null, maxItems = 5): ExportRepairItem[] {
+  const items: ExportRepairItem[] = []
+  for (const segment of project?.segments ?? []) {
+    for (const card of segment.cards) {
+      if (!cardHasExportBlockingContent(card)) continue
+      items.push({
+        segmentId: segment.id,
+        cardId: card.id,
+        sourceTime: segment.source_time || '',
+        title: clipText(exportRepairTitle(segment, card), 48),
+        reasons: exportBlockingReasonsForCard(card).slice(0, 3),
+      })
+      if (items.length >= maxItems) return items
+    }
+  }
+  return items
 }
 
 export function isPlaceholderPhrase(value: string | null | undefined) {
@@ -184,6 +349,7 @@ export function segmentBudgetLabel(value: number | undefined) {
 }
 
 export function isRecommendedCardForExport(segment: Segment, card: Card) {
+  if (cardHasExportBlockingContent(card)) return false
   const quality = card.quality?.status
   if (quality === 'recommended') return true
   if (quality === 'needs_review') return false
@@ -194,6 +360,7 @@ export function isRecommendedCardForExport(segment: Segment, card: Card) {
 }
 
 export function isReviewableCardForExport(segment: Segment, card: Card) {
+  if (cardHasExportBlockingContent(card)) return false
   if (card.quality?.status === 'reject') return false
   if (isRecommendedCardForExport(segment, card)) return true
   const reviewStatus = segmentReviewStatus(segment)
@@ -203,6 +370,32 @@ export function isReviewableCardForExport(segment: Segment, card: Card) {
 
 export function isUsableCardForExport(segment: Segment, card: Card) {
   return isReviewableCardForExport(segment, card)
+}
+
+export function getExportSelectionStats(project: Project | null): ExportSelectionStats {
+  const stats: ExportSelectionStats = {
+    totalCards: 0,
+    exportableCards: 0,
+    repairRequiredCards: 0,
+    selectedCards: 0,
+    selectedExportableCards: 0,
+    selectedRepairRequiredCards: 0,
+  }
+  for (const segment of project?.segments ?? []) {
+    for (const card of segment.cards) {
+      const exportable = isUsableCardForExport(segment, card)
+      const repairRequired = cardHasExportBlockingContent(card)
+      stats.totalCards += 1
+      if (exportable) stats.exportableCards += 1
+      if (repairRequired) stats.repairRequiredCards += 1
+      if (card.enabled) {
+        stats.selectedCards += 1
+        if (exportable) stats.selectedExportableCards += 1
+        if (repairRequired) stats.selectedRepairRequiredCards += 1
+      }
+    }
+  }
+  return stats
 }
 
 export function applyCardSelection(project: Project, mode: 'recommended' | 'reviewable') {
@@ -224,13 +417,55 @@ export function applyCardSelection(project: Project, mode: 'recommended' | 'revi
       ? {
           ...project.quality_funnel,
           selected_card_count: selected,
+          selected_exportable_card_count: selected,
+          selected_repair_required_card_count: 0,
         }
       : {
           selected_card_count: selected,
+          selected_exportable_card_count: selected,
+          selected_repair_required_card_count: 0,
         },
     segments,
   }
   return { project: nextProject, selected }
+}
+
+export function removeExportBlockedCardSelection(project: Project) {
+  let removed = 0
+  let selected = 0
+  const segments = project.segments.map((segment) => ({
+    ...segment,
+    cards: segment.cards.map((card) => {
+      if (card.enabled && !isUsableCardForExport(segment, card)) {
+        removed += 1
+        return { ...card, enabled: false }
+      }
+      if (card.enabled) selected += 1
+      return card
+    }),
+  }))
+  if (removed === 0) return { project, removed, selected }
+  const nextProject = {
+    ...project,
+    quality_funnel: project.quality_funnel
+      ? {
+          ...project.quality_funnel,
+          selected_card_count: selected,
+          selected_exportable_card_count: selected,
+          selected_repair_required_card_count: 0,
+        }
+      : {
+          selected_card_count: selected,
+          selected_exportable_card_count: selected,
+          selected_repair_required_card_count: 0,
+        },
+    segments,
+  }
+  return {
+    project: nextProject,
+    removed,
+    selected,
+  }
 }
 
 export function applyUsableCardSelection(project: Project) {
@@ -251,10 +486,14 @@ export function applyUsableCardSelection(project: Project) {
           ...project.quality_funnel,
           usable_card_count: selected,
           selected_card_count: selected,
+          selected_exportable_card_count: selected,
+          selected_repair_required_card_count: 0,
         }
       : {
           usable_card_count: selected,
           selected_card_count: selected,
+          selected_exportable_card_count: selected,
+          selected_repair_required_card_count: 0,
         },
     segments,
   }

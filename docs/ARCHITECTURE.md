@@ -6,7 +6,7 @@ This document describes the current desktop app architecture for maintenance and
 
 ```mermaid
 flowchart TB
-  A["Local video / URL / document"] --> B["Source parsing"]
+  A["Local video / URL"] --> B["Subtitle parsing"]
   B --> C["Local high-recall learning point seeds"]
   C --> D["AI review + missing point expansion"]
   D --> E["Contract sanitize + validation"]
@@ -26,6 +26,8 @@ The user-facing workflow is intentionally simple:
 ```text
 素材配置 -> 学习设置 -> 确认抽取 -> 审核导出
 ```
+
+The current public product surface intentionally hides document card generation. Internal document types and historical tests may remain for compatibility or future experiments, but release validation and ordinary desktop UI focus on video language cards only: local video and video links.
 
 Internally, the worker still keeps quality status, diagnostics, duplicate folding, hard blockers, and validation issues. The UI no longer asks users to choose between catch_all/curated/exhaustive. Learning point extraction is now AI-reviewed: local rules produce seeds, but formal extraction requires a tested model API.
 
@@ -72,22 +74,14 @@ The review UI defaults all usable cards to selected. Candidate-only learning poi
 
 ## Card Templates
 
-Current video/subtitle templates:
+The public video/subtitle workflow exposes one stable family: `immersive_v11`.
 
-- `immersive_v11`: default stable template.
-- `ciba_tianxia_v1`: experimental language-action mode.
+User-facing modes:
 
-`ciba_tianxia_v1` is intentionally isolated by `template_id`. It changes:
+- `完整复读`: full V11 back side with meaning, usage, pronunciation, practice, video, original audio, sentence TTS, and phrase TTS.
+- `快速复读`: lightweight V11 back side focused on original sentence, Chinese meaning, video, original audio, sentence TTS, and phrase TTS.
 
-- AI learning point review prompt.
-- learning value scoring preference.
-- final card-generation prompt.
-- Anki model family/tag label.
-- exported Anki front/back card face.
-
-It uses independent exported Anki front/back assets for the visible card face. The front prioritizes retrieval prompts, while the back organizes existing note fields as language action, contextual meaning, transfer examples, collocation boundary, listening evidence, and source scene.
-
-It still reuses the same genanki note field schema as the other language templates; `ciba_tianxia_v1` is a template/prompt/export-layout mode, not a separate learning-point data model.
+Historical or experimental template code may remain in the repository for regression and future research, but ordinary desktop UI and release validation must not expose it as a public card-generation path. All current public APKG exports keep the existing note-field compatibility contract.
 
 ## Language And Pronunciation
 

@@ -29,7 +29,8 @@ describe('DocumentStudyPanel', () => {
     const props = renderPanel()
 
     fireEvent.click(screen.getByRole('button', { name: /例子案例/ }))
-    fireEvent.click(screen.getByRole('button', { name: '双语' }))
+    fireEvent.click(screen.getByText('答案语言'))
+    fireEvent.click(screen.getByRole('button', { name: /双语/ }))
     fireEvent.click(screen.getByRole('button', { name: /深入掌握/ }))
     fireEvent.click(screen.getByRole('button', { name: '详细答案' }))
 
@@ -39,6 +40,9 @@ describe('DocumentStudyPanel', () => {
     expect(screen.getByText(/一张卡只记一个可回忆点/)).toBeVisible()
     expect(screen.getByText('知识吸收')).toBeVisible()
     expect(screen.getByText('知识卡重点')).toBeVisible()
+    expect(screen.getByText('答案语言')).toBeVisible()
+    expect(screen.getByText('答案/解析语言')).toBeVisible()
+    expect(screen.queryByText('讲解语言')).not.toBeInTheDocument()
     expect(screen.getByText('理解深度')).toBeVisible()
     expect(screen.queryByText('文档吸收设置')).not.toBeInTheDocument()
     expect(screen.queryByText('卡片深度')).not.toBeInTheDocument()
@@ -47,6 +51,17 @@ describe('DocumentStudyPanel', () => {
     expect(props.onPatchRequest).toHaveBeenCalledWith({ document_answer_language: 'bilingual' })
     expect(props.onPatchRequest).toHaveBeenCalledWith({ document_depth: 'deep' })
     expect(props.onPatchRequest).toHaveBeenCalledWith({ document_answer_length: 'long' })
+  })
+
+  it('keeps extra answer languages in advanced document controls', () => {
+    const props = renderPanel()
+
+    fireEvent.click(screen.getByText('答案语言'))
+    fireEvent.change(screen.getByLabelText('更多答案语言'), { target: { value: 'ja' } })
+
+    expect(screen.getByText(/自动识别原文/)).toBeVisible()
+    expect(screen.getByRole('option', { name: '日本語' })).toBeInTheDocument()
+    expect(props.onPatchRequest).toHaveBeenCalledWith({ document_answer_language: 'ja' })
   })
 
   it('shows language reading settings without listening focus', () => {

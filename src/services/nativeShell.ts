@@ -10,8 +10,18 @@ export async function selectSingleFile(filters: Array<{ name: string; extensions
   })
 }
 
-export async function selectDirectory() {
-  return openDialog({ directory: true, multiple: false })
+export type SelectDirectoryOptions = {
+  title?: string
+  defaultPath?: string | null
+}
+
+export async function selectDirectory(options: SelectDirectoryOptions = {}) {
+  return openDialog({
+    directory: true,
+    multiple: false,
+    ...(options.title ? { title: options.title } : {}),
+    ...(options.defaultPath ? { defaultPath: options.defaultPath } : {}),
+  })
 }
 
 export async function listDirectoryFiles(directory: string) {

@@ -1,9 +1,9 @@
-import type { CardStyleId, TemplateId } from './types'
+import type { CardStyleId, SourceMode, TemplateId } from './types'
 
 export const validTemplateIds: TemplateId[] = ['immersive_v11', 'ciba_tianxia_v1', 'immersive', 'dictionary', 'minimal']
 
 export const templateOptions: Array<{ id: TemplateId; label: string; note: string; locked?: boolean }> = [
-  { id: 'immersive_v11', label: '沉浸复读 V11', note: '当前唯一主模板：正面跟读，背面核对表达、原句译文和用法' },
+  { id: 'immersive_v11', label: '沉浸复读', note: '主流程模板：完整复读和快速复读都使用这套稳定正面' },
   {
     id: 'ciba_tianxia_v1',
     label: '词霸天下实验 V1',
@@ -22,6 +22,11 @@ export const cardStyleOptions: Array<{ id: CardStyleId; label: string; note: str
 
 export function normalizeTemplateId(value: unknown): TemplateId {
   return validTemplateIds.includes(value as TemplateId) ? (value as TemplateId) : 'immersive_v11'
+}
+
+export function publicTemplateIdFor(value: unknown, sourceMode: SourceMode | undefined): TemplateId {
+  const normalized = normalizeTemplateId(value)
+  return sourceMode === 'document' ? normalized : 'immersive_v11'
 }
 
 export function normalizeCardStyleId(value: unknown): CardStyleId {

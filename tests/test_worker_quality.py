@@ -1,13 +1,16 @@
 import base64
+import hashlib
 import importlib.util
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 from contextlib import redirect_stderr
 from pathlib import Path
 
@@ -27,6 +30,7 @@ def load_worker():
 
 
 worker = load_worker()
+from acg import ytdlp_support
 
 
 def load_verify_apkg():
@@ -51,6 +55,239 @@ class WorkerQualityTests(unittest.TestCase):
             "disable_ai_review_cache": True,
             "disable_card_generation_cache": True,
         }
+
+    def test_url_video_mode_overrides_stale_skip_video_flag(self):
+        legacy = worker._legacy_worker
+        payload = {
+            "source_url": "https://example.com/watch",
+            "url_import_mode": "video",
+            "skip_video_slicing": True,
+            "language": "English",
+        }
+
+        self.assertFalse(legacy.wants_subtitle_only(payload))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_root = Path(temp_dir)
+            source_dir = cache_root / "url_deadbeef"
+            source_dir.mkdir()
+            (source_dir / "source.mp4").write_bytes(b"fake video")
+            (source_dir / "source.en.srt").write_text(
+                "1\n00:00:00,000 --> 00:00:01,000\nHello there.\n",
+                encoding="utf-8",
+            )
+
+            cached = legacy.find_cached_url_source(cache_root, "deadbeef", payload)
+            self.assertIsNotNone(cached)
+            assert cached is not None
+            self.assertEqual(cached["download_mode"], "video")
+            self.assertFalse(cached["skip_video_slicing"])
+            project = {
+                "source_mode": "url",
+                "url_import_mode": "video",
+                "skip_video_slicing": True,
+                "video_path": cached["video_path"],
+                "source_info": cached,
+            }
+            self.assertFalse(legacy.video_free_export_allowed(project))
+            self.assertTrue(legacy.video_media_required_for_export(project))
+
+            stale_transcript_project = {
+                "source_mode": "url",
+                "skip_video_slicing": True,
+                "video_path": cached["video_path"],
+                "source_info": {"transcript_only": True},
+            }
+            self.assertFalse(legacy.video_free_export_allowed(stale_transcript_project))
+            self.assertTrue(legacy.video_media_required_for_export(stale_transcript_project))
+
+    def test_url_subtitle_mode_still_allows_video_free_export(self):
+        legacy = worker._legacy_worker
+        self.assertTrue(legacy.wants_subtitle_only({"url_import_mode": "subtitles", "skip_video_slicing": False}))
+        self.assertTrue(
+            legacy.video_free_export_allowed(
+                {
+                    "source_mode": "url",
+                    "url_import_mode": "subtitles",
+                    "skip_video_slicing": False,
+                    "video_path": "source.mp4",
+                    "source_info": {"download_mode": "video", "transcript_only": False},
+                }
+            )
+        )
+
+    def test_source_mode_helpers_match_worker_boundary(self):
+        from acg import source_modes
+
+        url_video_project = {
+            "source_mode": "url",
+            "url_import_mode": "video",
+            "skip_video_slicing": True,
+            "video_path": "source.mp4",
+            "source_info": {"download_mode": "video", "transcript_only": True},
+        }
+        subtitle_project = {
+            "source_mode": "url",
+            "url_import_mode": "subtitles",
+            "skip_video_slicing": False,
+            "video_path": "source.mp4",
+            "source_info": {"download_mode": "video", "transcript_only": False},
+        }
+        document_project = {"source_mode": "document"}
+
+        self.assertFalse(worker._legacy_worker.wants_subtitle_only(url_video_project))
+        self.assertEqual(
+            worker._legacy_worker.video_free_export_allowed(url_video_project),
+            source_modes.video_free_export_allowed(url_video_project),
+        )
+        self.assertEqual(
+            worker._legacy_worker.video_media_required_for_export(url_video_project),
+            source_modes.video_media_required_for_export(url_video_project),
+        )
+        self.assertTrue(source_modes.video_free_export_allowed(subtitle_project))
+        self.assertTrue(source_modes.video_free_export_allowed(document_project))
+
+    def test_language_text_helpers_match_worker_boundary(self):
+        from acg import language_text
+
+        languages = ["", "English", "français", "es-MX", "日本語", "русский", "unknown"]
+        for language in languages:
+            self.assertEqual(
+                worker._legacy_worker.normalize_learning_language(language),
+                language_text.normalize_learning_language(language),
+            )
+            self.assertEqual(
+                worker._legacy_worker.pronunciation_profile(language),
+                language_text.pronunciation_profile(language),
+            )
+
+        samples = [
+            "You're feeling completely lost.",
+            "we'll test overlap",
+            "中文语境义",
+            "日本語の例",
+            "Русский текст",
+            "",
+        ]
+        for sample in samples:
+            self.assertEqual(worker._legacy_worker.overlap_words(sample), language_text.overlap_words(sample))
+            self.assertEqual(
+                worker._legacy_worker.expanded_overlap_words(sample),
+                language_text.expanded_overlap_words(sample),
+            )
+            self.assertEqual(worker._legacy_worker.has_cjk(sample), language_text.has_cjk(sample))
+            self.assertEqual(worker._legacy_worker.has_japanese_kana(sample), language_text.has_japanese_kana(sample))
+            self.assertEqual(worker._legacy_worker.has_cyrillic(sample), language_text.has_cyrillic(sample))
+            self.assertEqual(worker._legacy_worker.has_latin_letter(sample), language_text.has_latin_letter(sample))
+
+        self.assertTrue(worker._legacy_worker.looks_like_target_language_text("bonjour", "fr"))
+        self.assertTrue(language_text.looks_like_target_language_text("bonjour", "fr"))
+        self.assertFalse(worker._legacy_worker.looks_like_target_language_text("需要人工确认", "en"))
+        self.assertFalse(language_text.looks_like_target_language_text("需要人工确认", "en"))
+        self.assertEqual(
+            worker._legacy_worker.word_overlap_ratio("You're completely lost", "you are lost"),
+            language_text.word_overlap_ratio("You're completely lost", "you are lost"),
+        )
+        self.assertEqual(worker._legacy_worker.TTS_LANGUAGE_FALLBACKS, language_text.TTS_LANGUAGE_FALLBACKS)
+
+    def test_service_error_helpers_match_worker_boundary(self):
+        from acg import service_errors
+
+        messages = [
+            "API HTTP 429: quota exceeded",
+            "TTS download HTTP 500: connection reset",
+            "HTTP Error 403: Forbidden",
+            "not an http status",
+        ]
+        for message in messages:
+            self.assertEqual(
+                worker._legacy_worker.http_status_from_error_message(message),
+                service_errors.http_status_from_error_message(message),
+            )
+
+        for kind in ("model", "tts", "unknown"):
+            self.assertEqual(worker._legacy_worker.service_error_codes(kind), service_errors.service_error_codes(kind))
+            self.assertEqual(worker._legacy_worker.service_stage(kind), service_errors.service_stage(kind))
+            self.assertEqual(worker._legacy_worker.service_label(kind), service_errors.service_label(kind))
+            for category in ("timeout", "auth", "quota", "not_found", "connection", "unknown"):
+                self.assertEqual(
+                    worker._legacy_worker.service_error_message(kind, category, "detail"),
+                    service_errors.service_error_message(kind, category, "detail"),
+                )
+
+        errors = [
+            RuntimeError("Gemini Vertex 没有返回正文：输出预算被 thinking 消耗完，请提高 maxOutputTokens。"),
+            TimeoutError("request timed out"),
+            urllib.error.HTTPError("https://example.test", 403, "Forbidden", None, None),
+            RuntimeError("API HTTP 429: resource exhausted quota"),
+            RuntimeError("model not found"),
+            urllib.error.URLError("getaddrinfo failed"),
+            RuntimeError("unexpected provider failure"),
+        ]
+        for kind in ("model", "tts"):
+            for err in errors:
+                self.assertEqual(
+                    worker._legacy_worker.classify_service_error(err, kind=kind),
+                    service_errors.classify_service_error(err, kind=kind),
+                )
+
+        worker_cases = [
+            (RuntimeError("Gemini API HTTP 500"), "generate"),
+            (RuntimeError("TTS HTTP 400 invalid argument"), "test_tts"),
+            (RuntimeError("plain failure"), "unknown_command"),
+        ]
+        for err, command in worker_cases:
+            self.assertEqual(
+                worker._legacy_worker.classify_worker_exception(err, command=command),
+                service_errors.classify_worker_exception(err, command=command),
+            )
+
+    def test_parse_srt_strips_non_speech_stage_directions(self):
+        legacy = worker._legacy_worker
+        with tempfile.TemporaryDirectory() as temp_dir:
+            subtitle = Path(temp_dir) / "stage-markers.srt"
+            subtitle.write_text(
+                "\n".join(
+                    [
+                        "1",
+                        "00:00:01,000 --> 00:00:04,000",
+                        "[Applause] [Applause] when I was 27 years old",
+                        "",
+                        "2",
+                        "00:00:04,100 --> 00:00:06,000",
+                        "[Music] I left a very demanding job.",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            cues = legacy.parse_srt(str(subtitle))
+
+        joined = " ".join(cue.text for cue in cues)
+        self.assertNotIn("Applause", joined)
+        self.assertNotIn("Music", joined)
+        self.assertIn("when I was 27 years old", joined)
+        self.assertIn("I left a very demanding job", joined)
+
+    def test_learning_point_card_source_sentence_uses_short_span_window(self):
+        from acg.commands import generate_cards_from_learning_points as command
+
+        point = {
+            "source_sentence": (
+                "when the work came back I calculated grades what struck me was that IQ was not the only "
+                "difference between my best and my worst students some of my"
+            ),
+            "exact_span": "what struck me was that",
+            "answer_core": "what struck me was that",
+            "exact_span_start": 44,
+            "exact_span_end": 67,
+        }
+
+        sentence = command._source_sentence_for_card(point)
+
+        self.assertIn("what struck me was that", sentence)
+        self.assertLessEqual(len(sentence.split()), command.MAX_CARD_SOURCE_SENTENCE_WORDS)
+        self.assertNotEqual(sentence, point["source_sentence"])
 
     def _patch_learning_point_ai_review(self):
         original = worker._legacy_worker.gemini_vertex_generate_content
@@ -251,6 +488,72 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(result["ai_reviewed_source_count"], 2)
         self.assertGreaterEqual(result["learning_point_summary"]["recommended"], 1)
 
+    def test_ai_review_source_budget_keeps_short_subtitles_exhaustive(self):
+        from acg.pipeline import learning_point_pipeline
+
+        source_sentences = [
+            {
+                "id": f"src-{index}",
+                "source_segment_id": f"src-{index}",
+                "source_sentence": f"This useful sentence {index} explains everyday spending choices.",
+                "text": f"This useful sentence {index} explains everyday spending choices.",
+                "start": float(index),
+                "end": float(index) + 1,
+                "source_time": "00:00:00.000 - 00:00:01.000",
+                "source_sentence_quality_flags": ["clean"],
+            }
+            for index in range(20)
+        ]
+        payload = {"language": "en", "level": "B1", "api_config": self._ai_config()}
+
+        selected = learning_point_pipeline._ai_review_source_sentences(payload, source_sentences, [])
+
+        self.assertEqual(len(selected), 20)
+        self.assertEqual(payload["_ai_review_discovery_source_count"], 20)
+        self.assertEqual(payload["_ai_review_discovery_source_deferred_count"], 0)
+
+    def test_ai_review_source_budget_caps_long_discovery_but_keeps_local_candidates(self):
+        from acg.pipeline import learning_point_pipeline
+
+        source_sentences = [
+            {
+                "id": f"src-{index}",
+                "source_segment_id": f"src-{index}",
+                "source_sentence": f"This useful sentence {index} explains everyday spending choices in context.",
+                "text": f"This useful sentence {index} explains everyday spending choices in context.",
+                "start": float(index),
+                "end": float(index) + 1,
+                "source_time": "00:00:00.000 - 00:00:01.000",
+                "source_sentence_quality_flags": ["clean"],
+            }
+            for index in range(220)
+        ]
+        local_points = [
+            {
+                "id": f"lp-{index}",
+                "source_segment_id": f"src-{index}",
+                "exact_span": "spending choices",
+                "answer_core": "spending choices",
+                "normalized_answer": "spending choices",
+                "candidate_kind": "expression",
+                "phrase_type": "collocation",
+                "learning_action": "训练 spending choices。",
+                "value_score": 4,
+                "validation_status": "valid",
+            }
+            for index in (5, 120, 219)
+        ]
+        payload = {"language": "en", "level": "B1", "api_config": self._ai_config()}
+
+        selected = learning_point_pipeline._ai_review_source_sentences(payload, source_sentences, local_points)
+        selected_ids = {item["source_segment_id"] for item in selected}
+
+        self.assertTrue({"src-5", "src-120", "src-219"} <= selected_ids)
+        self.assertEqual(payload["_ai_review_local_candidate_source_count"], 3)
+        self.assertEqual(payload["_ai_review_discovery_source_count"], 64)
+        self.assertEqual(payload["_ai_review_discovery_source_deferred_count"], 153)
+        self.assertEqual(len(selected), 67)
+
     def test_extract_learning_points_reuses_ai_review_batch_cache_when_explicitly_enabled(self):
         original = worker._legacy_worker.gemini_vertex_generate_content
         calls = {"count": 0}
@@ -315,6 +618,139 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(second["quality_funnel"]["ai_review_cache_hits"], 1)
         self.assertGreaterEqual(second["learning_point_summary"]["recommended"], 1)
 
+    def test_extract_learning_points_can_skip_ai_review_cache_read_while_writing_for_hot_followup(self):
+        original = worker._legacy_worker.gemini_vertex_generate_content
+        calls = {"count": 0}
+        cwd = os.getcwd()
+
+        def fake_gemini_vertex_generate_content(api, prompt, **kwargs):
+            calls["count"] += 1
+            marker = "字幕和候选_JSON_START"
+            compact = json.loads(prompt.split(marker, 1)[1].strip())
+            sources = []
+            for source in compact:
+                reviews = []
+                for candidate in source.get("local_candidates", []):
+                    answer = candidate.get("answer_core") or candidate.get("exact_span")
+                    reviews.append(
+                        {
+                            "id": candidate["id"],
+                            "decision": "recommend",
+                            "value_score": 4,
+                            "estimated_level": "B1",
+                            "exact_span": candidate.get("exact_span"),
+                            "answer_core": answer,
+                            "normalized_answer": candidate.get("normalized_answer") or answer,
+                            "candidate_kind": candidate.get("candidate_kind"),
+                            "phrase_type": candidate.get("phrase_type"),
+                            "learning_action": candidate.get("learning_action") or f"训练 {answer}。",
+                            "reason": "AI 精筛写入缓存。",
+                            "status_reason": "推荐。",
+                        }
+                    )
+                sources.append({"source_segment_id": source["source_segment_id"], "reviews": reviews, "new_learning_points": []})
+            return json.dumps({"sources": sources}, ensure_ascii=False)
+
+        worker._legacy_worker.gemini_vertex_generate_content = fake_gemini_vertex_generate_content
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                os.chdir(temp_dir)
+                base_payload = {
+                    "language": "en",
+                    "level": "B1",
+                    "reuse_ai_review_cache": True,
+                    "language_focus": ["phrases", "vocabulary", "grammar", "listening"],
+                    "api_config": {
+                        "provider": "gemini-vertex",
+                        "model": "gemini-3.1-pro-preview",
+                        "project": "test-project",
+                        "location": "global",
+                    },
+                }
+                cues = [worker.Cue(1, 1.0, 3.0, "Can you run the register for a minute?")]
+                cold_payload = {**base_payload, "disable_ai_review_cache_read": True}
+                hot_payload = dict(base_payload)
+                first = worker.extract_learning_points_from_subtitles(cold_payload, cues)
+                second = worker.extract_learning_points_from_subtitles(hot_payload, cues)
+                os.chdir(cwd)
+        finally:
+            os.chdir(cwd)
+            worker._legacy_worker.gemini_vertex_generate_content = original
+
+        self.assertEqual(calls["count"], 1)
+        self.assertEqual(first["quality_funnel"]["ai_review_cache_hits"], 0)
+        self.assertEqual(first["quality_funnel"]["ai_review_cache_misses"], 1)
+        self.assertFalse(first["quality_funnel"]["ai_review_cache_read_enabled"])
+        self.assertTrue(first["quality_funnel"]["ai_review_cache_write_enabled"])
+        self.assertEqual(second["quality_funnel"]["ai_review_cache_hits"], 1)
+        self.assertEqual(second["quality_funnel"]["ai_review_cache_misses"], 0)
+        self.assertTrue(second["quality_funnel"]["ai_review_cache_read_enabled"])
+        self.assertTrue(second["quality_funnel"]["ai_review_cache_write_enabled"])
+        self.assertGreaterEqual(second["learning_point_summary"]["recommended"], 1)
+
+    def test_extract_learning_points_ai_review_cache_namespace_isolated_when_explicit(self):
+        original = worker._legacy_worker.gemini_vertex_generate_content
+        calls = {"count": 0}
+        cwd = os.getcwd()
+
+        def fake_gemini_vertex_generate_content(api, prompt, **kwargs):
+            calls["count"] += 1
+            marker = "字幕和候选_JSON_START"
+            compact = json.loads(prompt.split(marker, 1)[1].strip())
+            sources = []
+            for source in compact:
+                reviews = []
+                for candidate in source.get("local_candidates", []):
+                    answer = candidate.get("answer_core") or candidate.get("exact_span")
+                    reviews.append(
+                        {
+                            "id": candidate["id"],
+                            "decision": "recommend",
+                            "value_score": 4,
+                            "estimated_level": "B1",
+                            "exact_span": candidate.get("exact_span"),
+                            "answer_core": answer,
+                            "normalized_answer": candidate.get("normalized_answer") or answer,
+                            "candidate_kind": candidate.get("candidate_kind"),
+                            "phrase_type": candidate.get("phrase_type"),
+                            "learning_action": candidate.get("learning_action") or f"训练 {answer}。",
+                            "reason": "命名空间缓存测试。",
+                            "status_reason": "推荐。",
+                        }
+                    )
+                sources.append({"source_segment_id": source["source_segment_id"], "reviews": reviews, "new_learning_points": []})
+            return json.dumps({"sources": sources}, ensure_ascii=False)
+
+        worker._legacy_worker.gemini_vertex_generate_content = fake_gemini_vertex_generate_content
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                os.chdir(temp_dir)
+                base_payload = {
+                    "language": "en",
+                    "level": "B1",
+                    "reuse_ai_review_cache": True,
+                    "language_focus": ["phrases", "vocabulary", "grammar", "listening"],
+                    "api_config": {
+                        "provider": "gemini-vertex",
+                        "model": "gemini-3.1-pro-preview",
+                        "project": "test-project",
+                        "location": "global",
+                    },
+                }
+                cues = [worker.Cue(1, 1.0, 3.0, "Can you run the register for a minute?")]
+                first = worker.extract_learning_points_from_subtitles({**base_payload, "ai_review_cache_namespace": "ns-a"}, cues)
+                second = worker.extract_learning_points_from_subtitles({**base_payload, "ai_review_cache_namespace": "ns-b"}, cues)
+                third = worker.extract_learning_points_from_subtitles({**base_payload, "ai_review_cache_namespace": "ns-a"}, cues)
+                os.chdir(cwd)
+        finally:
+            os.chdir(cwd)
+            worker._legacy_worker.gemini_vertex_generate_content = original
+
+        self.assertEqual(calls["count"], 2)
+        self.assertEqual(first["quality_funnel"]["ai_review_cache_hits"], 0)
+        self.assertEqual(second["quality_funnel"]["ai_review_cache_hits"], 0)
+        self.assertEqual(third["quality_funnel"]["ai_review_cache_hits"], 1)
+
     def test_extract_learning_points_does_not_read_ai_review_cache_by_default(self):
         original = worker._legacy_worker.gemini_vertex_generate_content
         calls = {"count": 0}
@@ -375,6 +811,202 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(first["quality_funnel"]["ai_review_cache_hits"], 0)
         self.assertEqual(second["quality_funnel"]["ai_review_cache_hits"], 0)
         self.assertGreaterEqual(second["learning_point_summary"]["recommended"], 1)
+
+    def test_ai_learning_point_review_uses_limited_concurrency_and_preserves_order(self):
+        from acg.pipeline import learning_point_pipeline
+
+        original = worker._legacy_worker.gemini_vertex_generate_content
+        lock = threading.Lock()
+        active_calls = {"count": 0, "max": 0, "total": 0}
+
+        def fake_gemini_vertex_generate_content(api, prompt, **kwargs):
+            marker = "字幕和候选_JSON_START"
+            compact = json.loads(prompt.split(marker, 1)[1].strip())
+            with lock:
+                active_calls["count"] += 1
+                active_calls["total"] += 1
+                active_calls["max"] = max(active_calls["max"], active_calls["count"])
+            try:
+                time.sleep(0.05)
+                sources = []
+                for source in compact:
+                    reviews = []
+                    for candidate in source.get("local_candidates", []):
+                        answer = candidate.get("answer_core") or candidate.get("exact_span")
+                        reviews.append(
+                            {
+                                "id": candidate["id"],
+                                "decision": "recommend",
+                                "value_score": 4,
+                                "estimated_level": "B1",
+                                "exact_span": candidate.get("exact_span"),
+                                "answer_core": answer,
+                                "normalized_answer": candidate.get("normalized_answer") or answer,
+                                "candidate_kind": candidate.get("candidate_kind"),
+                                "phrase_type": candidate.get("phrase_type"),
+                                "learning_action": candidate.get("learning_action") or f"训练 {answer}。",
+                                "reason": "并发 mock 精筛通过。",
+                                "status_reason": "推荐。",
+                            }
+                        )
+                    sources.append({"source_segment_id": source["source_segment_id"], "reviews": reviews, "new_learning_points": []})
+                return json.dumps({"sources": sources}, ensure_ascii=False)
+            finally:
+                with lock:
+                    active_calls["count"] -= 1
+
+        source_sentences = [
+            {
+                "id": f"src-{index}",
+                "source_segment_id": f"src-{index}",
+                "source_sentence": f"Sentence {index} uses point {index}.",
+                "text": f"Sentence {index} uses point {index}.",
+                "start": float(index),
+                "end": float(index) + 1,
+                "source_time": "00:00:00.000 - 00:00:01.000",
+            }
+            for index in range(33)
+        ]
+        local_points = [
+            {
+                "id": f"lp-{index}",
+                "source_segment_id": f"src-{index}",
+                "exact_span": f"point {index}",
+                "answer_core": f"point {index}",
+                "normalized_answer": f"point {index}",
+                "candidate_kind": "expression",
+                "phrase_type": "collocation",
+                "learning_action": f"训练 point {index}。",
+                "value_score": 4,
+                "validation_status": "valid",
+            }
+            for index in range(33)
+        ]
+
+        worker._legacy_worker.gemini_vertex_generate_content = fake_gemini_vertex_generate_content
+        try:
+            payload = {
+                "language": "en",
+                "level": "B1",
+                "language_focus": ["phrases"],
+                "api_config": self._ai_config(),
+            }
+            reviews_by_id, new_by_source, model_errors = learning_point_pipeline._call_ai_learning_point_review(
+                payload,
+                source_sentences,
+                local_points,
+            )
+        finally:
+            worker._legacy_worker.gemini_vertex_generate_content = original
+
+        self.assertEqual(model_errors, [])
+        self.assertTrue(all(not items for items in new_by_source.values()))
+        self.assertEqual(active_calls["total"], 3)
+        self.assertEqual(payload["_ai_review_concurrency"], 2)
+        self.assertEqual(active_calls["max"], 2)
+        self.assertEqual(reviews_by_id["lp-0"]["ai_batch_id"], "ai_review_1")
+        self.assertEqual(reviews_by_id["lp-16"]["ai_batch_id"], "ai_review_2")
+        self.assertEqual(reviews_by_id["lp-32"]["ai_batch_id"], "ai_review_3")
+        self.assertEqual(set(payload["_ai_review_timing_ms"].keys()), {"1", "2", "3"})
+
+    def test_extract_learning_points_recovers_non_string_status_from_scoring(self):
+        from acg.pipeline import learning_point_pipeline
+
+        original_ai = self._patch_learning_point_ai_review()
+        original_score = learning_point_pipeline.score_learning_point
+
+        def fake_score_learning_point(point, user_level, payload=None):
+            score = original_score(point, user_level, payload)
+            return {**score, "status": {"bad": "shape"}}
+
+        learning_point_pipeline.score_learning_point = fake_score_learning_point
+        try:
+            result = worker.extract_learning_points_from_subtitles(
+                {
+                    "language": "en",
+                    "level": "B1",
+                    "language_focus": ["phrases", "vocabulary", "grammar", "listening"],
+                    "api_config": self._ai_config(),
+                },
+                [worker.Cue(1, 1.0, 3.0, "Can you run the register for a minute?")],
+            )
+        finally:
+            learning_point_pipeline.score_learning_point = original_score
+            worker._legacy_worker.gemini_vertex_generate_content = original_ai
+
+        statuses = {point["status"] for point in result["learning_points"]}
+        self.assertTrue(statuses <= {"recommended", "candidate_only", "hidden_duplicate", "hard_blocked"})
+        self.assertGreaterEqual(result["learning_point_summary"]["recommended"], 1)
+
+    def test_extract_learning_points_sanitizes_nested_ai_review_fields(self):
+        original = worker._legacy_worker.gemini_vertex_generate_content
+
+        def fake_gemini_vertex_generate_content(api, prompt, **kwargs):
+            marker = "字幕和候选_JSON_START"
+            compact = json.loads(prompt.split(marker, 1)[1].strip())
+            sources = []
+            for source in compact:
+                reviews = []
+                for candidate in source.get("local_candidates", []):
+                    reviews.append(
+                        {
+                            "id": candidate["id"],
+                            "decision": "reject",
+                            "value_score": 1,
+                            "estimated_level": {"value": "B1"},
+                            "exact_span": candidate.get("exact_span"),
+                            "answer_core": candidate.get("answer_core") or candidate.get("exact_span"),
+                            "candidate_kind": {"value": candidate.get("candidate_kind") or "expression"},
+                            "phrase_type": {"value": candidate.get("phrase_type") or "spoken_phrase"},
+                            "learning_action": {"text": "本地候选仅用于回归测试。"},
+                            "reason": [{"text": "mock reject"}],
+                            "status_reason": {"text": "mock blocked"},
+                            "repair_history": [{"bad": "shape"}],
+                        }
+                    )
+                sources.append(
+                    {
+                        "source_segment_id": source["source_segment_id"],
+                        "reviews": reviews,
+                        "new_learning_points": [
+                            {
+                                "decision": {"value": "recommend"},
+                                "value_score": {"bad": "shape"},
+                                "estimated_level": {"value": "B1"},
+                                "exact_span": "repeat after me",
+                                "answer_core": "repeat after me",
+                                "normalized_answer": {"text": "repeat after me"},
+                                "candidate_kind": {"value": "expression"},
+                                "phrase_type": {"value": "spoken_phrase"},
+                                "learning_action": {"text": "训练 repeat after me 作为课堂指令。"},
+                                "reason": [{"text": "高频课堂指令。"}],
+                                "status_reason": {"text": "推荐。"},
+                                "repair_history": [{"bad": "shape"}],
+                            }
+                        ],
+                    }
+                )
+            return json.dumps({"sources": sources}, ensure_ascii=False)
+
+        worker._legacy_worker.gemini_vertex_generate_content = fake_gemini_vertex_generate_content
+        try:
+            result = worker.extract_learning_points_from_subtitles(
+                {
+                    "language": "en",
+                    "level": "B1",
+                    "language_focus": ["phrases", "vocabulary", "grammar", "listening"],
+                    "api_config": self._ai_config(),
+                },
+                [worker.Cue(1, 1.0, 3.0, "Please repeat after me one more time.")],
+            )
+        finally:
+            worker._legacy_worker.gemini_vertex_generate_content = original
+
+        answers = {point["answer_core"]: point for point in result["learning_points"]}
+        self.assertIn("repeat after me", answers)
+        self.assertEqual(answers["repeat after me"]["candidate_kind"], "expression")
+        self.assertEqual(answers["repeat after me"]["phrase_type"], "spoken_phrase")
+        self.assertIn(answers["repeat after me"]["status"], {"recommended", "candidate_only"})
 
     def test_extract_learning_points_hides_global_duplicate_learning_actions(self):
         original = worker._legacy_worker.gemini_vertex_generate_content
@@ -608,6 +1240,7 @@ class WorkerQualityTests(unittest.TestCase):
                     "title": "test",
                     "language": "en",
                     "level": "B1",
+                    "disable_card_generation_cache": True,
                     "api_config": self._ai_config(),
                     "selected_learning_point_ids": ["lp-2"],
                     "learning_points": learning_points,
@@ -621,6 +1254,542 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(project["segments"][0]["learning_point_id"], "lp-2")
         self.assertEqual(project["segments"][0]["cards"][0]["phrase"], "register")
         self.assertEqual(project["segments"][0]["cards"][0]["chinese"], "收银机")
+
+    def test_generate_cards_from_learning_points_blocks_unconfirmed_local_paths(self):
+        original_call_model_batches = worker._legacy_worker.call_model_batches
+        calls = {"count": 0}
+
+        def fake_call_model_batches(project, segments):
+            calls["count"] += 1
+            return {"segments": []}
+
+        worker._legacy_worker.call_model_batches = fake_call_model_batches
+        stderr = io.StringIO()
+        try:
+            with redirect_stderr(stderr), self.assertRaises(SystemExit):
+                worker.handle_generate_cards_from_learning_points(
+                    {
+                        "project_id": "project-test",
+                        "title": "test",
+                        "source_mode": "local",
+                        "video_path": "E:/media/source.mp4",
+                        "subtitle_path": "E:/media/source.srt",
+                        "local_path_access_confirmed": False,
+                        "language": "en",
+                        "level": "B1",
+                        "disable_card_generation_cache": True,
+                        "api_config": self._ai_config(),
+                        "selected_learning_point_ids": ["lp-1"],
+                        "learning_points": [
+                            {
+                                "id": "lp-1",
+                                "source_segment_id": "src-1",
+                                "source_sentence": "Can you run the register for a minute?",
+                                "source_time": "00:00:10.000 - 00:00:12.000",
+                                "start": 10.0,
+                                "end": 12.0,
+                                "exact_span": "run the register",
+                                "answer_core": "run the register",
+                                "type": "phrase",
+                                "candidate_kind": "expression",
+                                "status": "recommended",
+                                "value_score": 4.6,
+                            }
+                        ],
+                        "card_types": ["phrase"],
+                    }
+                )
+        finally:
+            worker._legacy_worker.call_model_batches = original_call_model_batches
+
+        self.assertEqual(calls["count"], 0)
+        self.assertIn("LOCAL_PATH_ACCESS_CONFIRMATION_REQUIRED", stderr.getvalue())
+
+    def test_generate_cards_from_learning_points_preserves_url_source_identity(self):
+        original_call_model_batches = worker._legacy_worker.call_model_batches
+
+        def fake_call_model_batches(project, segments):
+            return {
+                "segments": [
+                    {
+                        "id": segments[0]["id"],
+                        "cards": [
+                            {
+                                "type": "phrase",
+                                "learning_point_id": segments[0]["learning_point_id"],
+                                "phrase": "run the register",
+                                "answer_core": "run the register",
+                                "english": segments[0]["text"],
+                                "chinese": "负责收银",
+                                "definition": "operate the cash register",
+                                "collocations": "run the register",
+                                "context": segments[0]["text"],
+                                "example": "Can you run the register?",
+                                "chinese_feel": "负责收银",
+                                "why": "服务业高频场景表达。",
+                                "difficulty": "B1",
+                                "teacher_note": "AI mock 完整制卡。",
+                                "cloze": "Can you ____ for a minute?",
+                            }
+                        ],
+                    }
+                ]
+            }
+
+        worker._legacy_worker.call_model_batches = fake_call_model_batches
+        try:
+            project = worker.handle_generate_cards_from_learning_points(
+                {
+                    "project_id": "url-project",
+                    "title": "URL Video",
+                    "source_mode": "url",
+                    "source_url": "https://www.youtube.com/watch?v=test",
+                    "source_info": {
+                        "webpage_url": "https://www.youtube.com/watch?v=test",
+                        "title": "URL Video",
+                    },
+                    "video_path": r"C:\Users\Example\AppData\Local\com.ankicard.generator\projects\url_cache\url_test\source.mp4",
+                    "subtitle_path": r"C:\Users\Example\AppData\Local\com.ankicard.generator\projects\url_cache\url_test\source.en.srt",
+                    "language": "en",
+                    "level": "B1",
+                    "api_config": self._ai_config(),
+                    "tts_config": {
+                        "enabled": True,
+                        "provider": "gemini-vertex",
+                        "base_url": "https://aiplatform.googleapis.com",
+                        "project": "test-project",
+                        "model": "gemini-3.1-flash-tts-preview",
+                        "location": "global",
+                        "voice": "Kore",
+                        "language": "en-US",
+                    },
+                    "tts_semantic_verification": {
+                        "asr_provider": "whisper-cli",
+                        "whisper_model": "tiny.en",
+                        "whisper_language": "en",
+                        "require_pass_for_export": True,
+                    },
+                    "selected_learning_point_ids": ["lp-1"],
+                    "learning_points": [
+                        {
+                            "id": "lp-1",
+                            "source_segment_id": "src-1",
+                            "source_sentence": "Can you run the register for a minute?",
+                            "source_time": "00:00:10.000 - 00:00:12.000",
+                            "start": 10.0,
+                            "end": 12.0,
+                            "exact_span": "run the register",
+                            "answer_core": "run the register",
+                            "normalized_answer": "run the register",
+                            "candidate_kind": "expression",
+                            "phrase_type": "collocation",
+                            "learning_action": "训练服务业场景搭配。",
+                            "learning_action_key": "expression:run the register",
+                            "value_score": 4.6,
+                            "reason": "可迁移词伙。",
+                            "confidence": "high",
+                            "status": "recommended",
+                        }
+                    ],
+                    "card_types": ["phrase"],
+                }
+            )
+        finally:
+            worker._legacy_worker.call_model_batches = original_call_model_batches
+
+        self.assertEqual(project["source_mode"], "url")
+        self.assertEqual(project["source_url"], "https://www.youtube.com/watch?v=test")
+        self.assertEqual(project["source_info"]["webpage_url"], "https://www.youtube.com/watch?v=test")
+        self.assertTrue(project["video_path"].endswith("source.mp4"))
+        self.assertTrue(project["subtitle_path"].endswith("source.en.srt"))
+        self.assertTrue(project["tts_config"]["enabled"])
+        self.assertEqual(project["tts_config"]["provider"], "gemini-vertex")
+        self.assertEqual(worker._legacy_worker.normalized_tts_config(project)["provider"], "gemini-vertex")
+        self.assertEqual(project["tts_semantic_verification"]["asr_provider"], "whisper-cli")
+        self.assertTrue(project["tts_semantic_verification"]["require_pass_for_export"])
+        self.assertEqual(len(project["segments"]), 1)
+
+    def test_generate_cards_from_learning_points_reattaches_source_sentence_provenance(self):
+        original_call_model_batches = worker._legacy_worker.call_model_batches
+        from acg.media_alignment import fmt_time
+
+        def fake_call_model_batches(project, segments):
+            self.assertEqual(segments[0]["source_sentence_quality_flags"], ["possible_bad_join"])
+            self.assertEqual(segments[0]["source_sentence_quality_status"], "needs_review")
+            self.assertEqual(segments[0]["source_cue_ids"], [7, 8])
+            self.assertEqual(segments[0]["start"], segments[0]["source_cue_start"])
+            self.assertEqual(segments[0]["end"], segments[0]["source_cue_end"])
+            self.assertEqual(segments[0]["source_time"], segments[0]["source_cue_time"])
+            self.assertLessEqual(segments[0]["media_start"], segments[0]["source_cue_start"])
+            self.assertGreaterEqual(segments[0]["media_end"], segments[0]["source_cue_end"])
+            self.assertEqual(segments[0]["media_alignment_status"], "source_sentence_window")
+            self.assertEqual(segments[0]["media_alignment_text"], segments[0]["full_source_sentence"])
+            self.assertEqual(
+                segments[0]["media_source_time"],
+                f"{fmt_time(segments[0]['media_start'])} - {fmt_time(segments[0]['media_end'])}",
+            )
+            return {
+                "segments": [
+                    {
+                        "id": segments[0]["id"],
+                        "cards": [
+                            {
+                                "type": "phrase",
+                                "learning_point_id": "lp-provenance",
+                                "phrase": "confident",
+                                "answer_core": "confident",
+                                "exact_span": "confident",
+                                "english": segments[0]["text"],
+                                "chinese": "自信的",
+                                "definition": "confident 表示有信心。",
+                                "teacher_note": "训练 confident 的语境用法。",
+                            }
+                        ],
+                    }
+                ]
+            }
+
+        worker._legacy_worker.call_model_batches = fake_call_model_batches
+        try:
+            project = worker.handle_generate_cards_from_learning_points(
+                {
+                    "project_id": "project-provenance",
+                    "title": "test",
+                    "language": "en",
+                    "level": "B2",
+                    "api_config": self._ai_config(),
+                    "disable_card_generation_cache": True,
+                    "selected_learning_point_ids": ["lp-provenance"],
+                    "source_sentences": [
+                        {
+                            "id": "src-provenance",
+                            "source_segment_id": "src-provenance",
+                            "source_sentence": "everyday You're confident with the English that you use.",
+                            "source_cue_ids": [7, 8],
+                            "source_cue_count": 2,
+                            "source_cue_start": 12.0,
+                            "source_cue_end": 16.2,
+                            "source_cue_time": "00:00:12.000 - 00:00:16.200",
+                            "source_cue_texts": [
+                                "just totally change your perspective on everything whatever's normal and mundane",
+                                "everyday You're confident with the English that you use.",
+                            ],
+                            "source_merge_reason": "cue_sentence_merge",
+                            "source_sentence_quality_flags": ["possible_bad_join"],
+                            "source_sentence_quality_status": "needs_review",
+                        }
+                    ],
+                    "learning_points": [
+                        {
+                            "id": "lp-provenance",
+                            "source_segment_id": "src-provenance",
+                            "source_sentence": "everyday You're confident with the English that you use.",
+                            "exact_span": "confident",
+                            "answer_core": "confident",
+                            "normalized_answer": "confident",
+                            "type": "phrase",
+                            "candidate_kind": "contextual_vocab",
+                            "phrase_type": "vocabulary_usage",
+                            "status": "recommended",
+                            "value_score": 4.2,
+                            "reason": "可迁移词汇。",
+                            "learning_action": "训练 confident 的语境用法。",
+                        }
+                    ],
+                    "card_types": ["phrase"],
+                }
+            )
+        finally:
+            worker._legacy_worker.call_model_batches = original_call_model_batches
+
+        segment = project["segments"][0]
+        self.assertEqual(segment["source_cue_ids"], [7, 8])
+        self.assertEqual(segment["source_cue_start"], 12.0)
+        self.assertEqual(segment["source_cue_end"], 16.2)
+        self.assertEqual(segment["source_sentence_quality_flags"], ["possible_bad_join"])
+        self.assertEqual(segment["source_sentence_quality_status"], "needs_review")
+        self.assertEqual(segment["start"], segment["source_cue_start"])
+        self.assertEqual(segment["end"], segment["source_cue_end"])
+        self.assertEqual(segment["source_time"], segment["source_cue_time"])
+        self.assertLessEqual(segment["media_start"], segment["source_cue_start"])
+        self.assertGreaterEqual(segment["media_end"], segment["source_cue_end"])
+        self.assertEqual(segment["media_alignment_status"], "source_sentence_window")
+        self.assertEqual(segment["media_alignment_text"], segment["full_source_sentence"])
+        self.assertEqual(
+            segment["media_source_time"],
+            f"{fmt_time(segment['media_start'])} - {fmt_time(segment['media_end'])}",
+        )
+
+    def test_generate_cards_from_learning_points_marks_unlocated_media_phrase_needs_review(self):
+        original_call_model_batches = worker._legacy_worker.call_model_batches
+
+        def fake_call_model_batches(project, segments):
+            segment = segments[0]
+            self.assertFalse(segment["media_alignment_phrase_located"])
+            self.assertEqual(segment["media_alignment_review_status"], "needs_review")
+            self.assertIn("phrase_not_found_in_media_alignment_text", segment["phrase_decision_reason"])
+            return {
+                "segments": [
+                    {
+                        "id": segment["id"],
+                        "cards": [
+                            {
+                                "type": "phrase",
+                                "learning_point_id": segment["learning_point_id"],
+                                "phrase": "take the scenic route",
+                                "answer_core": "take the scenic route",
+                                "exact_span": "take the scenic route",
+                                "phrase_review_status": "recommended",
+                                "phrase_value_score": 5,
+                                "english": segment["text"],
+                                "chinese": "绕风景路走",
+                                "definition": "choose a longer but more scenic way",
+                                "collocations": "take the scenic route / choose the scenic route",
+                                "context": segment["text"],
+                                "example": "We decided to take the scenic route.",
+                                "chinese_feel": "强调不走最快路线，而走更有风景的路线。",
+                                "why": "常见路线选择表达。",
+                                "difficulty": "B1",
+                                "teacher_note": "训练路线选择语境里的自然表达。",
+                                "cloze": "We decided to ____.",
+                            }
+                        ],
+                    }
+                ]
+            }
+
+        worker._legacy_worker.call_model_batches = fake_call_model_batches
+        try:
+            project = worker.handle_generate_cards_from_learning_points(
+                {
+                    "project_id": "lp-media-unlocated",
+                    "title": "Learning point media review",
+                    "language": "en",
+                    "level": "B1",
+                    "api_config": self._ai_config(),
+                    "disable_card_generation_cache": True,
+                    "selected_learning_point_ids": ["lp-unlocated"],
+                    "learning_points": [
+                        {
+                            "id": "lp-unlocated",
+                            "source_segment_id": "src-1",
+                            "source_sentence": "We explain the setup before moving on.",
+                            "source_time": "00:00:10.000 - 00:00:14.000",
+                            "start": 10.0,
+                            "end": 14.0,
+                            "exact_span": "take the scenic route",
+                            "answer_core": "take the scenic route",
+                            "normalized_answer": "take the scenic route",
+                            "candidate_kind": "expression",
+                            "phrase_type": "collocation",
+                            "learning_action": "训练路线选择表达。",
+                            "learning_action_key": "expression:take the scenic route",
+                            "value_score": 4.7,
+                            "reason": "可迁移词伙。",
+                            "confidence": "high",
+                            "status": "recommended",
+                        }
+                    ],
+                    "card_types": ["phrase"],
+                }
+            )
+        finally:
+            worker._legacy_worker.call_model_batches = original_call_model_batches
+
+        segment = project["segments"][0]
+        card = segment["cards"][0]
+        self.assertFalse(segment["media_alignment_phrase_located"])
+        self.assertEqual(segment["media_alignment_review_status"], "needs_review")
+        self.assertEqual(segment["media_alignment_review_reason"], "phrase_not_found_in_media_alignment_text")
+        self.assertIn("phrase_not_found_in_media_alignment_text", segment["phrase_decision_reason"])
+        self.assertEqual(segment["phrase_review_status"], "needs_review")
+        self.assertEqual(card["phrase_review_status"], "needs_review")
+        self.assertEqual(card["quality"]["status"], "needs_review")
+        self.assertIn("媒体对齐未在原句中定位到目标表达，需复查。", card["quality"]["issues"])
+
+    def test_generate_cards_from_learning_points_drops_off_target_cards_from_same_sentence(self):
+        original_call_model_batches = worker._legacy_worker.call_model_batches
+
+        def fake_call_model_batches(project, segments):
+            segment = segments[0]
+            return {
+                "segments": [
+                    {
+                        "id": segment["id"],
+                        "cards": [
+                            {
+                                "type": "phrase",
+                                "learning_point_id": segment["learning_point_id"],
+                                "phrase": "run the register",
+                                "answer_core": "run the register",
+                                "english": segment["text"],
+                                "chinese": "负责收银",
+                                "definition": "operate the cash register",
+                                "collocations": "run the register",
+                                "context": segment["text"],
+                                "example": "Can you run the register?",
+                                "chinese_feel": "负责收银",
+                                "why": "服务业高频场景表达。",
+                                "difficulty": "B1",
+                                "teacher_note": "AI mock 完整制卡。",
+                                "cloze": "Can you ____ for a minute?",
+                            },
+                            {
+                                "type": "phrase",
+                                "learning_point_id": segment["learning_point_id"],
+                                "phrase": "take a break",
+                                "answer_core": "take a break",
+                                "english": segment["text"],
+                                "chinese": "休息一下",
+                                "definition": "暂时停止工作或学习，稍作休息。",
+                                "collocations": "take a break / need a break / short break",
+                                "context": segment["text"],
+                                "example": "Let's take a break.",
+                                "teacher_note": "这张卡只是用来模拟模型跑偏，同句旁支表达不应被带出。",
+                            },
+                        ],
+                    }
+                ]
+            }
+
+        worker._legacy_worker.call_model_batches = fake_call_model_batches
+        try:
+            project = worker.handle_generate_cards_from_learning_points(
+                {
+                    "project_id": "lp-off-target",
+                    "title": "Learning point only",
+                    "language": "en",
+                    "level": "B1",
+                    "api_config": self._ai_config(),
+                    "selected_learning_point_ids": ["lp-run-register"],
+                    "learning_points": [
+                        {
+                            "id": "lp-run-register",
+                            "source_segment_id": "src-1",
+                            "source_sentence": "Can you run the register while I take a break?",
+                            "source_time": "00:00:00.120 - 00:00:11.160",
+                            "start": 0.12,
+                            "end": 11.16,
+                            "exact_span": "run the register",
+                            "answer_core": "run the register",
+                            "normalized_answer": "run the register",
+                            "candidate_kind": "expression",
+                            "phrase_type": "collocation",
+                            "learning_action": "训练服务业场景里的 run the register。",
+                            "learning_action_key": "expression:run the register",
+                            "value_score": 4.6,
+                            "reason": "服务业高频搭配。",
+                            "confidence": "high",
+                            "status": "recommended",
+                        }
+                    ],
+                    "card_types": ["phrase"],
+                }
+            )
+        finally:
+            worker._legacy_worker.call_model_batches = original_call_model_batches
+
+        cards = [card for segment in project["segments"] for card in segment.get("cards", [])]
+        self.assertEqual([card["answer_core"] for card in cards], ["run the register"])
+        self.assertEqual(project["quality_funnel"]["off_target_learning_point_cards_dropped"], 1)
+        self.assertEqual(project["quality_funnel"]["selected_learning_point_count"], 1)
+
+    def test_generate_cards_from_learning_points_prepares_url_video_source(self):
+        original_call_model_batches = worker._legacy_worker.call_model_batches
+        original_download_url_source = worker._legacy_worker.download_url_source
+        calls = {"download": 0}
+
+        def fake_download_url_source(payload):
+            calls["download"] += 1
+            self.assertEqual(payload.get("url_import_mode"), "video")
+            return {
+                "video_path": r"C:\cache\source.mp4",
+                "subtitle_path": r"C:\cache\source.en.srt",
+                "url": payload.get("source_url"),
+                "title": "URL Video",
+                "transcript_only": False,
+                "skip_video_slicing": False,
+                "download_mode": "video",
+            }
+
+        def fake_call_model_batches(project, segments):
+            self.assertEqual(project.get("video_path"), r"C:\cache\source.mp4")
+            return {
+                "segments": [
+                    {
+                        "id": segments[0]["id"],
+                        "cards": [
+                            {
+                                "type": "phrase",
+                                "learning_point_id": segments[0]["learning_point_id"],
+                                "phrase": "special guest",
+                                "answer_core": "special guest",
+                                "english": segments[0]["text"],
+                                "chinese": "特别嘉宾",
+                                "definition": "a guest invited for a special role",
+                                "collocations": "have a special guest",
+                                "context": segments[0]["text"],
+                                "example": "Today I have a special guest.",
+                                "chinese_feel": "特别请来的嘉宾。",
+                                "why": "高频主持开场表达。",
+                                "difficulty": "B1",
+                                "teacher_note": "AI mock 完整制卡。",
+                                "cloze": "Today I have a ____.",
+                            }
+                        ],
+                    }
+                ]
+            }
+
+        worker._legacy_worker.download_url_source = fake_download_url_source
+        worker._legacy_worker.call_model_batches = fake_call_model_batches
+        try:
+            project = worker.handle_generate_cards_from_learning_points(
+                {
+                    "project_id": "url-project",
+                    "source_mode": "url",
+                    "source_url": "https://www.youtube.com/watch?v=test",
+                    "url_import_mode": "video",
+                    "skip_video_slicing": True,
+                    "language": "en",
+                    "level": "B1",
+                    "api_config": self._ai_config(),
+                    "selected_learning_point_ids": ["lp-1"],
+                    "learning_points": [
+                        {
+                            "id": "lp-1",
+                            "source_segment_id": "src-1",
+                            "source_sentence": "Today I have a special guest.",
+                            "source_time": "00:00:01.222 - 00:00:03.170",
+                            "start": 1.222,
+                            "end": 3.17,
+                            "exact_span": "special guest",
+                            "answer_core": "special guest",
+                            "normalized_answer": "special guest",
+                            "candidate_kind": "expression",
+                            "phrase_type": "collocation",
+                            "learning_action": "训练主持开场表达。",
+                            "learning_action_key": "expression:special guest",
+                            "value_score": 4.6,
+                            "reason": "高频实用词伙。",
+                            "confidence": "high",
+                            "status": "recommended",
+                        }
+                    ],
+                    "card_types": ["phrase"],
+                }
+            )
+        finally:
+            worker._legacy_worker.download_url_source = original_download_url_source
+            worker._legacy_worker.call_model_batches = original_call_model_batches
+
+        self.assertEqual(calls["download"], 1)
+        self.assertEqual(project["source_mode"], "url")
+        self.assertEqual(project["url_import_mode"], "video")
+        self.assertEqual(project["video_path"], r"C:\cache\source.mp4")
+        self.assertEqual(project["subtitle_path"], r"C:\cache\source.en.srt")
+        self.assertFalse(project["skip_video_slicing"])
+        self.assertEqual(project["source_info"]["download_mode"], "video")
 
     def test_generate_cards_from_learning_points_preserves_fast_review_density_and_slims_cards(self):
         original_call_model_batches = worker._legacy_worker.call_model_batches
@@ -638,7 +1807,7 @@ class WorkerQualityTests(unittest.TestCase):
                                 "answer_core": segment["answer_core"],
                                 "english": segment["text"],
                                 "chinese": "负责收银",
-                                "definition": "在零售或餐饮业中，指操作收银机、负责结账的工作。这是一个很长的解释，快速背卡不应该保留。",
+                                "definition": "在零售或餐饮业中，指操作收银机、负责结账的工作。这是一个很长的解释，快速复读不应该保留。",
                                 "collocations": "run the register / cover the register / operate the cash register",
                                 "context": "在商店、餐厅等服务业场景中，安排或请求某人负责收银时使用。",
                                 "example": "I'll run the register while you take a break.",
@@ -1014,7 +2183,7 @@ class WorkerQualityTests(unittest.TestCase):
 
         self.assertEqual(seen_learning_point_ids, ["lp-run-register", "lp-turns-out"])
 
-    def test_generate_cards_from_learning_points_reports_missing_and_filtered_selected_points(self):
+    def test_generate_cards_from_learning_points_outputs_every_selected_point(self):
         original_call_model_batches = worker._legacy_worker.call_model_batches
 
         def fake_call_model_batches(project, segments):
@@ -1133,14 +2302,17 @@ class WorkerQualityTests(unittest.TestCase):
         finally:
             worker._legacy_worker.call_model_batches = original_call_model_batches
 
-        self.assertEqual(len(project["segments"]), 1)
+        self.assertEqual(len(project["segments"]), 3)
         funnel = project["quality_funnel"]
         self.assertEqual(funnel["selected_learning_point_count"], 3)
         self.assertEqual(funnel["eligible_learning_point_count"], 3)
-        self.assertEqual(funnel["successful_learning_point_count"], 1)
-        self.assertEqual(funnel["card_generation_missing_learning_point_count"], 1)
-        self.assertEqual(funnel["card_generation_filtered_card_count"], 1)
+        self.assertEqual(funnel["successful_learning_point_count"], 3)
+        self.assertEqual(funnel["generation_missing_count"], 0)
+        self.assertEqual(funnel["generation_reconciliation_status"], "ok")
+        self.assertEqual(funnel["card_generation_missing_learning_point_count"], 0)
+        self.assertEqual(funnel["card_generation_filtered_card_count"], 0)
         self.assertEqual(funnel["card_generation_skipped_learning_point_count"], 0)
+        self.assertEqual(funnel["user_selected_fallback_card_count"], 2)
         self.assertEqual(
             funnel["successful_learning_point_count"]
             + funnel["card_generation_missing_learning_point_count"]
@@ -1150,14 +2322,345 @@ class WorkerQualityTests(unittest.TestCase):
         )
         diagnostics = project["card_generation_diagnostics"]
         self.assertEqual(diagnostics["selected_learning_point_count"], 3)
-        self.assertEqual(diagnostics["model_missing_learning_point_count"], 1)
-        self.assertEqual(diagnostics["filtered_learning_point_count"], 1)
+        self.assertEqual(diagnostics["successful_learning_point_count"], 3)
+        self.assertEqual(diagnostics["generated_card_count"], 3)
+        self.assertEqual(diagnostics["exportable_card_count"], 3)
+        self.assertEqual(diagnostics["missing_learning_point_count"], 0)
+        self.assertEqual(diagnostics["model_missing_learning_point_count"], 0)
+        self.assertEqual(diagnostics["filtered_learning_point_count"], 0)
         self.assertEqual(diagnostics["skipped_learning_point_count"], 0)
-        items_by_id = {item["learning_point_id"]: item for item in diagnostics["items"]}
-        self.assertEqual(items_by_id["lp-missing"]["status"], "model_missing")
-        self.assertEqual(items_by_id["lp-filtered"]["status"], "filtered")
-        self.assertIn("模型没有返回", items_by_id["lp-missing"]["reason"])
-        self.assertTrue(items_by_id["lp-filtered"]["reason"])
+        self.assertEqual(diagnostics["items"], [])
+        cards_by_lp = {
+            segment["learning_point_id"]: segment["cards"][0]
+            for segment in project["segments"]
+        }
+        self.assertEqual(cards_by_lp["lp-good"]["answer_core"], "run the register")
+        self.assertEqual(cards_by_lp["lp-missing"]["answer_core"], "get this over with")
+        self.assertEqual(cards_by_lp["lp-filtered"]["answer_core"], "bad point")
+        self.assertTrue(all(card["enabled"] for card in cards_by_lp.values()))
+        self.assertEqual(cards_by_lp["lp-missing"]["generation_source"], "fallback_from_selected_learning_point")
+        self.assertEqual(cards_by_lp["lp-filtered"]["generation_source"], "fallback_from_selected_learning_point")
+        self.assertIn("card", cards_by_lp["lp-missing"]["missing_ai_fields"])
+        self.assertIn("teacher_note", cards_by_lp["lp-filtered"]["fallback_fields_filled"])
+        self.assertFalse(any(worker._legacy_worker.card_has_export_blocking_content(card) for card in cards_by_lp.values()))
+
+    def test_generate_cards_from_learning_points_aligns_media_to_phrase_in_full_sentence(self):
+        original_call_model_batches = worker._legacy_worker.call_model_batches
+
+        def fake_call_model_batches(project, segments):
+            return {
+                "segments": [
+                    {
+                        "id": segments[0]["id"],
+                        "cards": [
+                            {
+                                "type": "phrase",
+                                "learning_point_id": segments[0]["learning_point_id"],
+                                "phrase": "what happens next",
+                                "answer_core": "what happens next",
+                                "english": segments[0]["text"],
+                                "chinese": "接下来会发生什么",
+                                "definition": "ask about the next event",
+                                "collocations": "what happens next",
+                                "context": segments[0]["text"],
+                                "example": "Let's see what happens next.",
+                                "chinese_feel": "想知道后续",
+                                "why": "常用于衔接叙事。",
+                                "difficulty": "B1",
+                                "teacher_note": "目标表达靠近长字幕后半段。",
+                                "cloze": "Let's see ____.",
+                            }
+                        ],
+                    }
+                ]
+            }
+
+        worker._legacy_worker.call_model_batches = fake_call_model_batches
+        try:
+            project = worker.handle_generate_cards_from_learning_points(
+                {
+                    "project_id": "media-align-test",
+                    "title": "test",
+                    "language": "en",
+                    "level": "B1",
+                    "api_config": self._ai_config(),
+                    "disable_card_generation_cache": True,
+                    "selected_learning_point_ids": ["lp-late"],
+                    "learning_points": [
+                        {
+                            "id": "lp-late",
+                            "source_segment_id": "src-late",
+                            "source_sentence": (
+                                "At the start we introduce the idea and give a little background "
+                                "before we finally ask what happens next in this story."
+                            ),
+                            "source_time": "00:01:40.000 - 00:01:52.000",
+                            "start": 100.0,
+                            "end": 112.0,
+                            "exact_span": "what happens next",
+                            "answer_core": "what happens next",
+                            "candidate_kind": "expression",
+                            "phrase_type": "spoken_phrase",
+                            "learning_action": "训练衔接叙事时的自然提问。",
+                            "value_score": 4.5,
+                            "status": "recommended",
+                        }
+                    ],
+                    "card_types": ["phrase"],
+                }
+            )
+        finally:
+            worker._legacy_worker.call_model_batches = original_call_model_batches
+
+        segment = project["segments"][0]
+        self.assertEqual(segment["media_alignment_status"], "source_sentence_window")
+        self.assertIn("what happens next", segment["text"])
+        self.assertIn("At the start we introduce", segment["media_alignment_text"])
+        self.assertLessEqual(segment["media_start"], 100.0)
+        self.assertGreaterEqual(segment["media_end"], 112.0)
+        self.assertGreater(segment["media_end"] - segment["media_start"], 12.0)
+        self.assertEqual(segment["source_time"], "00:01:40.000 - 00:01:52.000")
+        self.assertNotEqual(segment["media_source_time"], segment["source_time"])
+
+    def test_generate_cards_from_learning_points_expands_phrase_only_media_to_full_source_sentence(self):
+        original_call_model_batches = worker._legacy_worker.call_model_batches
+        full_sentence = "The more you live in English, the faster your brain rewires itself."
+
+        def fake_call_model_batches(project, segments):
+            return {
+                "segments": [
+                    {
+                        "id": segments[0]["id"],
+                        "cards": [
+                            {
+                                "type": "phrase",
+                                "learning_point_id": segments[0]["learning_point_id"],
+                                "phrase": "rewires itself",
+                                "answer_core": "rewires itself",
+                                "english": segments[0]["text"],
+                                "chinese": "大脑会重塑自己。",
+                                "definition": "change and adapt its own habits or wiring",
+                                "collocations": "rewires itself",
+                                "context": segments[0]["text"],
+                                "example": "Practice rewires itself through repetition.",
+                                "chinese_feel": "强调自我重塑",
+                                "why": "描述大脑适应语言输入。",
+                                "difficulty": "B2",
+                                "teacher_note": "目标表达靠近原句末尾。",
+                            }
+                        ],
+                    }
+                ]
+            }
+
+        worker._legacy_worker.call_model_batches = fake_call_model_batches
+        try:
+            project = worker.handle_generate_cards_from_learning_points(
+                {
+                    "project_id": "media-align-phrase-only-test",
+                    "title": "test",
+                    "language": "en",
+                    "level": "B2",
+                    "api_config": self._ai_config(),
+                    "disable_card_generation_cache": True,
+                    "selected_learning_point_ids": ["lp-rewire"],
+                    "source_sentences": [
+                        {
+                            "id": "src-rewire",
+                            "source_segment_id": "src-rewire",
+                            "source_sentence": full_sentence,
+                            "text": full_sentence,
+                            "start": 349.287,
+                            "end": 358.061,
+                            "source_time": "00:05:49.287 - 00:05:58.061",
+                        }
+                    ],
+                    "learning_points": [
+                        {
+                            "id": "lp-rewire",
+                            "source_segment_id": "src-rewire",
+                            "source_sentence": full_sentence,
+                            "source_time": "00:05:49.287 - 00:05:58.061",
+                            "start": 349.287,
+                            "end": 358.061,
+                            "exact_span": "rewires itself",
+                            "answer_core": "rewires itself",
+                            "candidate_kind": "expression",
+                            "phrase_type": "spoken_phrase",
+                            "learning_action": "训练表达大脑/系统自我重塑。",
+                            "value_score": 4.5,
+                            "status": "recommended",
+                        }
+                    ],
+                    "card_types": ["phrase"],
+                }
+            )
+        finally:
+            worker._legacy_worker.call_model_batches = original_call_model_batches
+
+        segment = project["segments"][0]
+        self.assertEqual(segment["text"], full_sentence)
+        self.assertEqual(segment["full_source_sentence"], full_sentence)
+        self.assertEqual(segment["media_alignment_status"], "source_sentence_window")
+        self.assertEqual(segment["media_alignment_text"], full_sentence)
+        self.assertLessEqual(segment["media_start"], 349.3)
+        self.assertGreaterEqual(segment["media_end"], 358.0)
+        self.assertGreater(segment["media_end"] - segment["media_start"], 8.5)
+
+    def test_generate_cards_from_learning_points_does_not_count_blocked_output_as_success(self):
+        original_call_model_batches = worker._legacy_worker.call_model_batches
+        original_filter_usable_segments = worker._legacy_worker.filter_usable_segments_for_output
+
+        def fake_call_model_batches(project, segments):
+            return {
+                "segments": [
+                    {
+                        "id": segments[0]["id"],
+                        "cards": [
+                            {
+                                "type": "phrase",
+                                "enabled": True,
+                                "learning_point_id": segments[0]["learning_point_id"],
+                                "phrase": "stay on track",
+                                "answer_core": "stay on track",
+                                "english": segments[0]["text"],
+                                "chinese": "保持正轨",
+                                "definition": "continue making progress toward a goal",
+                                "collocations": "stay on track",
+                                "context": segments[0]["text"],
+                                "example": segments[0]["text"],
+                                "chinese_feel": "自然表达继续按计划推进。",
+                                "why": "高频口语表达。",
+                                "teacher_note": "可以用于提醒自己别偏离目标。",
+                                "cloze": segments[0]["text"],
+                            }
+                        ],
+                    }
+                ]
+            }
+
+        def leaky_filter(segments, skipped_segments=None, **kwargs):
+            leaked_segments = json.loads(json.dumps(segments, ensure_ascii=False))
+            leaked_segments[0]["cards"][0]["teacher_note"] = "本地草稿，需要人工确认"
+            return leaked_segments, {
+                "filtered_learning_point_count": 0,
+                "duplicate_learning_point_count": 0,
+                "low_value_filtered_count": 0,
+                "blocked_quality_issue_count": 0,
+            }
+
+        stderr = io.StringIO()
+        worker._legacy_worker.call_model_batches = fake_call_model_batches
+        worker._legacy_worker.filter_usable_segments_for_output = leaky_filter
+        try:
+            with redirect_stderr(stderr), self.assertRaises(SystemExit):
+                worker.handle_generate_cards_from_learning_points(
+                    {
+                        "project_id": "blocked-output-test",
+                        "title": "test",
+                        "language": "en",
+                        "level": "B1",
+                        "api_config": self._ai_config(),
+                        "disable_card_generation_cache": True,
+                        "selected_learning_point_ids": ["lp-blocked-output"],
+                        "learning_points": [
+                            {
+                                "id": "lp-blocked-output",
+                                "source_segment_id": "src-blocked-output",
+                                "source_sentence": "I need to stay on track this week.",
+                                "source_time": "00:00:03.000 - 00:00:06.000",
+                                "start": 3.0,
+                                "end": 6.0,
+                                "exact_span": "stay on track",
+                                "answer_core": "stay on track",
+                                "candidate_kind": "expression",
+                                "phrase_type": "spoken_phrase",
+                                "learning_action": "训练 stay on track 的自然用法。",
+                                "value_score": 4.3,
+                                "status": "recommended",
+                            }
+                        ],
+                        "card_types": ["phrase"],
+                    }
+                )
+        finally:
+            worker._legacy_worker.call_model_batches = original_call_model_batches
+            worker._legacy_worker.filter_usable_segments_for_output = original_filter_usable_segments
+
+        error_line = next(
+            line for line in stderr.getvalue().splitlines() if line.startswith("__ANKI_CARD_ERROR__")
+        )
+        payload = json.loads(error_line.replace("__ANKI_CARD_ERROR__", "", 1))
+        self.assertEqual(payload["error_code"], "NO_USABLE_AI_CARDS")
+        details = payload["details"]
+        self.assertEqual(details["failed_learning_points"][0]["learning_point_id"], "lp-blocked-output")
+        self.assertEqual(details["failed_learning_points"][0]["status"], "filtered")
+
+    def test_generate_cards_from_learning_points_repairs_partial_ai_card(self):
+        original_call_model_batches = worker._legacy_worker.call_model_batches
+
+        def fake_call_model_batches(project, segments):
+            return {
+                "segments": [
+                    {
+                        "id": segments[0]["id"],
+                        "cards": [
+                            {
+                                "type": "phrase",
+                                "learning_point_id": segments[0]["learning_point_id"],
+                                "phrase": "wake up",
+                                "answer_core": "wake up",
+                                "english": segments[0]["text"],
+                                "chinese": "醒来；意识到",
+                            }
+                        ],
+                    }
+                ]
+            }
+
+        worker._legacy_worker.call_model_batches = fake_call_model_batches
+        try:
+            project = worker.handle_generate_cards_from_learning_points(
+                {
+                    "project_id": "repair-test",
+                    "title": "test",
+                    "language": "en",
+                    "level": "B1",
+                    "api_config": self._ai_config(),
+                    "disable_card_generation_cache": True,
+                    "selected_learning_point_ids": ["lp-partial"],
+                    "learning_points": [
+                        {
+                            "id": "lp-partial",
+                            "source_segment_id": "src-partial",
+                            "source_sentence": "I need to wake up earlier tomorrow.",
+                            "source_time": "00:00:03.000 - 00:00:06.000",
+                            "start": 3.0,
+                            "end": 6.0,
+                            "exact_span": "wake up",
+                            "answer_core": "wake up",
+                            "candidate_kind": "expression",
+                            "phrase_type": "phrasal_verb",
+                            "learning_action": "训练 wake up 的自然用法。",
+                            "reason": "高频短语动词。",
+                            "value_score": 4.2,
+                            "status": "recommended",
+                        }
+                    ],
+                    "card_types": ["phrase"],
+                }
+            )
+        finally:
+            worker._legacy_worker.call_model_batches = original_call_model_batches
+
+        card = project["segments"][0]["cards"][0]
+        self.assertEqual(project["card_generation_diagnostics"]["generated_card_count"], 1)
+        self.assertEqual(project["card_generation_diagnostics"]["missing_learning_point_count"], 0)
+        self.assertEqual(card["generation_source"], "ai_repaired")
+        self.assertIn("definition", card["missing_ai_fields"])
+        self.assertIn("teacher_note", card["fallback_fields_filled"])
+        self.assertTrue(card["definition"])
+        self.assertTrue(card["teacher_note"])
 
     def test_generate_cards_from_learning_points_preserves_ai_scan_stats(self):
         original_call_model_batches = worker._legacy_worker.call_model_batches
@@ -1344,6 +2847,858 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(second["segments"][0]["cards"][0]["phrase"], "run the register")
         self.assertFalse(first["quality_funnel"]["card_generation_cache_hit"])
         self.assertTrue(second["quality_funnel"]["card_generation_cache_hit"])
+        self.assertEqual(second["quality_funnel"]["card_generation_cache_hits"], 1)
+
+    def test_generate_cards_from_learning_points_card_cache_read_disabled_still_writes_for_hot(self):
+        original_call_model_batches = worker._legacy_worker.call_model_batches
+        calls = {"count": 0}
+        cwd = os.getcwd()
+
+        def fake_call_model_batches(project, segments):
+            calls["count"] += 1
+            return {
+                "segments": [
+                    {
+                        "id": segment["id"],
+                        "cards": [
+                            {
+                                "type": "phrase",
+                                "learning_point_id": segment["learning_point_id"],
+                                "phrase": segment["answer_core"],
+                                "answer_core": segment["answer_core"],
+                                "english": segment["text"],
+                                "chinese": "负责收银",
+                                "definition": "operate the cash register",
+                                "collocations": segment["answer_core"],
+                                "context": segment["text"],
+                                "example": segment["text"],
+                                "chinese_feel": "服务业语境",
+                                "why": "高频口语表达。",
+                                "difficulty": "B1",
+                                "teacher_note": "AI mock 完整制卡。",
+                                "cloze": "Can you ____?",
+                            }
+                        ],
+                    }
+                    for segment in segments
+                ]
+            }
+
+        worker._legacy_worker.call_model_batches = fake_call_model_batches
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                os.chdir(temp_dir)
+                base_payload = {
+                    "project_id": "project-test",
+                    "title": "test",
+                    "language": "en",
+                    "level": "B1",
+                    "card_generation_cache_namespace": "read-write-split",
+                    "api_config": {
+                        "provider": "gemini-vertex",
+                        "model": "gemini-3.1-pro-preview",
+                        "project": "test-project",
+                        "location": "global",
+                    },
+                    "selected_learning_point_ids": ["lp-1"],
+                    "learning_points": [
+                        {
+                            "id": "lp-1",
+                            "source_segment_id": "src-1",
+                            "source_sentence": "Can you run the register for a minute?",
+                            "source_time": "00:00:10.000 - 00:00:12.000",
+                            "start": 10.0,
+                            "end": 12.0,
+                            "exact_span": "run the register",
+                            "answer_core": "run the register",
+                            "normalized_answer": "run the register",
+                            "candidate_kind": "expression",
+                            "phrase_type": "collocation",
+                            "learning_action": "训练服务业场景搭配。",
+                            "learning_action_key": "expression:run the register",
+                            "value_score": 4.6,
+                            "reason": "可迁移词伙。",
+                            "confidence": "high",
+                            "status": "recommended",
+                        }
+                    ],
+                    "card_types": ["phrase"],
+                }
+                cold = worker.handle_generate_cards_from_learning_points(
+                    {**base_payload, "disable_card_generation_cache_read": True}
+                )
+                hot = worker.handle_generate_cards_from_learning_points(base_payload)
+                os.chdir(cwd)
+        finally:
+            os.chdir(cwd)
+            worker._legacy_worker.call_model_batches = original_call_model_batches
+
+        self.assertEqual(calls["count"], 1)
+        self.assertEqual(cold["quality_funnel"]["card_generation_cache_hits"], 0)
+        self.assertEqual(cold["quality_funnel"]["card_generation_cache_misses"], 1)
+        self.assertFalse(cold["quality_funnel"]["card_generation_cache_read_enabled"])
+        self.assertTrue(cold["quality_funnel"]["card_generation_cache_write_enabled"])
+        self.assertEqual(hot["quality_funnel"]["card_generation_cache_hits"], 1)
+        self.assertEqual(hot["quality_funnel"]["card_generation_cache_misses"], 0)
+        self.assertTrue(hot["quality_funnel"]["card_generation_cache_read_enabled"])
+        self.assertTrue(hot["quality_funnel"]["card_generation_cache_write_enabled"])
+
+    def test_generate_cards_from_learning_points_card_cache_namespace_isolated_when_explicit(self):
+        original_call_model_batches = worker._legacy_worker.call_model_batches
+        calls = {"count": 0}
+        cwd = os.getcwd()
+
+        def fake_call_model_batches(project, segments):
+            calls["count"] += 1
+            return {
+                "segments": [
+                    {
+                        "id": segment["id"],
+                        "cards": [
+                            {
+                                "type": "phrase",
+                                "learning_point_id": segment["learning_point_id"],
+                                "phrase": segment["answer_core"],
+                                "answer_core": segment["answer_core"],
+                                "english": segment["text"],
+                                "chinese": f"解释 {calls['count']}",
+                                "definition": "definition",
+                                "collocations": segment["answer_core"],
+                                "context": segment["text"],
+                                "example": segment["text"],
+                                "chinese_feel": "语境理解",
+                                "why": "高频表达。",
+                                "difficulty": "B1",
+                                "teacher_note": "AI mock 完整制卡。",
+                                "cloze": "Can you ____?",
+                            }
+                        ],
+                    }
+                    for segment in segments
+                ]
+            }
+
+        worker._legacy_worker.call_model_batches = fake_call_model_batches
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                os.chdir(temp_dir)
+                base_payload = {
+                    "project_id": "project-test",
+                    "title": "test",
+                    "language": "en",
+                    "level": "B1",
+                    "api_config": {
+                        "provider": "gemini-vertex",
+                        "model": "gemini-3.1-pro-preview",
+                        "project": "test-project",
+                        "location": "global",
+                    },
+                    "selected_learning_point_ids": ["lp-1"],
+                    "learning_points": [
+                        {
+                            "id": "lp-1",
+                            "source_segment_id": "src-1",
+                            "source_sentence": "Can you run the register for a minute?",
+                            "source_time": "00:00:10.000 - 00:00:12.000",
+                            "start": 10.0,
+                            "end": 12.0,
+                            "exact_span": "run the register",
+                            "answer_core": "run the register",
+                            "normalized_answer": "run the register",
+                            "candidate_kind": "expression",
+                            "phrase_type": "collocation",
+                            "learning_action": "训练服务业场景搭配。",
+                            "learning_action_key": "expression:run the register",
+                            "value_score": 4.6,
+                            "reason": "可迁移词伙。",
+                            "confidence": "high",
+                            "status": "recommended",
+                        }
+                    ],
+                    "card_types": ["phrase"],
+                }
+                first = worker.handle_generate_cards_from_learning_points(
+                    {**base_payload, "card_generation_cache_namespace": "ns-a"}
+                )
+                second = worker.handle_generate_cards_from_learning_points(
+                    {**base_payload, "card_generation_cache_namespace": "ns-b"}
+                )
+                third = worker.handle_generate_cards_from_learning_points(
+                    {**base_payload, "card_generation_cache_namespace": "ns-a"}
+                )
+                os.chdir(cwd)
+        finally:
+            os.chdir(cwd)
+            worker._legacy_worker.call_model_batches = original_call_model_batches
+
+        self.assertEqual(calls["count"], 2)
+        self.assertEqual(first["quality_funnel"]["card_generation_cache_hits"], 0)
+        self.assertEqual(second["quality_funnel"]["card_generation_cache_hits"], 0)
+        self.assertEqual(third["quality_funnel"]["card_generation_cache_hits"], 1)
+        self.assertEqual(third["quality_funnel"]["card_generation_cache_namespace"], "ns-a")
+
+    def test_generate_cards_from_learning_points_retries_unusable_payload_without_poisoning_cache(self):
+        original_call_model_batches = worker._legacy_worker.call_model_batches
+        calls = {"count": 0}
+        cwd = os.getcwd()
+
+        def fake_call_model_batches(project, segments):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                return {"segments": [{"id": segments[0]["id"], "cards": [{"type": "phrase"}]}]}
+            return {
+                "segments": [
+                    {
+                        "id": segments[0]["id"],
+                        "cards": [
+                            {
+                                "type": "phrase",
+                                "learning_point_id": segments[0]["learning_point_id"],
+                                "phrase": "run the register",
+                                "answer_core": "run the register",
+                                "english": segments[0]["text"],
+                                "chinese": "负责收银",
+                                "definition": "operate the cash register",
+                                "collocations": "run the register",
+                                "context": segments[0]["text"],
+                                "example": "Can you run the register?",
+                                "chinese_feel": "负责收银",
+                                "why": "服务业高频场景表达。",
+                                "difficulty": "B1",
+                                "teacher_note": "AI mock 完整制卡。",
+                                "cloze": "Can you ____ for a minute?",
+                            }
+                        ],
+                    }
+                ]
+            }
+
+        worker._legacy_worker.call_model_batches = fake_call_model_batches
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                os.chdir(temp_dir)
+                payload = {
+                    "project_id": "project-test",
+                    "title": "test",
+                    "language": "en",
+                    "level": "B1",
+                    "api_config": {
+                        "provider": "gemini-vertex",
+                        "model": "gemini-3.1-pro-preview",
+                        "project": "test-project",
+                        "location": "global",
+                    },
+                    "selected_learning_point_ids": ["lp-1"],
+                    "learning_points": [
+                        {
+                            "id": "lp-1",
+                            "source_segment_id": "src-1",
+                            "source_sentence": "Can you run the register for a minute?",
+                            "source_time": "00:00:10.000 - 00:00:12.000",
+                            "start": 10.0,
+                            "end": 12.0,
+                            "exact_span": "run the register",
+                            "answer_core": "run the register",
+                            "normalized_answer": "run the register",
+                            "candidate_kind": "expression",
+                            "phrase_type": "collocation",
+                            "learning_action": "训练服务业场景搭配。",
+                            "learning_action_key": "expression:run the register",
+                            "value_score": 4.6,
+                            "reason": "可迁移词伙。",
+                            "confidence": "high",
+                            "status": "recommended",
+                        }
+                    ],
+                    "card_types": ["phrase"],
+                }
+                first = worker.handle_generate_cards_from_learning_points(payload)
+                second = worker.handle_generate_cards_from_learning_points(payload)
+                os.chdir(cwd)
+        finally:
+            os.chdir(cwd)
+            worker._legacy_worker.call_model_batches = original_call_model_batches
+
+        self.assertEqual(calls["count"], 2)
+        self.assertEqual(first["segments"][0]["cards"][0]["phrase"], "run the register")
+        self.assertEqual(first["quality_funnel"]["card_generation_retry_count"], 1)
+        self.assertTrue(second["quality_funnel"]["card_generation_cache_hit"])
+        self.assertEqual(second["segments"][0]["cards"][0]["phrase"], "run the register")
+
+    def test_generate_cards_from_learning_points_only_calls_model_for_cache_misses(self):
+        original_call_model_batches = worker._legacy_worker.call_model_batches
+        called_batches: list[list[str]] = []
+        cwd = os.getcwd()
+
+        def learning_point(lp_id: str, text: str, answer: str) -> dict:
+            return {
+                "id": lp_id,
+                "source_segment_id": lp_id.replace("lp", "src"),
+                "source_sentence": text,
+                "source_time": "00:00:10.000 - 00:00:12.000",
+                "start": 10.0,
+                "end": 12.0,
+                "exact_span": answer,
+                "answer_core": answer,
+                "normalized_answer": answer,
+                "type": "phrase",
+                "candidate_kind": "expression",
+                "phrase_type": "collocation",
+                "level": "B1",
+                "learning_action": f"训练 {answer}。",
+                "learning_action_key": f"expression:{answer}",
+                "value_score": 4.6,
+                "reason": "可迁移词伙。",
+                "confidence": "high",
+                "status": "recommended",
+            }
+
+        def fake_call_model_batches(project, segments):
+            called_batches.append([str(segment["learning_point_id"]) for segment in segments])
+            return {
+                "segments": [
+                    {
+                        "id": segment["id"],
+                        "cards": [
+                            {
+                                "type": "phrase",
+                                "learning_point_id": segment["learning_point_id"],
+                                "phrase": segment["answer_core"],
+                                "answer_core": segment["answer_core"],
+                                "english": segment["text"],
+                                "chinese": "中文解释",
+                                "definition": "definition",
+                                "collocations": segment["answer_core"],
+                                "context": segment["text"],
+                                "example": segment["text"],
+                                "chinese_feel": "语境理解",
+                                "why": "高频表达。",
+                                "difficulty": "B1",
+                                "teacher_note": "AI mock 完整制卡。",
+                                "cloze": "Can you ____?",
+                            }
+                        ],
+                    }
+                    for segment in segments
+                ]
+            }
+
+        worker._legacy_worker.call_model_batches = fake_call_model_batches
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                os.chdir(temp_dir)
+                points = [
+                    learning_point("lp-1", "Can you run the register?", "run the register"),
+                    learning_point("lp-2", "I'm not in the mood.", "in the mood"),
+                    learning_point("lp-3", "It turns out fine.", "turns out"),
+                ]
+                base_payload = {
+                    "project_id": "project-test",
+                    "title": "test",
+                    "language": "en",
+                    "level": "B1",
+                    "api_config": {
+                        "provider": "gemini-vertex",
+                        "model": "gemini-3.1-pro-preview",
+                        "project": "test-project",
+                        "location": "global",
+                    },
+                    "learning_points": points,
+                    "card_types": ["phrase"],
+                }
+                worker.handle_generate_cards_from_learning_points(
+                    {**base_payload, "selected_learning_point_ids": ["lp-1", "lp-2"]}
+                )
+                second = worker.handle_generate_cards_from_learning_points(
+                    {**base_payload, "selected_learning_point_ids": ["lp-1", "lp-2", "lp-3"]}
+                )
+                os.chdir(cwd)
+        finally:
+            os.chdir(cwd)
+            worker._legacy_worker.call_model_batches = original_call_model_batches
+
+        self.assertEqual(called_batches, [["lp-1", "lp-2"], ["lp-3"]])
+        self.assertEqual(second["quality_funnel"]["card_generation_cache_hits"], 2)
+        self.assertEqual(second["quality_funnel"]["card_generation_cache_misses"], 1)
+        self.assertEqual([segment["learning_point_id"] for segment in second["segments"]], ["lp-1", "lp-2", "lp-3"])
+
+    def test_generate_cards_from_learning_points_incremental_skips_existing_learning_points(self):
+        original_call_model_batches = worker._legacy_worker.call_model_batches
+        seen_learning_point_ids: list[str] = []
+
+        def fake_call_model_batches(project, segments):
+            seen_learning_point_ids.extend(str(segment["learning_point_id"]) for segment in segments)
+            return {
+                "segments": [
+                    {
+                        "id": segment["id"],
+                        "cards": [
+                            {
+                                "type": "phrase",
+                                "learning_point_id": segment["learning_point_id"],
+                                "phrase": segment["answer_core"],
+                                "answer_core": segment["answer_core"],
+                                "english": segment["text"],
+                                "chinese": "新增解释",
+                                "definition": "new definition",
+                                "collocations": segment["answer_core"],
+                                "context": segment["text"],
+                                "example": segment["text"],
+                                "chinese_feel": "新增语境",
+                                "why": "补卡。",
+                                "difficulty": "B1",
+                                "teacher_note": "AI mock 增量制卡。",
+                                "cloze": "Can you ____?",
+                            }
+                        ],
+                    }
+                    for segment in segments
+                ]
+            }
+
+        worker._legacy_worker.call_model_batches = fake_call_model_batches
+        try:
+            project = worker.handle_generate_cards_from_learning_points(
+                {
+                    "project_id": "project-test",
+                    "title": "test",
+                    "language": "en",
+                    "level": "B1",
+                    "disable_card_generation_cache": True,
+                    "api_config": self._ai_config(),
+                    "selected_learning_point_ids": ["lp-1", "lp-2"],
+                    "existing_project": {
+                        "id": "project-test",
+                        "title": "test",
+                        "segments": [
+                            {
+                                "id": "seg_lp_0001",
+                                "learning_point_id": "lp-1",
+                                "text": "Can you run the register?",
+                                "cards": [
+                                    {
+                                        "id": "card_0001",
+                                        "type": "phrase",
+                                        "enabled": True,
+                                        "learning_point_id": "lp-1",
+                                        "phrase": "run the register",
+                                        "english": "Can you run the register?",
+                                        "chinese": "已有解释",
+                                        "definition": "existing definition",
+                                    },
+                                    {
+                                        "id": "card_blocked_0001",
+                                        "type": "phrase",
+                                        "enabled": True,
+                                        "learning_point_id": "lp-1",
+                                        "phrase": "run the register",
+                                        "english": "Can you run the register?",
+                                        "chinese": "",
+                                        "definition": "needs repair",
+                                        "quality": {"issues": ["缺少中文意思"]},
+                                    },
+                                ],
+                            }
+                        ],
+                    },
+                    "learning_points": [
+                        {
+                            "id": "lp-1",
+                            "source_segment_id": "src-1",
+                            "source_sentence": "Can you run the register?",
+                            "source_time": "00:00:10.000 - 00:00:12.000",
+                            "start": 10.0,
+                            "end": 12.0,
+                            "exact_span": "run the register",
+                            "answer_core": "run the register",
+                            "normalized_answer": "run the register",
+                            "type": "phrase",
+                            "candidate_kind": "expression",
+                            "phrase_type": "collocation",
+                            "learning_action": "训练服务业表达。",
+                            "learning_action_key": "expression:run the register",
+                            "value_score": 4.6,
+                            "reason": "可迁移词伙。",
+                            "confidence": "high",
+                            "status": "recommended",
+                        },
+                        {
+                            "id": "lp-2",
+                            "source_segment_id": "src-2",
+                            "source_sentence": "I'm not in the mood.",
+                            "source_time": "00:00:13.000 - 00:00:15.000",
+                            "start": 13.0,
+                            "end": 15.0,
+                            "exact_span": "in the mood",
+                            "answer_core": "in the mood",
+                            "normalized_answer": "in the mood",
+                            "type": "phrase",
+                            "candidate_kind": "expression",
+                            "phrase_type": "collocation",
+                            "learning_action": "训练情绪表达。",
+                            "learning_action_key": "expression:in the mood",
+                            "value_score": 4.4,
+                            "reason": "口语高频。",
+                            "confidence": "high",
+                            "status": "recommended",
+                        },
+                    ],
+                    "card_types": ["phrase"],
+                }
+            )
+        finally:
+            worker._legacy_worker.call_model_batches = original_call_model_batches
+
+        self.assertEqual(seen_learning_point_ids, ["lp-2"])
+        self.assertEqual([segment["learning_point_id"] for segment in project["segments"]], ["lp-1", "lp-2"])
+        self.assertEqual(project["generated_learning_point_ids"], ["lp-1", "lp-2"])
+        self.assertEqual(project["quality_funnel"]["generation_queue_count"], 2)
+        self.assertEqual(project["quality_funnel"]["generation_success_count"], 2)
+        self.assertEqual(project["quality_funnel"]["new_successful_learning_point_count"], 1)
+        self.assertEqual(project["quality_funnel"]["existing_generated_selected_count"], 1)
+        self.assertEqual(project["quality_funnel"]["generation_missing_count"], 0)
+        self.assertEqual(project["quality_funnel"]["generation_reconciliation_status"], "ok")
+        diagnostics = project["card_generation_diagnostics"]
+        self.assertEqual(diagnostics["processed_learning_point_count"], 2)
+        self.assertEqual(diagnostics["successful_learning_point_count"], 2)
+        self.assertEqual(diagnostics["new_successful_learning_point_count"], 1)
+        self.assertEqual(diagnostics["existing_generated_selected_count"], 1)
+        self.assertEqual(diagnostics["missing_learning_point_count"], 0)
+
+    def test_generate_cards_from_learning_points_ignores_existing_shells_without_exportable_cards(self):
+        original_call_model_batches = worker._legacy_worker.call_model_batches
+        seen_learning_point_ids: list[str] = []
+
+        def fake_call_model_batches(project, segments):
+            seen_learning_point_ids.extend(str(segment["learning_point_id"]) for segment in segments)
+            return {
+                "segments": [
+                    {
+                        "id": segment["id"],
+                        "cards": [
+                            {
+                                "type": "phrase",
+                                "enabled": True,
+                                "learning_point_id": segment["learning_point_id"],
+                                "phrase": segment["answer_core"],
+                                "answer_core": segment["answer_core"],
+                                "english": segment["text"],
+                                "chinese": "重新生成的解释",
+                                "definition": "重新生成的定义",
+                                "collocations": segment["answer_core"],
+                                "context": segment["text"],
+                                "example": segment["text"],
+                                "chinese_feel": "重新生成后可导出。",
+                                "why": "补齐旧项目里没有可用卡的学习点。",
+                                "teacher_note": "旧项目壳不能算作已生成。",
+                                "cloze": segment["text"],
+                            }
+                        ],
+                    }
+                    for segment in segments
+                ]
+            }
+
+        points = [
+            {
+                "id": "lp-empty-shell",
+                "source_segment_id": "src-1",
+                "source_sentence": "Can you run the register?",
+                "source_time": "00:00:10.000 - 00:00:12.000",
+                "start": 10.0,
+                "end": 12.0,
+                "exact_span": "run the register",
+                "answer_core": "run the register",
+                "normalized_answer": "run the register",
+                "type": "phrase",
+                "candidate_kind": "expression",
+                "phrase_type": "collocation",
+                "learning_action": "训练服务业表达。",
+                "learning_action_key": "expression:run the register",
+                "value_score": 4.6,
+                "reason": "可迁移词伙。",
+                "confidence": "high",
+                "status": "recommended",
+            },
+            {
+                "id": "lp-disabled-card",
+                "source_segment_id": "src-2",
+                "source_sentence": "I'm not in the mood.",
+                "source_time": "00:00:13.000 - 00:00:15.000",
+                "start": 13.0,
+                "end": 15.0,
+                "exact_span": "in the mood",
+                "answer_core": "in the mood",
+                "normalized_answer": "in the mood",
+                "type": "phrase",
+                "candidate_kind": "expression",
+                "phrase_type": "collocation",
+                "learning_action": "训练情绪表达。",
+                "learning_action_key": "expression:in the mood",
+                "value_score": 4.4,
+                "reason": "口语高频。",
+                "confidence": "high",
+                "status": "recommended",
+            },
+        ]
+
+        worker._legacy_worker.call_model_batches = fake_call_model_batches
+        try:
+            project = worker.handle_generate_cards_from_learning_points(
+                {
+                    "project_id": "project-existing-shells",
+                    "title": "test",
+                    "language": "en",
+                    "level": "B1",
+                    "api_config": self._ai_config(),
+                    "disable_card_generation_cache": True,
+                    "selected_learning_point_ids": [point["id"] for point in points],
+                    "existing_generated_ids": [point["id"] for point in points],
+                    "existing_project": {
+                        "id": "project-existing-shells",
+                        "title": "test",
+                        "segments": [
+                            {
+                                "id": "seg_lp_0001",
+                                "learning_point_id": "lp-empty-shell",
+                                "text": "Can you run the register?",
+                                "cards": [],
+                            },
+                            {
+                                "id": "seg_lp_0002",
+                                "learning_point_id": "lp-disabled-card",
+                                "text": "I'm not in the mood.",
+                                "cards": [
+                                    {
+                                        "id": "card-disabled",
+                                        "type": "phrase",
+                                        "enabled": False,
+                                        "learning_point_id": "lp-disabled-card",
+                                        "phrase": "in the mood",
+                                        "english": "I'm not in the mood.",
+                                        "chinese": "旧的禁用卡",
+                                        "definition": "不能算作已生成。",
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    "learning_points": points,
+                    "card_types": ["phrase"],
+                }
+            )
+        finally:
+            worker._legacy_worker.call_model_batches = original_call_model_batches
+
+        self.assertEqual(seen_learning_point_ids, ["lp-empty-shell", "lp-disabled-card"])
+        self.assertEqual([segment["learning_point_id"] for segment in project["segments"]], ["lp-empty-shell", "lp-disabled-card"])
+        generated_cards = [
+            card
+            for segment in project["segments"]
+            for card in segment.get("cards", [])
+            if card.get("enabled")
+        ]
+        self.assertEqual(len(generated_cards), 2)
+        self.assertEqual(project["generated_learning_point_ids"], ["lp-disabled-card", "lp-empty-shell"])
+        self.assertEqual(project["quality_funnel"]["existing_generated_selected_count"], 0)
+        self.assertEqual(project["quality_funnel"]["new_successful_learning_point_count"], 2)
+        self.assertEqual(project["quality_funnel"]["generation_success_count"], 2)
+        self.assertEqual(project["quality_funnel"]["generation_missing_count"], 0)
+
+    def test_generate_cards_from_learning_points_all_existing_reports_reconciled(self):
+        original_call_model_batches = worker._legacy_worker.call_model_batches
+
+        def fail_if_called(project, segments):
+            raise AssertionError("existing learning points should not call the model")
+
+        worker._legacy_worker.call_model_batches = fail_if_called
+        try:
+            project = worker.handle_generate_cards_from_learning_points(
+                {
+                    "project_id": "project-existing",
+                    "title": "test",
+                    "language": "en",
+                    "level": "B1",
+                    "api_config": self._ai_config(),
+                    "selected_learning_point_ids": ["lp-1"],
+                    "existing_project": {
+                        "id": "project-existing",
+                        "title": "test",
+                        "tts_semantic_verification": {
+                            "enabled": True,
+                            "require_pass_for_export": True,
+                            "asr_provider": "whisper-cli",
+                        },
+                        "asr_provider": "whisper-cli",
+                        "require_pass_for_export": True,
+                        "enable_asr_quality_gate": True,
+                        "segments": [
+                            {
+                                "id": "seg_lp_0001",
+                                "learning_point_id": "lp-1",
+                                "text": "Can you run the register?",
+                                "cards": [
+                                    {
+                                        "id": "card_0001",
+                                        "type": "phrase",
+                                        "enabled": True,
+                                        "learning_point_id": "lp-1",
+                                        "phrase": "run the register",
+                                        "english": "Can you run the register?",
+                                        "chinese": "已有解释",
+                                        "definition": "existing definition",
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    "learning_points": [
+                        {
+                            "id": "lp-1",
+                            "source_segment_id": "src-1",
+                            "source_sentence": "Can you run the register?",
+                            "source_time": "00:00:10.000 - 00:00:12.000",
+                            "start": 10.0,
+                            "end": 12.0,
+                            "exact_span": "run the register",
+                            "answer_core": "run the register",
+                            "candidate_kind": "expression",
+                            "phrase_type": "collocation",
+                            "learning_action": "训练服务业表达。",
+                            "value_score": 4.6,
+                            "status": "recommended",
+                        },
+                    ],
+                    "card_types": ["phrase"],
+                }
+            )
+        finally:
+            worker._legacy_worker.call_model_batches = original_call_model_batches
+
+        self.assertEqual([segment["learning_point_id"] for segment in project["segments"]], ["lp-1"])
+        self.assertEqual(project["quality_funnel"]["generation_queue_count"], 1)
+        self.assertEqual(project["quality_funnel"]["generation_success_count"], 1)
+        self.assertEqual(project["quality_funnel"]["new_successful_learning_point_count"], 0)
+        self.assertEqual(project["quality_funnel"]["existing_generated_selected_count"], 1)
+        self.assertEqual(project["quality_funnel"]["generation_missing_count"], 0)
+        self.assertEqual(project["quality_funnel"]["generation_reconciliation_status"], "ok")
+        diagnostics = project["card_generation_diagnostics"]
+        self.assertEqual(diagnostics["processed_learning_point_count"], 1)
+        self.assertEqual(diagnostics["successful_learning_point_count"], 1)
+        self.assertEqual(diagnostics["generated_card_count"], 0)
+        self.assertEqual(diagnostics["exportable_card_count"], 1)
+        self.assertEqual(diagnostics["missing_learning_point_count"], 0)
+        self.assertEqual(project.get("tts_semantic_verification"), {})
+        self.assertNotIn("asr_provider", project)
+        self.assertNotIn("require_pass_for_export", project)
+        self.assertNotIn("enable_asr_quality_gate", project)
+        self.assertNotIn("whisper-cli", json.dumps(project, ensure_ascii=False))
+
+    def test_call_model_batches_uses_dynamic_weighted_batches(self):
+        original_call_model_batch_with_retry = worker._legacy_worker.call_model_batch_with_retry
+        batch_sizes: list[int] = []
+
+        def fake_call_model_batch_with_retry(project, segments, **kwargs):
+            batch_sizes.append(len(segments))
+            return ([{"id": segment["id"], "cards": [{"phrase": segment["phrase"], "chinese": "解释"}]} for segment in segments], [], [])
+
+        worker._legacy_worker.call_model_batch_with_retry = fake_call_model_batch_with_retry
+        try:
+            api_config = self._ai_config()
+            api_config["card_generation_batch_weight"] = 4
+            result = worker._legacy_worker.call_model_batches(
+                {"api_config": api_config},
+                [
+                    {
+                        "id": f"seg-{index}",
+                        "text": "long text " * 180,
+                        "phrase": f"phrase-{index}",
+                        "answer_core": f"phrase-{index}",
+                        "learning_action": "训练长文本学习点。",
+                    }
+                    for index in range(3)
+                ],
+                batch_size=10,
+            )
+        finally:
+            worker._legacy_worker.call_model_batch_with_retry = original_call_model_batch_with_retry
+
+        self.assertEqual(len(result["segments"]), 3)
+        self.assertGreater(len(batch_sizes), 1)
+        self.assertTrue(all(size <= 1 for size in batch_sizes))
+
+    def test_document_point_generation_cache_only_calls_model_for_misses(self):
+        original_call_document_model = worker._legacy_worker.call_document_model
+        called_batches: list[list[str]] = []
+        cwd = os.getcwd()
+
+        def fake_call_document_model(project, segments):
+            called_batches.append([str(segment["id"]) for segment in segments])
+            return {
+                "segments": [
+                    {
+                        "id": segment["id"],
+                        "cards": [
+                            {
+                                "type": "knowledge",
+                                "knowledge_type": "concepts",
+                                "english": segment["text"],
+                                "chinese": "核心答案",
+                                "phrase": segment.get("phrase") or "概念",
+                                "definition": "概念解释",
+                                "source_evidence": segment.get("document_excerpt", ""),
+                                "memory_hook": "记忆钩子",
+                                "transfer_check": "迁移检查",
+                                "boundary": "边界",
+                                "collocations": "相关概念",
+                                "context": "适用语境",
+                                "example": "例子",
+                                "why": "值得记。",
+                                "teacher_note": "老师提醒。",
+                                "cloze": "概念核心是 ____。",
+                            }
+                        ],
+                    }
+                    for segment in segments
+                ]
+            }
+
+        worker._legacy_worker.call_document_model = fake_call_document_model
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                os.chdir(temp_dir)
+                project = {
+                    "api_config": self._ai_config(),
+                    "language": "en",
+                    "level": "B1",
+                    "document_path": str(Path(temp_dir) / "doc.md"),
+                    "document_study_mode": "knowledge",
+                    "material_context": {"topic": "test"},
+                }
+                segments = [
+                    {"id": "doc_0001", "text": "第一点是什么？", "phrase": "第一点", "document_excerpt": "第一点的原文依据。"},
+                    {"id": "doc_0002", "text": "第二点是什么？", "phrase": "第二点", "document_excerpt": "第二点的原文依据。"},
+                    {"id": "doc_0003", "text": "第三点是什么？", "phrase": "第三点", "document_excerpt": "第三点的原文依据。"},
+                ]
+                worker._legacy_worker.cached_or_generated_document_payload(
+                    project,
+                    segments[:2],
+                    cache_disabled=False,
+                )
+                payload, stats = worker._legacy_worker.cached_or_generated_document_payload(
+                    project,
+                    segments,
+                    cache_disabled=False,
+                )
+                os.chdir(cwd)
+        finally:
+            os.chdir(cwd)
+            worker._legacy_worker.call_document_model = original_call_document_model
+
+        self.assertEqual(called_batches, [["doc_0001", "doc_0002"], ["doc_0003"]])
+        self.assertEqual(stats["cache_hits"], 2)
+        self.assertEqual(stats["cache_misses"], 1)
+        self.assertEqual([segment["id"] for segment in payload["segments"]], ["doc_0001", "doc_0002", "doc_0003"])
 
     def test_output_filter_removes_exact_duplicate_enabled_cards(self):
         segments = [
@@ -1435,6 +3790,56 @@ class WorkerQualityTests(unittest.TestCase):
         )
 
         self.assertEqual(base_url, worker.MIMO_TOKEN_PLAN_SGP_BASE_URL)
+
+    def test_provider_config_helpers_match_worker_boundary(self):
+        from acg import provider_config
+
+        configs = [
+            {"provider": "mimo", "api_key": "tp-token", "base_url": "https://api.xiaomimimo.com/v1", "model": "mimo-v2.5-pro"},
+            {"provider": "mimo", "api_key": "sk-token", "model": "mimo-v2.5-pro"},
+            {"provider": "openai-compatible", "api_key": "sk-token", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "model": "qwen3.1-max", "thinking_budget": 512},
+            {"provider": "openai-compatible", "api_key": "sk-token", "base_url": "https://api.deepseek.com", "model": "deepseek-v4-pro", "reasoning_budget": 9000},
+            {"provider": "gemini-vertex", "model": "gemini-3.1-pro-preview"},
+            {"provider": "local", "model": "anything"},
+            {"provider": "openai-compatible", "model": ""},
+        ]
+
+        for config in configs:
+            self.assertEqual(worker._legacy_worker.provider_name(config), provider_config.provider_name(config))
+            self.assertEqual(worker._legacy_worker.compatible_base_url(config, "https://default.example/v1"), provider_config.compatible_base_url(config, "https://default.example/v1"))
+            self.assertEqual(worker._legacy_worker.is_mimo_config(config), provider_config.is_mimo_config(config))
+            self.assertEqual(worker._legacy_worker.is_qwen_config(config), provider_config.is_qwen_config(config))
+            self.assertEqual(worker._legacy_worker.is_deepseek_config(config), provider_config.is_deepseek_config(config))
+            self.assertEqual(
+                worker._legacy_worker.is_deepseek_thinking_config(config),
+                provider_config.is_deepseek_thinking_config(config),
+            )
+            self.assertEqual(
+                worker._legacy_worker.is_gemini_vertex_config(config),
+                provider_config.is_gemini_vertex_config(config),
+            )
+            self.assertEqual(
+                worker._legacy_worker.is_gemini_vertex_tts_config(config),
+                provider_config.is_gemini_vertex_tts_config(config),
+            )
+            self.assertEqual(
+                worker._legacy_worker.is_gemini_vertex_thinking_config(config),
+                provider_config.is_gemini_vertex_thinking_config(config),
+            )
+            self.assertEqual(
+                worker._legacy_worker.is_thinking_model_config(config),
+                provider_config.is_thinking_model_config(config),
+            )
+            self.assertEqual(worker._legacy_worker.thinking_budget(config), provider_config.thinking_budget(config))
+            self.assertEqual(
+                worker._legacy_worker.should_stream_reasoning(config),
+                provider_config.should_stream_reasoning(config),
+            )
+            self.assertEqual(worker._legacy_worker.api_key_header(config), provider_config.api_key_header(config))
+            self.assertEqual(worker._legacy_worker.model_api_available(config), provider_config.model_api_available(config))
+
+        self.assertEqual(worker._legacy_worker.MIMO_TOKEN_PLAN_SGP_BASE_URL, provider_config.MIMO_TOKEN_PLAN_SGP_BASE_URL)
+        self.assertEqual(worker._legacy_worker.GEMINI_VERTEX_DEFAULT_MODEL, provider_config.GEMINI_VERTEX_DEFAULT_MODEL)
 
     def test_qwen_compatible_chat_completion_streams_with_thinking_budget(self):
         calls = {}
@@ -1751,6 +4156,28 @@ class WorkerQualityTests(unittest.TestCase):
             1.0,
         )
 
+    def test_normalized_tts_config_prefers_api_config_over_stale_top_level_tts(self):
+        tts = worker._legacy_worker.normalized_tts_config(
+            {
+                "tts_config": {"enabled": False, "provider": "disabled"},
+                "api_config": {
+                    "provider": "gemini-vertex",
+                    "tts_config": {
+                        "enabled": True,
+                        "provider": "gemini-vertex",
+                        "base_url": "https://aiplatform.googleapis.com",
+                        "model": "gemini-3.1-flash-tts-preview",
+                        "voice": "Kore",
+                        "language": "en-US",
+                    },
+                },
+            }
+        )
+
+        self.assertTrue(tts["enabled"])
+        self.assertEqual(tts["provider"], "gemini-vertex")
+        self.assertEqual(tts["voice"], "Kore")
+
     def test_tts_transcode_applies_output_volume_filter(self):
         original_which = worker._legacy_worker.shutil.which
         original_run = worker._legacy_worker.subprocess.run
@@ -1785,11 +4212,15 @@ class WorkerQualityTests(unittest.TestCase):
 
     def test_synthesize_tts_reuses_persistent_cache_for_same_voice_and_text(self):
         original_call_tts_audio = worker._legacy_worker.call_tts_audio
+        original_transcribe_tts_audio = worker._legacy_worker.transcribe_tts_audio
         calls = {"count": 0}
 
         def fake_call_tts_audio(tts, text, language):
             calls["count"] += 1
             return f"ID3:{text}:{language}".encode("utf-8") + (b"\x00" * 8192)
+
+        def fake_transcribe_tts_audio(audio_path, *, project, expected_text, role):
+            return {"ok": True, "provider": "fake-asr", "transcript": expected_text}
 
         project = {
             "language": "en",
@@ -1817,12 +4248,14 @@ class WorkerQualityTests(unittest.TestCase):
             second_path = Path(temp_dir) / "second.mp3"
             try:
                 worker._legacy_worker.call_tts_audio = fake_call_tts_audio
+                worker._legacy_worker.transcribe_tts_audio = fake_transcribe_tts_audio
                 first = worker._legacy_worker.synthesize_tts(project, segment, first_path)
                 second = worker._legacy_worker.synthesize_tts(project, segment, second_path)
                 first_bytes = first_path.read_bytes()
                 second_bytes = second_path.read_bytes()
             finally:
                 worker._legacy_worker.call_tts_audio = original_call_tts_audio
+                worker._legacy_worker.transcribe_tts_audio = original_transcribe_tts_audio
                 os.chdir(original_cwd)
 
         self.assertEqual(calls["count"], 1)
@@ -1830,6 +4263,412 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIsInstance(second, dict)
         self.assertTrue(second["cache_hit"])
         self.assertEqual(first_bytes, second_bytes)
+
+    def test_transcribe_tts_audio_uses_whisper_cli_when_configured(self):
+        original_which = worker._legacy_worker.shutil.which
+        original_run = worker._legacy_worker.subprocess.run
+        calls = {"args": []}
+
+        class FakeCompleted:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        def fake_run(args, **kwargs):
+            calls["args"] = list(args)
+            output_dir = Path(args[args.index("--output_dir") + 1])
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "sample.txt").write_text("semantic firewall", encoding="utf-8")
+            return FakeCompleted()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio_path = Path(temp_dir) / "sample.mp3"
+            audio_path.write_bytes(b"ID3" + b"\x00" * 8192)
+            try:
+                worker._legacy_worker.shutil.which = lambda name: "C:/Tools/whisper.exe" if name == "whisper" else None
+                worker._legacy_worker.subprocess.run = fake_run
+                result = worker._legacy_worker.transcribe_tts_audio(
+                    audio_path,
+                    project={
+                        "tts_semantic_verification": {
+                            "asr_provider": "whisper-cli",
+                            "whisper_model": "tiny.en",
+                            "whisper_language": "en",
+                        }
+                    },
+                    expected_text="semantic firewall",
+                    role="phrase_tts",
+                )
+            finally:
+                worker._legacy_worker.shutil.which = original_which
+                worker._legacy_worker.subprocess.run = original_run
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["provider"], "whisper-cli:tiny.en")
+        self.assertEqual(result["transcript"], "semantic firewall")
+        self.assertIn("--output_format", calls["args"])
+        self.assertIn("txt", calls["args"])
+
+    def test_tts_semantic_matches_common_asr_homophones_for_sentence_tts(self):
+        from acg.tts_semantic import normalize_tts_semantic_text, tts_semantic_matches
+
+        matched, expected_norm, actual_norm = worker._legacy_worker.tts_semantic_matches(
+            "As your morning alarm blares, you mutter to yourself, why did I set it so early?",
+            "As you're mourning alarm blares, you mutter to yourself. Why did I set it so early?",
+            role="sentence_tts",
+        )
+
+        self.assertTrue(matched, (expected_norm, actual_norm))
+        self.assertEqual(
+            worker._legacy_worker.tts_semantic_matches(
+                "As your morning alarm blares, you mutter to yourself, why did I set it so early?",
+                "As you're mourning alarm blares, you mutter to yourself. Why did I set it so early?",
+                role="sentence_tts",
+            ),
+            tts_semantic_matches(
+                "As your morning alarm blares, you mutter to yourself, why did I set it so early?",
+                "As you're mourning alarm blares, you mutter to yourself. Why did I set it so early?",
+                role="sentence_tts",
+            ),
+        )
+        self.assertEqual(normalize_tts_semantic_text("[Music] The answer's two."), "the answer's two")
+
+    def test_tts_semantic_matches_common_asr_homophones_for_long_phrase_tts(self):
+        matched, expected_norm, actual_norm = worker._legacy_worker.tts_semantic_matches(
+            "just in time to",
+            "Just in time too.",
+            role="phrase_tts",
+        )
+
+        self.assertTrue(matched, (expected_norm, actual_norm))
+
+    def test_tts_semantic_manifest_review_helpers_live_in_dedicated_module(self):
+        from acg.tts_semantic import (
+            phrase_tts_max_duration_seconds,
+            tts_manual_review_items,
+            tts_semantic_failure_items,
+            tts_semantic_verification_summary,
+        )
+
+        manifest = {
+            "sentence_passed.mp3": {
+                "role": "sentence_tts",
+                "field": "TtsAudio",
+                "tts_text": "This sentence passed.",
+                "semantic_verification": "passed",
+                "asr_transcript": "This sentence passed.",
+            },
+            "phrase_manual.mp3": {
+                "role": "phrase_tts",
+                "field": "PhraseTtsAudio",
+                "card_id": "card-1",
+                "learning_point_id": "lp-1",
+                "segment_id": "seg-1",
+                "source_time": "00:00:01.000 - 00:00:03.000",
+                "tts_text": "model",
+                "semantic_verification": "manual_review_required",
+            },
+            "phrase_mismatch.mp3": {
+                "role": "phrase_tts",
+                "field": "PhraseTtsAudio",
+                "card_id": "card-2",
+                "learning_point_id": "lp-2",
+                "tts_text": "scratch",
+                "semantic_verification": "mismatch",
+                "asr_transcript": "stretch",
+                "expected_text_normalized": "scratch",
+                "actual_text_normalized": "stretch",
+            },
+            "phrase_na.mp3": {
+                "role": "phrase_tts",
+                "field": "PhraseTtsAudio",
+                "tts_text": "fine",
+                "semantic_verification": "not_applicable",
+            },
+        }
+
+        manual_items = tts_manual_review_items(manifest)
+        failure_items = tts_semantic_failure_items(manifest)
+        summary = tts_semantic_verification_summary(manual_items, manifest)
+
+        self.assertEqual(manual_items, worker._legacy_worker.tts_manual_review_items(manifest))
+        self.assertEqual(failure_items, worker._legacy_worker.tts_semantic_failure_items(manifest))
+        self.assertEqual(summary, worker._legacy_worker.tts_semantic_verification_summary(manual_items, manifest))
+        self.assertEqual(len(manual_items), 1)
+        self.assertEqual(manual_items[0]["file"], "phrase_manual.mp3")
+        self.assertEqual(manual_items[0]["max_duration_seconds"], round(phrase_tts_max_duration_seconds("model"), 3))
+        self.assertEqual(
+            manual_items[0]["semantic_review_reasons"],
+            ["asr_semantic_check_unavailable", "high_risk_short_expression", "short_expression"],
+        )
+        self.assertEqual(len(failure_items), 1)
+        self.assertEqual(failure_items[0]["file"], "phrase_mismatch.mp3")
+        self.assertEqual(summary["status"], "mismatch")
+        self.assertEqual(summary["passed"], 1)
+        self.assertEqual(summary["failed"], 1)
+        self.assertEqual(summary["manual_review_required"], 1)
+
+    def test_tts_semantic_config_and_asr_command_helpers_match_worker_boundary(self):
+        from acg import tts_semantic
+
+        project = {
+            "tts_semantic_verification": {
+                "enabled": True,
+                "require_pass_for_export": True,
+            }
+        }
+        self.assertEqual(
+            worker._legacy_worker.tts_semantic_config(project),
+            tts_semantic.tts_semantic_config(project),
+        )
+        self.assertEqual(
+            worker._legacy_worker.tts_semantic_verification_enabled(project),
+            tts_semantic.tts_semantic_verification_enabled(project),
+        )
+        self.assertEqual(
+            worker._legacy_worker.tts_semantic_requires_export_pass(project),
+            tts_semantic.tts_semantic_requires_export_pass(project),
+        )
+        self.assertEqual(
+            worker._legacy_worker.unsafe_asr_command_reason("cmd.exe /c echo {audio}"),
+            tts_semantic.unsafe_asr_command_reason("cmd.exe /c echo {audio}"),
+        )
+        self.assertEqual(
+            worker._legacy_worker.unsafe_asr_command_reason("safe-asr"),
+            "",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio_path = Path(temp_dir) / "sample.mp3"
+            module_argv, module_reason = tts_semantic.build_asr_command_argv(
+                "safe-asr",
+                ["--input", "{audio}", "--plain"],
+                audio_path,
+            )
+            self.assertEqual(module_reason, "")
+            self.assertEqual(
+                worker._legacy_worker.build_asr_command_argv(
+                    "safe-asr",
+                    ["--input", "{audio}", "--plain"],
+                    audio_path,
+                ),
+                module_argv,
+            )
+
+    def test_transcribe_tts_audio_rejects_shell_template_command(self):
+        original_run = worker._legacy_worker.subprocess.run
+
+        def fake_run(*args, **kwargs):
+            raise AssertionError("unsafe ASR command must not be executed")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio_path = Path(temp_dir) / "sample.mp3"
+            audio_path.write_bytes(b"ID3" + b"\x00" * 8192)
+            try:
+                worker._legacy_worker.subprocess.run = fake_run
+                with self.assertRaises(SystemExit):
+                    worker._legacy_worker.transcribe_tts_audio(
+                        audio_path,
+                        project={
+                            "tts_semantic_verification": {
+                                "asr_command": "cmd.exe /c echo {audio}",
+                                "asr_timeout_seconds": 1,
+                            }
+                        },
+                        expected_text="semantic firewall",
+                        role="phrase_tts",
+                    )
+            finally:
+                worker._legacy_worker.subprocess.run = original_run
+
+    def test_transcribe_tts_audio_uses_safe_asr_command_args(self):
+        original_run = worker._legacy_worker.subprocess.run
+        calls = {}
+
+        class FakeCompleted:
+            returncode = 0
+            stdout = "semantic firewall"
+            stderr = ""
+
+        def fake_run(args, **kwargs):
+            calls["args"] = list(args)
+            calls["kwargs"] = dict(kwargs)
+            return FakeCompleted()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio_path = Path(temp_dir) / "sample.mp3"
+            audio_path.write_bytes(b"ID3" + b"\x00" * 8192)
+            try:
+                worker._legacy_worker.subprocess.run = fake_run
+                result = worker._legacy_worker.transcribe_tts_audio(
+                    audio_path,
+                    project={
+                        "tts_semantic_verification": {
+                            "asr_command": "safe-asr",
+                            "asr_command_args": ["--input", "{audio}", "--plain"],
+                        }
+                    },
+                    expected_text="semantic firewall",
+                    role="phrase_tts",
+                )
+            finally:
+                worker._legacy_worker.subprocess.run = original_run
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(calls["args"], ["safe-asr", "--input", str(audio_path), "--plain"])
+        self.assertNotIn("shell", calls["kwargs"])
+
+    def test_url_and_anki_security_guards_block_untrusted_hosts(self):
+        legacy = worker._legacy_worker
+        with self.assertRaises(SystemExit):
+            legacy.validate_source_url_for_import({"source_url": "http://127.0.0.1:8080/video.mp4"})
+        self.assertEqual(
+            legacy.validate_source_url_for_import(
+                {
+                    "source_url": "http://127.0.0.1:8080/video.mp4",
+                    "allow_private_network_url": True,
+                }
+            ),
+            "http://127.0.0.1:8080/video.mp4",
+        )
+        self.assertEqual(
+            legacy.validate_source_url_for_import({"source_url": "https://www.youtube.com/watch?v=test"}),
+            "https://www.youtube.com/watch?v=test",
+        )
+        legacy.validate_anki_connect_url("http://127.0.0.1:8765")
+        legacy.validate_anki_connect_url("http://localhost:8765")
+        with self.assertRaises(SystemExit):
+            legacy.validate_anki_connect_url("http://192.168.1.10:8765")
+
+    def test_yt_dlp_remote_components_are_explicit_opt_in(self):
+        legacy = worker._legacy_worker
+        original_which = legacy.shutil.which
+        try:
+            legacy.shutil.which = lambda name: f"C:/Tools/{name}.exe" if name == "deno" else None
+            self.assertEqual(legacy.yt_dlp_js_runtime_args(False), [])
+            self.assertEqual(
+                legacy.yt_dlp_js_runtime_args(True),
+                ["--js-runtimes", "deno", "--remote-components", "ejs:github"],
+            )
+        finally:
+            legacy.shutil.which = original_which
+
+    def test_synthesize_tts_rejects_overlong_phrase_audio_and_does_not_cache(self):
+        original_call_tts_audio = worker._legacy_worker.call_tts_audio
+        original_audio_duration_seconds = worker._legacy_worker.audio_duration_seconds
+
+        def fake_call_tts_audio(tts, text, language):
+            return b"ID3" + b"\x00" * 8192
+
+        project = {
+            "language": "en",
+            "api_config": {
+                "tts_config": {
+                    "enabled": True,
+                    "provider": "grok",
+                    "base_url": "https://api.x.ai/v1",
+                    "api_key": "sk-test",
+                    "model": "",
+                    "voice": "eve",
+                    "language": "en-US",
+                    "sample_rate": 24000,
+                    "bit_rate": 128000,
+                    "output_volume": 1.0,
+                }
+            },
+        }
+        segment = {"id": "seg_prompt", "text": "prompt"}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            output_path = Path(temp_dir) / "prompt.mp3"
+            tts = worker._legacy_worker.normalized_tts_config(project)
+            cache_path, _cache_key = worker._legacy_worker.tts_cache_path(tts, "prompt", "en")
+            try:
+                worker._legacy_worker.call_tts_audio = fake_call_tts_audio
+                worker._legacy_worker.audio_duration_seconds = lambda path: 87.64
+                with self.assertRaisesRegex(RuntimeError, "表达 TTS 时长异常"):
+                    worker._legacy_worker.synthesize_tts(
+                        project,
+                        segment,
+                        output_path,
+                        text_override="prompt",
+                        tts_kind="phrase",
+                    )
+            finally:
+                worker._legacy_worker.call_tts_audio = original_call_tts_audio
+                worker._legacy_worker.audio_duration_seconds = original_audio_duration_seconds
+                os.chdir(original_cwd)
+
+            self.assertFalse(output_path.exists())
+            self.assertFalse(cache_path.exists())
+
+    def test_synthesize_tts_discards_overlong_phrase_cache_before_regenerating(self):
+        original_call_tts_audio = worker._legacy_worker.call_tts_audio
+        original_audio_duration_seconds = worker._legacy_worker.audio_duration_seconds
+        original_transcribe_tts_audio = worker._legacy_worker.transcribe_tts_audio
+        calls = {"count": 0}
+        durations = iter([88.0, 1.4])
+
+        def fake_call_tts_audio(tts, text, language):
+            calls["count"] += 1
+            return b"ID3regenerated" + b"\x00" * 8192
+
+        def fake_transcribe_tts_audio(audio_path, *, project, expected_text, role):
+            return {"ok": True, "provider": "fake-asr", "transcript": expected_text}
+
+        project = {
+            "language": "en",
+            "api_config": {
+                "tts_config": {
+                    "enabled": True,
+                    "provider": "grok",
+                    "base_url": "https://api.x.ai/v1",
+                    "api_key": "sk-test",
+                    "model": "",
+                    "voice": "eve",
+                    "language": "en-US",
+                    "sample_rate": 24000,
+                    "bit_rate": 128000,
+                    "output_volume": 1.0,
+                }
+            },
+        }
+        segment = {"id": "seg_prompt", "text": "prompt"}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            output_path = Path(temp_dir) / "prompt.mp3"
+            tts = worker._legacy_worker.normalized_tts_config(project)
+            cache_path, _cache_key = worker._legacy_worker.tts_cache_path(tts, "prompt", "en")
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_bytes(b"ID3cached" + b"\x00" * 8192)
+            try:
+                worker._legacy_worker.call_tts_audio = fake_call_tts_audio
+                worker._legacy_worker.audio_duration_seconds = lambda path: next(durations)
+                worker._legacy_worker.transcribe_tts_audio = fake_transcribe_tts_audio
+                result = worker._legacy_worker.synthesize_tts(
+                    project,
+                    segment,
+                    output_path,
+                    text_override="prompt",
+                    tts_kind="phrase",
+                )
+                output_bytes = output_path.read_bytes()
+                cache_bytes = cache_path.read_bytes()
+            finally:
+                worker._legacy_worker.call_tts_audio = original_call_tts_audio
+                worker._legacy_worker.audio_duration_seconds = original_audio_duration_seconds
+                worker._legacy_worker.transcribe_tts_audio = original_transcribe_tts_audio
+                os.chdir(original_cwd)
+
+        self.assertEqual(calls["count"], 1)
+        self.assertIsInstance(result, dict)
+        self.assertFalse(result["cache_hit"])
+        self.assertTrue(output_bytes.startswith(b"ID3regenerated"))
+        self.assertTrue(cache_bytes.startswith(b"ID3regenerated"))
 
     def test_media_cache_rejects_tiny_invalid_files(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1867,6 +4706,38 @@ class WorkerQualityTests(unittest.TestCase):
             self.assertTrue(copied)
             self.assertEqual(output_path.read_bytes(), cache_path.read_bytes())
 
+    def test_cache_identity_helpers_match_worker_boundary(self):
+        from acg.cache_identity import (
+            cached_media_file_valid,
+            copy_cached_file,
+            file_fingerprint,
+            stable_cache_key,
+            store_cached_file,
+        )
+
+        payload = {"b": 2, "a": ["x", "y"], "nested": {"语言": "English"}}
+        self.assertEqual(worker._legacy_worker.stable_cache_key(payload, 24), stable_cache_key(payload, 24))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_path = root / "source.txt"
+            source_path.write_text("stable source fingerprint", encoding="utf-8")
+            self.assertEqual(worker._legacy_worker.file_fingerprint(source_path), file_fingerprint(source_path))
+
+            valid_mp3 = root / "valid.mp3"
+            cache_path = root / "cache" / "valid.mp3"
+            output_path = root / "out" / "valid.mp3"
+            valid_mp3.write_bytes(b"ID3" + b"\x00" * 2048)
+
+            self.assertEqual(worker._legacy_worker.cached_media_file_valid(valid_mp3), cached_media_file_valid(valid_mp3))
+            store_cached_file(valid_mp3, cache_path)
+            copied_by_worker = worker._legacy_worker.copy_cached_file(cache_path, output_path)
+            self.assertTrue(copied_by_worker)
+            self.assertTrue(output_path.exists())
+            output_path.unlink()
+            copied_by_module = copy_cached_file(cache_path, output_path)
+            self.assertTrue(copied_by_module)
+
     def test_tts_cache_key_includes_vertex_scope(self):
         base = {
             "enabled": True,
@@ -1896,6 +4767,70 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertNotEqual(key_a, key_b)
         self.assertNotEqual(key_a, key_c)
 
+    def test_cache_identity_helpers_match_worker_boundary(self):
+        from acg import cache_identity
+
+        tts = {
+            "enabled": True,
+            "provider": "gemini-vertex-tts",
+            "base_url": "https://aiplatform.googleapis.com/",
+            "model": "gemini-3.1-flash-tts-preview",
+            "voice": "Kore",
+            "sample_rate": 24000,
+            "bit_rate": 128000,
+            "output_volume": 0.65,
+            "project": "project-a",
+            "location": "",
+        }
+
+        cache_root = worker._legacy_worker.persistent_cache_root()
+        self.assertEqual(cache_root, cache_identity.persistent_cache_root(Path.cwd()))
+        self.assertEqual(
+            worker._legacy_worker.tts_provider_scope(tts),
+            cache_identity.tts_provider_scope(
+                tts,
+                provider=worker._legacy_worker.provider_name(tts),
+                default_region=worker._legacy_worker.gemini_vertex_location(tts),
+            ),
+        )
+
+        worker_tts_path, worker_tts_key = worker._legacy_worker.tts_cache_path(tts, "Read this once.", "en")
+        module_tts_path, module_tts_key = cache_identity.tts_cache_path(
+            cache_root,
+            tts,
+            "Read this once.",
+            "en",
+            provider_name_func=worker._legacy_worker.provider_name,
+            resolve_language_func=worker._legacy_worker.resolve_tts_language_code,
+            normalize_volume_func=worker._legacy_worker.normalized_tts_output_volume,
+            clean_text_func=worker._legacy_worker.clean_tts_input_text,
+            text_hash_func=worker._legacy_worker.media_text_hash,
+            provider_scope_func=worker._legacy_worker.tts_provider_scope,
+        )
+        self.assertEqual(worker_tts_path, module_tts_path)
+        self.assertEqual(worker_tts_key, module_tts_key)
+
+        worker_media_path, worker_media_key = worker._legacy_worker.media_clip_cache_path(
+            "video-fingerprint",
+            "00:00:01.000",
+            "3.500",
+            "video",
+            ".mp4",
+            "faststart",
+        )
+        module_media_path, module_media_key = cache_identity.media_clip_cache_path(
+            cache_root,
+            "video-fingerprint",
+            "00:00:01.000",
+            "3.500",
+            "video",
+            ".mp4",
+            "faststart",
+            ffmpeg_signature=worker._legacy_worker.ffmpeg_cache_signature(),
+        )
+        self.assertEqual(worker_media_path, module_media_path)
+        self.assertEqual(worker_media_key, module_media_key)
+
     def test_apkg_offline_field_report_detects_tts_hash_mismatch_and_bad_pronunciation_meta(self):
         report = verify_apkg.offline_field_report(
             [
@@ -1920,6 +4855,30 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(len(report["phrase_tts_text_hash_mismatches"]), 1)
         self.assertEqual(len(report["empty_required_text_fields"]), 1)
         self.assertEqual(len(report["blocked_study_text_values"]), 2)
+        self.assertEqual(report["corrupted_study_text_values"], [])
+
+    def test_apkg_offline_field_report_detects_question_mark_corrupted_study_text(self):
+        report = verify_apkg.offline_field_report(
+            [
+                {
+                    "CardId": "card-corrupt",
+                    "English": "This is a demanding job.",
+                    "Answer": "demanding job",
+                    "Chinese": "???????",
+                    "Definition": "A job requiring much effort.",
+                    "TeacherNote": "demanding ??????????????????",
+                    "TtsAudio": '<audio><source src="deck_tts_4a639f4d4a41.mp3"></audio>',
+                    "PhraseTtsAudio": '<audio><source src="deck_phrase_0423349bb0c2.mp3"></audio>',
+                    "PronunciationMeta": '{"validation_issues":[{"message":"??????????"}]}',
+                }
+            ],
+            {"deck_tts_4a639f4d4a41.mp3", "deck_phrase_0423349bb0c2.mp3"},
+        )
+
+        self.assertEqual(
+            {item["field"] for item in report["corrupted_study_text_values"]},
+            {"Chinese", "TeacherNote"},
+        )
 
     def test_apkg_media_header_validator_rejects_invalid_video_bytes(self):
         self.assertFalse(verify_apkg.media_header_valid("clip.mp4", 5, b"media"))
@@ -1970,6 +4929,59 @@ class WorkerQualityTests(unittest.TestCase):
             {issue["code"] for issue in issues},
             {"VIDEO_RESOLUTION_TOO_HIGH", "MP4_PROFILE_NOT_ANKI_FRIENDLY"},
         )
+
+    def test_verify_apkg_prepare_output_dir_refuses_non_workspace_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out_dir = Path(temp_dir) / "important"
+            out_dir.mkdir()
+            keep_file = out_dir / "keep.txt"
+            keep_file.write_text("do not delete", encoding="utf-8")
+
+            with self.assertRaises(SystemExit):
+                verify_apkg.prepare_verify_output_dir(out_dir)
+
+            self.assertTrue(keep_file.exists())
+            self.assertEqual(keep_file.read_text(encoding="utf-8"), "do not delete")
+
+    def test_verify_apkg_prepare_output_dir_allows_marked_workspace(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out_dir = Path(temp_dir) / "workspace"
+            out_dir.mkdir()
+            (out_dir / verify_apkg.VERIFY_WORKSPACE_MARKER).write_text("safe", encoding="utf-8")
+            (out_dir / "collection.anki2").write_text("old", encoding="utf-8")
+
+            prepared = verify_apkg.prepare_verify_output_dir(out_dir)
+
+            self.assertEqual(prepared, out_dir.resolve())
+            self.assertTrue((prepared / verify_apkg.VERIFY_WORKSPACE_MARKER).exists())
+            self.assertFalse((prepared / "collection.anki2").exists())
+
+    def test_verify_apkg_archive_limits_reject_too_many_media_entries(self):
+        class FakeInfo:
+            def __init__(self, filename, file_size=1):
+                self.filename = filename
+                self.file_size = file_size
+
+        class FakeArchive:
+            def infolist(self):
+                return [FakeInfo("collection.anki2"), FakeInfo("media")] + [
+                    FakeInfo(str(index)) for index in range(verify_apkg.MAX_ARCHIVE_MEDIA_ENTRIES + 1)
+                ]
+
+        with self.assertRaisesRegex(RuntimeError, "UNSAFE_APKG_ARCHIVE"):
+            verify_apkg.validate_apkg_archive_limits(FakeArchive())
+
+    def test_verify_apkg_archive_limits_reject_oversized_entry(self):
+        class FakeInfo:
+            filename = "0"
+            file_size = verify_apkg.MAX_ARCHIVE_ENTRY_BYTES + 1
+
+        class FakeArchive:
+            def infolist(self):
+                return [FakeInfo()]
+
+        with self.assertRaisesRegex(RuntimeError, "UNSAFE_APKG_ARCHIVE"):
+            verify_apkg.validate_apkg_archive_limits(FakeArchive())
 
     def test_apkg_offline_field_report_accepts_pronunciation_meta_with_arrays_and_ipa(self):
         meta = {
@@ -2059,16 +5071,18 @@ class WorkerQualityTests(unittest.TestCase):
 
         self.assertEqual(payload, {"segments": []})
 
-    def test_ytdlp_node_runtime_enables_remote_ejs_components(self):
+    def test_ytdlp_node_runtime_enables_remote_ejs_components_only_after_confirmation(self):
         original_which = worker.shutil.which
         try:
             worker.shutil.which = lambda name: "C:/node/node.exe" if name == "node" else None
 
-            args = worker.yt_dlp_js_runtime_args()
+            default_args = worker.yt_dlp_js_runtime_args()
+            confirmed_args = worker.yt_dlp_js_runtime_args(allow_remote_components=True)
         finally:
             worker.shutil.which = original_which
 
-        self.assertEqual(args, ["--js-runtimes", "node", "--remote-components", "ejs:github"])
+        self.assertEqual(default_args, [])
+        self.assertEqual(confirmed_args, ["--js-runtimes", "node", "--remote-components", "ejs:github"])
 
     def test_ytdlp_429_message_points_to_subtitle_rate_limit(self):
         message = worker.format_yt_dlp_failure(
@@ -2088,6 +5102,59 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertTrue(meta["retryable"])
         self.assertIn("local_srt", meta["fallbacks"])
 
+    def test_ytdlp_support_helpers_match_worker_boundary(self):
+        completed = subprocess.CompletedProcess(["yt-dlp"], 1, stdout="stdout detail", stderr="stderr detail")
+        self.assertEqual(worker.yt_dlp_failure_detail(completed), ytdlp_support.yt_dlp_failure_detail(completed))
+
+        details = [
+            "ERROR: Unable to download video subtitles for 'en': HTTP Error 429: Too Many Requests",
+            "ERROR: unable to download video: HTTP Error 429: Too Many Requests",
+            "ERROR: n challenge solving failed: remote component challenge solver required",
+            "ERROR: Unable to download video subtitles for 'en': requested subtitles are unavailable",
+            "ERROR: unable to download video data",
+        ]
+        for detail in details:
+            with self.subTest(detail=detail):
+                self.assertEqual(
+                    worker.yt_dlp_needs_remote_components(detail),
+                    ytdlp_support.yt_dlp_needs_remote_components(detail),
+                )
+                self.assertEqual(
+                    worker.is_subtitle_rate_limited(detail),
+                    ytdlp_support.is_subtitle_rate_limited(detail),
+                )
+                self.assertEqual(worker.format_yt_dlp_failure(detail), ytdlp_support.format_yt_dlp_failure(detail))
+                self.assertEqual(worker.yt_dlp_failure_meta(detail), ytdlp_support.yt_dlp_failure_meta(detail))
+
+    def test_ytdlp_argument_helpers_match_worker_boundary(self):
+        legacy = worker._legacy_worker
+        original_which = legacy.shutil.which
+        original_find_spec = legacy.importlib.util.find_spec
+        try:
+            legacy.shutil.which = lambda name: f"C:/Tools/{name}.exe" if name == "bun" else None
+            self.assertEqual(legacy.yt_dlp_js_runtime_args(False), [])
+            self.assertEqual(
+                legacy.yt_dlp_js_runtime_args(True),
+                ytdlp_support.yt_dlp_js_runtime_args(
+                    True,
+                    which_func=lambda name: f"C:/Tools/{name}.exe" if name == "bun" else None,
+                ),
+            )
+
+            legacy.importlib.util.find_spec = lambda name: object() if name == "curl_cffi" else None
+            self.assertEqual(
+                legacy.yt_dlp_network_args(),
+                ytdlp_support.yt_dlp_network_args(curl_cffi_available=True),
+            )
+            legacy.importlib.util.find_spec = lambda _name: None
+            self.assertEqual(
+                legacy.yt_dlp_network_args(),
+                ytdlp_support.yt_dlp_network_args(curl_cffi_available=False),
+            )
+        finally:
+            legacy.shutil.which = original_which
+            legacy.importlib.util.find_spec = original_find_spec
+
     def test_clean_input_path_removes_outer_quotes_and_spaces(self):
         self.assertEqual(worker.clean_input_path(' "F:\\Video\\clip.mkv" '), "F:\\Video\\clip.mkv")
         self.assertEqual(worker.clean_input_path("'F:\\Video\\clip.srt'"), "F:\\Video\\clip.srt")
@@ -2105,6 +5172,45 @@ class WorkerQualityTests(unittest.TestCase):
             selected = worker.discover_local_subtitle(f' "{video}" ', "English")
 
         self.assertEqual(selected, english_subtitle)
+
+    def test_subtitle_discovery_helpers_match_worker_boundary(self):
+        from acg.subtitles import discovery
+
+        for language in ("English", "中文", "français", "es-MX", "日本語", "русский"):
+            self.assertEqual(worker.subtitle_language_args(language), discovery.subtitle_language_args(language))
+            self.assertEqual(worker.subtitle_language_markers(language), discovery.subtitle_language_markers(language))
+            self.assertEqual(worker.subtitle_language_aliases(language), discovery.subtitle_language_aliases(language))
+
+        self.assertEqual(worker.compact_match_text("JMDS S01E01 - EN"), discovery.compact_match_text("JMDS S01E01 - EN"))
+        self.assertEqual(worker.TEXT_SUBTITLE_CODECS, discovery.TEXT_SUBTITLE_CODECS)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            video = root / "JMDS S01E01.mkv"
+            small_video = root / "small.mp4"
+            large_video = root / "large.mp4"
+            subtitle = root / "JMDS S01E01.en.srt"
+            unrelated = root / "JMDS S01E02.en.srt"
+            ignored = root / "largest.info.json"
+            video.write_bytes(b"video")
+            small_video.write_bytes(b"v")
+            large_video.write_bytes(b"video-video")
+            subtitle.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello.\n", encoding="utf-8")
+            unrelated.write_text("1\n00:00:00,000 --> 00:00:01,000\nWrong.\n", encoding="utf-8")
+            ignored.write_text("{}", encoding="utf-8")
+
+            self.assertEqual(
+                worker.first_file_by_suffix(root, (".mp4",)),
+                discovery.first_file_by_suffix(root, (".mp4",)),
+            )
+            self.assertEqual(
+                worker.pick_subtitle_file(root, "English"),
+                discovery.pick_subtitle_file(root, "English"),
+            )
+            self.assertEqual(
+                worker.discover_local_subtitle(f' "{video}" ', "English"),
+                discovery.discover_local_subtitle(f' "{video}" ', "English"),
+            )
 
     def test_select_embedded_subtitle_stream_prefers_requested_language(self):
         probe = {
@@ -2129,6 +5235,10 @@ class WorkerQualityTests(unittest.TestCase):
         selected = worker.select_embedded_subtitle_stream(probe, "English")
 
         self.assertEqual(selected["index"], 3)
+
+        from acg.subtitles import discovery
+
+        self.assertEqual(selected, discovery.select_embedded_subtitle_stream(probe, "English"))
 
     def test_local_generate_auto_discovers_subtitle_when_path_is_empty(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2460,7 +5570,7 @@ class WorkerQualityTests(unittest.TestCase):
 
         self.assertIn("找不到 ffmpeg", message)
 
-    def test_export_keeps_text_cards_when_local_media_slicing_fails(self):
+    def test_export_blocks_video_cards_when_local_media_slicing_fails(self):
         try:
             import genanki  # noqa: F401
         except ImportError:
@@ -2499,71 +5609,233 @@ class WorkerQualityTests(unittest.TestCase):
             )
             for segment in project["segments"]:
                 for card in segment["cards"]:
+                    card["difficulty_reason"] = "根据当前水平和表达可迁移性估计。"
                     card["enabled"] = True
 
             original_synthesize_tts = worker._legacy_worker.synthesize_tts
+            stderr = io.StringIO()
             try:
                 worker._legacy_worker.synthesize_tts = lambda *args, **kwargs: self.fail(
                     "TTS synthesis should not run when TTS is disabled"
                 )
-                result = worker.handle_export({"project": project, "output_dir": str(output_dir)})
+                with redirect_stderr(stderr), self.assertRaises(SystemExit):
+                    worker.handle_export({"project": project, "output_dir": str(output_dir)})
             finally:
                 worker._legacy_worker.synthesize_tts = original_synthesize_tts
 
+            message = stderr.getvalue()
+            self.assertIn("视频/原声切片失败", message)
+            self.assertIn("避免生成缺视频的视频卡", message)
+            self.assertNotIn("skip-video-slicing", message)
+            self.assertNotIn("use-subtitle-only", message)
+            self.assertFalse(any(output_dir.glob("*.apkg")))
+
+    def test_export_requires_video_path_for_video_projects_by_default(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "out"
+            output_dir.mkdir()
+            project = {
+                "title": "video without media",
+                "source_mode": "local",
+                "video_path": "",
+                "subtitle_path": "",
+                "language": "English",
+                "level": "B1",
+                "template_id": "immersive_v11",
+                "review_density": "fast",
+                "segments": [
+                    {
+                        "id": "seg_1",
+                        "start": 0,
+                        "end": 2,
+                        "text": "Can you run the register?",
+                        "cards": [
+                            {
+                                "id": "card_1",
+                                "type": "phrase",
+                                "enabled": True,
+                                "phrase": "run the register",
+                                "answer_core": "run the register",
+                                "english": "Can you run the register?",
+                                "chinese": "负责收银",
+                                "definition": "负责操作收银机。",
+                                "context": "Can you run the register?",
+                            }
+                        ],
+                    }
+                ],
+            }
+
+            stderr = io.StringIO()
+            with redirect_stderr(stderr), self.assertRaises(SystemExit):
+                worker.handle_export({"project": project, "output_dir": str(output_dir)})
+
+            message = stderr.getvalue()
+            self.assertIn("没有可切片的视频文件", message)
+            self.assertNotIn("use-subtitle-only", message)
+            self.assertFalse(any(output_dir.glob("*.apkg")))
+
+    def test_export_allows_url_subtitle_only_without_video_path(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "out"
+            output_dir.mkdir()
+            project = {
+                "title": "url subtitle only",
+                "source_mode": "url",
+                "source_url": "https://www.youtube.com/watch?v=test",
+                "url_import_mode": "subtitles",
+                "source_info": {"download_mode": "subtitles", "transcript_only": True},
+                "skip_video_slicing": True,
+                "video_path": "",
+                "subtitle_path": "",
+                "language": "English",
+                "level": "B1",
+                "template_id": "immersive_v11",
+                "review_density": "fast",
+                "segments": [
+                    {
+                        "id": "seg_1",
+                        "start": 0,
+                        "end": 2,
+                        "source_time": "00:00:00.000 - 00:00:02.000",
+                        "text": "Can you run the register?",
+                        "cards": [
+                            {
+                                "id": "card_1",
+                                "type": "phrase",
+                                "enabled": True,
+                                "phrase": "run the register",
+                                "answer_core": "run the register",
+                                "english": "Can you run the register?",
+                                "chinese": "负责收银",
+                                "definition": "负责操作收银机。",
+                                "context": "Can you run the register?",
+                            }
+                        ],
+                    }
+                ],
+            }
+
+            result = worker.handle_export({"project": project, "output_dir": str(output_dir)})
+
             self.assertTrue(Path(result["apkg_path"]).exists())
-            self.assertGreater(result["cards"], 0)
+            self.assertEqual(len(result["apkg_sha256"]), 64)
+            self.assertEqual(result["apkg_sha256"], hashlib.sha256(Path(result["apkg_path"]).read_bytes()).hexdigest())
+            self.assertEqual(result["apkg_size_bytes"], Path(result["apkg_path"]).stat().st_size)
+            self.assertGreater(result["apkg_mtime_ms"], 0)
+            self.assertEqual(result["cards"], 1)
             self.assertEqual(result["media_summary"]["video_segments"], 0)
-            self.assertEqual(result["media_summary"]["phrase_tts_files"], 0)
-            self.assertTrue(any("视频/原声切片失败" in warning for warning in result["warnings"]))
+            self.assertIn("total", result["timing_ms"])
+            self.assertIn("source_prepare", result["timing_ms"])
+            self.assertEqual(result["media_summary"]["media_concurrency"], 0)
+            self.assertEqual(result["deck_kind"], "subtitle_language")
 
-            import sqlite3
-            import zipfile
+    def test_export_can_write_direct_canonical_release_apkg(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
 
-            with zipfile.ZipFile(result["apkg_path"]) as apkg:
-                apkg.extract("collection.anki2", root)
-            connection = sqlite3.connect(root / "collection.anki2")
-            try:
-                models_json = connection.execute("select models from col").fetchone()[0]
-                note_fields = connection.execute("select flds from notes limit 1").fetchone()[0]
-            finally:
-                connection.close()
-            model = next(iter(json.loads(models_json).values()))
-            template = model["tmpls"][0]
-            field_names = [field["name"] for field in model["flds"]]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            apkg_dir = (
+                root
+                / "test_runs"
+                / "video_release_hardening_20260620_010000"
+                / "cases"
+                / "local_srt_full1_cold"
+                / "apkg"
+            )
+            apkg_dir.mkdir(parents=True)
+            canonical_apkg_path = apkg_dir / "local_srt_full1_cold.apkg"
+            project = {
+                "title": "local_srt_full1_cold",
+                "source_mode": "url",
+                "source_url": "https://www.youtube.com/watch?v=test",
+                "url_import_mode": "subtitles",
+                "source_info": {"download_mode": "subtitles", "transcript_only": True},
+                "skip_video_slicing": True,
+                "video_path": "",
+                "subtitle_path": "",
+                "language": "English",
+                "level": "B1",
+                "template_id": "immersive_v11",
+                "review_density": "fast",
+                "segments": [
+                    {
+                        "id": "seg_1",
+                        "start": 0,
+                        "end": 2,
+                        "source_time": "00:00:00.000 - 00:00:02.000",
+                        "text": "Can you run the register?",
+                        "cards": [
+                            {
+                                "id": "card_1",
+                                "type": "phrase",
+                                "enabled": True,
+                                "phrase": "run the register",
+                                "answer_core": "run the register",
+                                "english": "Can you run the register?",
+                                "chinese": "负责收银",
+                                "definition": "负责操作收银机。",
+                                "context": "Can you run the register?",
+                            }
+                        ],
+                    }
+                ],
+            }
 
-            self.assertIn("沉浸复读 V12", model["name"])
-            self.assertIn("v11-front-copy", template["qfmt"])
-            self.assertIn("{{FrontPrompt}}", template["qfmt"])
-            self.assertIn("慢读", template["qfmt"])
-            self.assertIn("点画面开始复读", template["qfmt"])
-            self.assertIn("复读循环中", template["qfmt"])
-            self.assertIn("video.muted = false", template["qfmt"])
-            self.assertIn('<div class="v11-label">{{CardType}}</div>', template["afmt"])
-            self.assertIn("原句</div>", template["afmt"])
-            self.assertIn("别误用", template["afmt"])
-            self.assertNotIn("<audio controls", template["qfmt"] + template["afmt"])
-            self.assertIn("CardLayout", field_names)
-            self.assertIn("CardVisualRole", field_names)
-            self.assertIn("FrontKicker", field_names)
-            self.assertIn("SourceLabel", field_names)
-            self.assertIn("PhoneticIpa", field_names)
-            self.assertIn("SpokenIpa", field_names)
-            self.assertIn("SourceSpokenIpa", field_names)
-            self.assertIn("PronunciationNote", field_names)
-            self.assertIn("PronunciationStatus", field_names)
-            self.assertIn("SourcePronunciationStatus", field_names)
-            self.assertIn("PronunciationMeta", field_names)
-            self.assertIn("SpokenPronunciationLabel", field_names)
-            self.assertIn("StandardPronunciationHint", field_names)
-            self.assertIn("标准读法", template["afmt"])
-            self.assertIn("{{SpokenPronunciationLabel}}", template["afmt"])
-            self.assertIn("{{^SourceSpokenIpa}}", template["afmt"])
-            self.assertIn("{{SourcePronunciationStatus}}", template["afmt"])
-            self.assertNotIn("原句听感</span><strong>未单独标注</strong>", template["afmt"])
-            exported_fields = note_fields.split("\x1f")
-            meta = json.loads(exported_fields[field_names.index("PronunciationMeta")])
-            self.assertIn(meta["language_code"], {"en", "fr", "es", "ja", "ru"})
-            self.assertIn("generation_basis", meta)
+            result = worker.handle_export(
+                {
+                    "project": project,
+                    "output_dir": str(apkg_dir),
+                    "canonical_apkg_path": str(canonical_apkg_path),
+                }
+            )
+
+            self.assertEqual(Path(result["apkg_path"]), canonical_apkg_path)
+            self.assertTrue(canonical_apkg_path.exists())
+            self.assertEqual(list(apkg_dir.glob("*.apkg")), [canonical_apkg_path])
+            self.assertEqual(result["apkg_sha256"], hashlib.sha256(canonical_apkg_path.read_bytes()).hexdigest())
+            self.assertEqual(result["apkg_size_bytes"], canonical_apkg_path.stat().st_size)
+
+    def test_export_refuses_existing_canonical_release_apkg(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            apkg_dir = root / "test_runs" / "video_release_hardening_20260620_010000" / "cases" / "case_a" / "apkg"
+            apkg_dir.mkdir(parents=True)
+            canonical_apkg_path = apkg_dir / "case_a.apkg"
+            canonical_apkg_path.write_bytes(b"existing release evidence")
+            stderr = io.StringIO()
+
+            with redirect_stderr(stderr), self.assertRaises(SystemExit):
+                worker.handle_export(
+                    {
+                        "project": {"title": "case_a", "source_mode": "document", "segments": []},
+                        "output_dir": str(apkg_dir),
+                        "canonical_apkg_path": str(canonical_apkg_path),
+                    }
+                )
+
+            self.assertIn("为避免覆盖证据已停止", stderr.getvalue())
+            self.assertEqual(canonical_apkg_path.read_bytes(), b"existing release evidence")
 
     def test_export_batch_project_writes_nested_subdecks(self):
         try:
@@ -2874,6 +6146,17 @@ class WorkerQualityTests(unittest.TestCase):
                 "language": "en",
                 "level": "B1",
                 "template_id": "immersive_v11",
+                "api_config": {
+                    "provider": "local",
+                    "tts_config": {
+                        "enabled": True,
+                        "provider": "openai-compatible",
+                        "base_url": "https://api.example.com/v1",
+                        "api_key": "sk-test",
+                        "model": "tts-test",
+                        "voice": "alloy",
+                    },
+                },
                 "segments": [
                     {
                         "id": "seg-a",
@@ -2926,6 +6209,7 @@ class WorkerQualityTests(unittest.TestCase):
                 ],
             }
             original_try_run_ffmpeg = worker._legacy_worker.try_run_ffmpeg
+            original_synthesize_tts = worker._legacy_worker.synthesize_tts
             original_cwd = os.getcwd()
 
             def fake_try_run_ffmpeg(command):
@@ -2942,21 +6226,204 @@ class WorkerQualityTests(unittest.TestCase):
                     output_path.write_bytes(b"media")
                 return ""
 
+            def fake_synthesize_tts(project_arg, segment_arg, output_path, text_override=None, tts_kind="sentence"):
+                Path(output_path).write_bytes(b"ID3" + b"\x00" * 8192)
+                text = str(text_override or segment_arg.get("text") or "")
+                return {
+                    "ok": True,
+                    "cache_hit": False,
+                    "semantic": worker._legacy_worker.tts_semantic_not_applicable(
+                        text,
+                        "phrase_tts" if tts_kind == "phrase" else "sentence_tts",
+                    ),
+                }
+
             try:
                 os.chdir(root)
                 worker._legacy_worker.try_run_ffmpeg = fake_try_run_ffmpeg
+                worker._legacy_worker.synthesize_tts = fake_synthesize_tts
                 result = worker.handle_export({"project": project, "output_dir": str(output_dir)})
             finally:
                 os.chdir(original_cwd)
                 worker._legacy_worker.try_run_ffmpeg = original_try_run_ffmpeg
+                worker._legacy_worker.synthesize_tts = original_synthesize_tts
 
             self.assertEqual(result["cards"], 2)
             self.assertEqual(result["segments"], 2)
             self.assertEqual(result["media_summary"]["video_segments"], 1)
             self.assertEqual(result["media_summary"]["video_files"], 2)
             self.assertEqual(result["media_summary"]["original_audio_files"], 1)
+            self.assertEqual(result["media_summary"]["sentence_tts_files"], 2)
+            self.assertEqual(result["media_summary"]["phrase_tts_files"], 2)
             self.assertEqual(result["media_summary"]["media_reused_segments"], 1)
-            self.assertEqual(result["media_summary"]["media_files"], 4)
+            self.assertEqual(result["media_summary"]["media_files"], 8)
+            self.assertEqual(result["media_summary"]["tts_cache_hits"], 0)
+            self.assertEqual(result["media_summary"]["tts_cache_misses"], 4)
+            self.assertEqual(result["media_summary"]["tts_cache_total"], 4)
+            self.assertEqual(result["media_summary"]["media_cache_hits"], 0)
+            self.assertEqual(result["media_summary"]["media_cache_misses"], 4)
+            self.assertEqual(result["media_summary"]["media_cache_total"], 4)
+
+    def test_export_cuts_video_and_original_audio_from_final_media_bounds_for_phrase_positions(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
+
+        from acg.media_alignment import align_segment_media_to_display_sentence, fmt_time, segment_media_bounds
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            video_path = root / "source.mp4"
+            output_dir = root / "out"
+            video_path.write_bytes(b"unique media bounds fixture " + os.urandom(16))
+            output_dir.mkdir()
+            full_sentence = (
+                "right at the start we explain the setup then quietly make the decision "
+                "together and save the surprise right before we leave"
+            )
+            phrases = [
+                ("seg_start", "right at the start", 100.0, 118.0),
+                ("seg_middle", "quietly make the decision", 140.0, 158.0),
+                ("seg_end", "right before we leave", 180.0, 198.0),
+            ]
+            segments = []
+            for index, (segment_id, phrase, start_at, end_at) in enumerate(phrases, start=1):
+                media_start, media_end = segment_media_bounds(start_at, end_at, full_sentence, phrase, review_mode=False)
+                segments.append(
+                    {
+                        "id": segment_id,
+                        "start": start_at,
+                        "end": end_at,
+                        "media_start": media_start,
+                        "media_end": media_end,
+                        "full_source_sentence": full_sentence,
+                        "source_time": f"{fmt_time(start_at)} - {fmt_time(end_at)}",
+                        "media_source_time": f"{fmt_time(media_start)} - {fmt_time(media_end)}",
+                        "text": full_sentence,
+                        "cards": [
+                            {
+                                "id": f"card_{index}",
+                                "type": "phrase",
+                                "enabled": True,
+                                "english": full_sentence,
+                                "answer_core": phrase,
+                                "phrase": phrase,
+                                "chinese": "结合原句理解这个表达。",
+                                "definition": "A useful expression from the sentence.",
+                                "context": full_sentence,
+                                "teacher_note": "检查视频与原声都使用 media_start/media_end。",
+                                "pronunciation_meta": {},
+                            }
+                        ],
+                    }
+                )
+            expected_aligned_by_segment = {
+                str(segment["id"]): align_segment_media_to_display_sentence(segment)
+                for segment in segments
+            }
+            project = {
+                "title": "media bounds original audio",
+                "source_mode": "local",
+                "video_path": str(video_path),
+                "language": "en",
+                "level": "B1",
+                "template_id": "immersive_v11",
+                "api_config": {
+                    "provider": "local",
+                    "tts_config": {
+                        "enabled": True,
+                        "provider": "openai-compatible",
+                        "base_url": "https://api.example.com/v1",
+                        "api_key": "sk-test",
+                        "model": "tts-test",
+                        "voice": "alloy",
+                    },
+                },
+                "segments": segments,
+            }
+            captured_commands: list[list[str]] = []
+            original_try_run_ffmpeg = worker._legacy_worker.try_run_ffmpeg
+            original_synthesize_tts = worker._legacy_worker.synthesize_tts
+
+            def fake_try_run_ffmpeg(command):
+                captured_commands.append([str(part) for part in command])
+                output_path = Path(command[-1])
+                if output_path.suffix == ".mp4":
+                    output_path.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 8192)
+                elif output_path.suffix == ".webm":
+                    output_path.write_bytes(b"\x1a\x45\xdf\xa3" + b"\x00" * 8192)
+                elif output_path.suffix == ".jpg":
+                    output_path.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 8192)
+                elif output_path.suffix == ".mp3":
+                    output_path.write_bytes(b"ID3" + b"\x00" * 8192)
+                else:
+                    output_path.write_bytes(b"media")
+                return ""
+
+            def fake_synthesize_tts(project_arg, segment_arg, output_path, text_override=None, tts_kind="sentence"):
+                Path(output_path).write_bytes(b"ID3" + b"\x00" * 8192)
+                text = str(text_override or segment_arg.get("text") or "")
+                return {
+                    "ok": True,
+                    "cache_hit": False,
+                    "semantic": worker._legacy_worker.tts_semantic_not_applicable(
+                        text,
+                        "phrase_tts" if tts_kind == "phrase" else "sentence_tts",
+                    ),
+                }
+
+            try:
+                worker._legacy_worker.try_run_ffmpeg = fake_try_run_ffmpeg
+                worker._legacy_worker.synthesize_tts = fake_synthesize_tts
+                result = worker.handle_export({"project": project, "output_dir": str(output_dir)})
+            finally:
+                worker._legacy_worker.try_run_ffmpeg = original_try_run_ffmpeg
+                worker._legacy_worker.synthesize_tts = original_synthesize_tts
+
+            self.assertEqual(result["cards"], 3)
+            self.assertEqual(result["media_summary"]["video_segments"], 3)
+            self.assertEqual(result["media_summary"]["original_audio_files"], 3)
+            media_by_segment = {item["segment_id"]: item for item in result["card_media_ledger"]}
+            audit_by_segment = {item["segment_id"]: item for item in result["audio_audit_items"]}
+            used_adjusted_media_window = False
+            for segment in segments:
+                segment_id = segment["id"]
+                card_media = media_by_segment[segment_id]
+                expected_aligned = expected_aligned_by_segment[segment_id]
+                expected_start = str(max(0.0, float(expected_aligned["media_start"])))
+                expected_duration = str(
+                    max(0.5, float(expected_aligned["media_end"]) - float(expected_aligned["media_start"]))
+                )
+                mp4_command = next(
+                    command
+                    for command in captured_commands
+                    if Path(command[-1]).suffix == ".mp4" and segment_id in Path(command[-1]).name
+                )
+                original_audio_command = next(
+                    command
+                    for command in captured_commands
+                    if Path(command[-1]).suffix == ".mp3" and segment_id in Path(command[-1]).name
+                )
+                for command in [mp4_command, original_audio_command]:
+                    self.assertEqual(command[command.index("-ss") + 1], expected_start)
+                    self.assertEqual(command[command.index("-t") + 1], expected_duration)
+                used_adjusted_media_window = used_adjusted_media_window or expected_start != str(segment["start"])
+                used_adjusted_media_window = used_adjusted_media_window or expected_duration != str(
+                    segment["end"] - segment["start"]
+                )
+
+            self.assertTrue(used_adjusted_media_window)
+            for segment in segments:
+                expected_aligned = expected_aligned_by_segment[segment["id"]]
+                card_media = media_by_segment[segment["id"]]
+                audit_item = audit_by_segment[segment["id"]]
+                self.assertEqual(card_media["media_start"], expected_aligned["media_start"])
+                self.assertEqual(card_media["media_end"], expected_aligned["media_end"])
+                self.assertEqual(card_media["media_source_time"], expected_aligned["media_source_time"])
+                self.assertEqual(audit_item["media_start"], expected_aligned["media_start"])
+                self.assertEqual(audit_item["media_end"], expected_aligned["media_end"])
+                self.assertEqual(audit_item["media_source_time"], expected_aligned["media_source_time"])
 
     def test_export_phrase_tts_matches_visible_answer_for_repetition_cards(self):
         try:
@@ -3018,7 +6485,7 @@ class WorkerQualityTests(unittest.TestCase):
             captured: list[str | None] = []
             original_synthesize_tts = worker._legacy_worker.synthesize_tts
 
-            def fake_synthesize_tts(project_arg, segment_arg, output_path, text_override=None):
+            def fake_synthesize_tts(project_arg, segment_arg, output_path, text_override=None, tts_kind="sentence"):
                 captured.append(text_override)
                 Path(output_path).write_bytes(b"ID3" + b"\x00" * 8192)
                 return True
@@ -3030,7 +6497,7 @@ class WorkerQualityTests(unittest.TestCase):
                 worker._legacy_worker.synthesize_tts = original_synthesize_tts
 
             self.assertTrue(Path(result["apkg_path"]).exists())
-            self.assertEqual(captured[0], None)
+            self.assertEqual(captured[0], "Ever want me to read anything, I could critique it for you.")
             self.assertEqual(captured[1], "Ever want me to")
             self.assertNotIn("critique it", captured)
             self.assertEqual(result["media_summary"]["phrase_tts_files"], 1)
@@ -3043,6 +6510,1222 @@ class WorkerQualityTests(unittest.TestCase):
             self.assertIn(sentence_entries[0]["text_hash"], sentence_entries[0]["file"])
             manifest_entry = result["media_manifest"][phrase_entries[0]["file"]]
             self.assertEqual(manifest_entry["role"], "phrase_tts")
+            self.assertEqual(phrase_entries[0]["semantic_verification"], "not_applicable")
+            self.assertEqual(phrase_entries[0]["semantic_review_reasons"], [])
+            self.assertEqual(result["media_summary"]["tts_manual_review_items"], 0)
+            self.assertEqual(result["media_summary"]["tts_high_risk_manual_review_items"], 0)
+            manual_phrase_items = [
+                item for item in result["tts_manual_review_items"] if item["role"] == "phrase_tts"
+            ]
+            self.assertEqual(manual_phrase_items, [])
+            self.assertEqual(result["tts_semantic_verification"]["status"], "not_applicable")
+            self.assertEqual(result["media_summary"]["card_media_ledger_items"], 1)
+            card_media = result["card_media_ledger"][0]
+            self.assertEqual(card_media["answer"], "Ever want me to")
+            self.assertEqual(card_media["sentence_tts_text"], "Ever want me to read anything, I could critique it for you.")
+            self.assertEqual(card_media["phrase_tts_text"], "Ever want me to")
+            self.assertEqual(card_media["sentence_tts_audio"], sentence_entries[0]["file"])
+            self.assertEqual(card_media["phrase_tts_audio"], phrase_entries[0]["file"])
+            self.assertTrue(Path(result["audio_audit_path"]).exists())
+            self.assertTrue(Path(result["audio_audit_markdown_path"]).exists())
+            self.assertEqual(result["audio_audit_summary"]["items"], 1)
+            self.assertEqual(result["audio_audit_summary"]["expected_items"], 1)
+            audio_audit_item = result["audio_audit_items"][0]
+            self.assertEqual(audio_audit_item["card_id"], card_media["card_id"])
+            self.assertEqual(audio_audit_item["visible_answer"], "Ever want me to")
+            self.assertEqual(audio_audit_item["sentence_tts_expected_text"], "Ever want me to read anything, I could critique it for you.")
+            self.assertEqual(audio_audit_item["phrase_tts_expected_text"], "Ever want me to")
+            self.assertEqual(audio_audit_item["sentence_tts_file"], sentence_entries[0]["file"])
+            self.assertEqual(audio_audit_item["phrase_tts_file"], phrase_entries[0]["file"])
+
+    def test_export_sentence_tts_prefers_full_source_sentence_over_phrase_segment_text(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "out"
+            output_dir.mkdir()
+            full_sentence = "The more you live in English, the faster your brain rewires itself."
+            project = {
+                "id": "tts-full-source-over-phrase",
+                "title": "tts full source over phrase",
+                "source_mode": "local",
+                "video_path": "",
+                "subtitle_path": "",
+                "language": "English",
+                "level": "B2",
+                "template_id": "immersive_v11",
+                "skip_video_slicing": True,
+                "api_config": {
+                    "provider": "local",
+                    "tts_config": {
+                        "enabled": True,
+                        "provider": "openai-compatible",
+                        "base_url": "https://api.example.com/v1",
+                        "api_key": "sk-test",
+                        "model": "tts-test",
+                        "voice": "alloy",
+                        "language": "en-US",
+                    },
+                },
+                "segments": [
+                    {
+                        "id": "seg_rewire",
+                        "start": 349.287,
+                        "end": 358.061,
+                        "source_time": "00:05:49.287 - 00:05:58.061",
+                        "text": "rewires itself",
+                        "full_source_sentence": full_sentence,
+                        "source_sentence": full_sentence,
+                        "cards": [
+                            {
+                                "id": "seg_rewire_phrase",
+                                "type": "phrase",
+                                "type_label": "表达",
+                                "enabled": True,
+                                "english": "rewires itself",
+                                "chinese": "你越多用英语生活，大脑就越快重塑自己。",
+                                "phrase": "rewires itself",
+                                "answer_core": "rewires itself",
+                                "definition": "Changes and adapts its own wiring or habits.",
+                                "teacher_note": "Here it describes how the brain adapts through use.",
+                            }
+                        ],
+                    }
+                ],
+            }
+            captured: list[tuple[str, str | None]] = []
+            original_synthesize_tts = worker._legacy_worker.synthesize_tts
+
+            def fake_synthesize_tts(project_arg, segment_arg, output_path, text_override=None, tts_kind="sentence"):
+                captured.append((tts_kind, text_override))
+                Path(output_path).write_bytes(b"ID3" + b"\x00" * 8192)
+                return True
+
+            try:
+                worker._legacy_worker.synthesize_tts = fake_synthesize_tts
+                result = worker.handle_export({"project": project, "output_dir": str(output_dir)})
+            finally:
+                worker._legacy_worker.synthesize_tts = original_synthesize_tts
+
+            self.assertTrue(Path(result["apkg_path"]).exists())
+            self.assertIn(("sentence", full_sentence), captured)
+            self.assertIn(("phrase", "rewires itself"), captured)
+            ledger = result["media_ledger"]
+            sentence_entries = [item for item in ledger if item["role"] == "sentence_tts"]
+            phrase_entries = [item for item in ledger if item["role"] == "phrase_tts"]
+            self.assertEqual(sentence_entries[0]["tts_text"], full_sentence)
+            self.assertEqual(phrase_entries[0]["tts_text"], "rewires itself")
+            card_media = result["card_media_ledger"][0]
+            self.assertEqual(card_media["sentence_tts_text"], full_sentence)
+            self.assertEqual(card_media["phrase_tts_text"], "rewires itself")
+            audio_audit_item = result["audio_audit_items"][0]
+            self.assertEqual(audio_audit_item["sentence_tts_expected_text"], full_sentence)
+            self.assertEqual(audio_audit_item["phrase_tts_expected_text"], "rewires itself")
+            report = verify_apkg.sqlite_fallback_report(Path(result["apkg_path"]))
+            self.assertEqual(report["tts_text_hash_mismatches"], [])
+            self.assertEqual(report["phrase_tts_text_hash_mismatches"], [])
+
+            import sqlite3
+            import zipfile
+
+            with zipfile.ZipFile(result["apkg_path"]) as archive:
+                collection_name = "collection.anki21" if "collection.anki21" in archive.namelist() else "collection.anki2"
+                collection_path = output_dir / "collection-for-source-check.anki2"
+                collection_path.write_bytes(archive.read(collection_name))
+            con = sqlite3.connect(collection_path)
+            try:
+                models = json.loads(con.execute("select models from col").fetchone()[0])
+                notes = verify_apkg.note_field_dicts(con, models)
+            finally:
+                con.close()
+            self.assertEqual(len(notes), 1)
+            self.assertEqual(verify_apkg.plain_field_text(notes[0]["English"]), full_sentence)
+
+    def test_export_records_media_subtitle_alignment_in_card_ledger_and_audit(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "out"
+            output_dir.mkdir()
+            subtitle_path = root / "source.srt"
+            subtitle_path.write_text(
+                "\n".join(
+                    [
+                        "1",
+                        "00:00:10,000 --> 00:00:13,000",
+                        "Today we need to build your perspective on",
+                        "",
+                        "2",
+                        "00:00:13,000 --> 00:00:16,000",
+                        "build your perspective on the world before moving on.",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            project = {
+                "id": "media-subtitle-alignment",
+                "title": "media subtitle alignment",
+                "source_mode": "local",
+                "video_path": "",
+                "subtitle_path": str(subtitle_path),
+                "language": "English",
+                "level": "B1",
+                "template_id": "immersive_v11",
+                "skip_video_slicing": True,
+                "api_config": {"provider": "local", "tts_config": {"enabled": False, "provider": "disabled"}},
+                "segments": [
+                    {
+                        "id": "seg_perspective",
+                        "start": 10.0,
+                        "end": 16.0,
+                        "source_time": "00:00:10.000 - 00:00:16.000",
+                        "full_source_sentence": "Today we need to build your perspective on the world before moving on.",
+                        "text": "build your perspective on the world before moving on.",
+                        "cards": [
+                            {
+                                "id": "seg_perspective_card",
+                                "type": "phrase",
+                                "type_label": "表达",
+                                "enabled": True,
+                                "english": "build your perspective on the world before moving on.",
+                                "phrase": "build your perspective on",
+                                "answer_core": "build your perspective on",
+                                "definition": "Develop the way you understand something.",
+                                "teacher_note": "Use it for viewpoints or worldview.",
+                            }
+                        ],
+                    }
+                ],
+            }
+
+            result = worker.handle_export({"project": project, "output_dir": str(output_dir)})
+
+            self.assertEqual(result["media_summary"]["subtitle_diagnostic_status"], "loaded")
+            self.assertEqual(result["media_summary"]["media_subtitle_alignment"]["matched"], 1)
+            card_media = result["card_media_ledger"][0]
+            self.assertLessEqual(card_media["media_start"], 10.0)
+            self.assertGreaterEqual(card_media["media_end"], 16.0)
+            self.assertEqual(
+                card_media["card_display_sentence"],
+                "Today we need to build your perspective on the world before moving on.",
+            )
+            self.assertEqual(card_media["media_alignment_status"], "source_sentence_window")
+            self.assertEqual(
+                card_media["media_alignment_text"],
+                "Today we need to build your perspective on the world before moving on.",
+            )
+            self.assertEqual(card_media["media_subtitle_alignment_status"], "matched")
+            self.assertIn("build your perspective", card_media["media_window_subtitle_text"])
+            audit_item = result["audio_audit_items"][0]
+            self.assertEqual(audit_item["media_start"], card_media["media_start"])
+            self.assertEqual(audit_item["media_end"], card_media["media_end"])
+            self.assertEqual(
+                audit_item["card_display_sentence"],
+                "Today we need to build your perspective on the world before moving on.",
+            )
+            self.assertEqual(audit_item["media_subtitle_alignment_status"], "matched")
+            self.assertIn("build your perspective", audit_item["media_window_subtitle_text"])
+            self.assertIn("build your perspective", audit_item["media_subtitle_text"])
+            self.assertEqual(audit_item["media_alignment_score"], audit_item["media_subtitle_overlap_score"])
+
+    def test_export_repeated_caption_alignment_matches_for_url_and_local_video_sources(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repeated_caption_srt = "\n".join(
+                [
+                    "1",
+                    "00:00:10,000 --> 00:00:11,000",
+                    "go go go go",
+                    "",
+                    "2",
+                    "00:00:11,000 --> 00:00:12,200",
+                    "go go now",
+                    "",
+                ]
+            )
+            original_try_run_ffmpeg = worker._legacy_worker.try_run_ffmpeg
+            original_synthesize_tts = worker._legacy_worker.synthesize_tts
+            original_ffprobe_video = verify_apkg.ffprobe_video
+            original_cwd = os.getcwd()
+
+            def fake_try_run_ffmpeg(command):
+                output_path = Path(command[-1])
+                if output_path.suffix == ".mp4":
+                    output_path.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 8192)
+                elif output_path.suffix == ".webm":
+                    output_path.write_bytes(b"\x1a\x45\xdf\xa3" + b"\x00" * 8192)
+                elif output_path.suffix == ".jpg":
+                    output_path.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 8192)
+                elif output_path.suffix == ".mp3":
+                    output_path.write_bytes(b"ID3" + b"\x00" * 8192)
+                else:
+                    output_path.write_bytes(b"media")
+                return ""
+
+            def fake_synthesize_tts(project_arg, segment_arg, output_path, text_override=None, tts_kind="sentence"):
+                Path(output_path).write_bytes(b"ID3" + b"\x00" * 8192)
+                text = str(text_override or segment_arg.get("text") or "")
+                return {
+                    "ok": True,
+                    "cache_hit": False,
+                    "semantic": worker._legacy_worker.tts_semantic_not_applicable(
+                        text,
+                        "phrase_tts" if tts_kind == "phrase" else "sentence_tts",
+                    ),
+                }
+
+            def fake_ffprobe_video(path):
+                suffix = Path(path).suffix.lower()
+                return {
+                    "ok": True,
+                    "codec": "h264" if suffix == ".mp4" else "vp8",
+                    "profile": "Baseline" if suffix == ".mp4" else "",
+                    "width": 960,
+                    "height": 540,
+                }
+
+            def repeated_caption_project(source_mode: str) -> dict:
+                case_video_path = root / f"source_{source_mode}.mp4"
+                case_subtitle_path = root / f"source_{source_mode}.srt"
+                case_video_path.write_bytes(f"repeated caption video fixture {source_mode} ".encode("utf-8") + os.urandom(16))
+                case_subtitle_path.write_text(repeated_caption_srt, encoding="utf-8")
+                source_info = {
+                    "title": f"Repeated captions {source_mode}",
+                    "video_path": str(case_video_path),
+                    "subtitle_path": str(case_subtitle_path),
+                    "download_mode": "video",
+                    "transcript_only": False,
+                    "skip_video_slicing": False,
+                }
+                project = {
+                    "id": f"repeated-caption-{source_mode}",
+                    "title": f"repeated caption {source_mode}",
+                    "source_mode": source_mode,
+                    "video_path": str(case_video_path),
+                    "subtitle_path": str(case_subtitle_path),
+                    "language": "English",
+                    "level": "B1",
+                    "template_id": "immersive_v11",
+                    "skip_video_slicing": source_mode == "url",
+                    "api_config": {
+                        "provider": "local",
+                        "tts_config": {
+                            "enabled": True,
+                            "provider": "openai-compatible",
+                            "base_url": "https://api.example.com/v1",
+                            "api_key": "sk-test",
+                            "model": "tts-test",
+                            "voice": "alloy",
+                        },
+                    },
+                    "segments": [
+                        {
+                            "id": f"seg_repeated_{source_mode}",
+                            "start": 10.0,
+                            "end": 12.2,
+                            "source_time": "00:00:10.000 - 00:00:12.200",
+                            "full_source_sentence": "go go go go now",
+                            "text": "go go go go now",
+                            "source_sentence_quality_flags": ["clean"],
+                            "source_sentence_quality_status": "clean",
+                            "cards": [
+                                {
+                                    "id": f"card_repeated_{source_mode}",
+                                    "type": "phrase",
+                                    "type_label": "表达",
+                                    "enabled": True,
+                                    "english": "go go go go now",
+                                    "phrase": "go go now",
+                                    "answer_core": "go go now",
+                                    "chinese": "现在就行动。",
+                                    "definition": "A repeated call to start moving or acting immediately.",
+                                    "context": "go go go go now",
+                                    "teacher_note": "Listen for repeated words without losing the final cue.",
+                                }
+                            ],
+                        }
+                    ],
+                }
+                if source_mode == "url":
+                    project.update(
+                        {
+                            "source_url": "https://example.com/repeated-caption-video",
+                            "url_import_mode": "video",
+                            "source_info": {
+                                **source_info,
+                                "url": "https://example.com/repeated-caption-video",
+                            },
+                        }
+                    )
+                else:
+                    project["source_info"] = {**source_info, "subtitle_source": "manual"}
+                return project
+
+            try:
+                worker._legacy_worker.try_run_ffmpeg = fake_try_run_ffmpeg
+                worker._legacy_worker.synthesize_tts = fake_synthesize_tts
+                verify_apkg.ffprobe_video = fake_ffprobe_video
+                os.chdir(root)
+                for source_mode in ["local", "url"]:
+                    with self.subTest(source_mode=source_mode):
+                        output_dir = root / f"out_{source_mode}"
+                        output_dir.mkdir()
+                        project = repeated_caption_project(source_mode)
+                        expected_subtitle_path = Path(project["subtitle_path"])
+                        expected_video_path = Path(project["video_path"])
+                        expected_video_fingerprint = worker.file_fingerprint(expected_video_path)
+                        expected_subtitle_fingerprint = worker.file_fingerprint(expected_subtitle_path)
+                        result = worker.handle_export(
+                            {"project": project, "output_dir": str(output_dir)}
+                        )
+
+                        self.assertEqual(result["deck_kind"], "video_language")
+                        self.assertTrue(Path(result["apkg_path"]).exists())
+                        self.assertEqual(result["media_summary"]["video_segments"], 1)
+                        self.assertGreaterEqual(result["media_summary"]["video_files"], 1)
+                        self.assertEqual(result["media_summary"]["original_audio_files"], 1)
+                        self.assertEqual(result["media_summary"]["sentence_tts_files"], 1)
+                        self.assertEqual(result["media_summary"]["phrase_tts_files"], 1)
+                        self.assertEqual(result["media_summary"]["card_media_ledger_items"], 1)
+                        self.assertEqual(result["media_summary"]["subtitle_diagnostic_status"], "loaded")
+                        self.assertEqual(str(Path(result["media_summary"]["subtitle_path"])), str(expected_subtitle_path))
+                        self.assertEqual(result["source_identity"]["source_mode"], source_mode)
+                        self.assertEqual(
+                            result["source_identity"]["source_video_fingerprint"],
+                            expected_video_fingerprint,
+                        )
+                        self.assertEqual(
+                            result["source_identity"]["source_subtitle_fingerprint"],
+                            expected_subtitle_fingerprint,
+                        )
+                        alignment_summary = result["media_summary"]["media_subtitle_alignment"]
+                        self.assertEqual(alignment_summary["matched"], 1)
+                        self.assertEqual(alignment_summary["partial"], 0)
+                        self.assertEqual(alignment_summary["mismatch"], 0)
+                        self.assertEqual(alignment_summary["unknown"], 0)
+                        self.assertEqual(len(result["card_media_ledger"]), 1)
+                        self.assertEqual(len(result["audio_audit_items"]), 1)
+                        self.assertEqual(result["audio_audit_summary"]["items"], 1)
+                        self.assertEqual(result["audio_audit_summary"]["expected_items"], 1)
+                        self.assertEqual(result["audio_audit_summary"]["media_subtitle_alignment"], alignment_summary)
+
+                        card_media = result["card_media_ledger"][0]
+                        audit_by_card_id = {item["card_id"]: item for item in result["audio_audit_items"]}
+                        audit_item = audit_by_card_id[card_media["card_id"]]
+                        self.assertEqual(audit_item["segment_id"], card_media["segment_id"])
+                        for item in [card_media, audit_item]:
+                            self.assertEqual(item["source_mode"], source_mode)
+                            self.assertEqual(str(Path(item["source_video_path"])), str(expected_video_path))
+                            self.assertEqual(item["source_video_fingerprint"], expected_video_fingerprint)
+                            self.assertEqual(str(Path(item["source_subtitle_path"])), str(expected_subtitle_path))
+                            self.assertEqual(item["source_subtitle_fingerprint"], expected_subtitle_fingerprint)
+                            self.assertEqual(item["source_subtitle_status"], "loaded")
+                            self.assertEqual(item["media_subtitle_alignment_status"], "matched")
+                            self.assertGreaterEqual(item["media_subtitle_overlap_score"], 0.68)
+                            self.assertEqual(str(Path(item["subtitle_path"])), str(expected_subtitle_path))
+                            self.assertIn("go go go go", item["media_window_subtitle_text"])
+                            self.assertIn("go go now", item["media_window_subtitle_text"])
+                            self.assertLessEqual(item["media_start"], 10.0)
+                            self.assertGreaterEqual(item["media_end"], 12.2)
+                            self.assertEqual(item["media_alignment_status"], "source_sentence_window")
+                            self.assertEqual(item["media_alignment_text"], "go go go go now")
+                            self.assertEqual(item["card_display_sentence"], "go go go go now")
+                        self.assertEqual(audit_item["media_start"], card_media["media_start"])
+                        self.assertEqual(audit_item["media_end"], card_media["media_end"])
+                        self.assertEqual(audit_item["media_alignment_score"], card_media["media_subtitle_overlap_score"])
+                        self.assertTrue(card_media["video_mp4"])
+                        self.assertTrue(card_media["video_webm"])
+                        self.assertTrue(card_media["original_audio"])
+                        self.assertTrue(card_media["sentence_tts_audio"])
+                        self.assertTrue(card_media["phrase_tts_audio"])
+                        for file_name in [
+                            card_media["video_mp4"],
+                            card_media["original_audio"],
+                            card_media["sentence_tts_audio"],
+                            card_media["phrase_tts_audio"],
+                        ]:
+                            manifest_entry = result["media_manifest"][file_name]
+                            self.assertEqual(manifest_entry["source_video_fingerprint"], expected_video_fingerprint)
+                            self.assertEqual(manifest_entry["source_subtitle_fingerprint"], expected_subtitle_fingerprint)
+
+                        report = verify_apkg.sqlite_fallback_report(Path(result["apkg_path"]))
+                        self.assertTrue(report["ok"], report["failed_checks"])
+                        self.assertEqual(report["failed_checks"], [])
+                        self.assertEqual(report["note_count"], result["cards"])
+                        self.assertEqual(report["card_count"], result["cards"])
+                        self.assertEqual(set(report["media_files"]), set(result["media_manifest"]))
+
+                        self.assertEqual(report["missing_archive_media"], [])
+                        self.assertEqual(report["invalid_archive_media"], [])
+                        self.assertEqual(report["missing_referenced_media"], [])
+                        self.assertEqual(report["unreferenced_media"], [])
+
+                        self.assertTrue(report["has_video_html_field"])
+                        self.assertTrue(report["has_mp4_video_source"])
+                        self.assertTrue(report["has_webm_video_source"])
+                        self.assertTrue(report["has_poster_html_field"])
+                        self.assertTrue(report["has_audio_html_field"])
+                        self.assertEqual(report["empty_required_text_fields"], [])
+                        self.assertEqual(report["tts_text_hash_mismatches"], [])
+                        self.assertEqual(report["phrase_tts_text_hash_mismatches"], [])
+            finally:
+                os.chdir(original_cwd)
+                worker._legacy_worker.try_run_ffmpeg = original_try_run_ffmpeg
+                worker._legacy_worker.synthesize_tts = original_synthesize_tts
+                verify_apkg.ffprobe_video = original_ffprobe_video
+
+    def test_export_blocks_video_package_when_media_subtitle_alignment_mismatches(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "out"
+            output_dir.mkdir()
+            video_path = root / "source.mp4"
+            subtitle_path = root / "source.srt"
+            video_path.write_bytes(b"fake video bytes")
+            subtitle_path.write_text(
+                "\n".join(
+                    [
+                        "1",
+                        "00:00:10,000 --> 00:00:13,000",
+                        "This is unrelated visual text.",
+                        "",
+                        "2",
+                        "00:00:13,000 --> 00:00:16,000",
+                        "Still unrelated captions on screen.",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            project = {
+                "id": "media-subtitle-mismatch",
+                "title": "media subtitle mismatch",
+                "source_mode": "local",
+                "video_path": str(video_path),
+                "subtitle_path": str(subtitle_path),
+                "language": "English",
+                "level": "B1",
+                "template_id": "immersive_v11",
+                "skip_video_slicing": False,
+                "api_config": {"provider": "local", "tts_config": {"enabled": False, "provider": "disabled"}},
+                "segments": [
+                    {
+                        "id": "seg_perspective",
+                        "start": 10.0,
+                        "end": 16.0,
+                        "source_time": "00:00:10.000 - 00:00:16.000",
+                        "full_source_sentence": "Today we need to build your perspective on the world before moving on.",
+                        "text": "Today we need to build your perspective on the world before moving on.",
+                        "cards": [
+                            {
+                                "id": "seg_perspective_card",
+                                "learning_point_id": "lp-perspective",
+                                "type": "phrase",
+                                "type_label": "表达",
+                                "enabled": True,
+                                "english": "Today we need to build your perspective on the world before moving on.",
+                                "phrase": "build your perspective",
+                                "answer_core": "build your perspective",
+                                "definition": "Develop the way you understand something.",
+                                "teacher_note": "Use it for viewpoints or worldview.",
+                            }
+                        ],
+                    }
+                ],
+            }
+
+            original_try_run_ffmpeg = worker._legacy_worker.try_run_ffmpeg
+            original_synthesize_tts = worker._legacy_worker.synthesize_tts
+            stderr = io.StringIO()
+            try:
+                worker._legacy_worker.try_run_ffmpeg = lambda *args, **kwargs: self.fail(
+                    "ffmpeg should not run when media/subtitle alignment is already mismatched"
+                )
+                worker._legacy_worker.synthesize_tts = lambda *args, **kwargs: self.fail(
+                    "TTS should not run when media/subtitle alignment is already mismatched"
+                )
+                with redirect_stderr(stderr), self.assertRaises(SystemExit):
+                    worker.handle_export({"project": project, "output_dir": str(output_dir)})
+            finally:
+                worker._legacy_worker.try_run_ffmpeg = original_try_run_ffmpeg
+                worker._legacy_worker.synthesize_tts = original_synthesize_tts
+
+            error_line = next(
+                line for line in stderr.getvalue().splitlines() if line.startswith("__ANKI_CARD_ERROR__")
+            )
+            payload = json.loads(error_line.removeprefix("__ANKI_CARD_ERROR__"))
+            self.assertEqual(payload["error_code"], "MEDIA_SUBTITLE_ALIGNMENT_MISMATCH")
+            self.assertEqual(payload["stage"], "media_alignment")
+            self.assertFalse(payload["retryable"])
+            self.assertEqual(payload["details"]["mismatch_count"], 1)
+            item = payload["details"]["items"][0]
+            self.assertEqual(item["segment_id"], "seg_perspective")
+            self.assertEqual(item["learning_point_ids"], ["lp-perspective"])
+            self.assertIn("build your perspective", item["expected_text"])
+            self.assertIn("unrelated", item["media_window_subtitle_text"])
+            self.assertFalse(any(output_dir.glob("*.apkg")))
+
+    def test_export_blocks_video_package_when_media_subtitle_alignment_is_low_partial(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "out"
+            output_dir.mkdir()
+            video_path = root / "source.mp4"
+            subtitle_path = root / "source.srt"
+            video_path.write_bytes(b"fake video bytes")
+            subtitle_path.write_text(
+                "\n".join(
+                    [
+                        "1",
+                        "00:00:10,000 --> 00:00:16,000",
+                        "Today we need to build unrelated filler words now.",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            project = {
+                "id": "media-subtitle-low-partial",
+                "title": "media subtitle low partial",
+                "source_mode": "local",
+                "video_path": str(video_path),
+                "subtitle_path": str(subtitle_path),
+                "language": "English",
+                "level": "B1",
+                "template_id": "immersive_v11",
+                "skip_video_slicing": False,
+                "api_config": {"provider": "local", "tts_config": {"enabled": False, "provider": "disabled"}},
+                "segments": [
+                    {
+                        "id": "seg_perspective",
+                        "start": 10.0,
+                        "end": 16.0,
+                        "source_time": "00:00:10.000 - 00:00:16.000",
+                        "full_source_sentence": "Today we need to build your perspective on the world before moving on.",
+                        "text": "Today we need to build your perspective on the world before moving on.",
+                        "cards": [
+                            {
+                                "id": "seg_perspective_card",
+                                "learning_point_id": "lp-perspective",
+                                "type": "phrase",
+                                "type_label": "表达",
+                                "enabled": True,
+                                "english": "Today we need to build your perspective on the world before moving on.",
+                                "phrase": "build your perspective",
+                                "answer_core": "build your perspective",
+                                "definition": "Develop the way you understand something.",
+                                "teacher_note": "Use it for viewpoints or worldview.",
+                            }
+                        ],
+                    }
+                ],
+            }
+
+            original_try_run_ffmpeg = worker._legacy_worker.try_run_ffmpeg
+            original_synthesize_tts = worker._legacy_worker.synthesize_tts
+            stderr = io.StringIO()
+            try:
+                worker._legacy_worker.try_run_ffmpeg = lambda *args, **kwargs: self.fail(
+                    "ffmpeg should not run when media/subtitle alignment is low-confidence partial"
+                )
+                worker._legacy_worker.synthesize_tts = lambda *args, **kwargs: self.fail(
+                    "TTS should not run when media/subtitle alignment is low-confidence partial"
+                )
+                with redirect_stderr(stderr), self.assertRaises(SystemExit):
+                    worker.handle_export({"project": project, "output_dir": str(output_dir)})
+            finally:
+                worker._legacy_worker.try_run_ffmpeg = original_try_run_ffmpeg
+                worker._legacy_worker.synthesize_tts = original_synthesize_tts
+
+            error_line = next(
+                line for line in stderr.getvalue().splitlines() if line.startswith("__ANKI_CARD_ERROR__")
+            )
+            payload = json.loads(error_line.removeprefix("__ANKI_CARD_ERROR__"))
+            self.assertEqual(payload["error_code"], "MEDIA_SUBTITLE_ALIGNMENT_MISMATCH")
+            item = payload["details"]["items"][0]
+            self.assertEqual(item["media_subtitle_alignment_status"], "partial")
+            self.assertLess(item["media_subtitle_overlap_score"], worker.MEDIA_SUBTITLE_PARTIAL_EXPORT_BLOCK_THRESHOLD)
+            self.assertEqual(item["media_subtitle_alignment_reason"], "partial_overlap_below_export_threshold")
+            self.assertFalse(any(output_dir.glob("*.apkg")))
+
+    def test_export_retries_failed_tts_once_serially_before_blocking_apkg(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "out"
+            output_dir.mkdir()
+            project = {
+                "id": "tts-retry-export",
+                "title": "tts retry export",
+                "source_mode": "local",
+                "video_path": "",
+                "subtitle_path": "",
+                "language": "English",
+                "level": "B1",
+                "template_id": "immersive_v11",
+                "skip_video_slicing": True,
+                "api_config": {
+                    "provider": "local",
+                    "tts_config": {
+                        "enabled": True,
+                        "provider": "openai-compatible",
+                        "base_url": "https://api.example.com/v1",
+                        "api_key": "sk-test",
+                        "model": "tts-test",
+                        "voice": "alloy",
+                        "language": "en-US",
+                    },
+                },
+                "segments": [
+                    {
+                        "id": "seg_retry",
+                        "start": 1,
+                        "end": 4,
+                        "source_time": "00:00:01.000 - 00:00:04.000",
+                        "text": "These are the things that these guys are missing out on.",
+                        "cards": [
+                            {
+                                "id": "card_retry",
+                                "type": "phrase",
+                                "enabled": True,
+                                "english": "These are the things that these guys are missing out on.",
+                                "chinese": "这些就是他们错过的东西。",
+                                "phrase": "missing out on",
+                                "answer_core": "missing out on",
+                                "definition": "fail to experience or get something useful",
+                                "context": "A speaker explains what someone lacks.",
+                                "teacher_note": "常见口语表达，后面可接机会、经历或信息。",
+                                "pronunciation_meta": {},
+                            }
+                        ],
+                    }
+                ],
+            }
+            original_synthesize_tts = worker._legacy_worker.synthesize_tts
+            original_cwd = os.getcwd()
+            calls: list[tuple[str, str | None]] = []
+
+            def fake_synthesize_tts(project_arg, segment_arg, output_path, text_override=None, tts_kind="sentence"):
+                calls.append((tts_kind, text_override))
+                if tts_kind == "sentence" and len([call for call in calls if call[0] == "sentence"]) == 1:
+                    raise RuntimeError("Gemini Vertex TTS 请求失败：API HTTP 400 INVALID_ARGUMENT")
+                Path(output_path).write_bytes(b"ID3" + b"\x00" * 8192)
+                return True
+
+            try:
+                os.chdir(root)
+                worker._legacy_worker.synthesize_tts = fake_synthesize_tts
+                result = worker.handle_export({"project": project, "output_dir": str(output_dir)})
+            finally:
+                worker._legacy_worker.synthesize_tts = original_synthesize_tts
+                os.chdir(original_cwd)
+
+            self.assertTrue(Path(result["apkg_path"]).exists())
+            self.assertEqual(result["media_summary"]["sentence_tts_files"], 1)
+            self.assertEqual(result["media_summary"]["phrase_tts_files"], 1)
+            self.assertGreaterEqual(len([call for call in calls if call[0] == "sentence"]), 2)
+
+    def test_export_returns_structured_missing_tts_media_error(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "out"
+            output_dir.mkdir()
+            project = {
+                "id": "tts-missing-export",
+                "title": "tts missing export",
+                "source_mode": "local",
+                "video_path": "",
+                "subtitle_path": "",
+                "language": "English",
+                "level": "B1",
+                "template_id": "immersive_v11",
+                "skip_video_slicing": True,
+                "api_config": {
+                    "provider": "local",
+                    "tts_config": {
+                        "enabled": True,
+                        "provider": "openai-compatible",
+                        "base_url": "https://api.example.com/v1",
+                        "api_key": "sk-test",
+                        "model": "tts-test",
+                        "voice": "alloy",
+                        "language": "en-US",
+                    },
+                },
+                "segments": [
+                    {
+                        "id": "seg_missing",
+                        "start": 1,
+                        "end": 4,
+                        "source_time": "00:00:01.000 - 00:00:04.000",
+                        "text": "You get to go, that idea is old to me.",
+                        "cards": [
+                            {
+                                "id": "card_missing",
+                                "type": "phrase",
+                                "enabled": True,
+                                "english": "You get to go, that idea is old to me.",
+                                "chinese": "你会发现这个想法对我来说已经旧了。",
+                                "phrase": "old to me",
+                                "answer_core": "old to me",
+                                "definition": "no longer new to the speaker",
+                                "context": "A speaker compares a past idea with a current view.",
+                                "teacher_note": "用来表达某个想法已经不新鲜。",
+                                "pronunciation_meta": {},
+                            }
+                        ],
+                    }
+                ],
+            }
+            original_synthesize_tts = worker._legacy_worker.synthesize_tts
+            original_cwd = os.getcwd()
+
+            def fake_synthesize_tts(project_arg, segment_arg, output_path, text_override=None, tts_kind="sentence"):
+                if tts_kind == "sentence":
+                    raise RuntimeError("Gemini Vertex TTS 请求失败：API HTTP 400 INVALID_ARGUMENT")
+                Path(output_path).write_bytes(b"ID3" + b"\x00" * 8192)
+                return True
+
+            stderr = io.StringIO()
+            try:
+                os.chdir(root)
+                worker._legacy_worker.synthesize_tts = fake_synthesize_tts
+                with self.assertRaises(SystemExit):
+                    with redirect_stderr(stderr):
+                        worker.handle_export({"project": project, "output_dir": str(output_dir)})
+            finally:
+                worker._legacy_worker.synthesize_tts = original_synthesize_tts
+                os.chdir(original_cwd)
+
+            error_line = next(
+                line for line in stderr.getvalue().splitlines() if line.startswith("__ANKI_CARD_ERROR__")
+            )
+            payload = json.loads(error_line.removeprefix("__ANKI_CARD_ERROR__"))
+            self.assertEqual(payload["error_code"], "MISSING_TTS_MEDIA")
+            self.assertEqual(payload["stage"], "tts")
+            self.assertTrue(payload["retryable"])
+            self.assertEqual(payload["details"]["tts_failure_count"], 1)
+            self.assertEqual(payload["details"]["sentence_tts_generated"], 0)
+            self.assertEqual(payload["details"]["sentence_tts_requested"], 1)
+            self.assertEqual(payload["details"]["tts_failure_items"][0]["segment_id"], "seg_missing")
+            self.assertEqual(payload["details"]["tts_failure_items"][0]["role"], "sentence_tts")
+            self.assertIn("INVALID_ARGUMENT", payload["details"]["tts_failure_items"][0]["error"])
+
+    def test_export_blocks_manual_tts_semantic_review_when_strict_export_required(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "out"
+            output_dir.mkdir()
+            project = {
+                "id": "tts-strict-manual-review",
+                "title": "tts strict manual review",
+                "source_mode": "local",
+                "video_path": "",
+                "subtitle_path": "",
+                "language": "English",
+                "level": "B1",
+                "template_id": "immersive_v11",
+                "skip_video_slicing": True,
+                "tts_semantic_verification": {
+                    "enabled": True,
+                    "require_pass_for_export": True,
+                },
+                "api_config": {
+                    "provider": "local",
+                    "tts_config": {
+                        "enabled": True,
+                        "provider": "openai-compatible",
+                        "base_url": "https://api.example.com/v1",
+                        "api_key": "sk-test",
+                        "model": "tts-strict-test",
+                        "voice": "alloy",
+                        "language": "en-US",
+                    },
+                },
+                "segments": [
+                    {
+                        "id": "seg_strict",
+                        "start": 0,
+                        "end": 2,
+                        "source_time": "00:00:00.000 - 00:00:02.000",
+                        "text": "Strict export should not accept unverified audio.",
+                        "cards": [
+                            {
+                                "id": "card_strict",
+                                "type": "phrase",
+                                "type_label": "表达卡",
+                                "enabled": True,
+                                "english": "Strict export should not accept unverified audio.",
+                                "chinese": "严格导出不接受未核验音频。",
+                                "phrase": "unverified audio",
+                                "answer_core": "unverified audio",
+                                "definition": "Audio whose content has not been proven by ASR.",
+                                "teacher_note": "This test keeps the semantic status in manual review.",
+                            }
+                        ],
+                    }
+                ],
+            }
+            original_synthesize_tts = worker._legacy_worker.synthesize_tts
+            stderr = io.StringIO()
+
+            def fake_synthesize_tts(project_arg, segment_arg, output_path, text_override=None, tts_kind="sentence"):
+                Path(output_path).write_bytes(b"ID3" + b"\x00" * 8192)
+                return True
+
+            try:
+                worker._legacy_worker.synthesize_tts = fake_synthesize_tts
+                with redirect_stderr(stderr), self.assertRaises(SystemExit):
+                    worker.handle_export({"project": project, "output_dir": str(output_dir)})
+            finally:
+                worker._legacy_worker.synthesize_tts = original_synthesize_tts
+
+            self.assertIn("TTS 语义未能自动证明", stderr.getvalue())
+            self.assertIn("TTS_SEMANTIC_UNVERIFIED", stderr.getvalue())
+            self.assertFalse(any(output_dir.rglob("*.apkg")))
+
+    def test_video_language_export_does_not_require_tts_semantic_pass_by_default(self):
+        self.assertFalse(
+            worker._legacy_worker.tts_semantic_requires_export_pass(
+                {"source_mode": "local", "template_id": "immersive_v11"},
+                "video_language",
+            )
+        )
+        self.assertTrue(
+            worker._legacy_worker.tts_semantic_requires_export_pass(
+                {
+                    "source_mode": "local",
+                    "template_id": "immersive_v11",
+                    "tts_semantic_verification": {"enabled": True, "require_pass_for_export": True},
+                },
+                "video_language",
+            )
+        )
+        self.assertFalse(
+            worker._legacy_worker.tts_semantic_requires_export_pass(
+                {"source_mode": "local", "template_id": "immersive_v11"},
+                "subtitle_language",
+            )
+        )
+
+    def test_tts_semantic_match_ignores_subtitle_sound_effect_tags(self):
+        matched, expected_norm, actual_norm = worker._legacy_worker.tts_semantic_matches(
+            "[laughter] [laughter] Nobody say Sam in the comments.",
+            "Nobody say Sam in the comments.",
+            role="sentence_tts",
+        )
+
+        self.assertTrue(matched)
+        self.assertEqual(expected_norm, "nobody say sam in the comments")
+        self.assertEqual(actual_norm, "nobody say sam in the comments")
+
+    def test_tts_semantic_sentence_match_allows_minor_asr_inflection(self):
+        matched, expected_norm, actual_norm = worker._legacy_worker.tts_semantic_matches(
+            "[laughter] Nobody say Sam in the comments.",
+            "Nobody says Sam in the comments.",
+            role="sentence_tts",
+        )
+
+        self.assertTrue(matched)
+        self.assertEqual(expected_norm, "nobody say sam in the comments")
+        self.assertEqual(actual_norm, "nobody says sam in the comments")
+
+    def test_export_flags_high_risk_short_phrase_tts_for_manual_review(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "out"
+            output_dir.mkdir()
+            project = {
+                "id": "tts-high-risk-prompt",
+                "title": "tts high risk prompt",
+                "source_mode": "local",
+                "video_path": "",
+                "subtitle_path": "",
+                "language": "English",
+                "level": "B1",
+                "template_id": "immersive_v11",
+                "skip_video_slicing": True,
+                "tts_semantic_verification": {"enabled": True},
+                "api_config": {
+                    "provider": "local",
+                    "tts_config": {
+                        "enabled": True,
+                        "provider": "openai-compatible",
+                        "base_url": "https://api.example.com/v1",
+                        "api_key": "sk-test",
+                        "model": "tts-test",
+                        "voice": "alloy",
+                        "language": "en-US",
+                    },
+                },
+                "segments": [
+                    {
+                        "id": "seg_prompt",
+                        "start": 0,
+                        "end": 2,
+                        "source_time": "00:00:00.000 - 00:00:02.000",
+                        "text": "Here is the prompt.",
+                        "cards": [
+                            {
+                                "id": "seg_prompt_listening",
+                                "type": "listening",
+                                "type_label": "听力卡",
+                                "enabled": True,
+                                "english": "Here is the prompt.",
+                                "chinese": "这是提示词。",
+                                "phrase": "prompt",
+                                "answer_core": "prompt",
+                                "definition": "a short instruction",
+                                "teacher_note": "短词必须人工抽听。",
+                            }
+                        ],
+                    }
+                ],
+            }
+            original_synthesize_tts = worker._legacy_worker.synthesize_tts
+
+            def fake_synthesize_tts(project_arg, segment_arg, output_path, text_override=None, tts_kind="sentence"):
+                Path(output_path).write_bytes(b"ID3" + b"\x00" * 8192)
+                return True
+
+            try:
+                worker._legacy_worker.synthesize_tts = fake_synthesize_tts
+                result = worker.handle_export({"project": project, "output_dir": str(output_dir)})
+            finally:
+                worker._legacy_worker.synthesize_tts = original_synthesize_tts
+
+            manual_phrase_items = [
+                item for item in result["tts_manual_review_items"] if item["role"] == "phrase_tts"
+            ]
+            self.assertEqual(len(manual_phrase_items), 1)
+            self.assertEqual(manual_phrase_items[0]["tts_text"], "prompt")
+            self.assertIn("high_risk_short_expression", manual_phrase_items[0]["semantic_review_reasons"])
+            self.assertIn("short_expression", manual_phrase_items[0]["semantic_review_reasons"])
+            self.assertEqual(result["media_summary"]["tts_high_risk_manual_review_items"], 1)
+            self.assertEqual(result["tts_semantic_verification"]["high_risk_items"], 1)
+
+    def test_export_records_passed_tts_semantic_verification_when_asr_matches(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "out"
+            output_dir.mkdir()
+            sentence = "The semantic firewall reads this sentence."
+            phrase = "semantic firewall"
+            project = {
+                "id": "tts-semantic-pass",
+                "title": "tts semantic pass",
+                "source_mode": "local",
+                "video_path": "",
+                "subtitle_path": "",
+                "language": "English",
+                "level": "B1",
+                "template_id": "immersive_v11",
+                "skip_video_slicing": True,
+                "tts_semantic_verification": {"enabled": True, "require_pass_for_export": True},
+                "api_config": {
+                    "provider": "local",
+                    "tts_config": {
+                        "enabled": True,
+                        "provider": "openai-compatible",
+                        "base_url": "https://api.example.com/v1",
+                        "api_key": "sk-test",
+                        "model": "tts-semantic-pass-test",
+                        "voice": "semantic-pass-voice",
+                        "language": "en-US",
+                    },
+                },
+                "segments": [
+                    {
+                        "id": "seg_semantic_pass",
+                        "start": 0,
+                        "end": 2,
+                        "source_time": "00:00:00.000 - 00:00:02.000",
+                        "text": sentence,
+                        "cards": [
+                            {
+                                "id": "card_semantic_pass",
+                                "type": "phrase",
+                                "enabled": True,
+                                "english": sentence,
+                                "chinese": "语义防火墙",
+                                "phrase": phrase,
+                                "answer_core": phrase,
+                                "definition": "A phrase used in this regression test.",
+                                "teacher_note": "ASR transcript matches the intended phrase.",
+                            }
+                        ],
+                    }
+                ],
+            }
+            original_call_tts_audio = worker._legacy_worker.call_tts_audio
+            original_apply_tts_output_volume = worker._legacy_worker.apply_tts_output_volume
+            original_transcribe_tts_audio = worker._legacy_worker.transcribe_tts_audio
+
+            def fake_call_tts_audio(*_args, **_kwargs):
+                return b"ID3" + b"\x00" * 8192
+
+            def fake_transcribe_tts_audio(audio_path, *, project, expected_text, role):
+                return {
+                    "ok": True,
+                    "provider": "fake-asr",
+                    "transcript": expected_text,
+                }
+
+            try:
+                worker._legacy_worker.call_tts_audio = fake_call_tts_audio
+                worker._legacy_worker.apply_tts_output_volume = lambda *_args, **_kwargs: None
+                worker._legacy_worker.transcribe_tts_audio = fake_transcribe_tts_audio
+                result = worker.handle_export({"project": project, "output_dir": str(output_dir)})
+            finally:
+                worker._legacy_worker.call_tts_audio = original_call_tts_audio
+                worker._legacy_worker.apply_tts_output_volume = original_apply_tts_output_volume
+                worker._legacy_worker.transcribe_tts_audio = original_transcribe_tts_audio
+
+            self.assertTrue(Path(result["apkg_path"]).exists())
+            self.assertEqual(result["tts_manual_review_items"], [])
+            self.assertEqual(result["tts_semantic_failures"], [])
+            self.assertEqual(result["tts_semantic_verification"]["status"], "passed")
+            self.assertEqual(result["tts_semantic_verification"]["passed"], 2)
+            self.assertEqual(result["media_summary"]["tts_semantic_passed_items"], 2)
+            tts_entries = [
+                item for item in result["media_ledger"] if item["role"] in {"sentence_tts", "phrase_tts"}
+            ]
+            self.assertEqual({item["semantic_verification"] for item in tts_entries}, {"passed"})
+            self.assertEqual(result["card_media_ledger"][0]["phrase_tts_semantic_verification"], "passed")
+
+    def test_export_fails_on_phrase_tts_semantic_mismatch(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "out"
+            output_dir.mkdir()
+            sentence = "Here is the checksum sentinel."
+            phrase = "checksum sentinel"
+            project = {
+                "id": "tts-semantic-mismatch",
+                "title": "tts semantic mismatch",
+                "source_mode": "local",
+                "video_path": "",
+                "subtitle_path": "",
+                "language": "English",
+                "level": "B1",
+                "template_id": "immersive_v11",
+                "skip_video_slicing": True,
+                "tts_semantic_verification": {
+                    "enabled": True,
+                    "require_pass_for_export": True,
+                },
+                "api_config": {
+                    "provider": "local",
+                    "tts_config": {
+                        "enabled": True,
+                        "provider": "openai-compatible",
+                        "base_url": "https://api.example.com/v1",
+                        "api_key": "sk-test",
+                        "model": "tts-semantic-mismatch-test",
+                        "voice": "semantic-mismatch-voice",
+                        "language": "en-US",
+                    },
+                },
+                "segments": [
+                    {
+                        "id": "seg_semantic_mismatch",
+                        "start": 0,
+                        "end": 2,
+                        "source_time": "00:00:00.000 - 00:00:02.000",
+                        "text": sentence,
+                        "cards": [
+                            {
+                                "id": "card_semantic_mismatch",
+                                "type": "phrase",
+                                "enabled": True,
+                                "english": sentence,
+                                "chinese": "校验哨兵",
+                                "phrase": phrase,
+                                "answer_core": phrase,
+                                "definition": "A phrase used in this regression test.",
+                                "teacher_note": "ASR transcript intentionally mismatches the phrase.",
+                            }
+                        ],
+                    }
+                ],
+            }
+            original_call_tts_audio = worker._legacy_worker.call_tts_audio
+            original_apply_tts_output_volume = worker._legacy_worker.apply_tts_output_volume
+            original_transcribe_tts_audio = worker._legacy_worker.transcribe_tts_audio
+            stderr = io.StringIO()
+
+            def fake_call_tts_audio(*_args, **_kwargs):
+                return b"ID3" + b"\x00" * 8192
+
+            def fake_transcribe_tts_audio(audio_path, *, project, expected_text, role):
+                transcript = expected_text if role == "sentence_tts" else "the model explained a different word"
+                return {
+                    "ok": True,
+                    "provider": "fake-asr",
+                    "transcript": transcript,
+                }
+
+            try:
+                worker._legacy_worker.call_tts_audio = fake_call_tts_audio
+                worker._legacy_worker.apply_tts_output_volume = lambda *_args, **_kwargs: None
+                worker._legacy_worker.transcribe_tts_audio = fake_transcribe_tts_audio
+                with redirect_stderr(stderr), self.assertRaises(SystemExit):
+                    worker.handle_export({"project": project, "output_dir": str(output_dir)})
+            finally:
+                worker._legacy_worker.call_tts_audio = original_call_tts_audio
+                worker._legacy_worker.apply_tts_output_volume = original_apply_tts_output_volume
+                worker._legacy_worker.transcribe_tts_audio = original_transcribe_tts_audio
+
+            self.assertIn("TTS 语义核验失败", stderr.getvalue())
+            self.assertFalse(any(output_dir.rglob("*.apkg")))
 
     def test_export_tts_uses_bounded_concurrency(self):
         try:
@@ -3112,7 +7795,7 @@ class WorkerQualityTests(unittest.TestCase):
             lock = threading.Lock()
             original_synthesize_tts = worker._legacy_worker.synthesize_tts
 
-            def fake_synthesize_tts(project_arg, segment_arg, output_path, text_override=None):
+            def fake_synthesize_tts(project_arg, segment_arg, output_path, text_override=None, tts_kind="sentence"):
                 nonlocal active, max_active
                 with lock:
                     active += 1
@@ -3137,12 +7820,180 @@ class WorkerQualityTests(unittest.TestCase):
             self.assertEqual(result["media_summary"]["phrase_tts_requested"], 3)
             self.assertEqual(result["media_summary"]["sentence_tts_files"], 3)
             self.assertEqual(result["media_summary"]["phrase_tts_files"], 3)
+            self.assertEqual(result["media_summary"]["tts_cache_hits"], 0)
+            self.assertEqual(result["media_summary"]["tts_cache_misses"], 6)
+            self.assertEqual(result["media_summary"]["tts_cache_total"], 6)
+            self.assertEqual(result["media_summary"]["media_cache_hits"], 0)
+            self.assertEqual(result["media_summary"]["media_cache_misses"], 0)
+            self.assertEqual(result["media_summary"]["media_cache_total"], 0)
             self.assertGreaterEqual(max_active, 2)
             self.assertLessEqual(max_active, 2)
             report = verify_apkg.sqlite_fallback_report(Path(result["apkg_path"]))
             self.assertEqual(report["empty_required_text_fields"], [])
             self.assertEqual(report["tts_text_hash_mismatches"], [])
             self.assertEqual(report["phrase_tts_text_hash_mismatches"], [])
+
+    def test_export_fails_when_enabled_tts_media_is_missing(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "out"
+            output_dir.mkdir()
+            project = {
+                "id": "missing-tts-media",
+                "title": "missing tts media",
+                "source_mode": "local",
+                "video_path": "",
+                "subtitle_path": "",
+                "language": "English",
+                "level": "B1",
+                "template_id": "immersive_v11",
+                "skip_video_slicing": True,
+                "api_config": {
+                    "provider": "local",
+                    "tts_config": {
+                        "enabled": True,
+                        "provider": "openai-compatible",
+                        "base_url": "https://api.example.com/v1",
+                        "api_key": "sk-test",
+                        "model": "tts-test",
+                        "voice": "alloy",
+                    },
+                },
+                "segments": [
+                    {
+                        "id": "seg_1",
+                        "start": 0,
+                        "end": 2,
+                        "source_time": "00:00:00.000 - 00:00:02.000",
+                        "text": "Today I have a special guest.",
+                        "cards": [
+                            {
+                                "id": "card_1",
+                                "type": "phrase",
+                                "enabled": True,
+                                "english": "Today I have a special guest.",
+                                "chinese": "特别嘉宾",
+                                "phrase": "special guest",
+                                "answer_core": "special guest",
+                                "definition": "一个自然的介绍嘉宾表达。",
+                                "teacher_note": "用于介绍受邀来宾。",
+                            }
+                        ],
+                    }
+                ],
+            }
+            original_synthesize_tts = worker._legacy_worker.synthesize_tts
+            stderr = io.StringIO()
+
+            try:
+                worker._legacy_worker.synthesize_tts = lambda *args, **kwargs: False
+                with redirect_stderr(stderr), self.assertRaises(SystemExit):
+                    worker.handle_export({"project": project, "output_dir": str(output_dir)})
+            finally:
+                worker._legacy_worker.synthesize_tts = original_synthesize_tts
+
+            message = stderr.getvalue()
+            self.assertIn("TTS 生成失败", message)
+            self.assertIn("MISSING_TTS_MEDIA", message)
+            self.assertIn("避免生成缺 TTS 的视频卡", message)
+            error_line = next(line for line in message.splitlines() if line.startswith("__ANKI_CARD_ERROR__"))
+            payload = json.loads(error_line.removeprefix("__ANKI_CARD_ERROR__"))
+            self.assertEqual(payload["details"]["tts_failure_count"], 2)
+            self.assertEqual(payload["details"]["sentence_tts_generated"], 0)
+            self.assertEqual(payload["details"]["phrase_tts_generated"], 0)
+            self.assertFalse(any(output_dir.glob("*.apkg")))
+
+    def test_export_blocks_video_language_cards_when_tts_disabled(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "out"
+            video_path = root / "source.mp4"
+            output_dir.mkdir()
+            video_path.write_bytes(b"fake video bytes for fingerprint")
+            project = {
+                "id": "tts-disabled-video-language",
+                "title": "tts disabled video language",
+                "source_mode": "local",
+                "video_path": str(video_path),
+                "subtitle_path": "",
+                "language": "English",
+                "level": "B1",
+                "template_id": "immersive_v11",
+                "skip_video_slicing": False,
+                "api_config": {"provider": "local", "tts_config": {"enabled": False, "provider": "disabled"}},
+                "segments": [
+                    {
+                        "id": "seg_1",
+                        "start": 0,
+                        "end": 2,
+                        "source_time": "00:00:00.000 - 00:00:02.000",
+                        "text": "Today I have a special guest.",
+                        "cards": [
+                            {
+                                "id": "card_1",
+                                "type": "phrase",
+                                "enabled": True,
+                                "english": "Today I have a special guest.",
+                                "chinese": "特别嘉宾",
+                                "phrase": "special guest",
+                                "answer_core": "special guest",
+                                "definition": "一个自然的介绍嘉宾表达。",
+                                "teacher_note": "用于介绍受邀来宾。",
+                            }
+                        ],
+                    }
+                ],
+            }
+            original_synthesize_tts = worker._legacy_worker.synthesize_tts
+            original_try_run_ffmpeg = worker._legacy_worker.try_run_ffmpeg
+            stderr = io.StringIO()
+
+            def fake_try_run_ffmpeg(command):
+                output_path = Path(command[-1])
+                if output_path.suffix == ".mp4":
+                    output_path.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 8192)
+                elif output_path.suffix == ".webm":
+                    output_path.write_bytes(b"\x1a\x45\xdf\xa3" + b"\x00" * 8192)
+                elif output_path.suffix == ".jpg":
+                    output_path.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 8192)
+                elif output_path.suffix == ".mp3":
+                    output_path.write_bytes(b"ID3" + b"\x00" * 8192)
+                else:
+                    output_path.write_bytes(b"media")
+                return ""
+
+            try:
+                worker._legacy_worker.try_run_ffmpeg = fake_try_run_ffmpeg
+                worker._legacy_worker.synthesize_tts = lambda *args, **kwargs: self.fail(
+                    "TTS synthesis should not run when TTS is disabled"
+                )
+                with redirect_stderr(stderr), self.assertRaises(SystemExit):
+                    worker.handle_export({"project": project, "output_dir": str(output_dir)})
+            finally:
+                worker._legacy_worker.synthesize_tts = original_synthesize_tts
+                worker._legacy_worker.try_run_ffmpeg = original_try_run_ffmpeg
+
+            message = stderr.getvalue()
+            self.assertIn("TTS 当前未启用", message)
+            self.assertIn("MISSING_TTS_MEDIA", message)
+            self.assertIn("必须包含整句 TTS 和表达 TTS", message)
+            error_line = next(line for line in message.splitlines() if line.startswith("__ANKI_CARD_ERROR__"))
+            payload = json.loads(error_line.removeprefix("__ANKI_CARD_ERROR__"))
+            self.assertEqual(payload["error_code"], "MISSING_TTS_MEDIA")
+            self.assertEqual(payload["details"]["sentence_tts_requested"], 1)
+            self.assertEqual(payload["details"]["sentence_tts_generated"], 0)
+            self.assertEqual(payload["details"]["phrase_tts_requested"], 1)
+            self.assertEqual(payload["details"]["phrase_tts_generated"], 0)
+            self.assertFalse(any(output_dir.glob("*.apkg")))
 
     def test_export_v11_required_fields_use_safe_fallbacks_after_generic_filter(self):
         try:
@@ -3289,7 +8140,7 @@ class WorkerQualityTests(unittest.TestCase):
         )
 
         self.assertIn("术语定义 / 例子案例", prompt)
-        self.assertIn("中文理解为主", prompt)
+        self.assertIn("原文语言", prompt)
         self.assertIn("深入掌握", prompt)
         self.assertIn("详细答案", prompt)
         self.assertIn("读书笔记老师", prompt)
@@ -3300,6 +8151,28 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("边界/反例", prompt)
         self.assertIn("不要把标题、目录、铺垫做成卡", prompt)
         self.assertIn("cloze 只能有一个 ____", prompt)
+
+    def test_document_prompt_supports_non_english_answer_languages(self):
+        prompt = worker.build_document_prompt(
+            {
+                "level": "B1",
+                "document_answer_language": "ja",
+                "document_depth": "standard",
+                "document_answer_length": "medium",
+            },
+            [
+                {
+                    "id": "doc_0001",
+                    "source_time": "文档知识点 1",
+                    "text": "Spaced repetition schedules reviews before forgetting.",
+                    "document_excerpt": "Spaced repetition schedules reviews before forgetting.",
+                }
+            ],
+        )
+
+        self.assertIn("自然日语", prompt)
+        self.assertIn("字段内容必须遵守本次讲解语言", prompt)
+        self.assertIn("不要因为字段名包含 chinese 就强制写中文", prompt)
         self.assertIn('"knowledge_type":"concepts|arguments|terms|examples"', prompt)
 
     def test_document_prompt_requires_atomic_retrieval_and_transfer_fields(self):
@@ -3325,6 +8198,8 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("原文依据", prompt)
         self.assertIn("迁移检查", prompt)
         self.assertIn("边界/反例", prompt)
+        self.assertIn("同一个 segment.cards 里输出多张", prompt)
+        self.assertIn("综合/对比卡", prompt)
         self.assertIn('"retrieval_task":"正面主动回忆问题"', prompt)
         self.assertIn('"atomic_answer":"背面第一屏短答案"', prompt)
         self.assertIn('"memory_hook":"记忆钩子"', prompt)
@@ -3373,7 +8248,91 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("搜索系统", card["chinese_feel"])
         self.assertIn("合上资料", card["how_to_use_it"])
         self.assertIn("不是简单重读", card["teacher_note"])
+        self.assertNotIn("本地文档草稿", card["difficulty_reason"])
+        self.assertIn("当前水平", card["difficulty_reason"])
         self.assertEqual(card["quality"]["status"], "recommended")
+
+    def test_document_merge_preserves_multiple_distinct_cards_and_caps_total(self):
+        segments = [
+            {
+                "id": "doc_0001",
+                "source_time": "文档知识点 1",
+                "text": "What should the learner remember?",
+                "phrase": "learning practice",
+                "document_excerpt": (
+                    "Spaced repetition helps memory over time. "
+                    "Active recall makes learning stick. "
+                    "Feedback prevents confident wrong answers."
+                ),
+            }
+        ]
+        base_card = {
+            "type": "knowledge",
+            "knowledge_type": "concepts",
+            "definition": "把一个学习动作压缩成可主动回忆的问题。",
+            "source_evidence": "Spaced repetition helps memory over time. Active recall makes learning stick.",
+            "memory_hook": "先回忆，再核对。",
+            "transfer_check": "复习时先说出答案，再打开资料检查。",
+            "boundary": "不是单纯重读，也不是边看边点头。",
+            "why_it_matters": "能避免熟悉感伪装成掌握。",
+            "teacher_note": "复习时关注自己能否独立说出答案。",
+            "cloze": "有效复习需要先 ____ 再核对。",
+        }
+        ai_payload = {
+            "segments": [
+                {
+                    "id": "doc_0001",
+                    "cards": [
+                        {
+                            **base_card,
+                            "retrieval_task": "间隔复习为什么能帮助长期记忆？",
+                            "atomic_answer": "它让学习者在遗忘开始后重新取回信息。",
+                            "phrase": "spaced repetition",
+                        },
+                        {
+                            **base_card,
+                            "retrieval_task": "主动回忆和重读的关键差别是什么？",
+                            "atomic_answer": "主动回忆要求先从记忆中产出答案。",
+                            "phrase": "active recall",
+                        },
+                        {
+                            **base_card,
+                            "retrieval_task": "反馈为什么能防止错答案被强化？",
+                            "atomic_answer": "反馈让学习者把答案和证据对照并修正。",
+                            "phrase": "feedback loop",
+                        },
+                    ],
+                }
+            ]
+        }
+
+        merged, _ = worker.merge_document_cards(segments, ai_payload, "B1", max_cards=2)
+
+        self.assertEqual(len(merged[0]["cards"]), 2)
+        self.assertEqual([card["phrase"] for card in merged[0]["cards"]], ["spaced repetition", "active recall"])
+        self.assertEqual(merged[0]["cards"][0]["id"], "doc_0001_knowledge")
+        self.assertEqual(merged[0]["cards"][1]["id"], "doc_0001_knowledge_02")
+        self.assertTrue(all(card["enabled"] for card in merged[0]["cards"]))
+
+        relation_segments = [{**segments[0]}]
+        relation_ai_payload = {
+            "segments": [
+                {
+                    "id": "doc_0001",
+                    "cards": ai_payload["segments"][0]["cards"][:2],
+                }
+            ]
+        }
+        expanded, _ = worker.merge_document_cards(relation_segments, relation_ai_payload, "B1", max_cards=3)
+        self.assertEqual(len(expanded[0]["cards"]), 3)
+        relation_card = expanded[0]["cards"][2]
+        self.assertEqual(relation_card["knowledge_type"], "arguments")
+        self.assertEqual(relation_card["phrase"], "spaced repetition + active recall")
+        self.assertIn("是什么关系", relation_card["english"])
+        self.assertIn("两个需要同时理解的侧面", relation_card["chinese"])
+        self.assertNotIn("本地文档草稿", relation_card["difficulty_reason"])
+        self.assertEqual(relation_card["quality"]["status"], "recommended")
+        self.assertTrue(relation_card["enabled"])
 
     def test_document_quality_flags_missing_transfer_or_boundary(self):
         quality = worker.document_card_quality(
@@ -3484,6 +8443,212 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(project["language_focus"], ["phrases", "grammar"])
         self.assertTrue(project["segments"][0]["source_time"].startswith("文档精读点"))
         self.assertEqual(project["segments"][0]["cards"][0]["type_label"], "文档精读卡")
+
+    def test_document_generation_cache_ignores_title_and_material_context_drift(self):
+        original_call_document_model = worker._legacy_worker.call_document_model
+        calls: list[dict] = []
+        cwd = os.getcwd()
+
+        def fake_call_document_model(project, segments):
+            calls.append(
+                {
+                    "title": project.get("title"),
+                    "material_context": project.get("material_context"),
+                    "segments": [segment.get("id") for segment in segments],
+                }
+            )
+            first_id = segments[0]["id"]
+            return {
+                "segments": [
+                    {
+                        "id": first_id,
+                        "cards": [
+                            {
+                                "type": "knowledge",
+                                "knowledge_type": "concepts",
+                                "retrieval_task": "为什么间隔复习有助于长期记忆？",
+                                "atomic_answer": "间隔复习让大脑多次主动取回信息。",
+                                "phrase": "spaced repetition",
+                                "definition": "把复习分散到不同时间点的学习方式。",
+                                "source_evidence": "Spaced repetition helps you remember ideas over time.",
+                                "memory_hook": "隔一段时间再找回，记忆路径会更稳。",
+                                "transfer_check": "安排今天、明天和下周各复习一次。",
+                                "boundary": "它不是一次性长时间重读。",
+                                "why_it_matters": "能减少熟悉感误判。",
+                                "cloze": "间隔复习让大脑多次 ____ 信息。",
+                            }
+                        ],
+                    }
+                ]
+            }
+
+        try:
+            worker._legacy_worker.call_document_model = fake_call_document_model
+            with tempfile.TemporaryDirectory() as temp_dir:
+                os.chdir(temp_dir)
+                try:
+                    document = Path(temp_dir) / "spacing.md"
+                    document.write_text(
+                        "Spaced repetition helps you remember ideas over time. Active recall makes learning stick.",
+                        encoding="utf-8",
+                    )
+                    base_payload = {
+                        "source_mode": "document",
+                        "document_path": str(document),
+                        "document_study_mode": "knowledge",
+                        "document_focus": ["concepts"],
+                        "document_depth": "standard",
+                        "document_answer_length": "medium",
+                        "api_config": {
+                            "provider": "openai-compatible",
+                            "base_url": "http://example.invalid/v1",
+                            "api_key": "test",
+                            "model": "fake-doc-model",
+                        },
+                        "level": "B1",
+                        "max_segments": 1,
+                    }
+                    first = worker.handle_generate_document({**base_payload, "title": "Document cache cold"})
+                    second = worker.handle_generate_document({**base_payload, "title": "Document cache hot"})
+                finally:
+                    os.chdir(cwd)
+        finally:
+            os.chdir(cwd)
+            worker._legacy_worker.call_document_model = original_call_document_model
+
+        self.assertEqual(len(calls), 1)
+        self.assertIn("Document cache cold", calls[0]["material_context"]["summary"])
+        self.assertIn("Document cache hot", second["material_context"]["summary"])
+        self.assertEqual(first["quality_funnel"]["card_generation_cache_hits"], 0)
+        self.assertEqual(first["quality_funnel"]["card_generation_cache_misses"], 1)
+        self.assertEqual(second["quality_funnel"]["card_generation_cache_hits"], 1)
+        self.assertEqual(second["quality_funnel"]["card_generation_cache_misses"], 0)
+        self.assertEqual(second["segments"][0]["cards"][0]["phrase"], "spaced repetition")
+
+    def test_document_generation_cache_key_changes_for_quality_inputs(self):
+        cwd = os.getcwd()
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                os.chdir(temp_dir)
+                try:
+                    project = {
+                        "document_path": str(Path(temp_dir) / "spacing.md"),
+                        "language": "en",
+                        "level": "B1",
+                        "document_study_mode": "knowledge",
+                        "document_focus": ["concepts"],
+                        "document_depth": "standard",
+                        "document_answer_length": "medium",
+                        "api_config": {"provider": "openai-compatible", "model": "fake-a"},
+                    }
+                    segment = {
+                        "id": "doc_0001",
+                        "text": "What is spaced repetition?",
+                        "phrase": "spaced repetition",
+                        "document_excerpt": "Spaced repetition helps memory.",
+                    }
+
+                    _, base_key = worker.document_generation_cache_path(project, segment)
+                    _, changed_text_key = worker.document_generation_cache_path(
+                        project,
+                        {**segment, "document_excerpt": "Active recall makes learning stick."},
+                    )
+                    _, changed_focus_key = worker.document_generation_cache_path(
+                        {**project, "document_focus": ["arguments"]},
+                        segment,
+                    )
+                    _, changed_depth_key = worker.document_generation_cache_path(
+                        {**project, "document_depth": "deep"},
+                        segment,
+                    )
+                    _, changed_model_key = worker.document_generation_cache_path(
+                        {**project, "api_config": {"provider": "openai-compatible", "model": "fake-b"}},
+                        segment,
+                    )
+                finally:
+                    os.chdir(cwd)
+        finally:
+            os.chdir(cwd)
+
+        self.assertNotEqual(base_key, changed_text_key)
+        self.assertNotEqual(base_key, changed_focus_key)
+        self.assertNotEqual(base_key, changed_depth_key)
+        self.assertNotEqual(base_key, changed_model_key)
+
+    def test_document_generation_cache_rejects_unusable_payloads(self):
+        original_call_document_model = worker._legacy_worker.call_document_model
+        cwd = os.getcwd()
+        calls = {"count": 0}
+
+        def fake_call_document_model(project, segments):
+            calls["count"] += 1
+            return {
+                "segments": [
+                    {
+                        "id": segments[0]["id"],
+                        "cards": [
+                            {
+                                "type": "knowledge",
+                                "retrieval_task": "什么是主动回忆？",
+                                "atomic_answer": "先尝试从记忆中取回答案，再核对资料。",
+                                "phrase": "active recall",
+                                "definition": "主动提取信息的学习方式。",
+                                "source_evidence": "Active recall makes learning stick.",
+                            }
+                        ],
+                    }
+                ]
+            }
+
+        try:
+            worker._legacy_worker.call_document_model = fake_call_document_model
+            with tempfile.TemporaryDirectory() as temp_dir:
+                os.chdir(temp_dir)
+                try:
+                    project = {
+                        "document_path": str(Path(temp_dir) / "recall.md"),
+                        "language": "en",
+                        "level": "B1",
+                        "document_study_mode": "knowledge",
+                        "document_focus": ["concepts"],
+                        "document_depth": "standard",
+                        "document_answer_length": "medium",
+                        "api_config": {"provider": "openai-compatible", "model": "fake-doc-model"},
+                    }
+                    segment = {
+                        "id": "doc_0001",
+                        "text": "What is active recall?",
+                        "phrase": "active recall",
+                        "document_excerpt": "Active recall makes learning stick.",
+                    }
+                    cache_path, cache_key = worker.document_generation_cache_path(project, segment)
+                    bad_payload = {"segments": [{"id": "doc_0001", "cards": [{"type": "knowledge"}]}]}
+
+                    worker.store_document_generation_cache(cache_path, cache_key, bad_payload)
+                    self.assertFalse(cache_path.exists())
+
+                    cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    cache_path.write_text(
+                        json.dumps({"schema_version": 1, "cache_key": cache_key, "payload": bad_payload}),
+                        encoding="utf-8",
+                    )
+                    self.assertIsNone(worker.load_document_generation_cache(cache_path))
+
+                    payload, stats = worker.cached_or_generated_document_payload(
+                        project,
+                        [segment],
+                        cache_disabled=False,
+                    )
+                finally:
+                    os.chdir(cwd)
+        finally:
+            os.chdir(cwd)
+            worker._legacy_worker.call_document_model = original_call_document_model
+
+        self.assertEqual(calls["count"], 1)
+        self.assertEqual(stats["cache_hits"], 0)
+        self.assertEqual(stats["cache_misses"], 1)
+        self.assertEqual(payload["segments"][0]["cards"][0]["phrase"], "active recall")
 
     def test_document_knowledge_generation_exports_apkg_without_media_steps(self):
         try:
@@ -3813,6 +8978,56 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertNotIn("api_key", worker.json.dumps(status).lower())
         self.assertNotIn("sk-", worker.json.dumps(status).lower())
 
+    def test_find_anki_executable_treats_permission_denied_ankiw_as_installed(self):
+        legacy = worker._legacy_worker
+        original_candidates = legacy.anki_executable_candidates
+        original_exists = legacy.Path.exists
+        candidate = legacy.Path(r"C:\Users\Example\AppData\Local\AnkiProgramFiles\.venv\Scripts\ankiw.exe")
+
+        def fake_exists(path):
+            if str(path) == str(candidate):
+                raise PermissionError("access denied")
+            return original_exists(path)
+
+        try:
+            legacy.anki_executable_candidates = lambda: [candidate]
+            legacy.Path.exists = fake_exists
+
+            self.assertEqual(legacy.find_anki_executable(), str(candidate))
+        finally:
+            legacy.anki_executable_candidates = original_candidates
+            legacy.Path.exists = original_exists
+
+    def test_windows_process_check_falls_back_to_powershell_when_tasklist_denied(self):
+        legacy = worker._legacy_worker
+        original_os_name = legacy.os.name
+        original_run = legacy.subprocess.run
+        calls = []
+
+        class Completed:
+            def __init__(self, returncode, stdout="", stderr=""):
+                self.returncode = returncode
+                self.stdout = stdout
+                self.stderr = stderr
+
+        def fake_run(command, **_kwargs):
+            calls.append(command)
+            if command[0] == "tasklist":
+                return Completed(1, "", "ERROR: Access denied")
+            return Completed(0, "59800\n", "")
+
+        try:
+            legacy.os.name = "nt"
+            legacy.subprocess.run = fake_run
+
+            self.assertTrue(legacy.is_process_running("ankiw.exe"))
+        finally:
+            legacy.os.name = original_os_name
+            legacy.subprocess.run = original_run
+
+        self.assertEqual(calls[0][0], "tasklist")
+        self.assertEqual(calls[1][0], "powershell.exe")
+
     def test_repair_env_returns_manual_ankiconnect_steps_without_secrets(self):
         original_check_anki_connect = worker._legacy_worker.check_anki_connect
         original_find_anki_executable = worker._legacy_worker.find_anki_executable
@@ -3842,6 +9057,8 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertNotIn("sk-", worker.json.dumps(result).lower())
 
     def test_video_html_keeps_mp4_and_webm_fallbacks(self):
+        from acg.anki_media import anki_audio_html, anki_video_html
+
         html = worker.anki_video_html("clip.webm", "clip.mp4", "clip.jpg")
 
         self.assertIn('poster="clip.jpg"', html)
@@ -3851,13 +9068,314 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn('src="clip.webm"', html)
         self.assertIn('type="video/webm"', html)
         self.assertLess(html.index('src="clip.webm"'), html.index('src="clip.mp4"'))
+        self.assertIn('class="anki-video-fallback"', html)
+        self.assertIn('aria-hidden="true"', html)
+        self.assertNotIn("视频无法播放", html)
+        self.assertEqual(html, anki_video_html("clip.webm", "clip.mp4", "clip.jpg"))
+        escaped_video = anki_video_html('clip"&.webm', 'clip<.mp4', 'post>.jpg', controls=False, muted=True)
+        self.assertIn('clip&quot;&amp;.webm', escaped_video)
+        self.assertIn('clip&lt;.mp4', escaped_video)
+        self.assertIn('post&gt;.jpg', escaped_video)
+        self.assertNotIn(" controls", escaped_video)
+        self.assertIn("muted", escaped_video)
+        escaped_audio = anki_audio_html('tts"&.mp3', role='slow"role')
+        self.assertEqual(escaped_audio, worker.anki_audio_html('tts"&.mp3', role='slow"role'))
+        self.assertIn('tts&quot;&amp;.mp3', escaped_audio)
+        self.assertIn('data-audio-role="slow&quot;role"', escaped_audio)
 
     def test_extract_media_references_reads_sources_and_poster(self):
+        from acg.media_refs import extract_media_references, media_refs_with_suffix, missing_video_required_media_roles
+
         html = worker.anki_video_html("clip.webm", "clip.mp4", "clip.jpg") + worker.anki_audio_html("clip_tts.mp3")
 
-        self.assertEqual(worker.extract_media_references(html), ["clip.jpg", "clip.webm", "clip.mp4", "clip_tts.mp3"])
+        refs = extract_media_references(html)
+        self.assertEqual(refs, ["clip.jpg", "clip.webm", "clip.mp4", "clip_tts.mp3"])
+        self.assertEqual(media_refs_with_suffix(refs, {".mp4", ".webm"}), ["clip.webm", "clip.mp4"])
+        self.assertEqual(worker.extract_media_references(html), refs)
+        complete_refs_by_field = {
+            "Video": ["clip.jpg", "clip.webm", "clip.mp4"],
+            "Audio": ["original.mp3"],
+            "TtsAudio": ["sentence.mp3"],
+            "PhraseTtsAudio": ["phrase.mp3"],
+        }
+        self.assertEqual(missing_video_required_media_roles(complete_refs_by_field), [])
+        incomplete_refs_by_field = {
+            "Video": ["clip.mp4"],
+            "Audio": ["original.mp3"],
+            "TtsAudio": ["sentence.mp3"],
+            "PhraseTtsAudio": [],
+        }
+        self.assertEqual(
+            missing_video_required_media_roles(incomplete_refs_by_field),
+            ["Video.webm", "Video.poster", "PhraseTtsAudio.mp3"],
+        )
+
+    def test_anki_field_helpers_extract_plain_text_and_card_identity(self):
+        from acg.anki_fields import (
+            anki_card_deck_name,
+            anki_card_model_name,
+            anki_field_has_any_text,
+            anki_field_plain_text,
+            anki_field_value,
+            anki_import_pronunciation_meta_error,
+            imported_model_template_mismatches,
+            imported_corrupted_study_text_values,
+            imported_tts_text_hash_mismatches,
+            missing_document_required_text_fields,
+            missing_video_required_text_fields,
+        )
+        from acg.audio_audit import media_text_hash
+
+        fields = {
+            "English": {"value": "The <b>quick</b> &amp; reliable card."},
+            "Answer": "quick card",
+            "Chinese": {"value": "??????"},
+            "TeacherNote": {"value": "Clean note"},
+            "PronunciationMeta": {"value": '{"status":"ok"}'},
+        }
+        info = {
+            "deckName": "视频语言卡 - Smoke",
+            "note": {"modelName": "Anki Card Generator V12 - 沉浸复读 V11 · 快速复读"},
+        }
+
+        self.assertEqual(anki_field_value(fields, "English"), "The <b>quick</b> &amp; reliable card.")
+        self.assertEqual(anki_field_plain_text(fields, "English"), "The quick & reliable card.")
+        self.assertTrue(anki_field_has_any_text(fields, ["Answer", "English"]))
+        self.assertEqual(anki_card_model_name(info), "Anki Card Generator V12 - 沉浸复读 V11 · 快速复读")
+        self.assertEqual(anki_card_deck_name(info), "视频语言卡 - Smoke")
+        self.assertEqual(
+            imported_corrupted_study_text_values(fields, "card-1"),
+            [{"card_id": "card-1", "field": "Chinese", "pattern": "??????", "excerpt": "??????"}],
+        )
+        self.assertEqual(anki_import_pronunciation_meta_error(fields), "")
+        self.assertEqual(anki_import_pronunciation_meta_error({"PronunciationMeta": ""}), "missing")
+        self.assertEqual(
+            anki_import_pronunciation_meta_error({"PronunciationMeta": "{not-json}"}),
+            "invalid_json:Expecting property name enclosed in double quotes",
+        )
+        self.assertEqual(anki_import_pronunciation_meta_error({"PronunciationMeta": "[]"}), "not_object")
+        self.assertEqual(worker.anki_field_plain_text(fields, "English"), "The quick & reliable card.")
+        self.assertEqual(worker.imported_corrupted_study_text_values(fields, "card-1")[0]["field"], "Chinese")
+        self.assertEqual(missing_video_required_text_fields(fields), ["CardId"])
+        self.assertEqual(
+            missing_video_required_text_fields(
+                {
+                    "CardId": {"value": "card-1"},
+                    "English": {"value": "Source sentence."},
+                    "Phrase": {"value": "source"},
+                }
+            ),
+            [],
+        )
+        self.assertEqual(
+            missing_document_required_text_fields(
+                {
+                    "CardId": {"value": "doc-1"},
+                    "English": {"value": "Document question"},
+                    "Definition": {"value": "Document answer"},
+                }
+            ),
+            [],
+        )
+        self.assertEqual(
+            missing_document_required_text_fields({"CardId": {"value": "doc-1"}}),
+            ["QuestionOrSource", "AnswerOrDefinition"],
+        )
+        video_template_check = imported_model_template_mismatches(
+            [
+                "Anki Card Generator V12 - 沉浸复读 V11 · 快速复读",
+                "Anki Card Generator V10 - 文档知识 V10",
+                "词霸天下实验 V1",
+            ],
+            strict_video_import=True,
+        )
+        self.assertEqual(video_template_check["ciba_model_names"], ["词霸天下实验 V1"])
+        self.assertEqual(
+            video_template_check["video_template_mismatches"],
+            ["Anki Card Generator V10 - 文档知识 V10", "词霸天下实验 V1"],
+        )
+        document_template_check = imported_model_template_mismatches(
+            [
+                "Anki Card Generator V12 - 沉浸复读 V11",
+                "Anki Card Generator V10 - 文档知识 V10",
+                "ciba scratch",
+            ],
+            strict_document_import=True,
+        )
+        self.assertEqual(
+            document_template_check["document_template_mismatches"],
+            ["Anki Card Generator V12 - 沉浸复读 V11", "ciba scratch"],
+        )
+        matching_refs = {
+            "TtsAudio": [f"sentence_{media_text_hash('The quick & reliable card.')}.mp3"],
+            "PhraseTtsAudio": [f"phrase_{media_text_hash('quick card')}.mp3"],
+        }
+        self.assertEqual(
+            imported_tts_text_hash_mismatches(fields, "card-1", matching_refs, media_text_hash),
+            [],
+        )
+        mismatched_refs = {**matching_refs, "PhraseTtsAudio": ["phrase_wrong.mp3"]}
+        tts_mismatches = imported_tts_text_hash_mismatches(fields, "card-1", mismatched_refs, media_text_hash)
+        self.assertEqual(tts_mismatches[0]["field"], "PhraseTtsAudio")
+        self.assertEqual(tts_mismatches[0]["expected_text_hash"], media_text_hash("quick card"))
+
+    def test_anki_verify_helpers_preserve_failed_check_order_and_messages(self):
+        from acg.anki_verify import verify_anki_import_failed_checks, verify_anki_import_message
+
+        failed_checks = verify_anki_import_failed_checks(
+            card_infos_present=True,
+            strict_video_import=True,
+            strict_document_import=False,
+            sorted_model_names=[],
+            video_template_mismatches=["Document V10"],
+            ciba_model_names=["词霸天下实验 V1"],
+            document_template_mismatches=[],
+            expected_cards=2,
+            verified_card_count=1,
+            card_media_ledger_provided=True,
+            card_media_ledger_count=1,
+            audio_audit_count=1,
+            audio_audit_mismatches=[{"field": "English"}],
+            audio_audit_write_errors=[],
+            card_media_ledger_mismatches=[{"field": "PhraseTtsAudio"}],
+            missing_video_field_media=[{"missing": ["Video.webm"]}],
+            empty_required_fields=[{"missing": ["English"]}],
+            corrupted_study_text_values=[{"field": "Chinese"}],
+            pronunciation_meta_errors=[{"error": "missing"}],
+            imported_tts_text_hash_mismatch=[{"field": "TtsAudio"}],
+            unreferenced_expected=["unused.mp3"],
+            unexpected_references=["extra.mp3"],
+            manifest_missing=["missing.mp3"],
+            manifest_mismatched=[{"file": "bad.mp3"}],
+            manifest_inaccessible=[{"file": "locked.mp3"}],
+            tts_audio_duration_issues=[{"file": "short.mp3"}],
+            tts_semantic_failures=[{"file": "semantic.mp3"}],
+            tts_semantic_export_required=False,
+            ledger_missing_manifest=["ledger-extra.mp3"],
+            manifest_tts_without_ledger=["tts-no-ledger.mp3"],
+            ledger_text_hash_mismatch=[{"file": "hash.mp3"}],
+            media_ledger_card_text_mismatches=[{"file": "card-text.mp3"}],
+        )
+
+        self.assertEqual(
+            failed_checks,
+            [
+                "imported_model_missing",
+                "video_template_mismatch",
+                "ordinary_flow_ciba_template",
+                "card_count_mismatch",
+                "card_media_ledger_count_mismatch",
+                "audio_audit_count_mismatch",
+                "audio_audit_mismatch",
+                "card_media_ledger_mismatch",
+                "missing_imported_video_field_media",
+                "empty_imported_required_fields",
+                "corrupted_imported_study_text",
+                "pronunciation_meta_parse_errors",
+                "imported_tts_text_hash_mismatch",
+                "unreferenced_expected_media",
+                "unexpected_media_references",
+                "missing_imported_media",
+                "media_hash_mismatch",
+                "inaccessible_imported_media",
+                "imported_tts_audio_duration",
+                "ledger_missing_manifest",
+                "manifest_tts_without_ledger",
+                "ledger_text_hash_mismatch",
+                "media_ledger_card_text_mismatch",
+            ],
+        )
+        self.assertNotIn("tts_semantic_mismatch", failed_checks)
+        self.assertEqual(verify_anki_import_message(failed_checks, duplicate_imported_cards=[], tts_manual_items=[]), "Anki 导入媒体核验发现问题。")
+        self.assertEqual(
+            verify_anki_import_message([], duplicate_imported_cards=[{"card_id": "card-1"}], tts_manual_items=[]),
+            "Anki 导入媒体核验通过；检测到同名 deck 里已有旧导入，已按本次 audio_audit 匹配到的卡片核验。",
+        )
+        self.assertEqual(
+            verify_anki_import_message([], duplicate_imported_cards=[], tts_manual_items=[{"file": "tts.mp3"}]),
+            "Anki 导入媒体核验通过；TTS 语义仍需按清单人工抽查。",
+        )
+
+    def test_audio_audit_media_ref_helpers_match_anki_fields(self):
+        from acg.audio_audit import (
+            audio_audit_imported_text_mismatches,
+            audio_audit_expected_refs_by_field,
+            card_media_expected_refs_by_field,
+            compare_expected_media_refs_by_field,
+            items_by_card_id,
+            missing_expected_entry_mismatch,
+        )
+
+        card_media = {
+            "card_id": "card-1",
+            "video_webm": "clip.webm",
+            "video_mp4": "clip.mp4",
+            "poster": "clip.jpg",
+            "original_audio": "original.mp3",
+            "sentence_tts_audio": "sentence.mp3",
+            "phrase_tts_audio": "phrase.mp3",
+        }
+        audit_item = {
+            "card_id": "card-1",
+            "video_webm": "clip.webm",
+            "video_mp4": "clip.mp4",
+            "poster": "clip.jpg",
+            "original_audio": "original.mp3",
+            "sentence_tts_file": "sentence.mp3",
+            "phrase_tts_file": "phrase.mp3",
+        }
+        refs_by_field = {
+            "Video": ["clip.webm", "clip.mp4", "clip.jpg"],
+            "Audio": ["original.mp3"],
+            "TtsAudio": ["sentence.mp3"],
+            "PhraseTtsAudio": ["wrong_phrase.mp3"],
+        }
+
+        self.assertEqual(items_by_card_id([card_media])["card-1"], card_media)
+        self.assertEqual(card_media_expected_refs_by_field(card_media)["PhraseTtsAudio"], ["phrase.mp3"])
+        self.assertEqual(audio_audit_expected_refs_by_field(audit_item)["PhraseTtsAudio"], ["phrase.mp3"])
+        mismatches = compare_expected_media_refs_by_field(
+            "card-1",
+            refs_by_field,
+            audio_audit_expected_refs_by_field(audit_item),
+        )
+        self.assertEqual(mismatches[0]["field"], "PhraseTtsAudio")
+        self.assertIn("phrase.mp3", mismatches[0]["missing_expected"])
+        self.assertIn("wrong_phrase.mp3", mismatches[0]["unexpected_actual"])
+        self.assertEqual(
+            missing_expected_entry_mismatch("card-1", "audio_audit entry")["missing_expected"],
+            ["audio_audit entry"],
+        )
+        audit_item.update(
+            {
+                "card_display_sentence": "Expected display sentence.",
+                "sentence_tts_expected_text": "Expected display sentence.",
+                "phrase_tts_expected_text": "expected phrase",
+                "media_subtitle_alignment_status": "mismatch",
+                "media_subtitle_overlap_score": 0.1,
+                "media_subtitle_time": "00:00:01.000 - 00:00:02.000",
+                "media_window_subtitle_text": "unrelated media subtitle",
+            }
+        )
+        sentence_actual, text_mismatches = audio_audit_imported_text_mismatches(
+            "card-1",
+            audit_item,
+            {
+                "English": {"value": "Imported display sentence."},
+                "Answer": {"value": "imported phrase"},
+                "Phrase": {"value": ""},
+            },
+        )
+        self.assertEqual(sentence_actual, "Imported display sentence.")
+        self.assertEqual(
+            [item["field"] for item in text_mismatches],
+            ["CardDisplaySentence", "MediaSubtitleAlignment", "English", "AnswerOrPhrase"],
+        )
+        self.assertEqual(text_mismatches[1]["media_window_subtitle_text"], "unrelated media subtitle")
 
     def test_compare_media_manifest_detects_media_collision(self):
+        from acg.media_manifest import compare_media_manifest, media_manifest
+
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             export_dir = root / "export"
@@ -3867,11 +9385,323 @@ class WorkerQualityTests(unittest.TestCase):
             (export_dir / "deck_seg_0001.mp3").write_bytes(b"new audio")
             (anki_dir / "deck_seg_0001.mp3").write_bytes(b"old audio")
 
-            manifest = worker.media_manifest([str(export_dir / "deck_seg_0001.mp3")])
-            result = worker.compare_media_manifest(manifest, anki_dir)
+            manifest = media_manifest(
+                [str(export_dir / "deck_seg_0001.mp3")],
+                [{"file": "deck_seg_0001.mp3", "role": "sentence_tts", "tts_text": "new audio"}],
+            )
+            legacy_manifest = worker.media_manifest([str(export_dir / "deck_seg_0001.mp3")])
+            result = compare_media_manifest(manifest, anki_dir)
+            legacy_result = worker.compare_media_manifest(legacy_manifest, anki_dir)
 
+        self.assertEqual(manifest["deck_seg_0001.mp3"]["role"], "sentence_tts")
         self.assertEqual(result["missing"], [])
         self.assertEqual(result["mismatched"][0]["file"], "deck_seg_0001.mp3")
+        self.assertEqual(legacy_result["mismatched"][0]["file"], "deck_seg_0001.mp3")
+
+    def test_media_ledger_manifest_consistency_reports_ledger_drift(self):
+        from acg.audio_audit import media_text_hash
+        from acg.media_manifest import media_ledger_card_text_mismatches, media_ledger_manifest_consistency
+
+        expected_manifest = {
+            "sentence.mp3": {"role": "sentence_tts"},
+            "phrase.mp3": {"role": "phrase_tts"},
+            "clip.mp4": {"role": "video"},
+        }
+        media_ledger = [
+            {
+                "file": "C:/export/sentence.mp3",
+                "role": "sentence_tts",
+                "tts_text": "Correct sentence text.",
+                "text_hash": media_text_hash("Correct sentence text."),
+            },
+            {
+                "file": "C:/export/extra.mp3",
+                "role": "phrase_tts",
+                "tts_text": "Wrong hash text.",
+                "text_hash": "wrong-hash",
+            },
+        ]
+
+        result = media_ledger_manifest_consistency(media_ledger, expected_manifest)
+
+        self.assertEqual(result["ledger_missing_manifest"], ["extra.mp3"])
+        self.assertEqual(result["manifest_tts_without_ledger"], ["phrase.mp3"])
+        self.assertEqual(result["ledger_text_hash_mismatch"][0]["file"], "extra.mp3")
+        self.assertEqual(
+            result["ledger_text_hash_mismatch"][0]["expected_text_hash"],
+            media_text_hash("Wrong hash text."),
+        )
+
+        card_text_mismatches = media_ledger_card_text_mismatches(
+            [
+                {
+                    "card_id": "card-1",
+                    "sentence_tts_audio": "sentence.mp3",
+                    "sentence_tts_text": "Correct sentence text.",
+                    "phrase_tts_audio": "phrase.mp3",
+                    "phrase_tts_text": "Correct phrase text.",
+                }
+            ],
+            [
+                media_ledger[0],
+                {
+                    "file": "phrase.mp3",
+                    "role": "phrase_tts",
+                    "tts_text": "Wrong but self-consistent phrase text.",
+                    "text_hash": media_text_hash("Wrong but self-consistent phrase text."),
+                },
+            ],
+        )
+
+        self.assertEqual(len(card_text_mismatches), 1)
+        self.assertEqual(card_text_mismatches[0]["field"], "PhraseTtsAudio")
+        self.assertEqual(card_text_mismatches[0]["file"], "phrase.mp3")
+        self.assertEqual(card_text_mismatches[0]["expected_text_hash"], media_text_hash("Correct phrase text."))
+        self.assertEqual(
+            card_text_mismatches[0]["ledger_text_hash"],
+            media_text_hash("Wrong but self-consistent phrase text."),
+        )
+
+    def test_compare_media_manifest_retries_transient_permission_error(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            export_dir = root / "export"
+            anki_dir = root / "anki"
+            export_dir.mkdir()
+            anki_dir.mkdir()
+            (export_dir / "deck_seg_0001.mp3").write_bytes(b"audio")
+            (anki_dir / "deck_seg_0001.mp3").write_bytes(b"audio")
+
+            manifest = worker.media_manifest([str(export_dir / "deck_seg_0001.mp3")])
+            original_file_sha256 = worker._legacy_worker.file_sha256
+            calls = {"count": 0}
+
+            def flaky_file_sha256(path):
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    raise PermissionError("media file is temporarily locked")
+                return original_file_sha256(path)
+
+            try:
+                worker._legacy_worker.file_sha256 = flaky_file_sha256
+                result = worker.compare_media_manifest(
+                    manifest,
+                    anki_dir,
+                    max_attempts=2,
+                    retry_delay_seconds=0,
+                )
+            finally:
+                worker._legacy_worker.file_sha256 = original_file_sha256
+
+        self.assertEqual(result["checked"], 1)
+        self.assertEqual(result["missing"], [])
+        self.assertEqual(result["mismatched"], [])
+        self.assertEqual(result["inaccessible"], [])
+
+    def test_compare_media_manifest_reports_persistent_permission_error(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            export_dir = root / "export"
+            anki_dir = root / "anki"
+            export_dir.mkdir()
+            anki_dir.mkdir()
+            (export_dir / "deck_seg_0001.mp3").write_bytes(b"audio")
+            (anki_dir / "deck_seg_0001.mp3").write_bytes(b"audio")
+
+            manifest = worker.media_manifest([str(export_dir / "deck_seg_0001.mp3")])
+            original_file_sha256 = worker._legacy_worker.file_sha256
+
+            try:
+                worker._legacy_worker.file_sha256 = lambda _path: (_ for _ in ()).throw(PermissionError("locked"))
+                result = worker.compare_media_manifest(
+                    manifest,
+                    anki_dir,
+                    max_attempts=2,
+                    retry_delay_seconds=0,
+                )
+            finally:
+                worker._legacy_worker.file_sha256 = original_file_sha256
+
+        self.assertEqual(result["checked"], 0)
+        self.assertEqual(result["missing"], [])
+        self.assertEqual(result["mismatched"], [])
+        self.assertEqual(result["inaccessible"][0]["file"], "deck_seg_0001.mp3")
+
+    def test_compare_media_manifest_falls_back_to_anki_connect_when_filesystem_denied(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            export_dir = root / "export"
+            anki_dir = root / "anki"
+            export_dir.mkdir()
+            anki_dir.mkdir()
+            media_bytes = b"audio from anki connect"
+            (export_dir / "deck_seg_0001.mp3").write_bytes(media_bytes)
+            (anki_dir / "deck_seg_0001.mp3").write_bytes(media_bytes)
+
+            manifest = worker.media_manifest([str(export_dir / "deck_seg_0001.mp3")])
+            original_file_sha256 = worker._legacy_worker.file_sha256
+            original_retrieve = worker._legacy_worker.retrieve_anki_media_bytes
+
+            try:
+                worker._legacy_worker.file_sha256 = lambda _path: (_ for _ in ()).throw(PermissionError("locked"))
+                worker._legacy_worker.retrieve_anki_media_bytes = lambda filename, _url: (
+                    media_bytes if filename == "deck_seg_0001.mp3" else None
+                )
+                result = worker.compare_media_manifest(
+                    manifest,
+                    anki_dir,
+                    anki_url="http://127.0.0.1:8765",
+                    max_attempts=1,
+                    retry_delay_seconds=0,
+                )
+            finally:
+                worker._legacy_worker.file_sha256 = original_file_sha256
+                worker._legacy_worker.retrieve_anki_media_bytes = original_retrieve
+
+        self.assertEqual(result["checked"], 1)
+        self.assertEqual(result["missing"], [])
+        self.assertEqual(result["mismatched"], [])
+        self.assertEqual(result["inaccessible"], [])
+
+    def test_imported_tts_duration_reports_permission_error_instead_of_crashing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            anki_dir = Path(temp_dir) / "anki"
+            anki_dir.mkdir()
+            manifest = {
+                "locked_phrase.mp3": {
+                    "role": "phrase_tts",
+                    "tts_text": "prompt",
+                    "duration_seconds": 1.2,
+                }
+            }
+            original_exists = worker._legacy_worker.Path.exists
+
+            def locked_exists(path):
+                if Path(path).name == "locked_phrase.mp3":
+                    raise PermissionError("locked by Anki")
+                return original_exists(path)
+
+            try:
+                worker._legacy_worker.Path.exists = locked_exists
+                result = worker._legacy_worker.imported_tts_audio_duration_issues(
+                    manifest,
+                    anki_dir,
+                    {"locked_phrase.mp3"},
+                    strict_video_import=True,
+                    max_attempts=2,
+                    retry_delay_seconds=0,
+                )
+            finally:
+                worker._legacy_worker.Path.exists = original_exists
+
+        self.assertEqual(result[0]["file"], "locked_phrase.mp3")
+        self.assertEqual(result[0]["reason"], "duration_inaccessible")
+
+    def test_imported_tts_duration_falls_back_to_anki_connect_when_filesystem_denied(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            anki_dir = Path(temp_dir) / "anki"
+            anki_dir.mkdir()
+            manifest = {
+                "locked_phrase.mp3": {
+                    "role": "phrase_tts",
+                    "tts_text": "prompt",
+                    "duration_seconds": 1.2,
+                }
+            }
+            original_exists = worker._legacy_worker.Path.exists
+            original_retrieve = worker._legacy_worker.retrieve_anki_media_bytes
+            original_duration = worker._legacy_worker.audio_duration_seconds_from_bytes
+
+            def locked_exists(path):
+                if Path(path).name == "locked_phrase.mp3":
+                    raise PermissionError("locked by Anki")
+                return original_exists(path)
+
+            try:
+                worker._legacy_worker.Path.exists = locked_exists
+                worker._legacy_worker.retrieve_anki_media_bytes = lambda filename, _url: (
+                    b"audio from anki connect" if filename == "locked_phrase.mp3" else None
+                )
+                worker._legacy_worker.audio_duration_seconds_from_bytes = lambda _filename, _data: 1.2
+                result = worker._legacy_worker.imported_tts_audio_duration_issues(
+                    manifest,
+                    anki_dir,
+                    {"locked_phrase.mp3"},
+                    strict_video_import=True,
+                    anki_url="http://127.0.0.1:8765",
+                    max_attempts=1,
+                    retry_delay_seconds=0,
+                )
+            finally:
+                worker._legacy_worker.Path.exists = original_exists
+                worker._legacy_worker.retrieve_anki_media_bytes = original_retrieve
+                worker._legacy_worker.audio_duration_seconds_from_bytes = original_duration
+
+        self.assertEqual(result, [])
+
+    def test_imported_media_duration_helpers_match_worker_boundary(self):
+        from acg import imported_media
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            anki_dir = Path(temp_dir) / "anki"
+            anki_dir.mkdir()
+            phrase_file = anki_dir / "phrase.mp3"
+            phrase_file.write_bytes(b"fake audio")
+            manifest = {
+                "phrase.mp3": {
+                    "role": "phrase_tts",
+                    "tts_text": "prompt",
+                    "duration_seconds": 1.2,
+                }
+            }
+
+            def fake_audio_duration_seconds(path):
+                return 87.64 if Path(path).name == "phrase.mp3" else None
+
+            original_audio_duration_seconds = worker._legacy_worker.audio_duration_seconds
+            try:
+                worker._legacy_worker.audio_duration_seconds = fake_audio_duration_seconds
+                wrapper_result = worker._legacy_worker.imported_tts_audio_duration_issues(
+                    manifest,
+                    anki_dir,
+                    {"phrase.mp3"},
+                    strict_video_import=True,
+                    max_attempts=1,
+                    retry_delay_seconds=0,
+                )
+            finally:
+                worker._legacy_worker.audio_duration_seconds = original_audio_duration_seconds
+
+            core_result = imported_media.imported_tts_audio_duration_issues(
+                manifest,
+                anki_dir,
+                {"phrase.mp3"},
+                strict_video_import=True,
+                max_attempts=1,
+                retry_delay_seconds=0,
+                retrieve_media_bytes_func=lambda _filename, _url: None,
+                duration_seconds_func=fake_audio_duration_seconds,
+                duration_seconds_from_bytes_func=lambda _filename, _data: None,
+                clean_tts_text_func=worker._legacy_worker.clean_tts_input_text,
+                phrase_max_duration_func=worker._legacy_worker.phrase_tts_max_duration_seconds,
+            )
+
+        self.assertEqual(wrapper_result, core_result)
+        self.assertEqual(core_result[0]["reason"], "overlong_phrase_tts")
+        self.assertEqual(worker._legacy_worker.numeric_manifest_value("1.25"), 1.25)
+        self.assertEqual(imported_media.numeric_manifest_value("1.25"), 1.25)
+
+    def test_export_text_helpers_match_worker_boundary(self):
+        from acg import export_text
+
+        raw_html = '<span class="x">A & B</span>'
+        self.assertEqual(worker._legacy_worker.anki_text(raw_html), export_text.anki_text(raw_html))
+        self.assertEqual(export_text.anki_text(raw_html), '&lt;span class="x"&gt;A &amp; B&lt;/span&gt;')
+        long_text = "one two three four five"
+        self.assertEqual(worker._legacy_worker.audit_text_excerpt(long_text, 12), "one two thr\u2026")
+        self.assertEqual(worker._legacy_worker.audit_text_excerpt(long_text, 12), export_text.audit_text_excerpt(long_text, 12))
+        self.assertEqual(worker._legacy_worker.anki_study_text("本地 fallback 只保证结构完整"), "")
+        self.assertEqual(worker._legacy_worker.anki_study_text("A & B"), "A &amp; B")
 
     def test_verify_anki_import_accepts_zero_media_exports(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -3905,6 +9735,11 @@ class WorkerQualityTests(unittest.TestCase):
                         "export_result": {
                             "deck_name": "Zero Media Deck",
                             "cards": 1,
+                            "source_identity": {
+                                "source_fingerprint": "file:freshsource1234",
+                                "source_mode": "local_video",
+                            },
+                            "source_fingerprint": "file:freshsource1234",
                             "media_manifest": {},
                             "media_summary": {"media_files": 0},
                             "media_dir": str(Path(temp_dir) / "export_media"),
@@ -3918,6 +9753,92 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(result["media_count_expected"], 0)
         self.assertEqual(result["media_count_checked"], 0)
         self.assertEqual(result["card_count"], 1)
+        self.assertEqual(result["source_identity"]["source_fingerprint"], "file:freshsource1234")
+        self.assertEqual(result["source_fingerprint"], "file:freshsource1234")
+
+    def test_verify_anki_import_can_import_apkg_before_checking_cards(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            apkg_path = Path(temp_dir) / "deck.apkg"
+            apkg_path.write_bytes(b"fake apkg for importPackage mock")
+            expected_apkg_sha256 = hashlib.sha256(apkg_path.read_bytes()).hexdigest()
+            expected_apkg_size_bytes = apkg_path.stat().st_size
+            anki_dir = Path(temp_dir) / "anki_media"
+            anki_dir.mkdir()
+            original_anki_connect = worker._legacy_worker.anki_connect
+
+            def fake_anki_connect(action, params=None, url=""):
+                calls.append((action, params or {}))
+                if action == "importPackage":
+                    self.assertEqual(params["path"], str(apkg_path))
+                    return True
+                if action == "findCards":
+                    return [123]
+                if action == "cardsInfo":
+                    return [
+                        {
+                            "cardId": 123,
+                            "fields": {
+                                "Video": {"value": ""},
+                                "Audio": {"value": ""},
+                                "TtsAudio": {"value": ""},
+                                "PhraseTtsAudio": {"value": ""},
+                            },
+                        }
+                    ]
+                if action == "getMediaDirPath":
+                    return str(anki_dir)
+                raise AssertionError(action)
+
+            try:
+                worker._legacy_worker.anki_connect = fake_anki_connect
+                result = worker.handle_verify_anki_import(
+                    {
+                        "import_apkg": True,
+                        "export_result": {
+                            "apkg_path": str(apkg_path),
+                            "deck_name": "Import Then Verify",
+                            "cards": 1,
+                            "media_manifest": {},
+                            "media_summary": {"media_files": 0},
+                            "media_dir": str(Path(temp_dir) / "export_media"),
+                        },
+                    }
+                )
+            finally:
+                worker._legacy_worker.anki_connect = original_anki_connect
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["import_attempted"])
+        self.assertTrue(result["import_result"])
+        self.assertEqual(result["apkg_path"], str(apkg_path))
+        self.assertEqual(result["apkg_sha256"], expected_apkg_sha256)
+        self.assertEqual(result["apkg_size_bytes"], expected_apkg_size_bytes)
+        self.assertGreater(result["apkg_mtime_ms"], 0)
+        self.assertLess(
+            [action for action, _ in calls].index("importPackage"),
+            [action for action, _ in calls].index("findCards"),
+        )
+
+    def test_verify_anki_import_fails_when_requested_apkg_is_missing(self):
+        result = worker.handle_verify_anki_import(
+            {
+                "import_apkg": True,
+                "export_result": {
+                    "apkg_path": "E:\\missing\\deck.apkg",
+                    "deck_name": "Missing APKG",
+                    "cards": 1,
+                    "media_manifest": {},
+                    "media_summary": {"media_files": 0},
+                    "media_dir": "",
+                },
+            }
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["failed_checks"], ["apkg_missing_for_import"])
+        self.assertTrue(result["import_attempted"])
+        self.assertFalse(result["import_result"])
 
     def test_verify_anki_import_uses_exported_template_tag(self):
         calls = []
@@ -3968,6 +9889,1283 @@ class WorkerQualityTests(unittest.TestCase):
         find_query = next(params["query"] for action, params in calls if action == "findCards")
         self.assertIn("tag:anki_card_generator_v11", find_query)
         self.assertNotIn("tag:anki_card_generator_v10", find_query)
+
+    def test_verify_anki_import_accepts_explicit_anki_query(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            anki_dir = Path(temp_dir) / "anki_media"
+            anki_dir.mkdir()
+            original_anki_connect = worker._legacy_worker.anki_connect
+
+            def fake_anki_connect(action, params=None, url=""):
+                calls.append((action, params or {}))
+                if action == "findCards":
+                    return [123, 456]
+                if action == "cardsInfo":
+                    return [
+                        {
+                            "cardId": 123,
+                            "fields": {
+                                "CardId": {"value": "doc_e2e_0001"},
+                                "FrontContent": {"value": "Question one"},
+                                "Answer": {"value": "Answer one"},
+                                "Video": {"value": ""},
+                                "Audio": {"value": ""},
+                                "TtsAudio": {"value": ""},
+                                "PhraseTtsAudio": {"value": ""},
+                            },
+                            "modelName": "Anki Card Generator V10 - 文档知识 V10",
+                            "deckName": "文档知识卡::Document E2E",
+                        },
+                        {
+                            "cardId": 456,
+                            "fields": {
+                                "CardId": {"value": "doc_e2e_0002"},
+                                "FrontContent": {"value": "Question two"},
+                                "Answer": {"value": "Answer two"},
+                                "Video": {"value": ""},
+                                "Audio": {"value": ""},
+                                "TtsAudio": {"value": ""},
+                                "PhraseTtsAudio": {"value": ""},
+                            },
+                            "modelName": "Anki Card Generator V10 - 文档知识 V10",
+                            "deckName": "文档知识卡::Document E2E",
+                        },
+                    ]
+                if action == "getMediaDirPath":
+                    return str(anki_dir)
+                raise AssertionError(action)
+
+            try:
+                worker._legacy_worker.anki_connect = fake_anki_connect
+                result = worker.handle_verify_anki_import(
+                    {
+                        "anki_query": 'tag:anki_card_generator_v10 CardId:doc_e2e_*',
+                        "export_result": {
+                            "deck_name": "文档知识卡::Document E2E",
+                            "deck_kind": "document_knowledge",
+                            "cards": 2,
+                            "media_manifest": {},
+                            "media_summary": {"media_files": 0},
+                            "media_dir": str(Path(temp_dir) / "export_media"),
+                        },
+                    }
+                )
+            finally:
+                worker._legacy_worker.anki_connect = original_anki_connect
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["card_count"], 2)
+        find_query = next(params["query"] for action, params in calls if action == "findCards")
+        self.assertEqual(find_query, "tag:anki_card_generator_v10 CardId:doc_e2e_*")
+        self.assertNotIn('deck:"文档知识卡::Document E2E"', find_query)
+
+    def test_verify_anki_import_checks_video_fields_pronunciation_and_tts_hashes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            anki_dir = Path(temp_dir) / "anki_media"
+            anki_dir.mkdir()
+            sentence = "We take public trust seriously."
+            answer = "take public trust seriously"
+            sentence_hash = worker.media_text_hash(sentence)
+            phrase_hash = worker.media_text_hash(answer)
+            media_names = [
+                "sample_clip.webm",
+                "sample_clip.mp4",
+                "sample_clip.jpg",
+                "sample_original.mp3",
+                f"sample_tts_{sentence_hash}.mp3",
+                f"sample_phrase_{phrase_hash}.mp3",
+            ]
+            for name in media_names:
+                (anki_dir / name).write_bytes(f"media:{name}".encode("utf-8"))
+            media_ledger = [
+                {
+                    "file": f"sample_tts_{sentence_hash}.mp3",
+                    "role": "sentence_tts",
+                    "tts_text": sentence,
+                    "text_hash": sentence_hash,
+                },
+                {
+                    "file": f"sample_phrase_{phrase_hash}.mp3",
+                    "role": "phrase_tts",
+                    "tts_text": answer,
+                    "text_hash": phrase_hash,
+                },
+            ]
+            original_anki_connect = worker._legacy_worker.anki_connect
+            original_audio_duration_seconds = worker._legacy_worker.audio_duration_seconds
+
+            def fake_audio_duration_seconds(path):
+                name = Path(path).name
+                if name.endswith((".mp4", ".webm")):
+                    return 2.0
+                if "phrase" in name:
+                    return 1.7
+                if name.endswith(".mp3"):
+                    return 2.4
+                return None
+
+            def fake_anki_connect(action, params=None, url=""):
+                if action == "findCards":
+                    return [123]
+                if action == "cardsInfo":
+                    return [
+                        {
+                            "cardId": 123,
+                            "deckName": "Video Gate Deck",
+                            "modelName": "Anki Card Generator V12 - 沉浸复读 V11",
+                            "fields": {
+                                "CardId": {"value": "card-1"},
+                                "Video": {
+                                    "value": worker.anki_video_html(
+                                        "sample_clip.webm",
+                                        "sample_clip.mp4",
+                                        "sample_clip.jpg",
+                                    )
+                                },
+                                "Audio": {"value": worker.anki_audio_html("sample_original.mp3")},
+                                "TtsAudio": {"value": worker.anki_audio_html(f"sample_tts_{sentence_hash}.mp3")},
+                                "PhraseTtsAudio": {"value": worker.anki_audio_html(f"sample_phrase_{phrase_hash}.mp3")},
+                                "PronunciationMeta": {"value": json.dumps({"status": "ok"})},
+                                "English": {"value": sentence},
+                                "Answer": {"value": answer},
+                            },
+                        }
+                    ]
+                if action == "getMediaDirPath":
+                    return str(anki_dir)
+                raise AssertionError(action)
+
+            try:
+                worker._legacy_worker.audio_duration_seconds = fake_audio_duration_seconds
+                manifest = worker.media_manifest([str(anki_dir / name) for name in media_names], media_ledger)
+                worker._legacy_worker.anki_connect = fake_anki_connect
+                result = worker.handle_verify_anki_import(
+                    {
+                        "export_result": {
+                            "deck_name": "Video Gate Deck",
+                            "deck_kind": "video_language",
+                            "cards": 1,
+                            "template_version": "V12",
+                            "anki_tag": "anki_card_generator_v12",
+                            "media_manifest": manifest,
+                            "media_ledger": media_ledger,
+                            "card_media_ledger": [
+                                {
+                                    "card_id": "card-1",
+                                    "learning_point_id": "lp-1",
+                                    "segment_id": "seg-1",
+                                    "answer": answer,
+                                    "sentence_tts_text": sentence,
+                                    "phrase_tts_text": answer,
+                                    "video_webm": "sample_clip.webm",
+                                    "video_mp4": "sample_clip.mp4",
+                                    "poster": "sample_clip.jpg",
+                                    "original_audio": "sample_original.mp3",
+                                    "sentence_tts_audio": f"sample_tts_{sentence_hash}.mp3",
+                                    "phrase_tts_audio": f"sample_phrase_{phrase_hash}.mp3",
+                                }
+                            ],
+                            "media_summary": {"media_files": len(media_names)},
+                            "media_dir": str(anki_dir),
+                        }
+                    }
+                )
+            finally:
+                worker._legacy_worker.anki_connect = original_anki_connect
+                worker._legacy_worker.audio_duration_seconds = original_audio_duration_seconds
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["failed_checks"], [])
+        self.assertEqual(result["media_ledger_card_text_mismatches"], [])
+
+    def test_verify_anki_import_rejects_question_mark_corrupted_study_text(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            anki_dir = Path(temp_dir) / "anki_media"
+            anki_dir.mkdir()
+            sentence = "This is a demanding job."
+            answer = "demanding job"
+            sentence_hash = worker.media_text_hash(sentence)
+            phrase_hash = worker.media_text_hash(answer)
+            media_names = [
+                "sample_clip.webm",
+                "sample_clip.mp4",
+                "sample_clip.jpg",
+                "sample_original.mp3",
+                f"sample_tts_{sentence_hash}.mp3",
+                f"sample_phrase_{phrase_hash}.mp3",
+            ]
+            for name in media_names:
+                (anki_dir / name).write_bytes(f"media:{name}".encode("utf-8"))
+            media_ledger = [
+                {
+                    "file": f"sample_tts_{sentence_hash}.mp3",
+                    "role": "sentence_tts",
+                    "tts_text": sentence,
+                    "text_hash": sentence_hash,
+                },
+                {
+                    "file": f"sample_phrase_{phrase_hash}.mp3",
+                    "role": "phrase_tts",
+                    "tts_text": answer,
+                    "text_hash": phrase_hash,
+                },
+            ]
+            original_anki_connect = worker._legacy_worker.anki_connect
+            original_audio_duration_seconds = worker._legacy_worker.audio_duration_seconds
+
+            def fake_audio_duration_seconds(path):
+                return 2.0
+
+            def fake_anki_connect(action, params=None, url=""):
+                if action == "findCards":
+                    return [123]
+                if action == "cardsInfo":
+                    return [
+                        {
+                            "cardId": 123,
+                            "deckName": "Video Gate Deck",
+                            "modelName": "Anki Card Generator V12 - 沉浸复读 V11",
+                            "fields": {
+                                "CardId": {"value": "card-1"},
+                                "Video": {
+                                    "value": worker.anki_video_html(
+                                        "sample_clip.webm",
+                                        "sample_clip.mp4",
+                                        "sample_clip.jpg",
+                                    )
+                                },
+                                "Audio": {"value": worker.anki_audio_html("sample_original.mp3")},
+                                "TtsAudio": {"value": worker.anki_audio_html(f"sample_tts_{sentence_hash}.mp3")},
+                                "PhraseTtsAudio": {"value": worker.anki_audio_html(f"sample_phrase_{phrase_hash}.mp3")},
+                                "PronunciationMeta": {"value": '{"message":"??????????"}'},
+                                "English": {"value": sentence},
+                                "Answer": {"value": answer},
+                                "Chinese": {"value": "???????"},
+                                "TeacherNote": {"value": "demanding ??????????????????"},
+                            },
+                        }
+                    ]
+                if action == "getMediaDirPath":
+                    return str(anki_dir)
+                raise AssertionError(action)
+
+            try:
+                worker._legacy_worker.audio_duration_seconds = fake_audio_duration_seconds
+                manifest = worker.media_manifest([str(anki_dir / name) for name in media_names], media_ledger)
+                worker._legacy_worker.anki_connect = fake_anki_connect
+                result = worker.handle_verify_anki_import(
+                    {
+                        "export_result": {
+                            "deck_name": "Video Gate Deck",
+                            "deck_kind": "video_language",
+                            "cards": 1,
+                            "template_version": "V12",
+                            "anki_tag": "anki_card_generator_v12",
+                            "media_manifest": manifest,
+                            "media_ledger": media_ledger,
+                            "card_media_ledger": [
+                                {
+                                    "card_id": "card-1",
+                                    "learning_point_id": "lp-1",
+                                    "segment_id": "seg-1",
+                                    "answer": answer,
+                                    "sentence_tts_text": sentence,
+                                    "phrase_tts_text": answer,
+                                    "video_webm": "sample_clip.webm",
+                                    "video_mp4": "sample_clip.mp4",
+                                    "poster": "sample_clip.jpg",
+                                    "original_audio": "sample_original.mp3",
+                                    "sentence_tts_audio": f"sample_tts_{sentence_hash}.mp3",
+                                    "phrase_tts_audio": f"sample_phrase_{phrase_hash}.mp3",
+                                }
+                            ],
+                            "media_summary": {"media_files": len(media_names)},
+                            "media_dir": str(anki_dir),
+                        }
+                    }
+                )
+            finally:
+                worker._legacy_worker.anki_connect = original_anki_connect
+                worker._legacy_worker.audio_duration_seconds = original_audio_duration_seconds
+
+        self.assertFalse(result["ok"])
+        self.assertIn("corrupted_imported_study_text", result["failed_checks"])
+        self.assertEqual(
+            {item["field"] for item in result["corrupted_study_text_values"]},
+            {"Chinese", "TeacherNote"},
+        )
+        self.assertEqual(result["model_names"], ["Anki Card Generator V12 - 沉浸复读 V11"])
+        self.assertEqual(result["deck_names_seen"], ["Video Gate Deck"])
+        self.assertEqual(result["media_count_checked"], len(media_names))
+        self.assertEqual(result["card_media_ledger_count"], 1)
+        self.assertEqual(result["missing_video_field_media"], [])
+        self.assertEqual(result["pronunciation_meta_errors"], [])
+        self.assertEqual(result["imported_tts_text_hash_mismatch"], [])
+        self.assertEqual(result["imported_tts_audio_duration_issues"], [])
+        self.assertEqual(result["tts_semantic_verification"]["status"], "manual_review_required")
+        self.assertEqual(result["tts_semantic_verification"]["manual_review_required"], 2)
+        self.assertEqual(result["tts_semantic_verification"]["high_risk_items"], 0)
+        self.assertEqual(
+            sorted(item["role"] for item in result["tts_manual_review_items"]),
+            ["phrase_tts", "sentence_tts"],
+        )
+        self.assertTrue(result["audio_audit_verify_path"].endswith("audio_audit.verify.json"))
+        self.assertTrue(result["audio_audit_verify_markdown_path"].endswith("audio_audit.verify.md"))
+        self.assertEqual(result["audio_audit_mismatches"], [])
+        self.assertEqual(result["audio_audit_summary"]["items"], 1)
+        self.assertEqual(result["audio_audit_summary"]["expected_items"], 1)
+
+    def test_verify_anki_import_does_not_fail_tts_semantic_mismatch_by_default(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            anki_dir = Path(temp_dir) / "anki_media"
+            anki_dir.mkdir()
+            sentence = "This card should read the source sentence."
+            answer = "source sentence"
+            sentence_hash = worker.media_text_hash(sentence)
+            phrase_hash = worker.media_text_hash(answer)
+            media_names = [
+                "sample_clip.webm",
+                "sample_clip.mp4",
+                "sample_clip.jpg",
+                "sample_original.mp3",
+                f"sample_tts_{sentence_hash}.mp3",
+                f"sample_phrase_{phrase_hash}.mp3",
+            ]
+            for name in media_names:
+                (anki_dir / name).write_bytes(f"media:{name}".encode("utf-8"))
+            media_ledger = [
+                {
+                    "file": f"sample_tts_{sentence_hash}.mp3",
+                    "role": "sentence_tts",
+                    "tts_text": sentence,
+                    "text_hash": sentence_hash,
+                    "semantic_verification": "passed",
+                    "asr_transcript": sentence,
+                },
+                {
+                    "file": f"sample_phrase_{phrase_hash}.mp3",
+                    "role": "phrase_tts",
+                    "tts_text": answer,
+                    "text_hash": phrase_hash,
+                    "semantic_verification": "mismatch",
+                    "asr_transcript": "a different phrase",
+                    "expected_text_normalized": "source sentence",
+                    "actual_text_normalized": "a different phrase",
+                    "semantic_review_reasons": ["asr_text_mismatch"],
+                },
+            ]
+            original_anki_connect = worker._legacy_worker.anki_connect
+            original_audio_duration_seconds = worker._legacy_worker.audio_duration_seconds
+
+            def fake_audio_duration_seconds(path):
+                name = Path(path).name
+                if name.endswith((".mp4", ".webm")):
+                    return 2.0
+                if "phrase" in name:
+                    return 1.2
+                if name.endswith(".mp3"):
+                    return 2.0
+                return None
+
+            def fake_anki_connect(action, params=None, url=""):
+                if action == "findCards":
+                    return [123]
+                if action == "cardsInfo":
+                    return [
+                        {
+                            "cardId": 123,
+                            "deckName": "Video Gate Deck",
+                            "modelName": "Anki Card Generator V12 - 沉浸复读 V11",
+                            "fields": {
+                                "CardId": {"value": "card-1"},
+                                "Video": {
+                                    "value": worker.anki_video_html(
+                                        "sample_clip.webm",
+                                        "sample_clip.mp4",
+                                        "sample_clip.jpg",
+                                    )
+                                },
+                                "Audio": {"value": worker.anki_audio_html("sample_original.mp3")},
+                                "TtsAudio": {"value": worker.anki_audio_html(f"sample_tts_{sentence_hash}.mp3")},
+                                "PhraseTtsAudio": {"value": worker.anki_audio_html(f"sample_phrase_{phrase_hash}.mp3")},
+                                "PronunciationMeta": {"value": json.dumps({"status": "ok"})},
+                                "English": {"value": sentence},
+                                "Answer": {"value": answer},
+                            },
+                        }
+                    ]
+                if action == "getMediaDirPath":
+                    return str(anki_dir)
+                raise AssertionError(action)
+
+            try:
+                worker._legacy_worker.audio_duration_seconds = fake_audio_duration_seconds
+                manifest = worker.media_manifest([str(anki_dir / name) for name in media_names], media_ledger)
+                worker._legacy_worker.anki_connect = fake_anki_connect
+                result = worker.handle_verify_anki_import(
+                    {
+                        "export_result": {
+                            "deck_name": "Video Gate Deck",
+                            "deck_kind": "video_language",
+                            "cards": 1,
+                            "template_version": "V12",
+                            "anki_tag": "anki_card_generator_v12",
+                            "media_manifest": manifest,
+                            "media_ledger": media_ledger,
+                            "card_media_ledger": [
+                                {
+                                    "card_id": "card-1",
+                                    "learning_point_id": "lp-1",
+                                    "segment_id": "seg-1",
+                                    "answer": answer,
+                                    "sentence_tts_text": sentence,
+                                    "phrase_tts_text": answer,
+                                    "video_webm": "sample_clip.webm",
+                                    "video_mp4": "sample_clip.mp4",
+                                    "poster": "sample_clip.jpg",
+                                    "original_audio": "sample_original.mp3",
+                                    "sentence_tts_audio": f"sample_tts_{sentence_hash}.mp3",
+                                    "phrase_tts_audio": f"sample_phrase_{phrase_hash}.mp3",
+                                }
+                            ],
+                            "media_summary": {"media_files": len(media_names)},
+                            "media_dir": str(anki_dir),
+                        }
+                    }
+                )
+            finally:
+                worker._legacy_worker.anki_connect = original_anki_connect
+                worker._legacy_worker.audio_duration_seconds = original_audio_duration_seconds
+
+        self.assertTrue(result["ok"], result)
+        self.assertNotIn("tts_semantic_mismatch", result["failed_checks"])
+        self.assertEqual(result["tts_semantic_verification"]["status"], "mismatch")
+        self.assertEqual(result["tts_semantic_verification"]["failed"], 1)
+        self.assertEqual(result["tts_semantic_failures"][0]["tts_text"], answer)
+
+    def test_verify_anki_import_fails_media_ledger_card_text_mismatch(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            anki_dir = Path(temp_dir) / "anki_media"
+            anki_dir.mkdir()
+            sentence = "Ledger text should match the imported card sentence."
+            answer = "match the imported card"
+            wrong_ledger_answer = "wrong but self consistent ledger phrase"
+            sentence_hash = worker.media_text_hash(sentence)
+            phrase_hash = worker.media_text_hash(answer)
+            wrong_phrase_hash = worker.media_text_hash(wrong_ledger_answer)
+            sentence_file = f"sample_tts_{sentence_hash}.mp3"
+            phrase_file = f"sample_phrase_{phrase_hash}.mp3"
+            media_names = [
+                "sample_clip.webm",
+                "sample_clip.mp4",
+                "sample_clip.jpg",
+                "sample_original.mp3",
+                sentence_file,
+                phrase_file,
+            ]
+            for name in media_names:
+                (anki_dir / name).write_bytes(f"media:{name}".encode("utf-8"))
+            media_ledger = [
+                {
+                    "file": sentence_file,
+                    "role": "sentence_tts",
+                    "tts_text": sentence,
+                    "text_hash": sentence_hash,
+                },
+                {
+                    "file": phrase_file,
+                    "role": "phrase_tts",
+                    "tts_text": wrong_ledger_answer,
+                    "text_hash": wrong_phrase_hash,
+                },
+            ]
+            card_media_ledger = [
+                {
+                    "card_id": "card-1",
+                    "learning_point_id": "lp-1",
+                    "segment_id": "seg-1",
+                    "answer": answer,
+                    "sentence_tts_text": sentence,
+                    "phrase_tts_text": answer,
+                    "video_webm": "sample_clip.webm",
+                    "video_mp4": "sample_clip.mp4",
+                    "poster": "sample_clip.jpg",
+                    "original_audio": "sample_original.mp3",
+                    "sentence_tts_audio": sentence_file,
+                    "phrase_tts_audio": phrase_file,
+                }
+            ]
+            original_anki_connect = worker._legacy_worker.anki_connect
+
+            def fake_anki_connect(action, params=None, url=""):
+                if action == "findCards":
+                    return [123]
+                if action == "cardsInfo":
+                    return [
+                        {
+                            "cardId": 123,
+                            "deckName": "Video Gate Deck",
+                            "modelName": "Anki Card Generator V12 - 沉浸复读 V11",
+                            "fields": {
+                                "CardId": {"value": "card-1"},
+                                "Video": {
+                                    "value": worker.anki_video_html(
+                                        "sample_clip.webm",
+                                        "sample_clip.mp4",
+                                        "sample_clip.jpg",
+                                    )
+                                },
+                                "Audio": {"value": worker.anki_audio_html("sample_original.mp3")},
+                                "TtsAudio": {"value": worker.anki_audio_html(sentence_file)},
+                                "PhraseTtsAudio": {"value": worker.anki_audio_html(phrase_file)},
+                                "PronunciationMeta": {"value": json.dumps({"status": "ok"})},
+                                "English": {"value": sentence},
+                                "Answer": {"value": answer},
+                            },
+                        }
+                    ]
+                if action == "getMediaDirPath":
+                    return str(anki_dir)
+                raise AssertionError(action)
+
+            try:
+                manifest = worker.media_manifest([str(anki_dir / name) for name in media_names], media_ledger)
+                worker._legacy_worker.anki_connect = fake_anki_connect
+                result = worker.handle_verify_anki_import(
+                    {
+                        "export_result": {
+                            "deck_name": "Video Gate Deck",
+                            "deck_kind": "video_language",
+                            "cards": 1,
+                            "template_version": "V12",
+                            "anki_tag": "anki_card_generator_v12",
+                            "media_manifest": manifest,
+                            "media_ledger": media_ledger,
+                            "card_media_ledger": card_media_ledger,
+                            "media_summary": {"media_files": len(media_names)},
+                            "media_dir": str(anki_dir),
+                        }
+                    }
+                )
+            finally:
+                worker._legacy_worker.anki_connect = original_anki_connect
+
+        self.assertFalse(result["ok"], result)
+        self.assertIn("media_ledger_card_text_mismatch", result["failed_checks"])
+        self.assertNotIn("card_media_ledger_mismatch", result["failed_checks"])
+        self.assertNotIn("audio_audit_mismatch", result["failed_checks"])
+        self.assertEqual(result["card_media_ledger_mismatches"], [])
+        self.assertEqual(result["audio_audit_mismatches"], [])
+        self.assertEqual(result["imported_tts_text_hash_mismatch"], [])
+        self.assertEqual(result["ledger_text_hash_mismatch"], [])
+        self.assertEqual(result["media_ledger_card_text_mismatches"][0]["field"], "PhraseTtsAudio")
+        self.assertEqual(result["media_ledger_card_text_mismatches"][0]["expected_text_hash"], phrase_hash)
+        self.assertEqual(result["media_ledger_card_text_mismatches"][0]["ledger_text_hash"], wrong_phrase_hash)
+        self.assertEqual(result["media_ledger_card_text_mismatches"][0]["ledger_declared_text_hash"], wrong_phrase_hash)
+
+    def test_verify_anki_import_fails_card_media_ledger_mismatch(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            anki_dir = Path(temp_dir) / "anki_media"
+            anki_dir.mkdir()
+            sentence = "Ledger should bind media per card."
+            answer = "bind media"
+            sentence_hash = worker.media_text_hash(sentence)
+            phrase_hash = worker.media_text_hash(answer)
+            expected_phrase = f"sample_phrase_{phrase_hash}.mp3"
+            wrong_phrase = f"wrong_phrase_{phrase_hash}.mp3"
+            media_names = [
+                "sample_clip.webm",
+                "sample_clip.mp4",
+                "sample_clip.jpg",
+                "sample_original.mp3",
+                f"sample_tts_{sentence_hash}.mp3",
+                expected_phrase,
+                wrong_phrase,
+            ]
+            for name in media_names:
+                (anki_dir / name).write_bytes(f"media:{name}".encode("utf-8"))
+            media_ledger = [
+                {
+                    "file": f"sample_tts_{sentence_hash}.mp3",
+                    "role": "sentence_tts",
+                    "tts_text": sentence,
+                    "text_hash": sentence_hash,
+                },
+                {
+                    "file": expected_phrase,
+                    "role": "phrase_tts",
+                    "tts_text": answer,
+                    "text_hash": phrase_hash,
+                },
+                {
+                    "file": wrong_phrase,
+                    "role": "phrase_tts",
+                    "tts_text": answer,
+                    "text_hash": phrase_hash,
+                },
+            ]
+            original_anki_connect = worker._legacy_worker.anki_connect
+
+            def fake_anki_connect(action, params=None, url=""):
+                if action == "findCards":
+                    return [123]
+                if action == "cardsInfo":
+                    return [
+                        {
+                            "cardId": 123,
+                            "deckName": "Video Gate Deck",
+                            "modelName": "Anki Card Generator V12 - 沉浸复读 V11",
+                            "fields": {
+                                "CardId": {"value": "card-1"},
+                                "Video": {
+                                    "value": worker.anki_video_html(
+                                        "sample_clip.webm",
+                                        "sample_clip.mp4",
+                                        "sample_clip.jpg",
+                                    )
+                                },
+                                "Audio": {"value": worker.anki_audio_html("sample_original.mp3")},
+                                "TtsAudio": {"value": worker.anki_audio_html(f"sample_tts_{sentence_hash}.mp3")},
+                                "PhraseTtsAudio": {"value": worker.anki_audio_html(wrong_phrase)},
+                                "PronunciationMeta": {"value": json.dumps({"status": "ok"})},
+                                "English": {"value": sentence},
+                                "Answer": {"value": answer},
+                            },
+                        }
+                    ]
+                if action == "getMediaDirPath":
+                    return str(anki_dir)
+                raise AssertionError(action)
+
+            try:
+                manifest = worker.media_manifest([str(anki_dir / name) for name in media_names], media_ledger)
+                worker._legacy_worker.anki_connect = fake_anki_connect
+                result = worker.handle_verify_anki_import(
+                    {
+                        "export_result": {
+                            "deck_name": "Video Gate Deck",
+                            "deck_kind": "video_language",
+                            "cards": 1,
+                            "template_version": "V12",
+                            "anki_tag": "anki_card_generator_v12",
+                            "media_manifest": manifest,
+                            "media_ledger": media_ledger,
+                            "card_media_ledger": [
+                                {
+                                    "card_id": "card-1",
+                                    "learning_point_id": "lp-1",
+                                    "segment_id": "seg-1",
+                                    "answer": answer,
+                                    "sentence_tts_text": sentence,
+                                    "phrase_tts_text": answer,
+                                    "video_webm": "sample_clip.webm",
+                                    "video_mp4": "sample_clip.mp4",
+                                    "poster": "sample_clip.jpg",
+                                    "original_audio": "sample_original.mp3",
+                                    "sentence_tts_audio": f"sample_tts_{sentence_hash}.mp3",
+                                    "phrase_tts_audio": expected_phrase,
+                                }
+                            ],
+                            "media_summary": {"media_files": len(media_names)},
+                            "media_dir": str(anki_dir),
+                        }
+                    }
+                )
+            finally:
+                worker._legacy_worker.anki_connect = original_anki_connect
+
+        self.assertFalse(result["ok"], result)
+        self.assertIn("card_media_ledger_mismatch", result["failed_checks"])
+        self.assertIn("audio_audit_mismatch", result["failed_checks"])
+        self.assertEqual(result["card_media_ledger_mismatches"][0]["field"], "PhraseTtsAudio")
+        self.assertIn(expected_phrase, result["card_media_ledger_mismatches"][0]["missing_expected"])
+        self.assertIn(wrong_phrase, result["card_media_ledger_mismatches"][0]["unexpected_actual"])
+        self.assertEqual(result["audio_audit_mismatches"][0]["field"], "PhraseTtsAudio")
+
+    def test_verify_anki_import_fails_card_display_sentence_mismatch(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            anki_dir = Path(temp_dir) / "anki_media"
+            anki_dir.mkdir()
+            expected_display = "This is the sentence the card should display."
+            imported_sentence = "This is the sentence Anki actually imported."
+            answer = "sentence"
+            sentence_hash = worker.media_text_hash(imported_sentence)
+            phrase_hash = worker.media_text_hash(answer)
+            media_names = [
+                "sample_clip.webm",
+                "sample_clip.mp4",
+                "sample_clip.jpg",
+                "sample_original.mp3",
+                f"sample_tts_{sentence_hash}.mp3",
+                f"sample_phrase_{phrase_hash}.mp3",
+            ]
+            for name in media_names:
+                (anki_dir / name).write_bytes(f"media:{name}".encode("utf-8"))
+            media_ledger = [
+                {
+                    "file": f"sample_tts_{sentence_hash}.mp3",
+                    "role": "sentence_tts",
+                    "tts_text": imported_sentence,
+                    "text_hash": sentence_hash,
+                },
+                {
+                    "file": f"sample_phrase_{phrase_hash}.mp3",
+                    "role": "phrase_tts",
+                    "tts_text": answer,
+                    "text_hash": phrase_hash,
+                },
+            ]
+            original_anki_connect = worker._legacy_worker.anki_connect
+
+            def fake_anki_connect(action, params=None, url=""):
+                if action == "findCards":
+                    return [123]
+                if action == "cardsInfo":
+                    return [
+                        {
+                            "cardId": 123,
+                            "deckName": "Video Gate Deck",
+                            "modelName": "Anki Card Generator V12 - 沉浸复读 V11",
+                            "fields": {
+                                "CardId": {"value": "card-1"},
+                                "Video": {
+                                    "value": worker.anki_video_html(
+                                        "sample_clip.webm",
+                                        "sample_clip.mp4",
+                                        "sample_clip.jpg",
+                                    )
+                                },
+                                "Audio": {"value": worker.anki_audio_html("sample_original.mp3")},
+                                "TtsAudio": {"value": worker.anki_audio_html(f"sample_tts_{sentence_hash}.mp3")},
+                                "PhraseTtsAudio": {"value": worker.anki_audio_html(f"sample_phrase_{phrase_hash}.mp3")},
+                                "PronunciationMeta": {"value": json.dumps({"status": "ok"})},
+                                "English": {"value": imported_sentence},
+                                "Answer": {"value": answer},
+                            },
+                        }
+                    ]
+                if action == "getMediaDirPath":
+                    return str(anki_dir)
+                raise AssertionError(action)
+
+            try:
+                manifest = worker.media_manifest([str(anki_dir / name) for name in media_names], media_ledger)
+                worker._legacy_worker.anki_connect = fake_anki_connect
+                result = worker.handle_verify_anki_import(
+                    {
+                        "export_result": {
+                            "deck_name": "Video Gate Deck",
+                            "deck_kind": "video_language",
+                            "cards": 1,
+                            "template_version": "V12",
+                            "anki_tag": "anki_card_generator_v12",
+                            "media_manifest": manifest,
+                            "media_ledger": media_ledger,
+                            "card_media_ledger": [
+                                {
+                                    "card_id": "card-1",
+                                    "learning_point_id": "lp-1",
+                                    "segment_id": "seg-1",
+                                    "answer": answer,
+                                    "card_display_sentence": expected_display,
+                                    "sentence_tts_text": imported_sentence,
+                                    "phrase_tts_text": answer,
+                                    "video_webm": "sample_clip.webm",
+                                    "video_mp4": "sample_clip.mp4",
+                                    "poster": "sample_clip.jpg",
+                                    "original_audio": "sample_original.mp3",
+                                    "sentence_tts_audio": f"sample_tts_{sentence_hash}.mp3",
+                                    "phrase_tts_audio": f"sample_phrase_{phrase_hash}.mp3",
+                                }
+                            ],
+                            "media_summary": {"media_files": len(media_names)},
+                            "media_dir": str(anki_dir),
+                        }
+                    }
+                )
+            finally:
+                worker._legacy_worker.anki_connect = original_anki_connect
+
+        self.assertFalse(result["ok"], result)
+        self.assertIn("audio_audit_mismatch", result["failed_checks"])
+        self.assertEqual(result["audio_audit_mismatches"][0]["field"], "CardDisplaySentence")
+        self.assertEqual(result["imported_tts_text_hash_mismatch"], [])
+
+    def test_verify_anki_import_fails_media_subtitle_alignment_mismatch_from_audit(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            anki_dir = Path(temp_dir) / "anki_media"
+            anki_dir.mkdir()
+            sentence = "Today we need to build your perspective on the world before moving on."
+            answer = "build your perspective"
+            sentence_hash = worker.media_text_hash(sentence)
+            phrase_hash = worker.media_text_hash(answer)
+            media_names = [
+                "sample_clip.webm",
+                "sample_clip.mp4",
+                "sample_clip.jpg",
+                "sample_original.mp3",
+                f"sample_tts_{sentence_hash}.mp3",
+                f"sample_phrase_{phrase_hash}.mp3",
+            ]
+            for name in media_names:
+                (anki_dir / name).write_bytes(f"media:{name}".encode("utf-8"))
+            media_ledger = [
+                {
+                    "file": f"sample_tts_{sentence_hash}.mp3",
+                    "role": "sentence_tts",
+                    "tts_text": sentence,
+                    "text_hash": sentence_hash,
+                },
+                {
+                    "file": f"sample_phrase_{phrase_hash}.mp3",
+                    "role": "phrase_tts",
+                    "tts_text": answer,
+                    "text_hash": phrase_hash,
+                },
+            ]
+            card_media_item = {
+                "card_id": "card-1",
+                "learning_point_id": "lp-1",
+                "segment_id": "seg-1",
+                "answer": answer,
+                "card_display_sentence": sentence,
+                "sentence_tts_text": sentence,
+                "phrase_tts_text": answer,
+                "video_webm": "sample_clip.webm",
+                "video_mp4": "sample_clip.mp4",
+                "poster": "sample_clip.jpg",
+                "original_audio": "sample_original.mp3",
+                "sentence_tts_audio": f"sample_tts_{sentence_hash}.mp3",
+                "phrase_tts_audio": f"sample_phrase_{phrase_hash}.mp3",
+            }
+            audio_audit_item = {
+                **card_media_item,
+                "sentence_tts_expected_text": sentence,
+                "phrase_tts_expected_text": answer,
+                "sentence_tts_file": f"sample_tts_{sentence_hash}.mp3",
+                "phrase_tts_file": f"sample_phrase_{phrase_hash}.mp3",
+                "video_webm": "sample_clip.webm",
+                "video_mp4": "sample_clip.mp4",
+                "poster": "sample_clip.jpg",
+                "original_audio": "sample_original.mp3",
+                "source_sentence_quality_flags": ["clean"],
+                "source_sentence_quality_status": "clean",
+                "media_subtitle_alignment_status": "mismatch",
+                "media_subtitle_overlap_score": 0.0,
+                "media_subtitle_alignment_reason": "no_subtitle_cues_overlap_media_window",
+                "media_subtitle_time": "00:00:40.000 - 00:00:43.000",
+                "media_window_subtitle_text": "This is unrelated visual text.",
+            }
+            original_anki_connect = worker._legacy_worker.anki_connect
+
+            def fake_anki_connect(action, params=None, url=""):
+                if action == "findCards":
+                    return [123]
+                if action == "cardsInfo":
+                    return [
+                        {
+                            "cardId": 123,
+                            "deckName": "Video Gate Deck",
+                            "modelName": "Anki Card Generator V12 - 沉浸复读 V11",
+                            "fields": {
+                                "CardId": {"value": "card-1"},
+                                "Video": {
+                                    "value": worker.anki_video_html(
+                                        "sample_clip.webm",
+                                        "sample_clip.mp4",
+                                        "sample_clip.jpg",
+                                    )
+                                },
+                                "Audio": {"value": worker.anki_audio_html("sample_original.mp3")},
+                                "TtsAudio": {"value": worker.anki_audio_html(f"sample_tts_{sentence_hash}.mp3")},
+                                "PhraseTtsAudio": {"value": worker.anki_audio_html(f"sample_phrase_{phrase_hash}.mp3")},
+                                "PronunciationMeta": {"value": json.dumps({"status": "ok"})},
+                                "English": {"value": sentence},
+                                "Answer": {"value": answer},
+                            },
+                        }
+                    ]
+                if action == "getMediaDirPath":
+                    return str(anki_dir)
+                raise AssertionError(action)
+
+            try:
+                manifest = worker.media_manifest([str(anki_dir / name) for name in media_names], media_ledger)
+                worker._legacy_worker.anki_connect = fake_anki_connect
+                result = worker.handle_verify_anki_import(
+                    {
+                        "export_result": {
+                            "deck_name": "Video Gate Deck",
+                            "deck_kind": "video_language",
+                            "cards": 1,
+                            "template_version": "V12",
+                            "anki_tag": "anki_card_generator_v12",
+                            "media_manifest": manifest,
+                            "media_ledger": media_ledger,
+                            "card_media_ledger": [card_media_item],
+                            "audio_audit_items": [audio_audit_item],
+                            "media_summary": {"media_files": len(media_names)},
+                            "media_dir": str(anki_dir),
+                        }
+                    }
+                )
+            finally:
+                worker._legacy_worker.anki_connect = original_anki_connect
+
+        self.assertFalse(result["ok"], result)
+        self.assertIn("audio_audit_mismatch", result["failed_checks"])
+        media_alignment_mismatches = [
+            item for item in result["audio_audit_mismatches"] if item.get("field") == "MediaSubtitleAlignment"
+        ]
+        self.assertEqual(len(media_alignment_mismatches), 1)
+        self.assertEqual(media_alignment_mismatches[0]["status"], "mismatch")
+        self.assertEqual(
+            media_alignment_mismatches[0]["reason"],
+            "no_subtitle_cues_overlap_media_window",
+        )
+        self.assertEqual(result["missing_video_field_media"], [])
+        self.assertEqual(result["imported_tts_text_hash_mismatch"], [])
+
+    def test_verify_anki_import_tolerates_duplicate_same_card_from_previous_import(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            anki_dir = Path(temp_dir) / "anki_media"
+            anki_dir.mkdir()
+            sentence = "I am going to practice."
+            answer = "going to"
+            sentence_hash = worker.media_text_hash(sentence)
+            phrase_hash = worker.media_text_hash(answer)
+            media_names = [
+                "sample_clip.webm",
+                "sample_clip.mp4",
+                "sample_clip.jpg",
+                "sample_original.mp3",
+                f"sample_tts_{sentence_hash}.mp3",
+                f"sample_phrase_{phrase_hash}.mp3",
+            ]
+            for name in media_names:
+                (anki_dir / name).write_bytes(f"media:{name}".encode("utf-8"))
+            media_ledger = [
+                {
+                    "file": f"sample_tts_{sentence_hash}.mp3",
+                    "role": "sentence_tts",
+                    "tts_text": sentence,
+                    "text_hash": sentence_hash,
+                    "semantic_verification": "passed",
+                },
+                {
+                    "file": f"sample_phrase_{phrase_hash}.mp3",
+                    "role": "phrase_tts",
+                    "tts_text": answer,
+                    "text_hash": phrase_hash,
+                    "semantic_verification": "passed",
+                },
+            ]
+            card_media_ledger = [
+                {
+                    "card_id": "card-1",
+                    "learning_point_id": "lp-1",
+                    "segment_id": "seg-1",
+                    "answer": answer,
+                    "sentence_tts_text": sentence,
+                    "phrase_tts_text": answer,
+                    "video_webm": "sample_clip.webm",
+                    "video_mp4": "sample_clip.mp4",
+                    "poster": "sample_clip.jpg",
+                    "original_audio": "sample_original.mp3",
+                    "sentence_tts_audio": f"sample_tts_{sentence_hash}.mp3",
+                    "phrase_tts_audio": f"sample_phrase_{phrase_hash}.mp3",
+                }
+            ]
+            original_anki_connect = worker._legacy_worker.anki_connect
+            original_audio_duration_seconds = worker._legacy_worker.audio_duration_seconds
+
+            def fake_audio_duration_seconds(path):
+                return 1.0
+
+            def duplicate_card_info(card_id):
+                return {
+                    "cardId": card_id,
+                    "deckName": "Video Gate Deck",
+                    "modelName": "Anki Card Generator V12 - 沉浸复读 V11 · 快速复读",
+                    "fields": {
+                        "CardId": {"value": "card-1"},
+                        "Video": {
+                            "value": worker.anki_video_html(
+                                "sample_clip.webm",
+                                "sample_clip.mp4",
+                                "sample_clip.jpg",
+                            )
+                        },
+                        "Audio": {"value": worker.anki_audio_html("sample_original.mp3")},
+                        "TtsAudio": {"value": worker.anki_audio_html(f"sample_tts_{sentence_hash}.mp3")},
+                        "PhraseTtsAudio": {"value": worker.anki_audio_html(f"sample_phrase_{phrase_hash}.mp3")},
+                        "PronunciationMeta": {"value": json.dumps({"status": "ok"})},
+                        "English": {"value": sentence},
+                        "Answer": {"value": answer},
+                    },
+                }
+
+            def fake_anki_connect(action, params=None, url=""):
+                if action == "findCards":
+                    return [123, 456]
+                if action == "cardsInfo":
+                    return [duplicate_card_info(123), duplicate_card_info(456)]
+                if action == "getMediaDirPath":
+                    return str(anki_dir)
+                raise AssertionError(action)
+
+            try:
+                manifest = worker.media_manifest([str(anki_dir / name) for name in media_names], media_ledger)
+                worker._legacy_worker.anki_connect = fake_anki_connect
+                worker._legacy_worker.audio_duration_seconds = fake_audio_duration_seconds
+                result = worker.handle_verify_anki_import(
+                    {
+                        "export_result": {
+                            "deck_name": "Video Gate Deck",
+                            "deck_kind": "video_language",
+                            "cards": 1,
+                            "template_version": "V12",
+                            "anki_tag": "anki_card_generator_v12",
+                            "media_manifest": manifest,
+                            "media_ledger": media_ledger,
+                            "card_media_ledger": card_media_ledger,
+                            "media_summary": {"media_files": len(media_names)},
+                            "media_dir": str(anki_dir),
+                        }
+                    }
+                )
+            finally:
+                worker._legacy_worker.anki_connect = original_anki_connect
+                worker._legacy_worker.audio_duration_seconds = original_audio_duration_seconds
+
+        self.assertTrue(result["ok"], result)
+        self.assertNotIn("card_count_mismatch", result["failed_checks"])
+        self.assertEqual(result["card_count"], 1)
+        self.assertEqual(result["expected_cards"], 1)
+        self.assertEqual(result["imported_card_count"], 2)
+        self.assertEqual(result["duplicate_imported_card_count"], 1)
+        self.assertEqual(result["audio_audit_summary"]["items"], 1)
+        self.assertEqual(result["audio_audit_summary"]["expected_items"], 1)
+
+    def test_verify_anki_import_rejects_overlong_phrase_tts_duration(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            anki_dir = Path(temp_dir) / "anki_media"
+            anki_dir.mkdir()
+            sentence = "Here is the prompt."
+            answer = "prompt"
+            sentence_hash = worker.media_text_hash(sentence)
+            phrase_hash = worker.media_text_hash(answer)
+            media_names = [
+                "sample_clip.webm",
+                "sample_clip.mp4",
+                "sample_clip.jpg",
+                "sample_original.mp3",
+                f"sample_tts_{sentence_hash}.mp3",
+                f"sample_phrase_{phrase_hash}.mp3",
+            ]
+            for name in media_names:
+                (anki_dir / name).write_bytes(f"media:{name}".encode("utf-8"))
+            media_ledger = [
+                {
+                    "file": f"sample_tts_{sentence_hash}.mp3",
+                    "role": "sentence_tts",
+                    "tts_text": sentence,
+                    "text_hash": sentence_hash,
+                },
+                {
+                    "file": f"sample_phrase_{phrase_hash}.mp3",
+                    "role": "phrase_tts",
+                    "tts_text": answer,
+                    "text_hash": phrase_hash,
+                },
+            ]
+            original_anki_connect = worker._legacy_worker.anki_connect
+            original_audio_duration_seconds = worker._legacy_worker.audio_duration_seconds
+
+            def fake_audio_duration_seconds(path):
+                name = Path(path).name
+                if name.endswith((".mp4", ".webm")):
+                    return 2.0
+                if "phrase" in name:
+                    return 87.64
+                if name.endswith(".mp3"):
+                    return 2.0
+                return None
+
+            def fake_anki_connect(action, params=None, url=""):
+                if action == "findCards":
+                    return [123]
+                if action == "cardsInfo":
+                    return [
+                        {
+                            "cardId": 123,
+                            "deckName": "Video Gate Deck",
+                            "modelName": "Anki Card Generator V12 - 沉浸复读 V11 · 快速复读",
+                            "fields": {
+                                "CardId": {"value": "card-1"},
+                                "Video": {
+                                    "value": worker.anki_video_html(
+                                        "sample_clip.webm",
+                                        "sample_clip.mp4",
+                                        "sample_clip.jpg",
+                                    )
+                                },
+                                "Audio": {"value": worker.anki_audio_html("sample_original.mp3")},
+                                "TtsAudio": {"value": worker.anki_audio_html(f"sample_tts_{sentence_hash}.mp3")},
+                                "PhraseTtsAudio": {"value": worker.anki_audio_html(f"sample_phrase_{phrase_hash}.mp3")},
+                                "PronunciationMeta": {"value": json.dumps({"status": "ok"})},
+                                "English": {"value": sentence},
+                                "Answer": {"value": answer},
+                            },
+                        }
+                    ]
+                if action == "getMediaDirPath":
+                    return str(anki_dir)
+                raise AssertionError(action)
+
+            try:
+                worker._legacy_worker.audio_duration_seconds = fake_audio_duration_seconds
+                manifest = worker.media_manifest([str(anki_dir / name) for name in media_names], media_ledger)
+                worker._legacy_worker.anki_connect = fake_anki_connect
+                result = worker.handle_verify_anki_import(
+                    {
+                        "export_result": {
+                            "deck_name": "Video Gate Deck",
+                            "deck_kind": "video_language",
+                            "cards": 1,
+                            "template_version": "V12",
+                            "anki_tag": "anki_card_generator_v12",
+                            "media_manifest": manifest,
+                            "media_ledger": media_ledger,
+                            "media_summary": {"media_files": len(media_names)},
+                            "media_dir": str(anki_dir),
+                        }
+                    }
+                )
+            finally:
+                worker._legacy_worker.anki_connect = original_anki_connect
+                worker._legacy_worker.audio_duration_seconds = original_audio_duration_seconds
+
+        self.assertFalse(result["ok"], result)
+        self.assertIn("imported_tts_audio_duration", result["failed_checks"])
+        self.assertEqual(result["imported_tts_audio_duration_issues"][0]["reason"], "overlong_phrase_tts")
+        self.assertEqual(result["imported_tts_audio_duration_issues"][0]["tts_text"], "prompt")
+        self.assertEqual(result["tts_semantic_verification"]["high_risk_items"], 1)
+        high_risk_items = [
+            item
+            for item in result["tts_manual_review_items"]
+            if "high_risk_short_expression" in item.get("semantic_review_reasons", [])
+        ]
+        self.assertEqual(high_risk_items[0]["tts_text"], "prompt")
+
+    def test_verify_anki_import_fails_video_without_tts_and_bad_meta(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            anki_dir = Path(temp_dir) / "anki_media"
+            anki_dir.mkdir()
+            original_anki_connect = worker._legacy_worker.anki_connect
+
+            def fake_anki_connect(action, params=None, url=""):
+                if action == "findCards":
+                    return [123]
+                if action == "cardsInfo":
+                    return [
+                        {
+                            "cardId": 123,
+                            "deckName": "Broken Video Gate Deck",
+                            "modelName": "Anki Card Generator V12 - 词霸天下实验 V1",
+                            "fields": {
+                                "CardId": {"value": "card-1"},
+                                "Video": {"value": ""},
+                                "Audio": {"value": ""},
+                                "TtsAudio": {"value": ""},
+                                "PhraseTtsAudio": {"value": ""},
+                                "PronunciationMeta": {"value": "{not json"},
+                                "English": {"value": "Bad import."},
+                                "Answer": {"value": "Bad import"},
+                            },
+                        }
+                    ]
+                if action == "getMediaDirPath":
+                    return str(anki_dir)
+                raise AssertionError(action)
+
+            try:
+                worker._legacy_worker.anki_connect = fake_anki_connect
+                result = worker.handle_verify_anki_import(
+                    {
+                        "export_result": {
+                            "deck_name": "Broken Video Gate Deck",
+                            "deck_kind": "video_language",
+                            "cards": 1,
+                            "template_version": "V12",
+                            "anki_tag": "anki_card_generator_v12",
+                            "media_manifest": {},
+                            "media_summary": {"media_files": 0},
+                            "media_dir": str(Path(temp_dir) / "export_media"),
+                        }
+                    }
+                )
+            finally:
+                worker._legacy_worker.anki_connect = original_anki_connect
+
+        self.assertFalse(result["ok"])
+        self.assertIn("video_template_mismatch", result["failed_checks"])
+        self.assertIn("ordinary_flow_ciba_template", result["failed_checks"])
+        self.assertIn("missing_imported_video_field_media", result["failed_checks"])
+        self.assertIn("pronunciation_meta_parse_errors", result["failed_checks"])
+
+    def test_verify_anki_import_rejects_document_on_video_template(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            anki_dir = Path(temp_dir) / "anki_media"
+            anki_dir.mkdir()
+            original_anki_connect = worker._legacy_worker.anki_connect
+
+            def fake_anki_connect(action, params=None, url=""):
+                if action == "findCards":
+                    return [123]
+                if action == "cardsInfo":
+                    return [
+                        {
+                            "cardId": 123,
+                            "deckName": "Document Gate Deck",
+                            "modelName": "Anki Card Generator V12 - 沉浸复读 V11",
+                            "fields": {
+                                "CardId": {"value": "doc-card-1"},
+                                "FrontContent": {"value": "What does the document say?"},
+                                "Answer": {"value": "It says the import gate should reject video templates."},
+                                "Video": {"value": ""},
+                                "Audio": {"value": ""},
+                                "TtsAudio": {"value": ""},
+                                "PhraseTtsAudio": {"value": ""},
+                            },
+                        }
+                    ]
+                if action == "getMediaDirPath":
+                    return str(anki_dir)
+                raise AssertionError(action)
+
+            try:
+                worker._legacy_worker.anki_connect = fake_anki_connect
+                result = worker.handle_verify_anki_import(
+                    {
+                        "export_result": {
+                            "deck_name": "Document Gate Deck",
+                            "deck_kind": "document_knowledge",
+                            "cards": 1,
+                            "template_version": "V10",
+                            "anki_tag": "anki_card_generator_v10",
+                            "media_manifest": {},
+                            "media_summary": {"media_files": 0},
+                            "media_dir": str(Path(temp_dir) / "export_media"),
+                        }
+                    }
+                )
+            finally:
+                worker._legacy_worker.anki_connect = original_anki_connect
+
+        self.assertFalse(result["ok"])
+        self.assertIn("document_template_mismatch", result["failed_checks"])
 
     def test_qwen_tts_audio_uses_dashscope_generation_endpoint(self):
         calls = {}
@@ -4083,7 +11281,24 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(calls["body"]["generationConfig"]["responseModalities"], ["AUDIO"])
         self.assertEqual(speech_config["languageCode"], "en-US")
         self.assertEqual(speech_config["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"], "Kore")
-        self.assertEqual(calls["body"]["contents"][0]["parts"][0]["text"], "This is a local video card.")
+        self.assertNotIn("systemInstruction", calls["body"])
+        prompt = calls["body"]["contents"][0]["parts"][0]["text"]
+        self.assertIn("Read aloud exactly the target text below.", prompt)
+        self.assertIn("Do not explain, translate, expand, add words", prompt)
+        self.assertIn("Target text: This is a local video card.", prompt)
+
+    def test_tts_text_module_matches_worker_exact_prompt_and_variants(self):
+        from acg.tts_text import exact_tts_prompt, gemini_vertex_tts_text_variants
+
+        self.assertEqual(exact_tts_prompt("in style"), worker.exact_tts_prompt("in style"))
+        self.assertEqual(
+            gemini_vertex_tts_text_variants("Tell you what, I'll let you off for a 10.")[:2],
+            [
+                "Tell you what, I'll let you off for a 10.",
+                "Tell you what, I'll let you off for a ten.",
+            ],
+        )
+        self.assertIn("in style.", gemini_vertex_tts_text_variants("in style"))
 
     def test_gemini_vertex_tts_retries_with_number_words_after_http_error(self):
         calls = {"texts": []}
@@ -4100,9 +11315,9 @@ class WorkerQualityTests(unittest.TestCase):
         def fake_http_json(url, headers, body, timeout=60):
             text = body["contents"][0]["parts"][0]["text"]
             calls["texts"].append(text)
-            if text == "Tell you what, I'll let you off for a 10.":
+            if text == worker.exact_tts_prompt("Tell you what, I'll let you off for a 10."):
                 raise RuntimeError("API HTTP 400: invalid argument")
-            if text == "Tell you what, I'll let you off for a ten.":
+            if text == worker.exact_tts_prompt("Tell you what, I'll let you off for a ten."):
                 return {
                     "candidates": [
                         {
@@ -4144,7 +11359,10 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertTrue(audio.startswith(b"RIFF"))
         self.assertEqual(
             calls["texts"],
-            ["Tell you what, I'll let you off for a 10.", "Tell you what, I'll let you off for a ten."],
+            [
+                worker.exact_tts_prompt("Tell you what, I'll let you off for a 10."),
+                worker.exact_tts_prompt("Tell you what, I'll let you off for a ten."),
+            ],
         )
 
     def test_gemini_vertex_tts_retries_short_phrase_with_sentence_punctuation_when_no_audio(self):
@@ -4162,9 +11380,9 @@ class WorkerQualityTests(unittest.TestCase):
         def fake_http_json(url, headers, body, timeout=60):
             text = body["contents"][0]["parts"][0]["text"]
             calls["texts"].append(text)
-            if text == "in style":
+            if text == worker.exact_tts_prompt("in style"):
                 return {"candidates": [{"finishReason": "STOP", "content": {"parts": [{"text": "in style"}]}}]}
-            if text == "Read exactly this expression: in style.":
+            if text == worker.exact_tts_prompt("in style."):
                 return {
                     "candidates": [
                         {
@@ -4204,7 +11422,13 @@ class WorkerQualityTests(unittest.TestCase):
             worker._legacy_worker.gcloud_value = original_gcloud_value
 
         self.assertTrue(audio.startswith(b"RIFF"))
-        self.assertEqual(calls["texts"], ["in style", "in style.", "Read exactly this expression: in style."])
+        self.assertEqual(
+            calls["texts"],
+            [
+                worker.exact_tts_prompt("in style"),
+                worker.exact_tts_prompt("in style."),
+            ],
+        )
 
     def test_phrase_match_requires_all_phrase_words_in_compact_order(self):
         self.assertTrue(worker.phrase_in_text("I need to make sure we are ready.", "make sure"))
@@ -4222,6 +11446,12 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(
             worker.strip_subtitle_text("? >> Before we start, don't forget to subscribe."),
             "Before we start, don't forget to subscribe.",
+        )
+
+    def test_subtitle_cleaning_removes_youtube_ass_spacing_controls(self):
+        self.assertEqual(
+            worker.strip_subtitle_text("repeat after me speaking\\h\\h practice\\Nout there"),
+            "repeat after me speaking practice out there",
         )
 
     def test_parse_srt_handles_blank_line_between_timestamp_and_text(self):
@@ -4601,14 +11831,175 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertLess(media_end, 112.35)
         self.assertLessEqual(media_end - media_start, 6.25)
 
+    def test_sentence_window_media_bounds_tracks_display_sentence_not_phrase_only(self):
+        full_text = (
+            "Today I want to talk about the plan because honestly we need to figure out "
+            "what happens next before we move on."
+        )
+        display_text = "the plan because honestly we need to figure out what happens next before we move on."
+
+        media_start, media_end, status = worker.sentence_window_media_bounds(
+            100.0,
+            112.0,
+            full_text,
+            display_text,
+        )
+
+        self.assertEqual(status, "display_sentence_window")
+        self.assertLess(media_start, 103.5)
+        self.assertGreater(media_end, 111.5)
+        self.assertGreater(media_end - media_start, 8.0)
+
+    def test_learning_point_media_alignment_fields_prefers_full_source_sentence_window(self):
+        from acg.media_alignment import learning_point_media_alignment_fields
+
+        full_text = "The more you live in English, the faster your brain rewires itself."
+        fields = learning_point_media_alignment_fields(
+            {
+                "source_sentence": full_text,
+                "answer_core": "rewires itself",
+                "exact_span": "rewires itself",
+            },
+            start=349.287,
+            end=358.061,
+            display_sentence="rewires itself",
+        )
+
+        self.assertEqual(fields["media_alignment_status"], "source_sentence_window")
+        self.assertEqual(fields["media_alignment_text"], full_text)
+        self.assertEqual(fields["media_alignment_source_text"], full_text)
+        self.assertEqual(fields["media_alignment_phrase"], "rewires itself")
+        self.assertTrue(fields["media_alignment_phrase_located"])
+        self.assertLessEqual(fields["media_start"], 349.3)
+        self.assertGreaterEqual(fields["media_end"], 358.0)
+        self.assertGreater(fields["media_end"] - fields["media_start"], 8.5)
+
+    def test_media_subtitle_alignment_diagnostic_detects_window_mismatch(self):
+        cues = [
+            worker.Cue(index=1, start=10.0, end=12.0, text="This is unrelated visual text."),
+            worker.Cue(index=2, start=12.0, end=14.0, text="Still unrelated captions on screen."),
+        ]
+
+        diagnostic = worker.media_subtitle_alignment_diagnostic(
+            cues,
+            10.0,
+            14.0,
+            "build your perspective on the world",
+        )
+
+        self.assertEqual(diagnostic["media_subtitle_alignment_status"], "mismatch")
+        self.assertLess(diagnostic["media_subtitle_overlap_score"], 0.38)
+
+    def test_media_subtitle_alignment_partial_blocks_only_when_low_or_source_unreliable(self):
+        cues = [
+            worker.Cue(index=1, start=10.0, end=14.0, text="alpha beta gamma delta epsilon zeta filler words"),
+        ]
+        diagnostic = worker.media_subtitle_alignment_diagnostic(
+            cues,
+            10.0,
+            14.0,
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa",
+        )
+
+        self.assertEqual(diagnostic["media_subtitle_alignment_status"], "partial")
+        self.assertGreaterEqual(
+            diagnostic["media_subtitle_overlap_score"],
+            worker.MEDIA_SUBTITLE_PARTIAL_EXPORT_BLOCK_THRESHOLD,
+        )
+        self.assertFalse(worker.media_subtitle_alignment_blocks_export(diagnostic, {}))
+        self.assertTrue(
+            worker.media_subtitle_alignment_blocks_export(
+                diagnostic,
+                {"source_sentence_quality_flags": ["possible_bad_join"]},
+            )
+        )
+        self.assertTrue(
+            worker.media_subtitle_alignment_blocks_export(
+                diagnostic,
+                {"source_sentence_quality_flags": ["too_long"]},
+            )
+        )
+        self.assertEqual(
+            worker.media_subtitle_alignment_failure_reason(
+                diagnostic,
+                {"source_sentence_quality_flags": ["too_long"]},
+            ),
+            "partial_overlap_with_unreliable_source_sentence:too_long",
+        )
+
+        low_diagnostic = worker.media_subtitle_alignment_diagnostic(
+            cues,
+            10.0,
+            14.0,
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron",
+        )
+
+        self.assertEqual(low_diagnostic["media_subtitle_alignment_status"], "partial")
+        self.assertLess(
+            low_diagnostic["media_subtitle_overlap_score"],
+            worker.MEDIA_SUBTITLE_PARTIAL_EXPORT_BLOCK_THRESHOLD,
+        )
+        self.assertTrue(worker.media_subtitle_alignment_blocks_export(low_diagnostic, {}))
+
+    def test_export_alignment_recomputes_old_phrase_aligned_segment_to_card_sentence(self):
+        segment = {
+            "id": "seg-old",
+            "start": 100.0,
+            "end": 112.0,
+            "source_time": "00:01:40.000 - 00:01:52.000",
+            "media_start": 108.0,
+            "media_end": 112.2,
+            "media_source_time": "00:01:48.000 - 00:01:52.200",
+            "media_alignment_status": "phrase_aligned",
+            "full_source_sentence": (
+                "Today I want to talk about the plan because honestly we need to figure out "
+                "what happens next before we move on."
+            ),
+            "text": "the plan because honestly we need to figure out what happens next before we move on.",
+        }
+
+        aligned = worker.align_segment_media_to_display_sentence(segment)
+
+        self.assertEqual(aligned["media_alignment_status"], "source_sentence_window")
+        self.assertEqual(aligned["media_alignment_text"], segment["full_source_sentence"])
+        self.assertLessEqual(aligned["media_start"], 100.0)
+        self.assertGreater(aligned["media_end"], 111.5)
+        self.assertGreater(aligned["media_end"] - aligned["media_start"], 11.5)
+
+    def test_export_alignment_expands_phrase_only_segment_to_full_source_sentence(self):
+        full_sentence = "The more you live in English, the faster your brain rewires itself."
+        segment = {
+            "id": "seg-phrase-only",
+            "start": 349.287,
+            "end": 358.061,
+            "source_time": "00:05:49.287 - 00:05:58.061",
+            "media_start": 354.0,
+            "media_end": 358.061,
+            "media_source_time": "00:05:54.000 - 00:05:58.061",
+            "media_alignment_status": "phrase_aligned",
+            "full_source_sentence": full_sentence,
+            "source_sentence": full_sentence,
+            "text": "rewires itself",
+        }
+
+        aligned = worker.align_segment_media_to_display_sentence(segment)
+
+        self.assertEqual(aligned["media_alignment_status"], "source_sentence_window")
+        self.assertEqual(aligned["media_alignment_text"], full_sentence)
+        self.assertLessEqual(aligned["media_start"], 349.3)
+        self.assertGreaterEqual(aligned["media_end"], 358.0)
+        self.assertGreater(aligned["media_end"] - aligned["media_start"], 8.5)
+
     def test_segment_display_source_time_prefers_media_source_time(self):
+        from acg.media_alignment import segment_display_source_time
+
         segment = {
             "source_time": "00:01:40.000 - 00:01:52.000",
             "media_source_time": "00:01:42.100 - 00:01:45.400",
         }
 
         self.assertEqual(
-            worker.segment_display_source_time(segment),
+            segment_display_source_time(segment),
             "00:01:42.100 - 00:01:45.400",
         )
 
@@ -5016,6 +12407,39 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(worker.card_label_for_learning_card("", "vocabulary"), "语境生词卡")
         self.assertEqual(worker.card_label_for_learning_card("idiom", "phrase"), "表达卡")
 
+    def test_repetition_front_fields_do_not_claim_original_audio_when_tts_only(self):
+        from acg.export_fields import front_fields_for_export_media
+
+        front_fields = {
+            "front_prompt": "听原声，跟读这一句。",
+            "front_content": "先听一遍，再模仿语气和节奏。",
+            "answer": "special guest",
+        }
+
+        adjusted = front_fields_for_export_media(
+            front_fields,
+            repetition_mode=True,
+            has_original_audio=False,
+            has_tts_audio=True,
+        )
+        self.assertEqual(adjusted, worker.front_fields_for_export_media(
+            front_fields,
+            repetition_mode=True,
+            has_original_audio=False,
+            has_tts_audio=True,
+        ))
+        self.assertEqual(adjusted["front_prompt"], "听慢读，跟读这一句。")
+        self.assertEqual(adjusted["front_content"], "先听慢读，再模仿语气和节奏。")
+        self.assertEqual(front_fields["front_prompt"], "听原声，跟读这一句。")
+
+        with_original = front_fields_for_export_media(
+            front_fields,
+            repetition_mode=True,
+            has_original_audio=True,
+            has_tts_audio=True,
+        )
+        self.assertEqual(with_original["front_prompt"], "听原声，跟读这一句。")
+
     def test_ciba_tianxia_does_not_use_v11_repetition_front_mode(self):
         self.assertTrue(worker.uses_v11_repetition_front("immersive_v11", "video_language"))
         self.assertTrue(worker.uses_v11_repetition_front("immersive_v11", "subtitle_language"))
@@ -5098,6 +12522,15 @@ class WorkerQualityTests(unittest.TestCase):
         sensitive = {"phrase": "flat as a washboard", "english": "I mean you're flat as a washboard."}
         self.assertIn("可能冒犯", worker.v11_misuse_text(sensitive))
         self.assertEqual(worker.v11_source_translation_text(sensitive), "我是说，你平得像个搓衣板。")
+
+    def test_text_cleaning_module_filters_internal_placeholders(self):
+        from acg.text_cleaning import clean_study_text, contains_internal_placeholder
+
+        value = "本地 fallback 只保证结构完整。"
+
+        self.assertTrue(contains_internal_placeholder(value))
+        self.assertEqual(clean_study_text(value), "")
+        self.assertEqual(clean_study_text("  keep   this text  "), "keep this text")
 
     def test_v11_back_fields_are_labeled_and_deduped(self):
         card = {
@@ -5189,6 +12622,29 @@ class WorkerQualityTests(unittest.TestCase):
 
         self.assertEqual(front_fields["answer"], "Ever want me to")
         self.assertEqual(worker.card_phrase_tts_text(card, front_fields), "Ever want me to")
+
+    def test_sentence_tts_text_prefers_full_source_sentence_boundary(self):
+        from acg.export_fields import card_sentence_tts_text
+
+        segment = {
+            "text": "rewires itself",
+            "full_source_sentence": "The more you live in English, the faster your brain rewires itself.",
+            "source_sentence": "The more you live in English, the faster your brain rewires itself.",
+        }
+        cards = [
+            {
+                "english": "rewires itself",
+                "answer_core": "rewires itself",
+                "phrase": "rewires itself",
+                "normalized_answer": "rewires itself",
+            }
+        ]
+
+        selected = card_sentence_tts_text(segment, cards)
+
+        self.assertEqual(selected, "The more you live in English, the faster your brain rewires itself.")
+        self.assertEqual(selected, worker.card_sentence_tts_text(segment, cards))
+        self.assertNotEqual(selected, segment["text"])
 
     def test_merge_ai_cards_preserves_boundary_fields_for_back_template(self):
         segments = [
@@ -5298,7 +12754,7 @@ class WorkerQualityTests(unittest.TestCase):
             ],
         )
 
-        self.assertIn("快速背卡模式", prompt)
+        self.assertIn("快速复读模式", prompt)
         self.assertIn("减少 token", prompt)
         self.assertIn("不要输出长段落", prompt)
         self.assertIn("definition/context/example/collocations/why/why_it_matters/how_to_use_it/usage_boundary/confusable_note", prompt)
@@ -5445,7 +12901,7 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(meta["field_confidence"]["source_spoken_ipa"], "medium")
         self.assertEqual(card["pronunciation_confidence"], "medium")
         self.assertNotIn("未实听", card.get("pronunciation_note", ""))
-        self.assertIn("未实听", card["pronunciation_status"])
+        self.assertEqual(card.get("pronunciation_status", ""), "")
 
     def test_dictionary_only_global_confidence_uses_lowest_field_confidence(self):
         card = {
@@ -5493,7 +12949,7 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(card["pronunciation_meta"]["field_confidence"]["source_spoken_ipa"], "low")
         self.assertEqual(card["pronunciation_confidence"], "low")
 
-    def test_dictionary_only_without_any_pronunciation_shows_visible_missing_status(self):
+    def test_dictionary_only_without_any_pronunciation_leaves_visible_status_blank(self):
         card = {
             "english": "I'm shorthanded, Walter. What am I to do?",
             "answer_core": "shorthanded",
@@ -5512,10 +12968,10 @@ class WorkerQualityTests(unittest.TestCase):
 
         issues = worker.sanitize_pronunciation_fields(card, "en")
 
-        self.assertIn("读法未可靠生成，已隐藏。", issues)
+        self.assertIn("未生成可靠读法字段。", issues)
         self.assertNotIn("pronunciation_note", card)
-        self.assertEqual(card["pronunciation_status"], "未实听，仅提供标准读法；读法未可靠生成，已隐藏")
-        self.assertEqual(card["source_pronunciation_status"], "原句听感未可靠生成，已隐藏")
+        self.assertEqual(card.get("pronunciation_status", ""), "")
+        self.assertEqual(card.get("source_pronunciation_status", ""), "")
         self.assertEqual(card["pronunciation_confidence"], "low")
         self.assertIn("PRONUNCIATION_NOT_GENERATED", [issue["code"] for issue in card["pronunciation_meta"]["validation_issues"]])
         self.assertIn("PRONUNCIATION_NOT_GENERATED", [change["code"] for change in card["pronunciation_meta"]["field_changes"]])
@@ -5549,7 +13005,7 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(changes[0]["action"], "hidden")
         self.assertEqual(changes[0]["code"], "SOURCE_PRONUNCIATION_TOO_SHORT")
         self.assertNotIn("原句听感未可靠生成", card.get("pronunciation_note", ""))
-        self.assertIn("原句听感未可靠生成", card["source_pronunciation_status"])
+        self.assertEqual(card.get("source_pronunciation_status", ""), "")
         self.assertEqual(card["pronunciation_confidence"], "low")
 
     def test_export_quality_audit_detects_drafts_duplicates_and_bad_meta(self):
@@ -5702,7 +13158,7 @@ class WorkerQualityTests(unittest.TestCase):
         knowledge = worker.anki_template_assets("immersive", "document_knowledge")
         reading = worker.anki_template_assets("immersive", "document_reading")
 
-        self.assertEqual(v11[0], "沉浸复读 V12")
+        self.assertEqual(v11[0], "沉浸复读 V11")
         self.assertEqual(ciba[0], "词霸天下实验 V1 · 暖色纸感")
         minimal_ciba = worker.anki_template_assets("ciba_tianxia_v1", "video_language", "minimal_white")
         dark_ciba = worker.anki_template_assets("ciba_tianxia_v1", "video_language", "dark_immersive")
@@ -5755,17 +13211,29 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertNotIn("别误用", ciba[3])
         self.assertNotIn("自己造句", ciba[3])
         self.assertIn("v11-video-stage", v11[2])
-        self.assertEqual(v11_fast[0], "沉浸复读 V12 · 快速背卡")
+        self.assertEqual(v11_fast[0], "沉浸复读 V11 · 快速复读")
         self.assertIn("fast-review-card", v11_fast[1] + v11_fast[2] + v11_fast[3])
-        self.assertIn("快速背卡", v11_fast[2] + v11_fast[3])
+        self.assertNotEqual(v11_fast[2], v11[2])
         self.assertIn("语境义", v11_fast[3])
+        for field in ["{{Video}}", "{{Audio}}", "{{TtsAudio}}", "{{PhraseTtsAudio}}"]:
+            self.assertIn(field, v11[2] + v11[3])
+            self.assertIn(field, v11_fast[2] + v11_fast[3])
         self.assertIn("{{PhraseTtsAudio}}", v11_fast[3])
         self.assertLess(v11_fast[3].index("v11-video-stage"), v11_fast[3].index("fast-answer-focus"))
         self.assertNotIn("怎么用", v11_fast[3])
         self.assertNotIn("别误用", v11_fast[3])
         self.assertNotIn("自己造句", v11_fast[3])
+        self.assertNotIn("词霸天下", v11_fast[2] + v11_fast[3])
+        self.assertNotIn("语言动作", v11_fast[2] + v11_fast[3])
+        self.assertNotIn("迁移句", v11_fast[2] + v11_fast[3])
         self.assertNotIn("v11-info-grid", v11_fast[3])
         self.assertIn("v11-video-stage", v11[2])
+        self.assertLess(v11[3].index("v11-video-stage"), v11[3].index("v11-answer-main"))
+        self.assertIn(".v11-answer-layout > .v11-video-stage", v11[1])
+        self.assertIn(".v11-back .v11-answer-layout", v11[1])
+        self.assertIn("flex-direction: column", v11[1])
+        self.assertIn('aria-label="播放视频复读"', v11[2] + v11[3])
+        self.assertIn('stage.addEventListener("keydown"', v11[2] + v11[3])
         self.assertIn("▮ 复读卡", v11[2] + v11[3])
         self.assertIn("playV11Audio", v11[2] + v11[3])
         self.assertIn("toggleV11Video", v11[2] + v11[3])
@@ -5778,9 +13246,13 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("怎么用", v11[3])
         self.assertIn("别误用", v11[3])
         self.assertIn("自己造句", v11[3])
+        self.assertIn("understanding-block", v11[3])
+        self.assertIn("boundary-block", v11[3])
+        self.assertIn("transfer-block", v11[3])
         self.assertNotIn("怎么理解", v11[3])
         self.assertNotIn("怎么迁移", v11[3])
-        self.assertNotIn("老师提醒", v11[3])
+        self.assertNotIn("语言动作", v11[3])
+        self.assertNotIn("词霸天下", v11[3])
         self.assertIn("v11-answer-title.is-long", v11[1])
         self.assertIn("setupV11TextSizing", v11[2] + v11[3])
         self.assertIn("{{#ChineseFeel}}<p class=\"v11-answer-note\">{{ChineseFeel}}</p>{{/ChineseFeel}}", v11[3])
@@ -5840,9 +13312,19 @@ class WorkerQualityTests(unittest.TestCase):
                 self.assertIn("recall-task", front, name)
                 self.assertIn("answer-anchor", back, name)
                 self.assertIn("evidence-anchor", back, name)
-                self.assertIn("understanding-block", back, name)
-                self.assertIn("boundary-block", back, name)
-                self.assertIn("transfer-block", back, name)
+                if template_id == "immersive_v11":
+                    self.assertIn("v11-info-block", back, name)
+                    self.assertIn("怎么用", back, name)
+                    self.assertIn("别误用", back, name)
+                    self.assertIn("自己造句", back, name)
+                elif template_id == "ciba_tianxia_v1":
+                    self.assertIn("ciba-core-group", back, name)
+                    self.assertIn("ciba-priority-grid", back, name)
+                    self.assertIn("ciba-transfer-group", back, name)
+                else:
+                    self.assertIn("understanding-block", back, name)
+                    self.assertIn("boundary-block", back, name)
+                    self.assertIn("transfer-block", back, name)
                 self.assertIn("font-weight: 950", css, name)
                 self.assertLess(back.index("answer-anchor"), back.index("evidence-anchor"), name)
                 self.assertNotIn("#0D1117", combined, name)
@@ -6249,6 +13731,33 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(point["confidence"], "high")
         self.assertEqual(point["validation_status"], "repaired")
         self.assertTrue(point["repair_history"])
+
+    def test_learning_point_contract_accepts_structured_repair_history(self):
+        ok, reason, point = worker.sanitize_learning_point_contract(
+            {
+                "candidate_kind": "contextual_vocab",
+                "phrase_type": "vocabulary_usage",
+                "exact_span": "register",
+                "answer_core": "register = 收银机 /ˈredʒɪstər/",
+                "normalized_answer": "register",
+                "card_focus": "训练 register 在服务业语境里的意思。",
+                "repair_history": [
+                    {
+                        "field": "answer_core",
+                        "action": "trim_explanation",
+                        "reason": "answer_core 含解释，已回退为目标词。",
+                    }
+                ],
+            },
+            "I'm gonna run the register.",
+            language="en",
+        )
+
+        self.assertTrue(ok, reason)
+        self.assertEqual(point["validation_status"], "repaired")
+        self.assertTrue(point["repair_history"])
+        self.assertTrue(all(isinstance(entry, str) for entry in point["repair_history"]))
+        self.assertIn("answer_core 含解释，已回退为目标词。", point["repair_history"])
 
     def test_source_expansion_auto_caps_requested_source_groups(self):
         segments = []
@@ -7082,6 +14591,7 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("本地规则卡，需要人工确认", phrase_card["quality"]["issues"])
         self.assertNotIn("预览草稿，需要人工确认", phrase_card["quality"]["issues"])
         self.assertNotIn("字段像模板废话", phrase_card["quality"]["issues"])
+        self.assertNotIn("预览草稿", phrase_card["difficulty_reason"])
 
     def test_local_generate_warning_counts_curated_recommendations(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -7263,6 +14773,8 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(worker.subtitle_language_args("English"), "en,en-orig,en-GB,en-US")
 
     def test_project_media_prefix_is_unique_per_source(self):
+        from acg.anki_export import project_media_prefix
+
         first = worker.project_media_prefix({"title": "Deck", "source_url": "https://youtu.be/one", "created_at": 1})
         second = worker.project_media_prefix({"title": "Deck", "source_url": "https://youtu.be/two", "created_at": 2})
         third = worker.project_media_prefix({"title": "Deck", "source_url": "https://youtu.be/one", "created_at": 1}, 177)
@@ -7270,6 +14782,26 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertNotEqual(first, third)
         self.assertTrue(first.startswith("Deck_"))
+        self.assertEqual(first, project_media_prefix({"title": "Deck", "source_url": "https://youtu.be/one", "created_at": 1}))
+
+    def test_anki_export_naming_helpers_match_worker_boundary(self):
+        from acg.anki_export import anki_deck_name, anki_deck_part, batch_export_deck_specs, safe_filename, stable_id
+
+        self.assertEqual(worker.safe_filename("Bad / Deck: Name?"), safe_filename("Bad / Deck: Name?"))
+        self.assertEqual(worker.anki_deck_part("Parent::Bad / Child", "Fallback"), anki_deck_part("Parent::Bad / Child", "Fallback"))
+        self.assertEqual(worker.anki_deck_name("Parent::Bad / Child", "Fallback"), anki_deck_name("Parent::Bad / Child", "Fallback"))
+        self.assertEqual(worker.stable_id("anki-card-model", 1000), stable_id("anki-card-model", 1000))
+
+        project = {
+            "title": "Batch / Root",
+            "batch_items": [
+                {"id": "a", "title": "Clip One"},
+                {"id": "b", "deck_name": "Custom::Deck"},
+                {"id": "c", "title": "Clip One"},
+                {"id": "disabled", "title": "Skipped", "enabled": False},
+            ],
+        }
+        self.assertEqual(worker.batch_export_deck_specs(project), batch_export_deck_specs(project))
 
     def _first_apkg_note_fields(self, apkg_path: str) -> dict[str, str]:
         import sqlite3
@@ -7437,6 +14969,184 @@ class WorkerQualityTests(unittest.TestCase):
         )
 
         self.assertEqual(audit["answer_not_in_source"], 0)
+
+    def test_export_quality_audit_reports_blocked_document_card_details(self):
+        audit = worker._legacy_worker.export_quality_audit(
+            {
+                "source_mode": "document",
+                "document_study_mode": "knowledge",
+                "template_id": "immersive_v11",
+                "language": "en",
+                "level": "B2",
+            },
+            [
+                {
+                    "id": "doc_draft",
+                    "text": "什么是语境义优先？",
+                    "source_time": "文档知识点 1",
+                    "cards": [
+                        {
+                            "id": "doc_draft_card",
+                            "type": "knowledge",
+                            "enabled": True,
+                            "english": "什么是语境义优先？",
+                            "answer_core": "语境义优先",
+                            "phrase": "语境义优先",
+                            "chinese": "本地文档草稿，需要人工确认。",
+                            "definition": "内部提示：正式导出前需要人工确认。",
+                            "teacher_note": "请重新生成。",
+                            "quality": {"score": 65, "status": "needs_review", "issues": ["自动草稿卡"]},
+                        }
+                    ],
+                }
+            ],
+        )
+
+        self.assertGreater(audit["blocked_text_values"], 0)
+        self.assertEqual(len(audit["blocked_cards"]), 1)
+        blocked = audit["blocked_cards"][0]
+        self.assertEqual(blocked["card_id"], "doc_draft_card")
+        self.assertEqual(blocked["segment_id"], "doc_draft")
+        self.assertIn("语境义优先", blocked["title"])
+        self.assertIn("人工确认", blocked["matched_text"])
+        self.assertIn("matched_fields", blocked)
+        self.assertIn("重新生成", blocked["suggested_action"])
+
+    def test_export_quality_audit_blocks_document_draft_text_in_planning_fields(self):
+        audit = worker._legacy_worker.export_quality_audit(
+            {
+                "source_mode": "document",
+                "document_study_mode": "knowledge",
+                "template_id": "immersive_v11",
+                "language": "en",
+                "level": "B2",
+            },
+            [
+                {
+                    "id": "doc_draft",
+                    "text": "什么是间隔重复？",
+                    "source_time": "文档知识点 1",
+                    "cards": [
+                        {
+                            "id": "doc_draft_card",
+                            "type": "knowledge",
+                            "enabled": True,
+                            "english": "什么是间隔重复？",
+                            "answer_core": "间隔重复",
+                            "phrase": "间隔重复",
+                            "chinese": "按间隔安排复习。",
+                            "definition": "一种长期记忆策略。",
+                            "teacher_note": "先回忆，再核对答案。",
+                            "difficulty_reason": "本地文档草稿按当前水平和文本复杂度估计。",
+                            "quality": {"score": 90, "status": "recommended", "issues": []},
+                        }
+                    ],
+                }
+            ],
+        )
+
+        self.assertGreater(audit["blocked_text_values"], 0)
+        self.assertEqual(len(audit["blocked_cards"]), 1)
+        blocked = audit["blocked_cards"][0]
+        self.assertEqual(blocked["card_id"], "doc_draft_card")
+        self.assertEqual(blocked["matched_field"], "DifficultyReason")
+        self.assertIn("本地文档草稿", blocked["matched_text"])
+
+    def test_export_quality_audit_does_not_block_generic_human_review_issue_only(self):
+        audit = worker._legacy_worker.export_quality_audit(
+            {
+                "source_mode": "local",
+                "template_id": "immersive_v11",
+                "language": "en",
+                "level": "B1",
+            },
+            [
+                {
+                    "id": "video_seg",
+                    "text": "Dad, come check this out.",
+                    "source_time": "00:00:00.000 - 00:00:02.000",
+                    "cards": [
+                        {
+                            "id": "video_card",
+                            "type": "phrase",
+                            "enabled": True,
+                            "english": "Dad, come check this out.",
+                            "answer_core": "check this out",
+                            "phrase": "check this out",
+                            "chinese": "看看这个。",
+                            "definition": "用来邀请别人注意某个东西。",
+                            "context": "Dad, come check this out.",
+                            "teacher_note": "适合口语场景。",
+                            "quality": {"score": 80, "status": "recommended", "issues": ["本地规则卡，需要人工确认。"]},
+                        }
+                    ],
+                }
+            ],
+        )
+
+        self.assertEqual(audit["blocked_text_values"], 0)
+        self.assertEqual(audit["blocked_cards"], [])
+
+    def test_export_quality_gate_failure_includes_blocked_card_details(self):
+        try:
+            import genanki  # noqa: F401
+        except ImportError:
+            self.skipTest("genanki is required for export smoke")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "out"
+            output_dir.mkdir()
+            stderr = io.StringIO()
+            with self.assertRaises(SystemExit):
+                with redirect_stderr(stderr):
+                    worker.handle_export(
+                        {
+                            "project": {
+                                "id": "doc-quality-gate-details",
+                                "title": "文档坏卡导出诊断",
+                                "source_mode": "document",
+                                "document_study_mode": "knowledge",
+                                "template_id": "immersive_v11",
+                                "language": "en",
+                                "level": "B2",
+                                "segments": [
+                                    {
+                                        "id": "doc_draft",
+                                        "text": "什么是语境义优先？",
+                                        "source_time": "文档知识点 1",
+                                        "cards": [
+                                            {
+                                                "id": "doc_draft_card",
+                                                "type": "knowledge",
+                                                "enabled": True,
+                                                "english": "什么是语境义优先？",
+                                                "answer_core": "语境义优先",
+                                                "phrase": "语境义优先",
+                                                "chinese": "本地文档草稿，需要人工确认。",
+                                                "definition": "内部提示：正式导出前需要人工确认。",
+                                                "context": "",
+                                                "source_evidence": "文档说明语境义优先。",
+                                                "teacher_note": "请重新生成。",
+                                                "quality": {
+                                                    "score": 65,
+                                                    "status": "needs_review",
+                                                    "issues": ["自动草稿卡"],
+                                                },
+                                            }
+                                        ],
+                                    }
+                                ],
+                            },
+                            "output_dir": str(output_dir),
+                        }
+                    )
+
+            error_line = next(line for line in stderr.getvalue().splitlines() if line.startswith("__ANKI_CARD_ERROR__"))
+            payload = json.loads(error_line.replace("__ANKI_CARD_ERROR__", "", 1))
+            self.assertEqual(payload["error_code"], "EXPORT_QUALITY_GATE_FAILED")
+            self.assertEqual(payload["stage"], "quality_audit")
+            self.assertEqual(payload["details"]["blocked_cards"][0]["card_id"], "doc_draft_card")
+            self.assertIn("人工确认", payload["details"]["blocked_cards"][0]["matched_text"])
 
     def test_azw3_document_auto_converts_with_ebook_convert_when_available(self):
         import subprocess
@@ -7623,6 +15333,134 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("再造一句", worker.BACK_TEMPLATE)
         self.assertIn("block-grid", worker.CARD_CSS)
         self.assertNotIn("@media (max-height: 980px)", worker.CARD_CSS)
+
+    def test_audio_audit_includes_source_sentence_provenance(self):
+        items = worker.build_audio_audit_items(
+            [
+                {
+                    "card_id": "card-1",
+                    "learning_point_id": "lp-1",
+                    "segment_id": "seg-1",
+                    "source_mode": "local",
+                    "source_title": "The power of poetry",
+                    "source_video_path": "E:\\ANKI\\materials\\poetry.mp4",
+                    "source_video_fingerprint": "cff7c10a1bda8f7f",
+                    "source_video_sha256": "cff7c10a1bda8f7f03c605a778c547ffc5374d91cd3c9c208f8f8e168c874935",
+                    "source_subtitle_path": "E:\\ANKI\\materials\\poetry.srt",
+                    "source_subtitle_fingerprint": "3b138e73805d4f50",
+                    "source_subtitle_sha256": "3b138e73805d4f50c5925bca643f7dcb7b0aead07734e0eb791043848c346d35",
+                    "source_subtitle_status": "loaded",
+                    "source_time": "00:00:45.791 - 00:00:53.911",
+                    "media_source_time": "00:00:45.671 - 00:00:54.091",
+                    "source_cue_ids": [12, 13],
+                    "source_cue_count": 2,
+                    "source_cue_start": 45.791,
+                    "source_cue_end": 53.911,
+                    "source_cue_time": "00:00:45.791 - 00:00:53.911",
+                    "source_cue_texts": [
+                        "It's sort of like a mini English that works in your everyday",
+                        "You're confident with it.",
+                    ],
+                    "source_merge_reason": "merged_until_sentence_boundary",
+                    "source_sentence_quality_flags": ["possible_bad_join"],
+                    "source_sentence_quality_status": "needs_review",
+                    "sentence_tts_text": "It's sort of like a mini English that works in your everyday You're confident with it.",
+                    "phrase_tts_text": "You're confident with",
+                    "sentence_tts_audio": "sentence.wav",
+                    "phrase_tts_audio": "phrase.wav",
+                }
+            ],
+            {
+                "sentence.wav": {"sha256": "sentence-sha", "tts_text_hash": "sentence-text"},
+                "phrase.wav": {"sha256": "phrase-sha", "tts_text_hash": "phrase-text"},
+            },
+            deck_name="Video Deck",
+            model_name="Anki Card Generator V12 - 沉浸复读 V11 · 快速复读",
+            deck_kind="video_language",
+        )
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["source_mode"], "local")
+        self.assertEqual(items[0]["source_title"], "The power of poetry")
+        self.assertEqual(items[0]["source_video_fingerprint"], "cff7c10a1bda8f7f")
+        self.assertEqual(
+            items[0]["source_video_sha256"],
+            "cff7c10a1bda8f7f03c605a778c547ffc5374d91cd3c9c208f8f8e168c874935",
+        )
+        self.assertEqual(items[0]["source_subtitle_fingerprint"], "3b138e73805d4f50")
+        self.assertEqual(
+            items[0]["source_subtitle_sha256"],
+            "3b138e73805d4f50c5925bca643f7dcb7b0aead07734e0eb791043848c346d35",
+        )
+        self.assertEqual(items[0]["source_subtitle_status"], "loaded")
+        self.assertEqual(items[0]["source_cue_ids"], [12, 13])
+        self.assertEqual(items[0]["source_cue_start"], 45.791)
+        self.assertEqual(items[0]["source_cue_end"], 53.911)
+        self.assertEqual(items[0]["source_cue_texts"][1], "You're confident with it.")
+        self.assertEqual(items[0]["source_sentence_quality_flags"], ["possible_bad_join"])
+        self.assertEqual(items[0]["source_sentence_quality_status"], "needs_review")
+        summary = worker.audio_audit_summary(items, deck_kind="video_language", expected_items=1)
+        self.assertEqual(summary["source_sentence_quality"]["needs_review"], 1)
+        self.assertEqual(summary["source_sentence_quality"]["clean"], 0)
+
+    def test_audio_audit_module_preserves_text_hashes_and_failure_details(self):
+        from acg.audio_audit import (
+            audio_audit_failure_details,
+            audio_audit_summary,
+            build_audio_audit_items,
+            media_text_hash,
+        )
+
+        items = build_audio_audit_items(
+            [
+                {
+                    "card_id": "card-tts",
+                    "learning_point_id": "lp-tts",
+                    "segment_id": "seg-tts",
+                    "source_time": "00:00:01.000 - 00:00:04.000",
+                    "sentence_tts_text": "Tell you what, I'll let you off for a 10.",
+                    "phrase_tts_text": "Tell you what",
+                    "sentence_tts_audio": "sentence.mp3",
+                    "phrase_tts_audio": "phrase.mp3",
+                    "answer": "Tell you what",
+                }
+            ],
+            {
+                "sentence.mp3": {
+                    "sha256": "sentence-sha",
+                    "semantic_verification": "passed",
+                    "text_hash": media_text_hash("Tell you what, I'll let you off for a 10."),
+                },
+                "phrase.mp3": {
+                    "sha256": "phrase-sha",
+                    "semantic_verification": "mismatch",
+                    "text_hash": media_text_hash("Tell you what"),
+                    "semantic_review_reasons": ["tts provider returned wrong phrase"],
+                },
+            },
+            deck_name="Video Deck",
+            model_name="Anki Card Generator V12 - 沉浸复读 V11",
+            deck_kind="video_language",
+        )
+
+        self.assertEqual(items[0]["tts_text_hashes"]["sentence_tts"], media_text_hash("Tell you what, I'll let you off for a 10."))
+        self.assertEqual(items[0]["tts_text_hashes"]["phrase_tts"], media_text_hash("Tell you what"))
+        self.assertEqual(items[0]["semantic_review_reasons"], ["tts provider returned wrong phrase"])
+        summary = audio_audit_summary(items, deck_kind="video_language", expected_items=1)
+        self.assertEqual(summary["status"], "mismatch")
+        details = audio_audit_failure_details(
+            items,
+            [
+                {
+                    "file": "phrase.mp3",
+                    "role": "phrase_tts",
+                    "tts_text": "Tell you what",
+                    "semantic_verification": "mismatch",
+                }
+            ],
+        )
+        self.assertEqual(details["audio_failures"][0]["card_id"], "card-tts")
+        self.assertEqual(details["audio_failures"][0]["expected_text"], "Tell you what")
 
 
 if __name__ == "__main__":

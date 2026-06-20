@@ -6,7 +6,7 @@ This guide covers the current desktop app behavior.
 
 Development startup uses two processes:
 
-1. Vite starts the local frontend at `http://127.0.0.1:5173/`.
+1. Vite starts the local frontend at `http://127.0.0.1:1420/`.
 2. Tauri/Cargo compiles and starts the desktop window.
 
 If the desktop window is slow after code changes, wait for Cargo to finish. A cold Tauri build can take around a minute. A browser page showing `localhost refused connection` only means the frontend dev server is not ready or has stopped; it does not by itself prove the desktop app build is broken.
@@ -14,11 +14,28 @@ If the desktop window is slow after code changes, wait for Cargo to finish. A co
 Recommended developer startup:
 
 ```powershell
-cd E:\ANKI
-npm run tauri:dev
+cd path\to\Anki-card-generator
+npm.cmd run desktop:dev
 ```
 
-If a hidden/background dev server was left from yesterday, stop stale `anki-card-generator.exe` / project `node` / `cargo` processes, then start again. Avoid judging the app by an old installed portable release; use the current workspace when testing active changes.
+`desktop:dev` is the recommended entrypoint. It starts Vite and Tauri as child processes, keeps stdout/stderr in log files, and hides the Tauri dev console by default so only the desktop UI appears. If you need a visible debug console, run:
+
+```powershell
+npm.cmd run desktop:dev:debug
+```
+
+Avoid judging the app by an old installed portable release; use the current workspace when testing active changes.
+
+Startup diagnostics:
+
+- `.tauri-dev-current.out`
+- `.tauri-dev-current.err`
+- `.tauri-launch-current.json`
+- `.tauri-startup-current.json`
+
+The intended behavior is that, if `desktop:dev` fails, it exits non-zero and stops only the half-started workspace process tree so the next run starts cleanly. `npm.cmd run tauri:dev` is still available as the raw Tauri command for low-level debugging, but it is no longer the recommended everyday entrypoint.
+
+The project previously used Vite's default `5173` port. On some Windows machines that port can be reserved by the system and fail with `EACCES`; the current workspace pins development startup to `1420` to keep desktop launches repeatable.
 
 ## Local Environment Check Fails
 
@@ -74,6 +91,51 @@ Plugin install steps:
 
 You can still export `.apkg` without AnkiConnect; you just cannot run automatic import verification.
 
+### AnkiConnect Works But Anki Path Is Not Detected
+
+On some Windows installs, Anki may live under the current user's local app directory, for example:
+
+```text
+%LOCALAPPDATA%\AnkiProgramFiles\.venv\Scripts\ankiw.exe
+```
+
+If another run shows a mixed state:
+
+```text
+anki_installed=false
+anki_running=false
+anki_connect=true
+```
+
+In that case, treat AnkiConnect as the stronger signal for import verification. It means the worker can talk to Anki through `http://127.0.0.1:8765`, even if the app did not locate `anki.exe` for launch/repair actions.
+
+Quick confirmation:
+
+```powershell
+Invoke-RestMethod -Uri http://127.0.0.1:8765 -Method Post -ContentType 'application/json' -Body '{"action":"version","version":6}'
+```
+
+Expected result:
+
+```json
+{"result":6,"error":null}
+```
+
+If import verification needs to read `collection.media`, remember that Anki stores it under the user profile, outside the repository. Sandboxed commands may need explicit permission to read that directory.
+
+## Document Entry Is Not Visible
+
+This is expected in the current public workflow. Document card generation has been hidden from the ordinary desktop flow so the release can focus on reliable video language cards.
+
+What should be visible:
+
+- `本地视频`
+- `视频链接`
+- Video file picker filters such as MP4, MKV, MOV, AVI, WEBM.
+- Optional SRT subtitle picker.
+
+If a restored old project or localStorage entry still contains `source_mode=document`, the app should fall back to the public video flow instead of showing document controls.
+
 ## YouTube URL Fails
 
 Common causes:
@@ -85,10 +147,10 @@ Common causes:
 
 Recommended actions:
 
-1. Switch to subtitle-only generation if captions are available.
-2. Use local video + SRT.
-3. Run `一键修复全部可修复项` to refresh yt-dlp and Deno.
-4. Wait or change network if YouTube returns 429.
+1. Use local video + SRT if you already have a downloaded copy.
+2. Run `一键修复全部可修复项` to refresh yt-dlp and Deno.
+3. Wait or change network if YouTube returns 429.
+4. Confirm the video has usable captions/subtitles before retrying.
 
 ## No SRT File
 
@@ -111,33 +173,45 @@ The current workflow does more than old simple subtitle splitting:
 - dedupe
 - multilingual pronunciation metadata
 - card body generation
-- optional TTS and media ledger
+- required TTS and media ledger for video-card export
+
+The main slow stages are usually:
+
+- full-subtitle AI review
+- card body generation with a slower high-quality model
+- two TTS files per video card
+- ffmpeg slicing for video, poster, original audio, and webm/mp4 variants
+- APKG packaging and verification
+
+Switching from a Pro/Preview reasoning model to a faster model can speed AI review and card body generation, but it will not remove TTS or media slicing time. A safer product direction is hybrid routing: use a fast model for obvious cards, and use a stronger model only for complex, low-confidence, C1/C2, or repair cases.
 
 Cost/time controls:
 
 - Use shorter source clips for testing.
-- Disable TTS while checking card quality.
-- Use subtitle-only when video slicing is not needed.
+- For early draft inspection, generate fewer selected cards first.
+- Use fast mode when you only need the lighter review template.
+- Reuse cache for repeated local tests, but use fresh material and cold settings for real benchmarks.
 - Keep learning level on auto unless you need a manual preference.
 
 ## Generated Card Count Looks Low
 
-The app no longer exposes “recommended / review / reject” as the main user workflow. It now shows:
+For selected learning points, the current product expectation is:
 
-- generated usable cards
-- selected cards
-- discovered learning points
-- learning point diagnostics
-- duplicate/hard-blocked counts
+```text
+selected learning points ~= generated cards
+```
 
-If generated cards are fewer than expected, open `学习点诊断`. It will show whether learning points were:
+If the model omits optional fields, the app should create a fallback card from the selected learning point and subtitle context, then record the missing fields in advanced diagnostics. The UI should not present “model did not return this learning point” as a normal reason to drop a user-selected card.
 
-- legal but not generated yet
-- duplicate training actions
-- hard-blocked because `exact_span` was not in the source sentence
-- hard-blocked because `answer_core` contained Chinese, IPA, or explanation text
+If generated cards are fewer than selected cards, it should be treated as a hard failure or a bug unless the diagnostic says one of these concrete failures happened:
 
-The current V1 does not automatically generate complete media/TTS/Anki fields for every candidate-only learning point.
+- source media cannot be read
+- video slicing failed
+- sentence TTS or phrase TTS still failed after retry
+- media ledger or manifest hash mismatch
+- Anki/APKG verification failed
+
+Open advanced diagnostics only for the reason distribution. Ordinary users should mainly see selected, generated, exportable, and failed-hard counts.
 
 ## Learning Point Extraction Finishes In A Few Seconds
 
@@ -150,9 +224,11 @@ Formal extraction should call the configured model API. If it finishes in a few 
 
 For quality checks, use the desktop app, confirm the settings page shows the model API test passed, and start a fresh `抽取学习点` run.
 
-## 词霸天下实验 V1 Export Still Looks Like V11
+## Hidden Experimental Template Export Still Looks Like V11
 
-This should not be expected in V1.1 or later.
+The ordinary video/subtitle workflow no longer exposes experimental templates. It should use `沉浸复读 V11` with either `完整复读` or `快速复读`.
+
+This section is only for developer or regression checks that intentionally create a `template_id=ciba_tianxia_v1` project.
 
 `词霸天下实验 V1` changes the bottom-layer behavior:
 
@@ -174,7 +250,27 @@ Check `设置 -> 语音 TTS`:
 - Vertex TTS uses local `gcloud` auth and does not need an API key field.
 - FFmpeg is available, because some providers return PCM that needs conversion.
 
-You can disable TTS and still export cards with original video/audio.
+For the public video-card workflow, sentence TTS and phrase TTS are required media. If TTS is disabled or missing, use that only as an intermediate debugging state; a final video APKG should not be exported with broken or missing TTS.
+
+### Export Says TTS Failed And No APKG Was Generated
+
+This means the app protected the package because one or more required TTS files were missing. The generated card bodies are still kept; the app did not intentionally discard the whole project.
+
+Current expected UI behavior:
+
+- show how many TTS items failed
+- show the failed card/expression/source sentence when available
+- show provider/model/voice details
+- offer `重试失败 TTS 并导出`
+
+If retry still fails:
+
+1. Open `设置 -> 语音 TTS`.
+2. Test the TTS configuration.
+3. Try a different voice/model if the provider rejects a specific text.
+4. Inspect the structured `MISSING_TTS_MEDIA` details in the worker result.
+
+Missing TTS remains a hard export gate for video cards because exporting a card with broken audio would create a bad Anki package.
 
 ## TTS Audio Does Not Match Card Text
 
@@ -186,6 +282,8 @@ The exporter uses different text sources:
 If phrase audio sounds wrong, inspect the card before export. The answer field must not contain Chinese explanation, IPA, or pronunciation notes. Those belong in pronunciation/explanation fields.
 
 The export writes a media ledger with TTS text hash, segment id, card id, and learning point id. APKG verification should report zero media/TTS hash mismatches.
+
+ASR / Whisper is not part of the current public export gate. A local ASR model is not required to use the app, and ASR mismatch should not block ordinary video card export.
 
 ## TTS Is Much Louder Than Original Video
 

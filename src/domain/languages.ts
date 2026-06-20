@@ -150,8 +150,7 @@ export function spokenPronunciationLabel(meta: PronunciationMeta | null): string
 export function pronunciationBasisHint(meta: PronunciationMeta | null): string {
   if (!meta) return ''
   if (meta.generation_basis === 'audio_verified') return ''
-  if (meta.generation_basis === 'dictionary_only') return '未实听，仅提供标准读法'
-  return '未实听，按字幕和常见口语规律推测'
+  return ''
 }
 
 export function confidenceRank(value: unknown): 0 | 1 | 2 {

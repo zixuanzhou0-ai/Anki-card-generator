@@ -12,15 +12,15 @@ export const defaultReviewDensity: ReviewDensity = 'full'
 export const reviewDensityOptions: ReviewDensityOption[] = [
   {
     id: 'fast',
-    label: '精简背面',
-    note: '只保留音频、原句、重点词伙和当前语境义；适合高频刷卡。',
-    badge: '低干扰',
+    label: '快速复读',
+    note: '正面沿用沉浸复读，背面只保留原句、语境义、视频、原声和两段 TTS。',
+    badge: '快速',
   },
   {
     id: 'full',
-    label: '完整背面',
-    note: '保留解释、边界、迁移句和听辨提示；适合新卡精学。',
-    badge: '默认',
+    label: '完整复读',
+    note: '保留完整 V11 背面：用法、边界、迁移句和听辨提示，适合新卡精学。',
+    badge: '完整',
   },
 ]
 

@@ -30,6 +30,7 @@ function renderDialog(overrides: Partial<ComponentProps<typeof SettingsDialog>> 
       apiTestTitle: '尚未测试',
       apiTestTone: 'idle',
       apiTesting: false,
+      apiKeySaved: false,
       activeApiProfileId: 'default',
       apiProfileDirty: false,
       apiProfileStatus: '未保存到我的模型',
@@ -40,13 +41,11 @@ function renderDialog(overrides: Partial<ComponentProps<typeof SettingsDialog>> 
       mimoOpenAiBaseUrl: 'https://api.xiaomimimo.com/v1',
       mimoTextModels,
       savedApiProfiles: [],
-      showAdvancedApi: false,
       showCapabilities: false,
       onApplyApiPreset: vi.fn(),
       onApplySavedApiProfile: vi.fn(),
       onPatchApi: vi.fn(),
       onSaveApiProfile: vi.fn(),
-      onSetShowAdvancedApi: vi.fn(),
       onSetShowCapabilities: vi.fn(),
       onTestApi: vi.fn(),
     },
@@ -65,6 +64,7 @@ function renderDialog(overrides: Partial<ComponentProps<typeof SettingsDialog>> 
     settingsTab: 'api',
     ttsSettings: {
       advancedTtsPresets,
+      apiConfig: defaultRequest.api_config,
       appBusy: false,
       featuredTtsPresets,
       mimoOpenAiBaseUrl: 'https://api.xiaomimimo.com/v1',
@@ -78,6 +78,7 @@ function renderDialog(overrides: Partial<ComponentProps<typeof SettingsDialog>> 
       showAdvancedTts: false,
       tts: defaultRequest.api_config.tts_config,
       ttsProfileDirty: false,
+      ttsKeySaved: false,
       ttsProfileStatus: '未保存到我的语音',
       ttsTestMessage: 'TTS 当前关闭。',
       ttsTestMeta: 'disabled',
@@ -129,6 +130,8 @@ describe('SettingsDialog', () => {
     expect(within(health).getByText('语音 TTS')).toBeInTheDocument()
     expect(within(health).getByText('本地环境')).toBeInTheDocument()
     expect(within(health).getAllByText('未测试')).toHaveLength(1)
+    expect(within(health).getByText('视频卡导出需要整句 TTS 和表达 TTS；请在语音页开启并测试。')).toBeInTheDocument()
+    expect(within(health).queryByText(/只使用原声/)).not.toBeInTheDocument()
 
     fireEvent.click(within(health).getByRole('button', { name: /本地环境/ }))
     expect(props.onSettingsTabChange).toHaveBeenCalledWith('env')

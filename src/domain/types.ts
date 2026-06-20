@@ -7,7 +7,19 @@ export type LearningLanguageCode = 'en' | 'fr' | 'es' | 'ja' | 'ru'
 export type LanguageFocus = 'phrases' | 'vocabulary' | 'grammar' | 'listening'
 export type DocumentFocus = 'concepts' | 'arguments' | 'terms' | 'examples'
 export type DocumentStudyMode = 'knowledge' | 'language_reading'
-export type DocumentAnswerLanguage = 'zh' | 'en' | 'bilingual'
+export type DocumentAnswerLanguage =
+  | 'zh'
+  | 'en'
+  | 'bilingual'
+  | 'ja'
+  | 'ko'
+  | 'es'
+  | 'fr'
+  | 'de'
+  | 'ru'
+  | 'pt'
+  | 'it'
+  | 'ar'
 export type DocumentDepth = 'quick' | 'standard' | 'deep'
 export type DocumentAnswerLength = 'short' | 'medium' | 'long'
 export type StudyDepth = 'standard' | 'deep'
@@ -115,6 +127,21 @@ export type TtsConfig = {
   output_volume?: number
 }
 
+export type TtsSemanticVerificationConfig = {
+  asr_provider?: 'whisper-cli' | 'whisper' | 'openai-whisper' | 'asr-command' | string
+  asr_command?: string
+  asr_command_args?: string[]
+  whisper_command?: string
+  whisper_model?: string
+  whisper_language?: string
+  whisper_timeout_seconds?: number
+  asr_timeout_seconds?: number
+  require_pass_for_export?: boolean
+  strict?: boolean
+  block_unverified?: boolean
+  fail_on_manual_review?: boolean
+}
+
 export type ApiPreset = {
   id: string
   label: string
@@ -194,13 +221,161 @@ export type TtsTestResult = {
   bytes?: number
 }
 
+export type TtsSemanticSummary = {
+  automatic_semantic_check?: 'available' | 'unavailable' | string
+  status?: 'passed' | 'mismatch' | 'manual_review_required' | 'not_applicable' | string
+  passed?: number
+  failed?: number
+  manual_review_required?: number
+  high_risk_items?: number
+}
+
+export type TtsSemanticItem = {
+  file: string
+  role?: 'sentence_tts' | 'phrase_tts' | string
+  field?: string
+  card_id?: string
+  learning_point_id?: string
+  segment_id?: string
+  source_time?: string
+  tts_text?: string
+  text_hash?: string
+  semantic_verification?: string
+  semantic_review_reasons?: string[]
+  asr_provider?: string
+  asr_transcript?: string
+  expected_text_normalized?: string
+  actual_text_normalized?: string
+}
+
+export type CardMediaLedgerItem = {
+  card_id: string
+  source_card_id?: string
+  learning_point_id?: string
+  segment_id?: string
+  source_time?: string
+  media_start?: number
+  media_end?: number
+  media_source_time?: string
+  media_alignment_status?: string
+  media_alignment_text?: string
+  media_alignment_source_text?: string
+  media_subtitle_alignment_status?: string
+  media_subtitle_alignment_reason?: string
+  media_subtitle_overlap_score?: number
+  media_subtitle_time?: string
+  media_subtitle_cue_count?: number
+  media_window_subtitle_text?: string
+  subtitle_path?: string
+  card_display_sentence?: string
+  answer?: string
+  sentence_tts_text?: string
+  phrase_tts_text?: string
+  video_webm?: string
+  video_mp4?: string
+  poster?: string
+  original_audio?: string
+  sentence_tts_audio?: string
+  phrase_tts_audio?: string
+  sentence_tts_semantic_verification?: string
+  sentence_tts_asr_transcript?: string
+  phrase_tts_semantic_verification?: string
+  phrase_tts_asr_transcript?: string
+  template_label?: string
+  template_version?: string
+}
+
+export type AudioAuditItem = {
+  card_id: string
+  learning_point_id?: string
+  segment_id?: string
+  source_time?: string
+  media_start?: number
+  media_end?: number
+  media_source_time?: string
+  media_alignment_status?: string
+  media_alignment_text?: string
+  media_alignment_source_text?: string
+  media_subtitle_alignment_status?: string
+  media_subtitle_alignment_reason?: string
+  media_subtitle_overlap_score?: number
+  media_subtitle_time?: string
+  media_subtitle_cue_count?: number
+  media_window_subtitle_text?: string
+  subtitle_path?: string
+  card_display_sentence?: string
+  source_sentence?: string
+  visible_answer?: string
+  sentence_tts_expected_text?: string
+  phrase_tts_expected_text?: string
+  video_webm?: string
+  video_mp4?: string
+  poster?: string
+  original_audio?: string
+  sentence_tts_file?: string
+  phrase_tts_file?: string
+  sentence_tts_asr_transcript?: string
+  phrase_tts_asr_transcript?: string
+  sentence_tts_semantic_verification?: string
+  phrase_tts_semantic_verification?: string
+  semantic_review_reasons?: string[]
+  sentence_tts_semantic_review_reasons?: string[]
+  phrase_tts_semantic_review_reasons?: string[]
+  media_hashes?: Record<string, string>
+  tts_text_hashes?: Record<string, string>
+  deck?: string
+  model?: string
+  template?: string
+  anki_note_id?: number | string
+  anki_fields?: Record<string, string[]>
+  anki_media_exists?: Record<string, boolean>
+}
+
+export type AudioAuditSummary = {
+  status?: 'passed' | 'mismatch' | 'manual_review_required' | 'not_applicable' | string
+  items?: number
+  expected_items?: number
+  passed?: number
+  failed?: number
+  manual_review_required?: number
+  mismatches?: number
+  media_subtitle_alignment?: {
+    matched?: number
+    partial?: number
+    mismatch?: number
+    unknown?: number
+  }
+  verify_path?: string
+}
+
 export type ExportResult = {
   apkg_path: string
+  apkg_relative_path?: string
+  apkg_sha256?: string
+  apkg_size_bytes?: number
+  apkg_mtime_ms?: number
+  source_identity?: Record<string, unknown>
+  source_fingerprint?: string
   media_dir: string
   deck_name?: string
+  deck_names?: string[]
+  model_name?: string
+  template_name?: string
+  template_version?: string
+  anki_tag?: string
+  anki_manual_import_hint?: string
+  anki_verify_after_manual_import_supported?: boolean
   media_prefix?: string
   media_manifest?: Record<string, MediaManifestEntry>
   media_ledger?: MediaLedgerItem[]
+  card_media_ledger?: CardMediaLedgerItem[]
+  tts_manual_review_items?: TtsSemanticItem[]
+  tts_semantic_failures?: TtsSemanticItem[]
+  tts_semantic_verification?: TtsSemanticSummary
+  audio_audit_path?: string
+  audio_audit_markdown_path?: string
+  audio_audit_summary?: AudioAuditSummary
+  audio_audit_items?: AudioAuditItem[]
   cards: number
   segments: number
   media_summary?: {
@@ -212,7 +387,33 @@ export type ExportResult = {
     media_files: number
     media_bytes: number
     media_mb: number
+    card_media_ledger_items?: number
+    tts_cache_hits?: number
+    tts_cache_misses?: number
+    tts_cache_total?: number
+    media_cache_hits?: number
+    media_cache_misses?: number
+    media_cache_total?: number
+    media_reused_segments?: number
+    tts_concurrency?: number
+    media_concurrency?: number
+    tts_manual_review_items?: number
+    tts_semantic_passed_items?: number
+    tts_semantic_failed_items?: number
+    tts_high_risk_manual_review_items?: number
+    subtitle_diagnostic_status?: string
+    subtitle_path?: string
+    media_subtitle_alignment?: {
+      matched?: number
+      partial?: number
+      mismatch?: number
+      unknown?: number
+    }
   }
+  timing_ms?: Record<string, number>
+  cache_summary?: Record<string, unknown>
+  generation_reconciliation?: Record<string, unknown>
+  retryable_failures?: Array<Record<string, unknown>>
   warnings?: string[]
   deck_kind?: 'video_language' | 'subtitle_language' | 'document_knowledge' | 'document_reading' | string
 }
@@ -221,9 +422,23 @@ export type AnkiVerifyResult = {
   ok: boolean
   message: string
   failed_checks: string[]
+  apkg_path?: string
+  apkg_relative_path?: string
+  apkg_sha256?: string
+  apkg_size_bytes?: number
+  apkg_mtime_ms?: number
+  source_identity?: Record<string, unknown> | null
+  source_fingerprint?: string | null
   deck_name?: string
+  model_names?: string[]
+  import_attempted?: boolean
+  import_result?: unknown
+  import_error?: string | null
   card_count?: number
   expected_cards?: number | null
+  imported_card_count?: number
+  duplicate_imported_card_count?: number
+  duplicate_imported_cards?: Array<{ card_id: string; anki_card_id: string }>
   media_count_expected?: number
   media_count_referenced?: number
   media_count_checked?: number
@@ -234,14 +449,40 @@ export type AnkiVerifyResult = {
   ledger_missing_manifest?: string[]
   manifest_tts_without_ledger?: string[]
   ledger_text_hash_mismatch?: Array<{ file: string; expected_text_hash: string; ledger_text_hash: string }>
+  card_media_ledger_count?: number | null
+  card_media_ledger_mismatches?: Array<{
+    card_id: string
+    field: string
+    expected: string[]
+    actual: string[]
+    missing_expected: string[]
+    unexpected_actual: string[]
+  }>
+  media_ledger_card_text_mismatches?: Array<Record<string, unknown>>
+  tts_manual_review_items?: TtsSemanticItem[]
+  tts_semantic_failures?: TtsSemanticItem[]
+  tts_semantic_verification?: TtsSemanticSummary
+  audio_audit_verify_path?: string
+  audio_audit_verify_markdown_path?: string
+  audio_audit_mismatches?: Array<Record<string, unknown>>
+  audio_audit_write_errors?: Array<Record<string, unknown>>
+  audio_audit_summary?: AudioAuditSummary
+  timing_ms?: Record<string, number>
 }
 
 export type WorkerProgress = {
   job_id?: string
   command: string
   stage: string
+  stage_label?: string
+  phase?: string
   percent: number
   message: string
+  completed_batches?: number
+  total_batches?: number
+  elapsed_ms?: number
+  cache_hits?: number
+  cache_misses?: number
 }
 
 export type WorkerCommand =
@@ -271,6 +512,16 @@ export type WorkerErrorCode =
   | 'TTS_NOT_FOUND'
   | 'TTS_QUOTA_EXCEEDED'
   | 'TTS_TIMEOUT'
+  | 'TTS_SEMANTIC_MISMATCH'
+  | 'TTS_SEMANTIC_UNVERIFIED'
+  | 'UNSAFE_ASR_COMMAND'
+  | 'UNSAFE_VERIFY_OUTPUT_DIR'
+  | 'REMOTE_ANKI_CONNECT_BLOCKED'
+  | 'PRIVATE_NETWORK_URL_BLOCKED'
+  | 'YTDLP_REMOTE_COMPONENTS_CONFIRMATION_REQUIRED'
+  | 'LOCAL_PATH_ACCESS_CONFIRMATION_REQUIRED'
+  | 'EXPORT_QUALITY_GATE_FAILED'
+  | 'MEDIA_SUBTITLE_ALIGNMENT_MISMATCH'
   | 'FFMPEG_SLICE_FAILED'
   | 'ANKI_EXPORT_FAILED'
   | 'ANKI_VERIFY_FAILED'
@@ -301,6 +552,10 @@ export type QualityFunnel = {
   review_learning_point_count?: number
   card_count?: number
   selected_card_count?: number
+  exportable_card_count?: number
+  repair_required_card_count?: number
+  selected_exportable_card_count?: number
+  selected_repair_required_card_count?: number
   recommended_card_count?: number
   review_card_count?: number
   rejected_learning_point_count?: number
@@ -312,14 +567,41 @@ export type QualityFunnel = {
   selected_learning_point_count?: number
   eligible_learning_point_count?: number
   successful_learning_point_count?: number
+  generation_queue_count?: number
+  generation_success_count?: number
+  generation_missing_count?: number
+  generation_reconciliation_status?: 'ok' | 'partial' | string
   card_generation_missing_learning_point_count?: number
   card_generation_filtered_card_count?: number
   card_generation_skipped_learning_point_count?: number
+  user_selected_fallback_card_count?: number
+  ai_repaired_card_count?: number
   candidate_only_learning_point_count?: number
   hidden_duplicate_learning_point_count?: number
   hard_blocked_learning_point_count?: number
   ai_review_cache_hits?: number
   ai_review_cache_misses?: number
+  ai_review_cache_read_enabled?: boolean
+  ai_review_cache_write_enabled?: boolean
+  ai_review_concurrency?: number
+  ai_review_timing_ms?: Record<string, number>
+  learning_point_timing_ms?: Record<string, number>
+  generation_timing_ms?: Record<string, number>
+  generation_timing_aggregate_batch_count?: number
+  generation_timing_aggregate_complete?: boolean
+  generation_batch_size?: number
+  generation_batch_count?: number
+  generation_batch_completed?: number
+  generation_batch_completed_learning_points?: number
+  card_generation_cache_hits?: number
+  card_generation_cache_misses?: number
+  card_generation_cache_read_enabled?: boolean
+  card_generation_cache_write_enabled?: boolean
+  card_generation_cache_namespace?: string
+  card_generation_cache_aggregate_batch_count?: number
+  card_generation_cache_aggregate_complete?: boolean
+  card_generation_cache_policy_consistent?: boolean
+  card_generation_cache_namespace_consistent?: boolean
   level_mode?: LevelMode | string
   learning_points_per_source_distribution?: Record<string, number>
   enabled_cards_per_source_distribution?: Record<string, number>
@@ -356,18 +638,69 @@ export type MaterialContext = {
 export type CardGenerationDiagnosticItem = {
   learning_point_id: string
   answer_core?: string
-  status: 'skipped' | 'model_missing' | 'filtered' | string
+  status:
+    | 'skipped'
+    | 'model_missing'
+    | 'hard_failed'
+    | 'filtered'
+    | 'ai_repaired'
+    | 'fallback_from_selected_learning_point'
+    | string
   reason: string
+  missing_ai_fields?: string[]
+  fallback_fields_filled?: string[]
 }
 
 export type CardGenerationDiagnostics = {
+  processed_learning_point_count?: number
   selected_learning_point_count?: number
   eligible_learning_point_count?: number
   successful_learning_point_count?: number
+  generated_card_count?: number
+  exportable_card_count?: number
+  missing_learning_point_count?: number
   model_missing_learning_point_count?: number
   filtered_learning_point_count?: number
   skipped_learning_point_count?: number
+  hard_failure_items?: CardGenerationDiagnosticItem[]
+  fallback_card_count?: number
+  missing_ai_fields?: Record<string, string[]>
+  media_integrity_summary?: Record<string, unknown>
   items?: CardGenerationDiagnosticItem[]
+}
+
+export type GenerationRunState =
+  | 'source_ready'
+  | 'learning_points_ready'
+  | 'generation_confirming'
+  | 'generation_running'
+  | 'cards_ready'
+  | 'export_running'
+  | 'export_failed_retryable'
+  | 'export_ready'
+  | 'anki_verified'
+
+export type GenerationRunProgress = {
+  state: GenerationRunState
+  stage_label: string
+  percent: number
+  selected_count: number
+  processed_count: number
+  generated_count: number
+  exportable_count: number
+  hard_failure_count: number
+  batch_completed?: number
+  batch_total?: number
+}
+
+export type GenerationRunSummary = {
+  selected_count: number
+  processed_count: number
+  generated_count: number
+  exportable_count: number
+  hard_failure_count: number
+  fallback_card_count?: number
+  retryable_failure_count?: number
 }
 
 export type WorkerFinishedEvent = {
@@ -375,11 +708,16 @@ export type WorkerFinishedEvent = {
   command: WorkerCommand
   ok: boolean
   result?: unknown
+  result_ref?: string
+  result_size_bytes?: number
+  result_summary?: Record<string, unknown>
+  finished_at_ms?: number
   error?: string
   error_code?: WorkerErrorCode | string
   stage?: string
   retryable?: boolean
   fallbacks?: string[]
+  details?: Record<string, unknown>
   cancelled?: boolean
 }
 
@@ -423,6 +761,9 @@ export type GenerateRequest = {
   source_url: string
   url_import_mode: UrlImportMode
   url_auto_subtitle_fallback: boolean
+  allow_private_network_url?: boolean
+  allow_ytdlp_remote_components?: boolean
+  local_path_access_confirmed?: boolean
   skip_video_slicing: boolean
   batch_enabled: boolean
   batch_items: BatchSourceItem[]
@@ -577,6 +918,9 @@ export type Card = {
   pronunciation_status?: string
   source_pronunciation_status?: string
   pronunciation_meta?: PronunciationMeta | string | null
+  generation_source?: 'ai_complete' | 'ai_repaired' | 'fallback_from_selected_learning_point' | string
+  missing_ai_fields?: string[]
+  fallback_fields_filled?: string[]
   replacement_examples?: string | string[]
   avoid_reason?: string
   quality?: {
@@ -593,6 +937,11 @@ export type Segment = {
   media_start?: number
   media_end?: number
   media_source_time?: string
+  media_alignment_status?: 'source_sentence_window' | 'display_sentence_window' | 'source_sentence_fallback' | string
+  media_alignment_phrase?: string
+  media_alignment_phrase_located?: boolean
+  media_alignment_text?: string
+  media_alignment_source_text?: string
   source_time: string
   text: string
   duration: number
@@ -692,6 +1041,10 @@ export type Project = {
   quality_funnel?: QualityFunnel
   card_generation_diagnostics?: CardGenerationDiagnostics
   learning_point_inventory?: LearningPointInventoryItem[]
+  generated_learning_point_ids?: string[]
+  generated_document_point_ids?: string[]
+  source_fingerprint?: string
+  tts_semantic_verification?: TtsSemanticVerificationConfig
   segments: Segment[]
   warnings?: string[]
   error_code?: WorkerErrorCode | string
@@ -714,6 +1067,13 @@ export type MediaManifestEntry = {
   learning_point_id?: string
   tts_text?: string
   text_hash?: string
+  semantic_verification?: string
+  manual_review_required?: boolean
+  semantic_review_reasons?: string[]
+  asr_provider?: string
+  asr_transcript?: string
+  expected_text_normalized?: string
+  actual_text_normalized?: string
   field?: string
   source_time?: string
 }

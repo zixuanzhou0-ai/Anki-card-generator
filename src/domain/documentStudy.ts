@@ -15,14 +15,33 @@ export const documentStudyModeOptions: Array<{
   { id: 'language_reading', label: '语言精读', note: '从英文文档里学习表达、词汇和语法框架' },
 ]
 
-export const documentAnswerLanguageOptions: Array<{
+export type DocumentAnswerLanguageOption = {
   id: DocumentAnswerLanguage
   label: string
   note: string
-}> = [
-  { id: 'zh', label: '中文', note: '反面解释优先用自然中文' },
-  { id: 'en', label: '英文', note: '反面答案和解释优先用英文' },
-  { id: 'bilingual', label: '双语', note: '中文理解为主，保留关键英文术语' },
+}
+
+export const documentAnswerLanguagePrimaryOptions: DocumentAnswerLanguageOption[] = [
+  { id: 'zh', label: '中文', note: '答案、解释和老师提醒默认用自然中文' },
+  { id: 'en', label: 'English', note: '答案、解释和老师提醒默认用英文' },
+  { id: 'bilingual', label: '双语', note: '保留原文语言线索，同时用中文解释清楚' },
+]
+
+export const documentAnswerLanguageMoreOptions: DocumentAnswerLanguageOption[] = [
+  { id: 'ja', label: '日本語', note: '答案、解释和老师提醒默认用日语' },
+  { id: 'ko', label: '한국어', note: '答案、解释和老师提醒默认用韩语' },
+  { id: 'es', label: 'Español', note: '答案、解释和老师提醒默认用西班牙语' },
+  { id: 'fr', label: 'Français', note: '答案、解释和老师提醒默认用法语' },
+  { id: 'de', label: 'Deutsch', note: '答案、解释和老师提醒默认用德语' },
+  { id: 'ru', label: 'Русский', note: '答案、解释和老师提醒默认用俄语' },
+  { id: 'pt', label: 'Português', note: '答案、解释和老师提醒默认用葡萄牙语' },
+  { id: 'it', label: 'Italiano', note: '答案、解释和老师提醒默认用意大利语' },
+  { id: 'ar', label: 'العربية', note: '答案、解释和老师提醒默认用阿拉伯语' },
+]
+
+export const documentAnswerLanguageOptions: DocumentAnswerLanguageOption[] = [
+  ...documentAnswerLanguagePrimaryOptions,
+  ...documentAnswerLanguageMoreOptions,
 ]
 
 export const documentDepthOptions: Array<{

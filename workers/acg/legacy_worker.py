@@ -1,9 +1,10 @@
 ﻿from __future__ import annotations
 
-import html
 import base64
+import binascii
 import hashlib
 import functools
+import ipaddress
 import importlib.util
 import json
 import math
@@ -13,6 +14,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import unicodedata
 import urllib.error
@@ -28,339 +30,477 @@ if str(WORKER_DIR) not in sys.path:
     sys.path.insert(0, str(WORKER_DIR))
 
 from acg import errors as worker_errors
+from acg.anki_fields import (
+    anki_card_deck_name,
+    anki_card_model_name,
+    anki_field_plain_text,
+    anki_field_value,
+    anki_import_pronunciation_meta_error,
+    imported_model_template_mismatches,
+    imported_corrupted_study_text_values,
+    imported_tts_text_hash_mismatches,
+    missing_document_required_text_fields,
+    missing_video_required_text_fields,
+)
+from acg.anki_export import (
+    anki_deck_name,
+    anki_deck_part,
+    batch_export_deck_specs,
+    project_media_prefix,
+    safe_filename,
+    stable_id,
+)
+from acg.anki_media import anki_audio_html, anki_video_html
+from acg.anki_verify import verify_anki_import_failed_checks, verify_anki_import_message
+from acg.audio_audit import (
+    audio_audit_failure_details,
+    audio_audit_manifest_entry,
+    audio_audit_markdown,
+    audio_audit_reasons_for_file,
+    audio_audit_role_hashes,
+    audio_audit_summary,
+    audio_audit_tts_hashes,
+    audio_audit_expected_refs_by_field,
+    audio_audit_imported_text_mismatches,
+    card_media_expected_refs_by_field,
+    build_audio_audit_items,
+    compare_expected_media_refs_by_field,
+    items_by_card_id,
+    load_audio_audit_from_export_result,
+    media_text_hash,
+    missing_expected_entry_mismatch,
+    unique_clean_strings,
+    write_audio_audit_files,
+)
+from acg.card_quality import (
+    ACCEPTABLE_FRAGMENT_ANSWERS as card_quality_acceptable_fragment_answers,
+    BAD_INCOMPLETE_ANSWERS as card_quality_bad_incomplete_answers,
+    INCOMPLETE_FINAL_CONTRACTIONS as card_quality_incomplete_final_contractions,
+    INCOMPLETE_FINAL_WORDS as card_quality_incomplete_final_words,
+    SHORT_FRAGMENT_PRONOUN_ENDS as card_quality_short_fragment_pronoun_ends,
+    SHORT_WH_FRAGMENT_STARTS as card_quality_short_wh_fragment_starts,
+    allows_function_start_phrase as card_quality_allows_function_start_phrase,
+    cefr_rank as card_quality_cefr_rank,
+    has_generic_definition as card_quality_has_generic_definition,
+    has_generic_teacher_note as card_quality_has_generic_teacher_note,
+    has_template_noise as card_quality_has_template_noise,
+    is_specific_study_text as card_quality_is_specific_study_text,
+    is_too_basic_for_level as card_quality_is_too_basic_for_level,
+    looks_like_incomplete_answer_fragment as card_quality_looks_like_incomplete_answer_fragment,
+    looks_like_truncated_listening_answer as card_quality_looks_like_truncated_listening_answer,
+    normalized_action_text as card_quality_normalized_action_text,
+    normalized_answer_key as card_quality_normalized_answer_key,
+    phrase_allows_trailing_preposition as card_quality_phrase_allows_trailing_preposition,
+    phrase_guide_key as card_quality_phrase_guide_key,
+)
+from acg.card_planning import (
+    card_type_for_learning_point as card_planning_card_type_for_learning_point,
+    has_listening_training_value as card_planning_has_listening_training_value,
+    has_output_training_value as card_planning_has_output_training_value,
+    plan_card_types as card_planning_plan_card_types,
+    requested_card_types as card_planning_requested_card_types,
+    usable_learning_point_span as card_planning_usable_learning_point_span,
+)
+from acg.cache_identity import (
+    MEDIA_FFMPEG_PROFILE_VERSION,
+    TEXT_NORMALIZATION_CACHE_VERSION,
+    TTS_PROVIDER_ADAPTER_VERSION,
+    cached_media_file_valid,
+    copy_cached_file,
+    discard_cached_file,
+    file_fingerprint,
+    media_clip_cache_path as cache_media_clip_cache_path,
+    persistent_cache_root as cache_persistent_cache_root,
+    stable_cache_key,
+    store_cached_file,
+    tts_cache_path as cache_tts_cache_path,
+    tts_provider_scope as cache_tts_provider_scope,
+)
 from acg.documents.chunking import clip_words, split_document_chunks
 from acg.documents.readers import read_document_source
+from acg.export_fields import card_sentence_tts_text, front_fields_for_export_media
+from acg.export_text import anki_study_text, anki_text, audit_text_excerpt
+from acg.generation_timing import add_export_timing_aliases, add_verify_anki_import_timing_aliases
+from acg.imported_media import (
+    audio_duration_seconds_from_bytes as imported_audio_duration_seconds_from_bytes,
+    imported_media_exists_for_audit,
+    imported_tts_audio_duration_issues as imported_tts_audio_duration_issues_core,
+    numeric_manifest_value,
+)
+from acg.language_text import (
+    CONTRACTION_WORD_EXPANSIONS,
+    LEARNING_LANGUAGE_ALIASES,
+    LEARNING_LANGUAGE_PROFILES,
+    TTS_LANGUAGE_FALLBACKS,
+    expanded_overlap_words as language_expanded_overlap_words,
+    has_cjk as language_has_cjk,
+    has_cyrillic as language_has_cyrillic,
+    has_japanese_kana as language_has_japanese_kana,
+    has_latin_letter as language_has_latin_letter,
+    looks_like_target_language_text as language_looks_like_target_language_text,
+    normalize_learning_language as language_normalize_learning_language,
+    overlap_words as language_overlap_words,
+    pronunciation_profile as language_pronunciation_profile,
+    word_overlap_ratio as language_word_overlap_ratio,
+)
+from acg.learning_settings import (
+    LANGUAGE_FOCUS_LABELS as learning_settings_language_focus_labels,
+    LANGUAGE_FOCUS_ORDER as learning_settings_language_focus_order,
+    LANGUAGE_FOCUS_RULES as learning_settings_language_focus_rules,
+    SELECTION_STRATEGIES as learning_settings_selection_strategies,
+    SELECTION_STRATEGY_LABELS as learning_settings_selection_strategy_labels,
+    STUDY_DEPTHS as learning_settings_study_depths,
+    collection_levels_from_payload as learning_settings_collection_levels_from_payload,
+    discovery_collection_levels as learning_settings_discovery_collection_levels,
+    language_focus_instruction as learning_settings_language_focus_instruction,
+    learning_point_confidence as learning_settings_learning_point_confidence,
+    max_learning_points_per_source as learning_settings_max_learning_points_per_source,
+    max_reviewable_cards_per_source as learning_settings_max_reviewable_cards_per_source,
+    max_source_expansion_groups as learning_settings_max_source_expansion_groups,
+    normalize_collection_levels as learning_settings_normalize_collection_levels,
+    normalized_document_reading_focus as learning_settings_normalized_document_reading_focus,
+    normalized_language_focus as learning_settings_normalized_language_focus,
+    normalized_level_mode as learning_settings_normalized_level_mode,
+    normalized_selection_strategy as learning_settings_normalized_selection_strategy,
+    normalized_source_expansion_mode as learning_settings_normalized_source_expansion_mode,
+    normalized_study_depth as learning_settings_normalized_study_depth,
+    selection_candidate_multiplier as learning_settings_selection_candidate_multiplier,
+)
+from acg.learning_actions import (
+    learning_action_for_card as learning_actions_learning_action_for_card,
+    normalize_learning_action_fields as learning_actions_normalize_learning_action_fields,
+    normalized_contains_text as learning_actions_normalized_contains_text,
+)
+from acg.inventory import (
+    LEARNING_POINT_INVENTORY_STATUSES as inventory_learning_point_inventory_statuses,
+    apply_default_generated_card_selection as inventory_apply_default_generated_card_selection,
+    card_quality_status as inventory_card_quality_status,
+    inventory_learning_action as inventory_inventory_learning_action,
+    inventory_status_for_filtered_item as inventory_inventory_status_for_filtered_item,
+    inventory_status_for_rejected_card as inventory_inventory_status_for_rejected_card,
+    learning_point_inventory_stats as inventory_learning_point_inventory_stats,
+)
+from acg.review_modes import (
+    CIBA_CARD_STYLE_LABELS as review_modes_ciba_card_style_labels,
+    VALID_CARD_STYLES as review_modes_valid_card_styles,
+    VALID_REVIEW_DENSITIES as review_modes_valid_review_densities,
+    VALID_TEMPLATE_IDS as review_modes_valid_template_ids,
+    ciba_tianxia_mode as review_modes_ciba_tianxia_mode,
+    fast_review_card_quality as review_modes_fast_review_card_quality,
+    fast_review_density as review_modes_fast_review_density,
+    fast_review_prompt_instruction as review_modes_fast_review_prompt_instruction,
+    normalize_card_style as review_modes_normalize_card_style,
+    normalize_review_density as review_modes_normalize_review_density,
+    normalize_template_id as review_modes_normalize_template_id,
+    short_fast_text as review_modes_short_fast_text,
+    slim_fast_review_card as review_modes_slim_fast_review_card,
+    slim_fast_review_segments as review_modes_slim_fast_review_segments,
+)
+from acg.learning_spans import (
+    exact_span_offsets as learning_span_exact_span_offsets,
+    expression_span_from_text as learning_span_expression_span_from_text,
+    normalize_candidate_span as learning_span_normalize_candidate_span,
+    normalized_phrase_key as learning_span_normalized_phrase_key,
+    phrase_in_text as learning_span_phrase_in_text,
+)
+from acg.learning_types import (
+    card_label_for_learning_card as learning_type_card_label_for_learning_card,
+    card_label_for_phrase_type as learning_type_card_label_for_phrase_type,
+    candidate_kind_allowed_by_focus as learning_type_candidate_kind_allowed_by_focus,
+    candidate_kind_for_phrase_type as learning_type_candidate_kind_for_phrase_type,
+    candidate_kind_for_segment as learning_type_candidate_kind_for_segment,
+    content_kind_for_phrase_type as learning_type_content_kind_for_phrase_type,
+    learning_action_key_for_contract as learning_type_learning_action_key_for_contract,
+    normalize_candidate_kind as learning_type_normalize_candidate_kind,
+    normalize_phrase_type as learning_type_normalize_phrase_type,
+    phrase_type_for_candidate_kind as learning_type_phrase_type_for_candidate_kind,
+)
 from acg.phrases.lexicon import (
     CARD_TYPE_LABELS,
     CEFR_LABELS,
     CEFR_ORDER,
     COMMON_FUNCTION_STARTS,
-    CONTENT_PATTERNS,
     DISCOVERY_EXPRESSION_PATTERNS,
     DISCOVERY_PHRASE_PARTICLES,
     DISCOVERY_PHRASE_VERBS,
     DISCOVERY_PREPOSITION_STARTS,
     DISCOVERY_SIGNAL_WORDS,
     EXPRESSION_PATTERNS,
-    FILLER_TEXTS,
-    LOW_VALUE_STANDALONE_PHRASES,
-    NON_TRANSFERABLE_PHRASES,
-    PHRASE_GUIDE_ALIASES,
     PHRASE_GUIDES,
     PHRASES_BY_LEVEL,
-    TEMPLATE_NOISE_PATTERNS,
-    TOO_BASIC_FOR_INTERMEDIATE_PHRASES,
-    TRANSFERABLE_FUNCTION_FRAME_PHRASES,
-    VIDEO_INTRO_PATTERNS,
-    WEAK_PHRASE_STARTS,
+)
+from acg.phrase_discovery import (
+    candidate_phrases_from_text as phrase_discovery_candidate_phrases_from_text,
+    choose_best_phrase as phrase_discovery_choose_best_phrase,
+    discovery_ngram_has_signal as phrase_discovery_discovery_ngram_has_signal,
+    find_phrase as phrase_discovery_find_phrase,
+    has_adjacent_duplicate_words as phrase_discovery_has_adjacent_duplicate_words,
+    is_low_value_standalone_phrase as phrase_discovery_is_low_value_standalone_phrase,
+    is_non_transferable_phrase as phrase_discovery_is_non_transferable_phrase,
+    normalize_phrase_candidate as phrase_discovery_normalize_phrase_candidate,
+    phrase_pool as phrase_discovery_phrase_pool,
+    structurally_safe_discovery_phrase as phrase_discovery_structurally_safe_discovery_phrase,
+    trim_discovery_phrase_words as phrase_discovery_trim_discovery_phrase_words,
+    usable_phrase as phrase_discovery_usable_phrase,
+)
+from acg.provider_config import (
+    DEEPSEEK_OPENAI_BASE_URL,
+    DEEPSEEK_THINKING_MODELS,
+    GEMINI_VERTEX_DEFAULT_MODEL,
+    GEMINI_VERTEX_GLOBAL_BASE_URL,
+    GEMINI_VERTEX_PROVIDERS,
+    GEMINI_VERTEX_TTS_DEFAULT_MODEL,
+    GEMINI_VERTEX_TTS_DEFAULT_VOICE,
+    GEMINI_VERTEX_TTS_GLOBAL_BASE_URL,
+    GEMINI_VERTEX_TTS_PROVIDERS,
+    GEMINI_VERTEX_UNAVAILABLE_MODEL_ALIASES,
+    MIMO_OPENAI_BASE_URL,
+    MIMO_PROVIDERS,
+    MIMO_TOKEN_PLAN_SGP_BASE_URL,
+    OPENAI_COMPATIBLE_PROVIDERS,
+    QWEN_DASHSCOPE_CN_TTS_BASE_URL,
+    QWEN_TTS_DEFAULT_MODEL,
+    QWEN_TTS_DEFAULT_VOICE,
+    QWEN_TTS_PROVIDERS,
+    api_key_header as provider_api_key_header,
+    compatible_base_url as provider_compatible_base_url,
+    is_deepseek_config as provider_is_deepseek_config,
+    is_deepseek_thinking_config as provider_is_deepseek_thinking_config,
+    is_gemini_vertex_config as provider_is_gemini_vertex_config,
+    is_gemini_vertex_thinking_config as provider_is_gemini_vertex_thinking_config,
+    is_gemini_vertex_tts_config as provider_is_gemini_vertex_tts_config,
+    is_mimo_config as provider_is_mimo_config,
+    is_qwen_config as provider_is_qwen_config,
+    is_thinking_model_config as provider_is_thinking_model_config,
+    model_api_available as provider_model_api_available,
+    provider_name as provider_provider_name,
+    should_stream_reasoning as provider_should_stream_reasoning,
+    thinking_budget as provider_thinking_budget,
+)
+from acg.service_errors import (
+    classify_service_error as service_errors_classify_service_error,
+    classify_worker_exception as service_errors_classify_worker_exception,
+    http_status_from_error_message as service_errors_http_status_from_error_message,
+    service_error_codes as service_errors_service_error_codes,
+    service_error_message as service_errors_service_error_message,
+    service_label as service_errors_service_label,
+    service_stage as service_errors_service_stage,
+)
+from acg.security_boundaries import (
+    BLOCKED_URL_HOSTS as security_boundaries_blocked_url_hosts,
+    LOOPBACK_HOSTS as security_boundaries_loopback_hosts,
+    SENSITIVE_WINDOWS_ROOTS as security_boundaries_sensitive_windows_roots,
+    SUPPORTED_INPUT_SUFFIXES as security_boundaries_supported_input_suffixes,
+    host_is_loopback as security_boundaries_host_is_loopback,
+    host_is_private_or_local as security_boundaries_host_is_private_or_local,
+    ip_address_for_host as security_boundaries_ip_address_for_host,
+    parsed_url_host as security_boundaries_parsed_url_host,
+    require_confirmed_local_path_access as security_boundaries_require_confirmed_local_path_access,
+    validate_anki_connect_url as security_boundaries_validate_anki_connect_url,
+    validate_source_url_for_import as security_boundaries_validate_source_url_for_import,
+)
+from acg.scoring.source_text import (
+    contains_any as source_text_contains_any,
+    content_allowed as source_text_content_allowed,
+    looks_like_video_intro as source_text_looks_like_video_intro,
+    score_text as source_text_score_text,
+)
+from acg.ytdlp_support import (
+    format_yt_dlp_failure as ytdlp_support_format_yt_dlp_failure,
+    is_subtitle_rate_limited as ytdlp_support_is_subtitle_rate_limited,
+    yt_dlp_failure_detail as ytdlp_support_yt_dlp_failure_detail,
+    yt_dlp_failure_meta as ytdlp_support_yt_dlp_failure_meta,
+    yt_dlp_js_runtime_args as ytdlp_support_yt_dlp_js_runtime_args,
+    yt_dlp_network_args as ytdlp_support_yt_dlp_network_args,
+    yt_dlp_needs_remote_components as ytdlp_support_yt_dlp_needs_remote_components,
+)
+from acg.subtitles.discovery import (
+    TEXT_SUBTITLE_CODECS,
+    compact_match_text as subtitle_discovery_compact_match_text,
+    convert_vtt_to_srt as subtitle_discovery_convert_vtt_to_srt,
+    discover_local_subtitle as subtitle_discovery_discover_local_subtitle,
+    first_file_by_suffix as subtitle_discovery_first_file_by_suffix,
+    pick_subtitle_file as subtitle_discovery_pick_subtitle_file,
+    select_embedded_subtitle_stream as subtitle_discovery_select_embedded_subtitle_stream,
+    subtitle_language_aliases as subtitle_discovery_subtitle_language_aliases,
+    subtitle_language_args as subtitle_discovery_subtitle_language_args,
+    subtitle_language_markers as subtitle_discovery_subtitle_language_markers,
+)
+from acg.subtitles.sentences import (
+    append_caption_text as subtitle_append_caption_text,
+    has_unbalanced_quotes as subtitle_has_unbalanced_quotes,
+    incremental_caption_text as subtitle_incremental_caption_text,
+    normalize_rolling_cues as subtitle_normalize_rolling_cues,
+    source_segment_key as subtitle_source_segment_key,
+    split_caption_fragment as subtitle_split_caption_fragment,
+    starts_like_fragment as subtitle_starts_like_fragment,
+    stitch_sentence_cues as subtitle_stitch_sentence_cues,
+    word_spans as subtitle_word_spans,
+)
+from acg.media_alignment import (
+    MEDIA_SUBTITLE_PARTIAL_EXPORT_BLOCK_THRESHOLD,
+    SOURCE_SENTENCE_QUALITY_MEDIA_BLOCK_FLAGS,
+    _counted_word_overlap_ratio,
+    align_segment_media_to_display_sentence,
+    clean_candidate_text,
+    export_subtitle_alignment_diagnostics,
+    is_filler_text as media_is_filler_text,
+    media_subtitle_alignment_blocks_export,
+    media_subtitle_alignment_diagnostic,
+    media_subtitle_alignment_failure_reason,
+    merge_subtitle_parts,
+    looks_complete_sentence as media_looks_complete_sentence,
+    phrase_word_indices,
+    refine_segment_media_for_phrase,
+    segment_media_bounds,
+    segment_display_source_time,
+    sentence_window_media_bounds,
+    video_media_subtitle_mismatch_items,
+)
+from acg.media_manifest import (
+    bytes_sha256,
+    compare_media_manifest as compare_media_manifest_core,
+    file_sha256,
+    media_ledger_card_text_mismatches as media_ledger_card_text_mismatches_core,
+    media_ledger_manifest_consistency,
+    media_manifest as media_manifest_core,
+)
+from acg.media_refs import extract_media_references, missing_video_required_media_roles
+from acg.model_json import (
+    extract_json_object as model_json_extract_json_object,
+    strip_reasoning_text as model_json_strip_reasoning_text,
 )
 from acg.protocol import PROGRESS_PREFIX, emit, emit_progress, fail, read_payload
+from acg.source_modes import (
+    SUBTITLE_ONLY_IMPORT_MODES,
+    normalized_url_import_mode,
+    url_video_mode_requested,
+    video_free_export_allowed,
+    video_media_required_for_export,
+    wants_subtitle_only,
+)
 from acg.subtitles.core import Cue, fmt_time, parse_timestamp, strip_subtitle_text
+from acg.text_cleaning import (
+    INTERNAL_PLACEHOLDER_PATTERNS,
+    MANUAL_CONFIRMATION_ONLY_PLACEHOLDER_PATTERNS,
+    clean_study_text,
+    contains_internal_placeholder,
+    internal_placeholder_patterns,
+    internal_placeholder_patterns_for_quality_issue,
+)
+from acg.tts_text import (
+    TTS_SMALL_NUMBER_WORDS,
+    clean_tts_input_text,
+    exact_tts_prompt,
+    gemini_vertex_tts_text_variants,
+    tts_ascii_punctuation_variant,
+    tts_sentence_punctuation_variant,
+    tts_small_number_words_variant,
+    tts_speech_safe_variant,
+)
+from acg.tts_semantic import (
+    build_asr_command_argv as semantic_build_asr_command_argv,
+    normalize_tts_semantic_text,
+    phrase_tts_max_duration_seconds,
+    tts_manual_review_items,
+    tts_semantic_config as semantic_tts_semantic_config,
+    tts_semantic_base_reasons,
+    tts_semantic_failure_items,
+    tts_semantic_matches,
+    tts_semantic_not_applicable,
+    tts_semantic_requires_export_pass as semantic_tts_semantic_requires_export_pass,
+    tts_semantic_verification_enabled as semantic_tts_semantic_verification_enabled,
+    tts_semantic_verification_summary,
+    unsafe_asr_command_reason as semantic_unsafe_asr_command_reason,
+)
 
 
 for stream in (sys.stdin, sys.stdout, sys.stderr):
     if hasattr(stream, "reconfigure"):
         stream.reconfigure(encoding="utf-8")
 
-MIMO_OPENAI_BASE_URL = "https://api.xiaomimimo.com/v1"
-MIMO_TOKEN_PLAN_SGP_BASE_URL = "https://token-plan-sgp.xiaomimimo.com/v1"
-DEEPSEEK_OPENAI_BASE_URL = "https://api.deepseek.com"
-QWEN_DASHSCOPE_CN_TTS_BASE_URL = "https://dashscope.aliyuncs.com/api/v1"
-QWEN_TTS_DEFAULT_MODEL = "qwen3-tts-flash"
-QWEN_TTS_DEFAULT_VOICE = "Jennifer"
-GEMINI_VERTEX_TTS_GLOBAL_BASE_URL = "https://aiplatform.googleapis.com"
-GEMINI_VERTEX_TTS_DEFAULT_MODEL = "gemini-3.1-flash-tts-preview"
-GEMINI_VERTEX_TTS_DEFAULT_VOICE = "Kore"
-MIMO_PROVIDERS = {"mimo", "xiaomi-mimo"}
-QWEN_TTS_PROVIDERS = {"qwen", "dashscope", "aliyun-dashscope"}
-GEMINI_VERTEX_TTS_PROVIDERS = {"gemini-vertex", "vertex-gemini", "gemini-vertex-tts", "vertex-gemini-tts"}
-OPENAI_COMPATIBLE_PROVIDERS = {"openai-compatible", *MIMO_PROVIDERS}
-GEMINI_VERTEX_PROVIDERS = {"gemini-vertex", "vertex-gemini"}
-GEMINI_VERTEX_GLOBAL_BASE_URL = "https://aiplatform.googleapis.com"
-GEMINI_VERTEX_DEFAULT_MODEL = "gemini-3.1-pro-preview"
-GEMINI_VERTEX_UNAVAILABLE_MODEL_ALIASES = {"gemini-3.1-pro"}
-DEEPSEEK_THINKING_MODELS = {"deepseek-v4-pro", "deepseek-v4-flash", "deepseek-reasoner"}
-
-LEARNING_LANGUAGE_PROFILES: dict[str, dict[str, str]] = {
-    "en": {
-        "label": "English",
-        "accent_profile": "en-US-general",
-        "notation_system": "ipa_en_connected",
-        "standard_hint": "IPA",
-    },
-    "fr": {
-        "label": "Français",
-        "accent_profile": "fr-FR-standard-media",
-        "notation_system": "api_ipa_liaison",
-        "standard_hint": "API/IPA",
-    },
-    "es": {
-        "label": "Español",
-        "accent_profile": "es-LatAm-general-MX-like",
-        "notation_system": "spanish_syllable_stress_optional_ipa",
-        "standard_hint": "音节+重音",
-    },
-    "ja": {
-        "label": "日本語",
-        "accent_profile": "ja-JP-Tokyo-standard",
-        "notation_system": "kana_pitch",
-        "standard_hint": "假名+音高",
-    },
-    "ru": {
-        "label": "Русский",
-        "accent_profile": "ru-general-standard",
-        "notation_system": "stressed_cyrillic_optional_ipa",
-        "standard_hint": "重音西里尔",
-    },
-}
-
-LEARNING_LANGUAGE_ALIASES = {
-    "": "en",
-    "english": "en",
-    "en-us": "en",
-    "en-gb": "en",
-    "us english": "en",
-    "american english": "en",
-    "英语": "en",
-    "français": "fr",
-    "francais": "fr",
-    "french": "fr",
-    "fr-fr": "fr",
-    "法语": "fr",
-    "español": "es",
-    "espanol": "es",
-    "spanish": "es",
-    "es-mx": "es",
-    "es-419": "es",
-    "es-es": "es",
-    "西班牙语": "es",
-    "日本語": "ja",
-    "japanese": "ja",
-    "ja-jp": "ja",
-    "日语": "ja",
-    "русский": "ru",
-    "russian": "ru",
-    "ru-ru": "ru",
-    "俄语": "ru",
-}
-
-TTS_LANGUAGE_FALLBACKS: dict[str, list[str]] = {
-    "en": ["en-US", "en-GB"],
-    "fr": ["fr-FR", "fr-CA"],
-    "es": ["es-MX", "es-419", "es-US", "es-ES"],
-    "ja": ["ja-JP"],
-    "ru": ["ru-RU"],
-}
-
-VALID_TEMPLATE_IDS = {"immersive_v11", "ciba_tianxia_v1", "immersive", "dictionary", "minimal"}
+VALID_TEMPLATE_IDS = review_modes_valid_template_ids
 
 
 def normalize_template_id(template_id: Any = "immersive_v11") -> str:
-    value = str(template_id or "").strip()
-    return value if value in VALID_TEMPLATE_IDS else "immersive_v11"
+    return review_modes_normalize_template_id(template_id)
 
 
 def ciba_tianxia_mode(payload: dict[str, Any] | None) -> bool:
-    return normalize_template_id((payload or {}).get("template_id")) == "ciba_tianxia_v1"
+    return review_modes_ciba_tianxia_mode(payload)
 
 
-VALID_CARD_STYLES = {"warm_paper", "minimal_white", "dark_immersive"}
-VALID_REVIEW_DENSITIES = {"full", "fast"}
-CIBA_CARD_STYLE_LABELS = {
-    "warm_paper": "暖色纸感",
-    "minimal_white": "极简白卡",
-    "dark_immersive": "深色沉浸",
-}
+VALID_CARD_STYLES = review_modes_valid_card_styles
+VALID_REVIEW_DENSITIES = review_modes_valid_review_densities
+CIBA_CARD_STYLE_LABELS = review_modes_ciba_card_style_labels
 
 
 def normalize_card_style(card_style: Any = "warm_paper") -> str:
-    value = str(card_style or "").strip()
-    return value if value in VALID_CARD_STYLES else "warm_paper"
+    return review_modes_normalize_card_style(card_style)
 
 
 def normalize_review_density(review_density: Any = "full") -> str:
-    value = str(review_density or "").strip()
-    return value if value in VALID_REVIEW_DENSITIES else "full"
+    return review_modes_normalize_review_density(review_density)
 
 
 def fast_review_density(project: dict[str, Any]) -> bool:
-    return normalize_review_density(project.get("review_density")) == "fast"
+    return review_modes_fast_review_density(project)
 
 
 def fast_review_prompt_instruction(project: dict[str, Any]) -> str:
-    if not fast_review_density(project):
-        return ""
-    return (
-        "【快速背卡模式：真正减少 token】"
-        "用户选择的是精简背面/快速背卡，不是完整精学卡。"
-        "每张卡只生成最小复习字段：retrieval_prompt、answer_core、phrase、chinese、english/source_evidence、chinese_feel、teacher_note。"
-        "teacher_note 最多一句，优先 18-36 个中文字；definition 最多一句，优先 20-40 个中文字。"
-        "不要输出长段落，不要把边界、易错、为什么值得学、例句和迁移句都塞进 teacher_note。"
-        "definition/context/example/collocations/why/why_it_matters/how_to_use_it/usage_boundary/confusable_note/replacement_examples "
-        "这些字段能留空就留空；确实必须写时也只能短句。"
-        "同一个 learning_point 只做一张 phrase 主卡；除非用户明确选择听力/填空且该点不可替代，否则不要额外生成 listening 或 cloze。"
-        "目标是减少 token、减少审核负担，让背面只留下：答案、当前语境义、原句、一个很短提醒。"
-    )
+    return review_modes_fast_review_prompt_instruction(project)
 
 
 def short_fast_text(value: Any, limit: int) -> str:
-    text = clean_study_text(value)
-    if not text:
-        return ""
-    first = re.split(r"[。.!！?？；;]\s*", text, maxsplit=1)[0].strip()
-    text = first or text
-    return text[: max(0, limit)].rstrip()
+    return review_modes_short_fast_text(value, limit)
 
 
 def fast_review_card_quality(card: dict[str, Any], segment: dict[str, Any] | None = None) -> dict[str, Any]:
-    segment = segment or {}
-    issues: list[str] = []
-    answer = clean_study_text(card.get("answer_core") or card.get("phrase"))
-    english = clean_study_text(card.get("english") or segment.get("text"))
-    chinese = clean_study_text(card.get("chinese"))
-    definition = clean_study_text(card.get("definition"))
-    teacher_note = clean_study_text(card.get("teacher_note"))
-    retrieval_prompt = clean_study_text(card.get("retrieval_prompt"))
-    if not answer:
-        issues.append("缺少核心答案")
-    if not english:
-        issues.append("缺少原句")
-    if answer and english and not normalized_contains_text(english, answer):
-        issues.append("核心答案不在原句")
-    if not chinese or not has_cjk(chinese):
-        issues.append("缺少中文语境义")
-    if not (definition or teacher_note):
-        issues.append("缺少短释义或老师提醒")
-    if not retrieval_prompt:
-        issues.append("缺少正面回忆题")
-    score = max(0, 88 - 16 * len(issues))
-    status = "recommended" if score >= 72 and not issues else "needs_review" if score >= 42 else "reject"
-    return {"score": score, "status": status, "issues": issues}
+    return review_modes_fast_review_card_quality(card, segment)
 
 
 def slim_fast_review_card(card: dict[str, Any], segment: dict[str, Any] | None = None) -> dict[str, Any]:
-    slim = dict(card)
-    slim["teacher_note"] = short_fast_text(slim.get("teacher_note") or slim.get("how_to_use_it") or slim.get("definition"), 48)
-    slim["definition"] = short_fast_text(slim.get("definition") or slim.get("learning_target"), 48)
-    slim["chinese_feel"] = short_fast_text(slim.get("chinese_feel") or slim.get("natural_chinese"), 40)
-    for key in [
-        "collocations",
-        "example",
-        "why",
-        "why_it_matters",
-        "how_to_use_it",
-        "usage_boundary",
-        "confusable_note",
-        "replacement_examples",
-        "conceptual_action",
-        "chinese_learner_trap",
-    ]:
-        slim[key] = ""
-    slim["quality"] = fast_review_card_quality(slim, segment)
-    slim["enabled"] = slim["quality"]["status"] == "recommended"
-    return slim
+    return review_modes_slim_fast_review_card(card, segment)
 
 
 def slim_fast_review_segments(segments: list[dict[str, Any]], project: dict[str, Any]) -> list[dict[str, Any]]:
-    if not fast_review_density(project):
-        return segments
-    slimmed: list[dict[str, Any]] = []
-    for segment in segments:
-        slimmed.append({**segment, "cards": [slim_fast_review_card(card, segment) for card in segment.get("cards", []) or []]})
-    return slimmed
+    return review_modes_slim_fast_review_segments(segments, project)
 
 
 def normalize_learning_language(language: Any = "en") -> str:
-    raw = str(language or "").strip()
-    lower = raw.lower()
-    if lower in LEARNING_LANGUAGE_PROFILES:
-        return lower
-    if lower in LEARNING_LANGUAGE_ALIASES:
-        return LEARNING_LANGUAGE_ALIASES[lower]
-    if lower.startswith("en"):
-        return "en"
-    if lower.startswith("fr"):
-        return "fr"
-    if lower.startswith("es"):
-        return "es"
-    if lower.startswith("ja") or "日本" in raw:
-        return "ja"
-    if lower.startswith("ru") or "рус" in lower or "俄语" in raw:
-        return "ru"
-    return "en"
+    return language_normalize_learning_language(language)
 
 
 def pronunciation_profile(language: Any = "en") -> dict[str, str]:
-    code = normalize_learning_language(language)
-    return {"code": code, **LEARNING_LANGUAGE_PROFILES[code]}
+    return language_pronunciation_profile(language)
 
 
 def overlap_words(value: str) -> list[str]:
-    return re.findall(r"[A-Za-z0-9']+", value.lower())
-
-
-CONTRACTION_WORD_EXPANSIONS = {
-    "i've": ["i", "have"],
-    "you've": ["you", "have"],
-    "we've": ["we", "have"],
-    "they've": ["they", "have"],
-    "i'm": ["i", "am"],
-    "you're": ["you", "are"],
-    "we're": ["we", "are"],
-    "they're": ["they", "are"],
-    "it's": ["it", "is"],
-    "that's": ["that", "is"],
-    "what's": ["what", "is"],
-    "who's": ["who", "is"],
-    "where's": ["where", "is"],
-    "there's": ["there", "is"],
-    "here's": ["here", "is"],
-    "i'd": ["i", "would"],
-    "you'd": ["you", "would"],
-    "we'd": ["we", "would"],
-    "they'd": ["they", "would"],
-    "i'll": ["i", "will"],
-    "you'll": ["you", "will"],
-    "we'll": ["we", "will"],
-    "they'll": ["they", "will"],
-}
+    return language_overlap_words(value)
 
 
 def expanded_overlap_words(value: str) -> list[str]:
-    words: list[str] = []
-    for word in overlap_words(value):
-        words.extend(CONTRACTION_WORD_EXPANSIONS.get(word, [word]))
-    return words
+    return language_expanded_overlap_words(value)
 
 
 def has_cjk(value: str) -> bool:
-    return bool(re.search(r"[\u3400-\u9fff]", str(value or "")))
+    return language_has_cjk(value)
 
 
 def has_japanese_kana(value: Any) -> bool:
-    return bool(re.search(r"[\u3040-\u30ff]", str(value or "")))
+    return language_has_japanese_kana(value)
 
 
 def has_cyrillic(value: Any) -> bool:
-    return bool(re.search(r"[\u0400-\u04ff]", str(value or "")))
+    return language_has_cyrillic(value)
 
 
 def has_latin_letter(value: Any) -> bool:
-    return bool(re.search(r"[A-Za-zÀ-ÖØ-öø-ÿĀ-ž]", str(value or "")))
+    return language_has_latin_letter(value)
 
 
 def looks_like_target_language_text(value: Any, language: Any = "en") -> bool:
-    text = clean_study_text(value) if "clean_study_text" in globals() else str(value or "").strip()
-    if not text:
-        return False
-    code = normalize_learning_language(language)
-    if code == "ja":
-        return has_japanese_kana(text) or has_cjk(text)
-    if code == "ru":
-        return has_cyrillic(text)
-    if code in {"fr", "es", "en"}:
-        return has_latin_letter(text)
-    return bool(text)
+    return language_looks_like_target_language_text(value, language)
 
 
 def clean_input_path(value: Any) -> str:
@@ -368,46 +508,7 @@ def clean_input_path(value: Any) -> str:
 
 
 def word_overlap_ratio(left: str, right: str) -> float:
-    left_words = set(overlap_words(left))
-    right_words = set(overlap_words(right))
-    if not left_words or not right_words:
-        return 0.0
-    return len(left_words & right_words) / max(1, min(len(left_words), len(right_words)))
-
-
-def merge_subtitle_parts(parts: list[str]) -> str:
-    merged = ""
-    for raw_part in parts:
-        part = strip_subtitle_text(raw_part)
-        if not part:
-            continue
-        if not merged:
-            merged = part
-            continue
-
-        merged_norm = " ".join(overlap_words(merged))
-        part_norm = " ".join(overlap_words(part))
-        if not part_norm:
-            continue
-        if part_norm in merged_norm:
-            continue
-        if merged_norm and merged_norm in part_norm:
-            merged = part
-            continue
-
-        merged_words = overlap_words(merged)
-        part_words = overlap_words(part)
-        overlap = 0
-        max_overlap = min(len(merged_words), len(part_words))
-        for size in range(max_overlap, 0, -1):
-            if merged_words[-size:] == part_words[:size]:
-                overlap = size
-                break
-        if overlap >= 2:
-            merged = f"{merged} {' '.join(part_words[overlap:])}".strip()
-        else:
-            merged = f"{merged} {part}".strip()
-    return strip_subtitle_text(merged)
+    return language_word_overlap_ratio(left, right)
 
 
 def parse_srt(path: str) -> list[Cue]:
@@ -461,174 +562,55 @@ def parse_srt(path: str) -> list[Cue]:
 
 
 def word_spans(text: str) -> list[re.Match[str]]:
-    return list(re.finditer(r"[A-Za-z0-9']+", text))
+    return subtitle_word_spans(text)
 
 
 def incremental_caption_text(previous_text: str, current_text: str) -> tuple[str, bool]:
-    previous_words = overlap_words(previous_text)
-    current_words = overlap_words(current_text)
-    max_overlap = min(len(previous_words), len(current_words))
-    overlap = 0
-    for size in range(max_overlap, 1, -1):
-        if previous_words[-size:] == current_words[:size]:
-            overlap = size
-            break
-    if overlap < 2:
-        return current_text, False
-
-    spans = word_spans(current_text)
-    if len(spans) < overlap:
-        return current_text, False
-    suffix = current_text[spans[overlap - 1].end() :].strip(" \t\r\n,")
-    return suffix, True
+    return subtitle_incremental_caption_text(previous_text, current_text)
 
 
 def split_caption_fragment(text: str, start: float, end: float) -> list[tuple[str, float, float]]:
-    text = strip_subtitle_text(text)
-    if not text:
-        return []
-    parts: list[tuple[str, float, float]] = []
-    cursor = 0
-    duration = max(0.01, end - start)
-    for match in re.finditer(r"[^.?!]+[.?!]+", text):
-        fragment = strip_subtitle_text(match.group(0))
-        if fragment:
-            part_start = start + duration * (match.start() / max(1, len(text)))
-            part_end = start + duration * (match.end() / max(1, len(text)))
-            parts.append((fragment, part_start, part_end))
-        cursor = match.end()
-    tail = strip_subtitle_text(text[cursor:])
-    if tail:
-        part_start = start + duration * (cursor / max(1, len(text)))
-        parts.append((tail, part_start, end))
-    return parts
+    return subtitle_split_caption_fragment(text, start, end)
 
 
 def append_caption_text(left: str, right: str) -> str:
-    left = strip_subtitle_text(left)
-    right = strip_subtitle_text(right)
-    if not left:
-        return right
-    if not right:
-        return left
-    if re.search(r"[-/([{]$", left):
-        return f"{left}{right}"
-    return f"{left} {right}"
+    return subtitle_append_caption_text(left, right)
 
 
 def stitch_sentence_cues(chunks: list[Cue]) -> list[Cue]:
-    sentences: list[Cue] = []
-    buffer = ""
-    buffer_start = 0.0
-    buffer_end = 0.0
-    index = 1
-
-    def flush_buffer() -> None:
-        nonlocal buffer, buffer_start, buffer_end, index
-        clean = strip_subtitle_text(buffer)
-        if len(overlap_words(clean)) >= 3:
-            sentences.append(Cue(index, buffer_start, buffer_end, clean))
-            index += 1
-        buffer = ""
-
-    for cue in chunks:
-        for fragment, frag_start, frag_end in split_caption_fragment(cue.text, cue.start, cue.end):
-            if not buffer:
-                buffer_start = frag_start
-            buffer = append_caption_text(buffer, fragment)
-            buffer_end = frag_end
-            clean = strip_subtitle_text(buffer)
-            words = overlap_words(clean)
-            if re.search(r"[.?!][\"']?$", fragment):
-                flush_buffer()
-            elif len(words) >= 12 or (len(words) >= 7 and buffer_end - buffer_start >= 3.2):
-                flush_buffer()
-
-    tail = strip_subtitle_text(buffer)
-    if len(overlap_words(tail)) >= 3:
-        sentences.append(Cue(index, buffer_start, buffer_end, tail))
-
-    return sentences or chunks
+    return subtitle_stitch_sentence_cues(chunks)
 
 
 def normalize_rolling_cues(cues: list[Cue]) -> list[Cue]:
-    chunks: list[Cue] = []
-    previous_text = ""
-    rolling_hits = 0
-
-    for cue in cues:
-        incremental, overlapped = incremental_caption_text(previous_text, cue.text)
-        if overlapped:
-            rolling_hits += 1
-        clean = strip_subtitle_text(incremental)
-        if clean:
-            chunks.append(Cue(len(chunks) + 1, cue.start, cue.end, clean))
-        previous_text = cue.text
-
-    if cues and rolling_hits / max(1, len(cues)) >= 0.18:
-        return stitch_sentence_cues(chunks)
-    return cues
+    return subtitle_normalize_rolling_cues(cues)
 
 
 def contains_any(text: str, patterns: list[str]) -> bool:
-    lower = text.lower()
-    return any(pattern in lower for pattern in patterns)
+    return source_text_contains_any(text, patterns)
 
 
 def content_allowed(text: str, toggles: dict[str, bool]) -> bool:
-    if not toggles.get("profanity", False) and contains_any(text, CONTENT_PATTERNS["profanity"]):
-        return False
-    if not toggles.get("romance", False) and contains_any(text, CONTENT_PATTERNS["romance"]):
-        return False
-    if not toggles.get("slang", True) and contains_any(text, CONTENT_PATTERNS["slang"]):
-        return False
-    if not toggles.get("sarcasm", True) and contains_any(text, CONTENT_PATTERNS["sarcasm"]):
-        return False
-    return True
+    return source_text_content_allowed(text, toggles)
 
 
 def normalize_collection_levels(value: Any, current_level: str) -> list[str]:
-    if not isinstance(value, list):
-        value = []
-    selected = [str(item).upper() for item in value if str(item).upper() in CEFR_ORDER]
-    unique = list(dict.fromkeys(selected))
-    if unique:
-        return sorted(unique, key=CEFR_ORDER.index)
-    cutoff = max(CEFR_ORDER.index(current_level), 0) if current_level in CEFR_ORDER else 2
-    lower = max(0, cutoff - 1)
-    return CEFR_ORDER[lower : cutoff + 1]
+    return learning_settings_normalize_collection_levels(value, current_level)
 
 
 def collection_levels_from_payload(payload: dict[str, Any], current_level: str) -> list[str]:
-    if normalized_level_mode(payload) == "auto":
-        return list(CEFR_ORDER)
-    return normalize_collection_levels(payload.get("collection_levels"), current_level)
+    return learning_settings_collection_levels_from_payload(payload, current_level)
 
 
 def normalized_level_mode(payload: dict[str, Any]) -> str:
-    return "manual" if str(payload.get("level_mode") or "").strip().lower() == "manual" else "auto"
+    return learning_settings_normalized_level_mode(payload)
 
 
-LANGUAGE_FOCUS_ORDER = ["phrases", "vocabulary", "grammar", "listening"]
-LANGUAGE_FOCUS_LABELS = {
-    "phrases": "词伙表达",
-    "vocabulary": "单词用法",
-    "grammar": "语法框架",
-    "listening": "听力难点",
-}
-LANGUAGE_FOCUS_RULES = {
-    "phrases": "优先选择可迁移的词伙、搭配、口语块和话语标记；phrase 必须来自原句且不能是整句。",
-    "vocabulary": "可以选择原句里的一个核心单词或短搭配，但必须训练真实语境里的词义、搭配或用法，不做脱离原句的词典式生词卡。",
-    "grammar": "可以选择原句里的可替换句型、结构或语法框架；重点解释它怎么换场景复用，而不是讲抽象语法术语。",
-    "listening": "只在弱读、连读、缩读、停顿切分或听音辨义明显时强化听力点；不要把所有句子都硬做听力卡。",
-}
-STUDY_DEPTHS = {"standard", "deep"}
-SELECTION_STRATEGIES = {"catch_all", "curated", "exhaustive"}
-SELECTION_STRATEGY_LABELS = {
-    "catch_all": "智能筛选",
-    "curated": "智能筛选",
-    "exhaustive": "智能筛选",
-}
+LANGUAGE_FOCUS_ORDER = learning_settings_language_focus_order
+LANGUAGE_FOCUS_LABELS = learning_settings_language_focus_labels
+LANGUAGE_FOCUS_RULES = learning_settings_language_focus_rules
+STUDY_DEPTHS = learning_settings_study_depths
+SELECTION_STRATEGIES = learning_settings_selection_strategies
+SELECTION_STRATEGY_LABELS = learning_settings_selection_strategy_labels
 PHRASE_TYPE_CARD_LABELS = {
     "spoken_phrase": "表达卡",
     "sentence_frame": "表达卡",
@@ -701,186 +683,95 @@ LISTENING_FEATURE_RE = re.compile(
 
 
 def normalized_language_focus(payload: dict[str, Any]) -> list[str]:
-    raw = payload.get("language_focus")
-    if not isinstance(raw, list):
-        return ["phrases", "vocabulary", "listening"]
-    selected = [str(item) for item in raw if str(item) in LANGUAGE_FOCUS_ORDER]
-    unique = list(dict.fromkeys(selected))
-    return unique or ["phrases", "vocabulary", "listening"]
+    return learning_settings_normalized_language_focus(payload)
 
 
 def normalized_document_reading_focus(payload: dict[str, Any]) -> list[str]:
-    focus = [item for item in normalized_language_focus(payload) if item in {"phrases", "vocabulary", "grammar"}]
-    return focus or ["phrases"]
+    return learning_settings_normalized_document_reading_focus(payload)
 
 
 def language_focus_instruction(payload: dict[str, Any]) -> str:
-    focus = normalized_language_focus(payload)
-    labels = " / ".join(LANGUAGE_FOCUS_LABELS[item] for item in focus)
-    rules = "".join(f"{LANGUAGE_FOCUS_LABELS[item]}：{LANGUAGE_FOCUS_RULES[item]}" for item in focus)
-    return (
-        f"本次用户选择的学习重点：{labels}。请只围绕这些重点判断和制卡。"
-        "如果某个片段只有未选择的学习价值，降低优先级或放入候选库；不要因为类型占比或水平偏好硬过滤合法学习点。"
-        f"{rules}"
-    )
+    return learning_settings_language_focus_instruction(payload)
 
 
 def normalized_study_depth(payload: dict[str, Any]) -> str:
-    value = str(payload.get("study_depth") or "").strip()
-    return value if value in STUDY_DEPTHS else "deep"
+    return learning_settings_normalized_study_depth(payload)
 
 
 def normalized_selection_strategy(payload: dict[str, Any]) -> str:
-    value = str(payload.get("selection_strategy") or "").strip()
-    return "catch_all" if value in SELECTION_STRATEGIES or not value else "catch_all"
+    return learning_settings_normalized_selection_strategy(payload)
 
 
 def discovery_collection_levels(payload: dict[str, Any], current_level: str) -> list[str]:
-    strategy = normalized_selection_strategy(payload)
-    if strategy in {"catch_all", "exhaustive"}:
-        return list(CEFR_ORDER)
-    return collection_levels_from_payload(payload, current_level)
+    return learning_settings_discovery_collection_levels(payload, current_level)
 
 
 def selection_candidate_multiplier(payload: dict[str, Any]) -> int:
-    return 4
+    return learning_settings_selection_candidate_multiplier(payload)
 
 
 def max_learning_points_per_source(payload: dict[str, Any]) -> int:
-    return 4
+    return learning_settings_max_learning_points_per_source(payload)
 
 
 def max_reviewable_cards_per_source(payload: dict[str, Any]) -> int:
-    return 6
+    return learning_settings_max_reviewable_cards_per_source(payload)
 
 
 def normalized_source_expansion_mode(payload: dict[str, Any]) -> str:
-    value = str(payload.get("source_expansion_mode") or payload.get("catch_all_expansion") or "auto").strip().lower()
-    return value if value in {"auto", "full", "off"} else "auto"
+    return learning_settings_normalized_source_expansion_mode(payload)
 
 
 def max_source_expansion_groups(payload: dict[str, Any]) -> int:
-    raw = payload.get("max_source_expansion_groups")
-    try:
-        explicit = int(raw)
-    except (TypeError, ValueError):
-        explicit = 0
-    if explicit > 0:
-        return max(1, min(160, explicit))
-    return 24
+    return learning_settings_max_source_expansion_groups(payload)
 
 
 def card_label_for_phrase_type(phrase_type: str, fallback: str = "表达卡") -> str:
-    return PHRASE_TYPE_CARD_LABELS.get(str(phrase_type or "").strip(), fallback)
+    return learning_type_card_label_for_phrase_type(phrase_type, fallback)
 
 
 def card_label_for_learning_card(phrase_type: str, content_kind: str, fallback: str = "表达卡") -> str:
-    normalized_type = str(phrase_type or "").strip()
-    if normalized_type in PHRASE_TYPE_CARD_LABELS:
-        return PHRASE_TYPE_CARD_LABELS[normalized_type]
-    normalized_kind = str(content_kind or "").strip()
-    if normalized_kind == "vocabulary":
-        return "语境生词卡"
-    if normalized_kind == "listening":
-        return "听力卡"
-    return fallback
+    return learning_type_card_label_for_learning_card(phrase_type, content_kind, fallback)
 
 
 def content_kind_for_phrase_type(phrase_type: str, fallback: str = "phrase") -> str:
-    return PHRASE_TYPE_CONTENT_KIND.get(str(phrase_type or "").strip(), fallback)
+    return learning_type_content_kind_for_phrase_type(phrase_type, fallback)
 
 
 def candidate_kind_for_phrase_type(phrase_type: str, fallback: str = "expression") -> str:
-    return PHRASE_TYPE_TO_CANDIDATE_KIND.get(str(phrase_type or "").strip(), fallback)
+    return learning_type_candidate_kind_for_phrase_type(phrase_type, fallback)
 
 
 def phrase_type_for_candidate_kind(candidate_kind: str, fallback: str = "spoken_phrase") -> str:
-    return CANDIDATE_KIND_TO_PHRASE_TYPE.get(str(candidate_kind or "").strip(), fallback)
+    return learning_type_phrase_type_for_candidate_kind(candidate_kind, fallback)
 
 
 def candidate_kind_for_segment(segment: dict[str, Any]) -> str:
-    explicit = str(segment.get("candidate_kind") or "").strip()
-    if explicit:
-        return explicit
-    content_kind = str(segment.get("content_kind") or "").strip()
-    if content_kind == "vocabulary":
-        return "contextual_vocab"
-    if content_kind == "grammar":
-        return "grammar_pattern"
-    if content_kind == "listening":
-        return "listening_feature"
-    return candidate_kind_for_phrase_type(str(segment.get("phrase_type") or ""), "expression")
+    return learning_type_candidate_kind_for_segment(segment)
 
 
 def normalize_candidate_kind(value: Any, fallback: str = "expression") -> str:
-    kind = str(value or "").strip()
-    return kind if kind in CANDIDATE_KIND_TO_PHRASE_TYPE else fallback
+    return learning_type_normalize_candidate_kind(value, fallback)
 
 
 def normalize_phrase_type(value: Any, candidate_kind: str = "expression") -> str:
-    phrase_type = str(value or "").strip()
-    if phrase_type in PHRASE_TYPE_TO_CANDIDATE_KIND:
-        return phrase_type
-    return phrase_type_for_candidate_kind(candidate_kind)
+    return learning_type_normalize_phrase_type(value, candidate_kind)
 
 
 def learning_point_confidence(value_score: Any, default: str = "medium") -> str:
-    try:
-        score = float(value_score)
-    except (TypeError, ValueError):
-        score = 0
-    if score >= 4:
-        return "high"
-    if score >= 3:
-        return "medium"
-    return default if default in {"high", "medium", "low"} else "medium"
+    return learning_settings_learning_point_confidence(value_score, default)
 
 
 def exact_span_offsets(text: str, span: str) -> tuple[int | None, int | None]:
-    source = str(text or "")
-    target = str(span or "").strip()
-    if not source or not target:
-        return None, None
-    direct = source.lower().find(target.lower())
-    if direct >= 0:
-        return direct, direct + len(target)
-    pattern = r"\s+".join(re.escape(part) for part in target.split())
-    if not pattern:
-        return None, None
-    match = re.search(pattern, source, flags=re.IGNORECASE)
-    if not match:
-        return None, None
-    return match.start(), match.end()
+    return learning_span_exact_span_offsets(text, span)
 
 
 def learning_action_key_for_contract(item: dict[str, Any]) -> str:
-    focus = clean_study_text(
-        item.get("learning_action")
-        or item.get("phrase_card_focus")
-        or item.get("card_focus")
-        or item.get("reason")
-        or ""
-    )
-    parts = [
-        normalize_candidate_kind(item.get("candidate_kind") or item.get("kind")),
-        normalized_phrase_key(str(item.get("normalized_answer") or item.get("answer_core") or item.get("exact_span") or item.get("phrase") or "")),
-        re.sub(r"\s+", " ", focus.lower()).strip()[:96],
-    ]
-    return "::".join(part for part in parts if part)
+    return learning_type_learning_action_key_for_contract(item)
 
 
 def candidate_kind_allowed_by_focus(candidate_kind: str, payload: dict[str, Any]) -> bool:
-    focus = set(normalized_language_focus(payload))
-    if candidate_kind in {"expression", "pragmatic_risk"}:
-        return "phrases" in focus
-    if candidate_kind == "contextual_vocab":
-        return "vocabulary" in focus
-    if candidate_kind == "listening_feature":
-        return "listening" in focus
-    if candidate_kind == "grammar_pattern":
-        # Spoken ellipsis/non-standard grammar often behaves like an expression.
-        return bool({"grammar", "phrases"} & focus)
-    return True
+    return learning_type_candidate_kind_allowed_by_focus(candidate_kind, payload)
 
 
 DOCUMENT_FOCUS_ORDER = ["concepts", "arguments", "terms", "examples"]
@@ -898,9 +789,18 @@ DOCUMENT_FOCUS_RULES = {
 }
 DOCUMENT_STUDY_MODES = {"knowledge", "language_reading"}
 DOCUMENT_ANSWER_LANGUAGES = {
-    "zh": "反面解释优先用自然中文；关键术语可以保留英文。",
-    "en": "反面答案和解释优先用英文；避免中文长解释。",
-    "bilingual": "中文理解为主，同时保留关键英文术语和简短英文表达。",
+    "zh": "答案、解释和老师提醒优先用自然中文；关键术语可以保留原文。",
+    "en": "答案、解释和老师提醒优先用英文；避免中文长解释。",
+    "bilingual": "保留文档原文语言的关键术语、短句或证据，同时用自然中文解释清楚；不要默认原文只能是英文。",
+    "ja": "答案、解释和老师提醒优先用自然日语；关键术语可以保留原文。",
+    "ko": "答案、解释和老师提醒优先用自然韩语；关键术语可以保留原文。",
+    "es": "答案、解释和老师提醒优先用自然西班牙语；关键术语可以保留原文。",
+    "fr": "答案、解释和老师提醒优先用自然法语；关键术语可以保留原文。",
+    "de": "答案、解释和老师提醒优先用自然德语；关键术语可以保留原文。",
+    "ru": "答案、解释和老师提醒优先用自然俄语；关键术语可以保留原文。",
+    "pt": "答案、解释和老师提醒优先用自然葡萄牙语；关键术语可以保留原文。",
+    "it": "答案、解释和老师提醒优先用自然意大利语；关键术语可以保留原文。",
+    "ar": "答案、解释和老师提醒优先用自然阿拉伯语；关键术语可以保留原文。",
 }
 DOCUMENT_DEPTH_RULES = {
     "quick": "快速记忆：问题要短，答案尽量 1 句，避免展开过多背景。",
@@ -949,6 +849,8 @@ def document_style_instruction(payload: dict[str, Any]) -> str:
     answer_length = normalized_document_answer_length(payload)
     return (
         f"讲解语言：{DOCUMENT_ANSWER_LANGUAGES[answer_language]}"
+        "注意：JSON 字段名为了兼容 Anki 模型仍可能叫 chinese/chinese_feel，但字段内容必须遵守本次讲解语言；"
+        "不要因为字段名包含 chinese 就强制写中文。"
         f"卡片深度：{DOCUMENT_DEPTH_RULES[depth]}"
         f"答案长度：{DOCUMENT_LENGTH_RULES[answer_length]}"
     )
@@ -966,426 +868,123 @@ def document_focus_instruction(payload: dict[str, Any]) -> str:
 
 
 def phrase_pool(level: str, collection_levels: list[str] | None = None) -> list[str]:
-    order = CEFR_ORDER
-    if collection_levels:
-        selected_levels = normalize_collection_levels(collection_levels, level)
-    else:
-        cutoff = max(order.index(level), 0) if level in order else 2
-        lower = max(0, cutoff - 1)
-        upper = min(len(order), cutoff + 2)
-        selected_levels = order[lower:upper]
-    pool: list[str] = []
-    for item in selected_levels:
-        pool.extend(PHRASES_BY_LEVEL[item])
-    return pool
+    return phrase_discovery_phrase_pool(level, collection_levels)
 
 
 def normalize_phrase_candidate(value: str) -> str:
-    return re.sub(r"\s+", " ", str(value or "").strip(" \t\r\n.,!?;:\"“”‘’")).strip()
+    return phrase_discovery_normalize_phrase_candidate(value)
 
 
 def has_adjacent_duplicate_words(words: list[str]) -> bool:
-    return any(left == right for left, right in zip(words, words[1:]))
+    return phrase_discovery_has_adjacent_duplicate_words(words)
 
 
 def trim_discovery_phrase_words(words: list[str]) -> list[str]:
-    if len(words) >= 2 and words[0] in DISCOVERY_PHRASE_VERBS and words[1] in DISCOVERY_PHRASE_PARTICLES:
-        return words[:2]
-    if (
-        len(words) >= 3
-        and words[0] in DISCOVERY_PHRASE_VERBS
-        and words[1] in {"it", "this", "that", "things", "something", "someone", "me", "you", "him", "her", "us", "them"}
-        and words[2] in DISCOVERY_PHRASE_PARTICLES
-    ):
-        return words[:3]
-    return words
+    return phrase_discovery_trim_discovery_phrase_words(words)
 
 
 def discovery_ngram_has_signal(words: list[str]) -> bool:
-    phrase = " ".join(words)
-    if phrase in TRANSFERABLE_FUNCTION_FRAME_PHRASES:
-        return True
-    if any(phrase == f"{item} that" for item in TRANSFERABLE_FUNCTION_FRAME_PHRASES):
-        return True
-    if len(words) == 2 and words[0] in {"feel", "feels", "felt", "look", "looks", "looked", "sound", "sounds", "sounded"} and words[1] == "like":
-        return True
-    if words[0] in DISCOVERY_PHRASE_VERBS and (
-        words[1] in DISCOVERY_PHRASE_PARTICLES
-        or (
-            len(words) >= 3
-            and words[1] in {"it", "this", "that", "things", "something", "someone", "me", "you", "him", "her", "us", "them"}
-            and words[2] in DISCOVERY_PHRASE_PARTICLES
-        )
-    ):
-        return True
-    if (
-        words[0] in DISCOVERY_PREPOSITION_STARTS
-        and words[-1] in {"end", "middle", "mood", "place", "point", "run", "start", "time", "way"}
-        and any(word in DISCOVERY_SIGNAL_WORDS for word in words[1:])
-    ):
-        return True
-    if len(words) >= 3 and words[0] == "such" and words[1] in {"a", "an"}:
-        return True
-    if len(words) >= 3 and words[0] in {"more", "less"} and "than" in words:
-        return True
-    if len(words) >= 4 and words[0] == "as" and words[-1] == "possible":
-        return True
-    if len(words) >= 3 and "kind" in words and "of" in words:
-        return True
-    if len(words) >= 3 and "sort" in words and "of" in words:
-        return True
-    return False
+    return phrase_discovery_discovery_ngram_has_signal(words)
 
 
 def structurally_safe_discovery_phrase(phrase: str) -> bool:
-    words = overlap_words(phrase)
-    if len(words) < 2 or len(words) > 6:
-        return False
-    key = " ".join(words)
-    if key in {"key expression", *LOW_VALUE_STANDALONE_PHRASES}:
-        return False
-    if has_adjacent_duplicate_words(words):
-        return False
-    if sum(1 for word in words if any(char.isdigit() for char in word)) > 1:
-        return False
-    if words[0] in COMMON_FUNCTION_STARTS and key not in TRANSFERABLE_FUNCTION_FRAME_PHRASES:
-        return False
-    if words[0] in WEAK_PHRASE_STARTS and words[0] not in DISCOVERY_PREPOSITION_STARTS and not discovery_ngram_has_signal(words):
-        return False
-    if words[-1] in {"the", "a", "an", "and", "or", "but", "as", "because", "if", "than", "to", "with"}:
-        return False
-    return discovery_ngram_has_signal(words)
+    return phrase_discovery_structurally_safe_discovery_phrase(phrase)
 
 
 def candidate_phrases_from_text(text: str) -> list[str]:
-    lower = str(text or "").lower()
-    candidates: list[str] = []
-    seen: set[str] = set()
-
-    def add(value: str, trusted: bool = False) -> None:
-        candidate = normalize_phrase_candidate(value)
-        if not trusted:
-            words = trim_discovery_phrase_words(overlap_words(candidate))
-            candidate = " ".join(words)
-        key = " ".join(overlap_words(candidate))
-        if not key or key in seen:
-            return
-        words = key.split()
-        if trusted and 2 <= len(words) <= 6 and key not in LOW_VALUE_STANDALONE_PHRASES and not has_adjacent_duplicate_words(words):
-            candidates.append(candidate)
-            seen.add(key)
-        elif structurally_safe_discovery_phrase(candidate):
-            candidates.append(candidate)
-            seen.add(key)
-
-    for pattern in DISCOVERY_EXPRESSION_PATTERNS:
-        for match in re.finditer(pattern, lower):
-            add(match.group(0), trusted=True)
-
-    words = overlap_words(lower)
-    for length in (5, 4, 3, 2):
-        if len(candidates) >= 8:
-            break
-        for index in range(0, max(0, len(words) - length + 1)):
-            add(" ".join(words[index : index + length]))
-            if len(candidates) >= 8:
-                break
-
-    return candidates
+    return phrase_discovery_candidate_phrases_from_text(text)
 
 
 def find_phrase(text: str, level: str, collection_levels: list[str] | None = None) -> str:
-    lower = text.lower()
-    for pattern in EXPRESSION_PATTERNS:
-        match = re.search(pattern, lower)
-        if match:
-            return re.sub(r"\s+", " ", match.group(0)).strip()
-
-    pool = sorted(phrase_pool(level, collection_levels), key=len, reverse=True)
-    for phrase in pool:
-        if phrase in lower:
-            return phrase
-
-    for phrase in candidate_phrases_from_text(text):
-        return phrase
-
-    # Do not invent a phrase from arbitrary adjacent words. Bad fallback chunks like
-    # "can we figure" or "ai model price" are worse than returning no phrase.
-    return "key expression"
+    return phrase_discovery_find_phrase(text, level, collection_levels)
 
 
 def is_filler_text(text: str) -> bool:
-    words = overlap_words(text)
-    return bool(words) and len(words) <= 2 and " ".join(words).strip(".?!") in FILLER_TEXTS
+    return media_is_filler_text(text)
 
 
 def looks_complete_sentence(text: str) -> bool:
-    stripped = text.strip()
-    words = overlap_words(stripped)
-    return len(words) >= 4 and bool(re.search(r"[.?!]$|[.?!][\"']?$", stripped))
+    return media_looks_complete_sentence(text)
 
 
 def has_unbalanced_quotes(text: str) -> bool:
-    value = str(text or "")
-    return value.count('"') % 2 == 1 or value.count("“") != value.count("”")
-
-
-def clean_candidate_text(text: str) -> str:
-    text = strip_subtitle_text(text)
-    if not text:
-        return ""
-    if re.search(r"[.?!][\"']?$", text):
-        return text
-    complete_parts = re.findall(r"[^.?!]+[.?!]", text)
-    if not complete_parts:
-        return text
-    cleaned = " ".join(part.strip() for part in complete_parts if part.strip())
-    if len(overlap_words(cleaned)) >= 4:
-        return cleaned
-    return text
+    return subtitle_has_unbalanced_quotes(text)
 
 
 def starts_like_fragment(text: str) -> bool:
-    words = overlap_words(text)
-    if not words:
-        return True
-    if text.strip()[:1] in {".", "?", "!", ",", ";", ":"}:
-        return True
-    if words[0] in {"about", "of", "for", "to", "with", "from", "because", "and", "or", "but", "so"}:
-        return True
-    first_char = text.strip()[:1]
-    return bool(first_char and first_char.islower() and words[0] not in {"i"} and not text.lower().startswith(("i ", "i'm", "i've")))
+    return subtitle_starts_like_fragment(text)
 
 
 def looks_like_video_intro(text: str) -> bool:
-    lower = re.sub(r"\s+", " ", str(text or "").strip().lower())
-    return any(re.search(pattern, lower) for pattern in VIDEO_INTRO_PATTERNS)
+    return source_text_looks_like_video_intro(text)
 
 
 def is_non_transferable_phrase(phrase: str) -> bool:
-    lower = re.sub(r"\s+", " ", str(phrase or "").strip().lower())
-    return bool(lower and (lower in NON_TRANSFERABLE_PHRASES or any(re.search(pattern, lower) for pattern in VIDEO_INTRO_PATTERNS)))
+    return phrase_discovery_is_non_transferable_phrase(phrase)
 
 
 def is_low_value_standalone_phrase(phrase: str) -> bool:
-    lower = re.sub(r"\s+", " ", str(phrase or "").strip().lower())
-    return lower in LOW_VALUE_STANDALONE_PHRASES
-
-
-GENERIC_DEFINITION_PATTERNS = [
-    r"\bthis phrase is useful\b",
-    r"\buseful in daily english\b",
-    r"\bcommon(?:ly)? used\b",
-    r"\bvery common\b",
-    r"这个表达很常见",
-    r"常用表达",
-    r"高频表达",
-    r"日常英语.*有用",
-]
-
-GENERIC_TEACHER_NOTE_PATTERNS = [
-    r"^很常见[。.!]?$",
-    r"^真实口语常用[。.!]?$",
-    r"^高频口语表达[。.!]?$",
-    r"^这个表达很常用[。.!]?$",
-    r"^适合日常交流[。.!]?$",
-    r"\buse it in daily english\b",
-    r"\bthis is a common expression\b",
-]
+    return phrase_discovery_is_low_value_standalone_phrase(phrase)
 
 
 def has_generic_definition(value: str) -> bool:
-    text = re.sub(r"\s+", " ", str(value or "").strip().lower())
-    return bool(text and any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in GENERIC_DEFINITION_PATTERNS))
+    return card_quality_has_generic_definition(value)
 
 
 def has_generic_teacher_note(value: str) -> bool:
-    text = re.sub(r"\s+", " ", str(value or "").strip().lower())
-    return bool(text and any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in GENERIC_TEACHER_NOTE_PATTERNS))
+    return card_quality_has_generic_teacher_note(value)
 
 
 def has_template_noise(value: Any) -> bool:
-    text = re.sub(r"\s+", " ", str(value or "").strip())
-    return bool(text and any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in TEMPLATE_NOISE_PATTERNS))
+    return card_quality_has_template_noise(value)
 
 
 def is_specific_study_text(value: Any) -> bool:
-    text = clean_study_text(value)
-    return bool(text and not has_template_noise(text))
+    return card_quality_is_specific_study_text(value)
 
 
 def normalized_action_text(value: Any) -> str:
-    if isinstance(value, list):
-        return " / ".join(str(item).strip() for item in value if str(item).strip())
-    if isinstance(value, dict):
-        return " / ".join(f"{key}: {item}" for key, item in value.items() if str(item).strip())
-    return str(value or "").strip()
+    return card_quality_normalized_action_text(value)
 
 
 def cefr_rank(value: str) -> int:
-    match = re.search(r"\b(A1|A2|B1|B2|C1|C2)\b", str(value or "").upper())
-    if not match:
-        return -1
-    return CEFR_ORDER.index(match.group(1))
+    return card_quality_cefr_rank(value)
 
 
 def is_too_basic_for_level(phrase: str, target_level: str) -> bool:
-    level_rank = cefr_rank(target_level)
-    if level_rank < cefr_rank("B1"):
-        return False
-    lower = re.sub(r"\s+", " ", str(phrase or "").strip().lower())
-    return lower in TOO_BASIC_FOR_INTERMEDIATE_PHRASES
+    return card_quality_is_too_basic_for_level(phrase, target_level)
 
 
 def allows_function_start_phrase(phrase: str) -> bool:
-    lower = re.sub(r"\s+", " ", str(phrase or "").strip().lower())
-    return lower in TRANSFERABLE_FUNCTION_FRAME_PHRASES or any(
-        lower.startswith(f"{item} ") for item in TRANSFERABLE_FUNCTION_FRAME_PHRASES
-    )
+    return card_quality_allows_function_start_phrase(phrase)
 
 
-INCOMPLETE_FINAL_WORDS = {
-    "because",
-    "if",
-    "than",
-    "when",
-    "where",
-    "which",
-    "who",
-    "whom",
-    "whose",
-    "with",
-}
-INCOMPLETE_FINAL_CONTRACTIONS = {
-    "where's",
-    "who's",
-}
-SHORT_WH_FRAGMENT_STARTS = {
-    "how",
-    "what",
-    "what'd",
-    "where",
-    "who",
-    "why",
-}
-SHORT_FRAGMENT_PRONOUN_ENDS = {"he", "her", "him", "it", "me", "she", "them", "they", "us", "we", "you"}
-ACCEPTABLE_FRAGMENT_ANSWERS = {
-    "apply heat to",
-    "be willing to",
-    "go first",
-    "how do you feel about",
-    "i do not like it when",
-    "i'd be willing to",
-    "i seen",
-    "in style",
-    "in the presence of",
-    "in the mood for",
-    "not really",
-    "prefer to see it as",
-    "right now",
-    "such a nice",
-    "that answers that",
-    "was thinking of",
-    "we'll see about that",
-    "what do you think about",
-    "what do you call that",
-    "what tells you",
-    "worked out of",
-}
-BAD_INCOMPLETE_ANSWERS = {
-    "it when",
-    "what'd you",
-    "what did you",
-    "what do you",
-    "what are you",
-    "where did you",
-    "who did you",
-}
+INCOMPLETE_FINAL_WORDS = card_quality_incomplete_final_words
+INCOMPLETE_FINAL_CONTRACTIONS = card_quality_incomplete_final_contractions
+SHORT_WH_FRAGMENT_STARTS = card_quality_short_wh_fragment_starts
+SHORT_FRAGMENT_PRONOUN_ENDS = card_quality_short_fragment_pronoun_ends
+ACCEPTABLE_FRAGMENT_ANSWERS = card_quality_acceptable_fragment_answers
+BAD_INCOMPLETE_ANSWERS = card_quality_bad_incomplete_answers
 
 
 def normalized_answer_key(value: Any) -> str:
-    return re.sub(r"\s+", " ", normalize_candidate_span(value).lower())
+    return card_quality_normalized_answer_key(value)
 
 
 def looks_like_incomplete_answer_fragment(value: Any, card: dict[str, Any]) -> bool:
-    lower = normalized_answer_key(value)
-    if not lower or lower in ACCEPTABLE_FRAGMENT_ANSWERS or allows_function_start_phrase(lower):
-        return False
-    if normalize_learning_language(card.get("language_code") or card.get("language") or "en") != "en":
-        return False
-    if lower in BAD_INCOMPLETE_ANSWERS:
-        return True
-    candidate_kind = str(card.get("candidate_kind") or "")
-    if candidate_kind == "contextual_vocab":
-        return False
-    words = overlap_words(lower)
-    if not words:
-        return False
-    last = words[-1]
-    if last in INCOMPLETE_FINAL_CONTRACTIONS:
-        return True
-    if last in INCOMPLETE_FINAL_WORDS and not phrase_allows_trailing_preposition(lower):
-        return True
-    if len(words) <= 3 and words[0] in SHORT_WH_FRAGMENT_STARTS and last in SHORT_FRAGMENT_PRONOUN_ENDS:
-        return True
-    return False
+    return card_quality_looks_like_incomplete_answer_fragment(value, card)
 
 
 def looks_like_truncated_listening_answer(value: Any, source_text: Any) -> bool:
-    lower = normalized_answer_key(value)
-    if not lower or lower in ACCEPTABLE_FRAGMENT_ANSWERS:
-        return False
-    if lower in BAD_INCOMPLETE_ANSWERS:
-        return True
-    source_words = overlap_words(source_text)
-    answer_words = overlap_words(lower)
-    if len(answer_words) < 2 or len(source_words) <= len(answer_words) + 1:
-        return False
-    last = answer_words[-1]
-    if last in INCOMPLETE_FINAL_CONTRACTIONS:
-        return True
-    if last in INCOMPLETE_FINAL_WORDS and not phrase_allows_trailing_preposition(lower):
-        return True
-    if len(answer_words) <= 3 and answer_words[0] in SHORT_WH_FRAGMENT_STARTS and last in SHORT_FRAGMENT_PRONOUN_ENDS:
-        return True
-    return False
+    return card_quality_looks_like_truncated_listening_answer(value, source_text)
 
 
 def phrase_guide_key(phrase: str) -> str:
-    lower = re.sub(r"\s+", " ", str(phrase or "").strip().lower())
-    return PHRASE_GUIDE_ALIASES.get(lower, lower)
+    return card_quality_phrase_guide_key(phrase)
 
 
 def score_text(text: str, level: str, toggles: dict[str, bool], collection_levels: list[str] | None = None) -> float:
-    lower = text.lower()
-    words = re.findall(r"[A-Za-z']+", text)
-    score = 2.0
-
-    if 5 <= len(words) <= 12:
-        score += 2.0
-    elif 13 <= len(words) <= 14:
-        score += 0.7
-    if "?" in text or "!" in text:
-        score += 0.4
-    if contains_any(lower, phrase_pool(level, collection_levels)):
-        score += 3.0
-    if toggles.get("slang", True) and contains_any(lower, CONTENT_PATTERNS["slang"]):
-        score += 0.6
-    if toggles.get("sarcasm", True) and contains_any(lower, CONTENT_PATTERNS["sarcasm"]):
-        score += 0.7
-    if toggles.get("culture", True) and contains_any(lower, CONTENT_PATTERNS["culture"]):
-        score += 0.5
-    if toggles.get("business", True) and contains_any(lower, CONTENT_PATTERNS["business"]):
-        score += 0.5
-    if len(words) > 14:
-        score -= 1.4
-    if len(words) > 18:
-        score -= 1.4
-    if looks_like_video_intro(text):
-        score -= 3.4
-    if re.search(r"\[[^\]]+\]|\([^\)]*(music|applause|laugh)[^\)]*\)", lower):
-        score -= 2.0
-    return max(0.1, score)
+    return source_text_score_text(text, level, toggles, collection_levels)
 
 
 def resolved_max_segments(payload: dict[str, Any], cues: list[Cue] | None = None, text: str = "") -> int:
@@ -1425,90 +1024,28 @@ def resolved_max_segments(payload: dict[str, Any], cues: list[Cue] | None = None
     return 35
 
 
-def phrase_word_indices(text: str, phrase: str) -> tuple[int, int] | None:
-    phrase_words = overlap_words(phrase)
-    if not phrase_words or phrase == "key expression":
-        return None
-    text_words = overlap_words(text)
-    if len(phrase_words) > len(text_words):
-        return None
-    for index in range(0, len(text_words) - len(phrase_words) + 1):
-        if text_words[index : index + len(phrase_words)] == phrase_words:
-            return index, index + len(phrase_words) - 1
-    return None
-
-
-def segment_media_bounds(start: float, end: float, text: str, phrase: str, review_mode: bool) -> tuple[float, float]:
-    duration = max(0.1, end - start)
-    words = overlap_words(text)
-    if duration <= 3.8 or len(words) < 5:
-        return max(0.0, start - 0.12), end + 0.18
-
-    indices = phrase_word_indices(text, phrase)
-    if not indices:
-        return max(0.0, start - 0.12), end + 0.18
-
-    first, last = indices
-    before_words = 7 if review_mode else 5
-    after_words = 7 if review_mode else 5
-    window_first = max(0, first - before_words)
-    window_after_last = min(len(words), last + 1 + after_words)
-    media_start = start + duration * (window_first / max(1, len(words))) - 0.2
-    media_end = start + duration * (window_after_last / max(1, len(words))) + 0.28
-    media_start = max(0.0, media_start)
-    media_end = min(end + 0.35, media_end)
-
-    if media_end - media_start < 2.1:
-        center = (media_start + media_end) / 2
-        media_start = max(0.0, center - 1.05)
-        media_end = center + 1.05
-    if media_end - media_start > 6.2:
-        center = (media_start + media_end) / 2
-        media_start = max(0.0, center - 3.1)
-        media_end = center + 3.1
-    return round(media_start, 3), round(media_end, 3)
-
-
-def refine_segment_media_for_phrase(
-    segment: dict[str, Any],
-    phrase: str,
-    review_mode: bool = False,
-) -> dict[str, Any]:
-    """Keep exported media centered on the final learning phrase.
-
-    Candidate building can keep a broad sentence for MIMO review. Once MIMO
-    chooses the actual phrase, recompute the clip window so video/original audio
-    and the final card focus do not drift apart.
-    """
-    if not phrase or not phrase_word_indices(str(segment.get("text") or ""), phrase):
-        return segment
+def load_export_subtitle_cues(project: dict[str, Any]) -> tuple[list[Cue], str, str]:
+    source_info = project.get("source_info") if isinstance(project.get("source_info"), dict) else {}
+    subtitle_path = clean_input_path(project.get("subtitle_path") or source_info.get("subtitle_path"))
+    if not subtitle_path:
+        return [], "", "subtitle_path_missing"
+    path = Path(subtitle_path)
+    if not path.exists():
+        return [], str(path), "subtitle_path_not_found"
     try:
-        start = float(segment.get("start") or 0)
-        end = float(segment.get("end") or start)
-    except (TypeError, ValueError):
-        return segment
-    media_start, media_end = segment_media_bounds(
-        start,
-        end,
-        str(segment.get("text") or ""),
-        phrase,
-        review_mode,
-    )
-    return {
-        **segment,
-        "media_start": media_start,
-        "media_end": media_end,
-        "media_source_time": f"{fmt_time(media_start)} - {fmt_time(media_end)}",
-    }
+        return parse_srt(str(path)), str(path), "loaded"
+    except SystemExit:
+        return [], str(path), "subtitle_parse_failed"
+    except Exception:
+        return [], str(path), "subtitle_parse_failed"
 
 
 def normalize_candidate_span(value: Any) -> str:
-    return re.sub(r"\s+", " ", str(value or "").strip(" \t\r\n\"'“”‘’.,?!"))
+    return learning_span_normalize_candidate_span(value)
 
 
 def expression_span_from_text(text: str, pattern: str) -> str:
-    match = re.search(pattern, text, re.IGNORECASE)
-    return normalize_candidate_span(match.group(0)) if match else ""
+    return learning_span_expression_span_from_text(text, pattern)
 
 
 def usable_learning_point_span(
@@ -1517,25 +1054,7 @@ def usable_learning_point_span(
     candidate_kind: str = "expression",
     phrase_type: str = "",
 ) -> bool:
-    normalized = normalize_candidate_span(span)
-    if not normalized or normalized.lower() == "key expression":
-        return False
-    words = overlap_words(normalized)
-    if not words:
-        return phrase_in_text(text, normalized)
-    if not phrase_in_text(text, normalized) and len(words) >= 2:
-        return False
-    kind = candidate_kind or candidate_kind_for_phrase_type(phrase_type)
-    if kind == "contextual_vocab":
-        return 1 <= len(words) <= 3
-    if kind in {"grammar_pattern", "listening_feature"}:
-        return len(words) <= 12
-    if kind in {"expression", "pragmatic_risk"} and phrase_type in {"collocation", "idiom", "spoken_phrase"}:
-        if 2 <= len(words) <= 7 and phrase_in_text(text, normalized):
-            if not is_non_transferable_phrase(normalized) and not is_low_value_standalone_phrase(normalized):
-                if words[0] not in COMMON_FUNCTION_STARTS or allows_function_start_phrase(normalized):
-                    return True
-    return usable_phrase(text, normalized)
+    return card_planning_usable_learning_point_span(text, span, candidate_kind, phrase_type)
 
 
 def typed_candidate_score(base_score: float, boost: float, kind: str) -> float:
@@ -1551,8 +1070,7 @@ def typed_candidate_score(base_score: float, boost: float, kind: str) -> float:
 
 
 def source_segment_key(start: float, end: float, text: str) -> str:
-    normalized_text = re.sub(r"\s+", " ", str(text or "").strip().lower())[:96]
-    return f"src_{stable_id(f'{start:.3f}:{end:.3f}:{normalized_text}') & 0xFFFFFFFF:08x}"
+    return subtitle_source_segment_key(start, end, text)
 
 
 def typed_learning_point_candidates(
@@ -1957,52 +1475,7 @@ def fallback_phrase_fields(text: str, phrase: str, level: str) -> dict[str, str]
 
 
 def phrase_in_text(text: str, phrase: str) -> bool:
-    raw_text = normalize_candidate_span(text).casefold()
-    raw_phrase = normalize_candidate_span(phrase).casefold()
-    if raw_phrase and raw_phrase in raw_text:
-        return True
-    has_gap_marker = bool(re.search(r"\.{2,}|…", str(phrase or "")))
-    normalized_text = " ".join(expanded_overlap_words(text))
-    normalized_phrase = " ".join(expanded_overlap_words(re.sub(r"\.{2,}|…", " ", str(phrase or ""))))
-    if not normalized_phrase:
-        return False
-    if normalized_phrase in normalized_text:
-        return True
-
-    phrase_words = normalized_phrase.split()
-    text_words = normalized_text.split()
-    if len(phrase_words) < 2:
-        return False
-
-    def word_matches(pattern_word: str, text_word: str) -> bool:
-        if pattern_word in {"someone", "somebody"}:
-            return text_word in {"me", "you", "him", "her", "us", "them", "someone", "somebody"}
-        if pattern_word == "something":
-            return text_word in {"it", "this", "that", "things", "something", "everything"}
-        return pattern_word == text_word
-
-    max_extra_words = 8 if has_gap_marker else 2
-    for first in [index for index, word in enumerate(text_words) if word_matches(phrase_words[0], word)]:
-        position = first
-        extra_words = 0
-        matched = 1
-        for phrase_word in phrase_words[1:]:
-            found = -1
-            scan_end = min(len(text_words), position + max_extra_words + 3)
-            for index in range(position + 1, scan_end):
-                if word_matches(phrase_word, text_words[index]):
-                    found = index
-                    break
-            if found == -1:
-                break
-            extra_words += found - position - 1
-            if extra_words > max_extra_words:
-                break
-            position = found
-            matched += 1
-        if matched == len(phrase_words):
-            return True
-    return False
+    return learning_span_phrase_in_text(text, phrase)
 
 
 def quality_issue_labels(
@@ -2385,70 +1858,15 @@ def make_cloze(text: str, phrase: str) -> str:
 
 
 def phrase_allows_trailing_preposition(phrase: str) -> bool:
-    phrase_lower = phrase.lower()
-    return bool(
-        re.search(r"\btell\s+\w+\s+about\b", phrase_lower)
-        or phrase_lower
-        in {
-            "working with",
-            "deal with",
-            "talk about",
-            "look for",
-            "come up with",
-            "get away with",
-            "opening doors to",
-            "connect with",
-            "full of",
-            "get used to",
-            "feel free to",
-            "in the mood for",
-            "what do you think about",
-            "how do you feel about",
-            "prefer to see it as",
-            "was thinking of",
-            "apply heat to",
-            "worked out of",
-            "in the presence of",
-            "i'd be willing to",
-            "be willing to",
-            "what's up for",
-        }
-    )
+    return card_quality_phrase_allows_trailing_preposition(phrase)
 
 
 def usable_phrase(text: str, phrase: str) -> bool:
-    words = overlap_words(phrase)
-    text_words = overlap_words(text)
-    if not phrase or phrase == "key expression":
-        return False
-    if len(words) < 2 or len(words) > 6:
-        return False
-    if len(words) >= max(4, len(text_words) - 1) and len(text_words) >= 5:
-        return False
-    if is_non_transferable_phrase(phrase):
-        return False
-    if is_low_value_standalone_phrase(phrase):
-        return False
-    if (words[0] in COMMON_FUNCTION_STARTS or words[0] in WEAK_PHRASE_STARTS) and not allows_function_start_phrase(phrase):
-        return False
-    trailing_prepositions = {"about", "of", "for", "to", "with", "from", "by", "at"}
-    if words[-1] in trailing_prepositions and not phrase_allows_trailing_preposition(phrase):
-        return False
-    return phrase_in_text(text, phrase)
+    return phrase_discovery_usable_phrase(text, phrase)
 
 
 def choose_best_phrase(text: str, proposed: str, fallback: str, level: str, collection_levels: list[str] | None = None) -> str:
-    candidates = [proposed, fallback, find_phrase(text, level, collection_levels)]
-    seen: set[str] = set()
-    for candidate in candidates:
-        normalized = re.sub(r"\s+", " ", str(candidate or "")).strip()
-        key = normalized.lower()
-        if not normalized or key in seen:
-            continue
-        seen.add(key)
-        if usable_phrase(text, normalized):
-            return normalized
-    return ""
+    return phrase_discovery_choose_best_phrase(text, proposed, fallback, level, collection_levels)
 
 
 def repair_card_fields(card: dict[str, Any], segment: dict[str, Any], level: str) -> None:
@@ -2570,257 +1988,35 @@ def repair_card_fields(card: dict[str, Any], segment: dict[str, Any], level: str
 
 
 def normalized_contains_text(haystack: Any, needle: Any) -> bool:
-    haystack_marker = re.sub(r"[\s\W_]+", "", clean_study_text(haystack).lower(), flags=re.UNICODE)
-    needle_marker = re.sub(r"[\s\W_]+", "", clean_study_text(needle).lower(), flags=re.UNICODE)
-    return bool(needle_marker and needle_marker in haystack_marker)
-
-
-LEARNING_ACTION_VALUES = {
-    "contextual_meaning",
-    "expression_recall",
-    "listening_discrimination",
-    "collocation_boundary",
-    "chinese_learner_trap",
-    "conceptual_action",
-    "grammar_pattern",
-}
+    return learning_actions_normalized_contains_text(haystack, needle)
 
 
 def learning_action_for_card(card: dict[str, Any]) -> str:
-    explicit = str(card.get("learning_action") or "").strip()
-    if explicit in LEARNING_ACTION_VALUES:
-        return explicit
-    candidate_kind = str(card.get("candidate_kind") or card.get("kind") or "").strip()
-    phrase_type = str(card.get("phrase_type") or "").strip()
-    content_kind = str(card.get("content_kind") or "").strip()
-    if candidate_kind == "contextual_vocab" or content_kind == "vocabulary" or phrase_type == "vocabulary_usage":
-        return "contextual_meaning"
-    if candidate_kind == "listening_feature" or content_kind == "listening" or phrase_type == "listening_sentence":
-        return "listening_discrimination"
-    if candidate_kind == "grammar_pattern" or content_kind == "grammar" or phrase_type == "grammar_pattern":
-        return "grammar_pattern"
-    if candidate_kind == "pragmatic_risk":
-        return "chinese_learner_trap"
-    if phrase_type in {"collocation", "idiom"}:
-        return "collocation_boundary"
-    return "expression_recall"
+    return learning_actions_learning_action_for_card(card)
 
 
 def normalize_learning_action_fields(card: dict[str, Any]) -> None:
-    learning_target = normalized_action_text(card.get("learning_target"))
-    why_it_matters = normalized_action_text(card.get("why_it_matters"))
-    how_to_use_it = normalized_action_text(card.get("how_to_use_it"))
-    natural_chinese = normalized_action_text(card.get("natural_chinese"))
-    replacement_examples = normalized_action_text(card.get("replacement_examples"))
-    avoid_reason = normalized_action_text(card.get("avoid_reason"))
-    usage_boundary = normalized_action_text(card.get("usage_boundary"))
-    confusable_note = normalized_action_text(card.get("confusable_note"))
-    conceptual_action = normalized_action_text(card.get("conceptual_action"))
-    chinese_learner_trap = normalized_action_text(card.get("chinese_learner_trap"))
-    card["learning_action"] = learning_action_for_card(card)
-
-    if not chinese_learner_trap and confusable_note:
-        card["chinese_learner_trap"] = confusable_note
-        chinese_learner_trap = normalized_action_text(card.get("chinese_learner_trap"))
-    if not conceptual_action and is_specific_study_text(card.get("learning_target")):
-        card["conceptual_action"] = clean_study_text(card.get("learning_target"))
-        conceptual_action = normalized_action_text(card.get("conceptual_action"))
-
-    if (not natural_chinese or has_template_noise(natural_chinese)) and is_specific_study_text(card.get("chinese")):
-        card["natural_chinese"] = clean_study_text(card.get("chinese"))
-        natural_chinese = normalized_action_text(card.get("natural_chinese"))
-    if (not how_to_use_it or has_template_noise(how_to_use_it)) and is_specific_study_text(card.get("definition")):
-        card["how_to_use_it"] = clean_study_text(card.get("definition"))
-        how_to_use_it = normalized_action_text(card.get("how_to_use_it"))
-    if (not why_it_matters or has_template_noise(why_it_matters)) and is_specific_study_text(card.get("why")):
-        card["why_it_matters"] = clean_study_text(card.get("why"))
-        why_it_matters = normalized_action_text(card.get("why_it_matters"))
-    if (not replacement_examples or has_template_noise(replacement_examples)) and is_specific_study_text(card.get("collocations")):
-        card["replacement_examples"] = clean_study_text(card.get("collocations"))
-        replacement_examples = normalized_action_text(card.get("replacement_examples"))
-
-    if natural_chinese and (not str(card.get("chinese") or "").strip() or not has_cjk(str(card.get("chinese") or ""))):
-        card["chinese"] = natural_chinese
-    learning_goal = str(card.get("learning_goal") or "").strip()
-    if learning_target and (
-        not learning_goal
-        or "核心价值" in learning_goal
-        or "额外能力点" in learning_goal
-        or "这张卡训练什么" in learning_goal
-        or "围绕这个学习点制卡" in learning_goal
-    ):
-        card["learning_goal"] = learning_target
-    why = str(card.get("why") or "").strip()
-    if why_it_matters and (
-        not why
-        or "本地 fallback" in why
-        or "正式导出前" in why
-        or "为什么值得学" in why
-    ):
-        card["why"] = why_it_matters
-    context = str(card.get("context") or "").strip()
-    if how_to_use_it and (
-        not context
-        or "本地待审字段" in context
-        or "review page" in context.lower()
-    ):
-        card["context"] = how_to_use_it
-    collocations = str(card.get("collocations") or "").strip()
-    if replacement_examples and (
-        not collocations
-        or "natural object" in collocations.lower()
-        or "complete sentence" in collocations.lower()
-        or collocations.lower().startswith("use ")
-    ):
-        card["collocations"] = replacement_examples
-    if avoid_reason and not str(card.get("phrase_reject_reason") or "").strip():
-        card["phrase_reject_reason"] = avoid_reason
-
-    teacher_note = str(card.get("teacher_note") or "").strip()
-    if (not teacher_note or has_generic_teacher_note(teacher_note)) and how_to_use_it:
-        card["teacher_note"] = how_to_use_it
-        teacher_note = str(card.get("teacher_note") or "").strip()
-    extra_notes = []
-    if usage_boundary and not normalized_contains_text(teacher_note, usage_boundary):
-        extra_notes.append(f"使用边界：{usage_boundary}")
-    if confusable_note and not normalized_contains_text(teacher_note, confusable_note):
-        extra_notes.append(f"易错提醒：{confusable_note}")
-    if chinese_learner_trap and not normalized_contains_text(teacher_note, chinese_learner_trap):
-        extra_notes.append(f"中文误区：{chinese_learner_trap}")
-    if extra_notes:
-        merged_note = "；".join(extra_notes)
-        if teacher_note and merged_note not in teacher_note:
-            card["teacher_note"] = f"{teacher_note}；{merged_note}"
-        elif not teacher_note:
-            card["teacher_note"] = merged_note
-    if has_generic_definition(str(card.get("definition", ""))) and learning_target:
-        card["definition"] = learning_target
-
-    comparable_teacher_note = re.sub(r"\s+", " ", str(card.get("teacher_note") or "").strip())
-    for key, replacement in [
-        ("why", learning_target or how_to_use_it),
-        ("context", learning_target or why_it_matters),
-        ("chinese_feel", how_to_use_it or why_it_matters),
-    ]:
-        comparable_value = re.sub(r"\s+", " ", str(card.get(key, "") or "").strip())
-        if comparable_teacher_note and comparable_value and comparable_teacher_note == comparable_value and replacement:
-            card["teacher_note"] = replacement
-            break
+    learning_actions_normalize_learning_action_fields(card)
 
 
 def requested_card_types(card_types: list[str]) -> list[str]:
-    requested = [str(card_type) for card_type in card_types if card_type in {"listening", "phrase", "cloze"}]
-    return requested or ["phrase"]
+    return card_planning_requested_card_types(card_types)
 
 
 def has_listening_training_value(text: str) -> bool:
-    lower = str(text or "").lower()
-    words = overlap_words(text)
-    return bool(
-        len(words) >= 8
-        and (
-            re.search(r"\b(?:i'm|you're|we're|they're|don't|can't|won't|i've|let's)\b", lower)
-            or re.search(r"\b(?:gonna|wanna|gotta)\b", lower)
-        )
-    )
+    return card_planning_has_listening_training_value(text)
 
 
 def has_output_training_value(phrase: str, level: str) -> bool:
-    lower = re.sub(r"\s+", " ", str(phrase or "").strip().lower())
-    if is_too_basic_for_level(lower, level):
-        return False
-    low_value_output_phrases = {
-        "by the way",
-        "make sure",
-        "talk about",
-        "talking about",
-        "what about",
-        "how about",
-    }
-    if lower in low_value_output_phrases:
-        return False
-    output_worthy_phrases = {"in the mood for", "end up", "turn out", "figure out", "make sense", "i see what you mean"}
-    return bool(
-        lower in output_worthy_phrases
-        or phrase_guide_key(lower) in output_worthy_phrases
-    )
+    return card_planning_has_output_training_value(phrase, level)
 
 
 def plan_card_types(segment: dict[str, Any], card_types: list[str], level: str) -> dict[str, Any]:
-    requested = requested_card_types(card_types)
-    phrase = re.sub(r"\s+", " ", str(segment.get("phrase") or "").strip())
-    text = str(segment.get("text") or "")
-    candidate_kind = candidate_kind_for_segment(segment)
-
-    if candidate_kind == "listening_feature" and "listening" in requested:
-        primary = "listening"
-        reason = "这个片段的核心价值是听懂真实语速下的弱读、连读或缩读。"
-    elif "phrase" in requested and usable_learning_point_span(text, phrase, candidate_kind, str(segment.get("phrase_type") or "")):
-        primary = "phrase"
-        if candidate_kind == "contextual_vocab":
-            reason = "这个片段的核心价值是掌握一个词在原句里的真实语境义。"
-        elif candidate_kind == "grammar_pattern":
-            reason = "这个片段的核心价值是掌握一个可迁移的语法/句法框架。"
-        elif candidate_kind == "pragmatic_risk":
-            reason = "这个片段的核心价值是理解表达的语气、边界和冒犯风险。"
-        else:
-            reason = "这个片段的核心价值是把自然表达迁移到自己的口语里。"
-    elif "listening" in requested:
-        primary = "listening"
-        reason = "这个片段更适合先做听音辨句，表达本身不够适合作为主词伙。"
-    else:
-        primary = requested[0]
-        reason = "按用户选择的卡型保留一张主训练卡。"
-
-    planned = [primary]
-    optional: list[str] = []
-    skipped: dict[str, str] = {}
-
-    if "listening" in requested and primary != "listening":
-        if has_listening_training_value(text):
-            optional.append("listening")
-        else:
-            skipped["listening"] = "听力难点不明显，合并到主卡里即可。"
-    if "cloze" in requested and primary != "cloze":
-        if has_output_training_value(phrase, level):
-            optional.append("cloze")
-        else:
-            skipped["cloze"] = "表达偏基础或输出价值不足，不单独做填空卡。"
-    if "phrase" in requested and primary != "phrase":
-        skipped["phrase"] = "没有稳定、完整、可迁移的表达，不单独做表达卡。"
-
-    if optional:
-        planned.extend(card_type for card_type in optional if card_type not in planned)
-
-    for card_type in requested:
-        if card_type not in planned and card_type not in skipped:
-            skipped[card_type] = "训练目标已被主卡覆盖。"
-
-    return {
-        "primary": primary,
-        "types": planned,
-        "reason": reason,
-        "skipped": skipped,
-    }
+    return card_planning_plan_card_types(segment, card_types, level)
 
 
 def card_type_for_learning_point(point: dict[str, Any], requested: list[str]) -> str:
-    kind = str(point.get("kind") or "")
-    suggested = str(point.get("suggested_card_type") or "")
-    answer = normalized_phrase_key(str(point.get("answer_core") or point.get("normalized_answer") or point.get("exact_span") or ""))
-    if answer in {"", "key expression"} and "listening" in requested:
-        return "listening"
-    if suggested in requested:
-        return suggested
-    if kind == "listening_feature" and "listening" in requested:
-        return "listening"
-    if "phrase" in requested:
-        return "phrase"
-    if "cloze" in requested:
-        return "cloze"
-    if "listening" in requested:
-        return "listening"
-    return requested[0] if requested else "phrase"
+    return card_planning_card_type_for_learning_point(point, requested)
 
 
 def fallback_cards(segment: dict[str, Any], card_types: list[str], level: str) -> list[dict[str, Any]]:
@@ -2880,7 +2076,7 @@ def fallback_cards(segment: dict[str, Any], card_types: list[str], level: str) -
             "how_to_use_it": fields.get("context", ""),
             "natural_chinese": fields.get("chinese", ""),
             "estimated_level": level if level in CEFR_ORDER else "B1",
-            "difficulty_reason": "预览草稿按当前水平和表达可迁移性估计。",
+            "difficulty_reason": "根据表达本身、原句语境和迁移难度估计。",
             "replacement_examples": fields.get("collocations", ""),
             "avoid_reason": "",
             "skipped_card_types": {},
@@ -3015,7 +2211,7 @@ def build_fast_review_prompt(project: dict[str, Any], segments: list[dict[str, A
     ]
     return (
         f"你是给中文母语者做 {profile['label']} Anki 卡的语言老师。"
-        "【快速背卡模式：真正减少 token】用户要的是精简背面/快速制卡，不是完整精学卡。"
+        "【快速复读模式：真正减少 token】用户要的是沉浸复读的轻量版，不是完整复读精学卡。"
         "目标：减少 token、减少等待时间、减少审核负担。"
         "每张卡只生成最小复习字段：type、learning_point_id、candidate_kind、exact_span、phrase、answer_core、english、chinese、definition、chinese_feel、teacher_note、retrieval_prompt。"
         "不要输出长段落；teacher_note 最多一句 18-36 个中文字；definition 最多一句 20-40 个中文字。"
@@ -3319,8 +2515,8 @@ def call_material_context(project: dict[str, Any], segments: list[dict[str, Any]
             payload = extract_json_object("".join(part.get("text", "") for part in response.get("content", [])))
         elif provider == "gemini":
             response = http_json(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
-                {},
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                {"x-goog-api-key": api_key},
                 {
                     "contents": [{"parts": [{"text": prompt}]}],
                     "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
@@ -3354,33 +2550,11 @@ def call_material_context(project: dict[str, Any], segments: list[dict[str, Any]
 
 
 def strip_reasoning_text(text: str) -> str:
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
-    text = re.sub(r"<thinking>.*?</thinking>", "", text, flags=re.IGNORECASE | re.DOTALL)
-    return text.strip()
+    return model_json_strip_reasoning_text(text)
 
 
 def extract_json_object(text: str) -> dict[str, Any]:
-    text = strip_reasoning_text(text)
-    text = text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?", "", text).strip()
-        text = re.sub(r"```$", "", text).strip()
-    decoder = json.JSONDecoder()
-    candidates: list[dict[str, Any]] = []
-    for match in re.finditer(r"\{", text):
-        try:
-            value, _end = decoder.raw_decode(text[match.start() :])
-        except json.JSONDecodeError:
-            continue
-        if isinstance(value, dict):
-            candidates.append(value)
-    if not candidates:
-        raise ValueError("模型没有返回 JSON 对象。")
-    for key in ("segments", "candidates"):
-        for candidate in reversed(candidates):
-            if key in candidate:
-                return candidate
-    return candidates[-1]
+    return model_json_extract_json_object(text)
 
 
 def http_json(url: str, headers: dict[str, str], body: dict[str, Any], timeout: int = 60) -> dict[str, Any]:
@@ -3510,130 +2684,35 @@ def http_get_binary(url: str, headers: dict[str, str] | None = None, timeout: in
 
 
 def http_status_from_error_message(message: str) -> int | None:
-    for pattern in (r"\b(?:API|TTS(?: download)?) HTTP\s+(\d{3})\b", r"\bHTTP(?: Error)?\s+(\d{3})\b"):
-        match = re.search(pattern, message, flags=re.IGNORECASE)
-        if match:
-            try:
-                return int(match.group(1))
-            except ValueError:
-                return None
-    return None
+    return service_errors_http_status_from_error_message(message)
 
 
 def service_error_codes(kind: str) -> dict[str, str]:
-    if kind == "tts":
-        return {
-            "auth": worker_errors.TTS_AUTH_FAILED,
-            "connection": worker_errors.TTS_CONNECTION_FAILED,
-            "not_found": worker_errors.TTS_NOT_FOUND,
-            "quota": worker_errors.TTS_QUOTA_EXCEEDED,
-            "timeout": worker_errors.TTS_TIMEOUT,
-        }
-    return {
-        "auth": worker_errors.MODEL_AUTH_FAILED,
-        "connection": worker_errors.MODEL_CONNECTION_FAILED,
-        "not_found": worker_errors.MODEL_NOT_FOUND,
-        "quota": worker_errors.MODEL_QUOTA_EXCEEDED,
-        "timeout": worker_errors.MODEL_TIMEOUT,
-    }
+    return service_errors_service_error_codes(kind)
 
 
 def service_stage(kind: str) -> str:
-    return "tts" if kind == "tts" else "model_api"
+    return service_errors_service_stage(kind)
 
 
 def service_label(kind: str) -> str:
-    return "TTS" if kind == "tts" else "模型"
+    return service_errors_service_label(kind)
 
 
 def service_error_message(kind: str, category: str, detail: str) -> str:
-    label = service_label(kind)
-    if category == "timeout":
-        return f"{label}请求超时：{detail}。通常是单批内容太多、模型 thinking 时间过长，或网络代理不稳定。"
-    if category == "auth":
-        return f"{label}授权或权限失败：{detail}。请检查 gcloud 登录、Vertex AI 项目、API Key 或服务权限。"
-    if category == "quota":
-        return f"{label}配额或限流：{detail}。请稍后重试，或检查 Vertex AI 配额、并发限制和账单状态。"
-    if category == "not_found":
-        return f"{label}模型或端点不存在：{detail}。请检查模型名、Base URL、区域和项目是否支持该模型。"
-    if category == "connection":
-        return f"{label}网络连接异常：{detail}。请检查代理、DNS、Base URL 和本机网络。"
-    return f"{label}请求失败：{detail}"
+    return service_errors_service_error_message(kind, category, detail)
 
 
 def classify_service_error(error: Exception, *, kind: str = "model") -> dict[str, Any]:
-    detail = str(error).strip() or error.__class__.__name__
-    lower = detail.lower()
-    status = http_status_from_error_message(detail)
-    codes = service_error_codes(kind)
-
-    category = "unknown"
-    retryable = False
-    if (
-        "max_tokens" in lower
-        or "maxoutputtokens" in lower
-        or "max_tokens" in detail
-        or "MAX_TOKENS" in detail
-        or "输出预算" in detail
-        or "thinking 消耗完" in detail
-    ):
-        category = "timeout"
-        retryable = True
-    elif isinstance(error, (TimeoutError, socket.timeout)) or "timed out" in lower or "timeout" in lower or "超时" in detail:
-        category = "timeout"
-        retryable = True
-    elif status in {401, 403} or any(term in lower for term in ("unauthorized", "unauthenticated", "forbidden", "permission", "invalid api key", "oauth")) or "权限" in detail:
-        category = "auth"
-    elif status == 429 or any(term in lower for term in ("resource exhausted", "quota", "rate limit", "too many requests")) or "限流" in detail or "配额" in detail:
-        category = "quota"
-        retryable = True
-    elif status == 404 or any(term in lower for term in ("not found", "model not found", "publisher model")) or "不存在" in detail:
-        category = "not_found"
-    elif (
-        isinstance(error, urllib.error.URLError)
-        or status is not None and status >= 500
-        or any(
-            term in lower
-            for term in (
-                "urlopen error",
-                "connection",
-                "network",
-                "proxy",
-                "dns",
-                "getaddrinfo",
-                "remote end closed",
-            )
-        )
-        or "连接" in detail
-    ):
-        category = "connection"
-        retryable = True
-
-    code = codes.get(category, worker_errors.UNKNOWN_WORKER_ERROR)
-    return {
-        "message": service_error_message(kind, category, detail),
-        "error_code": code,
-        "stage": service_stage(kind),
-        "retryable": retryable,
-    }
+    return service_errors_classify_service_error(error, kind=kind)
 
 
 def classify_worker_exception(error: Exception, *, command: str = "") -> dict[str, Any]:
-    detail = str(error)
-    lower = detail.lower()
-    if command == "test_tts" or "tts" in lower or "audio" in lower or "语音" in detail:
-        return classify_service_error(error, kind="tts")
-    if command in {"test_api", "generate"} or "api" in lower or "模型" in detail or "gemini" in lower or "vertex" in lower:
-        return classify_service_error(error, kind="model")
-    return {
-        "message": detail.strip() or error.__class__.__name__,
-        "error_code": worker_errors.UNKNOWN_WORKER_ERROR,
-        "stage": command or None,
-        "retryable": False,
-    }
+    return service_errors_classify_worker_exception(error, command=command)
 
 
 def anki_connect(action: str, params: dict[str, Any] | None = None, url: str = "http://127.0.0.1:8765") -> Any:
+    validate_anki_connect_url(url)
     response = http_json(
         url,
         {},
@@ -3649,113 +2728,109 @@ def anki_connect(action: str, params: dict[str, Any] | None = None, url: str = "
     return response.get("result")
 
 
-def anki_field_value(fields: dict[str, Any], name: str) -> str:
-    field = fields.get(name)
-    if isinstance(field, dict):
-        return str(field.get("value") or "")
-    return str(field or "")
+LOOPBACK_HOSTS = security_boundaries_loopback_hosts
+BLOCKED_URL_HOSTS = security_boundaries_blocked_url_hosts
+SENSITIVE_WINDOWS_ROOTS = security_boundaries_sensitive_windows_roots
+SUPPORTED_INPUT_SUFFIXES = security_boundaries_supported_input_suffixes
+
+
+def parsed_url_host(url: str) -> str:
+    return security_boundaries_parsed_url_host(url)
+
+
+def ip_address_for_host(host: str) -> ipaddress._BaseAddress | None:
+    return security_boundaries_ip_address_for_host(host)
+
+
+def host_is_loopback(host: str) -> bool:
+    return security_boundaries_host_is_loopback(host)
+
+
+def host_is_private_or_local(host: str) -> bool:
+    return security_boundaries_host_is_private_or_local(host)
+
+
+def validate_anki_connect_url(url: str) -> None:
+    return security_boundaries_validate_anki_connect_url(url)
+
+
+def validate_source_url_for_import(payload: dict[str, Any]) -> str:
+    return security_boundaries_validate_source_url_for_import(payload)
+
+
+def require_confirmed_local_path_access(payload: dict[str, Any], *, stage: str) -> None:
+    return security_boundaries_require_confirmed_local_path_access(payload, stage=stage)
+
+
+def yt_dlp_needs_remote_components(detail: str) -> bool:
+    return ytdlp_support_yt_dlp_needs_remote_components(detail)
+
+
+def fail_if_remote_components_confirmation_required(payload: dict[str, Any], detail: str) -> None:
+    if yt_dlp_needs_remote_components(detail) and not bool(payload.get("allow_ytdlp_remote_components")):
+        fail(
+            format_yt_dlp_failure(detail),
+            error_code="YTDLP_REMOTE_COMPONENTS_CONFIRMATION_REQUIRED",
+            stage="download_video",
+            retryable=True,
+            fallbacks=["allow_ytdlp_remote_components", "subtitle_only", "local_srt"],
+        )
 
 
 def compatible_base_url(config: dict[str, Any], default_url: str = "") -> str:
-    provider = str(config.get("provider", "")).strip().lower()
-    api_key = str(config.get("api_key") or "").strip().lower()
-    base_url = str(config.get("base_url") or "").strip().rstrip("/")
-    if is_mimo_config(config) and api_key.startswith("tp-") and "token-plan-" not in base_url.lower():
-        return MIMO_TOKEN_PLAN_SGP_BASE_URL
-    if base_url:
-        return base_url
-    if is_deepseek_config(config):
-        return DEEPSEEK_OPENAI_BASE_URL
-    if provider in MIMO_PROVIDERS:
-        return MIMO_TOKEN_PLAN_SGP_BASE_URL if api_key.startswith("tp-") else MIMO_OPENAI_BASE_URL
-    return default_url.rstrip("/")
+    return provider_compatible_base_url(config, default_url)
 
 
 def provider_name(config: dict[str, Any]) -> str:
-    return str(config.get("provider", "")).strip().lower()
+    return provider_provider_name(config)
 
 
 def is_mimo_config(config: dict[str, Any]) -> bool:
-    base_url = str(config.get("base_url") or "").lower()
-    return provider_name(config) in MIMO_PROVIDERS or "xiaomimimo.com" in base_url
+    return provider_is_mimo_config(config)
 
 
 def is_qwen_config(config: dict[str, Any]) -> bool:
-    base_url = str(config.get("base_url") or "").lower()
-    model = str(config.get("model") or "").strip().lower()
-    return (
-        provider_name(config) in QWEN_TTS_PROVIDERS
-        or "dashscope" in base_url
-        or "qwencloud" in base_url
-        or model.startswith("qwen")
-    )
+    return provider_is_qwen_config(config)
 
 
 def is_deepseek_config(config: dict[str, Any]) -> bool:
-    base_url = str(config.get("base_url") or "").lower()
-    model = str(config.get("model") or "").strip().lower()
-    return "deepseek.com" in base_url or model.startswith("deepseek-")
+    return provider_is_deepseek_config(config)
 
 
 def is_deepseek_thinking_config(config: dict[str, Any]) -> bool:
-    model = str(config.get("model") or "").strip().lower()
-    return is_deepseek_config(config) and model in DEEPSEEK_THINKING_MODELS
+    return provider_is_deepseek_thinking_config(config)
 
 
 def is_gemini_vertex_config(config: dict[str, Any]) -> bool:
-    return provider_name(config) in GEMINI_VERTEX_PROVIDERS
+    return provider_is_gemini_vertex_config(config)
 
 
 def is_gemini_vertex_tts_config(config: dict[str, Any]) -> bool:
-    return provider_name(config) in GEMINI_VERTEX_TTS_PROVIDERS
+    return provider_is_gemini_vertex_tts_config(config)
 
 
 def is_gemini_vertex_thinking_config(config: dict[str, Any]) -> bool:
-    model = str(config.get("model") or "").strip().lower()
-    return is_gemini_vertex_config(config) and model.startswith("gemini-3.")
+    return provider_is_gemini_vertex_thinking_config(config)
 
 
 def is_thinking_model_config(config: dict[str, Any]) -> bool:
-    return (
-        is_qwen_config(config)
-        or is_mimo_config(config)
-        or is_deepseek_thinking_config(config)
-        or is_gemini_vertex_thinking_config(config)
-    )
+    return provider_is_thinking_model_config(config)
 
 
 def thinking_budget(config: dict[str, Any], default_value: int = 800) -> int:
-    for key in ("thinking_budget", "reasoning_budget"):
-        value = config.get(key)
-        try:
-            budget = int(value)
-        except (TypeError, ValueError):
-            continue
-        if budget > 0:
-            return min(budget, 4000)
-    return default_value
+    return provider_thinking_budget(config, default_value)
 
 
 def should_stream_reasoning(config: dict[str, Any]) -> bool:
-    return is_thinking_model_config(config)
+    return provider_should_stream_reasoning(config)
 
 
 def api_key_header(config: dict[str, Any]) -> dict[str, str]:
-    api_key = str(config.get("api_key") or "").strip()
-    if is_mimo_config(config):
-        return {"api-key": api_key}
-    return {"Authorization": f"Bearer {api_key}"}
+    return provider_api_key_header(config)
 
 
 def model_api_available(api: dict[str, Any]) -> bool:
-    provider = provider_name(api) or "local"
-    if provider == "local":
-        return False
-    if not str(api.get("model") or "").strip():
-        return False
-    if is_gemini_vertex_config(api):
-        return True
-    return bool(str(api.get("api_key") or "").strip())
+    return provider_model_api_available(api)
 
 
 def hidden_subprocess_flags() -> dict[str, Any]:
@@ -4084,8 +3159,8 @@ def call_model(project: dict[str, Any], segments: list[dict[str, Any]]) -> dict[
 
         if provider == "gemini":
             response = http_json(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
-                {},
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                {"x-goog-api-key": api_key},
                 {
                     "contents": [{"parts": [{"text": prompt}]}],
                     "generationConfig": {
@@ -4230,6 +3305,60 @@ def emit_monotonic_model_progress(
     emit_progress(command, stage, current, message)
 
 
+def card_generation_segment_weight(segment: dict[str, Any]) -> int:
+    text = " ".join(
+        str(segment.get(key) or "")
+        for key in [
+            "text",
+            "answer_core",
+            "exact_span",
+            "learning_action",
+            "phrase_card_focus",
+            "phrase_decision_reason",
+        ]
+    )
+    point_text = " ".join(
+        str(point.get(key) or "")
+        for point in segment.get("learning_points", []) or []
+        if isinstance(point, dict)
+        for key in ["source_sentence", "answer_core", "exact_span", "learning_action", "reason"]
+    )
+    return max(1, math.ceil((len(text) + len(point_text)) / 520))
+
+
+def final_card_batch_weight(api: dict[str, Any], batch_size: int) -> int:
+    raw_value = api.get("card_generation_batch_weight") or api.get("final_card_batch_weight")
+    if raw_value in (None, ""):
+        raw_value = max(8, batch_size * 2)
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        value = max(8, batch_size * 2)
+    return max(1, min(80, value))
+
+
+def weighted_card_generation_batches(
+    segments: list[dict[str, Any]],
+    *,
+    batch_size: int,
+    max_weight: int,
+) -> list[tuple[int, list[dict[str, Any]]]]:
+    batches: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    current_weight = 0
+    for segment in segments:
+        segment_weight = card_generation_segment_weight(segment)
+        if current and (len(current) >= batch_size or current_weight + segment_weight > max_weight):
+            batches.append(current)
+            current = []
+            current_weight = 0
+        current.append(segment)
+        current_weight += segment_weight
+    if current:
+        batches.append(current)
+    return [(index + 1, batch) for index, batch in enumerate(batches)]
+
+
 def call_model_batches(project: dict[str, Any], segments: list[dict[str, Any]], batch_size: int = 10) -> dict[str, Any] | None:
     if not segments:
         return None
@@ -4245,10 +3374,8 @@ def call_model_batches(project: dict[str, Any], segments: list[dict[str, Any]], 
     errors: list[str] = []
     error_details: list[dict[str, Any]] = []
     any_called = False
-    batches = [
-        (start // batch_size + 1, segments[start : start + batch_size])
-        for start in range(0, len(segments), batch_size)
-    ]
+    max_batch_weight = final_card_batch_weight(api, batch_size)
+    batches = weighted_card_generation_batches(segments, batch_size=batch_size, max_weight=max_batch_weight)
     total_batches = max(1, len(batches))
     concurrency = final_card_generation_concurrency(api, total_batches)
     progress_command = str(project.get("_progress_command") or "generate")
@@ -4265,7 +3392,7 @@ def call_model_batches(project: dict[str, Any], segments: list[dict[str, Any]], 
                 progress_command,
                 "ai",
                 percent,
-                f"正在生成卡片正文：第 {index}/{total_batches} 批，每批最多 {batch_size} 个学习点{provider_hint}。",
+                f"正在生成卡片正文：第 {index}/{total_batches} 批，每批最多 {batch_size} 个学习点，动态权重 {max_batch_weight}{provider_hint}。",
             )
         batch_segments, batch_errors, batch_error_details = call_model_batch_with_retry(
             project,
@@ -4288,7 +3415,7 @@ def call_model_batches(project: dict[str, Any], segments: list[dict[str, Any]], 
             progress_command,
             "ai",
             progress_start,
-            f"最终制卡启用 {concurrency} 路并发：{total_batches} 批，每批最多 {batch_size} 个学习点。",
+            f"最终制卡启用 {concurrency} 路并发：{total_batches} 批，每批最多 {batch_size} 个学习点，动态权重 {max_batch_weight}。",
         )
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
             futures = [pool.submit(run_one, index, batch) for index, batch in batches]
@@ -4306,7 +3433,7 @@ def call_model_batches(project: dict[str, Any], segments: list[dict[str, Any]], 
                     progress_command,
                     "ai",
                     percent,
-                    f"卡片正文已完成 {completed_batches}/{total_batches} 批（刚完成第 {index} 批）。",
+                    f"卡片正文已完成 {completed_batches}/{total_batches} 批；最近完成批号 {index}。",
                 )
     if errors and not merged:
         first_detail = next((item for item in error_details if item.get("error_code")), {})
@@ -4395,7 +3522,7 @@ def phrase_review_score(value: Any) -> int:
 
 
 def normalized_phrase_key(phrase: str) -> str:
-    return re.sub(r"\s+", " ", str(phrase or "").strip().lower())
+    return learning_span_normalized_phrase_key(phrase)
 
 
 def is_placeholder_learning_phrase(value: Any) -> bool:
@@ -5450,8 +4577,8 @@ def handle_test_api(payload: dict[str, Any]) -> dict[str, Any]:
 
         elif provider == "gemini":
             response = http_json(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
-                {},
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                {"x-goog-api-key": api_key},
                 {
                     "contents": [{"parts": [{"text": prompt}]}],
                     "generationConfig": {
@@ -5503,7 +4630,7 @@ def handle_test_api(payload: dict[str, Any]) -> dict[str, Any]:
 
 def normalized_tts_config(project_or_payload: dict[str, Any]) -> dict[str, Any]:
     api = project_or_payload.get("api_config") or project_or_payload
-    tts = project_or_payload.get("tts_config") or api.get("tts_config") or {}
+    tts = api.get("tts_config") or project_or_payload.get("tts_config") or {}
     legacy_provider = api.get("tts_provider", "")
     legacy_model = api.get("tts_model", "")
     provider = str(tts.get("provider") or legacy_provider or "disabled").strip().lower()
@@ -5707,103 +4834,14 @@ def gemini_vertex_tts_language_code(language: str) -> str:
     return language
 
 
-def clean_tts_input_text(value: Any) -> str:
-    text = clean_study_text(value)
-    text = re.sub(r"\s+", " ", text).strip(" \t\r\n\"“”")
-    if not text:
-        raise RuntimeError("TTS 文本为空，无法生成音频。")
-    return text
-
-
-TTS_SMALL_NUMBER_WORDS = {
-    "0": "zero",
-    "1": "one",
-    "2": "two",
-    "3": "three",
-    "4": "four",
-    "5": "five",
-    "6": "six",
-    "7": "seven",
-    "8": "eight",
-    "9": "nine",
-    "10": "ten",
-    "11": "eleven",
-    "12": "twelve",
-    "13": "thirteen",
-    "14": "fourteen",
-    "15": "fifteen",
-    "16": "sixteen",
-    "17": "seventeen",
-    "18": "eighteen",
-    "19": "nineteen",
-    "20": "twenty",
-}
-
-
-def tts_ascii_punctuation_variant(text: str) -> str:
-    return (
-        text.replace("’", "'")
-        .replace("‘", "'")
-        .replace("“", '"')
-        .replace("”", '"')
-        .replace("—", "-")
-        .replace("–", "-")
-        .replace("…", "...")
-    )
-
-
-def tts_sentence_punctuation_variant(text: str) -> str:
-    stripped = text.strip()
-    if not stripped or re.search(r"[.!?。！？]$", stripped):
-        return stripped
-    return f"{stripped}."
-
-
-def tts_small_number_words_variant(text: str) -> str:
-    def replace_match(match: re.Match[str]) -> str:
-        return TTS_SMALL_NUMBER_WORDS.get(match.group(0), match.group(0))
-
-    return re.sub(r"(?<![\w.])(?:[0-9]|1[0-9]|20)(?![\w]|\.\d)", replace_match, text)
-
-
-def tts_instruction_fallback_variants(text: str) -> list[str]:
-    spoken = tts_sentence_punctuation_variant(tts_ascii_punctuation_variant(text))
-    if not spoken:
-        return []
-    latin_words = re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", spoken)
-    label = "expression" if 0 < len(latin_words) <= 5 else "sentence"
-    return [
-        f"Read exactly this {label}: {spoken}",
-        f"Say only this {label}: {spoken}",
-    ]
-
-
-def gemini_vertex_tts_text_variants(text: str) -> list[str]:
-    candidates = [
-        text,
-        tts_ascii_punctuation_variant(text),
-        tts_sentence_punctuation_variant(text),
-        tts_sentence_punctuation_variant(tts_ascii_punctuation_variant(text)),
-        tts_small_number_words_variant(text),
-        tts_sentence_punctuation_variant(tts_small_number_words_variant(text)),
-        *tts_instruction_fallback_variants(text),
-    ]
-    variants: list[str] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        cleaned = clean_tts_input_text(candidate)
-        if cleaned not in seen:
-            variants.append(cleaned)
-            seen.add(cleaned)
-    return variants
-
-
 def gemini_vertex_tts_request_body(tts: dict[str, Any], speech_text: str, resolved_language: str) -> dict[str, Any]:
+    # Vertex Gemini TTS rejects systemInstruction when responseModalities is AUDIO.
+    # Keep the exact-read instruction in contents and rely on strict hash/duration checks after synthesis.
     return {
         "contents": [
             {
                 "role": "user",
-                "parts": [{"text": speech_text}],
+                "parts": [{"text": exact_tts_prompt(speech_text)}],
             }
         ],
         "generationConfig": {
@@ -5872,7 +4910,10 @@ def mimo_tts_audio(tts: dict[str, Any], text: str, language: str) -> bytes:
         if voice:
             audio["voice"] = voice
     else:
-        user_content = f"Read naturally and clearly for a {language or 'en'} language-learning Anki card."
+        user_content = (
+            f"Read the assistant message aloud exactly for a {language or 'en'} language-learning Anki card. "
+            "Do not explain, translate, expand, add words, or add a preface."
+        )
         audio = {
             "format": "wav",
             "voice": voice or "mimo_default",
@@ -5913,7 +4954,8 @@ def qwen_tts_audio(tts: dict[str, Any], text: str, language: str) -> bytes:
     model_lower = model.lower()
     if "instruct" in model_lower:
         body["input"]["instructions"] = (
-            "Read naturally and clearly for a language-learning Anki card. "
+            "Read the input text aloud exactly for a language-learning Anki card. "
+            "Do not explain, translate, expand, add words, or add a preface. "
             "Use steady pacing and accurate pronunciation."
         )
         body["input"]["optimize_instructions"] = True
@@ -6059,7 +5101,7 @@ def handle_test_tts(payload: dict[str, Any]) -> dict[str, Any]:
                 f"https://generativelanguage.googleapis.com/v1beta/models/{tts['model']}:generateContent",
                 {"x-goog-api-key": tts["api_key"]},
                 {
-                    "contents": [{"parts": [{"text": f"Read naturally and clearly: {text}"}]}],
+                    "contents": [{"parts": [{"text": exact_tts_prompt(text)}]}],
                     "generationConfig": {
                         "responseModalities": ["AUDIO"],
                         "speechConfig": {
@@ -6428,56 +5470,22 @@ def merge_ai_cards(
 
 
 def card_quality_status(card: dict[str, Any]) -> str:
-    quality = card.get("quality") if isinstance(card.get("quality"), dict) else {}
-    return str(quality.get("status") or "").strip()
+    return inventory_card_quality_status(card)
 
 
-LEARNING_POINT_INVENTORY_STATUSES = {"card_generated", "candidate_only", "hidden_duplicate", "hard_blocked"}
+LEARNING_POINT_INVENTORY_STATUSES = inventory_learning_point_inventory_statuses
 
 
 def inventory_status_for_filtered_item(item: dict[str, Any], reason: str = "") -> str:
-    status = str(item.get("phrase_review_status") or "").strip()
-    reason_text = f"{reason} {item.get('phrase_reject_reason') or ''} {item.get('validation_issues') or ''}".lower()
-    if status == "duplicate" or "duplicate" in reason_text or "重复" in reason_text:
-        return "hidden_duplicate"
-    hard_signals = [
-        "exact_span",
-        "answer_core",
-        "不在原句",
-        "中文",
-        "ipa",
-        "发音说明",
-        "语法解释",
-        "幻觉",
-        "乱码",
-        "bad json",
-        "坏 json",
-    ]
-    if status == "reject" and any(signal in reason_text for signal in hard_signals):
-        return "hard_blocked"
-    return "candidate_only"
+    return inventory_inventory_status_for_filtered_item(item, reason)
 
 
 def inventory_status_for_rejected_card(card: dict[str, Any], segment: dict[str, Any]) -> str:
-    quality = card.get("quality") if isinstance(card.get("quality"), dict) else {}
-    reason = " / ".join(str(issue) for issue in quality.get("issues") or [])
-    return inventory_status_for_filtered_item({**segment, **card}, reason)
+    return inventory_inventory_status_for_rejected_card(card, segment)
 
 
 def inventory_learning_action(item: dict[str, Any], card: dict[str, Any] | None = None) -> str:
-    source = card or item
-    return clean_study_text(
-        source.get("learning_action")
-        or item.get("learning_action")
-        or source.get("learning_target")
-        or source.get("learning_goal")
-        or source.get("phrase_card_focus")
-        or source.get("why_it_matters")
-        or source.get("why")
-        or source.get("teacher_note")
-        or item.get("phrase_card_focus")
-        or "确认这个学习点是否值得做成卡。"
-    )
+    return inventory_inventory_learning_action(item, card)
 
 
 def learning_point_inventory_item(
@@ -6611,27 +5619,11 @@ def build_learning_point_inventory(
 
 
 def learning_point_inventory_stats(inventory: list[dict[str, Any]] | None) -> dict[str, int]:
-    counts = {
-        "candidate_only_learning_point_count": 0,
-        "hidden_duplicate_learning_point_count": 0,
-        "hard_blocked_learning_point_count": 0,
-    }
-    for item in inventory or []:
-        status = str(item.get("status") or "")
-        if status == "candidate_only":
-            counts["candidate_only_learning_point_count"] += 1
-        elif status == "hidden_duplicate":
-            counts["hidden_duplicate_learning_point_count"] += 1
-        elif status == "hard_blocked":
-            counts["hard_blocked_learning_point_count"] += 1
-    return counts
+    return inventory_learning_point_inventory_stats(inventory)
 
 
 def apply_default_generated_card_selection(segments: list[dict[str, Any]], project: dict[str, Any]) -> list[dict[str, Any]]:
-    for segment in segments:
-        for card in segment.get("cards", []) or []:
-            card["enabled"] = card_quality_status(card) in {"recommended", "needs_review"}
-    return segments
+    return inventory_apply_default_generated_card_selection(segments, project)
 
 
 def final_output_card_duplicate_key(segment: dict[str, Any], card: dict[str, Any]) -> str:
@@ -6691,6 +5683,7 @@ def filter_usable_segments_for_output(
     skipped_segments: list[dict[str, Any]] | None = None,
     *,
     block_export_drafts: bool = True,
+    dedupe_cards: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     stats = {
         "filtered_learning_point_count": 0,
@@ -6737,12 +5730,12 @@ def filter_usable_segments_for_output(
         for card in usable_cards:
             next_card = {**card, "enabled": True}
             duplicate_key = final_output_card_duplicate_key(next_segment, next_card)
-            if duplicate_key and duplicate_key in seen_card_keys:
+            if dedupe_cards and duplicate_key and duplicate_key in seen_card_keys:
                 stats["filtered_learning_point_count"] += 1
                 stats["duplicate_learning_point_count"] += 1
                 duplicate_cards_removed += 1
                 continue
-            if duplicate_key:
+            if dedupe_cards and duplicate_key:
                 seen_card_keys.add(duplicate_key)
             next_segment["cards"].append(next_card)
         if next_segment["cards"]:
@@ -6809,95 +5802,43 @@ def yt_dlp_base_command() -> list[str] | None:
     return None
 
 
-def yt_dlp_js_runtime_args() -> list[str]:
-    if shutil.which("deno"):
-        return ["--js-runtimes", "deno", "--remote-components", "ejs:github"]
-    if shutil.which("node"):
-        return ["--js-runtimes", "node", "--remote-components", "ejs:github"]
-    if shutil.which("bun"):
-        return ["--js-runtimes", "bun", "--remote-components", "ejs:github"]
-    return []
+def yt_dlp_js_runtime_args(allow_remote_components: bool = False) -> list[str]:
+    return ytdlp_support_yt_dlp_js_runtime_args(allow_remote_components, which_func=shutil.which)
 
 
 def yt_dlp_network_args() -> list[str]:
-    args = [
-        "--force-ipv4",
-        "--retries",
-        "10",
-        "--fragment-retries",
-        "10",
-        "--extractor-retries",
-        "5",
-        "--retry-sleep",
-        "http:linear=3::20",
-        "--sleep-requests",
-        "0.75",
-        "--sleep-subtitles",
-        "1.5",
-    ]
-    if importlib.util.find_spec("curl_cffi"):
-        args.extend(["--impersonate", "chrome"])
-    return args
+    return ytdlp_support_yt_dlp_network_args(curl_cffi_available=importlib.util.find_spec("curl_cffi") is not None)
 
 
 def yt_dlp_failure_detail(completed: subprocess.CompletedProcess[str]) -> str:
-    return (completed.stderr or completed.stdout or "").strip()
+    return ytdlp_support_yt_dlp_failure_detail(completed)
 
 
 def is_subtitle_rate_limited(detail: str) -> bool:
-    lower = detail.lower()
-    return "http error 429" in lower and "subtitles" in lower
+    return ytdlp_support_is_subtitle_rate_limited(detail)
 
 
 def format_yt_dlp_failure(detail: str) -> str:
-    tail = detail[-1800:]
-    if "HTTP Error 429" in detail:
-        return (
-            "URL 下载失败：YouTube 返回 HTTP 429，说明当前网络/IP 被临时限流，尤其是字幕接口。"
-            "我已经启用了 EJS、重试、降速和浏览器模拟；如果仍失败，请稍后重试、换网络/代理，"
-            "或先下载/准备本地 SRT 后走“本地视频 + SRT”。\n\n"
-            f"yt-dlp 原始信息：{tail}"
-        )
-    if "n challenge solving failed" in detail or "Remote component challenge solver" in detail:
-        return (
-            "URL 下载失败：YouTube JS challenge 没有解开。请运行 scripts/setup_runtime.ps1 更新依赖，"
-            "并确保已安装 Deno 2.0+ 或 Node.js 20+。新版会自动给 yt-dlp 加 "
-            "--remote-components ejs:github。\n\n"
-            f"yt-dlp 原始信息：{tail}"
-        )
-    return f"URL 下载失败：{tail}"
+    return ytdlp_support_format_yt_dlp_failure(detail)
 
 
 def yt_dlp_failure_meta(detail: str) -> dict[str, Any]:
-    if "HTTP Error 429" in detail:
-        return {
-            "error_code": "YOUTUBE_RATE_LIMIT",
-            "stage": "download_subtitles" if "subtitles" in detail.lower() else "download_video",
-            "retryable": True,
-            "fallbacks": ["subtitle_only", "local_srt"],
-        }
-    if "n challenge solving failed" in detail or "Remote component challenge solver" in detail:
-        return {
-            "error_code": "YOUTUBE_N_CHALLENGE",
-            "stage": "download_video",
-            "retryable": True,
-            "fallbacks": ["subtitle_only", "local_srt"],
-        }
-    return {
-        "error_code": "YOUTUBE_SUBTITLE_UNAVAILABLE" if "subtitles" in detail.lower() else None,
-        "stage": "download_subtitles" if "subtitles" in detail.lower() else "download_video",
-        "retryable": True,
-        "fallbacks": ["subtitle_only", "local_srt"],
-    }
+    return ytdlp_support_yt_dlp_failure_meta(detail)
 
 
-def run_yt_dlp(args: list[str], timeout: int = 900, check: bool = True) -> subprocess.CompletedProcess[str]:
+def run_yt_dlp(
+    args: list[str],
+    timeout: int = 900,
+    check: bool = True,
+    *,
+    allow_remote_components: bool = False,
+) -> subprocess.CompletedProcess[str]:
     command = yt_dlp_base_command()
     if not command:
         fail("找不到 yt-dlp。请运行：pip install yt-dlp，或把 yt-dlp 加入 PATH。")
 
     completed = subprocess.run(
-        [*command, *yt_dlp_js_runtime_args(), *yt_dlp_network_args(), *args],
+        [*command, *yt_dlp_js_runtime_args(allow_remote_components), *yt_dlp_network_args(), *args],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -6913,147 +5854,35 @@ def run_yt_dlp(args: list[str], timeout: int = 900, check: bool = True) -> subpr
 
 
 def subtitle_language_args(language: str) -> str:
-    code = language_code(language)
-    if code == "en":
-        return "en,en-orig,en-GB,en-US"
-    return f"{code},{code}-orig,{code}.*,{code},en,en-orig,en.*"
+    return subtitle_discovery_subtitle_language_args(language)
 
 
 def first_file_by_suffix(directory: Path, suffixes: tuple[str, ...]) -> Path | None:
-    candidates = [
-        path
-        for path in directory.iterdir()
-        if path.is_file() and path.suffix.lower() in suffixes and not path.name.endswith(".info.json")
-    ]
-    if not candidates:
-        return None
-    return sorted(candidates, key=lambda path: path.stat().st_size if path.exists() else 0, reverse=True)[0]
+    return subtitle_discovery_first_file_by_suffix(directory, suffixes)
 
 
 def convert_vtt_to_srt(path: Path) -> Path:
-    text = path.read_text(encoding="utf-8-sig", errors="replace")
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    blocks = re.split(r"\n\s*\n", text)
-    cues: list[str] = []
-
-    for block in blocks:
-        lines = [line.strip("\ufeff") for line in block.split("\n") if line.strip()]
-        if not lines:
-            continue
-        if lines[0].startswith(("WEBVTT", "NOTE", "STYLE", "REGION")):
-            continue
-        time_index = next((index for index, line in enumerate(lines) if "-->" in line), -1)
-        if time_index == -1:
-            continue
-        time_line = re.sub(r"(\d{2}:\d{2}:\d{2})\.(\d{3})", r"\1,\2", lines[time_index])
-        cue_text = strip_subtitle_text(" ".join(lines[time_index + 1 :]))
-        if cue_text:
-            cues.append(f"{len(cues) + 1}\n{time_line}\n{cue_text}")
-
-    if not cues:
-        fail(f"字幕不是可转换的 VTT：{path}")
-    output = path.with_suffix(".srt")
-    output.write_text("\n\n".join(cues) + "\n", encoding="utf-8")
-    return output
+    return subtitle_discovery_convert_vtt_to_srt(path)
 
 
 def pick_subtitle_file(directory: Path, language: str) -> Path | None:
-    code = language_code(language)
-    subtitles = [
-        path
-        for path in directory.iterdir()
-        if path.is_file() and path.suffix.lower() in {".srt", ".vtt"}
-    ]
-    if not subtitles:
-        return None
-
-    def score(path: Path) -> tuple[int, str]:
-        name = path.name.lower()
-        if f".{code}" in name:
-            return (0, name)
-        if ".en" in name:
-            return (1, name)
-        return (2, name)
-
-    selected = sorted(subtitles, key=score)[0]
-    if selected.suffix.lower() == ".vtt":
-        return convert_vtt_to_srt(selected)
-    return selected
+    return subtitle_discovery_pick_subtitle_file(directory, language)
 
 
 def compact_match_text(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", value.lower())
+    return subtitle_discovery_compact_match_text(value)
 
 
 def subtitle_language_markers(language: str) -> set[str]:
-    code = language_code(language)
-    markers = {f".{code}", f"-{code}", f"_{code}", f" {code}", f".{code}-", f".{code}_"}
-    if code == "en":
-        markers.update({"english", ".eng", "-eng", "_eng", " eng"})
-    return markers
+    return subtitle_discovery_subtitle_language_markers(language)
 
 
 def discover_local_subtitle(video_path: str, language: str = "English") -> Path | None:
-    video = Path(clean_input_path(video_path))
-    directory = video.parent
-    if not video.name or not directory.exists():
-        return None
-
-    subtitles = [
-        path
-        for path in directory.iterdir()
-        if path.is_file() and path.suffix.lower() in {".srt", ".vtt"}
-    ]
-    if not subtitles:
-        return None
-
-    video_stem = video.stem.lower()
-    compact_video = compact_match_text(video_stem)
-    markers = subtitle_language_markers(language)
-
-    def score(path: Path) -> tuple[int, int, str]:
-        stem = path.stem.lower()
-        compact_stem = compact_match_text(stem)
-        has_language_marker = any(marker in stem for marker in markers)
-        size = path.stat().st_size if path.exists() else 0
-        if compact_stem == compact_video:
-            return (0, -size, path.name.lower())
-        if compact_video and compact_stem.startswith(compact_video) and has_language_marker:
-            return (1, -size, path.name.lower())
-        if compact_video and compact_video in compact_stem and has_language_marker:
-            return (2, -size, path.name.lower())
-        if compact_video and compact_stem.startswith(compact_video):
-            return (3, -size, path.name.lower())
-        if len(subtitles) == 1:
-            return (4, -size, path.name.lower())
-        return (9, -size, path.name.lower())
-
-    selected = sorted(subtitles, key=score)[0]
-    if score(selected)[0] >= 9:
-        return None
-    if selected.suffix.lower() == ".vtt":
-        return convert_vtt_to_srt(selected)
-    return selected
-
-
-TEXT_SUBTITLE_CODECS = {"subrip", "ass", "ssa", "webvtt", "mov_text"}
+    return subtitle_discovery_discover_local_subtitle(video_path, language)
 
 
 def subtitle_language_aliases(language: str) -> set[str]:
-    lower = str(language or "").lower()
-    if any(value in lower for value in ["zh", "chinese", "中文", "汉语", "chi", "zho", "cmn"]):
-        return {"zh", "zho", "chi", "cmn", "chn", "chinese", "中文"}
-    if any(value in lower for value in ["fr", "french", "français"]):
-        return {"fr", "fra", "fre", "french"}
-    if any(value in lower for value in ["es", "spanish", "español"]):
-        return {"es", "spa", "spanish"}
-    if any(value in lower for value in ["ja", "japanese", "日本"]):
-        return {"ja", "jpn", "japanese"}
-    if any(value in lower for value in ["ru", "russian", "рус", "俄语"]):
-        return {"ru", "rus", "russian"}
-    if any(value in lower for value in ["ko", "korean", "한국"]):
-        return {"ko", "kor", "korean"}
-    return {"en", "eng", "english", "en-us", "en-gb"}
+    return subtitle_discovery_subtitle_language_aliases(language)
 
 
 def run_ffprobe_json(video_path: Path) -> dict[str, Any] | None:
@@ -7085,25 +5914,7 @@ def run_ffprobe_json(video_path: Path) -> dict[str, Any] | None:
 
 
 def select_embedded_subtitle_stream(probe: dict[str, Any] | None, language: str) -> dict[str, Any] | None:
-    aliases = subtitle_language_aliases(language)
-    streams = [stream for stream in (probe or {}).get("streams", []) if stream.get("codec_type") == "subtitle"]
-    text_streams = [stream for stream in streams if str(stream.get("codec_name") or "").lower() in TEXT_SUBTITLE_CODECS]
-    if not text_streams:
-        return None
-
-    def score(stream: dict[str, Any]) -> tuple[int, int, int, int]:
-        tags = stream.get("tags") if isinstance(stream.get("tags"), dict) else {}
-        language_tag = str(tags.get("language") or "").strip().lower()
-        codec = str(stream.get("codec_name") or "").lower()
-        disposition = stream.get("disposition") if isinstance(stream.get("disposition"), dict) else {}
-        language_score = 0 if language_tag in aliases else 3 if language_tag in {"", "und", "unknown"} else 8
-        codec_score = 0 if codec == "subrip" else 1
-        forced_score = 2 if int(disposition.get("forced") or 0) else 0
-        default_score = 0 if int(disposition.get("default") or 0) else 1
-        return (language_score, forced_score, codec_score, default_score)
-
-    selected = sorted(text_streams, key=score)[0]
-    return selected if score(selected)[0] < 8 else None
+    return subtitle_discovery_select_embedded_subtitle_stream(probe, language)
 
 
 def extract_embedded_subtitle(video_path: str, language: str = "English") -> Path | None:
@@ -7170,11 +5981,6 @@ def read_download_info(directory: Path) -> dict[str, Any]:
         return {}
 
 
-def wants_subtitle_only(payload: dict[str, Any]) -> bool:
-    mode = str(payload.get("url_import_mode") or "").strip().lower()
-    return bool(payload.get("skip_video_slicing")) or mode in {"subtitles", "subtitle", "subtitle_only", "transcript"}
-
-
 def find_cached_url_source(cache_root: Path, url_hash: str, payload: dict[str, Any]) -> dict[str, Any] | None:
     candidates = [path for path in cache_root.glob(f"url_*{url_hash}") if path.is_dir()]
     stable_candidate = cache_root / f"url_{url_hash}"
@@ -7188,6 +5994,9 @@ def find_cached_url_source(cache_root: Path, url_hash: str, payload: dict[str, A
         if not subtitle_path or (not video_path and not wants_subtitle_only(payload)):
             continue
         info = read_download_info(directory)
+        skip_video_slicing = not bool(video_path) or (
+            bool(payload.get("skip_video_slicing")) and not url_video_mode_requested(payload)
+        )
         return {
             "video_path": str(video_path) if video_path else "",
             "subtitle_path": str(subtitle_path),
@@ -7195,7 +6004,7 @@ def find_cached_url_source(cache_root: Path, url_hash: str, payload: dict[str, A
             "url": str(payload.get("source_url") or "").strip(),
             "cached": True,
             "transcript_only": not bool(video_path),
-            "skip_video_slicing": not bool(video_path) or bool(payload.get("skip_video_slicing")),
+            "skip_video_slicing": skip_video_slicing,
             "download_mode": "subtitles" if not video_path else "video",
             **info,
         }
@@ -7203,7 +6012,7 @@ def find_cached_url_source(cache_root: Path, url_hash: str, payload: dict[str, A
 
 
 def download_url_subtitles_only(payload: dict[str, Any], download_dir: Path, output_template: str, sub_langs: str) -> dict[str, Any]:
-    url = str(payload.get("source_url") or "").strip()
+    url = validate_source_url_for_import(payload)
     args = [
         "--no-playlist",
         "--windows-filenames",
@@ -7219,9 +6028,14 @@ def download_url_subtitles_only(payload: dict[str, Any], download_dir: Path, out
         "--write-auto-subs",
         url,
     ]
-    completed = run_yt_dlp(args, check=False)
+    completed = run_yt_dlp(
+        args,
+        check=False,
+        allow_remote_components=bool(payload.get("allow_ytdlp_remote_components")),
+    )
     if completed.returncode != 0:
         detail = yt_dlp_failure_detail(completed)
+        fail_if_remote_components_confirmation_required(payload, detail)
         fail(format_yt_dlp_failure(detail), **yt_dlp_failure_meta(detail))
 
     subtitle_path = pick_subtitle_file(download_dir, payload.get("language", "English"))
@@ -7249,11 +6063,7 @@ def download_url_subtitles_only(payload: dict[str, Any], download_dir: Path, out
 
 
 def download_url_source(payload: dict[str, Any]) -> dict[str, Any]:
-    url = str(payload.get("source_url") or "").strip()
-    if not url:
-        fail("请输入 YouTube / 视频 URL。")
-    if not re.match(r"^https?://", url, flags=re.IGNORECASE):
-        fail("URL 需要以 http:// 或 https:// 开头。")
+    url = validate_source_url_for_import(payload)
 
     cache_root = Path.cwd() / "projects" / "url_cache"
     cache_root.mkdir(parents=True, exist_ok=True)
@@ -7291,9 +6101,14 @@ def download_url_source(payload: dict[str, Any]) -> dict[str, Any]:
         "--write-auto-subs",
         url,
     ]
-    completed = run_yt_dlp(download_args, check=False)
+    completed = run_yt_dlp(
+        download_args,
+        check=False,
+        allow_remote_components=bool(payload.get("allow_ytdlp_remote_components")),
+    )
     if completed.returncode != 0:
         detail = yt_dlp_failure_detail(completed)
+        fail_if_remote_components_confirmation_required(payload, detail)
         if is_subtitle_rate_limited(detail):
             # If YouTube rate-limits official subtitles, try auto subtitles only once after a short pause.
             time.sleep(8)
@@ -7304,15 +6119,17 @@ def download_url_source(payload: dict[str, Any]) -> dict[str, Any]:
                     url,
                 ],
                 check=False,
+                allow_remote_components=bool(payload.get("allow_ytdlp_remote_components")),
             )
             if retry.returncode != 0:
                 retry_detail = yt_dlp_failure_detail(retry) or detail
+                fail_if_remote_components_confirmation_required(payload, retry_detail)
                 if payload.get("url_auto_subtitle_fallback", True):
                     try:
                         return download_url_subtitles_only(payload, download_dir, output_template, sub_langs)
                     except SystemExit as err:
                         fail(
-                            f"{format_yt_dlp_failure(retry_detail)}\n\n字幕-only fallback 也失败，退出码：{err.code}",
+                            f"{format_yt_dlp_failure(retry_detail)}\n\n字幕下载 fallback 也失败，退出码：{err.code}",
                             **yt_dlp_failure_meta(retry_detail),
                         )
                 fail(format_yt_dlp_failure(retry_detail), **yt_dlp_failure_meta(retry_detail))
@@ -7322,7 +6139,7 @@ def download_url_source(payload: dict[str, Any]) -> dict[str, Any]:
                     return download_url_subtitles_only(payload, download_dir, output_template, sub_langs)
                 except SystemExit as err:
                     fail(
-                        f"{format_yt_dlp_failure(detail)}\n\n字幕-only fallback 也失败，退出码：{err.code}",
+                        f"{format_yt_dlp_failure(detail)}\n\n字幕下载 fallback 也失败，退出码：{err.code}",
                         **yt_dlp_failure_meta(detail),
                     )
             fail(format_yt_dlp_failure(detail), **yt_dlp_failure_meta(detail))
@@ -7350,7 +6167,7 @@ def download_url_source(payload: dict[str, Any]) -> dict[str, Any]:
         "download_dir": str(download_dir),
         "url": url,
         "transcript_only": False,
-        "skip_video_slicing": bool(payload.get("skip_video_slicing")),
+        "skip_video_slicing": False if url_video_mode_requested(payload) else bool(payload.get("skip_video_slicing")),
         "download_mode": "video",
         **info,
     }
@@ -7361,6 +6178,17 @@ def build_document_prompt(project: dict[str, Any], segments: list[dict[str, Any]
     style_instruction = document_style_instruction(project)
     study_mode = normalized_document_study_mode(project)
     material_context_instruction = material_context_for_prompt(project.get("material_context"))
+    try:
+        target_card_count = max(1, int(project.get("max_segments") or len(segments) or 1))
+    except (TypeError, ValueError):
+        target_card_count = max(1, len(segments) or 1)
+    document_card_count_instruction = (
+        f"本次最多输出 {target_card_count} 张卡。"
+        "如果片段数量少但同一片段包含多个互不重复的高价值知识点，可以在同一个 segment.cards 里输出多张；"
+        "短资料可以先做独立概念卡，再做一张有原文证据支撑的综合/对比卡，把两个概念的关系、边界或配合方式问清楚；"
+        "每张卡必须训练不同的回忆动作，不能改写同一个问题来凑数量。"
+        "如果资料确实不足，少于目标数量也可以。"
+    )
     compact = [
         {
             "id": segment["id"],
@@ -7385,6 +6213,7 @@ def build_document_prompt(project: dict[str, Any], segments: list[dict[str, Any]
             "文档没有原声，禁止生成听力卡，禁止提到原声/TTS/视频切片。"
             f"本次语言精读目标：{focus_instruction}"
             f"{style_instruction}"
+            f"{document_card_count_instruction}"
             "制卡标准："
             "1) 每张卡只训练一个语言动作：理解一个表达、掌握一个词的用法、看懂一个语法框架。"
             "2) phrase 必须来自原文片段，不能是 key expression，不能是整句。"
@@ -7410,6 +6239,7 @@ def build_document_prompt(project: dict[str, Any], segments: list[dict[str, Any]
         f"{material_context_instruction}"
         f"{focus_instruction}"
         f"{style_instruction}"
+        f"{document_card_count_instruction}"
         "高质量知识卡原则：必须遵守最小信息原则，先理解再记忆；"
         "每张卡只保留一个可主动回忆的信息单元。"
         "必须保留原文依据或适用语境，避免脱离资料凭空解释。"
@@ -7444,6 +6274,160 @@ def build_document_prompt(project: dict[str, Any], segments: list[dict[str, Any]
         f"用户水平：{project.get('level', 'B1')}。"
         f"文档片段：{json.dumps(compact, ensure_ascii=False)}"
     )
+
+
+def document_generation_cache_path(project: dict[str, Any], segment: dict[str, Any]) -> tuple[Path, str]:
+    api = project.get("api_config") or {}
+    cache_key = stable_cache_key(
+        {
+            "version": 5,
+            "kind": "document_point_card_generation",
+            "provider": provider_name(api),
+            "base_url": str(api.get("base_url") or "").strip().rstrip("/"),
+            "model": str(api.get("model") or "").strip(),
+            "language": normalize_learning_language(project.get("language", "en")),
+            "level_mode": normalized_level_mode(project),
+            "level": str(project.get("level") or "B1"),
+            "study_mode": normalized_document_study_mode(project),
+            "document_focus": normalized_document_focus(project),
+            "document_answer_language": normalized_document_answer_language(project),
+            "document_depth": normalized_document_depth(project),
+            "document_answer_length": normalized_document_answer_length(project),
+            "study_depth": normalized_study_depth(project),
+            "document_path": clean_input_path(project.get("document_path")),
+            "segment": {
+                "id": str(segment.get("id") or ""),
+                "text": str(segment.get("text") or ""),
+                "phrase": str(segment.get("phrase") or ""),
+                "document_excerpt": str(segment.get("document_excerpt") or ""),
+            },
+        }
+    )
+    return persistent_cache_root() / "document_generation" / f"{cache_key}.json", cache_key
+
+
+def document_ai_payload_has_usable_cards(ai_payload: dict[str, Any] | None) -> bool:
+    if not isinstance(ai_payload, dict):
+        return False
+    usable_fields = {
+        "retrieval_task",
+        "atomic_answer",
+        "english",
+        "chinese",
+        "phrase",
+        "definition",
+        "source_evidence",
+        "why_it_matters",
+    }
+    for segment in ai_payload.get("segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        for card in segment.get("cards") or []:
+            if not isinstance(card, dict):
+                continue
+            if any(str(card.get(field) or "").strip() for field in usable_fields):
+                return True
+    return False
+
+
+def load_document_generation_cache(cache_path: Path) -> dict[str, Any] | None:
+    if not cache_path.exists() or cache_path.stat().st_size <= 0:
+        return None
+    try:
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    payload = cached.get("payload") if isinstance(cached, dict) else None
+    if document_ai_payload_has_usable_cards(payload):
+        return payload
+    return None
+
+
+def store_document_generation_cache(cache_path: Path, cache_key: str, ai_payload: dict[str, Any]) -> None:
+    if ai_payload.get("error") or not document_ai_payload_has_usable_cards(ai_payload):
+        return
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = cache_path.with_suffix(".tmp")
+        temp_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "cache_key": cache_key,
+                    "created_at": int(time.time() * 1000),
+                    "payload": ai_payload,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        temp_path.replace(cache_path)
+    except OSError:
+        return
+
+
+def cached_or_generated_document_payload(
+    project: dict[str, Any],
+    segments: list[dict[str, Any]],
+    *,
+    cache_disabled: bool,
+) -> tuple[dict[str, Any] | None, dict[str, int]]:
+    stats = {"cache_hits": 0, "cache_misses": 0}
+    cached_by_segment_id: dict[str, dict[str, Any]] = {}
+    missing_segments: list[dict[str, Any]] = []
+    cache_paths: dict[str, tuple[Path, str]] = {}
+    for segment in segments:
+        segment_id = str(segment.get("id") or "")
+        cache_paths[segment_id] = document_generation_cache_path(project, segment)
+        if cache_disabled:
+            missing_segments.append(segment)
+            stats["cache_misses"] += 1
+            continue
+        cache_path, _cache_key = cache_paths[segment_id]
+        cached = load_document_generation_cache(cache_path)
+        cached_segments = cached.get("segments") if isinstance(cached, dict) else None
+        if isinstance(cached_segments, list) and cached_segments:
+            cached_by_segment_id[segment_id] = cached_segments[0]
+            stats["cache_hits"] += 1
+        else:
+            missing_segments.append(segment)
+            stats["cache_misses"] += 1
+
+    generated_payload: dict[str, Any] | None = None
+    if missing_segments:
+        generated_payload = call_document_model(project, missing_segments)
+        if not generated_payload:
+            return None, stats
+        if generated_payload.get("segments") and not cache_disabled:
+            generated_by_segment_id = {
+                str(segment.get("id") or ""): segment
+                for segment in generated_payload.get("segments") or []
+                if isinstance(segment, dict)
+            }
+            for segment in missing_segments:
+                segment_id = str(segment.get("id") or "")
+                generated_segment = generated_by_segment_id.get(segment_id)
+                cache_path, cache_key = cache_paths.get(segment_id, (Path(), ""))
+                if generated_segment and cache_path:
+                    store_document_generation_cache(cache_path, cache_key, {"segments": [generated_segment]})
+
+    generated_by_segment_id = {
+        str(segment.get("id") or ""): segment
+        for segment in (generated_payload or {}).get("segments", []) or []
+        if isinstance(segment, dict)
+    }
+    merged_segments = []
+    for segment in segments:
+        segment_id = str(segment.get("id") or "")
+        if segment_id in cached_by_segment_id:
+            merged_segments.append(cached_by_segment_id[segment_id])
+        elif segment_id in generated_by_segment_id:
+            merged_segments.append(generated_by_segment_id[segment_id])
+    result: dict[str, Any] = {"segments": merged_segments}
+    if generated_payload and generated_payload.get("error"):
+        result["error"] = generated_payload.get("error")
+    return result, stats
 
 
 def call_document_model(project: dict[str, Any], segments: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -7494,8 +6478,8 @@ def call_document_model(project: dict[str, Any], segments: list[dict[str, Any]])
 
         if provider == "gemini":
             response = http_json(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
-                {},
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                {"x-goog-api-key": api_key},
                 {
                     "contents": [{"parts": [{"text": prompt}]}],
                     "generationConfig": {
@@ -7630,6 +6614,7 @@ def merge_document_cards(
     ai_payload: dict[str, Any] | None,
     level: str,
     study_mode: str = "knowledge",
+    max_cards: int | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
     ai_by_segment: dict[str, dict[str, Any]] = {}
     warning = None
@@ -7641,76 +6626,224 @@ def merge_document_cards(
     else:
         warning = "未配置可用模型，已生成本地待审文档草稿。"
 
-    for segment in segments:
+    def normalize_ai_document_card_defaults(card: dict[str, Any]) -> None:
+        safe_defaults = {
+            "why_it_matters": "这张卡帮助把原文信息转成可主动回忆的问题。",
+            "difficulty_reason": "根据当前水平、原文密度和回答复杂度估计。",
+            "teacher_note": "先用自己的话回答，再核对原文依据。",
+        }
+        for key, replacement in safe_defaults.items():
+            if contains_internal_placeholder(card.get(key)):
+                card[key] = replacement
+        if contains_internal_placeholder(card.get("context")):
+            card["context"] = "来自导入文档的可复习知识点。"
+        if contains_internal_placeholder(card.get("definition")):
+            card["definition"] = card.get("chinese") or "请根据原文回答这个问题。"
+
+    def card_from_ai_card(segment: dict[str, Any], ai_card: dict[str, Any], index: int) -> dict[str, Any]:
         card = fallback_document_card(segment, level, study_mode=study_mode)
+        if index > 1:
+            card["id"] = f"{segment['id']}_knowledge_{index:02d}"
+        for key in [
+            "english",
+            "chinese",
+            "phrase",
+            "knowledge_type",
+            "definition",
+            "collocations",
+            "context",
+            "example",
+            "chinese_feel",
+            "why",
+            "learning_target",
+            "why_it_matters",
+            "how_to_use_it",
+            "difficulty",
+            "estimated_level",
+            "difficulty_reason",
+            "teacher_note",
+            "cloze",
+            "content_kind",
+            "source_evidence",
+            "retrieval_task",
+            "atomic_answer",
+            "memory_hook",
+            "transfer_check",
+            "boundary",
+        ]:
+            if ai_card.get(key):
+                card[key] = str(ai_card[key])
+        if card.get("retrieval_task"):
+            card["english"] = clean_study_text(card.get("retrieval_task"))
+        if card.get("atomic_answer"):
+            card["chinese"] = clean_study_text(card.get("atomic_answer"))
+        if card.get("memory_hook"):
+            hook = clean_study_text(card.get("memory_hook"))
+            existing_feel = clean_study_text(card.get("chinese_feel"))
+            card["chinese_feel"] = "；".join(part for part in [existing_feel, hook] if part)
+        if card.get("transfer_check"):
+            transfer = clean_study_text(card.get("transfer_check"))
+            card["how_to_use_it"] = transfer
+            card["why"] = transfer
+        if card.get("boundary"):
+            boundary = clean_study_text(card.get("boundary"))
+            existing_note = clean_study_text(card.get("teacher_note"))
+            card["teacher_note"] = "；".join(part for part in [existing_note, boundary] if part)
+            existing_collocations = clean_study_text(card.get("collocations"))
+            if boundary and boundary not in existing_collocations:
+                card["collocations"] = "；".join(part for part in [existing_collocations, boundary] if part)
+        if card["cloze"].count("____") != 1:
+            card["cloze"] = f"{card['phrase']} 的核心是 ____。"
+        normalize_ai_document_card_defaults(card)
+        card["type_label"] = "文档精读卡" if study_mode == "language_reading" else "知识卡"
+        card["document_card_kind"] = "language_reading" if study_mode == "language_reading" else "knowledge"
+        card["quality"] = document_card_quality(card, fallback=False)
+        if study_mode == "language_reading":
+            card["quality"]["status"] = "needs_review"
+            card["quality"].setdefault("issues", []).append("文档精读卡默认待审，需确认语言点是否值得保留")
+            card["teacher_note"] = (
+                card.get("teacher_note", "")
+                or "文档精读卡：请确认这个表达、词义或语法框架确实值得复习。"
+            )
+        card["enabled"] = card["quality"]["status"] == "recommended"
+        return card
+
+    def relation_card_from_document_cards(segment: dict[str, Any], cards: list[dict[str, Any]], index: int) -> dict[str, Any] | None:
+        if study_mode == "language_reading" or len(cards) < 2:
+            return None
+        left, right = cards[0], cards[1]
+        left_phrase = clean_study_text(left.get("phrase"))
+        right_phrase = clean_study_text(right.get("phrase"))
+        if not left_phrase or not right_phrase or left_phrase.lower() == right_phrase.lower():
+            return None
+        left_definition = clip_words(
+            clean_study_text(left.get("definition") or left.get("chinese") or left.get("atomic_answer")),
+            18,
+        ).rstrip("。.!！?？；; ")
+        right_definition = clip_words(
+            clean_study_text(right.get("definition") or right.get("chinese") or right.get("atomic_answer")),
+            18,
+        ).rstrip("。.!！?？；; ")
+        if not left_definition or not right_definition:
+            return None
+        evidence_parts = [
+            clean_study_text(left.get("source_evidence")),
+            clean_study_text(right.get("source_evidence")),
+        ]
+        source_evidence = " ".join(dict.fromkeys(part for part in evidence_parts if part)).strip()
+        if not source_evidence:
+            source_evidence = clean_study_text(segment.get("document_excerpt"))
+        if not source_evidence:
+            return None
+        relation_phrase = f"{left_phrase} + {right_phrase}"
+        relation_card = fallback_document_card(segment, level, study_mode=study_mode)
+        relation_card.update(
+            {
+                "id": f"{segment['id']}_knowledge_{index:02d}",
+                "type": "knowledge",
+                "type_label": "知识卡",
+                "enabled": True,
+                "document_card_kind": "knowledge",
+                "knowledge_type": "arguments",
+                "content_kind": "knowledge",
+                "source_evidence": source_evidence,
+                "retrieval_task": f"{left_phrase} 和 {right_phrase} 在这段资料里是什么关系？",
+                "atomic_answer": (
+                    f"{left_phrase} 关注：{left_definition}；"
+                    f"{right_phrase} 关注：{right_definition}。"
+                    "二者合起来说明这段资料有两个需要同时理解的侧面。"
+                ),
+                "english": f"{left_phrase} 和 {right_phrase} 在这段资料里是什么关系？",
+                "chinese": (
+                    f"{left_phrase} 关注：{left_definition}；"
+                    f"{right_phrase} 关注：{right_definition}。"
+                    "二者合起来说明这段资料有两个需要同时理解的侧面。"
+                ),
+                "phrase": relation_phrase,
+                "definition": "这是一张综合/对比卡：把同一段资料里的两个知识点连接起来，而不是重复任一张单点卡。",
+                "collocations": f"{left_phrase}；{right_phrase}；综合关系；概念边界",
+                "context": "来自同一段导入文档的综合关系，用来检查两个知识点是否能被连起来理解。",
+                "example": clip_words(source_evidence, 42),
+                "chinese_feel": "先分别回忆两个概念，再说明它们如何配合或区分。",
+                "why": f"复习时先分别说出 {left_phrase} 和 {right_phrase}，再说明二者的配合或区别。",
+                "learning_target": "把两个相关知识点从孤立记忆提升为关系理解。",
+                "why_it_matters": "关系卡能防止只记住名词，却说不出它们如何一起支持原文观点。",
+                "how_to_use_it": f"复习时先分别说出 {left_phrase} 和 {right_phrase}，再说明二者的配合或区别。",
+                "difficulty": CEFR_LABELS.get(level, level),
+                "estimated_level": level if level in CEFR_ORDER else "B1",
+                "difficulty_reason": "根据当前水平和两个知识点的关系复杂度估计。",
+                "teacher_note": "这张卡不是新造概念，而是关系卡；先答两个单点，再解释它们为什么放在同一段里。",
+                "cloze": f"{left_phrase} 和 {right_phrase} 的关系是 ____。",
+                "transfer_check": f"复习时先分别说出 {left_phrase} 和 {right_phrase}，再说明二者的配合或区别。",
+                "boundary": "如果只能说出其中一个概念，而不能说明二者关系，这张综合卡就还没掌握。",
+                "memory_hook": "两张单点卡是零件；关系卡检查你能不能把零件装成结构。",
+            }
+        )
+        relation_card["quality"] = document_card_quality(relation_card, fallback=False)
+        relation_card["enabled"] = relation_card["quality"]["status"] == "recommended"
+        return relation_card
+
+    emitted_cards = 0
+    card_limit = max_cards if isinstance(max_cards, int) and max_cards > 0 else None
+    for segment in segments:
+        if card_limit is not None and emitted_cards >= card_limit:
+            segment["cards"] = []
+            continue
+        cards: list[dict[str, Any]] = []
         ai_segment = ai_by_segment.get(segment["id"])
         if ai_segment:
-            ai_card = next((item for item in ai_segment.get("cards", []) if item.get("type") == "knowledge"), None)
-            if ai_card:
-                for key in [
-                    "english",
-                    "chinese",
-                    "phrase",
-                    "knowledge_type",
-                    "definition",
-                    "collocations",
-                    "context",
-                    "example",
-                    "chinese_feel",
-                    "why",
-                    "learning_target",
-                    "why_it_matters",
-                    "how_to_use_it",
-                    "difficulty",
-                    "estimated_level",
-                    "difficulty_reason",
-                    "teacher_note",
-                    "cloze",
-                    "content_kind",
-                    "source_evidence",
-                    "retrieval_task",
-                    "atomic_answer",
-                    "memory_hook",
-                    "transfer_check",
-                    "boundary",
-                ]:
-                    if ai_card.get(key):
-                        card[key] = str(ai_card[key])
-                if card.get("retrieval_task"):
-                    card["english"] = clean_study_text(card.get("retrieval_task"))
-                if card.get("atomic_answer"):
-                    card["chinese"] = clean_study_text(card.get("atomic_answer"))
-                if card.get("memory_hook"):
-                    hook = clean_study_text(card.get("memory_hook"))
-                    existing_feel = clean_study_text(card.get("chinese_feel"))
-                    card["chinese_feel"] = "；".join(part for part in [existing_feel, hook] if part)
-                if card.get("transfer_check"):
-                    transfer = clean_study_text(card.get("transfer_check"))
-                    card["how_to_use_it"] = transfer
-                    card["why"] = transfer
-                if card.get("boundary"):
-                    boundary = clean_study_text(card.get("boundary"))
-                    existing_note = clean_study_text(card.get("teacher_note"))
-                    card["teacher_note"] = "；".join(part for part in [existing_note, boundary] if part)
-                    existing_collocations = clean_study_text(card.get("collocations"))
-                    if boundary and boundary not in existing_collocations:
-                        card["collocations"] = "；".join(part for part in [existing_collocations, boundary] if part)
-                if card["cloze"].count("____") != 1:
-                    card["cloze"] = f"{card['phrase']} 的核心是 ____。"
-                card["type_label"] = "文档精读卡" if study_mode == "language_reading" else "知识卡"
-                card["document_card_kind"] = "language_reading" if study_mode == "language_reading" else "knowledge"
-                card["quality"] = document_card_quality(card, fallback=False)
-                if study_mode == "language_reading":
-                    card["quality"]["status"] = "needs_review"
-                    card["quality"].setdefault("issues", []).append("文档精读卡默认待审，需确认语言点是否值得保留")
-                    card["teacher_note"] = (
-                        card.get("teacher_note", "")
-                        or "文档精读卡：请确认这个表达、词义或语法框架确实值得复习。"
+            raw_ai_cards = [
+                item
+                for item in ai_segment.get("cards", [])
+                if isinstance(item, dict) and str(item.get("type") or "knowledge") == "knowledge"
+            ]
+            seen_signatures: set[str] = set()
+            for index, ai_card in enumerate(raw_ai_cards, 1):
+                if card_limit is not None and emitted_cards >= card_limit:
+                    break
+                card = card_from_ai_card(segment, ai_card, index)
+                signature = stable_cache_key(
+                    {
+                        "phrase": clean_study_text(card.get("phrase")).lower(),
+                        "english": clean_study_text(card.get("english")).lower(),
+                        "chinese": clean_study_text(card.get("chinese")).lower(),
+                    }
+                )
+                if signature in seen_signatures:
+                    continue
+                seen_signatures.add(signature)
+                cards.append(card)
+                emitted_cards += 1
+            if card_limit is not None and emitted_cards < card_limit and len(cards) >= 2:
+                relation_card = relation_card_from_document_cards(segment, cards, len(cards) + 1)
+                if relation_card is not None:
+                    relation_signature = stable_cache_key(
+                        {
+                            "phrase": clean_study_text(relation_card.get("phrase")).lower(),
+                            "english": clean_study_text(relation_card.get("english")).lower(),
+                            "chinese": clean_study_text(relation_card.get("chinese")).lower(),
+                        }
                     )
-                card["enabled"] = card["quality"]["status"] == "recommended"
+                    if relation_signature not in seen_signatures:
+                        seen_signatures.add(relation_signature)
+                        cards.append(relation_card)
+                        emitted_cards += 1
+            if not cards:
+                card = fallback_document_card(segment, level, study_mode=study_mode)
+                card["quality"] = document_card_quality(card, fallback=True)
+                card["enabled"] = False
+                cards = [card]
+                emitted_cards += 1
         else:
+            card = fallback_document_card(segment, level, study_mode=study_mode)
             card["quality"] = document_card_quality(card, fallback=True)
             card["enabled"] = False
+            cards = [card]
+            emitted_cards += 1
+        if not cards:
+            segment["cards"] = []
+            continue
+        card = cards[0]
         segment["phrase"] = card.get("phrase", segment.get("phrase", ""))
         segment["knowledge_type"] = card.get("knowledge_type", "")
         segment["document_card_kind"] = card.get("document_card_kind", "knowledge")
@@ -7720,16 +6853,20 @@ def merge_document_cards(
             segment["phrase_reject_reason"] = " / ".join(card["quality"]["issues"])
         else:
             segment["phrase_decision_reason"] = card.get("why_it_matters") or card.get("why", "")
-        segment["cards"] = [card]
+        segment["cards"] = cards
     return segments, warning
 
 
 def handle_generate_document(payload: dict[str, Any]) -> dict[str, Any]:
+    timing_started = time.perf_counter()
+    timing_ms: dict[str, int] = {}
     payload = {**payload, "language": normalize_learning_language(payload.get("language", "en"))}
     document_path = clean_input_path(payload.get("document_path"))
     if not document_path:
         fail("请先选择 TXT、Markdown、DOCX、EPUB 或 PDF 文档。")
+    require_confirmed_local_path_access(payload, stage="document")
 
+    source_started = time.perf_counter()
     emit_progress("generate", "document", 22, "正在读取文档。")
     text = read_document_source(document_path)
     level = payload.get("level", "B1")
@@ -7744,15 +6881,26 @@ def handle_generate_document(payload: dict[str, Any]) -> dict[str, Any]:
             segment["source_time"] = f"文档精读点 {index}"
             title = segment.get("phrase") or f"精读点 {index}"
             segment["text"] = f"这段资料里值得精读的表达、词义或语法框架是什么：{title}"
+    timing_ms["source_prepare"] = int((time.perf_counter() - source_started) * 1000)
+    context_started = time.perf_counter()
     emit_progress("generate", "context", 54, "正在理解整份文档，建立制卡上下文。")
     material_context = call_material_context(payload, segments)
     payload = {**payload, "material_context": material_context, "study_depth": normalized_study_depth(payload)}
+    timing_ms["context_model"] = int((time.perf_counter() - context_started) * 1000)
     context_warning = material_context.get("warning") if isinstance(material_context, dict) else None
     progress_label = "语言精读卡" if study_mode == "language_reading" else "文档知识卡"
     emit_progress("generate", "ai", 66, f"正在生成{progress_label}：{len(segments)} 个片段。")
-    ai_payload = call_document_model(payload, segments)
+    model_started = time.perf_counter()
+    cache_disabled = bool(payload.get("disable_document_generation_cache") or (payload.get("api_config") or {}).get("disable_document_generation_cache"))
+    ai_payload, document_cache_stats = cached_or_generated_document_payload(
+        payload,
+        segments,
+        cache_disabled=cache_disabled,
+    )
+    timing_ms["card_model"] = int((time.perf_counter() - model_started) * 1000)
     emit_progress("generate", "cards", 86, "正在整理文档卡字段。")
-    segments, warning = merge_document_cards(segments, ai_payload, level, study_mode=study_mode)
+    field_started = time.perf_counter()
+    segments, warning = merge_document_cards(segments, ai_payload, level, study_mode=study_mode, max_cards=max_segments)
     document_candidate_count = len(segments)
     segments = apply_default_generated_card_selection(segments, payload)
     segments, output_filter_stats = filter_usable_segments_for_output(
@@ -7762,6 +6910,7 @@ def handle_generate_document(payload: dict[str, Any]) -> dict[str, Any]:
     )
     if context_warning:
         warning = f"{context_warning}；{warning}" if warning else str(context_warning)
+    timing_ms["field_merge"] = int((time.perf_counter() - field_started) * 1000)
 
     title = payload.get("title") or Path(document_path).stem
     try:
@@ -7776,6 +6925,11 @@ def handle_generate_document(payload: dict[str, Any]) -> dict[str, Any]:
         filter_stats=output_filter_stats,
         level_mode=normalized_level_mode(payload),
     )
+    timing_ms["total"] = int((time.perf_counter() - timing_started) * 1000)
+    generated_document_point_ids = [str(segment.get("id") or "") for segment in segments if segment.get("cards")]
+    quality_funnel["generation_timing_ms"] = timing_ms
+    quality_funnel["card_generation_cache_hits"] = int(document_cache_stats.get("cache_hits") or 0)
+    quality_funnel["card_generation_cache_misses"] = int(document_cache_stats.get("cache_misses") or 0)
     return {
         "id": f"project_{int(time.time())}",
         "title": title,
@@ -7801,6 +6955,15 @@ def handle_generate_document(payload: dict[str, Any]) -> dict[str, Any]:
         "max_segments": max_segments,
         "auto_max_segments": auto_segments,
         "quality_funnel": quality_funnel,
+        "generated_document_point_ids": generated_document_point_ids,
+        "source_fingerprint": stable_cache_key(
+            {
+                "source_mode": "document",
+                "document_path": document_path,
+                "title": title,
+                "study_mode": study_mode,
+            }
+        ),
         "segments": segments,
         "warning": warning,
         "source_mode": "document",
@@ -7957,10 +7120,23 @@ def handle_generate_batch(payload: dict[str, Any], source_mode: str) -> dict[str
             "video_path": clean_input_path(item.get("video_path")) if item_source_mode == "local" else "",
             "subtitle_path": clean_input_path(item.get("subtitle_path")) if item_source_mode == "local" else "",
             "document_path": clean_input_path(item.get("document_path")) if item_source_mode == "document" else "",
+            "allow_private_network_url": bool(
+                item.get("allow_private_network_url")
+                or payload.get("allow_private_network_url")
+            ),
+            "allow_ytdlp_remote_components": bool(
+                item.get("allow_ytdlp_remote_components")
+                or payload.get("allow_ytdlp_remote_components")
+            ),
             "_batch_item_id": item_id,
             "_batch_subdeck_title": subdeck_title,
             "_batch_deck_name": deck_name,
         }
+        if "local_path_access_confirmed" in item or "local_path_access_confirmed" in payload:
+            item_payload["local_path_access_confirmed"] = bool(
+                item.get("local_path_access_confirmed")
+                or payload.get("local_path_access_confirmed")
+            )
         if item_source_mode == "url" and not item_payload["source_url"]:
             failed_items.append({"id": item_id, "title": subdeck_title, "error": "缺少视频链接。"})
             continue
@@ -8078,6 +7254,9 @@ def handle_generate_batch(payload: dict[str, Any], source_mode: str) -> dict[str
         "study_depth": normalized_study_depth(payload),
         "selection_strategy": normalized_selection_strategy(payload),
         "card_types": payload.get("card_types") or first_project.get("card_types") or (["knowledge"] if source_mode == "document" else ["listening", "phrase", "cloze"]),
+        "tts_semantic_verification": payload.get("tts_semantic_verification")
+        or first_project.get("tts_semantic_verification")
+        or {},
         "max_segments": payload.get("max_segments") or first_project.get("max_segments") or 0,
         "auto_max_segments": bool(payload.get("auto_max_segments") or first_project.get("auto_max_segments")),
         "skip_video_slicing": bool(payload.get("skip_video_slicing") or source_mode == "document"),
@@ -8112,9 +7291,9 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         source_message = "已复用 URL 缓存素材。" if source_info.get("cached") else "URL 素材下载完成。"
         if source_info.get("transcript_only"):
             source_message = (
-                "已复用 URL 字幕缓存，跳过视频切片。"
+                "已复用 URL 字幕缓存；当前任务未生成视频媒体。"
                 if source_info.get("cached")
-                else "URL 字幕已就绪，跳过视频切片。"
+                else "URL 字幕已就绪；当前任务未生成视频媒体。"
             )
         emit_progress(
             "generate",
@@ -8122,18 +7301,26 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
             28,
             source_message,
         )
+        skip_video_slicing = bool(source_info.get("skip_video_slicing")) or (
+            bool(payload.get("skip_video_slicing")) and not url_video_mode_requested(payload)
+        )
         payload = {
             **payload,
             "video_path": source_info.get("video_path", ""),
             "subtitle_path": source_info["subtitle_path"],
             "title": payload.get("title") or source_info.get("title") or "",
-            "skip_video_slicing": bool(source_info.get("skip_video_slicing")) or bool(payload.get("skip_video_slicing")),
+            "skip_video_slicing": skip_video_slicing,
         }
 
     video_path = clean_input_path(payload.get("video_path", ""))
     subtitle_path = clean_input_path(payload.get("subtitle_path", ""))
+    if source_mode == "local":
+        require_confirmed_local_path_access(payload, stage="source")
     subtitle_source = "manual" if subtitle_path and Path(subtitle_path).exists() else ""
-    skip_video_slicing = bool(payload.get("skip_video_slicing") or (source_info or {}).get("transcript_only"))
+    skip_video_slicing = bool(
+        payload.get("skip_video_slicing")
+        or (bool((source_info or {}).get("transcript_only")) and not bool(video_path))
+    )
     if not skip_video_slicing and (not video_path or not Path(video_path).exists()):
         fail(f"视频文件不存在：{video_path}")
     if video_path and (not subtitle_path or not Path(subtitle_path).exists()):
@@ -8297,6 +7484,7 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         "selection_strategy": normalized_selection_strategy(payload),
         "material_context": material_context,
         "card_types": card_types,
+        "tts_semantic_verification": payload.get("tts_semantic_verification") or {},
         "max_segments": max_segments,
         "auto_max_segments": auto_segments,
         "skip_video_slicing": skip_video_slicing,
@@ -8309,6 +7497,7 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         "model_retryable": model_retryable,
         "source_mode": source_mode,
         "source_url": payload.get("source_url", "") if source_mode == "url" else "",
+        "url_import_mode": payload.get("url_import_mode") or ("video" if source_mode == "url" else ""),
         "source_info": source_info
         or {
             "title": title,
@@ -8320,10 +7509,6 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         },
         "created_at": int(time.time()),
     }
-
-
-def stable_id(value: str, offset: int = 0) -> int:
-    return int(zlib.crc32(value.encode("utf-8")) + offset)
 
 
 def run_ffmpeg(args: list[str]) -> None:
@@ -11782,6 +10967,25 @@ body,
   align-items: start;
   margin-top: clamp(28px, 5vw, 42px);
 }
+.v11-answer-main {
+  grid-column: 1;
+  min-width: 0;
+}
+.v11-answer-layout > .v11-video-stage {
+  grid-column: 2;
+  grid-row: 1;
+}
+.v11-back .v11-answer-layout {
+  display: flex;
+  flex-direction: column;
+}
+.v11-back .v11-answer-layout > .v11-video-stage {
+  width: min(100%, 760px);
+  margin-inline: auto;
+}
+.v11-back .v11-answer-main {
+  width: 100%;
+}
 .v11-label {
   margin-top: 14px;
   color: #6e6e73;
@@ -12167,6 +11371,18 @@ V11_CARD_SCRIPT = """
     document.querySelectorAll(".v11-video-stage").forEach(function(stage) {
       var video = stage.querySelector("video");
       if (!video) return;
+      if (!stage.getAttribute("role")) stage.setAttribute("role", "button");
+      if (!stage.getAttribute("tabindex")) stage.setAttribute("tabindex", "0");
+      if (!stage.getAttribute("aria-label")) stage.setAttribute("aria-label", "播放视频复读");
+      if (!stage.getAttribute("data-v11-keyboard-bound")) {
+        stage.addEventListener("keydown", function(event) {
+          if (event.key === "Enter" || event.key === " " || event.key === "Spacebar") {
+            event.preventDefault();
+            window.toggleV11Video(stage);
+          }
+        });
+        stage.setAttribute("data-v11-keyboard-bound", "1");
+      }
       video.loop = true;
       video.muted = false;
       video.playsInline = true;
@@ -12212,7 +11428,7 @@ LANGUAGE_FRONT_TEMPLATE_V11 = """
     {{#FrontContent}}<p>{{FrontContent}}</p>{{/FrontContent}}
   </section>
   {{#Video}}
-  <section class="v11-video-stage evidence-anchor" onclick="toggleV11Video(this)">
+  <section class="v11-video-stage evidence-anchor" onclick="toggleV11Video(this)" role="button" tabindex="0" aria-label="播放视频复读">
     {{Video}}
     <span class="v11-video-toggle">▶</span>
     <span class="v11-video-cue">点画面开始复读</span>
@@ -12233,6 +11449,14 @@ LANGUAGE_BACK_TEMPLATE_V11 = """
     {{#Difficulty}}<span class="v11-difficulty">{{Difficulty}}</span>{{/Difficulty}}
   </div>
   <section class="v11-answer-layout answer-anchor">
+    {{#Video}}
+    <div class="v11-video-stage evidence-anchor" onclick="toggleV11Video(this)" role="button" tabindex="0" aria-label="播放视频复读">
+      {{Video}}
+      <span class="v11-video-toggle">▶</span>
+      <span class="v11-video-cue">点画面开始复读</span>
+      <span class="v11-video-time">{{SourceTime}}</span>
+    </div>
+    {{/Video}}
     <div class="v11-answer-main">
       <div class="v11-time">{{SourceTime}}</div>
       <div class="v11-label">{{CardType}}</div>
@@ -12262,14 +11486,6 @@ LANGUAGE_BACK_TEMPLATE_V11 = """
         {{#TtsAudio}}<span class="v11-media-source audio-slow">{{TtsAudio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-slow')"><span class="v11-play">▶</span><span>慢读跟读</span></button>{{/TtsAudio}}
       </div>
     </div>
-    {{#Video}}
-    <div class="v11-video-stage" onclick="toggleV11Video(this)">
-      {{Video}}
-      <span class="v11-video-toggle">▶</span>
-      <span class="v11-video-cue">点画面开始复读</span>
-      <span class="v11-video-time">{{SourceTime}}</span>
-    </div>
-    {{/Video}}
   </section>
   <section class="v11-info-grid">
     {{#Definition}}<div class="v11-info-block understanding-block"><div class="v11-info-head"><span class="v11-icon">?</span><strong>怎么用</strong></div><p>{{Definition}}</p></div>{{/Definition}}
@@ -12333,7 +11549,7 @@ LANGUAGE_FRONT_TEMPLATE_V11_FAST = """
     {{#FrontContent}}<p>{{FrontContent}}</p>{{/FrontContent}}
   </section>
   {{#Video}}
-  <section class="v11-video-stage evidence-anchor" onclick="toggleV11Video(this)">
+  <section class="v11-video-stage evidence-anchor" onclick="toggleV11Video(this)" role="button" tabindex="0" aria-label="播放视频复读">
     {{Video}}
     <span class="v11-video-toggle">▶</span>
     <span class="v11-video-cue">点画面开始复读</span>
@@ -12354,7 +11570,7 @@ LANGUAGE_BACK_TEMPLATE_V11_FAST = """
     {{#Difficulty}}<span class="v11-difficulty">{{Difficulty}}</span>{{/Difficulty}}
   </div>
   {{#Video}}
-  <section class="v11-video-stage evidence-anchor" onclick="toggleV11Video(this)">
+  <section class="v11-video-stage evidence-anchor" onclick="toggleV11Video(this)" role="button" tabindex="0" aria-label="播放视频复读">
     {{Video}}
     <span class="v11-video-toggle">▶</span>
     <span class="v11-video-cue">点画面开始复读</span>
@@ -13076,8 +12292,8 @@ def anki_template_assets(template_id: str, deck_kind_code: str = "video_language
         )
     if template_id == "immersive_v11":
         if review_density == "fast":
-            return "沉浸复读 V12 · 快速背卡", CARD_CSS_V11_FAST, LANGUAGE_FRONT_TEMPLATE_V11_FAST, LANGUAGE_BACK_TEMPLATE_V11_FAST
-        return "沉浸复读 V12", CARD_CSS_V11, LANGUAGE_FRONT_TEMPLATE_V11, LANGUAGE_BACK_TEMPLATE_V11
+            return "沉浸复读 V11 · 快速复读", CARD_CSS_V11_FAST, LANGUAGE_FRONT_TEMPLATE_V11_FAST, LANGUAGE_BACK_TEMPLATE_V11_FAST
+        return "沉浸复读 V11", CARD_CSS_V11, LANGUAGE_FRONT_TEMPLATE_V11, LANGUAGE_BACK_TEMPLATE_V11
     if template_id == "dictionary":
         return "词典解释 V10", CARD_CSS, DICTIONARY_FRONT_TEMPLATE, DICTIONARY_BACK_TEMPLATE
     if template_id == "minimal":
@@ -13099,204 +12315,38 @@ def uses_v11_repetition_front(template_id: str, deck_kind_code: str = "video_lan
     return template_id == "immersive_v11"
 
 
-def safe_filename(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_") or "media"
-
-
-def anki_deck_part(value: Any, fallback: str = "未命名") -> str:
-    cleaned = str(value or "").strip()
-    cleaned = re.sub(r"::+", " - ", cleaned)
-    cleaned = re.sub(r"[\\/:*?\"<>|]+", " - ", cleaned)
-    cleaned = re.sub(r"\s*-\s*", " - ", cleaned)
-    cleaned = re.sub(r"\s+", " ", cleaned)
-    cleaned = re.sub(r"(?: - ){2,}", " - ", cleaned).strip(" -")
-    return cleaned or fallback
-
-
-def anki_deck_name(value: Any, fallback: str = "未命名") -> str:
-    raw = str(value or "").strip()
-    if "::" not in raw:
-        return anki_deck_part(raw, fallback)
-    parts = [anki_deck_part(part, fallback) for part in raw.split("::")]
-    return "::".join(part for part in parts if part) or fallback
-
-
-def batch_export_deck_specs(project: dict[str, Any]) -> tuple[str, list[dict[str, str]]]:
-    parent = anki_deck_part(project.get("title") or project.get("id") or "批量学习包", "批量学习包")
-    raw_items = project.get("batch_items") if isinstance(project.get("batch_items"), list) else []
-    specs: list[dict[str, str]] = []
-    seen_names: dict[str, int] = {}
-    for index, item in enumerate(raw_items):
-        if not isinstance(item, dict) or item.get("enabled") is False:
-            continue
-        item_id = str(item.get("id") or f"item-{index + 1}").strip()
-        if not item_id:
-            continue
-        explicit_deck = str(item.get("deck_name") or "").strip()
-        if explicit_deck:
-            deck_name = anki_deck_name(explicit_deck, parent)
-            if "::" not in deck_name:
-                deck_name = f"{parent}::{deck_name}"
-        else:
-            child = anki_deck_part(item.get("subdeck_title") or item.get("title") or item_id, f"素材 {index + 1}")
-            deck_name = f"{parent}::{child}"
-        count = seen_names.get(deck_name, 0)
-        seen_names[deck_name] = count + 1
-        if count:
-            deck_name = f"{deck_name} ({count + 1})"
-        specs.append({"id": item_id, "deck_name": deck_name})
-    return parent, specs
-
-
-def project_media_prefix(project: dict[str, Any], export_run_id: int | None = None) -> str:
-    base = safe_filename(str(project.get("title") or project.get("id") or "deck"))[:72]
-    seed = "|".join(
-        str(project.get(key) or "")
-        for key in ("id", "title", "source_url", "created_at")
-    )
-    if export_run_id is not None:
-        seed = f"{seed}|{export_run_id}"
-    return f"{base}_{stable_id(seed, 0)}"
-
-
-def anki_video_html(
-    webm_filename: str,
-    mp4_filename: str = "",
-    poster_filename: str = "",
-    *,
-    controls: bool = True,
-    muted: bool = False,
-) -> str:
-    if not webm_filename and not mp4_filename:
-        return ""
-    poster_attr = ""
-    poster_preload = ""
-    if poster_filename:
-        safe_poster = html.escape(poster_filename, quote=True)
-        poster_attr = f' poster="{safe_poster}"'
-        poster_preload = f'<img src="{safe_poster}" alt="" style="display:none">'
-    sources: list[str] = []
-    if webm_filename:
-        safe_webm = html.escape(webm_filename, quote=True)
-        sources.append(f'<source src="{safe_webm}" type="video/webm">')
-    if mp4_filename:
-        safe_mp4 = html.escape(mp4_filename, quote=True)
-        sources.append(f'<source src="{safe_mp4}" type="video/mp4">')
-    fallback = '<span>视频无法播放：当前 Anki 客户端不支持这个视频格式。</span>'
-    attrs = ["loop", "playsinline", 'preload="metadata"']
-    if controls:
-        attrs.append("controls")
-    if muted:
-        attrs.append("muted")
-    return f'{poster_preload}<video {" ".join(attrs)}{poster_attr}>{"".join(sources)}{fallback}</video>'
-
-
-def anki_audio_html(filename: str, *, controls: bool = True, role: str = "") -> str:
-    if not filename:
-        return ""
-    safe_name = html.escape(filename, quote=True)
-    controls_attr = " controls" if controls else ""
-    role_attr = f' data-audio-role="{html.escape(role, quote=True)}"' if role else ""
-    return f'<audio{controls_attr} preload="metadata"{role_attr}><source src="{safe_name}" type="audio/mpeg"></audio>'
-
-
-def extract_media_references(value: str) -> list[str]:
-    refs: list[str] = []
-    for attr in ("src", "poster"):
-        for match in re.finditer(rf"\b{attr}\s*=\s*([\"'])(.*?)\1", str(value or ""), flags=re.IGNORECASE):
-            name = html.unescape(match.group(2)).strip()
-            if name and not re.match(r"^[a-z]+://", name, flags=re.IGNORECASE):
-                refs.append(Path(name).name)
-    return list(dict.fromkeys(refs))
-
-
-def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def file_fingerprint(path_value: Any) -> str:
-    path = Path(str(path_value or ""))
-    if not path.exists() or not path.is_file():
-        return ""
+def retrieve_anki_media_bytes(filename: str, anki_url: str) -> bytes | None:
+    if not filename or not anki_url:
+        return None
     try:
-        stat = path.stat()
-        digest = hashlib.sha256()
-        digest.update(str(path.resolve()).encode("utf-8", errors="ignore"))
-        digest.update(str(stat.st_size).encode("ascii"))
-        digest.update(str(stat.st_mtime_ns).encode("ascii"))
-        with path.open("rb") as handle:
-            digest.update(handle.read(65536))
-            if stat.st_size > 65536:
-                handle.seek(max(0, stat.st_size - 65536))
-                digest.update(handle.read(65536))
-        return digest.hexdigest()[:24]
-    except OSError:
-        return ""
+        result = anki_connect("retrieveMediaFile", {"filename": filename}, anki_url)
+    except Exception:
+        return None
+    if not isinstance(result, str) or not result:
+        return None
+    try:
+        return base64.b64decode(result, validate=True)
+    except (ValueError, binascii.Error):
+        return None
 
 
 def media_manifest(media_files: list[str], media_ledger: list[dict[str, Any]] | None = None) -> dict[str, dict[str, Any]]:
-    ledger_by_file: dict[str, dict[str, Any]] = {}
-    for item in media_ledger or []:
-        name = Path(str(item.get("file") or "")).name
-        if name and name not in ledger_by_file:
-            ledger_by_file[name] = {
-                key: value
-                for key, value in item.items()
-                if key != "file" and value not in (None, "", [])
-            }
-    manifest: dict[str, dict[str, Any]] = {}
-    for media_file in media_files:
-        path = Path(media_file)
-        if not path.exists():
-            continue
-        entry = {
-            "sha256": file_sha256(path),
-            "bytes": path.stat().st_size,
-        }
-        entry.update(ledger_by_file.get(path.name, {}))
-        manifest[path.name] = entry
-    return manifest
-
-
-def segment_display_source_time(segment: dict[str, Any]) -> str:
-    return clean_study_text(segment.get("media_source_time")) or clean_study_text(segment.get("source_time"))
-
-
-def media_text_hash(value: Any) -> str:
-    text = clean_tts_input_text(str(value or "")).lower()
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12] if text else ""
+    return media_manifest_core(
+        media_files,
+        media_ledger,
+        duration_seconds_func=audio_duration_seconds,
+        phrase_max_duration_func=phrase_tts_max_duration_seconds,
+    )
 
 
 def persistent_cache_root() -> Path:
-    root = Path.cwd() / "projects" / "cache"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
-
-
-def stable_cache_key(payload: dict[str, Any], length: int = 32) -> str:
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:length]
-
-
-TEXT_NORMALIZATION_CACHE_VERSION = 2
-TTS_PROVIDER_ADAPTER_VERSION = 2
-MEDIA_FFMPEG_PROFILE_VERSION = 2
+    return cache_persistent_cache_root(Path.cwd())
 
 
 def tts_provider_scope(tts: dict[str, Any]) -> dict[str, str]:
     provider = provider_name(tts)
-    scope = {
-        "project": str(tts.get("project") or tts.get("project_id") or "").strip(),
-        "region": str(tts.get("location") or tts.get("region") or "").strip(),
-        "style": str(tts.get("style") or tts.get("instructions") or "").strip(),
-    }
-    if provider in GEMINI_VERTEX_TTS_PROVIDERS:
-        scope["region"] = scope["region"] or gemini_vertex_location(tts)
-    return scope
+    default_region = gemini_vertex_location(tts) if provider in GEMINI_VERTEX_TTS_PROVIDERS else ""
+    return cache_tts_provider_scope(tts, provider=provider, default_region=default_region)
 
 
 @functools.lru_cache(maxsize=1)
@@ -13321,92 +12371,293 @@ def ffmpeg_cache_signature() -> str:
     return f"{executable}|{version}"
 
 
-MEDIA_CACHE_MIN_BYTES = {
-    ".jpg": 1024,
-    ".jpeg": 1024,
-    ".mp3": 1024,
-    ".mp4": 4096,
-    ".webm": 4096,
-}
-
-
-def cached_media_file_valid(path: Path) -> bool:
+def audio_duration_seconds(path: Path) -> float | None:
+    if not shutil.which("ffprobe"):
+        return None
     try:
-        size = path.stat().st_size
-    except OSError:
-        return False
-    if size < MEDIA_CACHE_MIN_BYTES.get(path.suffix.lower(), 1):
-        return False
-    try:
-        with path.open("rb") as handle:
-            header = handle.read(64)
-    except OSError:
-        return False
-    suffix = path.suffix.lower()
-    if suffix in {".jpg", ".jpeg"}:
-        return header.startswith(b"\xff\xd8")
-    if suffix == ".mp3":
-        return header.startswith(b"ID3") or (
-            len(header) >= 2 and header[0] == 0xFF and (header[1] & 0xE0) == 0xE0
+        completed = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            **hidden_subprocess_flags(),
         )
-    if suffix == ".mp4":
-        return b"ftyp" in header
-    if suffix == ".webm":
-        return header.startswith(b"\x1a\x45\xdf\xa3")
-    return size > 0
-
-
-def discard_cached_file(path: Path) -> None:
+    except Exception:
+        return None
+    if completed.returncode != 0:
+        return None
     try:
-        path.unlink(missing_ok=True)
+        duration = float((completed.stdout or "").strip())
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(duration) or duration <= 0:
+        return None
+    return duration
+
+
+def tts_semantic_config(project: dict[str, Any]) -> dict[str, Any]:
+    return semantic_tts_semantic_config(project)
+
+
+def tts_semantic_verification_enabled(project: dict[str, Any]) -> bool:
+    return semantic_tts_semantic_verification_enabled(project)
+
+
+def tts_semantic_requires_export_pass(project: dict[str, Any], deck_kind_code: str = "") -> bool:
+    return semantic_tts_semantic_requires_export_pass(project, deck_kind_code)
+
+
+def transcribe_tts_audio_with_whisper_cli(audio_path: Path, config: dict[str, Any]) -> dict[str, Any]:
+    whisper_exe = shutil.which(str(config.get("whisper_command") or "whisper"))
+    if not whisper_exe:
+        return {"ok": False, "provider": "whisper-cli", "reason": "whisper_cli_not_found"}
+    model = str(config.get("whisper_model") or "tiny.en").strip()
+    language = str(config.get("whisper_language") or "en").strip()
+    timeout = int(config.get("asr_timeout_seconds") or config.get("whisper_timeout_seconds") or 120)
+    with tempfile.TemporaryDirectory(prefix="acg_tts_asr_") as temp_dir:
+        command = [
+            whisper_exe,
+            str(audio_path),
+            "--model",
+            model,
+            "--language",
+            language,
+            "--output_format",
+            "txt",
+            "--output_dir",
+            temp_dir,
+        ]
+        if os.name == "nt":
+            command.extend(["--fp16", "False"])
+        completed = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            **hidden_subprocess_flags(),
+        )
+        if completed.returncode != 0:
+            return {
+                "ok": False,
+                "provider": "whisper-cli",
+                "reason": "whisper_cli_failed",
+                "error": (completed.stderr or completed.stdout or "").strip()[-500:],
+            }
+        txt_files = sorted(Path(temp_dir).glob("*.txt"))
+        transcript = ""
+        if txt_files:
+            transcript = txt_files[0].read_text(encoding="utf-8", errors="replace").strip()
+        if not transcript:
+            transcript = (completed.stdout or "").strip()
+        if not transcript:
+            return {"ok": False, "provider": "whisper-cli", "reason": "whisper_empty_transcript"}
+    return {"ok": True, "provider": f"whisper-cli:{model}", "transcript": transcript}
+
+
+def unsafe_asr_command_reason(command: str) -> str:
+    return semantic_unsafe_asr_command_reason(command)
+
+
+def build_asr_command_argv(command: str, args: Any, audio_path: Path) -> list[str]:
+    argv, reason = semantic_build_asr_command_argv(command, args, audio_path)
+    if reason:
+        fail(
+            "ASR 命令配置不安全，已阻止执行。请只填写 ASR 可执行文件路径，并把参数放入 asr_command_args。"
+            "例如：asr_command='whisper'，asr_command_args=['{audio}', '--model', 'tiny.en']。",
+            error_code="UNSAFE_ASR_COMMAND",
+            stage="tts",
+            details={"reason": reason},
+        )
+    return argv
+
+
+def transcribe_tts_audio(
+    audio_path: Path,
+    *,
+    project: dict[str, Any],
+    expected_text: str,
+    role: str,
+) -> dict[str, Any]:
+    config = tts_semantic_config(project)
+    transcripts = config.get("transcripts") if isinstance(config.get("transcripts"), dict) else {}
+    for key in (Path(audio_path).name, Path(audio_path).stem, media_text_hash(expected_text), expected_text):
+        if key in transcripts:
+            return {"ok": True, "provider": "configured-transcript", "transcript": str(transcripts[key] or "")}
+
+    if str(config.get("asr_provider") or "").strip().lower() in {"whisper", "whisper-cli", "openai-whisper"} or bool(
+        config.get("auto_whisper")
+    ):
+        return transcribe_tts_audio_with_whisper_cli(audio_path, config)
+
+    command = str(config.get("asr_command") or os.environ.get("ACG_TTS_ASR_COMMAND") or "").strip()
+    if command:
+        completed = subprocess.run(
+            build_asr_command_argv(command, config.get("asr_command_args"), audio_path),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=int(config.get("asr_timeout_seconds") or 60),
+            **hidden_subprocess_flags(),
+        )
+        if completed.returncode == 0 and (completed.stdout or "").strip():
+            return {"ok": True, "provider": "asr-command", "transcript": completed.stdout.strip()}
+        return {
+            "ok": False,
+            "provider": "asr-command",
+            "reason": "asr_command_failed",
+            "error": (completed.stderr or completed.stdout or "").strip()[-500:],
+        }
+
+    return {
+        "ok": False,
+        "provider": "none",
+        "reason": "asr_semantic_check_unavailable",
+    }
+
+
+def verify_tts_audio_semantics(
+    audio_path: Path,
+    expected_text: str,
+    *,
+    role: str,
+    project: dict[str, Any],
+) -> dict[str, Any]:
+    tts_text = clean_tts_input_text(expected_text)
+    base_reasons = tts_semantic_base_reasons(role, tts_text)
+    transcript_result = transcribe_tts_audio(audio_path, project=project, expected_text=tts_text, role=role)
+    if not transcript_result.get("ok"):
+        return {
+            "semantic_verification": "manual_review_required",
+            "manual_review_required": True,
+            "semantic_review_reasons": sorted(set(base_reasons + [str(transcript_result.get("reason") or "asr_unavailable")])),
+            "asr_provider": str(transcript_result.get("provider") or "none"),
+            "asr_transcript": "",
+            "expected_text_normalized": normalize_tts_semantic_text(tts_text),
+            "actual_text_normalized": "",
+        }
+
+    transcript = clean_study_text(transcript_result.get("transcript") or "")
+    matched, expected_norm, actual_norm = tts_semantic_matches(tts_text, transcript, role=role)
+    if matched:
+        return {
+            "semantic_verification": "passed",
+            "manual_review_required": False,
+            "semantic_review_reasons": [],
+            "asr_provider": str(transcript_result.get("provider") or "asr"),
+            "asr_transcript": transcript,
+            "expected_text_normalized": expected_norm,
+            "actual_text_normalized": actual_norm,
+        }
+    return {
+        "semantic_verification": "mismatch",
+        "manual_review_required": False,
+        "semantic_review_reasons": sorted(set(base_reasons + ["asr_text_mismatch"])),
+        "asr_provider": str(transcript_result.get("provider") or "asr"),
+        "asr_transcript": transcript,
+        "expected_text_normalized": expected_norm,
+        "actual_text_normalized": actual_norm,
+    }
+
+
+def tts_cache_meta_path(cache_path: Path) -> Path:
+    return cache_path.with_suffix(f"{cache_path.suffix}.json")
+
+
+def load_tts_cache_semantic_meta(cache_path: Path, text: str) -> dict[str, Any] | None:
+    meta_path = tts_cache_meta_path(cache_path)
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(meta, dict):
+        return None
+    if meta.get("adapter_version") != TTS_PROVIDER_ADAPTER_VERSION:
+        return None
+    if str(meta.get("text_hash") or "") != media_text_hash(text):
+        return None
+    semantic = meta.get("semantic") if isinstance(meta.get("semantic"), dict) else None
+    if not semantic or semantic.get("semantic_verification") != "passed":
+        return None
+    return semantic
+
+
+def store_tts_cache_semantic_meta(cache_path: Path, text: str, semantic: dict[str, Any]) -> None:
+    if semantic.get("semantic_verification") != "passed":
+        return
+    meta = {
+        "adapter_version": TTS_PROVIDER_ADAPTER_VERSION,
+        "text_hash": media_text_hash(text),
+        "semantic": semantic,
+    }
+    try:
+        tts_cache_meta_path(cache_path).write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     except OSError:
         pass
 
 
-def copy_cached_file(cache_path: Path, output_path: Path) -> bool:
-    if not cached_media_file_valid(cache_path):
-        discard_cached_file(cache_path)
-        return False
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(cache_path, output_path)
-    if cached_media_file_valid(output_path):
-        return True
-    discard_cached_file(output_path)
-    return False
-
-
-def store_cached_file(output_path: Path, cache_path: Path) -> None:
-    if not cached_media_file_valid(output_path):
+def validate_tts_audio_duration(output_path: Path, text: str, tts_kind: str) -> None:
+    if tts_kind != "phrase":
         return
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = cache_path.with_suffix(f"{cache_path.suffix}.tmp")
-    shutil.copy2(output_path, temp_path)
-    temp_path.replace(cache_path)
+    duration = audio_duration_seconds(output_path)
+    if duration is None:
+        return
+    max_duration = phrase_tts_max_duration_seconds(text)
+    if duration <= max_duration:
+        return
+    display_text = clean_tts_input_text(text)
+    if len(display_text) > 80:
+        display_text = f"{display_text[:77]}..."
+    raise RuntimeError(
+        f"表达 TTS 时长异常：{display_text!r} 生成 {duration:.2f}s，"
+        f"超过上限 {max_duration:.2f}s，疑似 TTS 误读或扩写。"
+    )
 
 
 def tts_cache_path(tts: dict[str, Any], text: str, language: Any) -> tuple[Path, str]:
-    clean_text = clean_tts_input_text(text)
-    resolved_language = resolve_tts_language_code(tts, language)
-    cache_key = stable_cache_key(
-        {
-            "version": 2,
-            "kind": "tts",
-            "provider": provider_name(tts),
-            "adapter_version": TTS_PROVIDER_ADAPTER_VERSION,
-            "base_url": str(tts.get("base_url") or "").strip().rstrip("/"),
-            "model": str(tts.get("model") or "").strip(),
-            "voice": str(tts.get("voice") or "").strip(),
-            "language": resolved_language,
-            "provider_scope": tts_provider_scope(tts),
-            "sample_rate": int(tts.get("sample_rate") or 24000),
-            "bit_rate": int(tts.get("bit_rate") or 128000),
-            "output_volume": normalized_tts_output_volume(tts.get("output_volume")),
-            "text_normalization_version": TEXT_NORMALIZATION_CACHE_VERSION,
-            "text_hash": media_text_hash(clean_text),
-            "text": clean_text,
-        }
+    return cache_tts_cache_path(
+        persistent_cache_root(),
+        tts,
+        text,
+        language,
+        provider_name_func=provider_name,
+        resolve_language_func=resolve_tts_language_code,
+        normalize_volume_func=normalized_tts_output_volume,
+        clean_text_func=clean_tts_input_text,
+        text_hash_func=media_text_hash,
+        provider_scope_func=tts_provider_scope,
     )
-    return persistent_cache_root() / "tts" / f"{cache_key}.mp3", cache_key
+
+
+def project_cache_read_disabled(project: dict[str, Any], key: str) -> bool:
+    if bool(project.get(key)):
+        return True
+    api_config = project.get("api_config")
+    return isinstance(api_config, dict) and bool(api_config.get(key))
+
+
+def tts_cache_read_enabled(project: dict[str, Any]) -> bool:
+    return not project_cache_read_disabled(project, "disable_tts_cache_read")
+
+
+def media_cache_read_enabled(project: dict[str, Any]) -> bool:
+    return not project_cache_read_disabled(project, "disable_media_cache_read")
 
 
 def media_clip_cache_path(
@@ -13417,85 +12668,156 @@ def media_clip_cache_path(
     extension: str,
     profile: str,
 ) -> tuple[Path, str]:
-    cache_key = stable_cache_key(
-        {
-            "version": 2,
-            "kind": "media_clip",
-            "video": video_fingerprint_value,
-            "start": start,
-            "duration": duration,
-            "role": role,
-            "extension": extension,
-            "profile": profile,
-            "ffmpeg_profile_version": MEDIA_FFMPEG_PROFILE_VERSION,
-            "ffmpeg": ffmpeg_cache_signature(),
-        }
+    return cache_media_clip_cache_path(
+        persistent_cache_root(),
+        video_fingerprint_value,
+        start,
+        duration,
+        role,
+        extension,
+        profile,
+        ffmpeg_signature=ffmpeg_cache_signature(),
     )
-    return persistent_cache_root() / "media" / f"{cache_key}.{extension.lstrip('.')}", cache_key
 
 
-def compare_media_manifest(expected: dict[str, dict[str, Any]], media_dir: Path) -> dict[str, Any]:
-    missing: list[str] = []
-    mismatched: list[dict[str, str]] = []
-    checked = 0
-    for name, expected_info in sorted(expected.items()):
-        imported = media_dir / name
-        if not imported.exists():
-            missing.append(name)
+def compare_media_manifest(
+    expected: dict[str, dict[str, Any]],
+    media_dir: Path,
+    *,
+    anki_url: str = "",
+    max_attempts: int = 6,
+    retry_delay_seconds: float = 0.2,
+) -> dict[str, Any]:
+    return compare_media_manifest_core(
+        expected,
+        media_dir,
+        anki_url=anki_url,
+        max_attempts=max_attempts,
+        retry_delay_seconds=retry_delay_seconds,
+        file_sha256_func=file_sha256,
+        retrieve_media_bytes_func=retrieve_anki_media_bytes,
+        bytes_sha256_func=bytes_sha256,
+    )
+
+
+def audio_duration_seconds_from_bytes(filename: str, data: bytes) -> float | None:
+    return imported_audio_duration_seconds_from_bytes(
+        filename,
+        data,
+        duration_seconds_func=audio_duration_seconds,
+    )
+
+
+def imported_tts_audio_duration_issues(
+    expected_manifest: dict[str, dict[str, Any]],
+    media_dir: Path,
+    referenced_media: set[str],
+    *,
+    strict_video_import: bool,
+    anki_url: str = "",
+    max_attempts: int = 6,
+    retry_delay_seconds: float = 0.2,
+) -> list[dict[str, Any]]:
+    return imported_tts_audio_duration_issues_core(
+        expected_manifest,
+        media_dir,
+        referenced_media,
+        strict_video_import=strict_video_import,
+        anki_url=anki_url,
+        max_attempts=max_attempts,
+        retry_delay_seconds=retry_delay_seconds,
+        retrieve_media_bytes_func=retrieve_anki_media_bytes,
+        duration_seconds_func=audio_duration_seconds,
+        duration_seconds_from_bytes_func=audio_duration_seconds_from_bytes,
+        clean_tts_text_func=clean_tts_input_text,
+        phrase_max_duration_func=phrase_tts_max_duration_seconds,
+    )
+
+
+def export_audit_card_title(segment: dict[str, Any], card: dict[str, Any]) -> str:
+    for value in (
+        card.get("answer_core"),
+        card.get("phrase"),
+        segment.get("phrase"),
+        card.get("english"),
+        segment.get("text"),
+        card.get("id"),
+    ):
+        text = audit_text_excerpt(value, 56)
+        if text:
+            return text
+    return "未命名卡片"
+
+
+def export_audit_blocked_matches(
+    card: dict[str, Any],
+    required_values: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
+    matches: list[dict[str, str]] = []
+    fields: list[tuple[str, Any]] = [
+        ("LearningGoal", card.get("learning_goal")),
+        ("DecisionReason", card.get("decision_reason")),
+        ("PhraseDecisionReason", card.get("phrase_decision_reason")),
+        ("PhraseRejectReason", card.get("phrase_reject_reason")),
+        ("PhraseCardFocus", card.get("phrase_card_focus")),
+        ("LearningAction", card.get("learning_action")),
+        ("Chinese", card.get("chinese")),
+        ("Definition", card.get("definition")),
+        ("Collocations", card.get("collocations")),
+        ("TeacherNote", card.get("teacher_note")),
+        ("Context", card.get("context")),
+        ("Example", card.get("example")),
+        ("ChineseFeel", card.get("chinese_feel")),
+        ("Why", card.get("why")),
+        ("DifficultyReason", card.get("difficulty_reason")),
+        ("Phrase", card.get("phrase")),
+        ("Answer", card.get("answer_core")),
+        ("LearningTarget", card.get("learning_target")),
+        ("WhyItMatters", card.get("why_it_matters")),
+        ("HowToUseIt", card.get("how_to_use_it")),
+        ("NaturalChinese", card.get("natural_chinese")),
+        ("UsageBoundary", card.get("usage_boundary")),
+        ("ConfusableNote", card.get("confusable_note")),
+        ("ReplacementExamples", card.get("replacement_examples")),
+        ("AvoidReason", card.get("avoid_reason")),
+    ]
+    if required_values:
+        fields.extend((f"Export{name}", value) for name, value in required_values.items())
+    seen: set[tuple[str, str]] = set()
+    for field, value in fields:
+        patterns = internal_placeholder_patterns(value)
+        if not patterns:
             continue
-        checked += 1
-        actual_hash = file_sha256(imported)
-        expected_hash = str(expected_info.get("sha256") or "")
-        if expected_hash and actual_hash != expected_hash:
-            mismatched.append(
-                {
-                    "file": name,
-                    "expected_sha256": expected_hash,
-                    "actual_sha256": actual_hash,
-                }
-            )
-    return {
-        "checked": checked,
-        "missing": missing,
-        "mismatched": mismatched,
-    }
-
-
-def anki_text(value: Any) -> str:
-    return html.escape(str(value or ""), quote=False)
-
-
-INTERNAL_PLACEHOLDER_PATTERNS = (
-    "待精修",
-    "本地 fallback",
-    "本地草稿",
-    "预览草稿",
-    "本地待审",
-    "正式导出前",
-    "需要 AI 精修",
-    "只保证结构完整",
-    "不建议直接作为正式学习内容",
-    "当作本句目标表达",
-    "natural object",
-    "complete sentence",
-)
-
-
-def contains_internal_placeholder(value: Any) -> bool:
-    text = str(value or "")
-    text_lower = text.lower()
-    return any(pattern in text or pattern.lower() in text_lower for pattern in INTERNAL_PLACEHOLDER_PATTERNS)
-
-
-def clean_study_text(value: Any) -> str:
-    text = re.sub(r"\s+", " ", str(value or "").strip())
-    if contains_internal_placeholder(text):
-        return ""
-    return text
-
-
-def anki_study_text(value: Any) -> str:
-    return anki_text(clean_study_text(value))
+        excerpt = audit_text_excerpt(value)
+        key = (field, excerpt)
+        if key in seen:
+            continue
+        seen.add(key)
+        matches.append(
+            {
+                "field": field,
+                "matched_text": excerpt,
+                "patterns": " / ".join(patterns[:4]),
+            }
+        )
+    for index, issue in enumerate(card.get("quality", {}).get("issues") or [], start=1):
+        patterns = internal_placeholder_patterns_for_quality_issue(issue)
+        if not patterns:
+            continue
+        excerpt = audit_text_excerpt(issue)
+        field = f"QualityIssue{index}"
+        key = (field, excerpt)
+        if key in seen:
+            continue
+        seen.add(key)
+        matches.append(
+            {
+                "field": field,
+                "matched_text": excerpt,
+                "patterns": " / ".join(patterns[:4]),
+            }
+        )
+    return matches
 
 
 def ensure_card_pronunciation_meta(card: dict[str, Any], language: Any = "en") -> dict[str, Any]:
@@ -13855,7 +13177,7 @@ def set_pronunciation_status_once(target: dict[str, Any], field: str, message: s
     if field not in {"pronunciation_status", "source_pronunciation_status"}:
         return
     text = clean_study_text(message)
-    if not text:
+    if not text or pronunciation_status_is_unhelpful_placeholder(text):
         return
     current = clean_study_text(target.get(field) or "")
     if text in current:
@@ -13863,8 +13185,36 @@ def set_pronunciation_status_once(target: dict[str, Any], field: str, message: s
     target[field] = f"{current}；{text}".strip("；")[:180].rstrip()
 
 
+UNHELPFUL_PRONUNCIATION_STATUS_PATTERNS = (
+    r"未实听[，,]?\s*仅提供标准读法[。.]?",
+    r"未实听[，,]?\s*按字幕和常见口语规律推测[。.]?",
+    r"读法未可靠生成[，,]?\s*已隐藏[。.]?",
+    r"原句听感未可靠生成[，,]?\s*已隐藏[。.]?",
+)
+
+
+def pronunciation_status_is_unhelpful_placeholder(value: Any) -> bool:
+    text = clean_study_text(value)
+    if not text:
+        return True
+    return any(re.fullmatch(pattern, text) for pattern in UNHELPFUL_PRONUNCIATION_STATUS_PATTERNS)
+
+
+def clear_unhelpful_pronunciation_statuses(target: dict[str, Any]) -> None:
+    for field in ("pronunciation_status", "source_pronunciation_status"):
+        text = clean_study_text(target.get(field) or "")
+        if not text:
+            target.pop(field, None)
+            continue
+        parts = [part.strip() for part in re.split(r"[；;]", text) if part.strip()]
+        useful_parts = [part for part in parts if not pronunciation_status_is_unhelpful_placeholder(part)]
+        if useful_parts:
+            target[field] = "；".join(useful_parts)[:180].rstrip()
+        else:
+            target.pop(field, None)
+
+
 def set_source_pronunciation_hidden_status(target: dict[str, Any], *, code: str, message: str, original_value: Any = "") -> None:
-    set_pronunciation_status_once(target, "source_pronunciation_status", "原句听感未可靠生成，已隐藏")
     add_pronunciation_field_change(
         target,
         "source_spoken_ipa",
@@ -14078,25 +13428,15 @@ def standard_hint_for_meta(meta: dict[str, Any] | None, language: Any = "en") ->
 
 
 def maybe_prefix_inferred_note(target: dict[str, Any], meta: dict[str, Any]) -> None:
-    if meta.get("generation_basis") == "audio_verified":
-        return
-    if meta.get("generation_basis") == "dictionary_only":
-        set_pronunciation_status_once(target, "pronunciation_status", "未实听，仅提供标准读法")
-        return
-    if target.get("spoken_ipa") or target.get("source_spoken_ipa"):
-        set_pronunciation_status_once(target, "pronunciation_status", "未实听，按字幕和常见口语规律推测")
-        add_pronunciation_field_change(
-            target,
-            "pronunciation_note",
-            "kept" if target.get("pronunciation_note") else "not_generated",
-            "SUBTITLE_INFERRED_STATUS_SEPARATED",
-            "未实听状态已移到读法状态，不写入发音说明正文。",
-            original_value=target.get("pronunciation_note") or "",
-        )
+    # Public builds do not surface ASR/listening confidence placeholders on the card.
+    # Real pronunciation fields are kept; missing or inferred status text is left empty.
+    return
 
 
 PRONUNCIATION_SYSTEM_NOTE_PATTERNS = (
+    r"未实听[，,]?\s*仅提供标准读法[。.]?",
     r"未实听[，,]?\s*按字幕和常见口语规律推测[。.]?",
+    r"未实听[；;]\s*按字幕推测时未识别出可靠的弱读、连读或省读差异，暂按标准读法保留[。.]?",
     r"原句听感未可靠生成[，,]?\s*已隐藏[。.]?",
     r"读法未可靠生成[，,]?\s*已隐藏[。.]?",
 )
@@ -14108,12 +13448,6 @@ def separate_pronunciation_status_from_note(target: dict[str, Any]) -> None:
         target.pop("pronunciation_note", None)
         return
     original = note
-    if "未实听" in note:
-        set_pronunciation_status_once(target, "pronunciation_status", "未实听，按字幕和常见口语规律推测")
-    if "原句听感未可靠生成" in note:
-        set_pronunciation_status_once(target, "source_pronunciation_status", "原句听感未可靠生成，已隐藏")
-    if "读法未可靠生成" in note:
-        set_pronunciation_status_once(target, "pronunciation_status", "读法未可靠生成，已隐藏")
     for pattern in PRONUNCIATION_SYSTEM_NOTE_PATTERNS:
         note = re.sub(pattern, "", note)
     note = re.sub(r"\s*[；;]\s*", "；", note)
@@ -14128,7 +13462,7 @@ def separate_pronunciation_status_from_note(target: dict[str, Any]) -> None:
             "pronunciation_note",
             "downgraded" if note else "hidden",
             "PRONUNCIATION_STATUS_SEPARATED_FROM_NOTE",
-            "系统状态已从发音说明移到独立读法状态。",
+            "系统状态已从发音说明中移除。",
             original_value=original,
         )
 
@@ -14136,6 +13470,7 @@ def separate_pronunciation_status_from_note(target: dict[str, Any]) -> None:
 def sanitize_pronunciation_fields(target: dict[str, Any], language: Any = "English") -> list[str]:
     target_language = normalize_learning_language(language or target.get("language") or "en")
     target["language"] = target_language
+    clear_unhelpful_pronunciation_statuses(target)
     issues: list[str] = []
     for key in PRONUNCIATION_TEXT_FIELDS:
         raw = target.get(key)
@@ -14149,8 +13484,6 @@ def sanitize_pronunciation_fields(target: dict[str, Any], language: Any = "Engli
             issue = pronunciation_issue(key, "block", "PRONUNCIATION_FIELD_UNUSABLE", f"{key} 含不适合该语言读法字段的内容，已清空。")
             add_pronunciation_issue(target, issue)
             add_pronunciation_field_change(target, key, "cleared", issue["code"], issue["message"], original_value=raw)
-            if key == "source_spoken_ipa":
-                set_pronunciation_status_once(target, "source_pronunciation_status", "原句听感未可靠生成，已隐藏")
             set_pronunciation_field_confidence(target, key, "low")
             issues.append(issue["message"])
         if target_language == "en" and key == "spoken_ipa" and normalized and spoken_ipa_is_unhelpful_duplicate(target, normalized):
@@ -14167,7 +13500,6 @@ def sanitize_pronunciation_fields(target: dict[str, Any], language: Any = "Engli
             issue = pronunciation_issue("source_spoken_ipa", "block", "SOURCE_PRONUNCIATION_TOO_SHORT", "source_spoken_ipa 不是完整原句听感，已清空。")
             add_pronunciation_issue(target, issue)
             add_pronunciation_field_change(target, "source_spoken_ipa", "hidden", issue["code"], issue["message"], original_value=original_normalized)
-            set_pronunciation_status_once(target, "source_pronunciation_status", "原句听感未可靠生成，已隐藏")
             set_pronunciation_field_confidence(target, "source_spoken_ipa", "low")
             issues.append(issue["message"])
         if target_language == "es" and normalized and "θ" in normalized:
@@ -14241,14 +13573,10 @@ def sanitize_pronunciation_fields(target: dict[str, Any], language: Any = "Engli
                 issue = pronunciation_issue(key, "block", "DICTIONARY_ONLY_NO_SPOKEN", "dictionary_only 只保留标准读法，口语/原句听感已清空。")
                 add_pronunciation_issue(target, issue)
                 add_pronunciation_field_change(target, key, "hidden", issue["code"], issue["message"], original_value=original_value)
-                if key == "source_spoken_ipa":
-                    set_pronunciation_status_once(target, "source_pronunciation_status", "原句听感未可靠生成，已隐藏")
                 issues.append(issue["message"])
     maybe_prefix_inferred_note(target, meta)
     if not any(target.get(key) for key in PRONUNCIATION_TEXT_FIELDS) and not target.get("pronunciation_note"):
-        message = "读法未可靠生成，已隐藏。"
-        set_pronunciation_status_once(target, "pronunciation_status", "读法未可靠生成，已隐藏")
-        set_pronunciation_status_once(target, "source_pronunciation_status", "原句听感未可靠生成，已隐藏")
+        message = "未生成可靠读法字段。"
         issue = pronunciation_issue(
             "pronunciation_note",
             "info",
@@ -14261,7 +13589,7 @@ def sanitize_pronunciation_fields(target: dict[str, Any], language: Any = "Engli
             "pronunciation_note",
             "not_generated",
             issue["code"],
-            "模型没有返回可靠的读法字段，卡面已改为显示独立读法状态。",
+            "模型没有返回可靠的读法字段，卡面不显示发音占位。",
         )
         for key in ("phonetic_ipa", "spoken_ipa", "source_spoken_ipa", "pronunciation_note"):
             set_pronunciation_field_confidence(target, key, "low")
@@ -14353,6 +13681,7 @@ def sanitize_pronunciation_fields(target: dict[str, Any], language: Any = "Engli
         target["pronunciation_confidence"] = confidence
     else:
         target.pop("pronunciation_confidence", None)
+    clear_unhelpful_pronunciation_statuses(target)
     return list(dict.fromkeys([*issues, *pronunciation_issue_messages(target)]))
 
 
@@ -14445,7 +13774,22 @@ def sanitize_learning_point_contract(
     issues.extend(sanitize_pronunciation_fields(normalized, language))
     if issues:
         raw_history = normalized.get("repair_history")
-        prior_history = raw_history if isinstance(raw_history, list) else []
+        prior_history: list[str] = []
+        if isinstance(raw_history, list):
+            for entry in raw_history:
+                if isinstance(entry, str):
+                    history_text = clean_study_text(entry)
+                elif isinstance(entry, dict):
+                    history_text = clean_study_text(
+                        entry.get("reason")
+                        or entry.get("message")
+                        or entry.get("action")
+                        or json.dumps(entry, ensure_ascii=False, sort_keys=True)
+                    )
+                else:
+                    history_text = clean_study_text(entry)
+                if history_text:
+                    prior_history.append(history_text)
         normalized["source"] = "repaired"
         normalized["validation_status"] = "repaired"
         normalized["repair_history"] = list(dict.fromkeys([*prior_history, *issues]))
@@ -15141,6 +14485,7 @@ def synthesize_tts(
     segment: dict[str, Any],
     output_path: Path,
     text_override: str | None = None,
+    tts_kind: str = "sentence",
 ) -> dict[str, Any] | bool:
     tts = normalized_tts_config(project)
     if not tts["enabled"] or tts["provider"] == "disabled":
@@ -15156,8 +14501,37 @@ def synthesize_tts(
         return False
 
     cache_path, cache_key = tts_cache_path(tts, text, project.get("language", "en"))
-    if copy_cached_file(cache_path, output_path):
-        return {"ok": True, "cache_hit": True, "cache_key": cache_key}
+    if tts_cache_read_enabled(project) and copy_cached_file(cache_path, output_path):
+        try:
+            validate_tts_audio_duration(output_path, text, tts_kind)
+        except RuntimeError:
+            discard_cached_file(output_path)
+            discard_cached_file(cache_path)
+        else:
+            semantic_role = "phrase_tts" if tts_kind == "phrase" else "sentence_tts"
+            if not tts_semantic_verification_enabled(project):
+                return {
+                    "ok": True,
+                    "cache_hit": True,
+                    "cache_key": cache_key,
+                    "semantic": tts_semantic_not_applicable(text, semantic_role),
+                }
+            cached_semantic = load_tts_cache_semantic_meta(cache_path, text)
+            if cached_semantic:
+                return {"ok": True, "cache_hit": True, "cache_key": cache_key, "semantic": cached_semantic}
+            semantic = verify_tts_audio_semantics(
+                output_path,
+                text,
+                role=semantic_role,
+                project=project,
+            )
+            if semantic.get("semantic_verification") == "passed":
+                store_tts_cache_semantic_meta(cache_path, text, semantic)
+                return {"ok": True, "cache_hit": True, "cache_key": cache_key, "semantic": semantic}
+            discard_cached_file(output_path)
+            if semantic.get("semantic_verification") == "mismatch":
+                discard_cached_file(cache_path)
+                discard_cached_file(tts_cache_meta_path(cache_path))
 
     if not tts["api_key"] and not is_gemini_vertex_tts_config(tts):
         return False
@@ -15166,8 +14540,37 @@ def synthesize_tts(
         return False
 
     def done() -> dict[str, Any]:
-        store_cached_file(output_path, cache_path)
-        return {"ok": True, "cache_hit": False, "cache_key": cache_key}
+        try:
+            validate_tts_audio_duration(output_path, text, tts_kind)
+        except RuntimeError:
+            discard_cached_file(output_path)
+            discard_cached_file(cache_path)
+            raise
+        semantic_role = "phrase_tts" if tts_kind == "phrase" else "sentence_tts"
+        if not tts_semantic_verification_enabled(project):
+            store_cached_file(output_path, cache_path)
+            return {
+                "ok": True,
+                "cache_hit": False,
+                "cache_key": cache_key,
+                "semantic": tts_semantic_not_applicable(text, semantic_role),
+            }
+        semantic = verify_tts_audio_semantics(
+            output_path,
+            text,
+            role=semantic_role,
+            project=project,
+        )
+        if semantic.get("semantic_verification") == "mismatch":
+            discard_cached_file(output_path)
+            raise RuntimeError(
+                "TTS 语义核验失败："
+                f"期望 {text!r}，ASR 听到 {semantic.get('asr_transcript')!r}。"
+            )
+        if semantic.get("semantic_verification") == "passed":
+            store_cached_file(output_path, cache_path)
+            store_tts_cache_semantic_meta(cache_path, text, semantic)
+        return {"ok": True, "cache_hit": False, "cache_key": cache_key, "semantic": semantic}
 
     if provider in {"grok", "xai"}:
         audio = call_tts_audio(tts, text, project.get("language", "en"))
@@ -15218,7 +14621,7 @@ def synthesize_tts(
             f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
             {"x-goog-api-key": tts["api_key"]},
             {
-                "contents": [{"parts": [{"text": f"Read naturally and clearly: {text}"}]}],
+                "contents": [{"parts": [{"text": exact_tts_prompt(text)}]}],
                 "generationConfig": {
                     "responseModalities": ["AUDIO"],
                     "speechConfig": {
@@ -15276,12 +14679,24 @@ def export_tts_concurrency(project: dict[str, Any]) -> int:
     return max(1, min(4, value))
 
 
+def export_media_concurrency(project: dict[str, Any]) -> int:
+    raw_value = project.get("media_concurrency") or project.get("export_media_concurrency")
+    if raw_value in (None, ""):
+        raw_value = 3
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        value = 3
+    return max(1, min(3, value))
+
+
 def export_quality_audit(project: dict[str, Any], export_segments: list[dict[str, Any]]) -> dict[str, Any]:
     empty_required_fields = 0
     blocked_text_values = 0
     duplicate_visible_cards = 0
     pronunciation_meta_errors = 0
     answer_not_in_source = 0
+    blocked_cards: list[dict[str, Any]] = []
     seen_cards: set[str] = set()
     deck_kind_code = str(project.get("deck_kind") or project.get("project_kind") or "")
     if not deck_kind_code:
@@ -15317,16 +14732,25 @@ def export_quality_audit(project: dict[str, Any], export_segments: list[dict[str
                 "Context": context_field,
             }
             empty_required_fields += sum(1 for value in required_values.values() if not clean_study_text(value))
-            study_values = [
-                card.get("chinese"),
-                card.get("definition"),
-                card.get("teacher_note"),
-                card.get("context"),
-                card.get("chinese_feel"),
-                card.get("phrase"),
-                card.get("answer_core"),
-            ]
-            blocked_text_values += sum(1 for value in study_values if contains_internal_placeholder(value))
+            blocked_matches = export_audit_blocked_matches(card, required_values)
+            blocked_text_values += len(blocked_matches)
+            if blocked_matches:
+                first_match = blocked_matches[0]
+                blocked_cards.append(
+                    {
+                        "card_id": str(card.get("id") or ""),
+                        "learning_point_id": str(card.get("learning_point_id") or ""),
+                        "segment_id": str(segment.get("id") or ""),
+                        "source_time": str(segment.get("source_time") or segment.get("media_source_time") or ""),
+                        "title": export_audit_card_title(segment, card),
+                        "answer_summary": audit_text_excerpt(card.get("answer_core") or card.get("phrase") or ""),
+                        "matched_field": first_match.get("field", ""),
+                        "matched_text": first_match.get("matched_text", ""),
+                        "matched_patterns": first_match.get("patterns", ""),
+                        "matched_fields": blocked_matches,
+                        "suggested_action": "移除这张需修复卡，或重新生成/手动修正草稿字段后再导出。",
+                    }
+                )
             answer = answer_display_text(card.get("answer_core") or card.get("phrase") or "")
             evidence_text = " ".join(
                 clean_study_text(value)
@@ -15362,6 +14786,7 @@ def export_quality_audit(project: dict[str, Any], export_segments: list[dict[str
         "segment_count": len(export_segments),
         "empty_required_fields": empty_required_fields,
         "blocked_text_values": blocked_text_values,
+        "blocked_cards": blocked_cards,
         "duplicate_visible_cards": duplicate_visible_cards,
         "answer_not_in_source": answer_not_in_source,
         "pronunciation_meta_errors": pronunciation_meta_errors,
@@ -15369,6 +14794,9 @@ def export_quality_audit(project: dict[str, Any], export_segments: list[dict[str
 
 
 def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
+    timing_started = time.perf_counter()
+    prepare_started = timing_started
+    timing_ms: dict[str, int] = {}
     emit_progress("export", "prepare", 4, "准备导出 Anki 卡包。")
     try:
         import genanki
@@ -15379,16 +14807,83 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     output_dir = Path(payload.get("output_dir") or os.getcwd())
     if not output_dir.exists():
         fail(f"导出目录不存在：{output_dir}")
+    canonical_apkg_path_text = str(payload.get("canonical_apkg_path") or "").strip()
+    canonical_apkg_path = Path(canonical_apkg_path_text) if canonical_apkg_path_text else None
+    if canonical_apkg_path is not None:
+        if canonical_apkg_path.suffix.lower() != ".apkg":
+            fail(f"正式验收 APKG 路径必须以 .apkg 结尾：{canonical_apkg_path}")
+        if not canonical_apkg_path.parent.exists():
+            fail(f"正式验收 APKG 目录不存在：{canonical_apkg_path.parent}")
+        try:
+            selected_output_dir = output_dir.resolve()
+            canonical_parent = canonical_apkg_path.parent.resolve()
+        except OSError as exc:
+            fail(f"正式验收 APKG 路径不可用：{exc}")
+        if canonical_parent != selected_output_dir:
+            fail(
+                "正式验收 APKG 路径必须直接位于已选择的保存目录内，"
+                f"selected={selected_output_dir} canonical_parent={canonical_parent}"
+            )
+        if canonical_apkg_path.exists():
+            fail(f"正式验收 APKG 已存在，为避免覆盖证据已停止：{canonical_apkg_path}")
 
     is_document_project = project.get("source_mode") == "document"
     video_path_raw = clean_input_path(project.get("video_path"))
-    skip_video_media = is_document_project or bool(project.get("skip_video_slicing")) or not video_path_raw
+    video_required = video_media_required_for_export(project)
+    skip_video_media = is_document_project or video_free_export_allowed(project)
     export_webm_media = project.get("export_webm_media")
     export_webm_media = True if export_webm_media is None else bool(export_webm_media)
     video_path = Path(video_path_raw) if video_path_raw else Path()
+    if video_required and not video_path_raw:
+        fail(
+            "当前是视频卡导出，但项目里没有可切片的视频文件。请重新使用视频素材生成，或修复下载/本地路径后重试。",
+            error_code=worker_errors.FFMPEG_SLICE_FAILED,
+            stage="media",
+            retryable=True,
+            fallbacks=[],
+        )
     if not skip_video_media and not video_path.exists():
-        fail(f"视频文件不存在：{video_path}")
+        fail(
+            f"视频文件不存在：{video_path}。请重新选择/下载视频，确认本地路径后再导出。",
+            error_code=worker_errors.FFMPEG_SLICE_FAILED,
+            stage="media",
+            retryable=True,
+            fallbacks=[],
+        )
     video_source_fingerprint = file_fingerprint(video_path) if not skip_video_media else ""
+    source_info = project.get("source_info") if isinstance(project.get("source_info"), dict) else {}
+
+    def export_source_identity() -> dict[str, Any]:
+        identity: dict[str, Any] = {
+            "source_mode": str(project.get("source_mode") or ""),
+            "source_title": str(project.get("title") or source_info.get("title") or ""),
+            "url_import_mode": str(project.get("url_import_mode") or source_info.get("url_import_mode") or ""),
+            "source_download_mode": str(source_info.get("download_mode") or ""),
+            "source_transcript_only": bool(source_info.get("transcript_only")),
+            "source_skip_video_slicing": bool(project.get("skip_video_slicing") or source_info.get("skip_video_slicing")),
+            "source_video_path": str(video_path) if video_path_raw else str(source_info.get("video_path") or ""),
+            "source_video_fingerprint": str(
+                source_info.get("video_fingerprint") or source_info.get("video_sha256") or video_source_fingerprint or ""
+            ),
+            "source_video_sha256": str(source_info.get("video_sha256") or ""),
+            "source_subtitle_path": str(export_subtitle_path or source_info.get("subtitle_path") or project.get("subtitle_path") or ""),
+            "source_subtitle_fingerprint": str(
+                source_info.get("subtitle_fingerprint")
+                or source_info.get("subtitle_sha256")
+                or file_fingerprint(export_subtitle_path or source_info.get("subtitle_path") or project.get("subtitle_path") or "")
+            ),
+            "source_subtitle_sha256": str(source_info.get("subtitle_sha256") or ""),
+            "source_subtitle_status": str(export_subtitle_status or ""),
+        }
+        source_url = str(project.get("source_url") or source_info.get("webpage_url") or source_info.get("url") or "")
+        if source_url:
+            identity["source_url"] = source_url
+        source_fingerprint_value = str(project.get("source_fingerprint") or source_info.get("source_fingerprint") or "")
+        if source_fingerprint_value:
+            identity["source_fingerprint"] = source_fingerprint_value
+        return {key: value for key, value in identity.items() if value not in (None, "", [])}
+
+    source_identity: dict[str, Any] = {}
 
     emit_progress("export", "template", 10, "正在准备 Anki 模板和导出目录。")
     export_run_id = int(time.time())
@@ -15405,7 +14900,14 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     review_density = normalize_review_density(project.get("review_density"))
     parent_deck_name, batch_deck_specs = batch_export_deck_specs(project)
     is_batch_export = bool(project.get("batch_enabled")) and bool(batch_deck_specs)
-    deck_name = parent_deck_name if is_batch_export else f"{deck_kind}::{project.get('title', 'Untitled')}"
+    project_deck_title = anki_deck_part(project.get("title") or project.get("id") or "Untitled", "Untitled")
+    export_timestamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(export_run_id))
+    if is_batch_export:
+        deck_name = parent_deck_name
+    elif deck_kind_code in {"video_language", "subtitle_language"}:
+        deck_name = anki_deck_name(f"{deck_kind} - {project_deck_title} - {export_timestamp}", deck_kind)
+    else:
+        deck_name = f"{deck_kind}::{project_deck_title}"
     template_id = normalize_template_id(project.get("template_id", "immersive_v11"))
     card_style = normalize_card_style(project.get("card_style"))
     template_family = anki_template_family(template_id, deck_kind_code, card_style, review_density)
@@ -15490,11 +14992,16 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     exported_batch_item_ids: set[str] = set()
     media_files: list[str] = []
     media_ledger: list[dict[str, Any]] = []
+    card_media_ledger: list[dict[str, Any]] = []
     media_by_clip_key: dict[tuple[str, str, str, bool], dict[str, str]] = {}
     tts_by_segment: dict[str, str] = {}
+    sentence_tts_text_by_segment: dict[str, str] = {}
+    tts_semantic_by_segment: dict[str, dict[str, Any]] = {}
     phrase_tts_by_phrase: dict[str, str] = {}
     phrase_tts_cache_hit_by_phrase: dict[str, bool] = {}
+    phrase_tts_semantic_by_phrase: dict[str, dict[str, Any]] = {}
     warnings: list[str] = []
+    tts_failure_items: list[dict[str, Any]] = []
     tts_config = normalized_tts_config(project)
     tts_requested = bool(tts_config["enabled"] and tts_config["provider"] != "disabled")
     expected_phrase_tts_keys: set[str] = set()
@@ -15504,6 +15011,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     video_file_count = 0
     original_audio_count = 0
     tts_cache_hit_count = 0
+    media_cache_miss_count = 0
     media_cache_hit_count = 0
     media_reused_segment_count = 0
     project_card_prefix = safe_filename(project.get("title") or project.get("id") or "deck")
@@ -15524,6 +15032,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         field: str = "",
         tts_text: str = "",
         cache_hit: bool | None = None,
+        semantic: dict[str, Any] | None = None,
     ) -> None:
         if not file_name:
             return
@@ -15534,10 +15043,32 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             "card_id": str((card or {}).get("id") or ""),
             "learning_point_id": str((card or segment).get("learning_point_id") or ""),
             "field": field,
-            "source_time": segment_display_source_time(segment),
+            "source_time": str(segment.get("source_time") or segment_display_source_time(segment)),
+            "media_source_time": str(segment.get("media_source_time") or segment_display_source_time(segment)),
+            "source_cue_ids": segment.get("source_cue_ids") or [],
+            "source_cue_count": segment.get("source_cue_count"),
+            "source_cue_start": segment.get("source_cue_start"),
+            "source_cue_end": segment.get("source_cue_end"),
+            "source_cue_time": str(segment.get("source_cue_time") or ""),
+            "source_cue_texts": segment.get("source_cue_texts") or [],
+            "source_merge_reason": str(segment.get("source_merge_reason") or ""),
+            "source_sentence_quality_flags": segment.get("source_sentence_quality_flags") or [],
+            "source_sentence_quality_status": str(segment.get("source_sentence_quality_status") or ""),
+            "media_alignment_status": str(segment.get("media_alignment_status") or ""),
+            "media_alignment_text": clean_study_text(segment.get("media_alignment_text") or segment.get("text") or ""),
+            "media_alignment_source_text": clean_study_text(
+                segment.get("media_alignment_source_text")
+                or segment.get("full_source_sentence")
+                or segment.get("source_sentence")
+                or segment.get("text")
+                or ""
+            ),
             "tts_text": clean_tts_input_text(tts_text) if tts_text else "",
             "text_hash": media_text_hash(tts_text) if tts_text else "",
         }
+        entry.update(source_identity)
+        segment_subtitle_diagnostic = subtitle_alignment_by_segment.get(str(segment.get("id") or ""), {})
+        entry.update(segment_subtitle_diagnostic)
         if cache_hit is not None:
             entry["cache_hit"] = cache_hit
         if role in {"sentence_tts", "phrase_tts"}:
@@ -15549,13 +15080,106 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     "language": resolve_tts_language_code(tts_config, project.get("language", "en")),
                 }
             )
+            semantic = semantic if isinstance(semantic, dict) else {}
+            default_semantic_status = "manual_review_required" if tts_semantic_verification_enabled(project) else "not_applicable"
+            entry["semantic_verification"] = str(semantic.get("semantic_verification") or default_semantic_status)
+            entry["manual_review_required"] = bool(
+                semantic.get("manual_review_required")
+                if "manual_review_required" in semantic
+                else entry["semantic_verification"] == "manual_review_required"
+            )
+            entry["semantic_review_reasons"] = (
+                semantic.get("semantic_review_reasons")
+                if isinstance(semantic.get("semantic_review_reasons"), list)
+                else tts_semantic_base_reasons(role, tts_text)
+                if tts_semantic_verification_enabled(project)
+                else []
+            )
+            if semantic.get("asr_provider"):
+                entry["asr_provider"] = str(semantic.get("asr_provider") or "")
+            if semantic.get("asr_transcript"):
+                entry["asr_transcript"] = str(semantic.get("asr_transcript") or "")
+            if semantic.get("expected_text_normalized"):
+                entry["expected_text_normalized"] = str(semantic.get("expected_text_normalized") or "")
+            if semantic.get("actual_text_normalized"):
+                entry["actual_text_normalized"] = str(semantic.get("actual_text_normalized") or "")
+            if role == "phrase_tts" and tts_text:
+                entry["max_duration_seconds"] = round(phrase_tts_max_duration_seconds(tts_text), 3)
         media_ledger.append(entry)
 
+    def tts_task_expected_text(task: dict[str, Any]) -> str:
+        raw_text = task.get("text_override") or task.get("tts_text") or (task.get("segment") or {}).get("text") or ""
+        try:
+            return clean_tts_input_text(raw_text)
+        except RuntimeError:
+            return clean_study_text(raw_text)
+
+    def tts_failure_item(
+        task: dict[str, Any],
+        error: Any,
+        attempts: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        segment = task.get("segment") if isinstance(task.get("segment"), dict) else {}
+        card = task.get("card") if isinstance(task.get("card"), dict) else {}
+        error_text = str(error or "")
+        return {
+            "segment_id": str(segment.get("id") or task.get("key") or ""),
+            "card_id": str(card.get("id") or ""),
+            "learning_point_id": str(card.get("learning_point_id") or segment.get("learning_point_id") or ""),
+            "source_time": str(segment.get("source_time") or segment_display_source_time(segment)),
+            "media_source_time": str(segment.get("media_source_time") or segment_display_source_time(segment)),
+            "role": "phrase_tts" if task.get("kind") == "phrase" else "sentence_tts",
+            "key": str(task.get("key") or ""),
+            "expected_text": tts_task_expected_text(task),
+            "answer": clean_study_text(card.get("answer_core") or card.get("phrase") or segment.get("answer_core") or ""),
+            "provider": str(tts_config.get("provider") or ""),
+            "model": str(tts_config.get("model") or ""),
+            "voice": str(tts_config.get("voice") or ""),
+            "http_error": error_text if "HTTP" in error_text or "INVALID_ARGUMENT" in error_text else "",
+            "error": error_text,
+            "retryable": True,
+            "attempts": attempts or [],
+        }
+
     export_segments = [
-        segment
+        align_segment_media_to_display_sentence(segment)
         for segment in project.get("segments", [])
         if any(card.get("enabled", True) for card in segment.get("cards", []))
     ]
+    subtitle_cues, export_subtitle_path, export_subtitle_status = load_export_subtitle_cues(project)
+    source_identity = export_source_identity()
+    subtitle_alignment_by_segment = export_subtitle_alignment_diagnostics(
+        export_segments,
+        subtitle_cues,
+        export_subtitle_status,
+        export_subtitle_path,
+    )
+    subtitle_mismatch_items = (
+        video_media_subtitle_mismatch_items(export_segments, subtitle_alignment_by_segment)
+        if video_required and export_subtitle_status == "loaded"
+        else []
+    )
+    if subtitle_mismatch_items:
+        mismatch_count = sum(
+            1
+            for segment in export_segments
+            if media_subtitle_alignment_blocks_export(
+                subtitle_alignment_by_segment.get(str(segment.get("id") or ""), {}),
+                segment,
+            )
+        )
+        fail(
+            f"视频片段与字幕原句不匹配：发现 {mismatch_count} 个片段疑似错源、切片错位或字幕重合度过低，已阻止导出。",
+            error_code=worker_errors.MEDIA_SUBTITLE_ALIGNMENT_MISMATCH,
+            stage="media_alignment",
+            retryable=False,
+            details={
+                "mismatch_count": mismatch_count,
+                "items": subtitle_mismatch_items,
+                "subtitle_path": export_subtitle_path,
+                "suggested_action": "请重新抽取或重新选择匹配的视频/字幕素材；不要导出错源或低重合度视频卡。",
+            },
+        )
     quality_audit = export_quality_audit(project, export_segments)
     if quality_audit["blocked_text_values"] or quality_audit["duplicate_visible_cards"] or quality_audit["pronunciation_meta_errors"]:
         fail(
@@ -15566,16 +15190,22 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             error_code="EXPORT_QUALITY_GATE_FAILED",
             stage="quality_audit",
             retryable=False,
+            details={
+                "quality_audit": quality_audit,
+                "blocked_cards": quality_audit.get("blocked_cards", []),
+            },
         )
     if quality_audit["empty_required_fields"]:
         warnings.append(f"导出前审计发现 {quality_audit['empty_required_fields']} 个学习字段为空；请在质量诊断中抽查。")
     if quality_audit["answer_not_in_source"]:
         warnings.append(f"导出前审计发现 {quality_audit['answer_not_in_source']} 张非听力卡答案未能直接匹配原句；请抽查。")
+    timing_ms["source_prepare"] = int((time.perf_counter() - prepare_started) * 1000)
+    tts_started = time.perf_counter()
     tts_generation_enabled = False
     sentence_tts_total = 0
     sentence_tts_done = 0
     phrase_tts_text_keys: set[str] = set()
-    if tts_requested and not is_document_project:
+    if not is_document_project:
         for segment in export_segments:
             for card in [card for card in segment.get("cards", []) if card.get("enabled", True)]:
                 phrase_text = card_phrase_tts_text(card, card_front_fields(card, repetition_mode=use_v11_repetition_front)).lower()
@@ -15585,7 +15215,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     phrase_tts_done = 0
     if not is_document_project:
         if skip_video_media:
-            warnings.append("本次导出为字幕-only / 跳过视频切片模式，APKG 不包含视频片段和原声音频。")
+            warnings.append("本次导出没有视频媒体，APKG 不包含视频片段和原声音频。")
         if not tts_requested:
             warnings.append("TTS 当前未启用，本次导出不会生成整句 AI 朗读和表达小喇叭。")
         elif not tts_config["api_key"] and not is_gemini_vertex_tts_config(tts_config):
@@ -15623,8 +15253,41 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                 task["segment"],
                 task["output_path"],
                 text_override=task.get("text_override"),
+                tts_kind=str(task.get("kind") or "sentence"),
             )
+            if not result:
+                raise RuntimeError("TTS 没有生成音频。请检查 TTS 配置或文本内容后重试。")
             return {**task, "result": result}
+
+        def retry_task_serial(task: dict[str, Any], first_error: Any) -> dict[str, Any]:
+            attempts: list[dict[str, Any]] = [{"mode": "initial", "ok": False, "error": str(first_error)}]
+            retry_texts: list[tuple[str, str | None]] = [("original_retry", task.get("text_override"))]
+            try:
+                safe_text = tts_speech_safe_variant(tts_task_expected_text(task))
+                retry_texts.append(("speech_safe_text", safe_text))
+            except RuntimeError as err:
+                attempts.append({"mode": "speech_safe_text", "ok": False, "error": str(err)})
+
+            last_error = str(first_error)
+            for mode, text_override in retry_texts:
+                try:
+                    discard_cached_file(task["output_path"])
+                    result = synthesize_tts(
+                        project,
+                        task["segment"],
+                        task["output_path"],
+                        text_override=text_override,
+                        tts_kind=str(task.get("kind") or "sentence"),
+                    )
+                    if not result:
+                        raise RuntimeError("TTS 没有生成音频。请检查 TTS 配置或文本内容后重试。")
+                    attempts.append({"mode": mode, "ok": True})
+                    cleaned_task = {key: value for key, value in task.items() if key != "error"}
+                    return {**cleaned_task, "result": result, "tts_recovery_attempts": attempts, "tts_recovered": True}
+                except Exception as err:
+                    last_error = str(err)
+                    attempts.append({"mode": mode, "ok": False, "error": last_error})
+            return {**task, "error": last_error, "tts_recovery_attempts": attempts}
 
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = []
@@ -15645,6 +15308,15 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     else:
                         warnings.append(f"{label} 失败：{err}")
                 emit_export_progress(stage, percent, f"{label} {completed}/{len(tasks)}，并发 {max_workers}。")
+        failed_results = [item for item in results if item.get("error")]
+        if failed_results:
+            results = [item for item in results if not item.get("error")]
+            emit_export_progress(stage, progress_end, f"{label} 有 {len(failed_results)} 条失败，正在逐条重试。")
+            for index, item in enumerate(failed_results, start=1):
+                retry_result = retry_task_serial(item, item.get("error"))
+                results.append(retry_result)
+                percent = progress_start + int((index / max(1, len(failed_results))) * (progress_end - progress_start))
+                emit_export_progress(stage, percent, f"{label} 失败项重试 {index}/{len(failed_results)}。")
         return results
 
     sentence_tts_tasks: list[dict[str, Any]] = []
@@ -15654,10 +15326,12 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         for segment in export_segments:
             segment_id = safe_filename(segment.get("id", "segment"))
             media_segment_id = f"{media_prefix}_{segment_id}"
-            segment_tts_text = str(segment.get("text") or "")
+            enabled_cards = [card for card in segment.get("cards", []) if card.get("enabled", True)]
+            segment_tts_text = card_sentence_tts_text(segment, enabled_cards)
             tts_name = f"{media_segment_id}_tts_{media_text_hash(segment_tts_text)}.mp3"
             try:
                 clean_tts_input_text(segment_tts_text)
+                sentence_tts_text_by_segment[segment_id] = segment_tts_text
                 sentence_tts_tasks.append(
                     {
                         "kind": "sentence",
@@ -15666,12 +15340,12 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                         "file_name": tts_name,
                         "output_path": media_dir / tts_name,
                         "tts_text": segment_tts_text,
-                        "text_override": None,
+                        "text_override": segment_tts_text,
                     }
                 )
             except RuntimeError:
                 warnings.append(f"{segment_id} 整句 TTS 文本为空，已跳过。")
-            for card in [card for card in segment.get("cards", []) if card.get("enabled", True)]:
+            for card in enabled_cards:
                 front_fields = card_front_fields(card, repetition_mode=use_v11_repetition_front)
                 phrase_text = card_phrase_tts_text(card, front_fields)
                 phrase_key = phrase_text.lower()
@@ -15684,6 +15358,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                         "kind": "phrase",
                         "key": phrase_key,
                         "segment": segment,
+                        "card": card,
                         "file_name": phrase_tts_name,
                         "output_path": media_dir / phrase_tts_name,
                         "tts_text": phrase_text,
@@ -15693,57 +15368,68 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         sentence_tts_total = len(sentence_tts_tasks)
         phrase_tts_total = len(phrase_tts_tasks)
         for item in synthesize_tts_tasks(
-            sentence_tts_tasks,
-            stage="sentence_tts",
-            label="整句 TTS",
+            [*sentence_tts_tasks, *phrase_tts_tasks],
+            stage="tts",
+            label="TTS",
             progress_start=12,
-            progress_end=26,
-        ):
-            if item.get("error"):
-                warnings.append(f"{item.get('key')} TTS 失败：{item.get('error')}")
-                continue
-            tts_result = item.get("result")
-            if not tts_result:
-                continue
-            cache_hit = bool(tts_result.get("cache_hit")) if isinstance(tts_result, dict) else False
-            if cache_hit:
-                tts_cache_hit_count += 1
-            file_name = str(item.get("file_name") or "")
-            media_files.append(str(item["output_path"]))
-            tts_by_segment[str(item.get("key") or "")] = file_name
-            ledger_add(
-                file_name,
-                role="sentence_tts",
-                segment=item["segment"],
-                field="TtsAudio",
-                tts_text=str(item.get("tts_text") or ""),
-                cache_hit=cache_hit,
-            )
-        sentence_tts_done = len(tts_by_segment)
-
-        for item in synthesize_tts_tasks(
-            phrase_tts_tasks,
-            stage="phrase_tts",
-            label="表达 TTS",
-            progress_start=26,
             progress_end=40,
         ):
             if item.get("error"):
-                warnings.append(f"{item.get('key')} 表达 TTS 失败：{item.get('error')}")
+                if "TTS 语义核验失败" in str(item.get("error") or ""):
+                    fail(
+                        str(item.get("error")),
+                        error_code="TTS_SEMANTIC_MISMATCH",
+                        stage="tts",
+                        retryable=True,
+                    )
+                tts_failure_items.append(
+                    tts_failure_item(
+                        item,
+                        item.get("error"),
+                        item.get("tts_recovery_attempts") if isinstance(item.get("tts_recovery_attempts"), list) else [],
+                    )
+                )
+                if item.get("kind") == "phrase":
+                    warnings.append(f"{item.get('key')} 表达 TTS 失败：{item.get('error')}")
+                else:
+                    warnings.append(f"{item.get('key')} TTS 失败：{item.get('error')}")
                 continue
             tts_result = item.get("result")
             if not tts_result:
                 continue
             cache_hit = bool(tts_result.get("cache_hit")) if isinstance(tts_result, dict) else False
+            semantic_result = (
+                tts_result.get("semantic")
+                if isinstance(tts_result, dict) and isinstance(tts_result.get("semantic"), dict)
+                else {}
+            )
             if cache_hit:
                 tts_cache_hit_count += 1
-            phrase_key = str(item.get("key") or "")
             file_name = str(item.get("file_name") or "")
             media_files.append(str(item["output_path"]))
-            phrase_tts_by_phrase[phrase_key] = file_name
-            phrase_tts_cache_hit_by_phrase[phrase_key] = cache_hit
+            if item.get("kind") == "phrase":
+                phrase_key = str(item.get("key") or "")
+                phrase_tts_by_phrase[phrase_key] = file_name
+                phrase_tts_cache_hit_by_phrase[phrase_key] = cache_hit
+                phrase_tts_semantic_by_phrase[phrase_key] = semantic_result
+            else:
+                segment_key = str(item.get("key") or "")
+                tts_by_segment[segment_key] = file_name
+                tts_semantic_by_segment[segment_key] = semantic_result
+                ledger_add(
+                    file_name,
+                    role="sentence_tts",
+                    segment=item["segment"],
+                    field="TtsAudio",
+                    tts_text=str(item.get("tts_text") or ""),
+                    cache_hit=cache_hit,
+                    semantic=semantic_result,
+                )
+        sentence_tts_done = len(tts_by_segment)
         phrase_tts_done = len(phrase_tts_by_phrase)
 
+    timing_ms["tts"] = int((time.perf_counter() - tts_started) * 1000)
+    media_started = time.perf_counter()
     for index, segment in enumerate(export_segments):
         enabled_cards = [card for card in segment.get("cards", []) if card.get("enabled", True)]
         if not enabled_cards:
@@ -15789,7 +15475,6 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                 poster_name = reused_media_names.get("poster_name", "")
                 audio_name = reused_media_names.get("audio_name", "")
                 media_reused_segment_count += 1
-                media_cache_hit_count += len([name for name in [video_webm_name, video_mp4_name, poster_name, audio_name] if name])
                 if video_webm_name:
                     ledger_add(video_webm_name, role="video", segment=segment, field="Video")
                 if video_mp4_name:
@@ -15915,9 +15600,11 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     media_clip_cache_path(video_source_fingerprint, start, duration, role, extension, profile)[0]
                     for _output_path, role, extension, profile, _command in media_commands
                 ]
+                media_cache_reads_enabled = media_cache_read_enabled(project)
                 media_action = (
                     "媒体缓存"
-                    if media_command_cache_paths
+                    if media_cache_reads_enabled
+                    and media_command_cache_paths
                     and all(cached_media_file_valid(path) for path in media_command_cache_paths)
                     else "媒体切片"
                 )
@@ -15927,7 +15614,10 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     f"{media_action} {index + 1}/{len(export_segments)}：{segment.get('source_time', segment_id)}",
                 )
                 media_errors = []
-                for output_path, role, extension, profile, command in media_commands:
+                media_results: list[dict[str, Any]] = []
+
+                def run_media_command(command_spec: tuple[Path, str, str, str, list[str]]) -> dict[str, Any]:
+                    output_path, role, extension, profile, command = command_spec
                     cache_path, _ = media_clip_cache_path(
                         video_source_fingerprint,
                         start,
@@ -15936,17 +15626,39 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                         extension,
                         profile,
                     )
-                    if copy_cached_file(cache_path, output_path):
-                        media_cache_hit_count += 1
-                        continue
+                    if media_cache_reads_enabled and copy_cached_file(cache_path, output_path):
+                        return {"output_path": output_path, "role": role, "cache_hit": True, "error": ""}
                     error = try_run_ffmpeg(command)
                     if error:
-                        media_errors.append(error)
-                    else:
-                        store_cached_file(output_path, cache_path)
+                        return {"output_path": output_path, "role": role, "cache_hit": False, "error": error}
+                    store_cached_file(output_path, cache_path)
+                    return {"output_path": output_path, "role": role, "cache_hit": False, "error": ""}
+
+                media_workers = min(export_media_concurrency(project), len(media_commands))
+                if media_workers <= 1:
+                    media_results = [run_media_command(command_spec) for command_spec in media_commands]
+                else:
+                    with ThreadPoolExecutor(max_workers=media_workers) as pool:
+                        futures = [pool.submit(run_media_command, command_spec) for command_spec in media_commands]
+                        media_results = [future.result() for future in futures]
+                for result in media_results:
+                    if result.get("cache_hit"):
+                        media_cache_hit_count += 1
+                    elif not result.get("error"):
+                        media_cache_miss_count += 1
+                    if result.get("error"):
+                        media_errors.append(str(result.get("error")))
                 if media_errors:
                     for output_path, *_ in media_commands:
                         output_path.unlink(missing_ok=True)
+                    if video_required:
+                        fail(
+                            f"{segment_id} 视频/原声切片失败，已停止导出，避免生成缺视频的视频卡。请检查 FFmpeg、视频路径或重新生成素材后再导出：{media_errors[0]}",
+                            error_code=worker_errors.FFMPEG_SLICE_FAILED,
+                            stage="media",
+                            retryable=True,
+                            fallbacks=[],
+                        )
                     video_webm_name = ""
                     video_mp4_name = ""
                     poster_name = ""
@@ -15963,7 +15675,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                         "jpg-q3-scale960",
                     )
                     poster_error = ""
-                    if copy_cached_file(poster_cache_path, poster_out):
+                    if media_cache_reads_enabled and copy_cached_file(poster_cache_path, poster_out):
                         media_cache_hit_count += 1
                     else:
                         poster_error = try_run_ffmpeg(
@@ -15983,6 +15695,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                         )
                         if not poster_error:
                             store_cached_file(poster_out, poster_cache_path)
+                            media_cache_miss_count += 1
                     if poster_error:
                         poster_name = ""
                         poster_out.unlink(missing_ok=True)
@@ -16014,6 +15727,12 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
 
         for card in enabled_cards:
             front_fields = card_front_fields(card, repetition_mode=use_v11_repetition_front)
+            front_fields = front_fields_for_export_media(
+                front_fields,
+                repetition_mode=use_v11_repetition_front,
+                has_original_audio=bool(audio_name and audio_out.exists()),
+                has_tts_audio=bool(tts_by_segment.get(segment_id, "")),
+            )
             template_labels = card_template_labels(card, deck_kind_code)
             export_card_id = f"{project_card_prefix}_{card.get('id', '')}"
             phrase_text = card_phrase_tts_text(card, front_fields)
@@ -16032,7 +15751,62 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     field="PhraseTtsAudio",
                     tts_text=phrase_text,
                     cache_hit=phrase_tts_cache_hit_by_phrase.get(phrase_key, False),
+                    semantic=phrase_tts_semantic_by_phrase.get(phrase_key, {}),
                 )
+            sentence_tts_name = tts_by_segment.get(segment_id, "")
+            sentence_tts_text = sentence_tts_text_by_segment.get(segment_id) or card_sentence_tts_text(segment, enabled_cards)
+            note_source_sentence = clean_study_text(sentence_tts_text) or clean_study_text(card.get("english", ""))
+            sentence_semantic = tts_semantic_by_segment.get(segment_id, {})
+            phrase_semantic = phrase_tts_semantic_by_phrase.get(phrase_key, {}) if phrase_tts_name else {}
+            subtitle_diagnostic = subtitle_alignment_by_segment.get(str(segment.get("id") or ""), {})
+            card_media_ledger.append(
+                {
+                    "card_id": export_card_id,
+                    "source_card_id": str(card.get("id") or ""),
+                    "learning_point_id": str(card.get("learning_point_id") or segment.get("learning_point_id") or ""),
+                    "segment_id": str(segment.get("id") or ""),
+                    "source_time": str(segment.get("source_time") or segment_display_source_time(segment)),
+                    "media_start": segment.get("media_start"),
+                    "media_end": segment.get("media_end"),
+                    "media_source_time": str(segment.get("media_source_time") or segment_display_source_time(segment)),
+                    "source_cue_ids": segment.get("source_cue_ids") or [],
+                    "source_cue_count": segment.get("source_cue_count"),
+                    "source_cue_start": segment.get("source_cue_start"),
+                    "source_cue_end": segment.get("source_cue_end"),
+                    "source_cue_time": str(segment.get("source_cue_time") or ""),
+                    "source_cue_texts": segment.get("source_cue_texts") or [],
+                    "source_merge_reason": str(segment.get("source_merge_reason") or ""),
+                    "source_sentence_quality_flags": segment.get("source_sentence_quality_flags") or [],
+                    "source_sentence_quality_status": str(segment.get("source_sentence_quality_status") or ""),
+                    "media_alignment_status": str(segment.get("media_alignment_status") or ""),
+                    "media_alignment_text": clean_study_text(segment.get("media_alignment_text") or segment.get("text") or ""),
+                    "media_alignment_source_text": clean_study_text(
+                        segment.get("media_alignment_source_text")
+                        or segment.get("full_source_sentence")
+                        or segment.get("source_sentence")
+                        or segment.get("text")
+                        or ""
+                    ),
+                    **subtitle_diagnostic,
+                    "answer": clean_study_text(front_fields.get("answer") or ""),
+                    "card_display_sentence": note_source_sentence,
+                    "sentence_tts_text": clean_study_text(sentence_tts_text),
+                    "phrase_tts_text": clean_study_text(phrase_text),
+                    "video_webm": video_webm_name,
+                    "video_mp4": video_mp4_name,
+                    "poster": poster_name,
+                    "original_audio": audio_name,
+                    "sentence_tts_audio": sentence_tts_name,
+                    "phrase_tts_audio": phrase_tts_name,
+                    "sentence_tts_semantic_verification": str(sentence_semantic.get("semantic_verification") or ""),
+                    "sentence_tts_asr_transcript": str(sentence_semantic.get("asr_transcript") or ""),
+                    "phrase_tts_semantic_verification": str(phrase_semantic.get("semantic_verification") or ""),
+                    "phrase_tts_asr_transcript": str(phrase_semantic.get("asr_transcript") or ""),
+                    "template_label": template_labels["card_layout"],
+                    "template_version": template_version,
+                    **source_identity,
+                }
+            )
             if is_ciba_template:
                 meaning_field = ciba_contextual_meaning_text(card)
                 definition_field = ciba_language_action_text(card)
@@ -16057,7 +15831,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     anki_study_text(card.get("type_label", card.get("type", ""))),
                     anki_video_html(video_webm_name, video_mp4_name, poster_name, controls=not use_v11_repetition_front, muted=False),
                     anki_audio_html(audio_name, controls=not use_v11_repetition_front, role="original"),
-                    anki_audio_html(tts_by_segment.get(segment_id, ""), controls=not use_v11_repetition_front, role="slow"),
+                    anki_audio_html(sentence_tts_name, controls=not use_v11_repetition_front, role="slow"),
                     anki_audio_html(phrase_tts_name, controls=not use_v11_repetition_front, role="phrase"),
                     "1" if card.get("type") == "listening" else "",
                     anki_study_text(front_fields["front_prompt"]),
@@ -16073,7 +15847,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     anki_text(json.dumps(pronunciation_meta, ensure_ascii=False, separators=(",", ":"))),
                     anki_text(spoken_label_for_meta(pronunciation_meta)),
                     anki_text(standard_hint_for_meta(pronunciation_meta, project.get("language", "en"))),
-                    anki_study_text(card.get("english", "")),
+                    anki_study_text(note_source_sentence),
                     anki_text(meaning_field),
                     anki_study_text(card.get("phrase", "")),
                     anki_study_text(definition_field),
@@ -16120,23 +15894,145 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             target_deck.add_note(note)
             exported_cards += 1
 
+    timing_ms["media"] = int((time.perf_counter() - media_started) * 1000)
     if exported_cards == 0:
         fail("没有可导出的卡片。请在预览页至少启用一张卡。")
+    if video_required and not tts_generation_enabled:
+        if not tts_requested:
+            tts_config_error = "TTS 当前未启用。"
+        elif not tts_config["api_key"] and not is_gemini_vertex_tts_config(tts_config):
+            tts_config_error = "TTS 已启用但缺少 API Key。"
+        elif (
+            tts_config["provider"] in OPENAI_COMPATIBLE_PROVIDERS
+            or tts_config["provider"] in QWEN_TTS_PROVIDERS
+            or is_gemini_vertex_tts_config(tts_config)
+        ) and (not compatible_base_url(tts_config) or not tts_config["model"]):
+            tts_config_error = "TTS 已启用但缺少 Base URL 或模型名。"
+        else:
+            tts_config_error = "TTS 配置未通过导出检查。"
+        expected_sentence_tts = len(export_segments)
+        expected_phrase_tts = len(phrase_tts_text_keys)
+        fail(
+            "TTS 生成失败：当前视频/字幕语言卡必须包含整句 TTS 和表达 TTS，"
+            f"但 {tts_config_error} 因此没有生成 APKG。请先测试 TTS 配置后再导出。",
+            error_code="MISSING_TTS_MEDIA",
+            stage="tts",
+            retryable=True,
+            fallbacks=["test_tts_config", "return_to_selection"],
+            details={
+                "tts_failure_count": expected_sentence_tts + expected_phrase_tts,
+                "tts_failure_items": [],
+                "tts_failure_items_truncated": 0,
+                "sentence_tts_requested": expected_sentence_tts,
+                "sentence_tts_generated": 0,
+                "phrase_tts_requested": expected_phrase_tts,
+                "phrase_tts_generated": 0,
+                "provider": str(tts_config.get("provider") or ""),
+                "model": str(tts_config.get("model") or ""),
+                "voice": str(tts_config.get("voice") or ""),
+                "cache_root": str(persistent_cache_root()),
+                "tts_media_errors": [tts_config_error],
+            },
+        )
     if tts_generation_enabled and not is_document_project:
         expected_sentence_tts = sentence_tts_total
+        tts_media_errors: list[str] = []
         if expected_sentence_tts and not tts_by_segment:
-            warnings.append("TTS 已启用，但整句 AI 朗读生成 0 条；请先测试 TTS 配置后再导出。")
+            tts_media_errors.append("整句 AI 朗读生成 0 条")
         elif len(tts_by_segment) < expected_sentence_tts:
-            warnings.append(f"整句 AI 朗读只生成 {len(tts_by_segment)}/{expected_sentence_tts} 条，请检查导出日志。")
+            tts_media_errors.append(f"整句 AI 朗读只生成 {len(tts_by_segment)}/{expected_sentence_tts} 条")
         expected_phrase_tts = phrase_tts_total
         if expected_phrase_tts and not phrase_tts_by_phrase:
-            warnings.append("TTS 已启用，但表达小喇叭生成 0 条；请先测试 TTS 配置后再导出。")
+            tts_media_errors.append("表达小喇叭生成 0 条")
         elif len(phrase_tts_by_phrase) < expected_phrase_tts:
-            warnings.append(f"表达小喇叭只生成 {len(phrase_tts_by_phrase)}/{expected_phrase_tts} 条，请检查导出日志。")
+            tts_media_errors.append(f"表达小喇叭只生成 {len(phrase_tts_by_phrase)}/{expected_phrase_tts} 条")
+        if tts_media_errors:
+            tts_failure_details = [
+                warning
+                for warning in warnings
+                if "TTS 失败" in warning or "表达 TTS 失败" in warning
+            ][:2]
+            detail_suffix = f" 具体失败：{'；'.join(tts_failure_details)}。" if tts_failure_details else ""
+            tts_failure_count = len(tts_failure_items)
+            fail(
+                f"TTS 生成失败：{tts_failure_count or '部分'} 条 TTS 未完成，因此没有生成 APKG。"
+                "已生成的卡片仍保留，可重试失败音频。"
+                " 详情："
+                + "；".join(tts_media_errors)
+                + "。"
+                + detail_suffix
+                + "为避免生成缺 TTS 的视频卡，请先测试 TTS 配置后再导出。",
+                error_code="MISSING_TTS_MEDIA",
+                stage="tts",
+                retryable=True,
+                fallbacks=["retry_failed_tts_and_export", "test_tts_config", "return_to_selection"],
+                details={
+                    "tts_failure_count": tts_failure_count,
+                    "tts_failure_items": tts_failure_items[:50],
+                    "tts_failure_items_truncated": max(0, len(tts_failure_items) - 50),
+                    "sentence_tts_requested": expected_sentence_tts,
+                    "sentence_tts_generated": len(tts_by_segment),
+                    "phrase_tts_requested": expected_phrase_tts,
+                    "phrase_tts_generated": len(phrase_tts_by_phrase),
+                    "provider": str(tts_config.get("provider") or ""),
+                    "model": str(tts_config.get("model") or ""),
+                    "voice": str(tts_config.get("voice") or ""),
+                    "cache_root": str(persistent_cache_root()),
+                    "tts_media_errors": tts_media_errors,
+                },
+            )
 
+    package_started = time.perf_counter()
     emit_export_progress("package", 92, "正在写入 APKG。")
     media_files = list(dict.fromkeys(media_files))
     exported_media_manifest = media_manifest(media_files, media_ledger)
+    tts_manual_items = tts_manual_review_items(exported_media_manifest)
+    tts_semantic_failures = tts_semantic_failure_items(exported_media_manifest)
+    tts_semantic_summary = tts_semantic_verification_summary(tts_manual_items, exported_media_manifest)
+    audio_audit_items = build_audio_audit_items(
+        card_media_ledger,
+        exported_media_manifest,
+        deck_name=deck_name,
+        model_name=f"Anki Card Generator {template_version} - {template_label}",
+        deck_kind=deck_kind_code,
+    )
+    audio_audit_info = audio_audit_summary(
+        audio_audit_items,
+        deck_kind=deck_kind_code,
+        expected_items=exported_cards if deck_kind_code in {"video_language", "subtitle_language"} else 0,
+    )
+    audio_audit_path, audio_audit_markdown_path = write_audio_audit_files(export_root, audio_audit_items, audio_audit_info)
+    if tts_semantic_failures and tts_semantic_requires_export_pass(project, deck_kind_code):
+        first_failure = tts_semantic_failures[0]
+        fail(
+            "TTS 语义核验失败，已阻止导出，避免错音频进入 Anki："
+            f"{first_failure.get('file')} 期望 {first_failure.get('tts_text')!r}，"
+            f"ASR 听到 {first_failure.get('asr_transcript')!r}。",
+            error_code="TTS_SEMANTIC_MISMATCH",
+            stage="tts",
+            retryable=True,
+            details={
+                **audio_audit_failure_details(audio_audit_items, tts_semantic_failures),
+                "audio_audit_path": str(audio_audit_path),
+                "audio_audit_markdown_path": str(audio_audit_markdown_path),
+            },
+        )
+    if tts_manual_items and tts_semantic_requires_export_pass(project, deck_kind_code):
+        first_manual = tts_manual_items[0]
+        manual_reasons = [str(reason) for reason in first_manual.get("semantic_review_reasons") or []]
+        fail(
+            "TTS 语义未能自动证明，已阻止导出，避免未核验音频进入 Anki："
+            f"{first_manual.get('file')} 期望 {first_manual.get('tts_text')!r}，"
+            f"原因 {', '.join(manual_reasons) or 'asr_unavailable'}。",
+            error_code="TTS_SEMANTIC_UNVERIFIED",
+            stage="tts",
+            retryable=True,
+            details={
+                **audio_audit_failure_details(audio_audit_items, tts_manual_items),
+                "audio_audit_path": str(audio_audit_path),
+                "audio_audit_markdown_path": str(audio_audit_markdown_path),
+            },
+        )
     media_bytes = 0
     for media_file in media_files:
         try:
@@ -16146,22 +16042,44 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     package_decks: Any = decks_for_package[0] if len(decks_for_package) == 1 else decks_for_package
     package = genanki.Package(package_decks)
     package.media_files = media_files
-    apkg_path = export_root / f"{safe_filename(project.get('title', 'anki-card'))}.apkg"
+    apkg_path = canonical_apkg_path or export_root / f"{safe_filename(project.get('title', 'anki-card'))}.apkg"
     package.write_to_file(str(apkg_path))
+    apkg_stat = apkg_path.stat()
+    apkg_sha256 = file_sha256(apkg_path)
+    timing_ms["apkg_packaging"] = int((time.perf_counter() - package_started) * 1000)
+    timing_ms["total"] = int((time.perf_counter() - timing_started) * 1000)
+    add_export_timing_aliases(timing_ms)
 
     emit_export_progress("done", 100, f"导出完成：{exported_cards} 张卡。")
     anki_tag = f"anki_card_generator_{template_version.lower()}"
+    tts_cache_total = sentence_tts_total + phrase_tts_total
+    tts_cache_miss_count = max(0, tts_cache_total - tts_cache_hit_count)
+    media_cache_total = media_cache_hit_count + media_cache_miss_count
     return {
         "apkg_path": str(apkg_path),
+        "apkg_sha256": apkg_sha256,
+        "apkg_size_bytes": apkg_stat.st_size,
+        "apkg_mtime_ms": int(apkg_stat.st_mtime * 1000),
         "media_dir": str(media_dir),
         "deck_name": deck_name,
         "deck_names": deck_names_for_result,
+        "anki_manual_import_hint": f"导入后请在 Anki 牌组列表打开「{deck_name}」。",
+        "anki_verify_after_manual_import_supported": True,
         "deck_kind": deck_kind_code,
         "template_version": template_version,
         "anki_tag": anki_tag,
         "media_prefix": media_prefix,
+        "source_identity": source_identity,
         "media_manifest": exported_media_manifest,
         "media_ledger": media_ledger,
+        "card_media_ledger": card_media_ledger,
+        "tts_manual_review_items": tts_manual_items,
+        "tts_semantic_failures": tts_semantic_failures,
+        "tts_semantic_verification": tts_semantic_summary,
+        "audio_audit_path": str(audio_audit_path),
+        "audio_audit_markdown_path": str(audio_audit_markdown_path),
+        "audio_audit_summary": audio_audit_info,
+        "audio_audit_items": audio_audit_items,
         "cards": exported_cards,
         "segments": len(cut_segments),
         "media_summary": {
@@ -16173,13 +16091,27 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             "sentence_tts_requested": sentence_tts_total,
             "phrase_tts_requested": phrase_tts_total,
             "tts_concurrency": export_tts_concurrency(project) if tts_generation_enabled else 0,
+            "media_concurrency": export_media_concurrency(project) if not skip_video_media else 0,
             "tts_cache_hits": tts_cache_hit_count,
+            "tts_cache_misses": tts_cache_miss_count,
+            "tts_cache_total": tts_cache_total,
             "media_cache_hits": media_cache_hit_count,
+            "media_cache_misses": media_cache_miss_count,
+            "media_cache_total": media_cache_total,
             "media_reused_segments": media_reused_segment_count,
             "media_files": len(media_files),
             "media_bytes": media_bytes,
             "media_mb": round(media_bytes / (1024 * 1024), 1),
+            "card_media_ledger_items": len(card_media_ledger),
+            "subtitle_diagnostic_status": export_subtitle_status,
+            "subtitle_path": export_subtitle_path,
+            "media_subtitle_alignment": audio_audit_info.get("media_subtitle_alignment", {}),
+            "tts_manual_review_items": len(tts_manual_items),
+            "tts_semantic_passed_items": tts_semantic_summary["passed"],
+            "tts_semantic_failed_items": tts_semantic_summary["failed"],
+            "tts_high_risk_manual_review_items": tts_semantic_summary["high_risk_items"],
         },
+        "timing_ms": timing_ms,
         "batch_summary": {
             "enabled": is_batch_export,
             "items": len(batch_deck_specs) if is_batch_export else 0,
@@ -16192,10 +16124,29 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
+    timing_started = time.perf_counter()
+    timing_ms: dict[str, int] = {}
+
+    def with_verify_timing(result: dict[str, Any]) -> dict[str, Any]:
+        timing_ms["anki_verify"] = int((time.perf_counter() - timing_started) * 1000)
+        timing_ms["total"] = timing_ms["anki_verify"]
+        add_verify_anki_import_timing_aliases(timing_ms)
+        return {**result, "timing_ms": dict(timing_ms)}
+
     export_result = payload.get("export_result") or {}
     deck_name = str(payload.get("deck_name") or export_result.get("deck_name") or "").strip()
     media_dir = Path(str(payload.get("media_dir") or export_result.get("media_dir") or ""))
     anki_url = str(payload.get("anki_connect_url") or "http://127.0.0.1:8765").strip()
+    deck_kind = str(payload.get("deck_kind") or export_result.get("deck_kind") or "").strip()
+    strict_video_import = deck_kind in {"video_language", "subtitle_language"}
+    strict_document_import = deck_kind in {"document_knowledge", "document_reading"}
+    apkg_path_text = str(payload.get("apkg_path") or export_result.get("apkg_path") or "").strip()
+    apkg_path = Path(apkg_path_text) if apkg_path_text else Path()
+    apkg_sha256 = str(export_result.get("apkg_sha256") or "").strip()
+    apkg_size_bytes = export_result.get("apkg_size_bytes")
+    apkg_mtime_ms = export_result.get("apkg_mtime_ms")
+    source_identity = export_result.get("source_identity") if isinstance(export_result.get("source_identity"), dict) else {}
+    source_fingerprint = str(source_identity.get("source_fingerprint") or export_result.get("source_fingerprint") or "").strip()
     media_summary = export_result.get("media_summary") if isinstance(export_result.get("media_summary"), dict) else {}
     expected_media_files = media_summary.get("media_files")
     try:
@@ -16214,106 +16165,422 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
     if not anki_tag:
         template_version = str(payload.get("template_version") or export_result.get("template_version") or "").strip().lower()
         anki_tag = f"anki_card_generator_{template_version}" if template_version else "anki_card_generator_v10"
-    query = f"tag:{anki_tag}"
-    if deck_name:
+    explicit_anki_query = str(payload.get("anki_query") or export_result.get("anki_query") or "").strip()
+    query = explicit_anki_query or f"tag:{anki_tag}"
+    if deck_name and not explicit_anki_query:
         query = f'deck:"{deck_name}" {query}'
 
+    import_attempted = bool(payload.get("import_apkg"))
+    import_result: Any = None
+    import_error = ""
+    if import_attempted:
+        if not apkg_path.exists() or not apkg_path.is_file():
+            return with_verify_timing(
+                {
+                    "ok": False,
+                    "message": f"找不到要导入的 APKG：{apkg_path}",
+                    "failed_checks": ["apkg_missing_for_import"],
+                    "query": query,
+                    "import_attempted": True,
+                    "import_result": False,
+                }
+            )
+        if apkg_path.suffix.lower() != ".apkg":
+            return with_verify_timing(
+                {
+                    "ok": False,
+                    "message": f"导入路径不是 APKG 文件：{apkg_path}",
+                    "failed_checks": ["apkg_invalid_for_import"],
+                    "query": query,
+                    "import_attempted": True,
+                    "import_result": False,
+                }
+            )
+        apkg_stat = apkg_path.stat()
+        apkg_sha256 = file_sha256(apkg_path)
+        apkg_size_bytes = apkg_stat.st_size
+        apkg_mtime_ms = int(apkg_stat.st_mtime * 1000)
+        emit_progress(
+            "verify_anki_import",
+            "import",
+            8,
+            "正在通过 AnkiConnect 导入当前 APKG；导入完成后会核验媒体、字段和音频取证。",
+        )
+        import_started = time.perf_counter()
+        try:
+            import_result = anki_connect("importPackage", {"path": str(apkg_path)}, anki_url)
+        except Exception as err:
+            import_error = str(err)
+            timing_ms["anki_import"] = int((time.perf_counter() - import_started) * 1000)
+            return with_verify_timing(
+                {
+                    "ok": False,
+                    "message": f"AnkiConnect 导入 APKG 失败：{import_error}",
+                    "failed_checks": ["anki_import_failed"],
+                    "query": query,
+                    "import_attempted": True,
+                    "import_result": False,
+                    "import_error": import_error,
+                }
+            )
+        timing_ms["anki_import"] = int((time.perf_counter() - import_started) * 1000)
+        if import_result is False:
+            return with_verify_timing(
+                {
+                    "ok": False,
+                    "message": "AnkiConnect 没有成功导入 APKG。",
+                    "failed_checks": ["anki_import_failed"],
+                    "query": query,
+                    "import_attempted": True,
+                    "import_result": False,
+                }
+            )
+
+    query_started = time.perf_counter()
     try:
+        emit_progress(
+            "verify_anki_import",
+            "query",
+            18,
+            "正在读取 Anki 中的卡片、字段和媒体目录。",
+        )
         card_ids = anki_connect("findCards", {"query": query}, anki_url)
         card_infos = anki_connect("cardsInfo", {"cards": card_ids or []}, anki_url) if card_ids else []
         anki_media_dir = Path(str(anki_connect("getMediaDirPath", {}, anki_url) or ""))
     except Exception as err:
-        return {
-            "ok": False,
-            "message": f"无法连接 AnkiConnect 或读取卡片：{err}",
-            "failed_checks": ["anki_connect"],
-            "query": query,
-        }
+        timing_ms["anki_query"] = int((time.perf_counter() - query_started) * 1000)
+        return with_verify_timing(
+            {
+                "ok": False,
+                "message": f"无法连接 AnkiConnect 或读取卡片：{err}",
+                "failed_checks": ["anki_connect"],
+                "query": query,
+                "import_attempted": import_attempted,
+                "import_result": import_result,
+            }
+        )
+    timing_ms["anki_query"] = int((time.perf_counter() - query_started) * 1000)
 
     referenced_media: set[str] = set()
     card_ids_seen: set[int] = set()
+    deck_names_seen: set[str] = set()
+    model_names: set[str] = set()
+    missing_video_field_media: list[dict[str, Any]] = []
+    empty_required_fields: list[dict[str, Any]] = []
+    corrupted_study_text_values: list[dict[str, str]] = []
+    pronunciation_meta_errors: list[dict[str, str]] = []
+    imported_tts_text_hash_mismatch: list[dict[str, str]] = []
+    card_media_ledger = export_result.get("card_media_ledger") if isinstance(export_result.get("card_media_ledger"), list) else []
+    card_media_ledger_provided = isinstance(export_result.get("card_media_ledger"), list)
+    card_media_by_card_id = items_by_card_id(card_media_ledger)
+    audio_audit_items, audio_audit_export_summary = load_audio_audit_from_export_result(export_result)
+    if strict_video_import and not audio_audit_items and card_media_ledger:
+        audio_audit_items = build_audio_audit_items(
+            card_media_ledger,
+            expected_manifest,
+            deck_name=deck_name,
+            model_name=str(export_result.get("model_name") or ""),
+            deck_kind=deck_kind,
+        )
+        audio_audit_export_summary = audio_audit_summary(
+            audio_audit_items,
+            deck_kind=deck_kind,
+            expected_items=int(export_result.get("cards") or payload.get("expected_cards") or 0),
+        )
+    audio_audit_by_card_id = items_by_card_id(audio_audit_items)
+    audio_audit_verify_items: list[dict[str, Any]] = []
+    audio_audit_mismatches: list[dict[str, Any]] = []
+    card_media_ledger_mismatches: list[dict[str, Any]] = []
+    matched_export_card_ids: set[str] = set()
+    seen_export_card_ids: set[str] = set()
+    duplicate_imported_cards: list[dict[str, str]] = []
     for info in card_infos or []:
+        card_id = str(info.get("cardId") or "")
         try:
             card_ids_seen.add(int(info.get("cardId")))
         except Exception:
             pass
+        model_name = anki_card_model_name(info)
+        if model_name:
+            model_names.add(model_name)
+        imported_deck_name = anki_card_deck_name(info)
+        if imported_deck_name:
+            deck_names_seen.add(imported_deck_name)
         fields = info.get("fields") or {}
         for field_name in ["Video", "Audio", "TtsAudio", "PhraseTtsAudio"]:
             referenced_media.update(extract_media_references(anki_field_value(fields, field_name)))
+        if strict_video_import:
+            refs_by_field = {
+                field_name: extract_media_references(anki_field_value(fields, field_name))
+                for field_name in ["Video", "Audio", "TtsAudio", "PhraseTtsAudio"]
+            }
+            export_card_id = anki_field_plain_text(fields, "CardId")
+            matches_current_export = bool(
+                export_card_id and (export_card_id in card_media_by_card_id or export_card_id in audio_audit_by_card_id)
+            )
+            duplicate_current_export = False
+            if matches_current_export:
+                if export_card_id in seen_export_card_ids:
+                    duplicate_current_export = True
+                    duplicate_imported_cards.append({"card_id": export_card_id, "anki_card_id": card_id})
+                else:
+                    seen_export_card_ids.add(export_card_id)
+                    matched_export_card_ids.add(export_card_id)
+            card_media = card_media_by_card_id.get(export_card_id)
+            if card_media_ledger_provided and export_card_id and card_media:
+                card_media_ledger_mismatches.extend(
+                    compare_expected_media_refs_by_field(
+                        export_card_id,
+                        refs_by_field,
+                        card_media_expected_refs_by_field(card_media),
+                    )
+                )
+            elif card_media_ledger_provided and export_card_id:
+                card_media_ledger_mismatches.append(
+                    missing_expected_entry_mismatch(export_card_id, "card_media_ledger entry")
+                )
+            audit_item = audio_audit_by_card_id.get(export_card_id)
+            if export_card_id and audit_item:
+                verified_audit = dict(audit_item)
+                note_id = info.get("note") or info.get("noteId") or info.get("note_id")
+                if note_id:
+                    verified_audit["anki_note_id"] = note_id
+                verified_audit["anki_card_id"] = card_id
+                verified_audit["anki_fields"] = refs_by_field
+                referenced_names = sorted(
+                    {
+                        Path(ref).name
+                        for refs in refs_by_field.values()
+                        for ref in refs
+                        if str(ref).strip()
+                    }
+                )
+                verified_audit["anki_media_exists"] = {
+                    name: imported_media_exists_for_audit(anki_media_dir / name)
+                    for name in referenced_names
+                }
+                audio_audit_mismatches.extend(
+                    compare_expected_media_refs_by_field(
+                        export_card_id,
+                        refs_by_field,
+                        audio_audit_expected_refs_by_field(audit_item),
+                    )
+                )
+                sentence_actual, text_mismatches = audio_audit_imported_text_mismatches(
+                    export_card_id,
+                    audit_item,
+                    fields,
+                )
+                verified_audit["anki_card_display_sentence"] = sentence_actual
+                audio_audit_mismatches.extend(text_mismatches)
+                if not duplicate_current_export:
+                    audio_audit_verify_items.append(verified_audit)
+            elif strict_video_import and export_card_id:
+                audio_audit_mismatches.append(
+                    missing_expected_entry_mismatch(export_card_id, "audio_audit entry")
+                )
+            missing_roles = missing_video_required_media_roles(refs_by_field)
+            if missing_roles:
+                missing_video_field_media.append(
+                    {
+                        "card_id": card_id,
+                        "missing": missing_roles,
+                    }
+                )
+
+            missing_text = missing_video_required_text_fields(fields)
+            if missing_text:
+                empty_required_fields.append({"card_id": card_id, "missing": missing_text})
+
+            corrupted_study_text_values.extend(imported_corrupted_study_text_values(fields, card_id))
+
+            pronunciation_error = anki_import_pronunciation_meta_error(fields)
+            if pronunciation_error:
+                pronunciation_meta_errors.append({"card_id": card_id, "error": pronunciation_error})
+
+            imported_tts_text_hash_mismatch.extend(
+                imported_tts_text_hash_mismatches(fields, card_id, refs_by_field, media_text_hash)
+            )
+        if strict_document_import:
+            missing_text = missing_document_required_text_fields(fields)
+            if missing_text:
+                empty_required_fields.append({"card_id": card_id, "missing": missing_text})
 
     expected_names = set(expected_manifest)
     media_ledger = export_result.get("media_ledger") if isinstance(export_result.get("media_ledger"), list) else []
-    ledger_files = {
-        Path(str(item.get("file") or "")).name
-        for item in media_ledger
-        if isinstance(item, dict) and str(item.get("file") or "").strip()
-    }
-    ledger_missing_manifest = sorted(ledger_files - expected_names)
-    manifest_tts_without_ledger = sorted(
-        name
-        for name, info in expected_manifest.items()
-        if isinstance(info, dict) and str(info.get("role") or "") in {"sentence_tts", "phrase_tts"} and name not in ledger_files
-    )
-    ledger_text_hash_mismatch = [
-        {
-            "file": Path(str(item.get("file") or "")).name,
-            "expected_text_hash": media_text_hash(item.get("tts_text")),
-            "ledger_text_hash": str(item.get("text_hash") or ""),
-        }
-        for item in media_ledger
-        if isinstance(item, dict)
-        and item.get("tts_text")
-        and str(item.get("text_hash") or "") not in {"", media_text_hash(item.get("tts_text"))}
-    ]
+    ledger_manifest_check = media_ledger_manifest_consistency(media_ledger, expected_manifest)
+    ledger_missing_manifest = ledger_manifest_check["ledger_missing_manifest"]
+    manifest_tts_without_ledger = ledger_manifest_check["manifest_tts_without_ledger"]
+    ledger_text_hash_mismatch = ledger_manifest_check["ledger_text_hash_mismatch"]
+    media_ledger_card_text_mismatches = media_ledger_card_text_mismatches_core(card_media_ledger, media_ledger)
     expected_referenced_manifest = {
         name: expected_manifest[name]
         for name in sorted(expected_names & referenced_media)
     }
-    manifest_check = compare_media_manifest(expected_referenced_manifest, anki_media_dir)
+    tts_manual_items = tts_manual_review_items(expected_referenced_manifest)
+    tts_semantic_failures = tts_semantic_failure_items(expected_referenced_manifest)
+    tts_semantic_summary = tts_semantic_verification_summary(tts_manual_items, expected_referenced_manifest)
+    manifest_check = compare_media_manifest(expected_referenced_manifest, anki_media_dir, anki_url=anki_url, max_attempts=1)
+    tts_audio_duration_issues = imported_tts_audio_duration_issues(
+        expected_referenced_manifest,
+        anki_media_dir,
+        referenced_media,
+        strict_video_import=strict_video_import,
+        anki_url=anki_url,
+        max_attempts=1,
+    )
     unreferenced_expected = sorted(expected_names - referenced_media)
     unexpected_references = sorted(referenced_media - expected_names)
     expected_cards = int(export_result.get("cards") or payload.get("expected_cards") or 0)
+    audio_audit_verified_items = audio_audit_verify_items if audio_audit_verify_items else audio_audit_items
+    audio_audit_verified_summary = audio_audit_summary(
+        audio_audit_verified_items,
+        deck_kind=deck_kind,
+        expected_items=expected_cards if strict_video_import else 0,
+    )
+    audio_audit_verify_path = ""
+    audio_audit_verify_markdown_path = ""
+    audio_audit_write_errors: list[str] = []
+    if strict_video_import or audio_audit_items:
+        audit_output_root = None
+        if str(export_result.get("audio_audit_path") or "").strip():
+            audit_output_root = Path(str(export_result.get("audio_audit_path"))).parent
+        elif media_dir:
+            audit_output_root = media_dir.parent
+        else:
+            audit_output_root = Path.cwd()
+        try:
+            verify_json_path, verify_markdown_path = write_audio_audit_files(
+                audit_output_root,
+                audio_audit_verified_items,
+                {
+                    **audio_audit_verified_summary,
+                    "export_summary": audio_audit_export_summary,
+                    "mismatches": len(audio_audit_mismatches),
+                },
+                base_name="audio_audit.verify",
+            )
+            audio_audit_verify_path = str(verify_json_path)
+            audio_audit_verify_markdown_path = str(verify_markdown_path)
+            audio_audit_verified_summary["verify_path"] = audio_audit_verify_path
+        except OSError as err:
+            audio_audit_write_errors.append(str(err))
+    sorted_model_names = sorted(model_names)
+    sorted_deck_names = sorted(deck_names_seen)
+    template_mismatches = imported_model_template_mismatches(
+        sorted_model_names,
+        strict_video_import=strict_video_import,
+        strict_document_import=strict_document_import,
+    )
+    ciba_model_names = template_mismatches["ciba_model_names"]
+    video_template_mismatches = template_mismatches["video_template_mismatches"]
+    document_template_mismatches = template_mismatches["document_template_mismatches"]
+    if strict_video_import and (card_media_by_card_id or audio_audit_by_card_id):
+        verified_card_count = len(matched_export_card_ids)
+    else:
+        verified_card_count = len(card_ids_seen)
 
-    failed_checks: list[str] = []
-    if not card_infos:
-        failed_checks.append("no_imported_cards")
-    if expected_cards and len(card_ids_seen) != expected_cards:
-        failed_checks.append("card_count_mismatch")
-    if unreferenced_expected:
-        failed_checks.append("unreferenced_expected_media")
-    if unexpected_references:
-        failed_checks.append("unexpected_media_references")
-    if manifest_check["missing"]:
-        failed_checks.append("missing_imported_media")
-    if manifest_check["mismatched"]:
-        failed_checks.append("media_hash_mismatch")
-    if ledger_missing_manifest:
-        failed_checks.append("ledger_missing_manifest")
-    if manifest_tts_without_ledger:
-        failed_checks.append("manifest_tts_without_ledger")
-    if ledger_text_hash_mismatch:
-        failed_checks.append("ledger_text_hash_mismatch")
+    # Public builds do not use ASR as a mandatory quality gate. Preserve the
+    # diagnostic summary for old exports, but do not fail Anki verify unless a
+    # future caller explicitly re-enables the ASR gate in this command payload.
+    failed_checks = verify_anki_import_failed_checks(
+        card_infos_present=bool(card_infos),
+        strict_video_import=strict_video_import,
+        strict_document_import=strict_document_import,
+        sorted_model_names=sorted_model_names,
+        video_template_mismatches=video_template_mismatches,
+        ciba_model_names=ciba_model_names,
+        document_template_mismatches=document_template_mismatches,
+        expected_cards=expected_cards,
+        verified_card_count=verified_card_count,
+        card_media_ledger_provided=card_media_ledger_provided,
+        card_media_ledger_count=len(card_media_ledger),
+        audio_audit_count=len(audio_audit_items),
+        audio_audit_mismatches=audio_audit_mismatches,
+        audio_audit_write_errors=audio_audit_write_errors,
+        card_media_ledger_mismatches=card_media_ledger_mismatches,
+        missing_video_field_media=missing_video_field_media,
+        empty_required_fields=empty_required_fields,
+        corrupted_study_text_values=corrupted_study_text_values,
+        pronunciation_meta_errors=pronunciation_meta_errors,
+        imported_tts_text_hash_mismatch=imported_tts_text_hash_mismatch,
+        unreferenced_expected=unreferenced_expected,
+        unexpected_references=unexpected_references,
+        manifest_missing=manifest_check["missing"],
+        manifest_mismatched=manifest_check["mismatched"],
+        manifest_inaccessible=manifest_check.get("inaccessible", []),
+        tts_audio_duration_issues=tts_audio_duration_issues,
+        tts_semantic_failures=tts_semantic_failures,
+        tts_semantic_export_required=tts_semantic_requires_export_pass(payload, deck_kind),
+        ledger_missing_manifest=ledger_missing_manifest,
+        manifest_tts_without_ledger=manifest_tts_without_ledger,
+        ledger_text_hash_mismatch=ledger_text_hash_mismatch,
+        media_ledger_card_text_mismatches=media_ledger_card_text_mismatches,
+    )
+    message = verify_anki_import_message(
+        failed_checks,
+        duplicate_imported_cards=duplicate_imported_cards,
+        tts_manual_items=tts_manual_items,
+    )
 
-    return {
-        "ok": not failed_checks,
-        "message": "Anki 导入媒体核验通过。" if not failed_checks else "Anki 导入媒体核验发现问题。",
-        "failed_checks": failed_checks,
-        "query": query,
-        "deck_name": deck_name,
-        "card_count": len(card_ids_seen),
-        "expected_cards": expected_cards or None,
-        "media_count_expected": len(expected_manifest),
-        "media_count_referenced": len(referenced_media),
-        "media_count_checked": manifest_check["checked"],
-        "missing_media": manifest_check["missing"],
-        "mismatched_media": manifest_check["mismatched"],
-        "unexpected_media_references": unexpected_references,
-        "unreferenced_expected_media": unreferenced_expected,
-        "ledger_missing_manifest": ledger_missing_manifest,
-        "manifest_tts_without_ledger": manifest_tts_without_ledger,
-        "ledger_text_hash_mismatch": ledger_text_hash_mismatch,
-        "anki_media_dir": str(anki_media_dir),
-    }
+    return with_verify_timing(
+        {
+            "ok": not failed_checks,
+            "message": message,
+            "failed_checks": failed_checks,
+            "query": query,
+            "import_attempted": import_attempted,
+            "import_result": import_result,
+            "import_error": import_error or None,
+            "apkg_path": apkg_path_text or None,
+            "apkg_sha256": apkg_sha256 or None,
+            "apkg_size_bytes": apkg_size_bytes,
+            "apkg_mtime_ms": apkg_mtime_ms,
+            "source_identity": dict(source_identity) if source_identity else None,
+            "source_fingerprint": source_fingerprint or None,
+            "deck_name": deck_name,
+            "deck_kind": deck_kind or None,
+            "deck_names_seen": sorted_deck_names,
+            "model_names": sorted_model_names,
+            "ciba_model_names": ciba_model_names,
+            "video_template_mismatches": video_template_mismatches,
+            "document_template_mismatches": document_template_mismatches,
+            "card_count": verified_card_count,
+            "expected_cards": expected_cards or None,
+            "imported_card_count": len(card_ids_seen),
+            "duplicate_imported_card_count": len(duplicate_imported_cards),
+            "duplicate_imported_cards": duplicate_imported_cards,
+            "card_media_ledger_count": len(card_media_ledger) if card_media_ledger_provided else None,
+            "card_media_ledger_mismatches": card_media_ledger_mismatches,
+            "missing_video_field_media": missing_video_field_media,
+            "empty_required_fields": empty_required_fields,
+            "corrupted_study_text_values": corrupted_study_text_values,
+            "pronunciation_meta_errors": pronunciation_meta_errors,
+            "imported_tts_text_hash_mismatch": imported_tts_text_hash_mismatch,
+            "media_count_expected": len(expected_manifest),
+            "media_count_referenced": len(referenced_media),
+            "media_count_checked": manifest_check["checked"],
+            "missing_media": manifest_check["missing"],
+            "mismatched_media": manifest_check["mismatched"],
+            "inaccessible_media": manifest_check.get("inaccessible", []),
+            "imported_tts_audio_duration_issues": tts_audio_duration_issues,
+            "tts_manual_review_items": tts_manual_items,
+            "tts_semantic_failures": tts_semantic_failures,
+            "tts_semantic_verification": tts_semantic_summary,
+            "audio_audit_verify_path": audio_audit_verify_path or None,
+            "audio_audit_verify_markdown_path": audio_audit_verify_markdown_path or None,
+            "audio_audit_mismatches": audio_audit_mismatches,
+            "audio_audit_write_errors": audio_audit_write_errors,
+            "audio_audit_summary": audio_audit_verified_summary,
+            "unexpected_media_references": unexpected_references,
+            "unreferenced_expected_media": unreferenced_expected,
+            "ledger_missing_manifest": ledger_missing_manifest,
+            "manifest_tts_without_ledger": manifest_tts_without_ledger,
+            "ledger_text_hash_mismatch": ledger_text_hash_mismatch,
+            "media_ledger_card_text_mismatches": media_ledger_card_text_mismatches,
+            "anki_media_dir": str(anki_media_dir),
+        }
+    )
 
 
 def package_version(name: str) -> str:
@@ -16350,6 +16617,7 @@ def anki_executable_candidates() -> list[Path]:
         base = Path(local_app_data)
         candidates.extend(
             [
+                base / "AnkiProgramFiles" / ".venv" / "Scripts" / "ankiw.exe",
                 base / "AnkiProgramFiles" / ".venv" / "Scripts" / "anki.exe",
                 base / "Programs" / "Anki" / "anki.exe",
             ]
@@ -16374,10 +16642,17 @@ def anki_executable_candidates() -> list[Path]:
     return unique
 
 
+def is_anki_executable_name(path: Path) -> bool:
+    return path.name.lower() in {"anki.exe", "ankiw.exe"}
+
+
 def find_anki_executable() -> str:
     for candidate in anki_executable_candidates():
         try:
             if candidate.exists():
+                return str(candidate)
+        except PermissionError:
+            if is_anki_executable_name(candidate):
                 return str(candidate)
         except OSError:
             continue
@@ -16397,7 +16672,28 @@ def is_process_running(image_name: str) -> bool:
                 timeout=5,
                 **hidden_subprocess_flags(),
             )
-            return completed.returncode == 0 and image_name.lower() in completed.stdout.lower()
+            if completed.returncode == 0 and image_name.lower() in completed.stdout.lower():
+                return True
+        except Exception:
+            pass
+        try:
+            process_name = Path(image_name).stem.replace("'", "''")
+            completed = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-Command",
+                    f"Get-Process -Name '{process_name}' -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Id",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
+                **hidden_subprocess_flags(),
+            )
+            return completed.returncode == 0 and bool(completed.stdout.strip())
         except Exception:
             return False
     try:
@@ -16419,7 +16715,11 @@ def is_process_running(image_name: str) -> bool:
 def check_anki_desktop() -> dict[str, Any]:
     anki_path = find_anki_executable()
     anki_installed = bool(anki_path)
-    anki_running = is_process_running("anki.exe") if os.name == "nt" else is_process_running("anki")
+    anki_running = (
+        is_process_running("anki.exe") or is_process_running("ankiw.exe")
+        if os.name == "nt"
+        else is_process_running("anki")
+    )
     if anki_installed and anki_running:
         detail = f"已安装并正在运行：{anki_path}"
     elif anki_installed:
@@ -16646,6 +16946,9 @@ def launch_anki_desktop(anki_path: str) -> tuple[bool, str]:
     if not anki_path:
         return False, "未找到 anki.exe。"
     try:
+        if os.name == "nt" and hasattr(os, "startfile"):
+            os.startfile(anki_path)  # type: ignore[attr-defined]
+            return True, f"已尝试打开 Anki：{anki_path}"
         subprocess.Popen([anki_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **hidden_subprocess_flags())
         return True, f"已尝试打开 Anki：{anki_path}"
     except Exception as err:
@@ -16919,4 +17222,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

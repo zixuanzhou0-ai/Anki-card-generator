@@ -1,9 +1,10 @@
-import { FileText, Film, FolderOpen, Link2, Subtitles } from 'lucide-react'
+import { Film, FolderOpen, Link2, Subtitles } from 'lucide-react'
 
 import { batchItemsForSource, buildBatchPackage, createUrlBatchItems } from '../../domain/batch'
+import { publicSourceModeFor, type PublicSourceMode } from '../../domain/publicSource'
 import type { GenerateRequest, SourceMode } from '../../domain/types'
 
-type SourcePathKind = 'video' | 'subtitle' | 'document' | 'video-folder' | 'document-folder'
+type SourcePathKind = 'video' | 'subtitle' | 'video-folder'
 
 type SourceSetupPanelProps = {
   request: GenerateRequest
@@ -12,24 +13,23 @@ type SourceSetupPanelProps = {
   onSelectSourceMode: (mode: SourceMode) => void
 }
 
-function sourceLabelFor(mode: SourceMode, batchEnabled: boolean) {
+function sourceLabelFor(mode: PublicSourceMode, batchEnabled: boolean) {
   if (batchEnabled) {
-    return mode === 'url' ? '批量视频链接' : mode === 'document' ? '批量文档 / 文件夹' : '批量视频文件夹'
+    return mode === 'url' ? '批量视频链接' : '批量视频文件夹'
   }
-  return mode === 'url' ? '视频链接' : mode === 'document' ? '文档资料' : '本地视频'
+  return mode === 'url' ? '视频链接' : '本地视频'
 }
 
 function sourceItemText(item: { video_path?: string; subtitle_path?: string; source_url?: string; document_path?: string }) {
   return item.video_path || item.source_url || item.document_path || ''
 }
 
-function batchSourceHint(mode: SourceMode) {
+function batchSourceHint(mode: PublicSourceMode) {
   if (mode === 'url') return '每行一个链接，适合课程列表、播放列表或一组短视频。'
-  if (mode === 'document') return '选择一个资料文件夹，系统会把每份文档整理成独立子牌组。'
   return '选择剧集或课程文件夹，系统会自动按文件名排序并匹配同目录字幕。'
 }
 
-function BatchPackagePreview({ count, mode, title }: { count: number; mode: SourceMode; title: string }) {
+function BatchPackagePreview({ count, mode, title }: { count: number; mode: PublicSourceMode; title: string }) {
   return (
     <section className="batch-package-preview" aria-label="批量学习包预览">
       <div className="batch-package-title">
@@ -44,7 +44,7 @@ function BatchPackagePreview({ count, mode, title }: { count: number; mode: Sour
         </li>
         <li>
           <strong>确认子牌组</strong>
-          <small>每个视频、链接或文档都会成为 Anki 里的一个子卡包。</small>
+          <small>每个视频或链接都会成为 Anki 里的一个子卡包。</small>
         </li>
         <li>
           <strong>统一生成导出</strong>
@@ -57,7 +57,7 @@ function BatchPackagePreview({ count, mode, title }: { count: number; mode: Sour
 
 function BatchItemList({ items }: { items: ReturnType<typeof batchItemsForSource> }) {
   if (!items.length) {
-    return <p className="document-source-hint">还没有批量素材。选择文件夹、粘贴多个链接，或添加一组文档后会在这里确认子卡包。</p>
+    return <p className="document-source-hint">还没有批量素材。选择视频文件夹或粘贴多个链接后会在这里确认子卡包。</p>
   }
   return (
     <div className="batch-item-list" aria-label="批量素材列表">
@@ -75,8 +75,9 @@ function BatchItemList({ items }: { items: ReturnType<typeof batchItemsForSource
 }
 
 export function SourceSetupPanel({ request, onPatchRequest, onSelectPath, onSelectSourceMode }: SourceSetupPanelProps) {
-  const sourceLabel = sourceLabelFor(request.source_mode, request.batch_enabled)
-  const batchItems = batchItemsForSource(request.batch_items ?? [], request.source_mode)
+  const sourceMode = publicSourceModeFor(request.source_mode)
+  const sourceLabel = sourceLabelFor(sourceMode, request.batch_enabled)
+  const batchItems = batchItemsForSource(request.batch_items ?? [], sourceMode)
   const batchCount = batchItems.length
   const batchTitle = request.title.trim() || '无标题学习包'
 
@@ -104,8 +105,8 @@ export function SourceSetupPanel({ request, onPatchRequest, onSelectPath, onSele
       <div className="source-switch" aria-label="素材来源">
         <button
           type="button"
-          className={request.source_mode === 'local' ? 'selected' : ''}
-          aria-pressed={request.source_mode === 'local'}
+          className={sourceMode === 'local' ? 'selected' : ''}
+          aria-pressed={sourceMode === 'local'}
           onClick={() => onSelectSourceMode('local')}
         >
           <Film size={18} />
@@ -114,23 +115,13 @@ export function SourceSetupPanel({ request, onPatchRequest, onSelectPath, onSele
         </button>
         <button
           type="button"
-          className={request.source_mode === 'url' ? 'selected' : ''}
-          aria-pressed={request.source_mode === 'url'}
+          className={sourceMode === 'url' ? 'selected' : ''}
+          aria-pressed={sourceMode === 'url'}
           onClick={() => onSelectSourceMode('url')}
         >
           <Link2 size={18} />
           <span>视频链接</span>
           <small>YouTube / URL</small>
-        </button>
-        <button
-          type="button"
-          className={request.source_mode === 'document' ? 'selected' : ''}
-          aria-pressed={request.source_mode === 'document'}
-          onClick={() => onSelectSourceMode('document')}
-        >
-          <FileText size={18} />
-          <span>文档资料</span>
-          <small>PDF / Word / EPUB</small>
         </button>
       </div>
       <details className="compact-details source-input-details" open>
@@ -158,7 +149,7 @@ export function SourceSetupPanel({ request, onPatchRequest, onSelectPath, onSele
           <div className="batch-source-panel">
             <div className="batch-source-header">
               <div>
-                <strong>{request.source_mode === 'url' ? '批量链接列表' : request.source_mode === 'document' ? '批量文档列表' : '批量视频列表'}</strong>
+                <strong>{sourceMode === 'url' ? '批量链接列表' : '批量视频列表'}</strong>
                 <small>已添加 {batchCount} 个素材</small>
               </div>
               <button type="button" className="ghost-button" onClick={() => onPatchRequest({ batch_enabled: false })} aria-label="关闭批量模式">
@@ -166,7 +157,7 @@ export function SourceSetupPanel({ request, onPatchRequest, onSelectPath, onSele
               </button>
             </div>
             <BatchItemList items={batchItems} />
-            {request.source_mode === 'url' ? (
+            {sourceMode === 'url' ? (
               <label className="field">
                 <span>每行一个视频链接</span>
                 <textarea
@@ -179,20 +170,15 @@ export function SourceSetupPanel({ request, onPatchRequest, onSelectPath, onSele
                   添加链接到批量列表
                 </button>
               </label>
-            ) : request.source_mode === 'document' ? (
-              <button type="button" className="secondary-button" onClick={() => onSelectPath('document-folder')} aria-label="选择文档文件夹批量添加">
-                <FileText size={18} />
-                选择文档文件夹批量添加
-              </button>
             ) : (
               <button type="button" className="secondary-button" onClick={() => onSelectPath('video-folder')} aria-label="选择视频文件夹批量添加">
                 <Film size={18} />
                 选择视频文件夹批量添加
               </button>
             )}
-            <BatchPackagePreview count={batchCount} mode={request.source_mode} title={batchTitle} />
+            <BatchPackagePreview count={batchCount} mode={sourceMode} title={batchTitle} />
           </div>
-        ) : request.source_mode === 'url' ? (
+        ) : sourceMode === 'url' ? (
           <label className="field">
             <span>YouTube / 视频 URL</span>
             <input
@@ -200,31 +186,8 @@ export function SourceSetupPanel({ request, onPatchRequest, onSelectPath, onSele
               onChange={(event) => onPatchRequest({ source_url: event.target.value })}
               placeholder="https://www.youtube.com/watch?v=..."
             />
-            <small>失败时可切到字幕-only 或手动上传 SRT 继续制卡。</small>
+            <small>当前发布版会按视频制卡处理：下载视频和字幕，并在导出时生成视频片段、原声和 TTS。</small>
           </label>
-        ) : request.source_mode === 'document' ? (
-          <>
-            <label className="field file-field">
-              <span>文档资料</span>
-              <div>
-                <input
-                  value={request.document_path}
-                  onChange={(event) => onPatchRequest({ document_path: event.target.value })}
-                  placeholder="选择文档资料"
-                />
-                <button type="button" onClick={() => onSelectPath('document')} aria-label="选择文档资料">
-                  <FileText size={18} />
-                </button>
-              </div>
-              <small>支持 TXT、Markdown、DOCX、EPUB、PDF。扫描版 PDF 需要后续 OCR。</small>
-            </label>
-            <div className="document-source-flow" aria-label="文档制卡流程">
-              <span>上传资料</span>
-              <span>选择目标</span>
-              <span>生成知识卡</span>
-            </div>
-            <p className="document-source-hint">上传后只需调整文档目标，系统会自动拆知识点，不需要字幕、切片或 TTS。</p>
-          </>
         ) : (
           <>
             <label className="field file-field">
@@ -232,7 +195,7 @@ export function SourceSetupPanel({ request, onPatchRequest, onSelectPath, onSele
               <div>
                 <input
                   value={request.video_path}
-                  onChange={(event) => onPatchRequest({ video_path: event.target.value })}
+                  onChange={(event) => onPatchRequest({ video_path: event.target.value, local_path_access_confirmed: false })}
                   placeholder="选择本地视频"
                 />
                 <button type="button" onClick={() => onSelectPath('video')} aria-label="选择视频文件">
@@ -245,7 +208,7 @@ export function SourceSetupPanel({ request, onPatchRequest, onSelectPath, onSele
               <div>
                 <input
                   value={request.subtitle_path}
-                  onChange={(event) => onPatchRequest({ subtitle_path: event.target.value })}
+                  onChange={(event) => onPatchRequest({ subtitle_path: event.target.value, local_path_access_confirmed: false })}
                   placeholder="选择 SRT 字幕"
                 />
                 <button type="button" onClick={() => onSelectPath('subtitle')} aria-label="选择字幕文件">
@@ -257,72 +220,6 @@ export function SourceSetupPanel({ request, onPatchRequest, onSelectPath, onSele
           </>
         )}
       </details>
-      {request.source_mode === 'url' ? (
-        <details className="compact-details inspector-fold url-options-details">
-          <summary>
-            <span>下载和 fallback</span>
-            <strong>{request.url_import_mode === 'subtitles' ? '字幕-only' : '视频+字幕'}</strong>
-          </summary>
-          <div className="url-fallback-options" aria-label="URL 导入 fallback">
-            <div className="segmented compact-segmented">
-              <button
-                type="button"
-                className={request.url_import_mode === 'video' ? 'selected' : ''}
-                onClick={() => onPatchRequest({ url_import_mode: 'video', skip_video_slicing: false })}
-              >
-                下载视频+字幕
-              </button>
-              <button
-                type="button"
-                className={request.url_import_mode === 'subtitles' ? 'selected' : ''}
-                onClick={() => onPatchRequest({ url_import_mode: 'subtitles', skip_video_slicing: true })}
-              >
-                只用字幕生成
-              </button>
-            </div>
-            <label className="toggle">
-              <input
-                type="checkbox"
-                checked={request.url_auto_subtitle_fallback}
-                onChange={() => onPatchRequest({ url_auto_subtitle_fallback: !request.url_auto_subtitle_fallback })}
-              />
-              <span>视频下载失败时自动 fallback 到字幕-only</span>
-            </label>
-            <label className="toggle">
-              <input
-                type="checkbox"
-                checked={request.skip_video_slicing}
-                onChange={() => {
-                  const next = !request.skip_video_slicing
-                  onPatchRequest({
-                    skip_video_slicing: next,
-                    url_import_mode: next ? 'subtitles' : request.url_import_mode,
-                  })
-                }}
-              />
-              <span>导出时跳过视频切片，只保留字幕和 TTS</span>
-            </label>
-          </div>
-        </details>
-      ) : request.source_mode === 'local' ? (
-        <details className="compact-details inspector-fold local-options-details" open>
-          <summary>
-            <span>导出方式</span>
-            <strong>{request.skip_video_slicing ? '字幕-only' : '视频切片'}</strong>
-          </summary>
-          <div className="url-fallback-options" aria-label="本地视频导出方式">
-            <label className="toggle">
-              <input
-                type="checkbox"
-                checked={request.skip_video_slicing}
-                onChange={() => onPatchRequest({ skip_video_slicing: !request.skip_video_slicing })}
-              />
-              <span>导出时跳过视频切片，只保留字幕和 TTS</span>
-            </label>
-            <p className="document-source-hint">视频过大、切片很慢或媒体失败时，可先用字幕-only 产出可复习卡。</p>
-          </div>
-        </details>
-      ) : null}
     </div>
   )
 }

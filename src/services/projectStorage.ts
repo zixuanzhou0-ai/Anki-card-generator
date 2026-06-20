@@ -5,15 +5,17 @@ import type {
   LevelMode,
   Project,
   SecretPrefs,
+  SourceMode,
+  TemplateId,
   TtsConfig,
   TtsProvider,
-  UrlImportMode,
 } from '../domain/types'
 import { normalizeBatchItems } from '../domain/batch'
 import {
   DEEPSEEK_DEFAULT_MODEL,
   DEEPSEEK_OPENAI_BASE_URL,
   defaultRequest,
+  defaultCollectionLevels,
   documentReadingFocusOptions,
   normalizeDocumentAnswerLanguage,
   normalizeDocumentAnswerLength,
@@ -27,11 +29,12 @@ import {
   normalizeReviewDensity,
   normalizeSelectionStrategy,
   normalizeStudyDepth,
-  normalizeTemplateId,
+  publicTemplateIdFor,
   PROJECT_STORAGE_KEY,
   REQUEST_STORAGE_KEY,
   SECRET_PREFS_STORAGE_KEY,
 } from '../domain/options'
+import { stripStaleOrdinaryAsrGate } from '../domain/payloadSanitization'
 import { normalizeDeepSeekModelId, normalizeMimoModelId } from './apiConfig'
 import { isTauriRuntime } from './runtime'
 
@@ -76,13 +79,18 @@ export function normalizeSavedApiConfig(saved: GenerateRequest): GenerateRequest
 export const normalizeSavedMimoConfig = normalizeSavedApiConfig
 
 export function stripRequestSecrets(request: GenerateRequest): GenerateRequest {
+  const sanitizedRequest = stripStaleOrdinaryAsrGate(request as GenerateRequest & Record<string, unknown>) as GenerateRequest
+  const sanitizedApiConfig = stripStaleOrdinaryAsrGate(
+    request.api_config as ApiConfig & Record<string, unknown>,
+  ) as ApiConfig
+
   return {
-    ...request,
+    ...sanitizedRequest,
     api_config: {
-      ...request.api_config,
+      ...sanitizedApiConfig,
       api_key: '',
       tts_config: {
-        ...request.api_config.tts_config,
+        ...sanitizedApiConfig.tts_config,
         api_key: '',
       },
     },
@@ -98,6 +106,10 @@ function normalizeLevelMode(value: unknown): LevelMode {
   return value === 'manual' ? 'manual' : 'auto'
 }
 
+function normalizeMainFlowTemplateId(value: unknown, sourceMode: SourceMode | undefined): TemplateId {
+  return publicTemplateIdFor(value, sourceMode)
+}
+
 export function loadSavedRequest(): GenerateRequest {
   if (typeof window === 'undefined') return defaultRequest
   try {
@@ -108,41 +120,57 @@ export function loadSavedRequest(): GenerateRequest {
     const savedTts = (savedApi.tts_config ?? {}) as Partial<TtsConfig>
     const legacyTtsProvider = savedApi.tts_provider?.trim()
     const legacyTtsModel = savedApi.tts_model?.trim()
+    const savedSourceMode = (saved.source_mode ?? defaultRequest.source_mode) as SourceMode
+    const sourceMode = savedSourceMode === 'document' ? 'local' : savedSourceMode
+    const isDocumentSource = false
+    const currentLevel = (saved.level ?? defaultRequest.level) as Level
     const documentStudyMode = normalizeDocumentStudyMode(saved.document_study_mode)
     return stripRequestSecrets(
       normalizeSavedApiConfig({
         ...defaultRequest,
         ...saved,
-        template_id: normalizeTemplateId(saved.template_id),
+        source_mode: sourceMode,
+        template_id: normalizeMainFlowTemplateId(saved.template_id, sourceMode),
         card_style: normalizeCardStyleId(saved.card_style),
         review_density: normalizeReviewDensity(saved.review_density),
-        url_import_mode: (saved.url_import_mode ?? defaultRequest.url_import_mode) as UrlImportMode,
-        url_auto_subtitle_fallback: saved.url_auto_subtitle_fallback ?? defaultRequest.url_auto_subtitle_fallback,
-        skip_video_slicing: saved.skip_video_slicing ?? defaultRequest.skip_video_slicing,
+        url_import_mode: sourceMode === 'url' ? 'video' : defaultRequest.url_import_mode,
+        url_auto_subtitle_fallback: false,
+        allow_private_network_url: false,
+        allow_ytdlp_remote_components: false,
+        local_path_access_confirmed: false,
+        skip_video_slicing: false,
         batch_enabled: saved.batch_enabled ?? defaultRequest.batch_enabled,
-        batch_items: normalizeBatchItems(saved.batch_items, saved.source_mode),
+        batch_items: normalizeBatchItems(saved.batch_items, sourceMode),
+        document_path: isDocumentSource ? saved.document_path ?? '' : '',
         language: normalizeLearningLanguage(saved.language),
         level_mode: normalizeLevelMode(saved.level_mode),
-        collection_levels: normalizeCollectionLevels(
-          saved.collection_levels,
-          (saved.level ?? defaultRequest.level) as Level,
-        ),
-        content_toggles: {
-          ...defaultRequest.content_toggles,
-          ...(saved.content_toggles ?? {}),
-        },
-        language_focus:
-          documentStudyMode === 'language_reading'
+        collection_levels: isDocumentSource
+          ? normalizeCollectionLevels(saved.collection_levels, currentLevel)
+          : defaultCollectionLevels(currentLevel),
+        content_toggles: isDocumentSource
+          ? {
+              ...defaultRequest.content_toggles,
+              ...(saved.content_toggles ?? {}),
+            }
+          : defaultRequest.content_toggles,
+        language_focus: isDocumentSource
+          ? documentStudyMode === 'language_reading'
             ? normalizeDocumentLanguageFocus(saved.language_focus)
-            : normalizeLanguageFocus(saved.language_focus),
+            : normalizeLanguageFocus(saved.language_focus)
+          : defaultRequest.language_focus,
         document_focus: normalizeDocumentFocus(saved.document_focus),
         document_study_mode: documentStudyMode,
         document_answer_language: normalizeDocumentAnswerLanguage(saved.document_answer_language),
         document_depth: normalizeDocumentDepth(saved.document_depth),
         document_answer_length: normalizeDocumentAnswerLength(saved.document_answer_length),
-        study_depth: normalizeStudyDepth(saved.study_depth),
-        selection_strategy: normalizeSelectionStrategy(saved.selection_strategy),
-        reuse_ai_review_cache: saved.reuse_ai_review_cache ?? defaultRequest.reuse_ai_review_cache,
+        study_depth: isDocumentSource ? normalizeStudyDepth(saved.study_depth) : defaultRequest.study_depth,
+        selection_strategy: isDocumentSource
+          ? normalizeSelectionStrategy(saved.selection_strategy)
+          : defaultRequest.selection_strategy,
+        reuse_ai_review_cache: isDocumentSource
+          ? (saved.reuse_ai_review_cache ?? defaultRequest.reuse_ai_review_cache)
+          : defaultRequest.reuse_ai_review_cache,
+        max_segments: isDocumentSource ? (saved.max_segments ?? defaultRequest.max_segments) : defaultRequest.max_segments,
         api_config: {
           ...defaultRequest.api_config,
           ...savedApi,
@@ -156,7 +184,13 @@ export function loadSavedRequest(): GenerateRequest {
             enabled: savedTts.enabled ?? Boolean(legacyTtsProvider),
           },
         },
-        card_types: saved.card_types?.length ? saved.card_types : defaultRequest.card_types,
+        card_types: isDocumentSource
+          ? saved.card_types?.length
+            ? saved.card_types
+            : ['knowledge']
+          : saved.card_types?.filter((type) => type !== 'knowledge').length
+            ? saved.card_types.filter((type) => type !== 'knowledge')
+            : defaultRequest.card_types,
       }),
     )
   } catch {
@@ -172,14 +206,16 @@ export function loadSavedProject(): Project | null {
     const saved = JSON.parse(raw) as Project
     if (!saved || !Array.isArray(saved.segments) || saved.segments.length === 0) return null
     const documentStudyMode = normalizeDocumentStudyMode(saved.document_study_mode)
+    const sourceMode = (saved.source_mode ?? 'local') as SourceMode
+    if (sourceMode === 'document') return null
     const project: Project = {
       ...saved,
-      template_id: normalizeTemplateId(saved.template_id),
+      template_id: normalizeMainFlowTemplateId(saved.template_id, sourceMode),
       card_style: normalizeCardStyleId(saved.card_style),
       review_density: normalizeReviewDensity(saved.review_density),
       batch_enabled: saved.batch_enabled ?? false,
-      batch_items: normalizeBatchItems(saved.batch_items, saved.source_mode),
-      source_mode: saved.source_mode ?? 'local',
+      batch_items: normalizeBatchItems(saved.batch_items, sourceMode),
+      source_mode: sourceMode,
       language: normalizeLearningLanguage(saved.language),
       level_mode: normalizeLevelMode(saved.level_mode),
       language_focus:
@@ -226,6 +262,7 @@ function projectSourceMode(project: Project) {
 
 export function projectMatchesRequest(project: Project, request: GenerateRequest) {
   const sourceInfo = project.source_info ?? {}
+  if (request.source_mode === 'document' || projectSourceMode(project) === 'document') return false
   if (projectSourceMode(project) !== request.source_mode) return false
 
   if (request.batch_enabled) {
@@ -248,14 +285,6 @@ export function projectMatchesRequest(project: Project, request: GenerateRequest
       project.source_url || ('webpage_url' in sourceInfo ? sourceInfo.webpage_url : ''),
     )
     return Boolean(requestUrl && projectUrl && requestUrl === projectUrl)
-  }
-
-  if (request.source_mode === 'document') {
-    const requestDocumentPath = normalizeMaterialPath(request.document_path)
-    const projectDocumentPath = normalizeMaterialPath(
-      project.document_path || ('document_path' in sourceInfo ? sourceInfo.document_path : ''),
-    )
-    return Boolean(requestDocumentPath && projectDocumentPath && requestDocumentPath === projectDocumentPath)
   }
 
   const requestVideoPath = normalizeMaterialPath(request.video_path)

@@ -6,6 +6,7 @@ import {
   defaultDocumentDepth,
   defaultDocumentFocus,
   defaultDocumentStudyMode,
+  defaultCollectionLevels,
   defaultRequest,
   PROJECT_STORAGE_KEY,
   REQUEST_STORAGE_KEY,
@@ -50,10 +51,79 @@ describe('projectStorage document focus migration', () => {
     expect(loadSavedRequest().language).toBe('fr')
   })
 
-  it('preserves the experimental ciba template in saved requests', () => {
+  it('falls back from the experimental ciba template to immersive v11 in saved video requests', () => {
     window.localStorage.setItem(REQUEST_STORAGE_KEY, JSON.stringify({ template_id: 'ciba_tianxia_v1' }))
 
-    expect(loadSavedRequest().template_id).toBe('ciba_tianxia_v1')
+    expect(loadSavedRequest().template_id).toBe('immersive_v11')
+  })
+
+  it('strips stale ASR hard-gate fields from saved public video requests', () => {
+    window.localStorage.setItem(
+      REQUEST_STORAGE_KEY,
+      JSON.stringify({
+        source_mode: 'local',
+        video_path: 'E:/media/source.mp4',
+        subtitle_path: 'E:/media/source.srt',
+        tts_semantic_verification: {
+          enabled: true,
+          require_pass_for_export: true,
+          asr_provider: 'whisper-cli',
+        },
+        asr_provider: 'whisper-cli',
+        require_pass_for_export: true,
+        enable_asr_quality_gate: true,
+        api_config: {
+          ...defaultRequest.api_config,
+          tts_semantic_verification: {
+            enabled: true,
+            require_pass_for_export: true,
+            asr_provider: 'whisper-cli',
+          },
+          asr_provider: 'whisper-cli',
+          require_pass_for_export: true,
+          enable_asr_quality_gate: true,
+        },
+      }),
+    )
+
+    const request = loadSavedRequest() as typeof defaultRequest & Record<string, unknown>
+    const apiConfig = request.api_config as typeof defaultRequest.api_config & Record<string, unknown>
+
+    expect(request.tts_semantic_verification).toBeUndefined()
+    expect(request.asr_provider).toBeUndefined()
+    expect(request.require_pass_for_export).toBeUndefined()
+    expect(request.enable_asr_quality_gate).toBeUndefined()
+    expect(apiConfig.tts_semantic_verification).toBeUndefined()
+    expect(apiConfig.asr_provider).toBeUndefined()
+    expect(apiConfig.require_pass_for_export).toBeUndefined()
+    expect(apiConfig.enable_asr_quality_gate).toBeUndefined()
+    expect(JSON.stringify(request)).not.toContain('whisper-cli')
+  })
+
+  it('resets hidden video tuning settings to the internal smart defaults', () => {
+    window.localStorage.setItem(
+      REQUEST_STORAGE_KEY,
+      JSON.stringify({
+        source_mode: 'local',
+        level: 'B2',
+        collection_levels: ['C2'],
+        content_toggles: { daily: false, slang: true },
+        language_focus: ['grammar'],
+        study_depth: 'standard',
+        selection_strategy: 'curated',
+        reuse_ai_review_cache: true,
+        max_segments: 42,
+      }),
+    )
+
+    const request = loadSavedRequest()
+    expect(request.collection_levels).toEqual(defaultCollectionLevels('B2'))
+    expect(request.content_toggles).toEqual(defaultRequest.content_toggles)
+    expect(request.language_focus).toEqual(defaultRequest.language_focus)
+    expect(request.study_depth).toBe(defaultRequest.study_depth)
+    expect(request.selection_strategy).toBe(defaultRequest.selection_strategy)
+    expect(request.reuse_ai_review_cache).toBe(false)
+    expect(request.max_segments).toBe(0)
   })
 
   it('preserves fast review density in saved requests and defaults legacy values to full study', () => {
@@ -103,16 +173,38 @@ describe('projectStorage document focus migration', () => {
     })
   })
 
+  it('does not persist per-run network and local path security confirmations', () => {
+    window.localStorage.setItem(
+      REQUEST_STORAGE_KEY,
+      JSON.stringify({
+        source_mode: 'local',
+        video_path: 'E:/media/source.mp4',
+        subtitle_path: 'E:/media/source.srt',
+        allow_private_network_url: true,
+        allow_ytdlp_remote_components: true,
+        local_path_access_confirmed: true,
+      }),
+    )
+
+    const saved = loadSavedRequest()
+    expect(saved.allow_private_network_url).toBe(false)
+    expect(saved.allow_ytdlp_remote_components).toBe(false)
+    expect(saved.local_path_access_confirmed).toBe(false)
+  })
+
   it('falls back to immersive v11 for invalid saved template ids', () => {
     window.localStorage.setItem(REQUEST_STORAGE_KEY, JSON.stringify({ template_id: 'unknown-template' }))
 
     expect(loadSavedRequest().template_id).toBe('immersive_v11')
   })
 
-  it('normalizes saved document study path settings', () => {
+  it('keeps legacy document study preferences but restores the public source mode to local video', () => {
     window.localStorage.setItem(
       REQUEST_STORAGE_KEY,
       JSON.stringify({
+        source_mode: 'document',
+        document_path: 'E:/Docs/source.pdf',
+        card_types: ['knowledge'],
         document_study_mode: 'language_reading',
         document_answer_language: 'bilingual',
         document_depth: 'deep',
@@ -121,13 +213,16 @@ describe('projectStorage document focus migration', () => {
     )
 
     const request = loadSavedRequest()
+    expect(request.source_mode).toBe('local')
+    expect(request.document_path).toBe('')
+    expect(request.card_types).toEqual(defaultRequest.card_types)
     expect(request.document_study_mode).toBe('language_reading')
     expect(request.document_answer_language).toBe('bilingual')
     expect(request.document_depth).toBe('deep')
     expect(request.document_answer_length).toBe('long')
   })
 
-  it('removes hidden listening focus from saved language reading requests', () => {
+  it('ignores legacy document language focus in the public video-only workspace', () => {
     window.localStorage.setItem(
       REQUEST_STORAGE_KEY,
       JSON.stringify({
@@ -136,7 +231,7 @@ describe('projectStorage document focus migration', () => {
       }),
     )
 
-    expect(loadSavedRequest().language_focus).toEqual(['phrases', 'grammar'])
+    expect(loadSavedRequest().language_focus).toEqual(defaultRequest.language_focus)
   })
 
   it('migrates legacy empty model config to filled DeepSeek V4 Pro settings', () => {
@@ -182,7 +277,7 @@ describe('projectStorage document focus migration', () => {
     expect(request.api_config.model).toBe('deepseek-v4-pro')
   })
 
-  it('preserves document source info and cleans reading focus on saved projects', () => {
+  it('does not restore saved document projects into the public video-only workspace', () => {
     window.localStorage.setItem(
       PROJECT_STORAGE_KEY,
       JSON.stringify({
@@ -213,13 +308,10 @@ describe('projectStorage document focus migration', () => {
       }),
     )
 
-    const project = loadSavedProject()
-    expect(project?.language).toBe('en')
-    expect(project?.language_focus).toEqual(['phrases'])
-    expect(project?.source_info).toMatchObject({ document_study_mode: 'language_reading' })
+    expect(loadSavedProject()).toBeNull()
   })
 
-  it('preserves the experimental ciba template in saved projects', () => {
+  it('falls back from the experimental ciba template to immersive v11 in saved video projects', () => {
     window.localStorage.setItem(
       PROJECT_STORAGE_KEY,
       JSON.stringify({
@@ -243,7 +335,7 @@ describe('projectStorage document focus migration', () => {
       }),
     )
 
-    expect(loadSavedProject()?.template_id).toBe('ciba_tianxia_v1')
+    expect(loadSavedProject()?.template_id).toBe('immersive_v11')
   })
 
   it('preserves fast review density in saved projects', () => {
@@ -357,7 +449,7 @@ describe('projectStorage document focus migration', () => {
     expect(projectMatchesRequest(project, otherRequest)).toBe(false)
   })
 
-  it('matches saved batch projects by their batch item source paths', () => {
+  it('does not retain in-memory document batch projects in the public video workspace', () => {
     const project = {
       ...defaultRequest,
       id: 'batch-project',
@@ -397,8 +489,84 @@ describe('projectStorage document focus migration', () => {
       batch_items: [project.batch_items[0]],
     }
 
-    expect(projectMatchesRequest(project, matchingRequest)).toBe(true)
+    expect(projectMatchesRequest(project, matchingRequest)).toBe(false)
     expect(projectMatchesRequest(project, changedRequest)).toBe(false)
+  })
+
+  it('matches public local and URL batch projects by their batch item sources', () => {
+    const localItems = [
+      {
+        id: 'local1',
+        source_mode: 'local' as const,
+        enabled: true,
+        title: 'Local 1',
+        subdeck_title: 'Local 1',
+        video_path: 'E:\\Videos\\one.mp4',
+      },
+      {
+        id: 'local2',
+        source_mode: 'local' as const,
+        enabled: true,
+        title: 'Local 2',
+        subdeck_title: 'Local 2',
+        video_path: 'E:\\Videos\\two.mp4',
+      },
+    ]
+    const localProject = {
+      ...defaultRequest,
+      id: 'local-batch-project',
+      source_mode: 'local' as const,
+      batch_enabled: true,
+      batch_items: localItems,
+      segments: [],
+      created_at: 1,
+    }
+    const localRequest = {
+      ...defaultRequest,
+      source_mode: 'local' as const,
+      batch_enabled: true,
+      batch_items: localItems,
+    }
+
+    expect(projectMatchesRequest(localProject, localRequest)).toBe(true)
+    expect(projectMatchesRequest(localProject, { ...localRequest, batch_items: [localItems[0]] })).toBe(false)
+
+    const urlItems = [
+      {
+        id: 'url1',
+        source_mode: 'url' as const,
+        enabled: true,
+        title: 'URL 1',
+        subdeck_title: 'URL 1',
+        source_url: 'https://www.youtube.com/watch?v=one',
+      },
+      {
+        id: 'url2',
+        source_mode: 'url' as const,
+        enabled: true,
+        title: 'URL 2',
+        subdeck_title: 'URL 2',
+        source_url: 'https://www.youtube.com/watch?v=two',
+      },
+    ]
+    const urlProject = {
+      ...defaultRequest,
+      id: 'url-batch-project',
+      source_mode: 'url' as const,
+      batch_enabled: true,
+      batch_items: urlItems,
+      segments: [],
+      created_at: 1,
+    }
+    const urlRequest = {
+      ...defaultRequest,
+      source_mode: 'url' as const,
+      batch_enabled: true,
+      batch_items: urlItems,
+    }
+
+    expect(projectMatchesRequest(urlProject, urlRequest)).toBe(true)
+    expect(projectMatchesRequest(urlProject, { ...urlRequest, batch_items: [urlItems[0]] })).toBe(false)
   })
 
   it('keeps secret persistence opt-in for browser previews', () => {

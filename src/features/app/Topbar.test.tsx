@@ -78,4 +78,14 @@ describe('Topbar', () => {
     expect(screen.getByRole('button', { name: '抽取学习点' })).toBeDisabled()
     expect(props.onGenerate).not.toHaveBeenCalled()
   })
+
+  it('can hide the global generate action while the review panel owns generation confirmation', () => {
+    const props = renderTopbar({
+      showGenerateButton: false,
+      generateLabel: '生成 APKG · 12 张',
+    })
+
+    expect(screen.queryByRole('button', { name: '生成 APKG · 12 张' })).not.toBeInTheDocument()
+    expect(props.onGenerate).not.toHaveBeenCalled()
+  })
 })

@@ -2,15 +2,7 @@ import '@testing-library/jest-dom/vitest'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import {
-  contentOptions,
-  defaultRequest,
-  documentFocusOptions,
-  languageFocusOptions,
-  levels,
-  selectionStrategyOptions,
-  templateOptions,
-} from '../../domain/options'
+import { defaultRequest, levels } from '../../domain/options'
 import type { GenerateRequest } from '../../domain/types'
 import { InspectorPanel } from './InspectorPanel'
 
@@ -20,17 +12,13 @@ function renderInspector(overrides: Partial<GenerateRequest> = {}, propOverrides
   const request: GenerateRequest = { ...defaultRequest, ...overrides }
   const props = {
     activeWorkspaceStage: 'source' as const,
-    activeTemplateLabel: '沉浸语言 V10',
     appBusy: false,
-    contentOptions,
     diagnosticCount: 0,
-    documentFocusOptions,
     generatedCardCount: 0,
     hasExportableCards: false,
     hasLearningPointResult: false,
     hasProject: false,
     inspectorSheetOpen: false,
-    languageFocusOptions,
     levels,
     previewRate: 0.75,
     readiness: [
@@ -43,16 +31,13 @@ function renderInspector(overrides: Partial<GenerateRequest> = {}, propOverrides
     selectedLearningPointCount: 0,
     status: '准备生成 Anki 卡片。',
     statusTone: 'ok',
-    templateId: request.template_id,
-    templateOptions,
-    selectionStrategyOptions,
     workerBusy: false,
     workerErrorActions: [],
     workerProgress: null,
-    onApplyCollectionPreset: vi.fn(),
     onCloseSheet: vi.fn(),
     onExport: vi.fn(),
     onCheckEnv: vi.fn(),
+    onExtractLearningPointsWithoutCache: vi.fn(),
     onGenerate: vi.fn(),
     onOpenEnvSettings: vi.fn(),
     onPatchRequest: vi.fn(),
@@ -62,10 +47,6 @@ function renderInspector(overrides: Partial<GenerateRequest> = {}, propOverrides
     onSelectPath: vi.fn(),
     onSelectSourceMode: vi.fn(),
     onSelectTemplate: vi.fn(),
-    onToggleCollectionLevel: vi.fn(),
-    onToggleContent: vi.fn(),
-    onToggleDocumentFocus: vi.fn(),
-    onToggleLanguageFocus: vi.fn(),
     onWorkspaceStageChange: vi.fn(),
     onWorkerErrorAction: vi.fn(),
     ...propOverrides,
@@ -89,7 +70,7 @@ describe('InspectorPanel', () => {
     expect(screen.getByRole('button', { name: /选择素材后继续/ })).toBeDisabled()
     expect(screen.getByText('请选择本地视频文件后继续。')).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: '学习设置' })).not.toBeInTheDocument()
-    expect(screen.queryByText('卡片和模板')).not.toBeInTheDocument()
+    expect(screen.queryByText('卡片模式')).not.toBeInTheDocument()
   })
 
   it('shows learning and template settings in the generation stage', () => {
@@ -97,7 +78,7 @@ describe('InspectorPanel', () => {
 
     const stepper = screen.getByLabelText('制卡步骤')
     expect(screen.getByRole('heading', { name: '学习设置' })).toBeInTheDocument()
-    expect(screen.getByText('卡片和模板')).toBeInTheDocument()
+    expect(screen.getByText('卡片模式')).toBeInTheDocument()
     expect(within(stepper).getByRole('button', { name: /确认抽取/ })).not.toBeDisabled()
   })
 
@@ -134,6 +115,59 @@ describe('InspectorPanel', () => {
     expect(props.onGenerate).toHaveBeenCalledTimes(1)
   })
 
+  it('starts no-cache learning point extraction from the confirm step before a project exists', () => {
+    const onExtractLearningPointsWithoutCache = vi.fn()
+    const props = renderInspector(
+      {},
+      {
+        activeWorkspaceStage: 'review',
+        onExtractLearningPointsWithoutCache,
+        readiness: [
+          { id: 'source', label: '素材', done: true, detail: '已就绪' },
+          { id: 'api', label: 'API', done: true, detail: '已测试' },
+        ],
+      },
+    )
+
+    expect(screen.getByText('可以抽取学习点')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '开始抽取学习点' })).toBeEnabled()
+
+    const noCacheButton = screen.getByRole('button', { name: '不使用缓存抽取学习点' })
+    expect(noCacheButton).toBeEnabled()
+    fireEvent.click(noCacheButton)
+
+    expect(onExtractLearningPointsWithoutCache).toHaveBeenCalledTimes(1)
+    expect(props.onGenerate).not.toHaveBeenCalled()
+  })
+
+  it('hides the single-source no-cache extraction action for batch packages', () => {
+    renderInspector(
+      {
+        batch_enabled: true,
+        batch_items: [
+          {
+            id: 'ep1',
+            source_mode: 'local',
+            enabled: true,
+            title: 'S01E01',
+            subdeck_title: 'S01E01',
+            video_path: 'E:/Shows/S01E01.mp4',
+          },
+        ],
+      },
+      {
+        activeWorkspaceStage: 'review',
+        readiness: [
+          { id: 'source', label: '素材', done: true, detail: '已就绪' },
+          { id: 'api', label: 'API', done: true, detail: '已测试' },
+        ],
+      },
+    )
+
+    expect(screen.queryByRole('button', { name: '不使用缓存抽取学习点' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '开始抽取学习点' })).toBeEnabled()
+  })
+
   it('generates selected cards after learning points exist', () => {
     const props = renderInspector(
       {},
@@ -149,12 +183,11 @@ describe('InspectorPanel', () => {
       },
     )
 
-    expect(screen.getByText('选择学习点后生成完整卡片')).toBeInTheDocument()
-    expect(screen.getByText('12 个')).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: /生成选中卡片/ }))
-
-    expect(props.onGenerate).toHaveBeenCalledTimes(1)
+    expect(screen.getByText('选择学习点后一键生成 APKG')).toBeInTheDocument()
+    expect(screen.getByText('12 张卡片')).toBeInTheDocument()
+    expect(screen.getByText('在右侧清单确认 12 个学习点后生成 APKG')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /生成 APKG · 12 张/ })).not.toBeInTheDocument()
+    expect(props.onGenerate).not.toHaveBeenCalled()
   })
 
   it('locks earlier workflow steps while generation is running', () => {
@@ -182,7 +215,7 @@ describe('InspectorPanel', () => {
     expect(stageButtons[0]).toBeDisabled()
     expect(stageButtons[1]).toBeDisabled()
     expect(stageButtons[2]).not.toBeDisabled()
-    expect(screen.getByText('正在把学习点生成完整卡片')).toBeInTheDocument()
+    expect(screen.getByText('正在生成 APKG')).toBeInTheDocument()
     expect(screen.getByText(/生成进度已移到右侧工作台/)).toBeInTheDocument()
   })
 
@@ -281,11 +314,12 @@ describe('InspectorPanel', () => {
     expect(screen.getByText('无耻之徒 第一季')).toBeInTheDocument()
   })
 
-  it('uses document target panel instead of language learning panel for document source', () => {
+  it('keeps the public generation panel focused on video learning even for an old document source state', () => {
     renderInspector({ source_mode: 'document' }, { activeWorkspaceStage: 'generate' })
 
-    expect(screen.getByText('文档目标')).toBeVisible()
-    expect(screen.getByText('知识吸收')).toBeVisible()
-    expect(screen.queryByRole('heading', { name: '学习设置' })).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '学习设置' })).toBeInTheDocument()
+    expect(screen.getByText('卡片模式')).toBeVisible()
+    expect(screen.queryByText('文档目标')).not.toBeInTheDocument()
+    expect(screen.queryByText('知识吸收')).not.toBeInTheDocument()
   })
 })

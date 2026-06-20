@@ -4,6 +4,8 @@ import re
 from typing import Any
 
 from acg import legacy_worker
+from acg.learning_types import candidate_kind_allowed_by_focus, phrase_type_for_candidate_kind
+from acg.learning_spans import normalize_candidate_span, normalized_phrase_key
 
 LOCAL_PATTERNS: list[tuple[str, str, str, str, float, str]] = [
     (r"\bfigure\s+(?:it\s+)?out\b", "phrase", "expression", "collocation", 4.2, "训练 figure out 表达“弄明白/解决”。"),
@@ -44,7 +46,7 @@ LOCAL_PATTERNS: list[tuple[str, str, str, str, float, str]] = [
 
 
 def _span_from_match(text: str, match: re.Match[str]) -> str:
-    return legacy_worker.normalize_candidate_span(text[match.start() : match.end()])
+    return normalize_candidate_span(text[match.start() : match.end()])
 
 
 def _add_candidate(
@@ -60,10 +62,10 @@ def _add_candidate(
     reason: str,
     source: str,
 ) -> None:
-    answer = legacy_worker.normalize_candidate_span(exact_span)
+    answer = normalize_candidate_span(exact_span)
     if not answer:
         return
-    key = (candidate_kind, legacy_worker.normalized_phrase_key(answer))
+    key = (candidate_kind, normalized_phrase_key(answer))
     if key in seen:
         return
     seen.add(key)
@@ -116,14 +118,14 @@ def recall_local_learning_points(source_segment: dict[str, Any], payload: dict[s
             exact_span=str(typed.get("exact_span") or typed.get("phrase") or ""),
             point_type=point_type,
             candidate_kind=candidate_kind,
-            phrase_type=str(typed.get("phrase_type") or legacy_worker.phrase_type_for_candidate_kind(candidate_kind)),
+            phrase_type=str(typed.get("phrase_type") or phrase_type_for_candidate_kind(candidate_kind)),
             value_score=float(typed.get("score") or base_score),
             reason=str(typed.get("phrase_card_focus") or "训练原句里的可迁移学习点。"),
             source="local_rule",
         )
 
     for pattern, point_type, candidate_kind, phrase_type, value_score, reason in LOCAL_PATTERNS:
-        if not legacy_worker.candidate_kind_allowed_by_focus(candidate_kind, payload):
+        if not candidate_kind_allowed_by_focus(candidate_kind, payload):
             continue
         for match in re.finditer(pattern, text, re.IGNORECASE):
             _add_candidate(

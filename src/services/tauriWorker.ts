@@ -1,5 +1,5 @@
 ﻿import { invoke } from '@tauri-apps/api/core'
-import type { EnvRepairResult, EnvStatus, WorkerCommand, WorkerJob } from '../domain/types'
+import type { EnvRepairResult, EnvStatus, WorkerCommand, WorkerFinishedEvent, WorkerJob } from '../domain/types'
 import { isTauriRuntime } from './runtime'
 
 export async function runWorker<T>(command: string, payload: unknown): Promise<T> {
@@ -20,6 +20,19 @@ export async function startWorkerJob(command: WorkerCommand, payload: unknown): 
 
 export async function cancelWorkerJob(jobId: string): Promise<{ cancelled: boolean }> {
   return invoke<{ cancelled: boolean }>('cancel_worker_job', { jobId })
+}
+
+export async function getWorkerJobStatus(jobId: string): Promise<WorkerFinishedEvent | null> {
+  return invoke<WorkerFinishedEvent | null>('get_worker_job_status', { jobId })
+}
+
+export async function readWorkerJobResult<T>(jobId: string): Promise<T> {
+  return invoke<T>('read_worker_job_result', { jobId })
+}
+
+export async function recordRendererError(payload: unknown): Promise<void> {
+  if (!isTauriRuntime()) return
+  await invoke('record_renderer_error', { payload })
 }
 
 export async function saveSecret(key: string, value: string) {

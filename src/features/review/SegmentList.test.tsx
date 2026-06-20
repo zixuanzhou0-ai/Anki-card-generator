@@ -58,8 +58,9 @@ describe('SegmentList', () => {
     fireEvent.click(screen.getByRole('button', { name: /figure out/ }))
 
     expect(screen.getByText(/学习点 · 5\/5/)).toBeInTheDocument()
-    expect(screen.getByText(/训练点：练 figure out 的口语解决问题表达/)).toBeInTheDocument()
-    expect(screen.getByText('1/1 张已选')).toBeInTheDocument()
+    expect(screen.getByText('I figured it out.')).toBeInTheDocument()
+    expect(screen.queryByText(/训练点：/)).not.toBeInTheDocument()
+    expect(screen.getByText('1/1 张可导出')).toBeInTheDocument()
     expect(onSelectSegment).toHaveBeenCalledWith('seg-1')
 
     fireEvent.click(screen.getByRole('checkbox', { name: /选择片段：figure out/ }))
@@ -79,5 +80,32 @@ describe('SegmentList', () => {
     )
 
     expect(screen.getByText('当前筛选下没有片段')).toBeInTheDocument()
+  })
+
+  it('renders long segment lists progressively', () => {
+    const segments = Array.from({ length: 55 }, (_, index) => ({
+      ...segment,
+      id: `seg-${index + 1}`,
+      phrase: `phrase ${index + 1}`,
+      cards: segment.cards.map((card) => ({ ...card, id: `card-${index + 1}` })),
+    }))
+
+    render(
+      <SegmentList
+        activeSegmentId="seg-1"
+        motionDuration={0}
+        prefersReducedMotion
+        segments={segments}
+        onSelectSegment={vi.fn()}
+        onSetSegmentCardsEnabled={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('phrase 48')).toBeInTheDocument()
+    expect(screen.queryByText('phrase 49')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /显示更多 7 条/ }))
+
+    expect(screen.getByText('phrase 55')).toBeInTheDocument()
   })
 })
