@@ -17,6 +17,9 @@ import {
   phraseValueScore,
   phraseTypeLabel,
   qualityClass,
+  qualityLabel,
+  cardHasExportBlockingContent,
+  isUsableCardForExport,
   segmentMediaEnd,
   segmentMediaStart,
   segmentPhraseLabel,
@@ -223,6 +226,17 @@ function pronunciationActionLabel(action: PronunciationFieldChange['action']) {
   return '已保留'
 }
 
+function isHelpfulPronunciationStatus(value: string | undefined) {
+  const text = (value ?? '').trim()
+  if (!text) return false
+  return ![
+    /未实听[，,]?\s*仅提供标准读法/,
+    /未实听[，,]?\s*按字幕和常见口语规律推测/,
+    /读法未可靠生成[，,]?\s*已隐藏/,
+    /原句听感未可靠生成[，,]?\s*已隐藏/,
+  ].some((pattern) => pattern.test(text))
+}
+
 function CardEditor({
   card,
   documentStudyMode,
@@ -245,7 +259,15 @@ function CardEditor({
   const standardLabel = `标准读法（${standardPronunciationHint(pronunciationMeta?.language_code ?? language)}）`
   const spokenLabel = spokenPronunciationLabel(pronunciationMeta)
   const basisHint = pronunciationBasisHint(pronunciationMeta)
-  const pronunciationFieldChanges = (pronunciationMeta?.field_changes ?? []).filter((change) => change.action !== 'kept')
+  const pronunciationStatus = isHelpfulPronunciationStatus(card.pronunciation_status) ? card.pronunciation_status : ''
+  const sourcePronunciationStatus = isHelpfulPronunciationStatus(card.source_pronunciation_status)
+    ? card.source_pronunciation_status
+    : ''
+  const pronunciationFieldChanges = (pronunciationMeta?.field_changes ?? []).filter(
+    (change) => change.action !== 'kept' && change.action !== 'hidden' && change.action !== 'not_generated',
+  )
+  const exportBlocked = cardHasExportBlockingContent(card)
+  const exportable = isUsableCardForExport(segment, card)
   const cardTypeLabel =
     candidateLabel ||
     phraseTypeLabel(card.phrase_type ?? segment.phrase_type) ||
@@ -265,16 +287,29 @@ function CardEditor({
         <label className="toggle card-toggle">
           <input
             type="checkbox"
-            checked={card.enabled}
+            checked={card.enabled && exportable}
+            disabled={!exportable}
             onChange={() => onUpdateCard(segment.id, card.id, { enabled: !card.enabled })}
           />
           <span>{card.type_label}</span>
         </label>
         <div className="card-meta-row">
+          <span className={`card-export-state ${qualityClass(card)}`}>{qualityLabel(card)}</span>
           {candidateLabel ? <span className={`kind-chip kind-${card.candidate_kind ?? segment.candidate_kind}`}>{candidateLabel}</span> : null}
           <span className="difficulty">{card.estimated_level ? `难度 ${card.estimated_level}` : card.difficulty}</span>
         </div>
       </div>
+      {exportBlocked ? (
+        <div className="card-export-blocked" role="status">
+          <strong>这张卡暂不可导出</strong>
+          <span>包含本地草稿、内部提示或需要人工确认的文本。请重新生成，或修正字段后再勾选导出。</span>
+        </div>
+      ) : !exportable ? (
+        <div className="card-export-blocked" role="status">
+          <strong>这张卡已过滤，不会导出</strong>
+          <span>它没有通过当前质量筛选。请重新生成，或修正卡片内容后再导出。</span>
+        </div>
+      ) : null}
       {learningTarget || card.decision_reason || skippedEntries.length > 0 ? (
         <div className="card-plan" aria-label="卡片生成规划">
           <div>
@@ -325,14 +360,14 @@ function CardEditor({
             </p>
           ) : null}
           {card.phrase_card_focus ? <strong>训练点：{card.phrase_card_focus}</strong> : null}
-          {card.phonetic_ipa || card.spoken_ipa || card.source_spoken_ipa || card.pronunciation_status || card.source_pronunciation_status ? (
+          {card.phonetic_ipa || card.spoken_ipa || card.source_spoken_ipa || pronunciationStatus || sourcePronunciationStatus ? (
             <p>
               {[
                 card.phonetic_ipa ? `${standardLabel}：${card.phonetic_ipa}` : '',
                 card.spoken_ipa ? `${spokenLabel}：${card.spoken_ipa}` : '',
                 card.source_spoken_ipa ? `原句听感：${card.source_spoken_ipa}` : '',
-                card.pronunciation_status ? `读法状态：${card.pronunciation_status}` : '',
-                card.source_pronunciation_status ? `原句听感状态：${card.source_pronunciation_status}` : '',
+                pronunciationStatus ? `读法状态：${pronunciationStatus}` : '',
+                sourcePronunciationStatus ? `原句听感状态：${sourcePronunciationStatus}` : '',
               ]
                 .filter(Boolean)
                 .join(' · ')}

@@ -1,6 +1,6 @@
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     env, fs,
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
@@ -27,6 +27,10 @@ use windows_sys::Win32::{
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+#[cfg(windows)]
+const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+#[cfg(windows)]
+const DETACHED_PROCESS: u32 = 0x00000008;
 const WORKER_PROGRESS_PREFIX: &str = "__ANKI_CARD_PROGRESS__";
 const WORKER_ERROR_PREFIX: &str = "__ANKI_CARD_ERROR__";
 const SECRET_SERVICE: &str = "Anki Card Generator";
@@ -35,6 +39,23 @@ const ALLOWED_SECRET_KEYS: &[&str] = &["model_api_key", "tts_api_key"];
 const ALLOWED_SECRET_KEY_PREFIXES: &[&str] = &["model_profile_key_", "tts_profile_key_"];
 const MIN_WINDOW_WIDTH: f64 = 1180.0;
 const MIN_WINDOW_HEIGHT: f64 = 780.0;
+const WORKER_INLINE_RESULT_LIMIT_BYTES: usize = 64 * 1024;
+const GENERATE_WORKER_PAYLOAD_LIMIT_BYTES: usize = 1_500_000;
+const COMPLETED_WORKER_JOB_LIMIT: usize = 20;
+const DIRECTORY_LIST_MAX_FILES: usize = 2000;
+const DIRECTORY_LIST_MAX_DEPTH: usize = 4;
+const SUPPORTED_BULK_FILE_EXTENSIONS: &[&str] = &[
+    "mp4", "mkv", "webm", "mov", "m4v", "srt", "vtt", "txt", "md", "markdown", "docx", "epub",
+    "pdf", "azw", "azw3", "mobi",
+];
+const SENSITIVE_DIRECTORY_NAMES: &[&str] = &[
+    "windows",
+    "program files",
+    "program files (x86)",
+    "programdata",
+    "$recycle.bin",
+    "system volume information",
+];
 
 fn hide_console_window(command: &mut Command) {
     #[cfg(windows)]
@@ -43,9 +64,17 @@ fn hide_console_window(command: &mut Command) {
     }
 }
 
+fn detach_gui_process(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    }
+}
+
 #[derive(Clone, Default)]
 struct WorkerJobs {
     jobs: Arc<Mutex<HashMap<String, RunningJob>>>,
+    completed: Arc<Mutex<CompletedWorkerJobs>>,
 }
 
 #[derive(Clone)]
@@ -53,6 +82,36 @@ struct RunningJob {
     pid: u32,
     cancel_requested: bool,
     failure_message: Option<String>,
+}
+
+#[derive(Clone, Default)]
+struct CompletedWorkerJobs {
+    entries: HashMap<String, CompletedWorkerJob>,
+    order: VecDeque<String>,
+}
+
+#[derive(Clone)]
+struct CompletedWorkerJob {
+    status: WorkerJobStatus,
+    result_path: Option<PathBuf>,
+}
+
+#[derive(Clone, Serialize)]
+struct WorkerJobStatus {
+    job_id: String,
+    command: String,
+    ok: bool,
+    cancelled: bool,
+    result_ref: Option<String>,
+    result_size_bytes: Option<u64>,
+    result_summary: Option<Value>,
+    error: Option<String>,
+    error_code: Option<String>,
+    stage: Option<String>,
+    retryable: Option<bool>,
+    fallbacks: Option<Vec<String>>,
+    details: Option<Value>,
+    finished_at_ms: u64,
 }
 
 #[derive(Serialize)]
@@ -279,18 +338,21 @@ fn delete_secret_fallback(key: &str) -> Result<(), String> {
 fn worker_candidates(app: &tauri::AppHandle) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
-    // Release builds should only trust files shipped as app resources. Searching the
-    // current directory or arbitrary executable ancestors makes it too easy to run a
-    // spoofed workers/anki_worker.py when the app is launched from an unsafe folder.
-    if let Ok(resource_dir) = app.path().resource_dir() {
-        candidates.push(resource_dir.join("workers").join("anki_worker.py"));
-    }
-
     if cfg!(debug_assertions) {
         if let Ok(cwd) = env::current_dir() {
             candidates.push(cwd.join("workers").join("anki_worker.py"));
             candidates.push(cwd.join("..").join("workers").join("anki_worker.py"));
         }
+    }
+
+    // Release builds should only trust files shipped as app resources. Searching the
+    // current directory or arbitrary executable ancestors makes it too easy to run a
+    // spoofed workers/anki_worker.py when the app is launched from an unsafe folder.
+    // In dev, keep this as a fallback only: using the bundled target/debug worker
+    // makes runtime caches land under src-tauri/target, which can destabilize the
+    // Tauri dev watcher during large generation jobs.
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        candidates.push(resource_dir.join("workers").join("anki_worker.py"));
     }
 
     candidates
@@ -342,8 +404,16 @@ fn worker_work_dir(app: &tauri::AppHandle, worker: &Path) -> PathBuf {
 fn python_candidates(worker: &Path) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
-    if let Ok(path) = env::var("ANKI_CARD_GENERATOR_PYTHON") {
-        candidates.push(PathBuf::from(path));
+    let allow_custom_python =
+        cfg!(debug_assertions) || env::var("ANKI_ALLOW_CUSTOM_PYTHON").ok().as_deref() == Some("1");
+    if allow_custom_python {
+        if let Ok(path) = env::var("ANKI_CARD_GENERATOR_PYTHON") {
+            candidates.push(PathBuf::from(path));
+        }
+    } else if env::var("ANKI_CARD_GENERATOR_PYTHON").is_ok() {
+        log::warn!(
+            "Ignoring ANKI_CARD_GENERATOR_PYTHON in release mode; set ANKI_ALLOW_CUSTOM_PYTHON=1 to opt in."
+        );
     }
 
     for ancestor in worker.ancestors().take(8) {
@@ -481,7 +551,8 @@ fn make_job_id(command: &str) -> String {
 
 fn worker_idle_timeout(command: &str) -> Duration {
     match command {
-        "extract_learning_points" | "generate_cards_from_learning_points" => Duration::from_secs(900),
+        "extract_learning_points" => Duration::from_secs(300),
+        "generate_cards_from_learning_points" => Duration::from_secs(420),
         "generate" | "export" => Duration::from_secs(600),
         "test_api" | "test_tts" | "verify_anki_import" => Duration::from_secs(120),
         _ => Duration::from_secs(180),
@@ -528,7 +599,7 @@ fn apply_worker_error_payload(
             payload["error"] = json!(error);
         }
 
-        for key in ["error_code", "stage", "retryable", "fallbacks"] {
+        for key in ["error_code", "stage", "retryable", "fallbacks", "details"] {
             if let Some(value) = details.get(key) {
                 payload[key] = value.clone();
             }
@@ -538,8 +609,347 @@ fn apply_worker_error_payload(
     }
 }
 
-fn emit_worker_finished_with_error(
+fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64
+}
+
+fn workspace_root_for_startup_diagnostics() -> PathBuf {
+    let mut candidates = Vec::new();
+    if let Ok(current_dir) = env::current_dir() {
+        candidates.push(current_dir);
+    }
+    if let Ok(current_exe) = env::current_exe() {
+        if let Some(parent) = current_exe.parent() {
+            candidates.push(parent.to_path_buf());
+        }
+    }
+
+    for candidate in candidates {
+        for ancestor in candidate.ancestors() {
+            if ancestor.join("package.json").is_file() && ancestor.join("src-tauri").is_dir() {
+                return ancestor.to_path_buf();
+            }
+        }
+    }
+
+    env::current_dir().unwrap_or_else(|_| env::temp_dir())
+}
+
+fn write_startup_diagnostic(payload: Value) {
+    let path = workspace_root_for_startup_diagnostics().join(".tauri-startup-current.json");
+    if let Ok(content) = serde_json::to_vec_pretty(&payload) {
+        let _ = fs::write(path, content);
+    }
+}
+
+fn write_workspace_diagnostic_file(file_name: &str, payload: &Value) {
+    let path = workspace_root_for_startup_diagnostics().join(file_name);
+    if let Ok(content) = serde_json::to_vec_pretty(payload) {
+        let _ = fs::write(path, content);
+    }
+}
+
+fn append_workspace_text_file(file_name: &str, line: &str) {
+    let path = workspace_root_for_startup_diagnostics().join(file_name);
+    if let Ok(mut file) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
+fn reset_workspace_text_file(file_name: &str) {
+    let path = workspace_root_for_startup_diagnostics().join(file_name);
+    let _ = fs::write(path, "");
+}
+
+fn write_app_local_diagnostic_file(app: &tauri::AppHandle, file_name: &str, payload: &Value) {
+    if let Ok(dir) = app.path().app_local_data_dir() {
+        let _ = fs::create_dir_all(&dir);
+        if let Ok(content) = serde_json::to_vec_pretty(payload) {
+            let _ = fs::write(dir.join(file_name), content);
+        }
+    }
+}
+
+fn write_dual_diagnostic_file(app: &tauri::AppHandle, file_name: &str, payload: Value) {
+    write_workspace_diagnostic_file(file_name, &payload);
+    write_app_local_diagnostic_file(app, file_name.trim_start_matches('.'), &payload);
+}
+
+fn append_app_local_text_file(app: &tauri::AppHandle, file_name: &str, line: &str) {
+    if let Ok(dir) = app.path().app_local_data_dir() {
+        let _ = fs::create_dir_all(&dir);
+        if let Ok(mut file) = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join(file_name))
+        {
+            let _ = writeln!(file, "{line}");
+        }
+    }
+}
+
+fn append_dual_text_file(app: &tauri::AppHandle, file_name: &str, line: &str) {
+    append_workspace_text_file(file_name, line);
+    append_app_local_text_file(app, file_name.trim_start_matches('.'), line);
+}
+
+fn reset_app_local_text_file(app: &tauri::AppHandle, file_name: &str) {
+    if let Ok(dir) = app.path().app_local_data_dir() {
+        let _ = fs::create_dir_all(&dir);
+        let _ = fs::write(dir.join(file_name), "");
+    }
+}
+
+fn reset_dual_text_file(app: &tauri::AppHandle, file_name: &str) {
+    reset_workspace_text_file(file_name);
+    reset_app_local_text_file(app, file_name.trim_start_matches('.'));
+}
+
+fn worker_payload_summary(command: &str, payload: &Value, input_size_bytes: usize) -> Value {
+    let api = payload.get("api_config").and_then(Value::as_object);
+    let selected_count = payload
+        .get("selected_learning_point_ids")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+    let learning_point_count = payload
+        .get("learning_points")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+    let source_sentence_count = payload
+        .get("source_sentences")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+    json!({
+        "command": command,
+        "input_size_bytes": input_size_bytes,
+        "selected_learning_point_count": selected_count,
+        "learning_point_count": learning_point_count,
+        "source_sentence_count": source_sentence_count,
+        "source_mode": payload.get("source_mode").and_then(Value::as_str).unwrap_or_default(),
+        "url_import_mode": payload.get("url_import_mode").and_then(Value::as_str).unwrap_or_default(),
+        "has_source_url": payload.get("source_url").and_then(Value::as_str).map(|value| !value.is_empty()).unwrap_or(false),
+        "has_video_path": payload.get("video_path").and_then(Value::as_str).map(|value| !value.is_empty()).unwrap_or(false),
+        "has_subtitle_path": payload.get("subtitle_path").and_then(Value::as_str).map(|value| !value.is_empty()).unwrap_or(false),
+        "provider": api
+            .and_then(|api| api.get("provider"))
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        "model": api
+            .and_then(|api| api.get("model"))
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    })
+}
+
+fn write_worker_job_breadcrumb(app: &tauri::AppHandle, payload: Value) {
+    write_dual_diagnostic_file(app, ".tauri-job-current.json", payload);
+}
+
+fn unit_result_to_json<E: std::fmt::Display>(result: &Result<(), E>) -> Value {
+    match result {
+        Ok(()) => json!({
+            "ok": true,
+        }),
+        Err(err) => json!({
+            "ok": false,
+            "error": err.to_string(),
+        }),
+    }
+}
+
+fn window_state_to_json(window: &tauri::WebviewWindow) -> Value {
+    let inner_size = match window.inner_size() {
+        Ok(size) => json!({
+            "ok": true,
+            "width": size.width,
+            "height": size.height,
+        }),
+        Err(err) => json!({
+            "ok": false,
+            "error": err.to_string(),
+        }),
+    };
+    let outer_position = match window.outer_position() {
+        Ok(position) => json!({
+            "ok": true,
+            "x": position.x,
+            "y": position.y,
+        }),
+        Err(err) => json!({
+            "ok": false,
+            "error": err.to_string(),
+        }),
+    };
+    let visible = match window.is_visible() {
+        Ok(value) => json!({
+            "ok": true,
+            "value": value,
+        }),
+        Err(err) => json!({
+            "ok": false,
+            "error": err.to_string(),
+        }),
+    };
+    let minimized = match window.is_minimized() {
+        Ok(value) => json!({
+            "ok": true,
+            "value": value,
+        }),
+        Err(err) => json!({
+            "ok": false,
+            "error": err.to_string(),
+        }),
+    };
+    let focused = match window.is_focused() {
+        Ok(value) => json!({
+            "ok": true,
+            "value": value,
+        }),
+        Err(err) => json!({
+            "ok": false,
+            "error": err.to_string(),
+        }),
+    };
+
+    json!({
+        "inner_size": inner_size,
+        "outer_position": outer_position,
+        "visible": visible,
+        "minimized": minimized,
+        "focused": focused,
+    })
+}
+
+fn write_window_lifecycle_diagnostic(app: &tauri::AppHandle, window: &tauri::WebviewWindow, event_name: &str, event_debug: String) {
+    write_dual_diagnostic_file(
+        app,
+        ".tauri-window-current.json",
+        json!({
+            "schema_version": 1,
+            "source": "src-tauri/src/lib.rs window lifecycle",
+            "recorded_at_ms": now_unix_ms(),
+            "pid": std::process::id(),
+            "window": {
+                "label": window.label(),
+                "title": window.title().unwrap_or_default(),
+                "state": window_state_to_json(window),
+            },
+            "event": {
+                "name": event_name,
+                "debug": event_debug,
+            },
+        }),
+    );
+}
+
+fn worker_job_result_dir(app: &tauri::AppHandle) -> PathBuf {
+    app.path()
+        .app_local_data_dir()
+        .unwrap_or_else(|_| env::temp_dir().join(SECRET_FALLBACK_DIR))
+        .join("worker-results")
+}
+
+fn worker_result_summary(command: &str, result: &Value) -> Option<Value> {
+    let mut summary = json!({
+        "command": command,
+    });
+    let keys = [
+        "id",
+        "title",
+        "source_mode",
+        "cards",
+        "segments",
+        "apkg_path",
+        "learning_point_summary",
+        "media_summary",
+        "quality_funnel",
+    ];
+    let mut has_summary = false;
+    for key in keys {
+        if let Some(value) = result.get(key) {
+            summary[key] = value.clone();
+            has_summary = true;
+        }
+    }
+    has_summary.then_some(summary)
+}
+
+fn store_worker_job_result(
     app: &tauri::AppHandle,
+    job_id: &str,
+    result: &Value,
+) -> Result<(String, PathBuf, u64), String> {
+    let dir = worker_job_result_dir(app);
+    fs::create_dir_all(&dir).map_err(|err| format!("无法创建 worker 结果目录：{err}"))?;
+    let result_path = dir.join(format!("{job_id}.json"));
+    let bytes =
+        serde_json::to_vec(result).map_err(|err| format!("无法序列化 worker 结果：{err}"))?;
+    fs::write(&result_path, &bytes).map_err(|err| format!("无法写入 worker 结果文件：{err}"))?;
+    Ok((job_id.to_string(), result_path, bytes.len() as u64))
+}
+
+fn payload_string(payload: &Value, key: &str) -> Option<String> {
+    payload
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn payload_bool(payload: &Value, key: &str) -> Option<bool> {
+    payload.get(key).and_then(Value::as_bool)
+}
+
+fn payload_string_list(payload: &Value, key: &str) -> Option<Vec<String>> {
+    let values = payload.get(key)?.as_array()?;
+    Some(
+        values
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
+fn remember_completed_worker_job(
+    completed: &Arc<Mutex<CompletedWorkerJobs>>,
+    status: WorkerJobStatus,
+    result_path: Option<PathBuf>,
+) {
+    if let Ok(mut history) = completed.lock() {
+        if !history.entries.contains_key(&status.job_id) {
+            history.order.push_back(status.job_id.clone());
+        }
+        history.entries.insert(
+            status.job_id.clone(),
+            CompletedWorkerJob {
+                status,
+                result_path,
+            },
+        );
+        while history.order.len() > COMPLETED_WORKER_JOB_LIMIT {
+            if let Some(old_job_id) = history.order.pop_front() {
+                history.entries.remove(&old_job_id);
+            }
+        }
+    }
+}
+
+fn complete_worker_job_and_emit(
+    app: &tauri::AppHandle,
+    completed: &Arc<Mutex<CompletedWorkerJobs>>,
     job_id: &str,
     command: &str,
     ok: bool,
@@ -554,23 +964,74 @@ fn emit_worker_finished_with_error(
       "ok": ok,
       "cancelled": cancelled,
     });
+    let mut result_path = None;
+    let mut result_ref = None;
+    let mut result_size_bytes = None;
+    let mut result_summary = None;
     if let Some(result) = result {
-        payload["result"] = result;
+        result_summary = worker_result_summary(command, &result);
+        let serialized_size = serde_json::to_vec(&result).map(|bytes| bytes.len()).ok();
+        match store_worker_job_result(app, job_id, &result) {
+            Ok((stored_ref, stored_path, stored_size)) => {
+                payload["result_ref"] = json!(stored_ref);
+                payload["result_size_bytes"] = json!(stored_size);
+                result_ref = Some(job_id.to_string());
+                result_size_bytes = Some(stored_size);
+                result_path = Some(stored_path);
+            }
+            Err(err) => {
+                eprintln!("worker result store failed for {job_id}: {err}");
+                if let Some(size) = serialized_size {
+                    payload["result_size_bytes"] = json!(size as u64);
+                    result_size_bytes = Some(size as u64);
+                }
+            }
+        }
+        if let Some(summary) = result_summary.clone() {
+            payload["result_summary"] = summary;
+        }
+        let should_inline = serialized_size
+            .map(|size| size <= WORKER_INLINE_RESULT_LIMIT_BYTES)
+            .unwrap_or(true)
+            || result_ref.is_none();
+        if should_inline {
+            payload["result"] = result;
+        }
     }
     apply_worker_error_payload(&mut payload, error, error_details);
-    let _ = app.emit("worker-finished", payload);
-}
-
-fn emit_worker_finished(
-    app: &tauri::AppHandle,
-    job_id: &str,
-    command: &str,
-    ok: bool,
-    result: Option<serde_json::Value>,
-    error: Option<String>,
-    cancelled: bool,
-) {
-    emit_worker_finished_with_error(app, job_id, command, ok, result, error, None, cancelled);
+    let status = WorkerJobStatus {
+        job_id: job_id.to_string(),
+        command: command.to_string(),
+        ok,
+        cancelled,
+        result_ref,
+        result_size_bytes,
+        result_summary,
+        error: payload_string(&payload, "error"),
+        error_code: payload_string(&payload, "error_code"),
+        stage: payload_string(&payload, "stage"),
+        retryable: payload_bool(&payload, "retryable"),
+        fallbacks: payload_string_list(&payload, "fallbacks"),
+        details: payload.get("details").cloned(),
+        finished_at_ms: now_unix_ms(),
+    };
+    let status_diagnostic =
+        serde_json::to_value(&status).unwrap_or_else(|err| json!({ "serialize_error": err.to_string() }));
+    remember_completed_worker_job(completed, status, result_path);
+    write_worker_job_breadcrumb(
+        app,
+        json!({
+            "schema_version": 1,
+            "phase": "completed",
+            "job_id": job_id,
+            "command": command,
+            "recorded_at_ms": now_unix_ms(),
+            "status": status_diagnostic,
+        }),
+    );
+    if let Err(err) = app.emit("worker-finished", payload) {
+        eprintln!("worker-finished emit failed for {job_id}: {err}");
+    }
 }
 
 fn kill_process_tree(pid: u32) -> Result<(), String> {
@@ -610,7 +1071,7 @@ fn run_worker(
     let input = serde_json::to_vec(&payload).map_err(|err| err.to_string())?;
     let work_dir = worker_work_dir(&app, &worker);
 
-    let mut child = build_worker_command(python, &worker, &command, work_dir)
+    let mut child = build_worker_command(python, &worker, &command, work_dir.clone())
         .spawn()
         .map_err(|err| format!("无法启动 Python worker：{err}"))?;
 
@@ -704,11 +1165,59 @@ fn start_worker_job(
     let input = serde_json::to_vec(&payload).map_err(|err| err.to_string())?;
     let work_dir = worker_work_dir(&app, &worker);
     let job_id = make_job_id(&command);
+    let payload_summary = worker_payload_summary(&command, &payload, input.len());
+    reset_dual_text_file(&app, ".worker-stderr-current.log");
+    reset_dual_text_file(&app, ".worker-progress-current.log");
+    reset_dual_text_file(&app, ".worker-stdout-current.log");
 
-    let mut child = build_worker_command(python, &worker, &command, work_dir)
+    if command == "generate_cards_from_learning_points" && input.len() > GENERATE_WORKER_PAYLOAD_LIMIT_BYTES {
+        let diagnostic = json!({
+            "schema_version": 1,
+            "phase": "payload_rejected",
+            "job_id": job_id.clone(),
+            "recorded_at_ms": now_unix_ms(),
+            "payload_summary": payload_summary.clone(),
+            "limit_bytes": GENERATE_WORKER_PAYLOAD_LIMIT_BYTES,
+        });
+        write_worker_job_breadcrumb(&app, diagnostic);
+        return Err(format!(
+            "生成任务 payload 过大（{} bytes），已阻止启动以避免桌面端闪退。请减少本轮选择数量或使用分批生成。",
+            input.len()
+        ));
+    }
+
+    write_worker_job_breadcrumb(
+        &app,
+        json!({
+            "schema_version": 1,
+            "phase": "before_spawn",
+            "job_id": job_id.clone(),
+            "command": command.clone(),
+            "recorded_at_ms": now_unix_ms(),
+            "worker_path": worker.display().to_string(),
+            "work_dir": work_dir.display().to_string(),
+            "payload_summary": payload_summary.clone(),
+        }),
+    );
+
+    let mut child = build_worker_command(python, &worker, &command, work_dir.clone())
         .spawn()
         .map_err(|err| format!("无法启动 Python worker：{err}"))?;
     let pid = child.id();
+    write_worker_job_breadcrumb(
+        &app,
+        json!({
+            "schema_version": 1,
+            "phase": "spawned",
+            "job_id": job_id.clone(),
+            "command": command.clone(),
+            "worker_pid": pid,
+            "recorded_at_ms": now_unix_ms(),
+            "worker_path": worker.display().to_string(),
+            "work_dir": work_dir.display().to_string(),
+            "payload_summary": payload_summary.clone(),
+        }),
+    );
     let stderr = child
         .stderr
         .take()
@@ -763,7 +1272,24 @@ fn start_worker_job(
                         .and_then(|percent| percent.as_u64())
                         .unwrap_or_default();
                     if percent >= 100 || last_emit.elapsed() >= Duration::from_millis(100) {
+                        let progress_value = value.clone();
                         let _ = app_for_progress.emit("worker-progress", value);
+                        append_dual_text_file(
+                            &app_for_progress,
+                            ".worker-progress-current.log",
+                            &format!("[{}] {}", now_unix_ms(), progress_value),
+                        );
+                        write_worker_job_breadcrumb(
+                            &app_for_progress,
+                            json!({
+                                "schema_version": 1,
+                                "phase": "progress",
+                                "job_id": progress_job_id.clone(),
+                                "command": progress_value.get("command").and_then(Value::as_str).unwrap_or_default(),
+                                "recorded_at_ms": now_unix_ms(),
+                                "progress": progress_value,
+                            }),
+                        );
                         last_emit = Instant::now();
                     }
                 }
@@ -771,9 +1297,19 @@ fn start_worker_job(
                 if let Ok(mut value) = stderr_error_sink.lock() {
                     *value = Some(error);
                 }
+                append_dual_text_file(
+                    &app_for_progress,
+                    ".worker-stderr-current.log",
+                    &format!("[{}] structured_error {}", now_unix_ms(), line),
+                );
             } else if let Ok(mut text) = stderr_sink.lock() {
                 text.push_str(&line);
                 text.push('\n');
+                append_dual_text_file(
+                    &app_for_progress,
+                    ".worker-stderr-current.log",
+                    &format!("[{}] {}", now_unix_ms(), line),
+                );
             }
         }
     });
@@ -817,6 +1353,7 @@ fn start_worker_job(
 
     let app_for_finish = app.clone();
     let jobs_for_finish = Arc::clone(&jobs.jobs);
+    let completed_for_finish = Arc::clone(&jobs.completed);
     let finish_job_id = job_id.clone();
     let finish_command = command.clone();
     thread::spawn(move || {
@@ -824,6 +1361,16 @@ fn start_worker_job(
         let read_result = BufReader::new(stdout).read_to_string(&mut stdout_text);
         let wait_result = child.wait();
         let _ = progress_thread.join();
+        append_dual_text_file(
+            &app_for_finish,
+            ".worker-stdout-current.log",
+            &format!(
+                "[{}] stdout_bytes={} read_stdout_ok={}",
+                now_unix_ms(),
+                stdout_text.len(),
+                read_result.is_ok()
+            ),
+        );
         let job_state = jobs_for_finish
             .lock()
             .ok()
@@ -833,15 +1380,43 @@ fn start_worker_job(
             .map(|job| job.cancel_requested)
             .unwrap_or(false);
         let failure_message = job_state.and_then(|job| job.failure_message);
+        let exit_summary = match &wait_result {
+            Ok(status) => json!({
+                "ok": true,
+                "success": status.success(),
+                "code": status.code(),
+            }),
+            Err(err) => json!({
+                "ok": false,
+                "error": err.to_string(),
+            }),
+        };
+        write_worker_job_breadcrumb(
+            &app_for_finish,
+            json!({
+                "schema_version": 1,
+                "phase": "worker_exited",
+                "job_id": finish_job_id.clone(),
+                "command": finish_command.clone(),
+                "recorded_at_ms": now_unix_ms(),
+                "cancelled": cancelled,
+                "failure_message": failure_message.clone(),
+                "stdout_bytes": stdout_text.len(),
+                "read_stdout_ok": read_result.is_ok(),
+                "exit": exit_summary,
+            }),
+        );
 
         if let Err(err) = read_result {
-            emit_worker_finished(
+            complete_worker_job_and_emit(
                 &app_for_finish,
+                &completed_for_finish,
                 &finish_job_id,
                 &finish_command,
                 false,
                 None,
                 Some(format!("无法读取 worker JSON 输出：{err}")),
+                None,
                 cancelled,
             );
             return;
@@ -850,42 +1425,50 @@ fn start_worker_job(
         match wait_result {
             Ok(status) if status.success() && !cancelled => {
                 match serde_json::from_str::<serde_json::Value>(&stdout_text) {
-                    Ok(result) => emit_worker_finished(
+                    Ok(result) => complete_worker_job_and_emit(
                         &app_for_finish,
+                        &completed_for_finish,
                         &finish_job_id,
                         &finish_command,
                         true,
                         Some(result),
                         None,
+                        None,
                         false,
                     ),
-                    Err(err) => emit_worker_finished(
+                    Err(err) => complete_worker_job_and_emit(
                         &app_for_finish,
+                        &completed_for_finish,
                         &finish_job_id,
                         &finish_command,
                         false,
                         None,
                         Some(format!("worker 输出不是有效 JSON：{err}")),
+                        None,
                         false,
                     ),
                 }
             }
-            Ok(_) if cancelled => emit_worker_finished(
+            Ok(_) if cancelled => complete_worker_job_and_emit(
                 &app_for_finish,
+                &completed_for_finish,
                 &finish_job_id,
                 &finish_command,
                 false,
                 None,
                 Some("任务已取消。".to_string()),
+                None,
                 true,
             ),
-            Ok(_) if failure_message.is_some() => emit_worker_finished(
+            Ok(_) if failure_message.is_some() => complete_worker_job_and_emit(
                 &app_for_finish,
+                &completed_for_finish,
                 &finish_job_id,
                 &finish_command,
                 false,
                 None,
                 failure_message,
+                None,
                 false,
             ),
             Ok(_) => {
@@ -895,8 +1478,9 @@ fn start_worker_job(
                     .unwrap_or_default();
                 let error_details = stderr_error.lock().ok().and_then(|value| value.clone());
                 let message = worker_failure_message(&stderr, &stdout_text, error_details.as_ref());
-                emit_worker_finished_with_error(
+                complete_worker_job_and_emit(
                     &app_for_finish,
+                    &completed_for_finish,
                     &finish_job_id,
                     &finish_command,
                     false,
@@ -906,13 +1490,15 @@ fn start_worker_job(
                     false,
                 );
             }
-            Err(err) => emit_worker_finished(
+            Err(err) => complete_worker_job_and_emit(
                 &app_for_finish,
+                &completed_for_finish,
                 &finish_job_id,
                 &finish_command,
                 false,
                 None,
                 Some(format!("worker 执行失败：{err}")),
+                None,
                 cancelled,
             ),
         }
@@ -945,6 +1531,51 @@ fn cancel_worker_job(
     } else {
         Ok(WorkerCancelResult { cancelled: false })
     }
+}
+
+#[tauri::command]
+fn get_worker_job_status(
+    jobs: State<WorkerJobs>,
+    job_id: String,
+) -> Result<Option<WorkerJobStatus>, String> {
+    let history = jobs
+        .completed
+        .lock()
+        .map_err(|_| "无法读取后台任务完成状态。".to_string())?;
+    Ok(history
+        .entries
+        .get(&job_id)
+        .map(|entry| entry.status.clone()))
+}
+
+#[tauri::command]
+fn read_worker_job_result(jobs: State<WorkerJobs>, job_id: String) -> Result<Value, String> {
+    let result_path = {
+        let history = jobs
+            .completed
+            .lock()
+            .map_err(|_| "无法读取后台任务结果索引。".to_string())?;
+        history
+            .entries
+            .get(&job_id)
+            .and_then(|entry| entry.result_path.clone())
+            .ok_or_else(|| "后台任务结果不存在，可能需要重新运行。".to_string())?
+    };
+    let text = fs::read_to_string(&result_path)
+        .map_err(|err| format!("无法读取后台任务结果文件：{err}"))?;
+    serde_json::from_str(&text).map_err(|err| format!("后台任务结果不是有效 JSON：{err}"))
+}
+
+#[tauri::command]
+fn record_renderer_error(app: tauri::AppHandle, payload: Value) -> Result<(), String> {
+    let diagnostic = json!({
+        "schema_version": 1,
+        "source": "renderer",
+        "recorded_at_ms": now_unix_ms(),
+        "payload": payload,
+    });
+    write_dual_diagnostic_file(&app, ".renderer-error-current.json", diagnostic);
+    Ok(())
 }
 
 fn push_unique_path(candidates: &mut Vec<PathBuf>, path: PathBuf) {
@@ -1023,6 +1654,12 @@ fn anki_candidates_from_parts(
                 .join(".venv")
                 .join("Scripts")
                 .join("anki.exe"),
+        );
+    }
+    for drive in ["C", "D", "E", "F", "G"] {
+        push_unique_path(
+            &mut candidates,
+            PathBuf::from(format!(r"{drive}:\Anki\anki.exe")),
         );
     }
     push_unique_path(&mut candidates, PathBuf::from(r"C:\Program Files\Anki\anki.exe"));
@@ -1513,19 +2150,30 @@ fn list_directory_files(directory: String) -> Result<Vec<String>, String> {
     if !root.exists() || !root.is_dir() {
         return Err(format!("目录不存在或不是文件夹：{}", root.display()));
     }
+    let root = root
+        .canonicalize()
+        .map_err(|err| format!("无法解析目录 {}：{err}", root.display()))?;
+    if directory_listing_root_blocked(&root) {
+        return Err("出于安全考虑，不能批量枚举系统根目录或敏感系统目录。请选择素材所在的普通文件夹。".to_string());
+    }
     let mut files = Vec::new();
-    let mut stack = vec![root.clone()];
-    while let Some(current) = stack.pop() {
+    let mut stack = vec![(root.clone(), 0usize)];
+    while let Some((current, depth)) = stack.pop() {
         let entries = fs::read_dir(&current).map_err(|err| format!("无法读取目录 {}：{err}", current.display()))?;
         for entry in entries {
             let path = entry.map_err(|err| format!("无法读取目录项：{err}"))?.path();
             if path.is_dir() {
-                stack.push(path);
-            } else if path.is_file() {
+                if depth < DIRECTORY_LIST_MAX_DEPTH && !directory_listing_root_blocked(&path) {
+                    stack.push((path, depth + 1));
+                }
+            } else if path.is_file() && file_extension_supported_for_bulk_import(&path) {
                 files.push(path.display().to_string());
             }
-            if files.len() > 2000 {
-                return Err("文件夹内文件超过 2000 个，请先拆成更小的学习包。".to_string());
+            if files.len() > DIRECTORY_LIST_MAX_FILES {
+                return Err(format!(
+                    "文件夹内可导入文件超过 {} 个，请先拆成更小的学习包。",
+                    DIRECTORY_LIST_MAX_FILES
+                ));
             }
         }
     }
@@ -1541,6 +2189,81 @@ fn path_is_within(target: &Path, root: &Path) -> bool {
         return false;
     };
     target == root || target.starts_with(root)
+}
+
+fn file_extension_supported_for_bulk_import(path: &Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .map(|value| {
+            SUPPORTED_BULK_FILE_EXTENSIONS
+                .iter()
+                .any(|allowed| value.eq_ignore_ascii_case(allowed))
+        })
+        .unwrap_or(false)
+}
+
+fn directory_listing_root_blocked(path: &Path) -> bool {
+    let Ok(resolved) = path.canonicalize() else {
+        return true;
+    };
+    if resolved.parent().is_none() || resolved.parent() == Some(resolved.as_path()) {
+        return true;
+    }
+    let Some(name) = resolved.file_name().and_then(|value| value.to_str()) else {
+        return true;
+    };
+    let lower = name.to_ascii_lowercase();
+    SENSITIVE_DIRECTORY_NAMES
+        .iter()
+        .any(|blocked| lower == *blocked)
+}
+
+fn generated_apkg_directory(path: &Path) -> bool {
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    let parent_name = parent
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    parent_name.starts_with("AnkiCard-")
+        && (parent.join("audio_audit.json").is_file() || parent.join("audio_audit.md").is_file())
+}
+
+fn anki_import_path_allowed(app: &tauri::AppHandle, target: &Path) -> bool {
+    if !target.is_file()
+        || !target
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.eq_ignore_ascii_case("apkg"))
+            .unwrap_or(false)
+    {
+        return false;
+    }
+
+    if generated_apkg_directory(target) {
+        return true;
+    }
+
+    if let Ok(app_data) = app.path().app_local_data_dir() {
+        if path_is_within(target, &app_data) {
+            return true;
+        }
+    }
+
+    if let Ok(cwd) = env::current_dir() {
+        for root in [
+            cwd.join("release"),
+            cwd.join("test_runs"),
+            cwd.join("anki_live_e2e"),
+        ] {
+            if root.exists() && path_is_within(target, &root) {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 fn reveal_path_allowed(app: &tauri::AppHandle, target: &Path) -> bool {
@@ -1570,19 +2293,25 @@ fn reveal_path_allowed(app: &tauri::AppHandle, target: &Path) -> bool {
 }
 
 #[tauri::command]
-fn open_anki_import(apkg_path: String) -> Result<(), String> {
+fn open_anki_import(app: tauri::AppHandle, apkg_path: String) -> Result<(), String> {
     let apkg = PathBuf::from(apkg_path);
     if !apkg.exists() {
         return Err(format!("apkg 文件不存在：{}", apkg.display()));
     }
-    if !apkg.is_file() || apkg.extension().and_then(|value| value.to_str()) != Some("apkg") {
+    let apkg = apkg
+        .canonicalize()
+        .map_err(|err| format!("无法解析 apkg 路径：{err}"))?;
+    if !anki_import_path_allowed(&app, &apkg) {
+        return Err("只能导入本应用刚导出或测试目录中的 .apkg 文件。".to_string());
+    }
+    if !apkg.is_file() || !apkg.extension().and_then(|value| value.to_str()).map(|value| value.eq_ignore_ascii_case("apkg")).unwrap_or(false) {
         return Err("只能导入 .apkg 文件。".to_string());
     }
 
     let anki = find_anki()?;
     let mut command = Command::new(anki);
     command.arg(apkg);
-    hide_console_window(&mut command);
+    detach_gui_process(&mut command);
     command
         .spawn()
         .map_err(|err| format!("无法启动 Anki：{err}"))?;
@@ -1676,6 +2405,21 @@ fn delete_secret(key: String) -> Result<(), String> {
 }
 
 pub fn run() {
+    std::panic::set_hook(Box::new(|panic_info| {
+        let payload = json!({
+            "schema_version": 1,
+            "source": "rust_panic_hook",
+            "recorded_at_ms": now_unix_ms(),
+            "thread": thread::current().name().unwrap_or("<unnamed>"),
+            "message": panic_info.to_string(),
+            "location": panic_info.location().map(|location| json!({
+                "file": location.file(),
+                "line": location.line(),
+                "column": location.column(),
+            })),
+        });
+        write_workspace_diagnostic_file(".tauri-panic-current.json", &payload);
+    }));
     tauri::Builder::default()
         .manage(WorkerJobs::default())
         .plugin(tauri_plugin_dialog::init())
@@ -1685,6 +2429,9 @@ pub fn run() {
             repair_bootstrap_env,
             start_worker_job,
             cancel_worker_job,
+            get_worker_job_status,
+            read_worker_job_result,
+            record_renderer_error,
             suggest_subtitle_path,
             list_directory_files,
             reveal_path,
@@ -1694,9 +2441,11 @@ pub fn run() {
             delete_secret
         ])
         .setup(|app| {
+            let mut built_new_window = false;
             let window = match app.get_webview_window("main") {
                 Some(window) => window,
                 None => {
+                    built_new_window = true;
                     WebviewWindowBuilder::new(app, "main", WebviewUrl::App("/".into()))
                         .title("Anki 卡片生成器")
                         .inner_size(1540.0, 1080.0)
@@ -1707,12 +2456,59 @@ pub fn run() {
                         .build()?
                 }
             };
-            window.set_min_size(Some(Size::Logical(LogicalSize {
+            let lifecycle_app = app.handle().clone();
+            let lifecycle_window = window.clone();
+            window.on_window_event(move |event| {
+                let event_debug = format!("{event:?}");
+                let event_name = event_debug
+                    .split([' ', '{', '('])
+                    .next()
+                    .unwrap_or("unknown")
+                    .to_string();
+                write_window_lifecycle_diagnostic(&lifecycle_app, &lifecycle_window, &event_name, event_debug);
+            });
+            let min_size_result = window.set_min_size(Some(Size::Logical(LogicalSize {
                 width: MIN_WINDOW_WIDTH,
                 height: MIN_WINDOW_HEIGHT,
-            })))?;
-            window.show()?;
-            window.set_focus()?;
+            })));
+            let unminimize_result = window.unminimize();
+            let center_result = window.center();
+            let show_result = window.show();
+            let focus_result = window.set_focus();
+
+            write_startup_diagnostic(json!({
+                "schema_version": 1,
+                "source": "src-tauri/src/lib.rs",
+                "phase": "setup",
+                "timestamp_ms": now_unix_ms(),
+                "pid": std::process::id(),
+                "workspace": workspace_root_for_startup_diagnostics(),
+                "window": {
+                    "label": "main",
+                    "title": "Anki 卡片生成器",
+                    "built_new_window": built_new_window,
+                    "state": window_state_to_json(&window),
+                },
+                "operations": {
+                    "set_min_size": unit_result_to_json(&min_size_result),
+                    "unminimize": unit_result_to_json(&unminimize_result),
+                    "center": unit_result_to_json(&center_result),
+                    "show": unit_result_to_json(&show_result),
+                    "set_focus": unit_result_to_json(&focus_result),
+                }
+            }));
+
+            min_size_result?;
+            if let Err(err) = unminimize_result {
+                eprintln!("Window unminimize failed during startup: {err}");
+            }
+            if let Err(err) = center_result {
+                eprintln!("Window center failed during startup: {err}");
+            }
+            show_result?;
+            if let Err(err) = focus_result {
+                eprintln!("Window focus failed during startup: {err}");
+            }
 
             Ok(())
         })
@@ -1740,7 +2536,7 @@ mod tests {
     fn anki_candidates_prefer_registered_launcher_over_embedded_venv_shim() {
         let candidates = anki_candidates_from_parts(
             None,
-            Some(r"C:\Users\Administrator\AppData\Local".to_string()),
+            Some(r"C:\Users\Example\AppData\Local".to_string()),
             vec![PathBuf::from(r"D:\Anki\anki.exe")],
         );
 
@@ -1752,12 +2548,46 @@ mod tests {
             .iter()
             .position(|path| {
                 path == &PathBuf::from(
-                    r"C:\Users\Administrator\AppData\Local\AnkiProgramFiles\.venv\Scripts\anki.exe",
+                    r"C:\Users\Example\AppData\Local\AnkiProgramFiles\.venv\Scripts\anki.exe",
                 )
             })
             .expect("embedded venv shim candidate");
 
         assert!(registered_index < embedded_shim_index);
+    }
+
+    #[test]
+    fn anki_candidates_include_common_drive_root_install() {
+        let candidates = anki_candidates_from_parts(None, None, Vec::new());
+
+        assert!(candidates.contains(&PathBuf::from(r"D:\Anki\anki.exe")));
+    }
+
+    #[test]
+    fn bulk_directory_listing_only_accepts_supported_extensions() {
+        assert!(file_extension_supported_for_bulk_import(Path::new("clip.mp4")));
+        assert!(file_extension_supported_for_bulk_import(Path::new("notes.MD")));
+        assert!(file_extension_supported_for_bulk_import(Path::new("subs.srt")));
+        assert!(!file_extension_supported_for_bulk_import(Path::new("secret.exe")));
+        assert!(!file_extension_supported_for_bulk_import(Path::new("archive.zip")));
+    }
+
+    #[test]
+    fn generated_apkg_directory_requires_export_marker() {
+        let root = env::temp_dir().join(format!(
+            "anki_card_generated_apkg_test_{}",
+            std::process::id()
+        ));
+        let export_dir = root.join("AnkiCard-unit-test");
+        fs::create_dir_all(&export_dir).expect("create export test dir");
+        let apkg = export_dir.join("deck.apkg");
+        fs::write(&apkg, b"apkg").expect("write apkg");
+
+        assert!(!generated_apkg_directory(&apkg));
+        fs::write(export_dir.join("audio_audit.json"), "{}").expect("write marker");
+        assert!(generated_apkg_directory(&apkg));
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

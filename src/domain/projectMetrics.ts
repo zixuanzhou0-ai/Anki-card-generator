@@ -1,5 +1,6 @@
 ﻿import type { Project, QualityFunnel } from './types'
 import {
+  getExportSelectionStats,
   isRecommendedCardForExport,
   isReviewableCardForExport,
   isUsableCardForExport,
@@ -156,6 +157,7 @@ export function getQualityFunnel(
     .map((segment) => phraseValueScore(segment.phrase_value_score))
     .filter((score): score is number => typeof score === 'number')
   const averageScore = scored.length ? scored.reduce((total, score) => total + score, 0) / scored.length : null
+  const exportStats = getExportSelectionStats(project)
   return {
     ...provided,
     source_sentence_count: provided.source_sentence_count ?? sourceIds.size,
@@ -164,13 +166,18 @@ export function getQualityFunnel(
     recommended_learning_point_count: provided.recommended_learning_point_count ?? qualityCounts.recommended,
     review_learning_point_count: provided.review_learning_point_count ?? qualityCounts.review,
     card_count: provided.card_count ?? qualityCounts.total,
-    selected_card_count: provided.selected_card_count ?? selectedCardCount,
-    usable_card_count: provided.usable_card_count ?? qualityCounts.recommended,
+    selected_card_count: selectedCardCount,
+    exportable_card_count: exportStats.exportableCards,
+    repair_required_card_count: exportStats.repairRequiredCards,
+    selected_exportable_card_count: exportStats.selectedExportableCards,
+    selected_repair_required_card_count: exportStats.selectedRepairRequiredCards,
+    usable_card_count: qualityCounts.recommended,
     filtered_learning_point_count:
       provided.filtered_learning_point_count ??
       (provided.rejected_learning_point_count ?? 0) + (provided.duplicate_learning_point_count ?? 0),
     low_value_filtered_count: provided.low_value_filtered_count ?? provided.rejected_learning_point_count ?? 0,
-    blocked_quality_issue_count: provided.blocked_quality_issue_count ?? provided.rejected_cards ?? 0,
+    blocked_quality_issue_count:
+      provided.blocked_quality_issue_count ?? Math.max(provided.rejected_cards ?? 0, exportStats.repairRequiredCards),
     candidate_only_learning_point_count:
       provided.candidate_only_learning_point_count ?? inventoryCounts.candidateOnly,
     hidden_duplicate_learning_point_count:

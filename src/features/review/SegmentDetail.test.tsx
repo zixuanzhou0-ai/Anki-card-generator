@@ -94,7 +94,7 @@ describe('SegmentDetail', () => {
     expect(onSetSegmentCardsEnabled).toHaveBeenCalledWith(false, 'seg-1')
   })
 
-  it('labels subtitle-inferred pronunciation as estimated in review', () => {
+  it('shows real pronunciation fields without inferred placeholder status', () => {
     render(
       <SegmentDetail
         language="en"
@@ -138,7 +138,8 @@ describe('SegmentDetail', () => {
 
     expect(screen.getByText(/标准读法（IPA）：\/wʌt ɪf\//)).toBeInTheDocument()
     expect(screen.getByText(/推测口语读法：\/wəd ɪf\//)).toBeInTheDocument()
-    expect(screen.getByText(/原句听感：已隐藏/)).toBeInTheDocument()
-    expect(screen.getByText(/未实听，按字幕和常见口语规律推测/)).toBeInTheDocument()
+    expect(screen.getByText(/原句听感：\/wəd ɪf wi\//)).toBeInTheDocument()
+    expect(screen.queryByText(/原句听感：已隐藏/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/未实听/)).not.toBeInTheDocument()
   })
 })

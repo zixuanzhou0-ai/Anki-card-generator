@@ -2,8 +2,9 @@ import { Sparkles } from 'lucide-react'
 
 import type { Project, QualityFunnel, SegmentFilter } from '../../domain/types'
 import { learningLanguageLabel } from '../../domain/options'
-import { segmentFilterOptions } from '../../domain/quality'
+import { exportRepairItems, segmentFilterOptions } from '../../domain/quality'
 import type { QualityCounts, QualityDiagnostics } from '../../domain/projectMetrics'
+import { publicProjectSourceStatus } from '../../domain/publicSource'
 
 type SegmentReviewCounts = Record<SegmentFilter, number>
 
@@ -44,15 +45,13 @@ export function ReviewSummaryPanel({
   segmentReviewCounts,
   onSegmentFilterChange,
 }: ReviewSummaryPanelProps) {
-  const isDocument = project.source_mode === 'document'
-  const isReading = isDocument && project.document_study_mode === 'language_reading'
+  const projectSourceStatus = publicProjectSourceStatus(project)
   const localSubtitleSource = subtitleSourceLabel(project)
   const displayLanguage = learningLanguageLabel(language)
   const materialContext = project.material_context
   const materialSummary = materialContext?.summary || materialContext?.topic || ''
   const maxLearningPoints = qualityFunnel.max_learning_points_per_source ?? 4
   const usableCount = qualityFunnel.usable_card_count ?? qualityFunnel.card_count ?? qualityCounts.total
-  const selectedCount = selectedCardCount
   const duplicateCount = qualityFunnel.duplicate_learning_point_count ?? qualityDiagnostics.duplicate
   const candidateOnlyCount = qualityFunnel.candidate_only_learning_point_count ?? 0
   const hiddenDuplicateCount = qualityFunnel.hidden_duplicate_learning_point_count ?? duplicateCount
@@ -73,59 +72,81 @@ export function ReviewSummaryPanel({
   const diagnosticCount = candidateOnlyCount + hiddenDuplicateCount + hardBlockedCount
   const levelLabel = project.level_mode === 'manual' ? level : '自动判断'
   const sourceSentenceCount = qualityFunnel.source_sentence_count ?? qualityFunnel.subtitle_cues
-  const labels = isReading
-    ? {
-        score: '精读点质量',
-        candidate: '精读点',
-        pipeline: '文档精读过程',
-        sourceUnits: '文档片段',
-        usable: '可用精读卡',
-        duplicate: '重复精读点',
-      }
-    : isDocument
-      ? {
-          score: '知识点质量',
-          candidate: '知识点',
-          pipeline: '文档制卡过程',
-          sourceUnits: '文档片段',
-          usable: '可用知识卡',
-          duplicate: '重复知识点',
-        }
-      : {
-          score: '平均词伙评分',
-          candidate: '候选片段',
-          pipeline: '智能筛选过程',
-          sourceUnits: '字幕句',
-          usable: '可用卡片',
-          duplicate: '重复合并',
-        }
+  const totalGeneratedCount = qualityFunnel.card_count ?? qualityCounts.total
+  const exportableCount = qualityFunnel.exportable_card_count ?? usableCount
+  const repairRequiredCount = qualityFunnel.repair_required_card_count ?? 0
+  const selectedRawCount = qualityFunnel.selected_card_count ?? selectedCardCount
+  const selectedExportableCount = qualityFunnel.selected_exportable_card_count ?? selectedCardCount
+  const selectedRepairRequiredCount = qualityFunnel.selected_repair_required_card_count ?? 0
+  const repairItems = exportRepairItems(project, 5)
+  const labels = {
+    score: '平均词伙评分',
+    candidate: '候选片段',
+    pipeline: '智能筛选过程',
+    sourceUnits: '字幕句',
+    usable: '可用卡片',
+    duplicate: '重复合并',
+  }
 
   return (
     <>
+      {projectSourceStatus.isHistoricalNonPublicProject ? (
+        <div className="public-source-guardrail" role="status" aria-label="历史项目提示">
+          <strong>历史项目</strong>
+          <span>{projectSourceStatus.notice}</span>
+        </div>
+      ) : null}
+
       <div className="review-export-summary" aria-label="导出数量概览">
         <div className="export-count-card">
-          <span>本次将导出</span>
+          <span>本次可导出</span>
           <div>
-            <strong>{selectedCount}</strong>
+            <strong>{selectedExportableCount}</strong>
             <em>张卡片</em>
           </div>
-          <small>{`只导出当前勾选的卡片；已选 ${selectedCount} / 生成 ${usableCount}`}</small>
+          <small>
+            {`已选 ${selectedRawCount} 张；其中可导出 ${selectedExportableCount} 张`}
+            {selectedRepairRequiredCount > 0 ? `，已选需修复 ${selectedRepairRequiredCount} 张` : ''}
+            {`。生成总数 ${totalGeneratedCount} 张。`}
+          </small>
         </div>
         <div className="export-side-metrics">
           <span>
-            <strong>{usableCount}</strong>
-            <small>生成可用卡</small>
+            <strong>{exportableCount}</strong>
+            <small>可导出卡</small>
           </span>
           <span>
-            <strong>{segmentReviewCounts.all}</strong>
-            <small>片段</small>
+            <strong>{totalGeneratedCount}</strong>
+            <small>生成总数</small>
           </span>
           <span>
-            <strong>{diagnosticCount}</strong>
-            <small>更多学习点</small>
+            <strong>{repairRequiredCount}</strong>
+            <small>需修复卡</small>
           </span>
         </div>
       </div>
+
+      {repairRequiredCount > 0 ? (
+        <details className="export-repair-notice" role="status" aria-label="需修复卡提示" open>
+          <summary>
+            <div>
+              <strong>{repairRequiredCount} 张需修复卡不会导出</strong>
+              <span>这些卡包含本地草稿、内部提示或需要人工确认的文本。请重新生成，或手动修正字段后再导出。</span>
+            </div>
+            <em>查看清单</em>
+          </summary>
+          {repairItems.length ? (
+            <ul>
+              {repairItems.map((item) => (
+                <li key={`${item.segmentId}-${item.cardId}`}>
+                  <strong>{item.title}</strong>
+                  <small>{[item.sourceTime, ...item.reasons].filter(Boolean).join(' · ')}</small>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </details>
+      ) : null}
 
       {materialSummary ? (
         <div className="material-context-card" aria-label="素材理解">
@@ -155,13 +176,12 @@ export function ReviewSummaryPanel({
             {`每句最多 ${maxLearningPoints} 个学习点 · `}
             {levelLabel} · {displayLanguage} · {activeTemplateLabel}
             {localSubtitleSource ? ` · ${localSubtitleSource}` : ''}
-            {project.source_mode === 'local' && project.skip_video_slicing ? ' · 字幕-only' : ''}
           </span>
         </div>
         {hasCardGenerationDiagnostics ? (
           <div className="quality-context-line">
             <span>
-              {`学习点制卡：已选 ${selectedLearningPointCount ?? '-'} · 成功 ${successfulLearningPointCount ?? usableCount} · 模型未返回 ${modelMissingLearningPointCount} · 质量过滤 ${cardGenerationFilteredCount}${
+            {`学习点制卡：已选 ${selectedLearningPointCount ?? '-'} · 成功 ${successfulLearningPointCount ?? usableCount} · 硬失败 ${modelMissingLearningPointCount} · 质量过滤 ${cardGenerationFilteredCount}${
                 cardGenerationSkippedCount ? ` · 跳过 ${cardGenerationSkippedCount}` : ''
               }`}
             </span>
@@ -173,8 +193,12 @@ export function ReviewSummaryPanel({
               <span key={`${item.learning_point_id}-${item.status}`}>
                 <strong>{item.answer_core || item.learning_point_id}</strong>
                 <small>
-                  {item.status === 'model_missing'
-                    ? '模型未返回'
+                  {item.status === 'model_missing' || item.status === 'hard_failed'
+                    ? '硬失败'
+                    : item.status === 'fallback_from_selected_learning_point'
+                      ? '保底生成'
+                      : item.status === 'ai_repaired'
+                        ? '字段补齐'
                     : item.status === 'filtered'
                       ? '质量过滤'
                       : item.status === 'skipped'
@@ -197,11 +221,11 @@ export function ReviewSummaryPanel({
             <small>学习点</small>
           </span>
           <span>
-            <strong>{qualityFunnel.card_count ?? qualityCounts.total}</strong>
+            <strong>{totalGeneratedCount}</strong>
             <small>生成卡片</small>
           </span>
           <span>
-            <strong>{usableCount}</strong>
+            <strong>{exportableCount}</strong>
             <small>{labels.usable}</small>
           </span>
           <span>
@@ -217,8 +241,8 @@ export function ReviewSummaryPanel({
             <small>硬阻断</small>
           </span>
           <span>
-            <strong>{selectedCount}</strong>
-            <small>已选导出</small>
+            <strong>{selectedExportableCount}</strong>
+            <small>已选可导出</small>
           </span>
         </div>
       </details>

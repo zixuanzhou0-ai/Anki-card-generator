@@ -2,7 +2,9 @@ import { BookOpenCheck, Languages } from 'lucide-react'
 
 import {
   documentAnswerLanguageLabel,
+  documentAnswerLanguageMoreOptions,
   documentAnswerLanguageOptions,
+  documentAnswerLanguagePrimaryOptions,
   documentAnswerLengthLabel,
   documentAnswerLengthOptions,
   documentDepthLabel,
@@ -14,7 +16,7 @@ import {
   learningLanguageOptions,
   normalizeLearningLanguage,
 } from '../../domain/options'
-import type { DocumentFocus, GenerateRequest, LanguageFocus, Level } from '../../domain/types'
+import type { DocumentAnswerLanguage, DocumentFocus, GenerateRequest, LanguageFocus, Level } from '../../domain/types'
 
 type LevelOption = {
   id: Level
@@ -62,11 +64,15 @@ export function DocumentStudyPanel({
   const selectedReadingFocus = request.language_focus.filter((item) => documentReadingFocusOptions.includes(item))
   const autoLevel = request.level_mode !== 'manual'
   const levelSummary = autoLevel ? '自动判断' : request.level
+  const answerLanguageLabel = documentAnswerLanguageLabel(request.document_answer_language)
+  const moreLanguageValue = documentAnswerLanguageMoreOptions.some((item) => item.id === request.document_answer_language)
+    ? request.document_answer_language
+    : ''
   const studySummary = isLanguageReading
     ? `语言精读 · ${learningLanguageLabel(request.language)} · ${levelSummary}`
-    : `${documentAnswerLanguageLabel(request.document_answer_language)} · ${documentDepthLabel(
-        request.document_depth,
-      )} · ${documentFocusSummary(request.document_focus)}`
+    : `答案${answerLanguageLabel} · ${documentDepthLabel(request.document_depth)} · ${documentFocusSummary(
+        request.document_focus,
+      )}`
 
   return (
     <section className="panel document-study-panel">
@@ -218,25 +224,63 @@ export function DocumentStudyPanel({
             </div>
           </details>
 
-          <div className="document-option-block">
-            <div className="settings-subheading">
-              <strong>讲解语言</strong>
-              <span>{documentAnswerLanguageLabel(request.document_answer_language)}</span>
-            </div>
-            <div className="segmented document-segmented" aria-label="文档讲解语言">
-              {documentAnswerLanguageOptions.map((item) => (
-                <button
-                  type="button"
-                  key={item.id}
-                  className={request.document_answer_language === item.id ? 'selected' : ''}
-                  onClick={() => onPatchRequest({ document_answer_language: item.id })}
-                  title={item.note}
+          <details className="compact-details document-language-settings">
+            <summary>
+              <span>答案语言</span>
+              <strong>{answerLanguageLabel}</strong>
+            </summary>
+            <div className="document-answer-language-body">
+              <div className="document-language-status">
+                <span>
+                  <strong>文档语言</strong>
+                  <small>自动识别原文；双语会保留原文语言线索</small>
+                </span>
+                <em>自动</em>
+              </div>
+              <div className="document-language-copy">
+                <strong>答案/解析语言</strong>
+                <span>控制卡片答案、解释和老师提醒的语言。默认中文；需要其他语言时在这里改。</span>
+              </div>
+              <div className="document-answer-language-quick" aria-label="常用答案语言">
+                {documentAnswerLanguagePrimaryOptions.map((item) => (
+                  <button
+                    type="button"
+                    key={item.id}
+                    className={request.document_answer_language === item.id ? 'selected' : ''}
+                    aria-pressed={request.document_answer_language === item.id}
+                    onClick={() => onPatchRequest({ document_answer_language: item.id })}
+                    title={item.note}
+                  >
+                    <strong>{item.label}</strong>
+                    <span>{item.note}</span>
+                  </button>
+                ))}
+              </div>
+              <label className="document-language-select-row">
+                <span>
+                  <strong>更多语言</strong>
+                  <small>适合日语、韩语、西语、法语等资料或复习习惯</small>
+                </span>
+                <select
+                  aria-label="更多答案语言"
+                  value={moreLanguageValue}
+                  onChange={(event) => {
+                    const nextLanguage = event.target.value as DocumentAnswerLanguage
+                    if (documentAnswerLanguageOptions.some((item) => item.id === nextLanguage)) {
+                      onPatchRequest({ document_answer_language: nextLanguage })
+                    }
+                  }}
                 >
-                  {item.label}
-                </button>
-              ))}
+                  <option value="">选择语言...</option>
+                  {documentAnswerLanguageMoreOptions.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </div>
-          </div>
+          </details>
 
           <div className="document-option-block">
             <div className="settings-subheading">

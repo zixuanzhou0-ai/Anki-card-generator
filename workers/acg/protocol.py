@@ -29,13 +29,14 @@ def emit(payload: Any) -> None:
     print(json.dumps(payload, ensure_ascii=False))
 
 
-def emit_progress(command: str, stage: str, percent: int, message: str) -> None:
+def emit_progress(command: str, stage: str, percent: int, message: str, **extra: Any) -> None:
     payload = {
         "command": command,
         "stage": stage,
         "percent": max(0, min(100, int(percent))),
         "message": message,
     }
+    payload.update(extra)
     print(f"{PROGRESS_PREFIX}{json.dumps(payload, ensure_ascii=False)}", file=sys.stderr, flush=True)
 
 
@@ -46,6 +47,7 @@ def worker_error_payload(
     stage: str | None = None,
     retryable: bool = False,
     fallbacks: list[str] | None = None,
+    details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -57,6 +59,8 @@ def worker_error_payload(
         payload["error_code"] = error_code
     if stage:
         payload["stage"] = stage
+    if details:
+        payload["details"] = details
     return payload
 
 
@@ -68,6 +72,7 @@ def fail(
     stage: str | None = None,
     retryable: bool = False,
     fallbacks: list[str] | None = None,
+    details: dict[str, Any] | None = None,
 ) -> None:
     payload = worker_error_payload(
         message,
@@ -75,6 +80,7 @@ def fail(
         stage=stage,
         retryable=retryable,
         fallbacks=fallbacks,
+        details=details,
     )
     print(f"{ERROR_PREFIX}{json.dumps(payload, ensure_ascii=False)}", file=sys.stderr, flush=True)
     print(message, file=sys.stderr)

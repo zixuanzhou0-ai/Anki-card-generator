@@ -1,12 +1,22 @@
+import { useEffect } from 'react'
 import { InspectorPanel } from '../features/app/InspectorPanel'
+import { publicSourceModeFor } from '../domain/publicSource'
 import { Topbar } from '../features/app/Topbar'
 import { ReviewWorkspace } from '../features/review/ReviewWorkspace'
 import { SettingsDialog } from '../features/settings/SettingsDialog'
-import { defaultSelectedLearningPointIds } from '../domain/learningPoints'
 import type { AppController } from './useAppController'
 
 type AppShellProps = {
   controller: AppController
+}
+
+declare global {
+  interface Window {
+    __ANKI_RELEASE_EVIDENCE__?: {
+      buildRawObservedSnapshotHandoff: AppController['buildReleaseObservedRawSnapshotHandoff']
+      buildTimingCacheSnapshot: AppController['buildReleaseObservedTimingCacheSnapshot']
+    }
+  }
 }
 
 export function AppShell({ controller }: AppShellProps) {
@@ -15,7 +25,6 @@ export function AppShell({ controller }: AppShellProps) {
     activeSegment,
     activeSegmentId,
     activeSegmentVideoSrc,
-    activeTemplate,
     activeApiProfileId,
     activeTtsProfileId,
     advancedApiPresets,
@@ -28,11 +37,11 @@ export function AppShell({ controller }: AppShellProps) {
     apiTestTitle,
     apiTestTone,
     apiTesting,
+    activeApiKeySaved,
     apiProfileDirty,
     apiProfileStatus,
     appBusy,
     applyApiPreset,
-    applyCollectionPreset,
     applySavedApiProfile,
     applySavedTtsProfile,
     applyTtsPreset,
@@ -40,18 +49,21 @@ export function AppShell({ controller }: AppShellProps) {
     capabilityHelp,
     capabilityLabels,
     checkEnv,
-    contentOptions,
     deepseekTextModels,
-    documentFocusOptions,
     envRepairing,
     envRepairResult,
     envStatus,
     exportApkg,
+    extractLearningPointsWithoutCache,
     featuredApiPresets,
     featuredTtsPresets,
     geminiVertexTextModels,
     generate,
+    generationConfirmOpen,
+    generationQueuePoints,
+    generationQueueSummary,
     generateCardsFromLearningPoints,
+    generateSingleLearningPoint,
     handleTopbarDoubleClick,
     handleWorkerErrorAction,
     inspectorActionLabel,
@@ -60,8 +72,8 @@ export function AppShell({ controller }: AppShellProps) {
     isCancelling,
     isDesktopRuntime,
     lastExport,
+    lastWorkerError,
     learningPointResult,
-    languageFocusOptions,
     levels,
     MIMO_OPENAI_BASE_URL,
     MIMO_TOKEN_PLAN_SGP_BASE_URL,
@@ -72,6 +84,8 @@ export function AppShell({ controller }: AppShellProps) {
     qwenTtsModels,
     qwenTtsVoices,
     motionDuration,
+    closeGenerationConfirm,
+    confirmGenerateCardsFromLearningPoints,
     openAnkiImport,
     patchApi,
     patchRequest,
@@ -84,20 +98,27 @@ export function AppShell({ controller }: AppShellProps) {
     qualityDiagnostics,
     qualityFunnel,
     readiness,
+    buildReleaseObservedRawSnapshotHandoff,
+    buildReleaseObservedTimingCacheSnapshot,
     request,
     requestEditedDuringRun,
     responsiveMode,
     revealExport,
+    removeGenerationQueueLearningPoint,
+    retryMissingLearningPoints,
     repairEnv,
     runWindowAction,
     savedApiProfiles,
     savedTtsProfiles,
     saveCurrentApiProfile,
     saveCurrentTtsProfile,
-    selectionStrategyOptions,
     segmentFilter,
     segmentReviewCounts,
     selectedCardCount,
+    selectedExportableCardCount,
+    exportableCardCount,
+    repairRequiredCardCount,
+    selectedRepairRequiredCardCount,
     selectedLearningPointCount,
     selectedLearningPointIds,
     invertCardSelection,
@@ -114,28 +135,22 @@ export function AppShell({ controller }: AppShellProps) {
     setSelectedLearningPointIds,
     setSettingsOpen,
     setSettingsTab,
-    setShowAdvancedApi,
     setShowAdvancedTts,
     setShowCapabilities,
     settingsDialogRef,
     settingsOpen,
     settingsTab,
-    showAdvancedApi,
     showAdvancedTts,
     showCapabilities,
     startWindowDrag,
     startWindowResize,
     status,
     statusTone,
-    templateOptions,
     testApi,
     testTts,
-    toggleCollectionLevel,
-    toggleContent,
-    toggleDocumentFocus,
-    toggleLanguageFocus,
     toggleInspector,
     tts,
+    activeTtsKeySaved,
     ttsProfileDirty,
     ttsProfileStatus,
     ttsTesting,
@@ -151,34 +166,55 @@ export function AppShell({ controller }: AppShellProps) {
     workerErrorActions,
     workerProgress,
   } = controller
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !isDesktopRuntime) {
+      if (typeof window !== 'undefined') delete window.__ANKI_RELEASE_EVIDENCE__
+      return
+    }
+    window.__ANKI_RELEASE_EVIDENCE__ = {
+      buildRawObservedSnapshotHandoff: buildReleaseObservedRawSnapshotHandoff,
+      buildTimingCacheSnapshot: buildReleaseObservedTimingCacheSnapshot,
+    }
+    return () => {
+      if (
+        window.__ANKI_RELEASE_EVIDENCE__?.buildRawObservedSnapshotHandoff ===
+        buildReleaseObservedRawSnapshotHandoff
+      ) {
+        delete window.__ANKI_RELEASE_EVIDENCE__
+      }
+    }
+  }, [buildReleaseObservedRawSnapshotHandoff, buildReleaseObservedTimingCacheSnapshot, isDesktopRuntime])
+
   const hasLearningPointResult = Boolean(learningPointResult && !project)
   const sourceReady = readiness.find((item) => item.id === 'source')?.done ?? false
+  const publicSourceMode = publicSourceModeFor(request.source_mode)
   const topbarGenerateDisabled =
     workerBusy ||
     (!project && !hasLearningPointResult && !sourceReady) ||
     (hasLearningPointResult && selectedLearningPointCount === 0)
   const primaryGenerateAction = hasLearningPointResult ? generateCardsFromLearningPoints : generate
   const primaryGenerateLabel =
-    request.source_mode === 'document'
-      ? project
-        ? '重新生成'
-        : '生成卡片'
-      : project
-        ? '重新抽取'
-        : hasLearningPointResult
-          ? '生成选中卡片'
-          : '抽取学习点'
+    project
+      ? '重新抽取（可能复用缓存）'
+      : hasLearningPointResult
+        ? generationConfirmOpen
+          ? `确认区已打开 · ${generationQueueSummary.count || selectedLearningPointCount} 张`
+          : `生成 APKG · ${selectedLearningPointCount} 张`
+        : '抽取学习点'
+  const reviewTemplateLabel = request.review_density === 'fast' ? '快速复读' : '完整复读'
 
   return (
     <div className="app-shell">
       <Topbar
         appBusy={appBusy}
         generateDisabled={topbarGenerateDisabled}
-        hasExportableCards={selectedCardCount > 0}
+        hasExportableCards={selectedExportableCardCount > 0}
         hasProject={Boolean(project)}
         inspectorActionLabel={inspectorActionLabel}
         inspectorActive={inspectorState === 'open' || inspectorState === 'collapsing' || inspectorSheetOpen}
         isCancelling={isCancelling}
+        showGenerateButton={!hasLearningPointResult}
         status={status}
         statusTone={statusTone}
         workerBusy={workerBusy}
@@ -205,40 +241,37 @@ export function AppShell({ controller }: AppShellProps) {
           ) : null}
           <InspectorPanel
             activeWorkspaceStage={activeWorkspaceStage}
-            activeTemplateLabel={activeTemplate?.label ?? '沉浸视频'}
             appBusy={appBusy}
-            contentOptions={contentOptions}
             diagnosticCount={
               (qualityFunnel.candidate_only_learning_point_count ?? 0) +
               (qualityFunnel.hidden_duplicate_learning_point_count ?? 0) +
               (qualityFunnel.hard_blocked_learning_point_count ?? 0)
             }
-            documentFocusOptions={documentFocusOptions}
             generatedCardCount={qualityCounts.total}
-            hasExportableCards={selectedCardCount > 0}
+            hasExportableCards={selectedExportableCardCount > 0}
             hasLearningPointResult={hasLearningPointResult}
             hasProject={Boolean(project)}
             inspectorSheetOpen={inspectorSheetOpen}
-            languageFocusOptions={languageFocusOptions}
             levels={levels}
             previewRate={previewRate}
             selectedCardCount={selectedCardCount}
+            selectedExportableCardCount={selectedExportableCardCount}
+            exportableCardCount={exportableCardCount}
+            repairRequiredCardCount={repairRequiredCardCount}
+            selectedRepairRequiredCardCount={selectedRepairRequiredCardCount}
             selectedLearningPointCount={selectedLearningPointCount}
             readiness={readiness}
             request={request}
             requestEditedDuringRun={requestEditedDuringRun}
             status={status}
             statusTone={statusTone}
-            templateId={request.template_id}
-            templateOptions={templateOptions}
-            selectionStrategyOptions={selectionStrategyOptions}
             workerBusy={workerBusy}
             workerErrorActions={workerErrorActions}
             workerProgress={workerProgress}
-            onApplyCollectionPreset={applyCollectionPreset}
             onCheckEnv={checkEnv}
             onCloseSheet={() => setInspectorState('collapsed')}
             onExport={exportApkg}
+            onExtractLearningPointsWithoutCache={extractLearningPointsWithoutCache}
             onGenerate={primaryGenerateAction}
             onOpenEnvSettings={() => {
               setSettingsTab('env')
@@ -251,10 +284,6 @@ export function AppShell({ controller }: AppShellProps) {
             onSelectPath={selectPath}
             onSelectSourceMode={selectSourceMode}
             onSelectTemplate={selectTemplate}
-            onToggleCollectionLevel={toggleCollectionLevel}
-            onToggleContent={toggleContent}
-            onToggleDocumentFocus={toggleDocumentFocus}
-            onToggleLanguageFocus={toggleLanguageFocus}
             onWorkspaceStageChange={setActiveWorkspaceStage}
             onWorkerErrorAction={handleWorkerErrorAction}
           />
@@ -263,14 +292,14 @@ export function AppShell({ controller }: AppShellProps) {
             activeSegment={activeSegment}
             activeSegmentId={activeSegmentId}
             activeSegmentVideoSrc={activeSegmentVideoSrc}
-            activeTemplateLabel={activeTemplate?.label ?? '沉浸视频'}
+            activeTemplateLabel={reviewTemplateLabel}
             ankiVerifying={ankiVerifying}
             ankiVerifyResult={ankiVerifyResult}
             lastExport={lastExport}
+            lastWorkerError={lastWorkerError}
             language={request.language}
             level={request.level}
             learningPointResult={learningPointResult}
-            maxSegments={request.max_segments}
             motionDuration={motionDuration}
             prefersReducedMotion={Boolean(prefersReducedMotion)}
             previewPanelRef={previewPanelRef}
@@ -281,27 +310,32 @@ export function AppShell({ controller }: AppShellProps) {
             qualityFunnel={qualityFunnel}
             selectedCardCount={selectedCardCount}
             selectedLearningPointIds={selectedLearningPointIds}
+            generationConfirmOpen={generationConfirmOpen}
+            generationQueuePoints={generationQueuePoints}
+            generationQueueSummary={generationQueueSummary}
             segmentFilter={segmentFilter}
             segmentReviewCounts={segmentReviewCounts}
-            sourceMode={request.source_mode}
+            sourceMode={publicSourceMode}
             templateId={request.template_id}
             visibleSegments={visibleSegments}
             workerBusy={workerBusy}
             workerProgress={workerProgress}
             status={status}
+            onCloseGenerationConfirm={closeGenerationConfirm}
+            onConfirmGenerateCardsFromLearningPoints={confirmGenerateCardsFromLearningPoints}
+            onExport={exportApkg}
+            onExtractLearningPointsWithoutCache={extractLearningPointsWithoutCache}
             onOpenAnkiImport={openAnkiImport}
             onRevealExport={revealExport}
             onSegmentFilterChange={setSegmentFilter}
             onInvertCardSelection={invertCardSelection}
             onGenerateCardsFromLearningPoints={generateCardsFromLearningPoints}
+            onGenerateSingleLearningPoint={generateSingleLearningPoint}
+            onRemoveGenerationQueueLearningPoint={removeGenerationQueueLearningPoint}
+            onRetryMissingLearningPoints={retryMissingLearningPoints}
             onSelectSegment={selectSegment}
             onSetCardsEnabled={setCardsEnabled}
             onSetSelectedLearningPointIds={setSelectedLearningPointIds}
-            onSelectDefaultLearningPoints={() =>
-              setSelectedLearningPointIds(
-                defaultSelectedLearningPointIds(learningPointResult?.learning_points ?? [], { reviewDensity: request.review_density }),
-              )
-            }
             onUpdateCard={updateCard}
             onVerifyAnkiImport={verifyAnkiImport}
           />
@@ -318,6 +352,7 @@ export function AppShell({ controller }: AppShellProps) {
           apiTestTitle,
           apiTestTone,
           apiTesting,
+          apiKeySaved: activeApiKeySaved,
           activeApiProfileId,
           apiProfileDirty,
           apiProfileStatus,
@@ -328,13 +363,11 @@ export function AppShell({ controller }: AppShellProps) {
           mimoOpenAiBaseUrl: MIMO_OPENAI_BASE_URL,
           mimoTextModels: [...mimoTextModels, ...qwenTextModels, ...deepseekTextModels, ...geminiVertexTextModels],
           savedApiProfiles,
-          showAdvancedApi,
           showCapabilities,
           onApplyApiPreset: applyApiPreset,
           onApplySavedApiProfile: applySavedApiProfile,
           onPatchApi: patchApi,
           onSaveApiProfile: saveCurrentApiProfile,
-          onSetShowAdvancedApi: setShowAdvancedApi,
           onSetShowCapabilities: setShowCapabilities,
           onTestApi: testApi,
         }}
@@ -346,6 +379,7 @@ export function AppShell({ controller }: AppShellProps) {
         settingsTab={settingsTab}
         ttsSettings={{
           advancedTtsPresets,
+          apiConfig: request.api_config,
           appBusy,
           featuredTtsPresets,
           mimoOpenAiBaseUrl: MIMO_OPENAI_BASE_URL,
@@ -358,6 +392,7 @@ export function AppShell({ controller }: AppShellProps) {
           savedTtsProfiles,
           showAdvancedTts,
           tts,
+          ttsKeySaved: activeTtsKeySaved,
           ttsProfileDirty,
           ttsProfileStatus,
           ttsTestMessage,

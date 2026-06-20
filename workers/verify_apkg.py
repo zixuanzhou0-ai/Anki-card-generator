@@ -29,6 +29,16 @@ MODEL_PREFIXES = (
 FIELD_SEPARATOR = "\x1f"
 
 REQUIRED_STUDY_TEXT_FIELDS = ("Chinese", "Definition", "TeacherNote")
+CORRUPTED_STUDY_TEXT_FIELDS = (
+    "Chinese",
+    "ChineseFeel",
+    "TeacherNote",
+    "Why",
+    "Context",
+    "ChineseLearnerTrap",
+    "ConceptualAction",
+)
+ASCII_REPLACEMENT_RUN_RE = re.compile(r"\?{3,}")
 BLOCKED_STUDY_TEXT_PATTERNS = (
     "待精修",
     "本地 fallback",
@@ -46,6 +56,83 @@ MEDIA_MIN_BYTES = {
     ".mp4": 4096,
     ".webm": 4096,
 }
+VERIFY_WORKSPACE_MARKER = ".anki_apkg_verify_workspace"
+MAX_ARCHIVE_MEDIA_ENTRIES = 2000
+MAX_ARCHIVE_ENTRY_BYTES = 512 * 1024 * 1024
+MAX_ARCHIVE_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
+LEGACY_VERIFY_ARTIFACT_NAMES = {
+    "collection.anki2",
+    "collection.anki21",
+    "collection.media",
+    "collection.log",
+    "collection.anki2-shm",
+    "collection.anki2-wal",
+    "collection.anki21-shm",
+    "collection.anki21-wal",
+    "media",
+}
+
+
+def archive_limit_error(message: str) -> RuntimeError:
+    return RuntimeError(f"UNSAFE_APKG_ARCHIVE: {message}")
+
+
+def validate_apkg_archive_limits(archive: zipfile.ZipFile) -> None:
+    media_entries = 0
+    total_size = 0
+    for info in archive.infolist():
+        if info.file_size > MAX_ARCHIVE_ENTRY_BYTES:
+            raise archive_limit_error(f"{info.filename} 超过单文件上限。")
+        total_size += int(info.file_size)
+        if total_size > MAX_ARCHIVE_TOTAL_BYTES:
+            raise archive_limit_error("解压后总大小超过上限。")
+        if info.filename not in {"collection.anki2", "collection.anki21", "media"}:
+            media_entries += 1
+    if media_entries > MAX_ARCHIVE_MEDIA_ENTRIES:
+        raise archive_limit_error("媒体文件数量超过上限。")
+
+
+def is_dangerous_output_root(path: Path) -> bool:
+    resolved = path.resolve()
+    if resolved.parent == resolved:
+        return True
+    try:
+        if resolved == Path.home().resolve():
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def legacy_verify_dir_safe_to_clean(path: Path) -> bool:
+    try:
+        entries = list(path.iterdir())
+    except OSError:
+        return False
+    if not entries:
+        return True
+    for entry in entries:
+        if entry.name == VERIFY_WORKSPACE_MARKER:
+            return True
+    return all(entry.name in LEGACY_VERIFY_ARTIFACT_NAMES for entry in entries)
+
+
+def prepare_verify_output_dir(out_dir: Path) -> Path:
+    out_dir = out_dir.resolve()
+    if is_dangerous_output_root(out_dir):
+        raise SystemExit(f"UNSAFE_VERIFY_OUTPUT_DIR: 拒绝使用危险输出目录：{out_dir}")
+    if out_dir.exists():
+        if not out_dir.is_dir():
+            raise SystemExit(f"UNSAFE_VERIFY_OUTPUT_DIR: 输出路径不是目录：{out_dir}")
+        if not legacy_verify_dir_safe_to_clean(out_dir):
+            raise SystemExit(
+                "UNSAFE_VERIFY_OUTPUT_DIR: 输出目录已存在且不像 APKG 验证工作目录，已拒绝删除。"
+                f"请换一个空目录或专用验证目录：{out_dir}"
+            )
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True)
+    (out_dir / VERIFY_WORKSPACE_MARKER).write_text("safe to clean by verify_apkg.py\n", encoding="utf-8")
+    return out_dir
 
 
 def media_header_valid(file_name: str, size: int, header: bytes) -> bool:
@@ -200,6 +287,7 @@ def offline_field_report(notes: list[dict], media_names: set[str]) -> dict:
     phrase_tts_hash_mismatches: list[dict] = []
     empty_required_text_fields: list[dict] = []
     blocked_study_text_values: list[dict] = []
+    corrupted_study_text_values: list[dict] = []
     video_reference_compatibility_issues: list[dict] = []
 
     for index, note in enumerate(notes, start=1):
@@ -220,6 +308,19 @@ def offline_field_report(notes: list[dict], media_names: set[str]) -> dict:
             if blocked:
                 blocked_study_text_values.append(
                     {"note": index, "card_id": card_id, "field": field_name, "pattern": blocked}
+                )
+        for field_name in CORRUPTED_STUDY_TEXT_FIELDS:
+            text = plain_field_text(note.get(field_name, ""))
+            match = ASCII_REPLACEMENT_RUN_RE.search(text)
+            if match:
+                corrupted_study_text_values.append(
+                    {
+                        "note": index,
+                        "card_id": card_id,
+                        "field": field_name,
+                        "pattern": match.group(0),
+                        "excerpt": text[:160],
+                    }
                 )
         for field_name in ("Video", "Audio", "TtsAudio", "PhraseTtsAudio"):
             referenced_media.update(extract_media_references(note.get(field_name, "")))
@@ -268,12 +369,14 @@ def offline_field_report(notes: list[dict], media_names: set[str]) -> dict:
         "phrase_tts_text_hash_mismatches": phrase_tts_hash_mismatches,
         "empty_required_text_fields": empty_required_text_fields,
         "blocked_study_text_values": blocked_study_text_values,
+        "corrupted_study_text_values": corrupted_study_text_values,
         "video_reference_compatibility_issues": video_reference_compatibility_issues,
     }
 
 
 def sqlite_fallback_report(apkg: Path) -> dict:
     with zipfile.ZipFile(apkg) as archive:
+        validate_apkg_archive_limits(archive)
         names = archive.namelist()
         collection_name = "collection.anki2" if "collection.anki2" in names else "collection.anki21"
         media_map = json.loads(archive.read("media").decode("utf-8"))
@@ -336,6 +439,7 @@ def sqlite_fallback_report(apkg: Path) -> dict:
                     "phrase_tts_text_hash_mismatches",
                     "empty_required_text_fields",
                     "blocked_study_text_values",
+                    "corrupted_study_text_values",
                     "video_reference_compatibility_issues",
                 ):
                     if field_report.get(key):
@@ -380,10 +484,7 @@ def main() -> None:
     if not apkg.exists():
         raise SystemExit(f"APKG not found: {apkg}")
 
-    out_dir = Path(sys.argv[2]) if len(sys.argv) > 2 else Path.cwd() / "anki_apkg_verify"
-    if out_dir.exists():
-        shutil.rmtree(out_dir)
-    out_dir.mkdir(parents=True)
+    out_dir = prepare_verify_output_dir(Path(sys.argv[2]) if len(sys.argv) > 2 else Path.cwd() / "anki_apkg_verify")
 
     try:
         import anki.lang
@@ -394,6 +495,8 @@ def main() -> None:
         return
 
     anki.lang.set_lang("en_US")
+    with zipfile.ZipFile(apkg) as archive:
+        validate_apkg_archive_limits(archive)
     col = Collection(str(out_dir / "collection.anki2"))
     try:
         importer = AnkiPackageImporter(col, str(apkg))
@@ -434,6 +537,7 @@ def main() -> None:
             "phrase_tts_text_hash_mismatches",
             "empty_required_text_fields",
             "blocked_study_text_values",
+            "corrupted_study_text_values",
             "video_reference_compatibility_issues",
         ):
             if field_report.get(key):

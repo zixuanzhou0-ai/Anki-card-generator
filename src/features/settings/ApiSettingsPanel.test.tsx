@@ -3,7 +3,7 @@ import type { ComponentProps } from 'react'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { ApiConfig, ApiPreset } from '../../domain/types'
+import type { ApiConfig, ApiPreset, SavedApiProfile } from '../../domain/types'
 import { ApiSettingsPanel } from './ApiSettingsPanel'
 
 afterEach(() => cleanup())
@@ -27,7 +27,7 @@ const apiConfig: ApiConfig = {
   },
 }
 
-const preset: ApiPreset = {
+const mimoPreset: ApiPreset = {
   base_url: 'https://token-plan-sgp.xiaomimimo.com/v1',
   capabilities: ['structured_json', 'long_context'],
   id: 'mimo',
@@ -38,32 +38,53 @@ const preset: ApiPreset = {
   provider: 'mimo',
 }
 
+const deepseekPreset: ApiPreset = {
+  base_url: 'https://api.deepseek.com',
+  capabilities: ['structured_json', 'long_context', 'cheap_batch'],
+  id: 'deepseek-v4-flash',
+  key_hint: 'DeepSeek Key',
+  label: 'DeepSeek V4 Flash',
+  model: 'deepseek-v4-flash',
+  note: '快速批量生成',
+  provider: 'openai-compatible',
+}
+
+const customPreset: ApiPreset = {
+  base_url: '',
+  capabilities: ['structured_json', 'cheap_batch'],
+  id: 'custom-compatible',
+  key_hint: '任意 Key',
+  label: '自定义兼容模型',
+  model: '',
+  note: '手动填写',
+  provider: 'openai-compatible',
+}
+
 function renderPanel(overrides: Partial<ComponentProps<typeof ApiSettingsPanel>> = {}) {
   const props: ComponentProps<typeof ApiSettingsPanel> = {
-    advancedApiPresets: [],
+    activeApiProfileId: 'local',
+    advancedApiPresets: [deepseekPreset, customPreset],
     apiConfig,
+    apiKeySaved: false,
+    apiProfileDirty: false,
+    apiProfileStatus: '未保存到我的模型',
     apiTestMessage: '请先测试连接。',
     apiTestMeta: 'local · 预览模式',
     apiTestTitle: '未测试',
     apiTestTone: 'idle',
     apiTesting: false,
-    activeApiProfileId: 'local',
-    apiProfileDirty: false,
-    apiProfileStatus: '未保存到我的模型',
     appBusy: false,
     capabilityHelp: { structured_json: '结构化输出' },
     capabilityLabels: ['structured_json'],
-    featuredApiPresets: [preset],
+    featuredApiPresets: [mimoPreset],
     mimoOpenAiBaseUrl: 'https://api.xiaomimimo.com/v1',
     mimoTextModels: [{ label: 'MIMO V2.5 Pro', value: 'mimo-v2.5-pro' }],
     savedApiProfiles: [],
-    showAdvancedApi: false,
-    showCapabilities: true,
+    showCapabilities: false,
     onApplyApiPreset: vi.fn(),
     onApplySavedApiProfile: vi.fn(),
     onPatchApi: vi.fn(),
     onSaveApiProfile: vi.fn(),
-    onSetShowAdvancedApi: vi.fn(),
     onSetShowCapabilities: vi.fn(),
     onTestApi: vi.fn(),
     ...overrides,
@@ -73,16 +94,58 @@ function renderPanel(overrides: Partial<ComponentProps<typeof ApiSettingsPanel>>
 }
 
 describe('ApiSettingsPanel', () => {
-  it('renders presets and can test the API connection', () => {
+  it('uses a searchable catalog and keeps direct config fields visible', () => {
     const props = renderPanel()
 
+    fireEvent.change(screen.getByPlaceholderText('搜索厂商、模型、Base URL'), { target: { value: 'deepseek' } })
+    fireEvent.click(screen.getByRole('button', { name: /DeepSeek V4 Flash/ }))
     fireEvent.click(screen.getByRole('button', { name: /测试连接/ }))
-    fireEvent.change(screen.getByRole('combobox', { name: /^模型方案$/ }), { target: { value: 'preset:mimo' } })
 
-    expect(screen.getByText('模型 API')).toBeInTheDocument()
-    expect(screen.getByText('请先测试连接。')).toBeInTheDocument()
+    expect(screen.getByText('模型目录')).toBeInTheDocument()
+    expect(screen.getByLabelText(/Provider/)).toBeInTheDocument()
+    expect(screen.getByLabelText(/Model/)).toBeInTheDocument()
+    expect(screen.getByLabelText(/API Key/)).toBeInTheDocument()
+    expect(props.onApplyApiPreset).toHaveBeenCalledWith(deepseekPreset)
     expect(props.onTestApi).toHaveBeenCalledOnce()
-    expect(props.onApplyApiPreset).toHaveBeenCalledWith(preset)
+  })
+
+  it('lets the user manually add an OpenAI-compatible model instead of forcing recommendations', () => {
+    const props = renderPanel()
+
+    fireEvent.click(screen.getByRole('button', { name: /OpenAI-compatible 模型/ }))
+
+    expect(props.onApplyApiPreset).toHaveBeenCalledWith(customPreset)
+  })
+
+  it('shows saved profiles at the top and applies them from the catalog', () => {
+    const savedProfile: SavedApiProfile = {
+      auth: 'api_key',
+      base_url: 'https://my-provider.example/v1',
+      capabilities: ['structured_json'],
+      has_api_key: true,
+      id: 'mine',
+      label: '我的高速模型',
+      last_test_ok: true,
+      model: 'my-fast-model',
+      provider: 'openai-compatible',
+      updated_at: '2026-06-16T00:00:00Z',
+    }
+    const props = renderPanel({ activeApiProfileId: 'mine', savedApiProfiles: [savedProfile] })
+
+    fireEvent.click(screen.getByRole('button', { name: /我的高速模型/ }))
+
+    expect(screen.getByText('我的模型')).toBeInTheDocument()
+    expect(props.onApplySavedApiProfile).toHaveBeenCalledWith('mine')
+  })
+
+  it('uses filter chips only as catalog filters', () => {
+    renderPanel()
+
+    fireEvent.click(screen.getByRole('button', { name: '速度' }))
+
+    expect(screen.getByRole('button', { name: /DeepSeek V4 Flash/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /MIMO Token Plan/ })).not.toBeInTheDocument()
+    expect(screen.getByLabelText(/Base URL/)).toBeInTheDocument()
   })
 
   it('renders a precise failed diagnostic title', () => {
@@ -98,7 +161,7 @@ describe('ApiSettingsPanel', () => {
 
   it('patches provider defaults when switching to MIMO', () => {
     const onPatchApi = vi.fn()
-    renderPanel({ onPatchApi, showAdvancedApi: true })
+    renderPanel({ onPatchApi })
 
     fireEvent.change(screen.getByLabelText(/Provider/), { target: { value: 'mimo' } })
 
@@ -113,7 +176,7 @@ describe('ApiSettingsPanel', () => {
 
   it('patches DeepSeek V4 defaults when switching to OpenAI-compatible from empty local config', () => {
     const onPatchApi = vi.fn()
-    renderPanel({ onPatchApi, showAdvancedApi: true })
+    renderPanel({ onPatchApi })
 
     fireEvent.change(screen.getByLabelText(/Provider/), { target: { value: 'openai-compatible' } })
 
@@ -126,9 +189,18 @@ describe('ApiSettingsPanel', () => {
     )
   })
 
-  it('patches Gemini Vertex defaults when switching to the Vertex provider', () => {
+  it('patches Gemini Vertex defaults and hides the API key field for gcloud auth', () => {
     const onPatchApi = vi.fn()
-    renderPanel({ onPatchApi, showAdvancedApi: true })
+    renderPanel({
+      apiConfig: {
+        ...apiConfig,
+        api_key: 'sk-old-provider-key',
+        base_url: 'https://aiplatform.googleapis.com',
+        model: 'gemini-3.1-pro-preview',
+        provider: 'gemini-vertex',
+      },
+      onPatchApi,
+    })
 
     fireEvent.change(screen.getByLabelText(/Provider/), { target: { value: 'gemini-vertex' } })
 
@@ -140,45 +212,15 @@ describe('ApiSettingsPanel', () => {
         provider: 'gemini-vertex',
       }),
     )
-  })
-
-  it('patches Gemini Vertex defaults from the model-row shortcut', () => {
-    const onPatchApi = vi.fn()
-    renderPanel({ onPatchApi, showAdvancedApi: true })
-
-    fireEvent.click(screen.getByRole('button', { name: /Vertex AI/ }))
-
-    expect(onPatchApi).toHaveBeenCalledWith(
-      expect.objectContaining({
-        api_key: '',
-        base_url: 'https://aiplatform.googleapis.com',
-        model: 'gemini-3.1-pro-preview',
-        provider: 'gemini-vertex',
-      }),
-    )
-  })
-
-  it('hides the API key field when Gemini Vertex uses local gcloud auth', () => {
-    renderPanel({
-      apiConfig: {
-        ...apiConfig,
-        api_key: 'sk-old-provider-key',
-        base_url: 'https://aiplatform.googleapis.com',
-        model: 'gemini-3.1-pro-preview',
-        provider: 'gemini-vertex',
-      },
-    })
-
     expect(screen.getByText('Vertex 授权')).toBeInTheDocument()
     expect(screen.getByText('使用本机 gcloud OAuth')).toBeInTheDocument()
     expect(screen.queryByLabelText('API Key')).not.toBeInTheDocument()
-    expect(screen.queryByLabelText(/记住本机模型 API Key/)).not.toBeInTheDocument()
   })
 
   it('toggles capabilities and saves the current model profile', () => {
     const onPatchApi = vi.fn()
     const onSaveApiProfile = vi.fn()
-    renderPanel({ onPatchApi, onSaveApiProfile })
+    renderPanel({ onPatchApi, onSaveApiProfile, showCapabilities: true })
 
     fireEvent.click(screen.getByRole('button', { name: /structured_json/ }))
     fireEvent.click(screen.getByRole('button', { name: /保存模型方案/ }))

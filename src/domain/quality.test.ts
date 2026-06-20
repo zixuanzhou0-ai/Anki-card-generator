@@ -3,7 +3,12 @@ import { describe, expect, it } from 'vitest'
 import type { Card, Segment } from './types'
 import {
   applyCardSelection,
+  cardHasExportBlockingContent,
+  getExportSelectionStats,
   isRecommendedCardForExport,
+  qualityClass,
+  qualityLabel,
+  removeExportBlockedCardSelection,
   segmentMatchesFilter,
   segmentPhraseTitle,
   segmentReviewStatus,
@@ -97,6 +102,56 @@ describe('review quality helpers', () => {
     expect(result.project.segments[0].cards.map((card) => card.enabled)).toEqual([true, false])
   })
 
+  it('does not select cards that still contain draft or internal export text', () => {
+    const draft = {
+      ...baseCard,
+      definition: '本地文档草稿，需要人工确认。',
+      quality: { score: 90, status: 'recommended' as const, issues: ['本地文档草稿，需要人工确认。'] },
+    }
+    const recommended = { ...baseCard, id: 'card-2', quality: { score: 90, status: 'recommended' as const, issues: [] } }
+    const project = {
+      id: 'project-1',
+      title: 'Project',
+      video_path: '',
+      subtitle_path: '',
+      language: 'English',
+      level: 'B1' as const,
+      template_id: 'immersive' as const,
+      content_toggles: {
+        daily: true,
+        slang: true,
+        sarcasm: true,
+        business: true,
+        culture: true,
+        profanity: false,
+        romance: false,
+        rare: false,
+      },
+      card_types: ['phrase' as const],
+      segments: [{ ...baseSegment, cards: [draft, recommended] }],
+      created_at: 1,
+    }
+
+    expect(cardHasExportBlockingContent(draft)).toBe(true)
+    expect(isRecommendedCardForExport(baseSegment, draft)).toBe(false)
+    const result = applyCardSelection(project, 'recommended')
+
+    expect(result.selected).toBe(1)
+    expect(result.project.segments[0].cards.map((card) => card.enabled)).toEqual([false, true])
+  })
+
+  it('does not block a card only because a quality note asks for human review', () => {
+    const reviewNoteOnly = {
+      ...baseCard,
+      quality: { score: 80, status: 'recommended' as const, issues: ['本地规则卡，需要人工确认。'] },
+    }
+
+    expect(cardHasExportBlockingContent(reviewNoteOnly)).toBe(false)
+    expect(qualityLabel(reviewNoteOnly)).toBe('可用卡')
+    expect(qualityClass(reviewNoteOnly)).toBe('usable')
+    expect(isRecommendedCardForExport(baseSegment, reviewNoteOnly)).toBe(true)
+  })
+
   it('does not auto-export review cards just because their segment is recommended', () => {
     const recommended = { ...baseCard, quality: { score: 90, status: 'recommended' as const, issues: [] } }
     const review = { ...baseCard, id: 'card-2', quality: { score: 62, status: 'needs_review' as const, issues: ['needs human check'] } }
@@ -162,5 +217,148 @@ describe('review quality helpers', () => {
     expect(result.selected).toBe(2)
     expect(result.project.segments[0].cards.map((card) => card.enabled)).toEqual([true, true, false])
     expect(result.project.quality_funnel?.selected_card_count).toBe(2)
+  })
+
+  it('removes already selected draft cards before export while preserving safe selections', () => {
+    const draft = {
+      ...baseCard,
+      enabled: true,
+      teacher_note: '正式导出前需要 AI 精修。',
+      quality: { score: 62, status: 'needs_review' as const, issues: ['需要 AI 精修。'] },
+    }
+    const safe = {
+      ...baseCard,
+      id: 'card-2',
+      enabled: true,
+      quality: { score: 90, status: 'recommended' as const, issues: [] },
+    }
+    const project = {
+      id: 'project-1',
+      title: 'Project',
+      video_path: '',
+      subtitle_path: '',
+      language: 'en',
+      level: 'B1' as const,
+      template_id: 'immersive' as const,
+      content_toggles: {
+        daily: true,
+        slang: true,
+        sarcasm: true,
+        business: true,
+        culture: true,
+        profanity: false,
+        romance: false,
+        rare: false,
+      },
+      card_types: ['phrase' as const],
+      quality_funnel: { selected_card_count: 2 },
+      segments: [{ ...baseSegment, cards: [draft, safe] }],
+      created_at: 1,
+    }
+
+    const result = removeExportBlockedCardSelection(project)
+
+    expect(result.removed).toBe(1)
+    expect(result.selected).toBe(1)
+    expect(result.project.segments[0].cards.map((card) => card.enabled)).toEqual([false, true])
+    expect(result.project.quality_funnel?.selected_card_count).toBe(1)
+  })
+
+  it('marks document draft and manual-confirmation cards as repair-required, not exportable', () => {
+    const draft = {
+      ...baseCard,
+      enabled: true,
+      phrase: '自动草稿卡：需要人工确认',
+      teacher_note: '内部提示：正式导出前需要人工确认。',
+      quality: { score: 70, status: 'needs_review' as const, issues: [] },
+    }
+    const safe = {
+      ...baseCard,
+      id: 'safe-card',
+      enabled: true,
+      quality: { score: 90, status: 'recommended' as const, issues: [] },
+    }
+    const project = {
+      id: 'project-1',
+      title: 'Document Project',
+      source_mode: 'document' as const,
+      video_path: '',
+      subtitle_path: '',
+      language: 'en',
+      level: 'B1' as const,
+      template_id: 'immersive' as const,
+      content_toggles: {
+        daily: true,
+        slang: true,
+        sarcasm: true,
+        business: true,
+        culture: true,
+        profanity: false,
+        romance: false,
+        rare: false,
+      },
+      card_types: ['knowledge' as const],
+      segments: [{ ...baseSegment, cards: [draft, safe] }],
+      created_at: 1,
+    }
+
+    const stats = getExportSelectionStats(project)
+
+    expect(cardHasExportBlockingContent(draft)).toBe(true)
+    expect(qualityLabel(draft)).toBe('需修复')
+    expect(qualityClass(draft)).toBe('blocked')
+    expect(stats).toMatchObject({
+      totalCards: 2,
+      exportableCards: 1,
+      repairRequiredCards: 1,
+      selectedCards: 2,
+      selectedExportableCards: 1,
+      selectedRepairRequiredCards: 1,
+    })
+  })
+
+  it('blocks document draft text leaked through visible planning fields', () => {
+    const draft = {
+      ...baseCard,
+      enabled: true,
+      difficulty_reason: '本地文档草稿按当前水平和文本复杂度估计。',
+      quality: { score: 90, status: 'recommended' as const, issues: [] },
+    }
+    const project = {
+      id: 'project-1',
+      title: 'Document Project',
+      source_mode: 'document' as const,
+      video_path: '',
+      subtitle_path: '',
+      language: 'en',
+      level: 'B1' as const,
+      template_id: 'immersive' as const,
+      content_toggles: {
+        daily: true,
+        slang: true,
+        sarcasm: true,
+        business: true,
+        culture: true,
+        profanity: false,
+        romance: false,
+        rare: false,
+      },
+      card_types: ['knowledge' as const],
+      segments: [{ ...baseSegment, cards: [draft] }],
+      created_at: 1,
+    }
+
+    const stats = getExportSelectionStats(project)
+
+    expect(cardHasExportBlockingContent(draft)).toBe(true)
+    expect(qualityLabel(draft)).toBe('需修复')
+    expect(stats).toMatchObject({
+      totalCards: 1,
+      exportableCards: 0,
+      repairRequiredCards: 1,
+      selectedCards: 1,
+      selectedExportableCards: 0,
+      selectedRepairRequiredCards: 1,
+    })
   })
 })

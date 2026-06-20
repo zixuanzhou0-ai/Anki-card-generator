@@ -1,6 +1,6 @@
 # Privacy
 
-This document describes the data flow for Anki Card Generator `v0.9.2-beta`.
+This document describes the data flow for Anki Card Generator `v0.9.3-beta`.
 
 ## Data kept on this device
 
@@ -19,12 +19,11 @@ Generated media, decks, caches, and `.venv/` are ignored by Git by default.
 When model review or TTS is enabled, the app sends selected text to the provider configured by the user. Depending on the selected feature, this may include:
 
 - subtitle segments;
-- document excerpts;
 - candidate phrases;
 - generated card fields;
 - text used for TTS generation.
 
-Providers shown in the UI may include MIMO, DeepSeek, OpenRouter, Claude, Gemini, xAI, and custom OpenAI-compatible endpoints. Each provider has its own privacy policy and retention behavior.
+Providers shown in the UI may include DeepSeek, Gemini/Vertex, Qwen/DashScope, and custom OpenAI-compatible endpoints. Each provider has its own privacy policy and retention behavior.
 
 ## YouTube and external downloads
 
@@ -42,4 +41,4 @@ To remove generated data, delete the chosen project/output folders and the `rele
 
 ## Copyright
 
-The app can create decks containing video clips, subtitles, and document excerpts. Users are responsible for ensuring they have the right to use the source material. Generated decks are intended for personal study unless the user has permission to distribute the underlying media and text.
+The app can create decks containing video clips, subtitles, original audio, and synthesized TTS audio. Users are responsible for ensuring they have the right to use the source material. Generated decks are intended for personal study unless the user has permission to distribute the underlying media and text.

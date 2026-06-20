@@ -11,14 +11,16 @@ describe('sourceValidation', () => {
     expect(sourceRequirementMessage({ ...defaultRequest, source_mode: 'url', source_url: 'not-a-url' })).toBe('请输入有效的视频链接，例如 https://...')
   })
 
-  it('requires local video and document inputs to look like supported files', () => {
+  it('requires local video inputs to look like supported video files and blocks hidden document mode', () => {
     expect(isSourceInputReady({ ...defaultRequest, source_mode: 'local', video_path: 'C:/clips/readme.txt' })).toBe(false)
     expect(isSourceInputReady({ ...defaultRequest, source_mode: 'local', video_path: 'C:/clips/lesson.mp4' })).toBe(true)
     expect(sourceRequirementMessage({ ...defaultRequest, source_mode: 'local', video_path: 'C:/clips/readme.txt' })).toBe('请选择 MP4、MKV、MOV、WEBM 等视频文件。')
 
     expect(isSourceInputReady({ ...defaultRequest, source_mode: 'document', document_path: 'C:/docs/video.mp4' })).toBe(false)
-    expect(isSourceInputReady({ ...defaultRequest, source_mode: 'document', document_path: 'C:/docs/notes.pdf' })).toBe(true)
-    expect(sourceRequirementMessage({ ...defaultRequest, source_mode: 'document', document_path: 'C:/docs/video.mp4' })).toBe('请选择 TXT、Markdown、DOCX、EPUB 或 PDF 文档。')
+    expect(isSourceInputReady({ ...defaultRequest, source_mode: 'document', document_path: 'C:/docs/notes.pdf' })).toBe(false)
+    expect(sourceRequirementMessage({ ...defaultRequest, source_mode: 'document', document_path: 'C:/docs/video.mp4' })).toBe(
+      '当前发布版只支持本地视频和视频链接。请选择视频素材。',
+    )
   })
 
   it('requires at least one enabled item in batch mode', () => {
@@ -39,5 +41,26 @@ describe('sourceValidation', () => {
       }),
     ).toBe(true)
     expect(sourceRequirementMessage({ ...defaultRequest, batch_enabled: true })).toBe('请先添加至少一个批量素材后继续。')
+  })
+
+  it('blocks hidden document source before considering batch readiness', () => {
+    const request = {
+      ...defaultRequest,
+      source_mode: 'document' as const,
+      batch_enabled: true,
+      batch_items: [
+        {
+          id: 'doc-ready',
+          title: 'Ready document',
+          subdeck_title: 'Ready document',
+          source_mode: 'document' as const,
+          enabled: true,
+          document_path: 'C:/docs/source.pdf',
+        },
+      ],
+    }
+
+    expect(isSourceInputReady(request)).toBe(false)
+    expect(sourceRequirementMessage(request)).toBe('当前发布版只支持本地视频和视频链接。请选择视频素材。')
   })
 })

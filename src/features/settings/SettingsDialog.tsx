@@ -128,7 +128,7 @@ function getSettingsHealthCards({
     {
       icon: 'tts',
       message: !ttsSettings.tts.enabled
-        ? '导出时只使用原声，不生成 AI 朗读。'
+        ? '视频卡导出需要整句 TTS 和表达 TTS；请在语音页开启并测试。'
         : ttsTone === 'ok'
           ? 'TTS 可用于整句朗读和表达发音。'
           : ttsTone === 'warn'
@@ -136,7 +136,7 @@ function getSettingsHealthCards({
             : ttsTone === 'testing'
               ? '正在验证语音模型和音色。'
               : '开启后建议先测试 TTS。',
-      meta: !ttsSettings.tts.enabled ? '可在语音页开启' : ttsSettings.ttsTestMeta,
+      meta: !ttsSettings.tts.enabled ? '关闭时不能导出视频卡' : ttsSettings.ttsTestMeta,
       status: !ttsSettings.tts.enabled ? '已关闭' : getServiceStatus(ttsTone),
       tab: 'tts',
       title: '语音 TTS',

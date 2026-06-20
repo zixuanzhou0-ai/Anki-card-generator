@@ -12,6 +12,7 @@ type TopbarProps = {
   inspectorActive: boolean
   inspectorActionLabel: string
   isCancelling: boolean
+  showGenerateButton?: boolean
   status: string
   statusTone: string
   workerBusy: boolean
@@ -34,6 +35,7 @@ export function Topbar({
   inspectorActive,
   inspectorActionLabel,
   isCancelling,
+  showGenerateButton = true,
   status,
   statusTone,
   workerBusy,
@@ -89,10 +91,12 @@ export function Topbar({
             导出
           </button>
         ) : null}
-        <button className="primary-button" type="button" onClick={onGenerate} disabled={appBusy || generateDisabled}>
-          {appBusy ? <Loader2 className="spin" size={18} /> : <Wand2 size={18} />}
-          {generateLabel}
-        </button>
+        {showGenerateButton ? (
+          <button className="primary-button" type="button" onClick={onGenerate} disabled={appBusy || generateDisabled}>
+            {appBusy ? <Loader2 className="spin" size={18} /> : <Wand2 size={18} />}
+            {generateLabel}
+          </button>
+        ) : null}
       </div>
       <div className="window-controls" aria-label="窗口控制">
         <button type="button" onClick={() => onWindowAction('minimize')} aria-label="最小化">

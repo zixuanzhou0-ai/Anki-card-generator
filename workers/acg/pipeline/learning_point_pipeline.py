@@ -3,20 +3,39 @@ from __future__ import annotations
 import time
 import json
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
 from acg import legacy_worker
 from acg.classification.leveling import estimate_learning_point_level
 from acg.contracts.learning_point import learning_action_key, normalize_learning_point
+from acg.generation_timing import add_learning_point_extraction_timing_aliases
+from acg.learning_types import normalize_candidate_kind, phrase_type_for_candidate_kind
+from acg.media_alignment import (
+    clean_candidate_text as media_clean_candidate_text,
+    looks_complete_sentence as media_looks_complete_sentence,
+    merge_subtitle_parts as media_merge_subtitle_parts,
+)
 from acg.protocol import emit_progress, fail
 from acg.recall.local_learning_points import recall_local_learning_points
 from acg.scoring.learning_value import assign_learning_point_status, score_learning_point
-from acg.subtitles.core import Cue, fmt_time
+from acg.subtitles.core import Cue
+from acg.subtitles.sentences import (
+    SOURCE_SENTENCE_QUALITY_DEMOTE_FLAGS,
+    apply_source_sentence_quality_gate,
+    sentence_quality_counts,
+    source_sentences_from_cues as build_source_sentences_from_cues,
+)
 
 
 AI_REVIEW_BATCH_SIZE = 16
 AI_REVIEW_PROMPT_VERSION = 2
+AI_REVIEW_DEFAULT_CONCURRENCY = 2
+AI_REVIEW_MAX_CONCURRENCY = 4
+AI_REVIEW_DISCOVERY_BUDGET_TRIGGER = 160
+AI_REVIEW_DEFAULT_DISCOVERY_SOURCE_BUDGET = 64
 
 
 class AIReviewPayloadError(ValueError):
@@ -53,6 +72,50 @@ def _ensure_ai_review_available(payload: dict[str, Any]) -> None:
         else:
             message = "学习点正式抽取需要可用的模型 API。请先在“模型 API”里测试连接。"
         fail(message, error_code="MODEL_API_REQUIRED", stage="model_api", retryable=True)
+
+
+def _ai_review_concurrency(payload: dict[str, Any], total_batches: int) -> int:
+    api = payload.get("api_config") or {}
+    raw_value = payload.get("ai_review_concurrency") or api.get("ai_review_concurrency") or AI_REVIEW_DEFAULT_CONCURRENCY
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        value = AI_REVIEW_DEFAULT_CONCURRENCY
+    return max(1, min(AI_REVIEW_MAX_CONCURRENCY, value, max(1, total_batches)))
+
+
+def _new_ai_review_stats() -> dict[str, Any]:
+    return {
+        "lock": threading.Lock(),
+        "hits": 0,
+        "misses": 0,
+        "timing_ms": {},
+    }
+
+
+def _record_ai_review_cache_stat(payload: dict[str, Any], stats: dict[str, Any] | None, field: str) -> None:
+    payload_key = f"_ai_review_cache_{field}"
+    if stats is None:
+        payload[payload_key] = int(payload.get(payload_key) or 0) + 1
+        return
+    lock = stats.get("lock")
+    if lock is None:
+        payload[payload_key] = int(payload.get(payload_key) or 0) + 1
+        return
+    with lock:
+        stats[field] = int(stats.get(field) or 0) + 1
+        payload[payload_key] = int(stats[field])
+
+
+def _record_ai_review_timing(stats: dict[str, Any] | None, batch_index: int, duration_ms: int) -> None:
+    if stats is None:
+        return
+    lock = stats.get("lock")
+    if lock is None:
+        stats.setdefault("timing_ms", {})[str(batch_index)] = duration_ms
+        return
+    with lock:
+        stats.setdefault("timing_ms", {})[str(batch_index)] = duration_ms
 
 
 def _points_for_source(points: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -164,6 +227,7 @@ def _ai_review_cache_path(
     local_by_source: dict[str, list[dict[str, Any]]],
 ) -> tuple[Path, str]:
     api = payload.get("api_config") or {}
+    cache_namespace = str(payload.get("ai_review_cache_namespace") or api.get("ai_review_cache_namespace") or "").strip()
     batch_fingerprint: list[dict[str, Any]] = []
     for source in source_batch:
         source_id = str(source.get("source_segment_id") or source.get("id") or "")
@@ -186,22 +250,23 @@ def _ai_review_cache_path(
                 ],
             }
         )
-    cache_key = legacy_worker.stable_cache_key(
-        {
-            "version": AI_REVIEW_PROMPT_VERSION,
-            "kind": "learning_point_ai_review",
-            "language": legacy_worker.normalize_learning_language(payload.get("language", "en")),
-            "level_mode": legacy_worker.normalized_level_mode(payload),
-            "level": str(payload.get("level") or "B1"),
-            "study_depth": str(payload.get("study_depth") or ""),
-            "language_focus": payload.get("language_focus") or [],
-            "provider": legacy_worker.provider_name(api),
-            "base_url": str(api.get("base_url") or "").strip().rstrip("/"),
-            "model": str(api.get("model") or "").strip(),
-            "prompt_version": AI_REVIEW_PROMPT_VERSION,
-            "batch": batch_fingerprint,
-        }
-    )
+    cache_key_payload = {
+        "version": AI_REVIEW_PROMPT_VERSION,
+        "kind": "learning_point_ai_review",
+        "language": legacy_worker.normalize_learning_language(payload.get("language", "en")),
+        "level_mode": legacy_worker.normalized_level_mode(payload),
+        "level": str(payload.get("level") or "B1"),
+        "study_depth": str(payload.get("study_depth") or ""),
+        "language_focus": payload.get("language_focus") or [],
+        "provider": legacy_worker.provider_name(api),
+        "base_url": str(api.get("base_url") or "").strip().rstrip("/"),
+        "model": str(api.get("model") or "").strip(),
+        "prompt_version": AI_REVIEW_PROMPT_VERSION,
+        "batch": batch_fingerprint,
+    }
+    if cache_namespace:
+        cache_key_payload["cache_namespace"] = cache_namespace
+    cache_key = legacy_worker.stable_cache_key(cache_key_payload)
     return legacy_worker.persistent_cache_root() / "learning_point_review" / f"{cache_key}.json", cache_key
 
 
@@ -238,36 +303,51 @@ def _store_ai_review_cache(cache_path: Path, cache_key: str, ai_payload: dict[st
         return
 
 
+def _ai_review_cache_disabled(payload: dict[str, Any], api: dict[str, Any], field: str) -> bool:
+    legacy_disabled = bool(payload.get("disable_ai_review_cache") or api.get("disable_ai_review_cache"))
+    return legacy_disabled or bool(payload.get(field) or api.get(field))
+
+
+def _ai_review_cache_policy(payload: dict[str, Any], api: dict[str, Any]) -> tuple[bool, bool]:
+    read_disabled = _ai_review_cache_disabled(payload, api, "disable_ai_review_cache_read")
+    write_disabled = _ai_review_cache_disabled(payload, api, "disable_ai_review_cache_write")
+    read_enabled = bool(payload.get("reuse_ai_review_cache") or api.get("reuse_ai_review_cache")) and not read_disabled
+    return read_enabled, not write_disabled
+
+
 def _call_ai_learning_point_review_batch(
     payload: dict[str, Any],
     source_batch: list[dict[str, Any]],
     local_by_source: dict[str, list[dict[str, Any]]],
     *,
-    batch_index: int,
+    batch_index: int | str,
     total_batches: int,
+    stats: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     api = payload.get("api_config") or {}
     percent = _ai_review_batch_percent(batch_index, total_batches)
+    batch_label = str(batch_index)
     cache_path, cache_key = _ai_review_cache_path(payload, source_batch, local_by_source)
-    cache_disabled = bool(payload.get("disable_ai_review_cache") or api.get("disable_ai_review_cache"))
-    cache_read_enabled = bool(payload.get("reuse_ai_review_cache") or api.get("reuse_ai_review_cache")) and not cache_disabled
+    cache_read_enabled, cache_write_enabled = _ai_review_cache_policy(payload, api)
+    payload["_ai_review_cache_read_enabled"] = cache_read_enabled
+    payload["_ai_review_cache_write_enabled"] = cache_write_enabled
     if cache_read_enabled:
         cached_payload = _load_ai_review_cache(cache_path)
         if cached_payload is not None:
-            payload["_ai_review_cache_hits"] = int(payload.get("_ai_review_cache_hits") or 0) + 1
+            _record_ai_review_cache_stat(payload, stats, "hits")
             emit_progress(
                 "extract_learning_points",
                 "ai_review",
                 percent,
-                f"AI 精筛缓存命中：第 {batch_index}/{total_batches} 批 · {cache_key[:8]}。",
+                f"AI 精筛缓存命中：第 {batch_label}/{total_batches} 批 · {cache_key[:8]}。",
             )
             return cached_payload
-    payload["_ai_review_cache_misses"] = int(payload.get("_ai_review_cache_misses") or 0) + 1
+    _record_ai_review_cache_stat(payload, stats, "misses")
     emit_progress(
         "extract_learning_points",
         "ai_review",
         percent,
-        f"AI 正在精筛学习点：第 {batch_index}/{total_batches} 批 · {_model_label(payload)}。",
+        f"AI 正在精筛学习点：第 {batch_label}/{total_batches} 批 · {_model_label(payload)}。本地候选只是待审学习点，不会直接制卡。",
     )
     prompt = _build_ai_learning_point_review_prompt(payload, source_batch, local_by_source)
     if legacy_worker.is_gemini_vertex_config(api):
@@ -299,7 +379,7 @@ def _call_ai_learning_point_review_batch(
     else:
         fail("当前模型 Provider 暂不支持学习点 AI 精筛。", error_code="MODEL_PROVIDER_UNSUPPORTED", stage="model_api", retryable=False)
     ai_payload = _extract_ai_review_payload(content or "")
-    if not cache_disabled:
+    if cache_write_enabled:
         _store_ai_review_cache(cache_path, cache_key, ai_payload)
     return ai_payload
 
@@ -327,6 +407,56 @@ def _extract_ai_review_payload(content: str) -> dict[str, Any]:
     if isinstance(payload, dict) and isinstance(payload.get("sources"), list):
         return payload
     raise AIReviewPayloadError("AI 学习点精筛没有返回 sources JSON，不能用本地候选冒充正式结果。")
+
+
+def _ai_review_scalar(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (str, int, float, bool)):
+        return str(value).strip()
+    if isinstance(value, dict):
+        for key in ("value", "text", "label", "name", "kind", "type", "reason", "content"):
+            if key in value:
+                nested = _ai_review_scalar(value.get(key))
+                if nested:
+                    return nested
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    if isinstance(value, list):
+        parts = [_ai_review_scalar(item) for item in value]
+        return " ".join(part for part in parts if part).strip()
+    return str(value).strip()
+
+
+def _sanitize_ai_review_item(item: dict[str, Any], *, source_id: str, ai_batch_id: str) -> dict[str, Any]:
+    cleaned = {
+        "source_segment_id": source_id,
+        "ai_batch_id": ai_batch_id,
+    }
+    text_fields = (
+        "id",
+        "decision",
+        "estimated_level",
+        "exact_span",
+        "answer_core",
+        "normalized_answer",
+        "candidate_kind",
+        "phrase_type",
+        "learning_action",
+        "reason",
+        "status_reason",
+        "confidence",
+        "level_reason",
+    )
+    for field in text_fields:
+        if field in item:
+            cleaned[field] = _ai_review_scalar(item.get(field))
+    raw_score = item.get("value_score")
+    try:
+        cleaned["value_score"] = round(float(raw_score), 2)
+    except (TypeError, ValueError):
+        if "value_score" in item:
+            cleaned["value_score"] = 0
+    return cleaned
 
 
 def _failed_ai_review_payload(source_batch: list[dict[str, Any]]) -> dict[str, Any]:
@@ -370,6 +500,7 @@ def _call_ai_learning_point_review_batch_resilient(
     batch_index: str,
     total_batches: int,
     retry_attempt: int = 0,
+    stats: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     try:
         return (
@@ -377,8 +508,9 @@ def _call_ai_learning_point_review_batch_resilient(
                 payload,
                 source_batch,
                 local_by_source,
-                batch_index=int(str(batch_index).split(".", 1)[0]),
+                batch_index=batch_index,
                 total_batches=total_batches,
+                stats=stats,
             ),
             [],
         )
@@ -410,6 +542,7 @@ def _call_ai_learning_point_review_batch_resilient(
                 batch_index=batch_index,
                 total_batches=total_batches,
                 retry_attempt=1,
+                stats=stats,
             )
         if len(source_batch) > 1:
             midpoint = max(1, len(source_batch) // 2)
@@ -426,6 +559,7 @@ def _call_ai_learning_point_review_batch_resilient(
                 batch_index=f"{batch_index}.1",
                 total_batches=total_batches,
                 retry_attempt=1,
+                stats=stats,
             )
             right_payload, right_errors = _call_ai_learning_point_review_batch_resilient(
                 payload,
@@ -434,6 +568,7 @@ def _call_ai_learning_point_review_batch_resilient(
                 batch_index=f"{batch_index}.2",
                 total_batches=total_batches,
                 retry_attempt=1,
+                stats=stats,
             )
             return (
                 {
@@ -472,17 +607,74 @@ def _call_ai_learning_point_review(
     reviews_by_id: dict[str, dict[str, Any]] = {}
     new_by_source: dict[str, list[dict[str, Any]]] = {}
     model_errors: list[dict[str, Any]] = []
-    total_batches = max(1, (len(source_sentences) + AI_REVIEW_BATCH_SIZE - 1) // AI_REVIEW_BATCH_SIZE)
-    for start in range(0, len(source_sentences), AI_REVIEW_BATCH_SIZE):
-        batch = source_sentences[start : start + AI_REVIEW_BATCH_SIZE]
-        batch_index = start // AI_REVIEW_BATCH_SIZE + 1
-        ai_payload, batch_errors = _call_ai_learning_point_review_batch_resilient(
-            payload,
-            batch,
-            local_by_source,
-            batch_index=str(batch_index),
-            total_batches=total_batches,
-        )
+    batches = [
+        (start // AI_REVIEW_BATCH_SIZE + 1, source_sentences[start : start + AI_REVIEW_BATCH_SIZE])
+        for start in range(0, len(source_sentences), AI_REVIEW_BATCH_SIZE)
+    ]
+    total_batches = max(1, len(batches))
+    if not batches:
+        payload["_ai_review_concurrency"] = 1
+        payload["_ai_review_timing_ms"] = {}
+        return reviews_by_id, new_by_source, model_errors
+
+    stats = _new_ai_review_stats()
+    concurrency = _ai_review_concurrency(payload, total_batches)
+    payload["_ai_review_concurrency"] = concurrency
+    batch_results: dict[int, tuple[dict[str, Any], list[dict[str, Any]]]] = {}
+
+    def run_batch(batch_index: int, batch: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        started = time.perf_counter()
+        try:
+            return _call_ai_learning_point_review_batch_resilient(
+                payload,
+                batch,
+                local_by_source,
+                batch_index=str(batch_index),
+                total_batches=total_batches,
+                stats=stats,
+            )
+        finally:
+            _record_ai_review_timing(stats, batch_index, int((time.perf_counter() - started) * 1000))
+
+    completed_batches = 0
+    if concurrency <= 1:
+        for batch_index, batch in batches:
+            batch_results[batch_index] = run_batch(batch_index, batch)
+            completed_batches += 1
+            emit_progress(
+                "extract_learning_points",
+                "ai_review",
+                min(70, 52 + int(completed_batches / total_batches * 18)),
+                f"AI 精筛已完成 {completed_batches}/{total_batches} 批。完成后会显示推荐和候选；只有用户勾选的学习点才会进入制卡。",
+                completed_batches=completed_batches,
+                total_batches=total_batches,
+                cache_hits=int(payload.get("_ai_review_cache_hits") or 0),
+                cache_misses=int(payload.get("_ai_review_cache_misses") or 0),
+            )
+    else:
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            futures = {
+                pool.submit(run_batch, batch_index, batch): batch_index
+                for batch_index, batch in batches
+            }
+            for future in as_completed(futures):
+                batch_index = futures[future]
+                batch_results[batch_index] = future.result()
+                completed_batches += 1
+                emit_progress(
+                    "extract_learning_points",
+                    "ai_review",
+                    min(70, 52 + int(completed_batches / total_batches * 18)),
+                    f"AI 精筛已完成 {completed_batches}/{total_batches} 批。完成后会显示推荐和候选；只有用户勾选的学习点才会进入制卡。",
+                    completed_batches=completed_batches,
+                    total_batches=total_batches,
+                    cache_hits=int(payload.get("_ai_review_cache_hits") or 0),
+                    cache_misses=int(payload.get("_ai_review_cache_misses") or 0),
+                )
+
+    payload["_ai_review_timing_ms"] = dict(stats.get("timing_ms") or {})
+    for batch_index in sorted(batch_results):
+        ai_payload, batch_errors = batch_results[batch_index]
         model_errors.extend(batch_errors)
         for source in ai_payload.get("sources", []) if isinstance(ai_payload, dict) else []:
             if not isinstance(source, dict):
@@ -490,11 +682,13 @@ def _call_ai_learning_point_review(
             source_id = str(source.get("source_segment_id") or "").strip()
             for review in source.get("reviews", []) or []:
                 if isinstance(review, dict) and review.get("id"):
-                    reviews_by_id[str(review["id"])] = {**review, "source_segment_id": source_id, "ai_batch_id": f"ai_review_{batch_index}"}
+                    safe_review = _sanitize_ai_review_item(review, source_id=source_id, ai_batch_id=f"ai_review_{batch_index}")
+                    if safe_review.get("id"):
+                        reviews_by_id[str(safe_review["id"])] = safe_review
             additions = source.get("new_learning_points") or source.get("learning_points") or []
             if source_id and isinstance(additions, list):
                 new_by_source.setdefault(source_id, []).extend(
-                    {**item, "source_segment_id": source_id, "ai_batch_id": f"ai_review_{batch_index}"}
+                    _sanitize_ai_review_item(item, source_id=source_id, ai_batch_id=f"ai_review_{batch_index}")
                     for item in additions
                     if isinstance(item, dict)
                 )
@@ -502,41 +696,14 @@ def _call_ai_learning_point_review(
 
 
 def source_sentences_from_cues(cues: list[Cue], payload: dict[str, Any]) -> list[dict[str, Any]]:
-    sentences: list[dict[str, Any]] = []
-    i = 0
-    while i < len(cues):
-        start = cues[i].start
-        end = cues[i].end
-        parts = [cues[i].text]
-        j = i
-        while j + 1 < len(cues):
-            current = legacy_worker.merge_subtitle_parts(parts)
-            gap = cues[j + 1].start - end
-            if legacy_worker.looks_complete_sentence(current) or gap > 0.9 or (end - start) >= 7.5:
-                break
-            j += 1
-            end = cues[j].end
-            parts.append(cues[j].text)
-        text = legacy_worker.clean_candidate_text(legacy_worker.merge_subtitle_parts(parts))
-        if text:
-            source_id = legacy_worker.source_segment_key(start, end, text)
-            sentences.append(
-                {
-                    "id": source_id,
-                    "source_segment_id": source_id,
-                    "source_sentence": text,
-                    "text": text,
-                    "start": round(start, 3),
-                    "end": round(end, 3),
-                    "source_time": f"{fmt_time(start)} - {fmt_time(end)}",
-                    "language": legacy_worker.normalize_learning_language(payload.get("language", "en")),
-                }
-            )
-        i = max(j + 1, i + 1)
-    for index, sentence in enumerate(sentences):
-        sentence["previous_sentence"] = sentences[index - 1]["source_sentence"] if index > 0 else ""
-        sentence["next_sentence"] = sentences[index + 1]["source_sentence"] if index + 1 < len(sentences) else ""
-    return sentences
+    return build_source_sentences_from_cues(
+        cues,
+        language=payload.get("language", "en"),
+        merge_subtitle_parts=media_merge_subtitle_parts,
+        clean_candidate_text=media_clean_candidate_text,
+        looks_complete_sentence=media_looks_complete_sentence,
+        normalize_language=legacy_worker.normalize_learning_language,
+    )
 
 
 def _prepare_subtitle_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], str, dict[str, Any] | None]:
@@ -705,7 +872,7 @@ def _reviewed_new_point(
     payload: dict[str, Any],
     index: int,
 ) -> dict[str, Any]:
-    candidate_kind = legacy_worker.normalize_candidate_kind(review.get("candidate_kind") or "expression")
+    candidate_kind = normalize_candidate_kind(review.get("candidate_kind") or "expression")
     point_type = {
         "expression": "phrase",
         "contextual_vocab": "vocab_usage",
@@ -719,7 +886,7 @@ def _reviewed_new_point(
             "id": str(review.get("id") or f"{source_segment.get('source_segment_id')}_ai_{index}"),
             "type": point_type,
             "candidate_kind": candidate_kind,
-            "phrase_type": review.get("phrase_type") or legacy_worker.phrase_type_for_candidate_kind(candidate_kind),
+            "phrase_type": review.get("phrase_type") or phrase_type_for_candidate_kind(candidate_kind),
             "source": "model",
             "confidence": review.get("confidence") or "medium",
         },
@@ -755,6 +922,9 @@ TRIVIAL_REVIEW_SENTENCES = {
     "good morning",
 }
 
+def _apply_source_sentence_quality_gate(point: dict[str, Any]) -> dict[str, Any]:
+    return apply_source_sentence_quality_gate(point)
+
 
 def _reviewable_source_sentence(source: dict[str, Any], *, has_local_candidates: bool = False) -> bool:
     text = legacy_worker.clean_study_text(source.get("source_sentence") or source.get("text") or "")
@@ -772,6 +942,62 @@ def _reviewable_source_sentence(source: dict[str, Any], *, has_local_candidates:
     if len(tokens) == 1 and len(tokens[0]) <= 3:
         return False
     return True
+
+
+def _ai_review_discovery_budget(payload: dict[str, Any], source_count: int, discovery_source_count: int) -> int:
+    api = payload.get("api_config") or {}
+    raw_value = (
+        payload.get("ai_review_discovery_source_budget")
+        or payload.get("learning_point_discovery_source_budget")
+        or api.get("ai_review_discovery_source_budget")
+        or 0
+    )
+    try:
+        explicit_value = int(raw_value)
+    except (TypeError, ValueError):
+        explicit_value = 0
+    if explicit_value > 0:
+        return max(0, explicit_value)
+    if source_count < AI_REVIEW_DISCOVERY_BUDGET_TRIGGER:
+        return discovery_source_count
+    return min(discovery_source_count, AI_REVIEW_DEFAULT_DISCOVERY_SOURCE_BUDGET)
+
+
+def _discovery_source_score(source: dict[str, Any]) -> tuple[int, int, int]:
+    text = legacy_worker.clean_study_text(source.get("source_sentence") or source.get("text") or "")
+    words = re.findall(r"[A-Za-zÀ-ÿА-Яа-яЁё\u3040-\u30ff\u4e00-\u9fff]+", text)
+    flags = {str(flag) for flag in source.get("source_sentence_quality_flags") or []}
+    quality_score = 0 if flags & SOURCE_SENTENCE_QUALITY_DEMOTE_FLAGS else 3
+    length_score = 2 if 5 <= len(words) <= 22 else (1 if 3 <= len(words) <= 30 else 0)
+    punctuation_score = 1 if re.search(r"[.?!][\"'”’)]*$", text.strip()) else 0
+    return quality_score, length_score, punctuation_score
+
+
+def _select_representative_discovery_sources(
+    sources: list[dict[str, Any]],
+    budget: int,
+) -> list[dict[str, Any]]:
+    if budget <= 0:
+        return []
+    if len(sources) <= budget:
+        return sources
+
+    selected: dict[str, dict[str, Any]] = {}
+    total = len(sources)
+    for slot in range(budget):
+        start = int(slot * total / budget)
+        end = int((slot + 1) * total / budget)
+        bucket = sources[start : max(start + 1, end)]
+        center = start + (len(bucket) - 1) / 2
+        best_offset, best_source = max(
+            enumerate(bucket),
+            key=lambda item: (*_discovery_source_score(item[1]), -abs((start + item[0]) - center)),
+        )
+        source_id = _source_id_for_sentence(best_source) or f"discovery-{start + best_offset}"
+        selected[source_id] = best_source
+
+    selected_ids = set(selected)
+    return [source for source in sources if (_source_id_for_sentence(source) or "") in selected_ids]
 
 
 def _ai_review_source_sentences(
@@ -792,10 +1018,20 @@ def _ai_review_source_sentences(
             score = 0.0
         valid_by_source[source_id] = max(valid_by_source.get(source_id, 0.0), score)
 
-    review_sources = [
+    reviewable_sources = [
         source
         for source in source_sentences
         if _reviewable_source_sentence(source, has_local_candidates=_source_id_for_sentence(source) in valid_by_source)
+    ]
+    local_candidate_sources = [
+        source
+        for source in reviewable_sources
+        if _source_id_for_sentence(source) in valid_by_source
+    ]
+    discovery_sources = [
+        source
+        for source in reviewable_sources
+        if _source_id_for_sentence(source) not in valid_by_source
     ]
     try:
         explicit_budget = int(
@@ -806,16 +1042,37 @@ def _ai_review_source_sentences(
         )
     except (TypeError, ValueError):
         explicit_budget = 0
-    if explicit_budget > 0 and len(review_sources) > explicit_budget:
+    if explicit_budget > 0 and len(reviewable_sources) > explicit_budget:
         ranked = sorted(
-            review_sources,
+            reviewable_sources,
             key=lambda source: (
                 -valid_by_source.get(_source_id_for_sentence(source), 0.0),
                 float(source.get("start") or 0),
             ),
         )[: max(3, explicit_budget)]
         selected_ids = {_source_id_for_sentence(source) for source in ranked}
-        review_sources = [source for source in review_sources if _source_id_for_sentence(source) in selected_ids]
+        review_sources = [source for source in reviewable_sources if _source_id_for_sentence(source) in selected_ids]
+        payload["_ai_review_local_candidate_source_count"] = len(
+            [source for source in review_sources if _source_id_for_sentence(source) in valid_by_source]
+        )
+        payload["_ai_review_discovery_source_count"] = len(review_sources) - int(payload["_ai_review_local_candidate_source_count"])
+        payload["_ai_review_discovery_source_budget"] = explicit_budget
+        payload["_ai_review_discovery_source_deferred_count"] = max(0, len(reviewable_sources) - len(review_sources))
+        return review_sources
+
+    discovery_budget = _ai_review_discovery_budget(payload, len(source_sentences), len(discovery_sources))
+    selected_discovery_sources = _select_representative_discovery_sources(discovery_sources, discovery_budget)
+    selected_discovery_ids = {_source_id_for_sentence(source) for source in selected_discovery_sources}
+    local_candidate_ids = {_source_id_for_sentence(source) for source in local_candidate_sources}
+    review_sources = [
+        source
+        for source in reviewable_sources
+        if _source_id_for_sentence(source) in local_candidate_ids or _source_id_for_sentence(source) in selected_discovery_ids
+    ]
+    payload["_ai_review_local_candidate_source_count"] = len(local_candidate_sources)
+    payload["_ai_review_discovery_source_count"] = len(selected_discovery_sources)
+    payload["_ai_review_discovery_source_budget"] = discovery_budget
+    payload["_ai_review_discovery_source_deferred_count"] = max(0, len(discovery_sources) - len(selected_discovery_sources))
     return review_sources
 
 
@@ -890,6 +1147,9 @@ def _apply_ai_learning_point_reviews(
 
 
 def extract_learning_points_from_subtitles(payload: dict[str, Any], cues: list[Cue] | None = None) -> dict[str, Any]:
+    timing_started = time.perf_counter()
+    source_started = timing_started
+    timing_ms: dict[str, int] = {}
     payload = {**payload, "language": legacy_worker.normalize_learning_language(payload.get("language", "en"))}
     _ensure_ai_review_available(payload)
     emit_progress("extract_learning_points", "source", 5, "正在准备字幕学习点抽取。")
@@ -901,6 +1161,8 @@ def extract_learning_points_from_subtitles(payload: dict[str, Any], cues: list[C
     else:
         subtitle_path = legacy_worker.clean_input_path(payload.get("subtitle_path", ""))
 
+    timing_ms["source_prepare"] = int((time.perf_counter() - source_started) * 1000)
+    extract_started = time.perf_counter()
     emit_progress("extract_learning_points", "sentences", 36, "正在把字幕整理成可分析句子。")
     source_sentences = source_sentences_from_cues(cues, payload)
     user_level = str(payload.get("level") or "B1")
@@ -913,16 +1175,26 @@ def extract_learning_points_from_subtitles(payload: dict[str, Any], cues: list[C
     local_candidate_count = len(raw_points)
     review_source_sentences = _ai_review_source_sentences(payload, source_sentences, raw_points)
     valid_local_candidate_count = len([point for point in raw_points if point.get("validation_status") != "hard_blocked"])
+    timing_ms["learning_point_extract"] = int((time.perf_counter() - extract_started) * 1000)
+    deferred_discovery_count = int(payload.get("_ai_review_discovery_source_deferred_count") or 0)
+    discovery_note = (
+        f" 长字幕已抽样普通句，跳过 {deferred_discovery_count} 个无本地候选的普通句。"
+        if deferred_discovery_count > 0
+        else ""
+    )
     emit_progress(
         "extract_learning_points",
         "ai_review",
         50,
-        f"本地召回 {local_candidate_count} 个候选，AI 将扫描 {len(review_source_sentences)}/{len(source_sentences)} 句字幕。",
+        f"本地召回 {local_candidate_count} 个待审候选（不是卡片数），AI 将扫描 {len(review_source_sentences)}/{len(source_sentences)} 句字幕。{discovery_note}",
     )
+    ai_review_started = time.perf_counter()
     points, model_errors = _apply_ai_learning_point_reviews(payload, source_sentences, review_source_sentences, raw_points)
+    timing_ms["ai_review"] = int((time.perf_counter() - ai_review_started) * 1000)
 
     seen: dict[str, dict[str, Any]] = {}
     deduped_points: list[dict[str, Any]] = []
+    postprocess_started = time.perf_counter()
     emit_progress("extract_learning_points", "classify", 72, f"正在整理 AI 精筛结果：{len(points)} 个学习点。")
     for point in points:
         if point.get("validation_status") != "hard_blocked":
@@ -934,10 +1206,12 @@ def extract_learning_points_from_subtitles(payload: dict[str, Any], cues: list[C
             score = score_learning_point(point, user_level, payload)
             point.update(score)
             point["learning_action_key"] = str(point.get("learning_action_key") or learning_action_key(point))
-            if point.get("status") not in {"recommended", "candidate_only", "hidden_duplicate", "hard_blocked"}:
+            current_status = str(point.get("status") or "")
+            if current_status not in {"recommended", "candidate_only", "hidden_duplicate", "hard_blocked"}:
                 status, status_reason = assign_learning_point_status(point, user_level, payload)
                 point["status"] = status
                 point["status_reason"] = status_reason
+            point = _apply_source_sentence_quality_gate(point)
         key = _learning_point_duplicate_key(point)
         if point.get("validation_status") == "hard_blocked":
             deduped_points.append(point)
@@ -961,6 +1235,7 @@ def extract_learning_points_from_subtitles(payload: dict[str, Any], cues: list[C
 
     points = sorted(deduped_points, key=lambda item: (float(item.get("start") or 0), str(item.get("answer_core") or "")))
     status_counts = _status_counts(points)
+    source_sentence_quality = sentence_quality_counts(source_sentences)
     ai_rejected_count = sum(1 for point in points if str(point.get("ai_decision") or "").lower() in {"reject", "skip", "missing_review"})
     summary = {
         "total": len(points),
@@ -973,9 +1248,12 @@ def extract_learning_points_from_subtitles(payload: dict[str, Any], cues: list[C
         "extract_learning_points",
         "done",
         100,
-        f"AI 已扫描 {len(review_source_sentences)}/{len(source_sentences)} 句字幕：推荐 {status_counts['recommended']} 个，候选 {status_counts['candidate_only']} 个。",
+        f"AI 已扫描 {len(review_source_sentences)}/{len(source_sentences)} 句字幕：推荐 {status_counts['recommended']} 个（默认勾选），候选 {status_counts['candidate_only']} 个（可手动加入）。下一步只生成已选学习点。",
     )
     title = payload.get("title") or (Path(payload.get("video_path") or subtitle_path).stem if (payload.get("video_path") or subtitle_path) else "字幕素材")
+    timing_ms["postprocess"] = int((time.perf_counter() - postprocess_started) * 1000)
+    timing_ms["total"] = int((time.perf_counter() - timing_started) * 1000)
+    add_learning_point_extraction_timing_aliases(timing_ms)
     return {
         "id": f"lp_project_{int(time.time())}",
         "title": title,
@@ -1005,9 +1283,11 @@ def extract_learning_points_from_subtitles(payload: dict[str, Any], cues: list[C
         "source_sentences": source_sentences,
         "learning_points": points,
         "learning_point_summary": summary,
+        "timing_ms": timing_ms,
         "quality_funnel": {
             "subtitle_cues": len(cues),
             "source_sentence_count": len(source_sentences),
+            "source_sentence_quality_counts": source_sentence_quality,
             "ai_reviewed_source_count": len(review_source_sentences),
             "learning_point_count": len(points),
             "recommended_learning_point_count": status_counts["recommended"],
@@ -1029,8 +1309,17 @@ def extract_learning_points_from_subtitles(payload: dict[str, Any], cues: list[C
             "ai_recommended_count": status_counts["recommended"],
             "ai_candidate_count": status_counts["candidate_only"],
             "ai_rejected_count": ai_rejected_count,
+            "ai_review_concurrency": int(payload.get("_ai_review_concurrency") or 1),
+            "ai_review_timing_ms": dict(payload.get("_ai_review_timing_ms") or {}),
             "ai_review_cache_hits": int(payload.get("_ai_review_cache_hits") or 0),
             "ai_review_cache_misses": int(payload.get("_ai_review_cache_misses") or 0),
+            "ai_review_cache_read_enabled": bool(payload.get("_ai_review_cache_read_enabled")),
+            "ai_review_cache_write_enabled": bool(payload.get("_ai_review_cache_write_enabled")),
+            "learning_point_timing_ms": timing_ms,
+            "ai_review_local_candidate_source_count": int(payload.get("_ai_review_local_candidate_source_count") or 0),
+            "ai_review_discovery_source_count": int(payload.get("_ai_review_discovery_source_count") or 0),
+            "ai_review_discovery_source_budget": int(payload.get("_ai_review_discovery_source_budget") or 0),
+            "ai_review_discovery_source_deferred_count": int(payload.get("_ai_review_discovery_source_deferred_count") or 0),
         },
         "ai_model_errors": model_errors,
         "warnings": [],

@@ -32,6 +32,14 @@ def fmt_time(seconds: float) -> str:
 def strip_subtitle_text(value: str) -> str:
     value = re.sub(r"<[^>]+>", "", value)
     value = re.sub(r"\{\\.*?\}", "", value)
+    value = re.sub(r"\\[hHnN]", " ", value)
+    value = re.sub(
+        r"[\[(]\s*(?:applause|music|laughter|laughs|cheering|clapping|audience|inaudible|silence)\s*[\])]",
+        " ",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = value.replace("♪", " ")
     value = re.sub(r"(?:^|\s)(?:>>|>)+\s*", " ", value)
     value = re.sub(r"^\s*[.?!]+\s*", "", value)
     value = re.sub(r"\s+", " ", value)

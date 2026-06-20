@@ -1,201 +1,168 @@
 # Anki Card Generator
 
-面向中文学习者的 Windows 桌面端 Anki 卡片生成器。它把视频、字幕、YouTube 链接和文档资料变成可以审核、选择并导出的 Anki `.apkg` 卡包。
+面向中文学习者的 Windows 桌面端视频制卡工具。它把本地视频 + 字幕或视频链接变成可审核、可导出、可导入 Anki 的 `.apkg` 复读卡包。
 
-当前测试版：`v0.9.2-beta`。
+当前测试版：`v0.9.3-beta`。
 
-当前仓库版本已经切到新的主流程：
+## 它适合做什么
 
-```text
-素材配置 -> AI 精筛学习点 -> 用户选择学习点 -> AI 生成完整卡片 -> 审核导出 APKG
-```
+- 从 YouTube /公开视频链接生成语言学习卡。
+- 从本地 `mp4/webm/mkv/mov` + `srt/vtt` 字幕生成卡。
+- 在生成前先抽取并推荐学习点，用户自己决定生成哪些卡。
+- 导出 Anki `.apkg`，并通过 AnkiConnect 做导入与媒体核验。
+- 为每张视频卡保留视频片段、原声、整句 TTS、表达 TTS、中文语境义和学习提示。
 
-不再让用户在“精选优先 / 不漏优先 / 全量发现”之间纠结。系统内部仍然保留质量 gate、重复过滤、硬阻断和诊断统计，但 Review UI 面向用户展示的是：
+当前公开主流程只保留两条入口：`本地视频 + 字幕` 和 `视频链接`。历史文档制卡、实验模板和内部诊断能力不作为普通用户入口展示。
 
-- `AI 已精筛学习点`：推荐学习点默认勾选，候选学习点可手动勾选。
-- `可用卡片`：用户确认后才生成完整卡片，默认全选，用户可取消。
-- `学习点诊断`：展示 AI 拒绝、重复折叠、硬阻断或制卡失败的学习点与原因。
-- `导出已选`：只导出用户当前勾选的完整卡片。
+## v0.9.3-beta 重点
 
-## 主要能力
+- **视频制卡主链路完成 8/8 真实验收矩阵**：YouTube、本地视频 + SRT、完整复读、快速复读、cold/hot cache、100+ 张一次点击压力包均已通过。
+- **启动更干净**：普通 `desktop:dev` 启动默认隐藏 Tauri 调试终端，日志仍写入文件；需要排查时可用 `desktop:dev:debug` 显示调试窗口。
+- **卡片质量闸更硬**：素材不可读、TTS 最终失败、媒体切片失败、ledger/hash mismatch、APKG verify fail 会阻止导出。
+- **用户选择更可信**：用户勾选 N 个可制卡学习点，目标就是生成 N 张卡；模型漏字段时会尽量补齐保底卡并记录诊断。
+- **缓存和速度更透明**：记录 cold/hot、cache hit/miss、TTS、媒体切片、APKG 打包和 Anki verify 阶段耗时。
+- **公开仓库更干净**：生成媒体、APKG、test runs、缓存、日志、内部 handoff 和本地密钥文件默认不会进入 Git。
 
-- 本地视频 + SRT：从剧集、课程或电影片段生成语言学习卡。
-- YouTube / URL：下载视频和字幕，失败时可降级到字幕-only。
-- 文档资料：支持知识吸收和语言精读两种路径。
-- AI 学习点精筛：本地规则先高召回候选，Gemini/Vertex 再评审、补漏、分层推荐。
-- 统一学习点选择：同一句里可以同时抽取词伙、语境生词、语法框架、听力难点和语气风险点。
-- 自动难度：学习水平默认自动判断，每张卡带 `estimated_level` / `difficulty`。
-- 多语言发音标注：支持 `en / fr / es / ja / ru`，不强行把所有语言塞进英语 IPA。
-- 发音透明追踪：`PronunciationMeta` 记录语言、口音 profile、生成依据、字段置信度和 validator issues。
-- TTS 与媒体账本：整句 TTS、表达 TTS、原视频音频、视频切片都会记录 hash 和 ledger，方便核验。
-- AnkiConnect 核验：可导入后检查 note/card、媒体引用、TTS ledger 和隐藏 JSON 字段。
-- 本地环境一键修复：设置页可以检测 Python、FFmpeg、Deno/Node、Anki、AnkiConnect，并尝试自动修复可自动处理的项。
+## 界面与成品卡
 
-## 当前模板
+### 桌面端工作台
 
-视频/字幕制卡目前有两个可选模板：
+![桌面端工作台](docs/screenshots/desktop-workspace.png)
 
-| 模板 | 当前定位 | 卡面 |
-| --- | --- | --- |
-| 沉浸复读 V11 | 默认稳定模板，偏通用沉浸跟读、释义、误用提醒和再造句 | V11 |
-| 词霸天下实验 V1 | 实验筛选/制卡风格，强调词块、语境义、概念视角、搭配边界、真实听辨和“为说而思考” | 独立 Anki 卡面 |
-
-注意：`词霸天下实验 V1` 现在有独立导出的 Anki 卡面，正面优先使用召回问题，背面按“核心答案 / 语境义 / 语言动作 / 迁移句 / 搭配边界 / 原句场景”组织。它仍复用现有 note field schema，仍属于实验模板，不代表已经有独立数据模型或完整 Review 页重设计。
-
-## 界面预览
-
-### 素材配置
+### 学习点生成与审核导出
 
 ![素材配置](docs/screenshots/workflow-start.png)
 
-### 审核导出
-
 ![审核导出](docs/screenshots/workflow-generated.png)
 
-### 模型 API 设置
+### 设置页
 
-Vertex 模式使用本机 `gcloud` OAuth，不需要粘贴 API Key。其它服务商的 Key 可以分别保存到“我的模型”。
+模型 API、TTS、本地环境检测分开配置。Vertex 模式使用本机 `gcloud` OAuth；其它 OpenAI-compatible 服务商可以保存到本机凭据。
 
 ![模型 API 设置](docs/screenshots/settings-model-api.png)
 
-### 语音 TTS 设置
+![TTS 设置](docs/screenshots/settings-tts.png)
 
-TTS 服务商、音色和 Key 与文本模型分开保存。导出 TTS 默认降低音量，避免比原视频声音刺耳。
+![本地环境检测](docs/screenshots/settings-environment.png)
 
-![语音 TTS 设置](docs/screenshots/settings-tts.png)
+### Anki 成品卡
 
-### 本地环境检测与修复
+下面三张来自 `100+ 张一次点击压力包` 的真实 Anki Preview 抽查，覆盖开头、中间和结尾卡片。
 
-环境页会分开检测 Anki 桌面端、Anki 是否运行、AnkiConnect 是否可用。缺少 Python 时，Tauri 原生层会先尝试安装推荐 Python 3.12，再继续安装 worker 依赖。
+![Anki 成品卡开头](docs/screenshots/anki-card-stress-start.jpg)
 
-![本地环境设置](docs/screenshots/settings-environment.png)
+![Anki 成品卡中间](docs/screenshots/anki-card-stress-middle.jpg)
+
+![Anki 成品卡结尾](docs/screenshots/anki-card-stress-end.jpg)
+
+## 卡片模式
+
+普通视频制卡只暴露 `沉浸复读 V11`，并提供两种复读模式：
+
+| 模式 | 适合场景 | 卡面内容 |
+| --- | --- | --- |
+| 完整复读 | 深度学习、精听、表达复盘 | 视频、原声、整句 TTS、表达 TTS、释义、用法、误用提醒、发音和练习提示 |
+| 快速复读 | 批量复习、轻量跟读 | 正面同 V11，背面保留原句、中文意思、视频、原声、慢读 TTS 和表达 TTS |
 
 ## 快速开始
 
-推荐普通用户直接使用 Windows 桌面端：
-
-1. 下载或构建桌面端。
+1. 安装或解压 Windows release 包。
 2. 打开 `Anki Card Generator.exe`。
 3. 进入 `设置 -> 本地环境`，点击 `检查环境`。
-4. 如果有缺失项，点击 `一键修复全部可修复项`。
-5. 进入 `模型 API`，选择模型方案，测试连接并保存。
-6. 进入 `语音 TTS`，选择 TTS 方案，测试连接并保存。
-7. 选择素材：本地视频 + SRT、视频链接，或文档资料。
+4. 按提示安装或修复 Python、FFmpeg、Anki、AnkiConnect 等依赖。
+5. 进入 `模型 API`，选择模型服务商，测试连接并保存。
+6. 进入 `语音 TTS`，选择 TTS 服务商和音色，测试连接并保存。
+7. 回到主界面，选择 `本地视频 + 字幕` 或 `视频链接`。
 8. 点击 `抽取学习点`，等待 AI 精筛推荐/候选学习点。
-9. 勾选想制卡的学习点，点击 `生成选中卡片`。
-10. 在 `审核导出` 里检查卡片，取消不想导出的卡。
-11. 点击 `导出已选`，导入 Anki。
+9. 勾选想生成的学习点，点击 `生成已勾选的 N 张`。
+10. 在审核页检查卡片，取消不想导出的卡。
+11. 点击 `导出可用的 N 张` 生成 `.apkg`。
+12. 使用 `打开 Anki` / `导入并核验` 检查 note、媒体、音频和卡面。
 
 完整图文教程见 [用户指南](docs/USER_GUIDE.md)。
 
-## 本地环境说明
+## 依赖与环境
 
-应用尽量把环境问题做成“检测 + 修复”，而不是只提示错误。
-
-| 项目 | 当前处理方式 |
-| --- | --- |
-| Python 运行环境 | 原生层检测；缺失时尝试通过 winget 安装推荐 Python 3.12 |
-| Python worker 依赖 | 创建 `.venv`，安装/更新 `genanki`、`yt-dlp`、`pypdf` |
-| FFmpeg | 缺失时尝试通过 winget 安装 |
-| Deno / Node | 缺失时尝试通过 winget 安装 Deno |
-| Anki 桌面端 | 缺失时尝试通过 winget 安装 |
-| AnkiConnect | 不能静默安装；应用会打开 Anki 并提示插件代码 `2055492159` |
-
-为什么不是“最新 Python”：当前推荐安装 Python 3.12，因为它更稳，避免最新版本带来依赖兼容波动。
+| 项目 | 用途 | 当前处理方式 |
+| --- | --- | --- |
+| Python 3.12 | 运行 worker、生成 APKG、处理媒体账本 | 原生层检测，缺失时可尝试自动安装 |
+| FFmpeg | 视频切片、原声音频、媒体转换 | 设置页检测，缺失时可尝试自动安装 |
+| yt-dlp | 视频链接下载 | worker 依赖安装 |
+| Anki 桌面端 | 导入和预览卡包 | 设置页检测，缺失时可尝试安装 |
+| AnkiConnect | 导入后核验 note/card/media | 需要用户在 Anki 插件页安装插件代码 `2055492159` |
 
 ## 模型与 TTS
 
-当前设置页支持：
+应用支持按服务商保存模型和 TTS 配置。文本模型与 TTS 分开设置，避免把同一个 API key 和模型配置混用。
 
-- Gemini Vertex：文本模型默认 `gemini-3.1-pro-preview`，使用本机 `gcloud` OAuth。
-- Gemini Vertex TTS：默认 `gemini-3.1-flash-tts-preview`，使用本机 `gcloud` OAuth。
-- MIMO / OpenAI-compatible。
+常见配置包括：
+
+- Gemini Vertex / Vertex TTS：使用本机 `gcloud` OAuth。
+- OpenAI-compatible endpoint：可填自定义 base URL、model、API key。
 - Qwen / DashScope。
 - DeepSeek。
-- 可扩展的自定义服务商配置。
+- 其它兼容服务商。
 
-每个模型方案和 TTS 方案都可以单独保存到“我的模型”或“我的 TTS”。Vertex 方案不显示 API Key 输入框，因为它不使用本地保存的 API Key。
-
-## 多语言发音逻辑
-
-内部语言使用稳定 code：
-
-```ts
-en | fr | es | ja | ru
-```
-
-默认 profile：
-
-| 语言 | 读法体系 |
-| --- | --- |
-| English | IPA + weak forms/linking/stress |
-| Français | API/IPA + liaison/e caduc |
-| Español | 拉美通用读法，音节 + 重音，可选 IPA |
-| 日本語 | 假名 + 可靠时标音高 |
-| Русский | 带重音西里尔，可选 IPA |
-
-V1 不做真实 ASR 或 forced alignment。没有音频实听时，`generation_basis` 默认是 `subtitle_inferred`，UI 和 Anki 卡面会标为推测口语读法或低置信度，不会把字幕推测包装成“剧中实听”。
-
-## 质量与诊断
-
-生成时会先召回学习点，再决定哪些生成完整卡片：
-
-- 合法且高价值：生成完整可用卡片。
-- 合法但未制卡：进入学习点诊断。
-- 训练动作重复：折叠为重复诊断。
-- `exact_span` 不在原句、`answer_core` 混入中文/IPA/解释：硬阻断。
-
-默认不会为了数量硬凑低价值卡。用户想多导出时，可以直接在可用卡片里选择更多卡片；后续可继续扩展“从候选库一键生成更多完整卡”。
+不要把真实 API key 写进源码、README、issue、日志或截图。选择“记住本地 key”时，应用优先保存到 Windows Credential Manager；不可用时使用本机 DPAPI 加密文件。
 
 ## 开发运行
 
 ```powershell
 npm install
-npm run tauri:dev
+npm.cmd run desktop:dev
 ```
 
-明天继续开发时，推荐直接在 `E:\ANKI` 运行：
+`desktop:dev` 会隐藏 Tauri 调试终端，只显示桌面 UI；日志仍写入：
+
+```text
+.tauri-dev-current.out
+.tauri-dev-current.err
+.vite-dev-current.out
+.vite-dev-current.err
+```
+
+需要看到调试终端时运行：
 
 ```powershell
-npm run tauri:dev
+npm.cmd run desktop:dev:debug
 ```
 
-如果刚改过 Tauri/Rust，首次冷启动可能需要重新编译，约几十秒到一分钟。Vite 正常启动后会显示 `http://127.0.0.1:5173/`；桌面窗口会在 Cargo 编译完成后出现。不要单独打开浏览器里的 `localhost` 页面来判断桌面端是否失败。
+底层 Tauri 命令仍保留：
+
+```powershell
+npm.cmd run tauri:dev
+```
 
 ## 验证
 
 常用检查：
 
 ```powershell
-npm run lint
-npm run test:unit
-npm run build
-python -m pytest tests\test_worker_quality.py -q -k "check_env or repair_env"
+npm.cmd run check
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
-2026-06-09 收尾已验证：
+发布前检查：
 
 ```powershell
-npm.cmd run test:unit
-python -m pytest tests\test_worker_quality.py -q
-npm.cmd run build
+npm.cmd run check:full
+npm.cmd run tauri:build
 ```
 
-完整发布前检查：
+最新 release-hardening 证据状态：
 
-```powershell
-npm run check:full
-npm run tauri:build
-```
+- 8/8 release matrix passed。
+- 202 张目标卡完成真实生成/导出/导入核验。
+- 112 张 Anki Preview 检查覆盖 1 张、20 张和 100+ 张包。
+- 100+ 压力包证明：用户一次点击生成，内部可分批，不影响用户操作模型。
+- `npm.cmd run check`、`cargo check --manifest-path src-tauri/Cargo.toml` 已通过。
 
-## 隐私与版权
+## 隐私、版权与安全
 
-- 不要把真实 API Key 写进源码、README、issue、日志或截图。
-- 用户勾选保存时，密钥优先保存到 Windows Credential Manager；不可用时使用本机 DPAPI 加密文件。
-- 使用第三方模型或 TTS 时，字幕、文档片段和生成字段会发送给对应服务商。
-- 生成的视频片段、音频、字幕、`.apkg` 和项目缓存默认不提交到 Git。
-- 第三方视频、字幕、文档和合成音频默认仅供个人学习使用。
+- 使用第三方模型或 TTS 时，字幕、学习点、卡片字段和 TTS 文本会发送给用户配置的服务商。
+- 生成的视频片段、音频、字幕、`.apkg`、项目缓存和 test runs 默认不提交到 Git。
+- 第三方视频、字幕和合成音频默认仅供个人学习使用；公开分享 deck 前请确认你有权分发底层素材。
+- 不要上传真实 API key、私有视频、私有字幕、私人路径、完整生成缓存或 Anki 用户数据。
 
 ## 更多文档
 
@@ -203,3 +170,6 @@ npm run tauri:build
 - [故障排查](docs/TROUBLESHOOTING.md)
 - [架构说明](docs/ARCHITECTURE.md)
 - [发布清单](docs/RELEASE_CHECKLIST.md)
+- [Beta 限制](docs/BETA_LIMITATIONS.md)
+- [隐私说明](PRIVACY.md)
+- [安全策略](SECURITY.md)

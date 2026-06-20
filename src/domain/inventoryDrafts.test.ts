@@ -31,7 +31,7 @@ function inventoryItem(
 }
 
 describe('materializeLearningPointInventory', () => {
-  it('turns every non-blocked inventory item into an enabled draft card', () => {
+  it('turns every non-blocked inventory item into an unselected repair draft card', () => {
     const base = createDemoProject(defaultRequest)
     const project: Project = {
       ...base,
@@ -53,8 +53,9 @@ describe('materializeLearningPointInventory', () => {
     const cards = result.project.segments.flatMap((segment) => segment.cards)
 
     expect(result.added).toBe(2)
-    expect(cards.some((card) => card.learning_point_id === 'lp-vocab' && card.enabled)).toBe(true)
-    expect(cards.some((card) => card.learning_point_id === 'lp-listening' && card.enabled)).toBe(true)
+    expect(cards.some((card) => card.learning_point_id === 'lp-vocab' && !card.enabled)).toBe(true)
+    expect(cards.some((card) => card.learning_point_id === 'lp-listening' && !card.enabled)).toBe(true)
+    expect(cards.find((card) => card.learning_point_id === 'lp-vocab')?.teacher_note).toContain('默认不会导出')
     expect(cards.some((card) => card.learning_point_id === 'lp-blocked')).toBe(false)
     expect(result.project.learning_point_inventory?.find((item) => item.id === 'lp-vocab')?.status).toBe('card_generated')
     expect(result.project.learning_point_inventory?.find((item) => item.id === 'lp-listening')?.status).toBe('card_generated')
