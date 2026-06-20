@@ -5,17 +5,14 @@ type WindowAction = 'minimize' | 'toggleMaximize' | 'close'
 
 type TopbarProps = {
   appBusy: boolean
+  generateDisabled: boolean
+  generateLabel: string
   hasExportableCards: boolean
   hasProject: boolean
   inspectorActive: boolean
   inspectorActionLabel: string
   isCancelling: boolean
-  projectSummary?: {
-    reviewCount: number
-    selectedCardLabel: string
-    segmentCount: number
-    templateLabel: string
-  }
+  showGenerateButton?: boolean
   status: string
   statusTone: string
   workerBusy: boolean
@@ -31,12 +28,14 @@ type TopbarProps = {
 
 export function Topbar({
   appBusy,
+  generateDisabled,
+  generateLabel,
   hasExportableCards,
   hasProject,
   inspectorActive,
   inspectorActionLabel,
   isCancelling,
-  projectSummary,
+  showGenerateButton = true,
   status,
   statusTone,
   workerBusy,
@@ -53,29 +52,21 @@ export function Topbar({
     <header className="topbar" onMouseDown={onMouseDown} onDoubleClick={onDoubleClick}>
       <div className="brand-lockup">
         <div className="app-mark" aria-hidden="true">
-          <img src="/app-icon.png" alt="" />
+          <img src="app-icon.png" alt="" />
         </div>
         <div>
-          <p className="eyebrow">Anki Card Generator V1</p>
+          <p className="eyebrow">Anki Card Generator</p>
           <h1>Anki 卡片生成器</h1>
         </div>
       </div>
       <div className="window-drag-region" />
       <div className="topbar-actions">
-        {projectSummary ? (
-          <div className="mini-summary" aria-label="项目摘要">
-            <span>{`${projectSummary.segmentCount} 个片段`}</span>
-            <span>{projectSummary.selectedCardLabel}</span>
-            <span>{`${projectSummary.reviewCount} 张待审`}</span>
-            <span>{projectSummary.templateLabel}</span>
-          </div>
-        ) : null}
         <div className={`status-chip ${statusTone}`} title={status} role="status" aria-live="polite" aria-atomic="true">
           <CheckCircle2 size={16} />
           <span>{status}</span>
         </div>
         <button
-          className="ghost-button inspector-toggle"
+          className="ghost-button quiet-button inspector-toggle"
           type="button"
           onClick={onToggleInspector}
           aria-pressed={inspectorActive}
@@ -100,10 +91,12 @@ export function Topbar({
             导出
           </button>
         ) : null}
-        <button className="primary-button" type="button" onClick={onGenerate} disabled={appBusy}>
-          {appBusy ? <Loader2 className="spin" size={18} /> : <Wand2 size={18} />}
-          {hasProject ? '重新生成' : '生成卡片'}
-        </button>
+        {showGenerateButton ? (
+          <button className="primary-button" type="button" onClick={onGenerate} disabled={appBusy || generateDisabled}>
+            {appBusy ? <Loader2 className="spin" size={18} /> : <Wand2 size={18} />}
+            {generateLabel}
+          </button>
+        ) : null}
       </div>
       <div className="window-controls" aria-label="窗口控制">
         <button type="button" onClick={() => onWindowAction('minimize')} aria-label="最小化">

@@ -4,12 +4,39 @@ export const MIMO_OPENAI_BASE_URL = 'https://api.xiaomimimo.com/v1'
 export const MIMO_TOKEN_PLAN_CN_BASE_URL = 'https://token-plan-cn.xiaomimimo.com/v1'
 export const MIMO_TOKEN_PLAN_SGP_BASE_URL = 'https://token-plan-sgp.xiaomimimo.com/v1'
 export const MIMO_TOKEN_PLAN_SGP_ANTHROPIC_BASE_URL = 'https://token-plan-sgp.xiaomimimo.com/anthropic'
+export const QWEN_DASHSCOPE_CN_COMPATIBLE_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+export const QWEN_DASHSCOPE_INTL_COMPATIBLE_BASE_URL = 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1'
+export const DEEPSEEK_OPENAI_BASE_URL = 'https://api.deepseek.com'
+export const DEEPSEEK_DEFAULT_MODEL = 'deepseek-v4-pro'
+export const GEMINI_VERTEX_GLOBAL_BASE_URL = 'https://aiplatform.googleapis.com'
+export const GEMINI_VERTEX_DEFAULT_MODEL = 'gemini-3.1-pro-preview'
+export const GEMINI_VERTEX_UNAVAILABLE_MODEL_ALIASES = new Set(['gemini-3.1-pro'])
 
 export const mimoTextModels = [
   { value: 'mimo-v2.5-pro', label: 'MiMo-V2.5-Pro' },
   { value: 'mimo-v2.5', label: 'MiMo-V2.5' },
   { value: 'mimo-v2-pro', label: 'MiMo-V2-Pro' },
   { value: 'mimo-v2-omni', label: 'MiMo-V2-Omni' },
+]
+
+export const qwenTextModels = [
+  { value: 'qwen3.7-max', label: 'Qwen3.7-Max' },
+  { value: 'qwen3-max', label: 'Qwen3-Max' },
+  { value: 'qwen3.6-plus', label: 'Qwen3.6-Plus' },
+  { value: 'qwen-plus', label: 'Qwen Plus' },
+  { value: 'qwen-max', label: 'Qwen Max' },
+  { value: 'qwen-flash', label: 'Qwen Flash' },
+]
+
+export const deepseekTextModels = [
+  { value: DEEPSEEK_DEFAULT_MODEL, label: 'DeepSeek V4 Pro' },
+  { value: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
+]
+
+export const geminiVertexTextModels = [
+  { value: GEMINI_VERTEX_DEFAULT_MODEL, label: 'Gemini 3.1 Pro Preview' },
+  { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+  { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
 ]
 
 export const capabilityLabels = ['structured_json', 'long_context', 'tts', 'asr', 'vision', 'omni', 'cheap_batch']
@@ -27,12 +54,12 @@ export const capabilityHelp: Record<string, string> = {
 export const apiPresets: ApiPreset[] = [
   {
     id: 'local',
-    label: '本地草稿',
+    label: '预览模式',
     provider: 'local',
     base_url: '',
     model: 'local-fallback',
     capabilities: ['structured_json'],
-    note: '不用 API Key，先用本地规则生成草稿，适合测试流程。',
+    note: '不用 API Key，只用于浏览器演示和流程预览；正式抽取学习点与制卡必须配置模型 API。',
     key_hint: '不需要填写',
   },
   {
@@ -86,24 +113,74 @@ export const apiPresets: ApiPreset[] = [
     key_hint: 'Token Plan Key，通常是 tp-...',
   },
   {
-    id: 'deepseek',
-    label: 'DeepSeek',
+    id: 'gemini-31-pro-preview-vertex',
+    label: 'Gemini 3.1 Pro Preview Vertex',
+    provider: 'gemini-vertex',
+    base_url: GEMINI_VERTEX_GLOBAL_BASE_URL,
+    model: GEMINI_VERTEX_DEFAULT_MODEL,
+    capabilities: ['structured_json', 'long_context'],
+    note: '使用本机 gcloud 登录的 Vertex AI；当前项目实测 global 端点可调用，thinking 会保留。',
+    key_hint: '不需要 API Key，先运行 gcloud auth login / 设置项目',
+  },
+  {
+    id: 'deepseek-v4-pro',
+    label: 'DeepSeek V4 Pro',
     provider: 'openai-compatible',
-    base_url: 'https://api.deepseek.com/v1',
-    model: 'deepseek-chat',
-    capabilities: ['structured_json', 'long_context', 'cheap_batch'],
-    note: '推荐作为入门默认项：成本友好，适合批量生成解释草稿。',
+    base_url: DEEPSEEK_OPENAI_BASE_URL,
+    model: DEEPSEEK_DEFAULT_MODEL,
+    capabilities: ['structured_json', 'long_context'],
+    note: 'DeepSeek 当前旗舰模型；默认保留 Thinking，适合高质量筛选、上下文理解和解释生成。',
     key_hint: 'DeepSeek 控制台里的 API Key',
+  },
+  {
+    id: 'deepseek-v4-flash',
+    label: 'DeepSeek V4 Flash',
+    provider: 'openai-compatible',
+    base_url: DEEPSEEK_OPENAI_BASE_URL,
+    model: 'deepseek-v4-flash',
+    capabilities: ['structured_json', 'long_context', 'cheap_batch'],
+    note: 'DeepSeek V4 快速低成本模型；适合批量字幕生成，Thinking 同样会被流式处理。',
+    key_hint: 'DeepSeek 控制台里的 API Key',
+  },
+  {
+    id: 'qwen37-max-cn',
+    label: 'Qwen3.7 Max',
+    provider: 'openai-compatible',
+    base_url: QWEN_DASHSCOPE_CN_COMPATIBLE_BASE_URL,
+    model: 'qwen3.7-max',
+    capabilities: ['structured_json', 'long_context'],
+    note: '阿里云百炼北京地域 OpenAI 兼容端点；当前官方 Max 系列优先选这个。',
+    key_hint: '北京地域 DashScope / 百炼 API Key',
+  },
+  {
+    id: 'qwen36-plus-cn',
+    label: 'Qwen3.6 Plus',
+    provider: 'openai-compatible',
+    base_url: QWEN_DASHSCOPE_CN_COMPATIBLE_BASE_URL,
+    model: 'qwen3.6-plus',
+    capabilities: ['structured_json', 'long_context', 'cheap_batch'],
+    note: '质量和成本更均衡，适合批量生成字幕解释和文档卡字段。',
+    key_hint: '北京地域 DashScope / 百炼 API Key',
   },
   {
     id: 'qwen',
     label: 'Qwen / 通义',
     provider: 'openai-compatible',
-    base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    base_url: QWEN_DASHSCOPE_CN_COMPATIBLE_BASE_URL,
     model: 'qwen-plus',
     capabilities: ['structured_json', 'long_context', 'cheap_batch'],
     note: '中文解释通常稳，适合中英双语卡片字段生成。',
     key_hint: 'DashScope API Key',
+  },
+  {
+    id: 'qwen37-max-intl',
+    label: 'Qwen3.7 Max Intl',
+    provider: 'openai-compatible',
+    base_url: QWEN_DASHSCOPE_INTL_COMPATIBLE_BASE_URL,
+    model: 'qwen3.7-max',
+    capabilities: ['structured_json', 'long_context'],
+    note: '新加坡/国际地域 OpenAI 兼容端点；需要使用对应地域的 DashScope Key。',
+    key_hint: '国际地域 DashScope API Key',
   },
   {
     id: 'kimi',
@@ -167,7 +244,13 @@ export const apiPresets: ApiPreset[] = [
   },
 ]
 
-export const featuredApiPresetIds = new Set(['mimo-token-plan-sgp', 'deepseek', 'custom-compatible'])
+export const featuredApiPresetIds = new Set([
+  'mimo-token-plan-sgp',
+  'qwen37-max-cn',
+  'deepseek-v4-pro',
+  'deepseek-v4-flash',
+  'custom-compatible',
+])
 
 export const featuredApiPresets = apiPresets.filter((preset) => featuredApiPresetIds.has(preset.id))
 export const advancedApiPresets = apiPresets.filter((preset) => !featuredApiPresetIds.has(preset.id))

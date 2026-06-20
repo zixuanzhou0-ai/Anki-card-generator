@@ -1,61 +1,66 @@
 # Release Checklist
 
-目标：确认别人拿到 Windows 包后，在没有源码和开发服务的环境里也能完成制卡和导出。
+当前发布目标：`v0.9.3-beta`（package version `0.9.3`）。
 
-## 构建前
+## 版本与仓库边界
 
-- [ ] `git status` 只包含本次发布相关文件。
-- [ ] 没有真实 API Key。
-- [ ] `.gitignore` 已排除缓存、媒体、`.apkg`、测试输出和 `.venv/`。
-- [ ] 版本号已更新：`package.json`、`package-lock.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`。
-- [ ] `workers/` 已作为 Tauri resources 打包。
-- [ ] README、`PRIVACY.md`、`SECURITY.md` 和 `docs/BETA_LIMITATIONS.md` 与本次发布一致。
-- [ ] Release note 明确说明 YouTube、第三方模型、TTS 费用和版权限制。
+- [ ] `package.json`、`package-lock.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 版本一致。
+- [ ] `README.md`、`PRIVACY.md`、`SECURITY.md`、`docs/BETA_LIMITATIONS.md` 都写明 `v0.9.3-beta`。
+- [ ] `.gitignore` 明确排除 `.env*`、key/token/credential 本地文件、生成媒体、APKG、test runs、缓存、日志和内部 handoff/goal 文档。
+- [ ] 使用白名单 staging；不要运行 `git add .`。
+- [ ] `git diff --cached` 人工检查无 API key、私有路径、APKG、视频、音频、`test_runs/` 或内部工作文档。
 
-## 自动测试
+## 产品文档
+
+- [ ] README 说明当前公开主流程只包含 `本地视频 + 字幕` 和 `视频链接`。
+- [ ] README 说明完整复读、快速复读、TTS、APKG 导出、Anki 导入核验、缓存/耗时诊断。
+- [ ] `docs/USER_GUIDE.md` 可按普通用户流程完成从设置到导出。
+- [ ] `docs/TROUBLESHOOTING.md` 覆盖 Python、FFmpeg、yt-dlp、Anki、AnkiConnect、TTS、API key 常见问题。
+- [ ] `docs/screenshots/` 只保留可公开截图；截图不含 API key、本机用户名、私有路径或私人素材。
+- [ ] GitHub Release body 使用 `docs/RELEASE_NOTES_v0.9.3-beta.md`。
+
+## 自动验证
 
 ```powershell
-python -m py_compile workers\anki_worker.py workers\verify_apkg.py tests\test_worker_quality.py
-npm run check
-npm run test:ui
-cargo build --manifest-path src-tauri/Cargo.toml --locked
-npm run tauri:build
-npm run smoke:release
+npm.cmd run check
+cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
-GitHub Actions 必须是绿色；如果 CI 因外部服务故障失败，release note 需要写明原因和人工复核结果。
+发布包前再跑：
 
-## 便携包检查
+```powershell
+npm.cmd run tauri:build
+```
 
-- [ ] 便携包包含 `Anki Card Generator.exe`。
-- [ ] 便携包包含 `workers/`。
-- [ ] 便携包包含 `scripts/setup_runtime.ps1`。
-- [ ] 便携包包含 `README.md`、`PRIVACY.md`、`SECURITY.md` 和 `docs/`。
-- [ ] 从便携包运行 `scripts/setup_runtime.ps1` 会创建项目本地 `.venv`。
-- [ ] `runtime_diagnostic.json` 已生成，且不包含 API Key。
-- [ ] 从便携包运行 `scripts/smoke_release.ps1` 通过，并生成 `verify_apkg.json`。
-- [ ] 可选：`scripts/smoke_portable.ps1 -PortableZip <zip>` 能从 zip 解压后跑完整 smoke。
+如果环境允许，也跑：
 
-## 干净机器验证
+```powershell
+npm.cmd run check:full
+```
 
-建议用 Windows Sandbox / 虚拟机 / 另一台电脑。
+## 桌面端验证
 
-1. 只复制 release zip，不复制源码。
-2. 解压。
-3. 运行 `scripts/setup_runtime.ps1`。
-4. 打开软件，点击“检查环境”。
-5. 填 MIMO Key。
-6. 用短视频或 YouTube URL 生成卡片。
-7. 导出 `.apkg`。
-8. 导入 Anki。
-9. 检查视频、原声、TTS、词伙 TTS 是否正常。
-10. 删除测试缓存和 `.apkg`，确认没有 API Key 或私人素材进入 release 目录。
+- [ ] `npm.cmd run desktop:dev` 只显示桌面 UI，不额外弹出 Tauri/npm 终端窗口。
+- [ ] `.tauri-dev-current.out/.err` 和 `.vite-dev-current.out/.err` 仍写入日志。
+- [ ] `npm.cmd run desktop:dev:debug` 会显示调试终端，方便开发排查。
+- [ ] release 安装包或 portable exe 启动时不显示终端窗口。
 
-## GitHub Release 内容
+## 视频制卡 Smoke
 
-- `AnkiCardGenerator-v0.9.2-beta-windows-portable.zip`
-- `AnkiCardGenerator-v0.9.2-beta-source.zip`
-- `AnkiCardGenerator-v0.9.2-beta-source.bundle`
-- `Anki Card Generator_0.9.2_x64-setup.exe`
-- `Anki Card Generator_0.9.2_x64_en-US.msi`
-- Release notes: `docs/RELEASE_NOTES_v0.9.2-beta.md`
+至少跑一个小样本，确认本次终端隐藏和版本发布没有影响核心路径：
+
+- [ ] 本地视频 + 字幕或视频链接可抽取学习点。
+- [ ] 用户可勾选学习点并生成卡。
+- [ ] 可导出 `.apkg`。
+- [ ] Anki 导入核验通过，`failed_checks=[]`。
+- [ ] 抽查卡片里的视频、原声、整句 TTS、表达 TTS 可播放。
+
+完整 release-hardening 证据已在本地 2026-06-20 矩阵完成：8/8 cases passed、202 target cards、112 Anki preview inspections。该证据不直接提交到 GitHub。
+
+## GitHub Release
+
+- [ ] 从 release 分支开 PR 到 `main`。
+- [ ] PR CI 通过后合并。
+- [ ] 在 `main` 合并 commit 上创建 tag `v0.9.3-beta`。
+- [ ] 创建 GitHub Release 并上传 Windows installer、MSI、portable zip、SHA256SUMS。
+- [ ] Release note 明确这是 beta：第三方模型/TTS/视频下载可能受服务商、网络、费用和版权限制影响。

@@ -10,12 +10,32 @@ export async function selectSingleFile(filters: Array<{ name: string; extensions
   })
 }
 
-export async function selectDirectory() {
-  return openDialog({ directory: true, multiple: false })
+export type SelectDirectoryOptions = {
+  title?: string
+  defaultPath?: string | null
+}
+
+export async function selectDirectory(options: SelectDirectoryOptions = {}) {
+  return openDialog({
+    directory: true,
+    multiple: false,
+    ...(options.title ? { title: options.title } : {}),
+    ...(options.defaultPath ? { defaultPath: options.defaultPath } : {}),
+  })
+}
+
+export async function listDirectoryFiles(directory: string) {
+  if (!isTauriRuntime()) return []
+  return invoke<string[]>('list_directory_files', { directory })
 }
 
 export function toAssetUrl(path: string) {
   return isTauriRuntime() ? convertFileSrc(path) : ''
+}
+
+export async function suggestSubtitlePath(videoPath: string, language: string) {
+  if (!isTauriRuntime()) return null
+  return invoke<string | null>('suggest_subtitle_path', { videoPath, language })
 }
 
 export async function revealPath(path: string) {

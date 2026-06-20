@@ -1,6 +1,6 @@
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     env, fs,
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
@@ -12,29 +12,106 @@ use std::{
 
 use serde::Serialize;
 use serde_json::{json, Value};
-use tauri::{Emitter, LogicalSize, Manager, Size, State};
+use tauri::{Emitter, LogicalSize, Manager, Size, State, WebviewUrl, WebviewWindowBuilder};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
+use windows_sys::Win32::{
+    Foundation::LocalFree,
+    Security::Cryptography::{
+        CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
+    },
+};
+
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+#[cfg(windows)]
+const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+#[cfg(windows)]
+const DETACHED_PROCESS: u32 = 0x00000008;
 const WORKER_PROGRESS_PREFIX: &str = "__ANKI_CARD_PROGRESS__";
 const WORKER_ERROR_PREFIX: &str = "__ANKI_CARD_ERROR__";
 const SECRET_SERVICE: &str = "Anki Card Generator";
+const SECRET_FALLBACK_DIR: &str = "com.ankicard.generator";
 const ALLOWED_SECRET_KEYS: &[&str] = &["model_api_key", "tts_api_key"];
-const MIN_WINDOW_WIDTH: f64 = 1360.0;
-const MIN_WINDOW_HEIGHT: f64 = 1040.0;
+const ALLOWED_SECRET_KEY_PREFIXES: &[&str] = &["model_profile_key_", "tts_profile_key_"];
+const MIN_WINDOW_WIDTH: f64 = 1180.0;
+const MIN_WINDOW_HEIGHT: f64 = 780.0;
+const WORKER_INLINE_RESULT_LIMIT_BYTES: usize = 64 * 1024;
+const GENERATE_WORKER_PAYLOAD_LIMIT_BYTES: usize = 1_500_000;
+const COMPLETED_WORKER_JOB_LIMIT: usize = 20;
+const DIRECTORY_LIST_MAX_FILES: usize = 2000;
+const DIRECTORY_LIST_MAX_DEPTH: usize = 4;
+const SUPPORTED_BULK_FILE_EXTENSIONS: &[&str] = &[
+    "mp4", "mkv", "webm", "mov", "m4v", "srt", "vtt", "txt", "md", "markdown", "docx", "epub",
+    "pdf", "azw", "azw3", "mobi",
+];
+const SENSITIVE_DIRECTORY_NAMES: &[&str] = &[
+    "windows",
+    "program files",
+    "program files (x86)",
+    "programdata",
+    "$recycle.bin",
+    "system volume information",
+];
+
+fn hide_console_window(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+}
+
+fn detach_gui_process(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    }
+}
 
 #[derive(Clone, Default)]
 struct WorkerJobs {
     jobs: Arc<Mutex<HashMap<String, RunningJob>>>,
+    completed: Arc<Mutex<CompletedWorkerJobs>>,
 }
 
 #[derive(Clone)]
 struct RunningJob {
     pid: u32,
     cancel_requested: bool,
+    failure_message: Option<String>,
+}
+
+#[derive(Clone, Default)]
+struct CompletedWorkerJobs {
+    entries: HashMap<String, CompletedWorkerJob>,
+    order: VecDeque<String>,
+}
+
+#[derive(Clone)]
+struct CompletedWorkerJob {
+    status: WorkerJobStatus,
+    result_path: Option<PathBuf>,
+}
+
+#[derive(Clone, Serialize)]
+struct WorkerJobStatus {
+    job_id: String,
+    command: String,
+    ok: bool,
+    cancelled: bool,
+    result_ref: Option<String>,
+    result_size_bytes: Option<u64>,
+    result_summary: Option<Value>,
+    error: Option<String>,
+    error_code: Option<String>,
+    stage: Option<String>,
+    retryable: Option<bool>,
+    fallbacks: Option<Vec<String>>,
+    details: Option<Value>,
+    finished_at_ms: u64,
 }
 
 #[derive(Serialize)]
@@ -47,29 +124,235 @@ struct WorkerCancelResult {
     cancelled: bool,
 }
 
+#[derive(Serialize)]
+struct BootstrapRepairAction {
+    id: String,
+    label: String,
+    status: String,
+    detail: String,
+    command: Option<String>,
+    next_step: Option<String>,
+}
+
+#[derive(Serialize)]
+struct BootstrapRepairResult {
+    ok: bool,
+    target: String,
+    summary: String,
+    actions: Vec<BootstrapRepairAction>,
+}
+
 fn validate_secret_key(key: &str) -> Result<(), String> {
-    if ALLOWED_SECRET_KEYS.contains(&key) {
-        Ok(())
-    } else {
-        Err(format!("不允许保存这个凭据键：{key}"))
+    let known_key = ALLOWED_SECRET_KEYS.contains(&key);
+    let known_prefix = ALLOWED_SECRET_KEY_PREFIXES
+        .iter()
+        .any(|prefix| key.starts_with(prefix));
+    let safe_chars = key
+        .chars()
+        .all(|value| value.is_ascii_alphanumeric() || value == '_' || value == '-');
+    if known_key || (known_prefix && safe_chars && key.len() <= 96) {
+        return Ok(());
+    }
+    Err(format!("不允许保存这个凭据键：{key}"))
+}
+
+fn save_keyring_secret(key: &str, value: &str) -> Result<(), String> {
+    let entry = keyring::Entry::new(SECRET_SERVICE, key)
+        .map_err(|err| format!("无法打开系统凭据：{err}"))?;
+    entry
+        .set_password(value)
+        .map_err(|err| format!("无法保存系统凭据：{err}"))?;
+    match entry.get_password() {
+        Ok(loaded) if loaded == value => Ok(()),
+        Ok(_) => Err("系统凭据写入后校验失败。".to_string()),
+        Err(err) => Err(format!("系统凭据写入后无法读回：{err}")),
+    }
+}
+
+fn load_keyring_secret(key: &str) -> Result<Option<String>, String> {
+    match keyring::Entry::new(SECRET_SERVICE, key)
+        .map_err(|err| format!("无法打开系统凭据：{err}"))?
+        .get_password()
+    {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(err) => Err(format!("无法读取系统凭据：{err}")),
+    }
+}
+
+fn delete_keyring_secret(key: &str) -> Result<(), String> {
+    match keyring::Entry::new(SECRET_SERVICE, key)
+        .map_err(|err| format!("无法打开系统凭据：{err}"))?
+        .delete_credential()
+    {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(err) => Err(format!("无法删除系统凭据：{err}")),
+    }
+}
+
+fn secret_fallback_path(key: &str) -> Result<PathBuf, String> {
+    validate_secret_key(key)?;
+    let root = env::var_os("LOCALAPPDATA")
+        .or_else(|| env::var_os("APPDATA"))
+        .map(PathBuf::from)
+        .ok_or_else(|| "无法定位当前用户 AppData 目录。".to_string())?;
+    Ok(root
+        .join(SECRET_FALLBACK_DIR)
+        .join("secrets")
+        .join(format!("{key}.dpapi")))
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut result = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        result.push(HEX[(byte >> 4) as usize] as char);
+        result.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    result
+}
+
+fn decode_hex(text: &str) -> Result<Vec<u8>, String> {
+    let trimmed = text.trim();
+    if trimmed.len() % 2 != 0 {
+        return Err("加密凭据文件格式不完整。".to_string());
+    }
+    let mut bytes = Vec::with_capacity(trimmed.len() / 2);
+    for index in (0..trimmed.len()).step_by(2) {
+        let byte = u8::from_str_radix(&trimmed[index..index + 2], 16)
+            .map_err(|err| format!("加密凭据文件格式无效：{err}"))?;
+        bytes.push(byte);
+    }
+    Ok(bytes)
+}
+
+#[cfg(windows)]
+fn protect_secret(value: &str) -> Result<Vec<u8>, String> {
+    let bytes = value.as_bytes();
+    let input = CRYPT_INTEGER_BLOB {
+        cbData: bytes.len() as u32,
+        pbData: bytes.as_ptr() as *mut u8,
+    };
+    let mut output = CRYPT_INTEGER_BLOB {
+        cbData: 0,
+        pbData: std::ptr::null_mut(),
+    };
+    let ok = unsafe {
+        CryptProtectData(
+            &input,
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null(),
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        )
+    };
+    if ok == 0 {
+        return Err(format!(
+            "DPAPI 加密失败：{}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let encrypted =
+        unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
+    unsafe {
+        let _ = LocalFree(output.pbData.cast());
+    }
+    Ok(encrypted)
+}
+
+#[cfg(windows)]
+fn unprotect_secret(bytes: &[u8]) -> Result<String, String> {
+    let input = CRYPT_INTEGER_BLOB {
+        cbData: bytes.len() as u32,
+        pbData: bytes.as_ptr() as *mut u8,
+    };
+    let mut output = CRYPT_INTEGER_BLOB {
+        cbData: 0,
+        pbData: std::ptr::null_mut(),
+    };
+    let ok = unsafe {
+        CryptUnprotectData(
+            &input,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null(),
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        )
+    };
+    if ok == 0 {
+        return Err(format!(
+            "DPAPI 解密失败：{}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let decrypted =
+        unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
+    unsafe {
+        let _ = LocalFree(output.pbData.cast());
+    }
+    String::from_utf8(decrypted).map_err(|err| format!("DPAPI 凭据不是有效 UTF-8：{err}"))
+}
+
+#[cfg(not(windows))]
+fn protect_secret(_value: &str) -> Result<Vec<u8>, String> {
+    Err("当前平台不支持 DPAPI 凭据兜底。".to_string())
+}
+
+#[cfg(not(windows))]
+fn unprotect_secret(_bytes: &[u8]) -> Result<String, String> {
+    Err("当前平台不支持 DPAPI 凭据兜底。".to_string())
+}
+
+fn save_secret_fallback(key: &str, value: &str) -> Result<(), String> {
+    let path = secret_fallback_path(key)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| format!("无法创建凭据目录：{err}"))?;
+    }
+    let encrypted = protect_secret(value)?;
+    fs::write(path, encode_hex(&encrypted)).map_err(|err| format!("无法写入 DPAPI 凭据：{err}"))
+}
+
+fn load_secret_fallback(key: &str) -> Result<Option<String>, String> {
+    let path = secret_fallback_path(key)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(path).map_err(|err| format!("无法读取 DPAPI 凭据：{err}"))?;
+    let encrypted = decode_hex(&raw)?;
+    unprotect_secret(&encrypted).map(Some)
+}
+
+fn delete_secret_fallback(key: &str) -> Result<(), String> {
+    let path = secret_fallback_path(key)?;
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!("无法删除 DPAPI 凭据：{err}")),
     }
 }
 
 fn worker_candidates(app: &tauri::AppHandle) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
-    // Release builds should only trust files shipped as app resources. Searching the
-    // current directory or arbitrary executable ancestors makes it too easy to run a
-    // spoofed workers/anki_worker.py when the app is launched from an unsafe folder.
-    if let Ok(resource_dir) = app.path().resource_dir() {
-        candidates.push(resource_dir.join("workers").join("anki_worker.py"));
-    }
-
     if cfg!(debug_assertions) {
         if let Ok(cwd) = env::current_dir() {
             candidates.push(cwd.join("workers").join("anki_worker.py"));
             candidates.push(cwd.join("..").join("workers").join("anki_worker.py"));
         }
+    }
+
+    // Release builds should only trust files shipped as app resources. Searching the
+    // current directory or arbitrary executable ancestors makes it too easy to run a
+    // spoofed workers/anki_worker.py when the app is launched from an unsafe folder.
+    // In dev, keep this as a fallback only: using the bundled target/debug worker
+    // makes runtime caches land under src-tauri/target, which can destabilize the
+    // Tauri dev watcher during large generation jobs.
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        candidates.push(resource_dir.join("workers").join("anki_worker.py"));
     }
 
     candidates
@@ -85,7 +368,15 @@ fn find_worker(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 fn worker_command_allowed(command: &str) -> bool {
     matches!(
         command,
-        "check_env" | "generate" | "export" | "test_api" | "test_tts" | "verify_anki_import"
+        "check_env"
+            | "repair_env"
+            | "extract_learning_points"
+            | "generate_cards_from_learning_points"
+            | "generate"
+            | "export"
+            | "test_api"
+            | "test_tts"
+            | "verify_anki_import"
     )
 }
 
@@ -113,8 +404,16 @@ fn worker_work_dir(app: &tauri::AppHandle, worker: &Path) -> PathBuf {
 fn python_candidates(worker: &Path) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
-    if let Ok(path) = env::var("ANKI_CARD_GENERATOR_PYTHON") {
-        candidates.push(PathBuf::from(path));
+    let allow_custom_python =
+        cfg!(debug_assertions) || env::var("ANKI_ALLOW_CUSTOM_PYTHON").ok().as_deref() == Some("1");
+    if allow_custom_python {
+        if let Ok(path) = env::var("ANKI_CARD_GENERATOR_PYTHON") {
+            candidates.push(PathBuf::from(path));
+        }
+    } else if env::var("ANKI_CARD_GENERATOR_PYTHON").is_ok() {
+        log::warn!(
+            "Ignoring ANKI_CARD_GENERATOR_PYTHON in release mode; set ANKI_ALLOW_CUSTOM_PYTHON=1 to opt in."
+        );
     }
 
     for ancestor in worker.ancestors().take(8) {
@@ -125,16 +424,100 @@ fn python_candidates(worker: &Path) -> Vec<PathBuf> {
         candidates.push(ancestor.join(".venv").join("bin").join("python"));
     }
 
+    #[cfg(windows)]
+    {
+        if let Ok(local_app_data) = env::var("LOCALAPPDATA") {
+            let base = PathBuf::from(local_app_data).join("Programs").join("Python");
+            candidates.push(base.join("Python312").join("python.exe"));
+            candidates.push(base.join("Python313").join("python.exe"));
+        }
+        if let Ok(program_files) = env::var("ProgramFiles") {
+            let base = PathBuf::from(program_files);
+            candidates.push(base.join("Python312").join("python.exe"));
+            candidates.push(base.join("Python313").join("python.exe"));
+        }
+    }
+
     candidates.push(PathBuf::from("python"));
     candidates.push(PathBuf::from("python3"));
     candidates
 }
 
-fn find_python(worker: &Path) -> PathBuf {
+fn command_first_line(mut command: Command) -> Option<String> {
+    hide_console_window(&mut command);
+    command
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| {
+            let stdout_text = String::from_utf8_lossy(&output.stdout);
+            if let Some(line) = stdout_text.lines().map(str::trim).find(|value| !value.is_empty()) {
+                return Some(line.to_string());
+            }
+            let stderr_text = String::from_utf8_lossy(&output.stderr);
+            stderr_text
+                .lines()
+                .map(str::trim)
+                .find(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+}
+
+fn python_version(python: &Path) -> Option<String> {
+    let mut command = Command::new(python);
+    command.arg("--version");
+    command_first_line(command)
+}
+
+fn find_available_python(worker: &Path) -> Option<(PathBuf, String)> {
     python_candidates(worker)
         .into_iter()
-        .find(|path| path.exists() || path.components().count() == 1)
+        .find_map(|path| python_version(&path).map(|version| (path, version)))
+}
+
+fn find_python(worker: &Path) -> PathBuf {
+    find_available_python(worker)
+        .map(|(path, _)| path)
+        .or_else(|| {
+            python_candidates(worker)
+                .into_iter()
+                .find(|path| path.exists() || path.components().count() == 1)
+        })
         .unwrap_or_else(|| PathBuf::from("python"))
+}
+
+fn command_path(name: &str) -> Option<String> {
+    #[cfg(windows)]
+    let command = {
+        let mut command = Command::new("where");
+        command.arg(name);
+        command
+    };
+
+    #[cfg(not(windows))]
+    let command = {
+        let mut command = Command::new("which");
+        command.arg(name);
+        command
+    };
+
+    command_first_line(command)
+}
+
+fn command_version(name: &str, args: &[&str]) -> Option<String> {
+    let mut command = Command::new(name);
+    command.args(args);
+    command_first_line(command)
+}
+
+fn native_status_item(id: &str, label: &str, status: &str, detail: String, fix: &str) -> Value {
+    json!({
+        "id": id,
+        "label": label,
+        "status": status,
+        "detail": detail,
+        "fix": fix,
+    })
 }
 
 fn build_worker_command(
@@ -153,8 +536,7 @@ fn build_worker_command(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    #[cfg(windows)]
-    worker_command.creation_flags(CREATE_NO_WINDOW);
+    hide_console_window(&mut worker_command);
 
     worker_command
 }
@@ -165,6 +547,16 @@ fn make_job_id(command: &str) -> String {
         .unwrap_or_default()
         .as_millis();
     format!("{command}-{millis}-{}", std::process::id())
+}
+
+fn worker_idle_timeout(command: &str) -> Duration {
+    match command {
+        "extract_learning_points" => Duration::from_secs(300),
+        "generate_cards_from_learning_points" => Duration::from_secs(420),
+        "generate" | "export" => Duration::from_secs(600),
+        "test_api" | "test_tts" | "verify_anki_import" => Duration::from_secs(120),
+        _ => Duration::from_secs(180),
+    }
 }
 
 fn parse_worker_error_line(line: &str) -> Option<Value> {
@@ -207,7 +599,7 @@ fn apply_worker_error_payload(
             payload["error"] = json!(error);
         }
 
-        for key in ["error_code", "stage", "retryable", "fallbacks"] {
+        for key in ["error_code", "stage", "retryable", "fallbacks", "details"] {
             if let Some(value) = details.get(key) {
                 payload[key] = value.clone();
             }
@@ -217,8 +609,347 @@ fn apply_worker_error_payload(
     }
 }
 
-fn emit_worker_finished_with_error(
+fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64
+}
+
+fn workspace_root_for_startup_diagnostics() -> PathBuf {
+    let mut candidates = Vec::new();
+    if let Ok(current_dir) = env::current_dir() {
+        candidates.push(current_dir);
+    }
+    if let Ok(current_exe) = env::current_exe() {
+        if let Some(parent) = current_exe.parent() {
+            candidates.push(parent.to_path_buf());
+        }
+    }
+
+    for candidate in candidates {
+        for ancestor in candidate.ancestors() {
+            if ancestor.join("package.json").is_file() && ancestor.join("src-tauri").is_dir() {
+                return ancestor.to_path_buf();
+            }
+        }
+    }
+
+    env::current_dir().unwrap_or_else(|_| env::temp_dir())
+}
+
+fn write_startup_diagnostic(payload: Value) {
+    let path = workspace_root_for_startup_diagnostics().join(".tauri-startup-current.json");
+    if let Ok(content) = serde_json::to_vec_pretty(&payload) {
+        let _ = fs::write(path, content);
+    }
+}
+
+fn write_workspace_diagnostic_file(file_name: &str, payload: &Value) {
+    let path = workspace_root_for_startup_diagnostics().join(file_name);
+    if let Ok(content) = serde_json::to_vec_pretty(payload) {
+        let _ = fs::write(path, content);
+    }
+}
+
+fn append_workspace_text_file(file_name: &str, line: &str) {
+    let path = workspace_root_for_startup_diagnostics().join(file_name);
+    if let Ok(mut file) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
+fn reset_workspace_text_file(file_name: &str) {
+    let path = workspace_root_for_startup_diagnostics().join(file_name);
+    let _ = fs::write(path, "");
+}
+
+fn write_app_local_diagnostic_file(app: &tauri::AppHandle, file_name: &str, payload: &Value) {
+    if let Ok(dir) = app.path().app_local_data_dir() {
+        let _ = fs::create_dir_all(&dir);
+        if let Ok(content) = serde_json::to_vec_pretty(payload) {
+            let _ = fs::write(dir.join(file_name), content);
+        }
+    }
+}
+
+fn write_dual_diagnostic_file(app: &tauri::AppHandle, file_name: &str, payload: Value) {
+    write_workspace_diagnostic_file(file_name, &payload);
+    write_app_local_diagnostic_file(app, file_name.trim_start_matches('.'), &payload);
+}
+
+fn append_app_local_text_file(app: &tauri::AppHandle, file_name: &str, line: &str) {
+    if let Ok(dir) = app.path().app_local_data_dir() {
+        let _ = fs::create_dir_all(&dir);
+        if let Ok(mut file) = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join(file_name))
+        {
+            let _ = writeln!(file, "{line}");
+        }
+    }
+}
+
+fn append_dual_text_file(app: &tauri::AppHandle, file_name: &str, line: &str) {
+    append_workspace_text_file(file_name, line);
+    append_app_local_text_file(app, file_name.trim_start_matches('.'), line);
+}
+
+fn reset_app_local_text_file(app: &tauri::AppHandle, file_name: &str) {
+    if let Ok(dir) = app.path().app_local_data_dir() {
+        let _ = fs::create_dir_all(&dir);
+        let _ = fs::write(dir.join(file_name), "");
+    }
+}
+
+fn reset_dual_text_file(app: &tauri::AppHandle, file_name: &str) {
+    reset_workspace_text_file(file_name);
+    reset_app_local_text_file(app, file_name.trim_start_matches('.'));
+}
+
+fn worker_payload_summary(command: &str, payload: &Value, input_size_bytes: usize) -> Value {
+    let api = payload.get("api_config").and_then(Value::as_object);
+    let selected_count = payload
+        .get("selected_learning_point_ids")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+    let learning_point_count = payload
+        .get("learning_points")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+    let source_sentence_count = payload
+        .get("source_sentences")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+    json!({
+        "command": command,
+        "input_size_bytes": input_size_bytes,
+        "selected_learning_point_count": selected_count,
+        "learning_point_count": learning_point_count,
+        "source_sentence_count": source_sentence_count,
+        "source_mode": payload.get("source_mode").and_then(Value::as_str).unwrap_or_default(),
+        "url_import_mode": payload.get("url_import_mode").and_then(Value::as_str).unwrap_or_default(),
+        "has_source_url": payload.get("source_url").and_then(Value::as_str).map(|value| !value.is_empty()).unwrap_or(false),
+        "has_video_path": payload.get("video_path").and_then(Value::as_str).map(|value| !value.is_empty()).unwrap_or(false),
+        "has_subtitle_path": payload.get("subtitle_path").and_then(Value::as_str).map(|value| !value.is_empty()).unwrap_or(false),
+        "provider": api
+            .and_then(|api| api.get("provider"))
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        "model": api
+            .and_then(|api| api.get("model"))
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    })
+}
+
+fn write_worker_job_breadcrumb(app: &tauri::AppHandle, payload: Value) {
+    write_dual_diagnostic_file(app, ".tauri-job-current.json", payload);
+}
+
+fn unit_result_to_json<E: std::fmt::Display>(result: &Result<(), E>) -> Value {
+    match result {
+        Ok(()) => json!({
+            "ok": true,
+        }),
+        Err(err) => json!({
+            "ok": false,
+            "error": err.to_string(),
+        }),
+    }
+}
+
+fn window_state_to_json(window: &tauri::WebviewWindow) -> Value {
+    let inner_size = match window.inner_size() {
+        Ok(size) => json!({
+            "ok": true,
+            "width": size.width,
+            "height": size.height,
+        }),
+        Err(err) => json!({
+            "ok": false,
+            "error": err.to_string(),
+        }),
+    };
+    let outer_position = match window.outer_position() {
+        Ok(position) => json!({
+            "ok": true,
+            "x": position.x,
+            "y": position.y,
+        }),
+        Err(err) => json!({
+            "ok": false,
+            "error": err.to_string(),
+        }),
+    };
+    let visible = match window.is_visible() {
+        Ok(value) => json!({
+            "ok": true,
+            "value": value,
+        }),
+        Err(err) => json!({
+            "ok": false,
+            "error": err.to_string(),
+        }),
+    };
+    let minimized = match window.is_minimized() {
+        Ok(value) => json!({
+            "ok": true,
+            "value": value,
+        }),
+        Err(err) => json!({
+            "ok": false,
+            "error": err.to_string(),
+        }),
+    };
+    let focused = match window.is_focused() {
+        Ok(value) => json!({
+            "ok": true,
+            "value": value,
+        }),
+        Err(err) => json!({
+            "ok": false,
+            "error": err.to_string(),
+        }),
+    };
+
+    json!({
+        "inner_size": inner_size,
+        "outer_position": outer_position,
+        "visible": visible,
+        "minimized": minimized,
+        "focused": focused,
+    })
+}
+
+fn write_window_lifecycle_diagnostic(app: &tauri::AppHandle, window: &tauri::WebviewWindow, event_name: &str, event_debug: String) {
+    write_dual_diagnostic_file(
+        app,
+        ".tauri-window-current.json",
+        json!({
+            "schema_version": 1,
+            "source": "src-tauri/src/lib.rs window lifecycle",
+            "recorded_at_ms": now_unix_ms(),
+            "pid": std::process::id(),
+            "window": {
+                "label": window.label(),
+                "title": window.title().unwrap_or_default(),
+                "state": window_state_to_json(window),
+            },
+            "event": {
+                "name": event_name,
+                "debug": event_debug,
+            },
+        }),
+    );
+}
+
+fn worker_job_result_dir(app: &tauri::AppHandle) -> PathBuf {
+    app.path()
+        .app_local_data_dir()
+        .unwrap_or_else(|_| env::temp_dir().join(SECRET_FALLBACK_DIR))
+        .join("worker-results")
+}
+
+fn worker_result_summary(command: &str, result: &Value) -> Option<Value> {
+    let mut summary = json!({
+        "command": command,
+    });
+    let keys = [
+        "id",
+        "title",
+        "source_mode",
+        "cards",
+        "segments",
+        "apkg_path",
+        "learning_point_summary",
+        "media_summary",
+        "quality_funnel",
+    ];
+    let mut has_summary = false;
+    for key in keys {
+        if let Some(value) = result.get(key) {
+            summary[key] = value.clone();
+            has_summary = true;
+        }
+    }
+    has_summary.then_some(summary)
+}
+
+fn store_worker_job_result(
     app: &tauri::AppHandle,
+    job_id: &str,
+    result: &Value,
+) -> Result<(String, PathBuf, u64), String> {
+    let dir = worker_job_result_dir(app);
+    fs::create_dir_all(&dir).map_err(|err| format!("无法创建 worker 结果目录：{err}"))?;
+    let result_path = dir.join(format!("{job_id}.json"));
+    let bytes =
+        serde_json::to_vec(result).map_err(|err| format!("无法序列化 worker 结果：{err}"))?;
+    fs::write(&result_path, &bytes).map_err(|err| format!("无法写入 worker 结果文件：{err}"))?;
+    Ok((job_id.to_string(), result_path, bytes.len() as u64))
+}
+
+fn payload_string(payload: &Value, key: &str) -> Option<String> {
+    payload
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn payload_bool(payload: &Value, key: &str) -> Option<bool> {
+    payload.get(key).and_then(Value::as_bool)
+}
+
+fn payload_string_list(payload: &Value, key: &str) -> Option<Vec<String>> {
+    let values = payload.get(key)?.as_array()?;
+    Some(
+        values
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
+fn remember_completed_worker_job(
+    completed: &Arc<Mutex<CompletedWorkerJobs>>,
+    status: WorkerJobStatus,
+    result_path: Option<PathBuf>,
+) {
+    if let Ok(mut history) = completed.lock() {
+        if !history.entries.contains_key(&status.job_id) {
+            history.order.push_back(status.job_id.clone());
+        }
+        history.entries.insert(
+            status.job_id.clone(),
+            CompletedWorkerJob {
+                status,
+                result_path,
+            },
+        );
+        while history.order.len() > COMPLETED_WORKER_JOB_LIMIT {
+            if let Some(old_job_id) = history.order.pop_front() {
+                history.entries.remove(&old_job_id);
+            }
+        }
+    }
+}
+
+fn complete_worker_job_and_emit(
+    app: &tauri::AppHandle,
+    completed: &Arc<Mutex<CompletedWorkerJobs>>,
     job_id: &str,
     command: &str,
     ok: bool,
@@ -233,23 +964,74 @@ fn emit_worker_finished_with_error(
       "ok": ok,
       "cancelled": cancelled,
     });
+    let mut result_path = None;
+    let mut result_ref = None;
+    let mut result_size_bytes = None;
+    let mut result_summary = None;
     if let Some(result) = result {
-        payload["result"] = result;
+        result_summary = worker_result_summary(command, &result);
+        let serialized_size = serde_json::to_vec(&result).map(|bytes| bytes.len()).ok();
+        match store_worker_job_result(app, job_id, &result) {
+            Ok((stored_ref, stored_path, stored_size)) => {
+                payload["result_ref"] = json!(stored_ref);
+                payload["result_size_bytes"] = json!(stored_size);
+                result_ref = Some(job_id.to_string());
+                result_size_bytes = Some(stored_size);
+                result_path = Some(stored_path);
+            }
+            Err(err) => {
+                eprintln!("worker result store failed for {job_id}: {err}");
+                if let Some(size) = serialized_size {
+                    payload["result_size_bytes"] = json!(size as u64);
+                    result_size_bytes = Some(size as u64);
+                }
+            }
+        }
+        if let Some(summary) = result_summary.clone() {
+            payload["result_summary"] = summary;
+        }
+        let should_inline = serialized_size
+            .map(|size| size <= WORKER_INLINE_RESULT_LIMIT_BYTES)
+            .unwrap_or(true)
+            || result_ref.is_none();
+        if should_inline {
+            payload["result"] = result;
+        }
     }
     apply_worker_error_payload(&mut payload, error, error_details);
-    let _ = app.emit("worker-finished", payload);
-}
-
-fn emit_worker_finished(
-    app: &tauri::AppHandle,
-    job_id: &str,
-    command: &str,
-    ok: bool,
-    result: Option<serde_json::Value>,
-    error: Option<String>,
-    cancelled: bool,
-) {
-    emit_worker_finished_with_error(app, job_id, command, ok, result, error, None, cancelled);
+    let status = WorkerJobStatus {
+        job_id: job_id.to_string(),
+        command: command.to_string(),
+        ok,
+        cancelled,
+        result_ref,
+        result_size_bytes,
+        result_summary,
+        error: payload_string(&payload, "error"),
+        error_code: payload_string(&payload, "error_code"),
+        stage: payload_string(&payload, "stage"),
+        retryable: payload_bool(&payload, "retryable"),
+        fallbacks: payload_string_list(&payload, "fallbacks"),
+        details: payload.get("details").cloned(),
+        finished_at_ms: now_unix_ms(),
+    };
+    let status_diagnostic =
+        serde_json::to_value(&status).unwrap_or_else(|err| json!({ "serialize_error": err.to_string() }));
+    remember_completed_worker_job(completed, status, result_path);
+    write_worker_job_breadcrumb(
+        app,
+        json!({
+            "schema_version": 1,
+            "phase": "completed",
+            "job_id": job_id,
+            "command": command,
+            "recorded_at_ms": now_unix_ms(),
+            "status": status_diagnostic,
+        }),
+    );
+    if let Err(err) = app.emit("worker-finished", payload) {
+        eprintln!("worker-finished emit failed for {job_id}: {err}");
+    }
 }
 
 fn kill_process_tree(pid: u32) -> Result<(), String> {
@@ -257,7 +1039,7 @@ fn kill_process_tree(pid: u32) -> Result<(), String> {
     {
         let mut command = Command::new("taskkill");
         command.args(["/PID", &pid.to_string(), "/T", "/F"]);
-        command.creation_flags(CREATE_NO_WINDOW);
+        hide_console_window(&mut command);
         let _ = command
             .status()
             .map_err(|err| format!("无法取消任务进程：{err}"))?;
@@ -289,7 +1071,7 @@ fn run_worker(
     let input = serde_json::to_vec(&payload).map_err(|err| err.to_string())?;
     let work_dir = worker_work_dir(&app, &worker);
 
-    let mut child = build_worker_command(python, &worker, &command, work_dir)
+    let mut child = build_worker_command(python, &worker, &command, work_dir.clone())
         .spawn()
         .map_err(|err| format!("无法启动 Python worker：{err}"))?;
 
@@ -347,7 +1129,11 @@ fn run_worker(
             .map(|text| text.clone())
             .unwrap_or_default();
         let error_details = stderr_error.lock().ok().and_then(|value| value.clone());
-        return Err(worker_failure_message(&stderr, &stdout_text, error_details.as_ref()));
+        return Err(worker_failure_message(
+            &stderr,
+            &stdout_text,
+            error_details.as_ref(),
+        ));
     }
 
     serde_json::from_str(&stdout_text).map_err(|err| format!("worker 输出不是有效 JSON：{err}"))
@@ -379,11 +1165,59 @@ fn start_worker_job(
     let input = serde_json::to_vec(&payload).map_err(|err| err.to_string())?;
     let work_dir = worker_work_dir(&app, &worker);
     let job_id = make_job_id(&command);
+    let payload_summary = worker_payload_summary(&command, &payload, input.len());
+    reset_dual_text_file(&app, ".worker-stderr-current.log");
+    reset_dual_text_file(&app, ".worker-progress-current.log");
+    reset_dual_text_file(&app, ".worker-stdout-current.log");
 
-    let mut child = build_worker_command(python, &worker, &command, work_dir)
+    if command == "generate_cards_from_learning_points" && input.len() > GENERATE_WORKER_PAYLOAD_LIMIT_BYTES {
+        let diagnostic = json!({
+            "schema_version": 1,
+            "phase": "payload_rejected",
+            "job_id": job_id.clone(),
+            "recorded_at_ms": now_unix_ms(),
+            "payload_summary": payload_summary.clone(),
+            "limit_bytes": GENERATE_WORKER_PAYLOAD_LIMIT_BYTES,
+        });
+        write_worker_job_breadcrumb(&app, diagnostic);
+        return Err(format!(
+            "生成任务 payload 过大（{} bytes），已阻止启动以避免桌面端闪退。请减少本轮选择数量或使用分批生成。",
+            input.len()
+        ));
+    }
+
+    write_worker_job_breadcrumb(
+        &app,
+        json!({
+            "schema_version": 1,
+            "phase": "before_spawn",
+            "job_id": job_id.clone(),
+            "command": command.clone(),
+            "recorded_at_ms": now_unix_ms(),
+            "worker_path": worker.display().to_string(),
+            "work_dir": work_dir.display().to_string(),
+            "payload_summary": payload_summary.clone(),
+        }),
+    );
+
+    let mut child = build_worker_command(python, &worker, &command, work_dir.clone())
         .spawn()
         .map_err(|err| format!("无法启动 Python worker：{err}"))?;
     let pid = child.id();
+    write_worker_job_breadcrumb(
+        &app,
+        json!({
+            "schema_version": 1,
+            "phase": "spawned",
+            "job_id": job_id.clone(),
+            "command": command.clone(),
+            "worker_pid": pid,
+            "recorded_at_ms": now_unix_ms(),
+            "worker_path": worker.display().to_string(),
+            "work_dir": work_dir.display().to_string(),
+            "payload_summary": payload_summary.clone(),
+        }),
+    );
     let stderr = child
         .stderr
         .take()
@@ -410,6 +1244,7 @@ fn start_worker_job(
             RunningJob {
                 pid,
                 cancel_requested: false,
+                failure_message: None,
             },
         );
     }
@@ -418,6 +1253,8 @@ fn start_worker_job(
     let stderr_sink = Arc::clone(&stderr_text);
     let stderr_error = Arc::new(Mutex::new(None::<Value>));
     let stderr_error_sink = Arc::clone(&stderr_error);
+    let last_progress = Arc::new(Mutex::new(Instant::now()));
+    let last_progress_sink = Arc::clone(&last_progress);
     let app_for_progress = app.clone();
     let progress_job_id = job_id.clone();
     let progress_thread = thread::spawn(move || {
@@ -425,6 +1262,9 @@ fn start_worker_job(
         let mut last_emit = Instant::now() - Duration::from_millis(100);
         for line in reader.lines().map_while(Result::ok) {
             if let Some(payload) = line.strip_prefix(WORKER_PROGRESS_PREFIX) {
+                if let Ok(mut seen_at) = last_progress_sink.lock() {
+                    *seen_at = Instant::now();
+                }
                 if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(payload) {
                     value["job_id"] = json!(progress_job_id);
                     let percent = value
@@ -432,7 +1272,24 @@ fn start_worker_job(
                         .and_then(|percent| percent.as_u64())
                         .unwrap_or_default();
                     if percent >= 100 || last_emit.elapsed() >= Duration::from_millis(100) {
+                        let progress_value = value.clone();
                         let _ = app_for_progress.emit("worker-progress", value);
+                        append_dual_text_file(
+                            &app_for_progress,
+                            ".worker-progress-current.log",
+                            &format!("[{}] {}", now_unix_ms(), progress_value),
+                        );
+                        write_worker_job_breadcrumb(
+                            &app_for_progress,
+                            json!({
+                                "schema_version": 1,
+                                "phase": "progress",
+                                "job_id": progress_job_id.clone(),
+                                "command": progress_value.get("command").and_then(Value::as_str).unwrap_or_default(),
+                                "recorded_at_ms": now_unix_ms(),
+                                "progress": progress_value,
+                            }),
+                        );
                         last_emit = Instant::now();
                     }
                 }
@@ -440,15 +1297,63 @@ fn start_worker_job(
                 if let Ok(mut value) = stderr_error_sink.lock() {
                     *value = Some(error);
                 }
+                append_dual_text_file(
+                    &app_for_progress,
+                    ".worker-stderr-current.log",
+                    &format!("[{}] structured_error {}", now_unix_ms(), line),
+                );
             } else if let Ok(mut text) = stderr_sink.lock() {
                 text.push_str(&line);
                 text.push('\n');
+                append_dual_text_file(
+                    &app_for_progress,
+                    ".worker-stderr-current.log",
+                    &format!("[{}] {}", now_unix_ms(), line),
+                );
+            }
+        }
+    });
+
+    let watchdog_jobs = Arc::clone(&jobs.jobs);
+    let watchdog_job_id = job_id.clone();
+    let watchdog_command = command.clone();
+    let watchdog_last_progress = Arc::clone(&last_progress);
+    thread::spawn(move || {
+        let timeout = worker_idle_timeout(&watchdog_command);
+        loop {
+            thread::sleep(Duration::from_secs(5));
+            let should_stop = watchdog_jobs
+                .lock()
+                .ok()
+                .and_then(|jobs| jobs.get(&watchdog_job_id).cloned())
+                .map(|job| job.cancel_requested || job.failure_message.is_some())
+                .unwrap_or(true);
+            if should_stop {
+                break;
+            }
+            let idle_for = watchdog_last_progress
+                .lock()
+                .map(|seen_at| seen_at.elapsed())
+                .unwrap_or_default();
+            if idle_for >= timeout {
+                let message = format!(
+                    "worker 超过 {} 秒没有任何进度更新，已自动终止。通常是网络/API 请求卡住；请稍后重试，或检查代理、Base URL 和模型服务状态。",
+                    timeout.as_secs()
+                );
+                if let Ok(mut jobs) = watchdog_jobs.lock() {
+                    if let Some(job) = jobs.get_mut(&watchdog_job_id) {
+                        job.failure_message = Some(message);
+                    }
+                }
+                let _ = kill_process_tree(pid);
+                break;
             }
         }
     });
 
     let app_for_finish = app.clone();
     let jobs_for_finish = Arc::clone(&jobs.jobs);
+    let completed_for_finish = Arc::clone(&jobs.completed);
     let finish_job_id = job_id.clone();
     let finish_command = command.clone();
     thread::spawn(move || {
@@ -456,21 +1361,62 @@ fn start_worker_job(
         let read_result = BufReader::new(stdout).read_to_string(&mut stdout_text);
         let wait_result = child.wait();
         let _ = progress_thread.join();
-        let cancelled = jobs_for_finish
+        append_dual_text_file(
+            &app_for_finish,
+            ".worker-stdout-current.log",
+            &format!(
+                "[{}] stdout_bytes={} read_stdout_ok={}",
+                now_unix_ms(),
+                stdout_text.len(),
+                read_result.is_ok()
+            ),
+        );
+        let job_state = jobs_for_finish
             .lock()
             .ok()
-            .and_then(|mut jobs| jobs.remove(&finish_job_id))
+            .and_then(|mut jobs| jobs.remove(&finish_job_id));
+        let cancelled = job_state
+            .as_ref()
             .map(|job| job.cancel_requested)
             .unwrap_or(false);
+        let failure_message = job_state.and_then(|job| job.failure_message);
+        let exit_summary = match &wait_result {
+            Ok(status) => json!({
+                "ok": true,
+                "success": status.success(),
+                "code": status.code(),
+            }),
+            Err(err) => json!({
+                "ok": false,
+                "error": err.to_string(),
+            }),
+        };
+        write_worker_job_breadcrumb(
+            &app_for_finish,
+            json!({
+                "schema_version": 1,
+                "phase": "worker_exited",
+                "job_id": finish_job_id.clone(),
+                "command": finish_command.clone(),
+                "recorded_at_ms": now_unix_ms(),
+                "cancelled": cancelled,
+                "failure_message": failure_message.clone(),
+                "stdout_bytes": stdout_text.len(),
+                "read_stdout_ok": read_result.is_ok(),
+                "exit": exit_summary,
+            }),
+        );
 
         if let Err(err) = read_result {
-            emit_worker_finished(
+            complete_worker_job_and_emit(
                 &app_for_finish,
+                &completed_for_finish,
                 &finish_job_id,
                 &finish_command,
                 false,
                 None,
                 Some(format!("无法读取 worker JSON 输出：{err}")),
+                None,
                 cancelled,
             );
             return;
@@ -479,34 +1425,51 @@ fn start_worker_job(
         match wait_result {
             Ok(status) if status.success() && !cancelled => {
                 match serde_json::from_str::<serde_json::Value>(&stdout_text) {
-                    Ok(result) => emit_worker_finished(
+                    Ok(result) => complete_worker_job_and_emit(
                         &app_for_finish,
+                        &completed_for_finish,
                         &finish_job_id,
                         &finish_command,
                         true,
                         Some(result),
                         None,
+                        None,
                         false,
                     ),
-                    Err(err) => emit_worker_finished(
+                    Err(err) => complete_worker_job_and_emit(
                         &app_for_finish,
+                        &completed_for_finish,
                         &finish_job_id,
                         &finish_command,
                         false,
                         None,
                         Some(format!("worker 输出不是有效 JSON：{err}")),
+                        None,
                         false,
                     ),
                 }
             }
-            Ok(_) if cancelled => emit_worker_finished(
+            Ok(_) if cancelled => complete_worker_job_and_emit(
                 &app_for_finish,
+                &completed_for_finish,
                 &finish_job_id,
                 &finish_command,
                 false,
                 None,
                 Some("任务已取消。".to_string()),
+                None,
                 true,
+            ),
+            Ok(_) if failure_message.is_some() => complete_worker_job_and_emit(
+                &app_for_finish,
+                &completed_for_finish,
+                &finish_job_id,
+                &finish_command,
+                false,
+                None,
+                failure_message,
+                None,
+                false,
             ),
             Ok(_) => {
                 let stderr = stderr_text
@@ -515,8 +1478,9 @@ fn start_worker_job(
                     .unwrap_or_default();
                 let error_details = stderr_error.lock().ok().and_then(|value| value.clone());
                 let message = worker_failure_message(&stderr, &stdout_text, error_details.as_ref());
-                emit_worker_finished_with_error(
+                complete_worker_job_and_emit(
                     &app_for_finish,
+                    &completed_for_finish,
                     &finish_job_id,
                     &finish_command,
                     false,
@@ -526,13 +1490,15 @@ fn start_worker_job(
                     false,
                 );
             }
-            Err(err) => emit_worker_finished(
+            Err(err) => complete_worker_job_and_emit(
                 &app_for_finish,
+                &completed_for_finish,
                 &finish_job_id,
                 &finish_command,
                 false,
                 None,
                 Some(format!("worker 执行失败：{err}")),
+                None,
                 cancelled,
             ),
         }
@@ -567,26 +1533,150 @@ fn cancel_worker_job(
     }
 }
 
-fn anki_candidates() -> Vec<PathBuf> {
+#[tauri::command]
+fn get_worker_job_status(
+    jobs: State<WorkerJobs>,
+    job_id: String,
+) -> Result<Option<WorkerJobStatus>, String> {
+    let history = jobs
+        .completed
+        .lock()
+        .map_err(|_| "无法读取后台任务完成状态。".to_string())?;
+    Ok(history
+        .entries
+        .get(&job_id)
+        .map(|entry| entry.status.clone()))
+}
+
+#[tauri::command]
+fn read_worker_job_result(jobs: State<WorkerJobs>, job_id: String) -> Result<Value, String> {
+    let result_path = {
+        let history = jobs
+            .completed
+            .lock()
+            .map_err(|_| "无法读取后台任务结果索引。".to_string())?;
+        history
+            .entries
+            .get(&job_id)
+            .and_then(|entry| entry.result_path.clone())
+            .ok_or_else(|| "后台任务结果不存在，可能需要重新运行。".to_string())?
+    };
+    let text = fs::read_to_string(&result_path)
+        .map_err(|err| format!("无法读取后台任务结果文件：{err}"))?;
+    serde_json::from_str(&text).map_err(|err| format!("后台任务结果不是有效 JSON：{err}"))
+}
+
+#[tauri::command]
+fn record_renderer_error(app: tauri::AppHandle, payload: Value) -> Result<(), String> {
+    let diagnostic = json!({
+        "schema_version": 1,
+        "source": "renderer",
+        "recorded_at_ms": now_unix_ms(),
+        "payload": payload,
+    });
+    write_dual_diagnostic_file(&app, ".renderer-error-current.json", diagnostic);
+    Ok(())
+}
+
+fn push_unique_path(candidates: &mut Vec<PathBuf>, path: PathBuf) {
+    if !path.as_os_str().is_empty() && !candidates.iter().any(|candidate| candidate == &path) {
+        candidates.push(path);
+    }
+}
+
+fn parse_windows_open_command_executable(command: &str) -> Option<PathBuf> {
+    let command = command.trim();
+    if command.is_empty() {
+        return None;
+    }
+    if let Some(rest) = command.strip_prefix('"') {
+        let end = rest.find('"')?;
+        return Some(PathBuf::from(&rest[..end]));
+    }
+    let lower = command.to_ascii_lowercase();
+    let exe_end = lower.find(".exe").map(|index| index + 4)?;
+    Some(PathBuf::from(command[..exe_end].trim()))
+}
+
+#[cfg(windows)]
+fn registered_anki_candidates() -> Vec<PathBuf> {
+    let script = r#"$class = (Get-ItemProperty -Path 'Registry::HKEY_CLASSES_ROOT\.apkg' -ErrorAction SilentlyContinue).'(default)'; if ($class) { (Get-ItemProperty -Path "Registry::HKEY_CLASSES_ROOT\$class\shell\open\command" -ErrorAction SilentlyContinue).'(default)' }"#;
+    let mut command = Command::new("powershell.exe");
+    command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+    hide_console_window(&mut command);
+    command
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter_map(parse_windows_open_command_executable)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(not(windows))]
+fn registered_anki_candidates() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+fn anki_candidates_from_parts(
+    env_anki_exe: Option<String>,
+    local_app_data: Option<String>,
+    registered_candidates: Vec<PathBuf>,
+) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
-    if let Ok(path) = env::var("ANKI_EXE") {
-        candidates.push(PathBuf::from(path));
+    if let Some(path) = env_anki_exe {
+        push_unique_path(&mut candidates, PathBuf::from(path));
     }
-    if let Ok(local_app_data) = env::var("LOCALAPPDATA") {
+    for path in registered_candidates {
+        push_unique_path(&mut candidates, path);
+    }
+    if let Some(local_app_data) = local_app_data {
         let base = PathBuf::from(local_app_data);
-        candidates.push(
+        push_unique_path(
+            &mut candidates,
+            base.join("Programs").join("Anki").join("anki.exe"),
+        );
+        push_unique_path(
+            &mut candidates,
+            base.join("AnkiProgramFiles")
+                .join(".venv")
+                .join("Scripts")
+                .join("ankiw.exe"),
+        );
+        push_unique_path(
+            &mut candidates,
             base.join("AnkiProgramFiles")
                 .join(".venv")
                 .join("Scripts")
                 .join("anki.exe"),
         );
-        candidates.push(base.join("Programs").join("Anki").join("anki.exe"));
     }
-    candidates.push(PathBuf::from(r"C:\Program Files\Anki\anki.exe"));
-    candidates.push(PathBuf::from(r"C:\Program Files (x86)\Anki\anki.exe"));
+    for drive in ["C", "D", "E", "F", "G"] {
+        push_unique_path(
+            &mut candidates,
+            PathBuf::from(format!(r"{drive}:\Anki\anki.exe")),
+        );
+    }
+    push_unique_path(&mut candidates, PathBuf::from(r"C:\Program Files\Anki\anki.exe"));
+    push_unique_path(
+        &mut candidates,
+        PathBuf::from(r"C:\Program Files (x86)\Anki\anki.exe"),
+    );
 
     candidates
+}
+
+fn anki_candidates() -> Vec<PathBuf> {
+    anki_candidates_from_parts(
+        env::var("ANKI_EXE").ok(),
+        env::var("LOCALAPPDATA").ok(),
+        registered_anki_candidates(),
+    )
 }
 
 fn find_anki() -> Result<PathBuf, String> {
@@ -596,6 +1686,499 @@ fn find_anki() -> Result<PathBuf, String> {
         .ok_or_else(|| {
             "找不到 Anki。请确认已安装 Anki，或设置 ANKI_EXE 指向 anki.exe。".to_string()
         })
+}
+
+fn process_running(image_name: &str) -> bool {
+    #[cfg(windows)]
+    {
+        let mut command = Command::new("tasklist");
+        command.args(["/FI", &format!("IMAGENAME eq {image_name}")]);
+        hide_console_window(&mut command);
+        return command
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| {
+                String::from_utf8_lossy(&output.stdout)
+                    .to_lowercase()
+                    .contains(&image_name.to_lowercase())
+            })
+            .unwrap_or(false);
+    }
+
+    #[cfg(not(windows))]
+    {
+        let mut command = Command::new("pgrep");
+        command.args(["-f", image_name]);
+        return command
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| !output.stdout.is_empty())
+            .unwrap_or(false);
+    }
+}
+
+fn bootstrap_worker_path(app: &tauri::AppHandle) -> PathBuf {
+    find_worker(app).unwrap_or_else(|_| {
+        env::current_dir()
+            .unwrap_or_default()
+            .join("workers")
+            .join("anki_worker.py")
+    })
+}
+
+#[tauri::command]
+fn check_bootstrap_env(app: tauri::AppHandle) -> Result<Value, String> {
+    let worker = bootstrap_worker_path(&app);
+    let python = find_available_python(&worker);
+    let ffmpeg_path = command_path("ffmpeg").unwrap_or_default();
+    let ffmpeg_version = if ffmpeg_path.is_empty() {
+        String::new()
+    } else {
+        command_version("ffmpeg", &["-version"]).unwrap_or_default()
+    };
+    let js_runtime = if command_path("deno").is_some() {
+        "deno"
+    } else if command_path("node").is_some() {
+        "node"
+    } else {
+        ""
+    };
+    let anki_path = find_anki().ok();
+    let anki_running = process_running("anki.exe") || process_running("anki");
+    let python_status = python
+        .as_ref()
+        .map(|(path, version)| {
+            native_status_item(
+                "python",
+                "Python 运行环境",
+                "ok",
+                format!("{version} · {}", path.display()),
+                "",
+            )
+        })
+        .unwrap_or_else(|| {
+            native_status_item(
+                "python",
+                "Python 运行环境",
+                "blocked",
+                "没有找到可用 Python；worker 无法启动。".to_string(),
+                "点击一键修复安装推荐 Python 3.12。",
+            )
+        });
+
+    let anki_detail = match &anki_path {
+        Some(path) if anki_running => format!("已安装并正在运行：{}", path.display()),
+        Some(path) => format!("已安装但未打开：{}", path.display()),
+        None => "未找到 Anki 桌面端。".to_string(),
+    };
+
+    let status_items = vec![
+        python_status,
+        native_status_item(
+            "venv",
+            "项目私有 venv",
+            if python.is_some() { "action" } else { "blocked" },
+            if python.is_some() {
+                "Python 可用；点击一键修复后会创建项目 .venv 并安装依赖。".to_string()
+            } else {
+                "需要先安装 Python，才能创建项目 .venv。".to_string()
+            },
+            "点击一键修复。",
+        ),
+        native_status_item(
+            "ffmpeg",
+            "FFmpeg 视频切片",
+            if ffmpeg_path.is_empty() { "blocked" } else { "ok" },
+            if ffmpeg_path.is_empty() {
+                "未在 PATH 找到 ffmpeg；本地视频导出会失败。".to_string()
+            } else {
+                ffmpeg_version
+            },
+            "点击一键修复尝试通过 winget 安装 FFmpeg。",
+        ),
+        native_status_item(
+            "genanki",
+            "genanki APKG 导出",
+            if python.is_some() { "action" } else { "blocked" },
+            "需要 Python worker 运行后安装/检查。".to_string(),
+            "点击一键修复安装 Python 依赖。",
+        ),
+        native_status_item(
+            "yt_dlp",
+            "yt-dlp URL 导入",
+            if python.is_some() { "action" } else { "blocked" },
+            "需要 Python worker 运行后安装/检查。".to_string(),
+            "点击一键修复安装 Python 依赖。",
+        ),
+        native_status_item(
+            "js_runtime",
+            "Deno / Node challenge solver",
+            if js_runtime.is_empty() { "action" } else { "ok" },
+            if js_runtime.is_empty() {
+                "YouTube n challenge 可能失败。".to_string()
+            } else {
+                js_runtime.to_string()
+            },
+            "点击一键修复尝试安装 Deno。",
+        ),
+        native_status_item(
+            "anki",
+            "Anki 桌面端",
+            if anki_path.is_some() { "ok" } else { "blocked" },
+            anki_detail,
+            "点击一键修复尝试安装 Anki。",
+        ),
+        native_status_item(
+            "anki_connect",
+            "AnkiConnect 导入核验",
+            if anki_path.is_some() { "action" } else { "blocked" },
+            if anki_path.is_some() {
+                "需要打开 Anki 并安装/启用 AnkiConnect 插件。".to_string()
+            } else {
+                "需要先安装 Anki 桌面端。".to_string()
+            },
+            "插件代码 2055492159。",
+        ),
+    ];
+
+    let (python_version, python_executable) = python
+        .map(|(path, version)| {
+            (
+                version.trim_start_matches("Python ").to_string(),
+                path.display().to_string(),
+            )
+        })
+        .unwrap_or_else(|| (String::new(), String::new()));
+
+    Ok(json!({
+        "python": python_version,
+        "python_executable": python_executable,
+        "venv": false,
+        "ffmpeg": !ffmpeg_path.is_empty(),
+        "ffmpeg_path": ffmpeg_path,
+        "ffmpeg_version": status_items.get(2).and_then(|item| item.get("detail")).and_then(Value::as_str).unwrap_or(""),
+        "genanki": false,
+        "yt_dlp": false,
+        "yt_dlp_version": "",
+        "yt_dlp_js_runtime": js_runtime,
+        "anki_installed": anki_path.is_some(),
+        "anki_path": anki_path.map(|path| path.display().to_string()).unwrap_or_default(),
+        "anki_running": anki_running,
+        "anki_connect": false,
+        "anki_connect_detail": "需要 Python worker 或 AnkiConnect 端口检查。",
+        "packages": {},
+        "status_items": status_items,
+        "worker": worker.display().to_string(),
+    }))
+}
+
+fn summarize_native_output(output: &std::process::Output) -> String {
+    let text = [
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+    ]
+    .join("\n")
+    .replace("\r\n", "\n")
+    .replace('\r', "\n");
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+    if lines.is_empty() {
+        return format!("退出码 {}", output.status.code().unwrap_or(-1));
+    }
+    lines
+        .iter()
+        .rev()
+        .take(8)
+        .copied()
+        .collect::<Vec<&str>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<&str>>()
+        .join("\n")
+}
+
+fn native_action(
+    id: &str,
+    label: &str,
+    status: &str,
+    detail: String,
+    command: Option<String>,
+    next_step: Option<String>,
+) -> BootstrapRepairAction {
+    BootstrapRepairAction {
+        id: id.to_string(),
+        label: label.to_string(),
+        status: status.to_string(),
+        detail,
+        command,
+        next_step,
+    }
+}
+
+#[tauri::command]
+fn repair_bootstrap_env(app: tauri::AppHandle, target: String) -> Result<BootstrapRepairResult, String> {
+    let normalized_target = if ["all", "python_runtime"].contains(&target.as_str()) {
+        target
+    } else {
+        "python_runtime".to_string()
+    };
+    let worker = bootstrap_worker_path(&app);
+    let mut actions = Vec::new();
+
+    if normalized_target == "all" || normalized_target == "python_runtime" {
+        if let Some((path, version)) = find_available_python(&worker) {
+            actions.push(native_action(
+                "python_runtime",
+                "Python 运行环境",
+                "skipped",
+                format!("已找到 {version}：{}", path.display()),
+                None,
+                None,
+            ));
+        } else if let Some(winget) = command_path("winget") {
+            let command_args = [
+                "install",
+                "--id",
+                "Python.Python.3.12",
+                "-e",
+                "--accept-package-agreements",
+                "--accept-source-agreements",
+            ];
+            let command_text = format!("{} {}", winget, command_args.join(" "));
+            let mut command = Command::new(&winget);
+            command.args(command_args);
+            hide_console_window(&mut command);
+            match command.output() {
+                Ok(output) => {
+                    let installed = find_available_python(&worker);
+                    let success = output.status.success() && installed.is_some();
+                    let detail = installed
+                        .map(|(path, version)| {
+                            format!("已安装并找到 {version}：{}", path.display())
+                        })
+                        .unwrap_or_else(|| summarize_native_output(&output));
+                    actions.push(native_action(
+                        "python_runtime",
+                        "通过 winget 安装推荐 Python 3.12",
+                        if success { "success" } else if output.status.success() { "manual" } else { "failed" },
+                        detail,
+                        Some(command_text),
+                        if success {
+                            None
+                        } else {
+                            Some("安装后如果仍未识别，请重启应用；也可以设置 ANKI_CARD_GENERATOR_PYTHON 指向 python.exe。".to_string())
+                        },
+                    ));
+                }
+                Err(err) => actions.push(native_action(
+                    "python_runtime",
+                    "通过 winget 安装推荐 Python 3.12",
+                    "failed",
+                    format!("无法执行 winget：{err}"),
+                    Some(command_text),
+                    Some("请手动安装 Python 3.12，或设置 ANKI_CARD_GENERATOR_PYTHON 指向 python.exe。".to_string()),
+                )),
+            }
+        } else {
+            actions.push(native_action(
+                "python_runtime",
+                "安装推荐 Python 3.12",
+                "manual",
+                "本机没有 winget，无法自动安装 Python。".to_string(),
+                None,
+                Some("请从 https://www.python.org/downloads/windows/ 安装 Python 3.12，并勾选 Add python.exe to PATH。".to_string()),
+            ));
+        }
+    }
+
+    let failed = actions.iter().filter(|action| action.status == "failed").count();
+    let manual = actions.iter().filter(|action| action.status == "manual").count();
+    Ok(BootstrapRepairResult {
+        ok: failed == 0,
+        target: normalized_target,
+        summary: format!(
+            "原生修复执行 {} 个步骤；失败 {} 个，需手动处理 {} 个。",
+            actions.len(),
+            failed,
+            manual
+        ),
+        actions,
+    })
+}
+
+fn clean_user_path(value: &str) -> String {
+    value
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .to_string()
+}
+
+fn compact_match_text(value: &str) -> String {
+    value
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect()
+}
+
+fn language_code(language: &str) -> &str {
+    match language.to_ascii_lowercase().as_str() {
+        "english" | "en" => "en",
+        "chinese" | "zh" | "zh-cn" => "zh",
+        "japanese" | "ja" => "ja",
+        "korean" | "ko" => "ko",
+        "spanish" | "es" => "es",
+        "french" | "fr" => "fr",
+        "german" | "de" => "de",
+        _ => "en",
+    }
+}
+
+fn subtitle_language_markers(language: &str) -> Vec<String> {
+    let code = language_code(language);
+    let mut markers = vec![
+        format!(".{code}"),
+        format!("-{code}"),
+        format!("_{code}"),
+        format!(" {code}"),
+        format!(".{code}-"),
+        format!(".{code}_"),
+    ];
+    if code == "en" {
+        markers.extend(
+            ["english", ".eng", "-eng", "_eng", " eng"]
+                .iter()
+                .map(|value| value.to_string()),
+        );
+    }
+    markers
+}
+
+#[tauri::command]
+fn suggest_subtitle_path(video_path: String, language: String) -> Result<Option<String>, String> {
+    let video = PathBuf::from(clean_user_path(&video_path));
+    let Some(directory) = video.parent() else {
+        return Ok(None);
+    };
+    if !directory.exists() {
+        return Ok(None);
+    }
+
+    let mut subtitles = Vec::new();
+    for entry in fs::read_dir(directory).map_err(|err| format!("无法读取视频目录：{err}"))?
+    {
+        let path = entry
+            .map_err(|err| format!("无法读取视频目录项：{err}"))?
+            .path();
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if path.is_file() && matches!(extension.as_str(), "srt" | "vtt") {
+            subtitles.push(path);
+        }
+    }
+    if subtitles.is_empty() {
+        return Ok(None);
+    }
+
+    let video_stem = video
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let compact_video = compact_match_text(&video_stem);
+    let markers = subtitle_language_markers(&language);
+    let single_subtitle = subtitles.len() == 1;
+
+    let mut scored = subtitles
+        .into_iter()
+        .filter_map(|path| {
+            let stem = path.file_stem()?.to_str()?.to_ascii_lowercase();
+            let compact_stem = compact_match_text(&stem);
+            let has_language_marker = markers.iter().any(|marker| stem.contains(marker));
+            let bucket = if compact_stem == compact_video {
+                0
+            } else if !compact_video.is_empty()
+                && compact_stem.starts_with(&compact_video)
+                && has_language_marker
+            {
+                1
+            } else if !compact_video.is_empty()
+                && compact_stem.contains(&compact_video)
+                && has_language_marker
+            {
+                2
+            } else if !compact_video.is_empty() && compact_stem.starts_with(&compact_video) {
+                3
+            } else if single_subtitle {
+                4
+            } else {
+                9
+            };
+            if bucket >= 9 {
+                return None;
+            }
+            let size = path.metadata().map(|meta| meta.len()).unwrap_or_default();
+            let name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            Some((bucket, size, name, path))
+        })
+        .collect::<Vec<_>>();
+
+    scored.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| right.1.cmp(&left.1))
+            .then_with(|| left.2.cmp(&right.2))
+    });
+
+    Ok(scored
+        .first()
+        .map(|(_, _, _, path)| path.display().to_string()))
+}
+
+#[tauri::command]
+fn list_directory_files(directory: String) -> Result<Vec<String>, String> {
+    let root = PathBuf::from(clean_user_path(&directory));
+    if !root.exists() || !root.is_dir() {
+        return Err(format!("目录不存在或不是文件夹：{}", root.display()));
+    }
+    let root = root
+        .canonicalize()
+        .map_err(|err| format!("无法解析目录 {}：{err}", root.display()))?;
+    if directory_listing_root_blocked(&root) {
+        return Err("出于安全考虑，不能批量枚举系统根目录或敏感系统目录。请选择素材所在的普通文件夹。".to_string());
+    }
+    let mut files = Vec::new();
+    let mut stack = vec![(root.clone(), 0usize)];
+    while let Some((current, depth)) = stack.pop() {
+        let entries = fs::read_dir(&current).map_err(|err| format!("无法读取目录 {}：{err}", current.display()))?;
+        for entry in entries {
+            let path = entry.map_err(|err| format!("无法读取目录项：{err}"))?.path();
+            if path.is_dir() {
+                if depth < DIRECTORY_LIST_MAX_DEPTH && !directory_listing_root_blocked(&path) {
+                    stack.push((path, depth + 1));
+                }
+            } else if path.is_file() && file_extension_supported_for_bulk_import(&path) {
+                files.push(path.display().to_string());
+            }
+            if files.len() > DIRECTORY_LIST_MAX_FILES {
+                return Err(format!(
+                    "文件夹内可导入文件超过 {} 个，请先拆成更小的学习包。",
+                    DIRECTORY_LIST_MAX_FILES
+                ));
+            }
+        }
+    }
+    files.sort_by(|left, right| left.to_lowercase().cmp(&right.to_lowercase()));
+    Ok(files)
 }
 
 fn path_is_within(target: &Path, root: &Path) -> bool {
@@ -608,6 +2191,81 @@ fn path_is_within(target: &Path, root: &Path) -> bool {
     target == root || target.starts_with(root)
 }
 
+fn file_extension_supported_for_bulk_import(path: &Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .map(|value| {
+            SUPPORTED_BULK_FILE_EXTENSIONS
+                .iter()
+                .any(|allowed| value.eq_ignore_ascii_case(allowed))
+        })
+        .unwrap_or(false)
+}
+
+fn directory_listing_root_blocked(path: &Path) -> bool {
+    let Ok(resolved) = path.canonicalize() else {
+        return true;
+    };
+    if resolved.parent().is_none() || resolved.parent() == Some(resolved.as_path()) {
+        return true;
+    }
+    let Some(name) = resolved.file_name().and_then(|value| value.to_str()) else {
+        return true;
+    };
+    let lower = name.to_ascii_lowercase();
+    SENSITIVE_DIRECTORY_NAMES
+        .iter()
+        .any(|blocked| lower == *blocked)
+}
+
+fn generated_apkg_directory(path: &Path) -> bool {
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    let parent_name = parent
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    parent_name.starts_with("AnkiCard-")
+        && (parent.join("audio_audit.json").is_file() || parent.join("audio_audit.md").is_file())
+}
+
+fn anki_import_path_allowed(app: &tauri::AppHandle, target: &Path) -> bool {
+    if !target.is_file()
+        || !target
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.eq_ignore_ascii_case("apkg"))
+            .unwrap_or(false)
+    {
+        return false;
+    }
+
+    if generated_apkg_directory(target) {
+        return true;
+    }
+
+    if let Ok(app_data) = app.path().app_local_data_dir() {
+        if path_is_within(target, &app_data) {
+            return true;
+        }
+    }
+
+    if let Ok(cwd) = env::current_dir() {
+        for root in [
+            cwd.join("release"),
+            cwd.join("test_runs"),
+            cwd.join("anki_live_e2e"),
+        ] {
+            if root.exists() && path_is_within(target, &root) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 fn reveal_path_allowed(app: &tauri::AppHandle, target: &Path) -> bool {
     if let Ok(app_data) = app.path().app_local_data_dir() {
         if path_is_within(target, &app_data) {
@@ -616,7 +2274,11 @@ fn reveal_path_allowed(app: &tauri::AppHandle, target: &Path) -> bool {
     }
 
     if let Ok(cwd) = env::current_dir() {
-        for root in [cwd.join("projects"), cwd.join("release"), cwd.join("anki_live_e2e")] {
+        for root in [
+            cwd.join("projects"),
+            cwd.join("release"),
+            cwd.join("anki_live_e2e"),
+        ] {
             if root.exists() && path_is_within(target, &root) {
                 return true;
             }
@@ -631,18 +2293,26 @@ fn reveal_path_allowed(app: &tauri::AppHandle, target: &Path) -> bool {
 }
 
 #[tauri::command]
-fn open_anki_import(apkg_path: String) -> Result<(), String> {
+fn open_anki_import(app: tauri::AppHandle, apkg_path: String) -> Result<(), String> {
     let apkg = PathBuf::from(apkg_path);
     if !apkg.exists() {
         return Err(format!("apkg 文件不存在：{}", apkg.display()));
     }
-    if !apkg.is_file() || apkg.extension().and_then(|value| value.to_str()) != Some("apkg") {
+    let apkg = apkg
+        .canonicalize()
+        .map_err(|err| format!("无法解析 apkg 路径：{err}"))?;
+    if !anki_import_path_allowed(&app, &apkg) {
+        return Err("只能导入本应用刚导出或测试目录中的 .apkg 文件。".to_string());
+    }
+    if !apkg.is_file() || !apkg.extension().and_then(|value| value.to_str()).map(|value| value.eq_ignore_ascii_case("apkg")).unwrap_or(false) {
         return Err("只能导入 .apkg 文件。".to_string());
     }
 
     let anki = find_anki()?;
-    Command::new(anki)
-        .arg(apkg)
+    let mut command = Command::new(anki);
+    command.arg(apkg);
+    detach_gui_process(&mut command);
+    command
         .spawn()
         .map_err(|err| format!("无法启动 Anki：{err}"))?;
     Ok(())
@@ -665,8 +2335,10 @@ fn reveal_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
         } else {
             target.display().to_string()
         };
-        Command::new("explorer")
-            .arg(arg)
+        let mut command = Command::new("explorer");
+        command.arg(arg);
+        hide_console_window(&mut command);
+        command
             .spawn()
             .map_err(|err| format!("无法打开资源管理器：{err}"))?;
     }
@@ -689,46 +2361,79 @@ fn reveal_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
 #[tauri::command]
 fn save_secret(key: String, value: String) -> Result<(), String> {
     validate_secret_key(&key)?;
-    keyring::Entry::new(SECRET_SERVICE, &key)
-        .map_err(|err| format!("无法打开系统凭据：{err}"))?
-        .set_password(&value)
-        .map_err(|err| format!("无法保存系统凭据：{err}"))?;
-    Ok(())
+    let keyring_result = save_keyring_secret(&key, &value);
+    let fallback_result = save_secret_fallback(&key, &value);
+    if keyring_result.is_ok() || fallback_result.is_ok() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{}；{}",
+            keyring_result.unwrap_err(),
+            fallback_result.unwrap_err()
+        ))
+    }
 }
 
 #[tauri::command]
 fn load_secret(key: String) -> Result<Option<String>, String> {
     validate_secret_key(&key)?;
-    match keyring::Entry::new(SECRET_SERVICE, &key)
-        .map_err(|err| format!("无法打开系统凭据：{err}"))?
-        .get_password()
-    {
-        Ok(value) => Ok(Some(value)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(err) => Err(format!("无法读取系统凭据：{err}")),
+    match load_keyring_secret(&key) {
+        Ok(Some(value)) => Ok(Some(value)),
+        Ok(None) => load_secret_fallback(&key),
+        Err(keyring_error) => match load_secret_fallback(&key) {
+            Ok(Some(value)) => Ok(Some(value)),
+            Ok(None) => Err(keyring_error),
+            Err(fallback_error) => Err(format!("{keyring_error}；{fallback_error}")),
+        },
     }
 }
 
 #[tauri::command]
 fn delete_secret(key: String) -> Result<(), String> {
     validate_secret_key(&key)?;
-    match keyring::Entry::new(SECRET_SERVICE, &key)
-        .map_err(|err| format!("无法打开系统凭据：{err}"))?
-        .delete_credential()
-    {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(err) => Err(format!("无法删除系统凭据：{err}")),
+    let keyring_result = delete_keyring_secret(&key);
+    let fallback_result = delete_secret_fallback(&key);
+    if keyring_result.is_ok() || fallback_result.is_ok() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{}；{}",
+            keyring_result.unwrap_err(),
+            fallback_result.unwrap_err()
+        ))
     }
 }
 
 pub fn run() {
+    std::panic::set_hook(Box::new(|panic_info| {
+        let payload = json!({
+            "schema_version": 1,
+            "source": "rust_panic_hook",
+            "recorded_at_ms": now_unix_ms(),
+            "thread": thread::current().name().unwrap_or("<unnamed>"),
+            "message": panic_info.to_string(),
+            "location": panic_info.location().map(|location| json!({
+                "file": location.file(),
+                "line": location.line(),
+                "column": location.column(),
+            })),
+        });
+        write_workspace_diagnostic_file(".tauri-panic-current.json", &payload);
+    }));
     tauri::Builder::default()
         .manage(WorkerJobs::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             run_worker,
+            check_bootstrap_env,
+            repair_bootstrap_env,
             start_worker_job,
             cancel_worker_job,
+            get_worker_job_status,
+            read_worker_job_result,
+            record_renderer_error,
+            suggest_subtitle_path,
+            list_directory_files,
             reveal_path,
             open_anki_import,
             save_secret,
@@ -736,22 +2441,165 @@ pub fn run() {
             delete_secret
         ])
         .setup(|app| {
-            if let Some(window) = app.get_webview_window("main") {
-                window.set_min_size(Some(Size::Logical(LogicalSize {
-                    width: MIN_WINDOW_WIDTH,
-                    height: MIN_WINDOW_HEIGHT,
-                })))?;
+            let mut built_new_window = false;
+            let window = match app.get_webview_window("main") {
+                Some(window) => window,
+                None => {
+                    built_new_window = true;
+                    WebviewWindowBuilder::new(app, "main", WebviewUrl::App("/".into()))
+                        .title("Anki 卡片生成器")
+                        .inner_size(1540.0, 1080.0)
+                        .min_inner_size(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
+                        .resizable(true)
+                        .decorations(false)
+                        .visible(true)
+                        .build()?
+                }
+            };
+            let lifecycle_app = app.handle().clone();
+            let lifecycle_window = window.clone();
+            window.on_window_event(move |event| {
+                let event_debug = format!("{event:?}");
+                let event_name = event_debug
+                    .split([' ', '{', '('])
+                    .next()
+                    .unwrap_or("unknown")
+                    .to_string();
+                write_window_lifecycle_diagnostic(&lifecycle_app, &lifecycle_window, &event_name, event_debug);
+            });
+            let min_size_result = window.set_min_size(Some(Size::Logical(LogicalSize {
+                width: MIN_WINDOW_WIDTH,
+                height: MIN_WINDOW_HEIGHT,
+            })));
+            let unminimize_result = window.unminimize();
+            let center_result = window.center();
+            let show_result = window.show();
+            let focus_result = window.set_focus();
+
+            write_startup_diagnostic(json!({
+                "schema_version": 1,
+                "source": "src-tauri/src/lib.rs",
+                "phase": "setup",
+                "timestamp_ms": now_unix_ms(),
+                "pid": std::process::id(),
+                "workspace": workspace_root_for_startup_diagnostics(),
+                "window": {
+                    "label": "main",
+                    "title": "Anki 卡片生成器",
+                    "built_new_window": built_new_window,
+                    "state": window_state_to_json(&window),
+                },
+                "operations": {
+                    "set_min_size": unit_result_to_json(&min_size_result),
+                    "unminimize": unit_result_to_json(&unminimize_result),
+                    "center": unit_result_to_json(&center_result),
+                    "show": unit_result_to_json(&show_result),
+                    "set_focus": unit_result_to_json(&focus_result),
+                }
+            }));
+
+            min_size_result?;
+            if let Err(err) = unminimize_result {
+                eprintln!("Window unminimize failed during startup: {err}");
+            }
+            if let Err(err) = center_result {
+                eprintln!("Window center failed during startup: {err}");
+            }
+            show_result?;
+            if let Err(err) = focus_result {
+                eprintln!("Window focus failed during startup: {err}");
             }
 
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_windows_open_command_extracts_registered_anki_executable() {
+        assert_eq!(
+            parse_windows_open_command_executable(r#"D:\Anki\anki.exe "%L""#),
+            Some(PathBuf::from(r"D:\Anki\anki.exe")),
+        );
+        assert_eq!(
+            parse_windows_open_command_executable(r#""C:\Program Files\Anki\anki.exe" "%1""#),
+            Some(PathBuf::from(r"C:\Program Files\Anki\anki.exe")),
+        );
+    }
+
+    #[test]
+    fn anki_candidates_prefer_registered_launcher_over_embedded_venv_shim() {
+        let candidates = anki_candidates_from_parts(
+            None,
+            Some(r"C:\Users\Example\AppData\Local".to_string()),
+            vec![PathBuf::from(r"D:\Anki\anki.exe")],
+        );
+
+        let registered_index = candidates
+            .iter()
+            .position(|path| path == &PathBuf::from(r"D:\Anki\anki.exe"))
+            .expect("registered launcher candidate");
+        let embedded_shim_index = candidates
+            .iter()
+            .position(|path| {
+                path == &PathBuf::from(
+                    r"C:\Users\Example\AppData\Local\AnkiProgramFiles\.venv\Scripts\anki.exe",
+                )
+            })
+            .expect("embedded venv shim candidate");
+
+        assert!(registered_index < embedded_shim_index);
+    }
+
+    #[test]
+    fn anki_candidates_include_common_drive_root_install() {
+        let candidates = anki_candidates_from_parts(None, None, Vec::new());
+
+        assert!(candidates.contains(&PathBuf::from(r"D:\Anki\anki.exe")));
+    }
+
+    #[test]
+    fn bulk_directory_listing_only_accepts_supported_extensions() {
+        assert!(file_extension_supported_for_bulk_import(Path::new("clip.mp4")));
+        assert!(file_extension_supported_for_bulk_import(Path::new("notes.MD")));
+        assert!(file_extension_supported_for_bulk_import(Path::new("subs.srt")));
+        assert!(!file_extension_supported_for_bulk_import(Path::new("secret.exe")));
+        assert!(!file_extension_supported_for_bulk_import(Path::new("archive.zip")));
+    }
+
+    #[test]
+    fn generated_apkg_directory_requires_export_marker() {
+        let root = env::temp_dir().join(format!(
+            "anki_card_generated_apkg_test_{}",
+            std::process::id()
+        ));
+        let export_dir = root.join("AnkiCard-unit-test");
+        fs::create_dir_all(&export_dir).expect("create export test dir");
+        let apkg = export_dir.join("deck.apkg");
+        fs::write(&apkg, b"apkg").expect("write apkg");
+
+        assert!(!generated_apkg_directory(&apkg));
+        fs::write(export_dir.join("audio_audit.json"), "{}").expect("write marker");
+        assert!(generated_apkg_directory(&apkg));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[ignore = "writes a temporary credential to the local OS keyring"]
+    fn secret_keyring_round_trip() {
+        let key = "model_api_key".to_string();
+        let value = format!("codex-test-{}", std::process::id());
+
+        save_secret(key.clone(), value.clone()).expect("save test credential");
+        let loaded = load_secret(key.clone()).expect("load test credential");
+        delete_secret(key).expect("delete test credential");
+
+        assert_eq!(loaded, Some(value));
+    }
 }

@@ -10,10 +10,14 @@ if str(WORKER_DIR) not in sys.path:
 
 from acg.commands.check_env import handle_check_env
 from acg.commands.export import handle_export
+from acg.commands.extract_learning_points import handle_extract_learning_points
 from acg.commands.generate import handle_generate
+from acg.commands.generate_cards_from_learning_points import handle_generate_cards_from_learning_points
+from acg.commands.repair_env import handle_repair_env
 from acg.commands.test_api import handle_test_api
 from acg.commands.test_tts import handle_test_tts
 from acg.commands.verify import handle_verify_anki_import
+from acg.pipeline.learning_point_pipeline import extract_learning_points_from_subtitles
 from acg import legacy_worker as _legacy_worker
 from acg.legacy_worker import *  # noqa: F401,F403 - preserve test-facing worker helpers during staged refactor.
 from acg.protocol import emit, fail, read_payload
@@ -22,8 +26,11 @@ WorkerHandler = Callable[[dict[str, Any]], dict[str, Any]]
 
 COMMANDS: dict[str, WorkerHandler] = {
     "check_env": handle_check_env,
+    "repair_env": handle_repair_env,
     "test_api": handle_test_api,
     "test_tts": handle_test_tts,
+    "extract_learning_points": handle_extract_learning_points,
+    "generate_cards_from_learning_points": handle_generate_cards_from_learning_points,
     "generate": handle_generate,
     "export": handle_export,
     "verify_anki_import": handle_verify_anki_import,
@@ -44,7 +51,18 @@ def main() -> None:
     handler = COMMANDS.get(command)
     if not handler:
         fail(f"未知 worker 命令：{command}")
-    emit(handler(read_payload()))
+    try:
+        emit(handler(read_payload()))
+    except SystemExit:
+        raise
+    except Exception as err:
+        details = _legacy_worker.classify_worker_exception(err, command=command)
+        fail(
+            details["message"],
+            error_code=details.get("error_code"),
+            stage=details.get("stage"),
+            retryable=bool(details.get("retryable")),
+        )
 
 
 if __name__ == "__main__":

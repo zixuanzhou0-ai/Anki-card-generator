@@ -1,9 +1,17 @@
 ﻿import { invoke } from '@tauri-apps/api/core'
-import type { WorkerCommand, WorkerJob } from '../domain/types'
+import type { EnvRepairResult, EnvStatus, WorkerCommand, WorkerFinishedEvent, WorkerJob } from '../domain/types'
 import { isTauriRuntime } from './runtime'
 
 export async function runWorker<T>(command: string, payload: unknown): Promise<T> {
   return invoke<T>('run_worker', { command, payload })
+}
+
+export async function checkBootstrapEnv(): Promise<EnvStatus> {
+  return invoke<EnvStatus>('check_bootstrap_env')
+}
+
+export async function repairBootstrapEnv(target = 'python_runtime'): Promise<EnvRepairResult> {
+  return invoke<EnvRepairResult>('repair_bootstrap_env', { target })
 }
 
 export async function startWorkerJob(command: WorkerCommand, payload: unknown): Promise<WorkerJob> {
@@ -14,17 +22,30 @@ export async function cancelWorkerJob(jobId: string): Promise<{ cancelled: boole
   return invoke<{ cancelled: boolean }>('cancel_worker_job', { jobId })
 }
 
-export async function saveSecret(key: 'model_api_key' | 'tts_api_key', value: string) {
+export async function getWorkerJobStatus(jobId: string): Promise<WorkerFinishedEvent | null> {
+  return invoke<WorkerFinishedEvent | null>('get_worker_job_status', { jobId })
+}
+
+export async function readWorkerJobResult<T>(jobId: string): Promise<T> {
+  return invoke<T>('read_worker_job_result', { jobId })
+}
+
+export async function recordRendererError(payload: unknown): Promise<void> {
+  if (!isTauriRuntime()) return
+  await invoke('record_renderer_error', { payload })
+}
+
+export async function saveSecret(key: string, value: string) {
   if (!isTauriRuntime()) return
   await invoke('save_secret', { key, value })
 }
 
-export async function loadSecret(key: 'model_api_key' | 'tts_api_key') {
+export async function loadSecret(key: string) {
   if (!isTauriRuntime()) return ''
   return (await invoke<string | null>('load_secret', { key })) ?? ''
 }
 
-export async function deleteSecret(key: 'model_api_key' | 'tts_api_key') {
+export async function deleteSecret(key: string) {
   if (!isTauriRuntime()) return
   await invoke('delete_secret', { key })
 }

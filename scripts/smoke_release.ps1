@@ -1,9 +1,14 @@
 param(
   [string]$WorkerPath = "",
-  [string]$OutputDir = ""
+  [string]$OutputDir = "",
+  [switch]$IncludeDocumentSmoke
 )
 
 $ErrorActionPreference = "Stop"
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[Console]::InputEncoding = $Utf8NoBom
+[Console]::OutputEncoding = $Utf8NoBom
+$OutputEncoding = $Utf8NoBom
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 if (-not $WorkerPath) {
   $WorkerPath = Join-Path $Root "workers\anki_worker.py"
@@ -24,8 +29,78 @@ $GenerateJson = Join-Path $OutputDir "generate.json"
 $ExportJson = Join-Path $OutputDir "export.json"
 $VerifyJson = Join-Path $OutputDir "verify_apkg.json"
 $VerifyOut = Join-Path $OutputDir "verify_import"
+$Document = Join-Path $SmokeInput "study-notes.md"
+$DocumentGenerateJson = Join-Path $OutputDir "document_generate.json"
+$DocumentExportJson = Join-Path $OutputDir "document_export.json"
+$DocumentVerifyJson = Join-Path $OutputDir "document_verify_apkg.json"
+$DocumentVerifyOut = Join-Path $OutputDir "document_verify_import"
 $VenvPython = Join-Path $Root ".venv\Scripts\python.exe"
 $Python = if (Test-Path $VenvPython) { $VenvPython } else { "python" }
+
+function Enable-SmokeTtsConfig {
+  param(
+    [Parameter(Mandatory = $true)]
+    [object]$Project
+  )
+
+  if (-not $Project.PSObject.Properties["api_config"] -or $null -eq $Project.api_config) {
+    $Project | Add-Member -NotePropertyName "api_config" -NotePropertyValue ([pscustomobject]@{}) -Force
+  }
+  if (-not $Project.api_config.PSObject.Properties["tts_config"] -or $null -eq $Project.api_config.tts_config) {
+    $Project.api_config | Add-Member -NotePropertyName "tts_config" -NotePropertyValue ([pscustomobject]@{}) -Force
+  }
+
+  $Tts = $Project.api_config.tts_config
+  $Tts | Add-Member -NotePropertyName "enabled" -NotePropertyValue $true -Force
+  $Tts | Add-Member -NotePropertyName "provider" -NotePropertyValue "openai-compatible" -Force
+  $Tts | Add-Member -NotePropertyName "api_key" -NotePropertyValue "smoke-test-key" -Force
+  $Tts | Add-Member -NotePropertyName "base_url" -NotePropertyValue "https://example.invalid/v1" -Force
+  $Tts | Add-Member -NotePropertyName "model" -NotePropertyValue "tts-smoke" -Force
+  $Tts | Add-Member -NotePropertyName "voice" -NotePropertyValue "smoke" -Force
+  $Tts | Add-Member -NotePropertyName "format" -NotePropertyValue "mp3" -Force
+  $Tts | Add-Member -NotePropertyName "speed" -NotePropertyValue 1 -Force
+  $Tts | Add-Member -NotePropertyName "sample_rate" -NotePropertyValue 24000 -Force
+}
+
+function Initialize-SmokeTtsCache {
+  param(
+    [Parameter(Mandatory = $true)]
+    [object]$Project,
+    [Parameter(Mandatory = $true)]
+    [string]$PythonExe,
+    [Parameter(Mandatory = $true)]
+    [string]$RepoRoot
+  )
+
+  $WorkerRoot = Join-Path $RepoRoot "workers"
+  $SeedScript = Join-Path $PSScriptRoot "seed_smoke_tts_cache.py"
+
+  $ProjectJson = $Project | ConvertTo-Json -Depth 50
+  $CacheItemsJson = $ProjectJson | & $PythonExe $SeedScript $WorkerRoot
+  if ($LASTEXITCODE -ne 0) {
+    throw "Failed to compute smoke TTS cache paths."
+  }
+
+  $CacheItems = @($CacheItemsJson | ConvertFrom-Json | ForEach-Object { $_ })
+  if ($CacheItems.Count -lt 1) {
+    throw "Smoke TTS cache seeding found no TTS tasks."
+  }
+
+  foreach ($Item in $CacheItems) {
+    $CachePath = [string]$Item.path
+    $CacheParent = [System.IO.Path]::GetDirectoryName($CachePath)
+    New-Item -ItemType Directory -Force -Path $CacheParent | Out-Null
+    if (-not (Test-Path -LiteralPath $CachePath)) {
+      $Duration = "1.20"
+      ffmpeg -v error -y -f lavfi -i "anullsrc=channel_layout=mono:sample_rate=24000" -t $Duration -acodec libmp3lame -q:a 5 $CachePath | Out-Null
+      if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $CachePath)) {
+        throw "Failed to create smoke TTS cache file: $CachePath"
+      }
+    }
+  }
+
+  Write-Host "Seeded smoke TTS cache items: $($CacheItems.Count)"
+}
 
 if (-not (Test-Path $WorkerPath)) {
   throw "Worker not found: $WorkerPath"
@@ -44,6 +119,16 @@ I need to figure out what happens next before we decide.
 00:00:05,300 --> 00:00:08,000
 It turns out this small habit can change your life.
 "@ | Set-Content -Encoding UTF8 $Srt
+
+@"
+# Retrieval practice
+
+Retrieval practice means trying to recall information before checking the answer. It improves long-term memory because the act of recall strengthens access to the idea, not only recognition.
+
+# Interleaving
+
+Interleaving mixes related problem types during practice. It is slower at first, but it helps learners decide which method fits a new problem.
+"@ | Set-Content -Encoding UTF8 $Document
 
 if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
   throw "ffmpeg is required for smoke test."
@@ -117,6 +202,9 @@ if ($enabledCards -eq 0) {
   $enabledCards = 1
 }
 
+Enable-SmokeTtsConfig -Project $project
+Initialize-SmokeTtsCache -Project $project -PythonExe $Python -RepoRoot $Root
+
 $exportPayload = @{
   project = $project
   output_dir = $SmokeOut
@@ -137,7 +225,80 @@ if (Test-Path $VerifyScript) {
   }
 }
 
+if ($IncludeDocumentSmoke) {
+  $documentPayload = @{
+    source_mode = "document"
+    title = "Document Release Smoke Test"
+    document_path = $Document
+    language = "English"
+    level = "B1"
+    collection_levels = @("A2", "B1", "B2")
+    max_segments = 0
+    template_id = "immersive"
+    content_toggles = @{}
+    language_focus = @("phrases", "listening")
+    document_focus = @("concepts", "arguments", "terms")
+    document_study_mode = "knowledge"
+    document_answer_language = "zh"
+    document_depth = "standard"
+    document_answer_length = "medium"
+    card_types = @("knowledge")
+    api_config = @{
+      provider = "local"
+      api_key = ""
+      base_url = ""
+      model = ""
+      capabilities = @()
+      tts_config = @{
+        enabled = $false
+        provider = "disabled"
+        api_key = ""
+        base_url = ""
+        model = ""
+        voice = ""
+        format = "mp3"
+        speed = 1
+        sample_rate = 24000
+      }
+    }
+  } | ConvertTo-Json -Depth 10
+
+  $documentProject = $documentPayload | & $Python $WorkerPath generate | ConvertFrom-Json
+  $documentProject | ConvertTo-Json -Depth 20 | Set-Content -Encoding UTF8 $DocumentGenerateJson
+  if ($documentProject.source_mode -ne "document" -or -not $documentProject.segments -or $documentProject.segments.Count -lt 1) {
+    throw "Document smoke generation produced no document segments."
+  }
+
+  $documentProject.segments[0].cards[0].enabled = $true
+  $documentExportPayload = @{
+    project = $documentProject
+    output_dir = $SmokeOut
+  } | ConvertTo-Json -Depth 30
+
+  $documentExport = $documentExportPayload | & $Python $WorkerPath export | ConvertFrom-Json
+  $documentExport | ConvertTo-Json -Depth 20 | Set-Content -Encoding UTF8 $DocumentExportJson
+  if (-not $documentExport.apkg_path -or -not (Test-Path $documentExport.apkg_path)) {
+    throw "Document APKG was not created: $($documentExport.apkg_path)"
+  }
+  if ($documentExport.deck_kind -ne "document_knowledge") {
+    throw "Document APKG deck kind is not source-aware: $($documentExport.deck_kind) / $($documentExport.deck_name)"
+  }
+
+  if (Test-Path $VerifyScript) {
+    $documentVerify = & $Python $VerifyScript $documentExport.apkg_path $DocumentVerifyOut | ConvertFrom-Json
+    $documentVerify | ConvertTo-Json -Depth 30 | Set-Content -Encoding UTF8 $DocumentVerifyJson
+    if (-not $documentVerify.ok) {
+      throw "Document APKG verification failed. See $DocumentVerifyJson"
+    }
+  }
+}
+
 Write-Host "Smoke test passed." -ForegroundColor Green
 Write-Host "Segments: $($project.segments.Count)"
 Write-Host "APKG: $($export.apkg_path)"
 Write-Host "Verify report: $VerifyJson"
+if ($IncludeDocumentSmoke) {
+  Write-Host "Document segments: $($documentProject.segments.Count)"
+  Write-Host "Document APKG: $($documentExport.apkg_path)"
+  Write-Host "Document verify report: $DocumentVerifyJson"
+}

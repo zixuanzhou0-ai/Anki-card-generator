@@ -5,10 +5,10 @@ import { describe, expect, it, vi } from 'vitest'
 import type { WorkerErrorAction } from '../../domain/workerErrors'
 import { StatusPanel } from './StatusPanel'
 
-const subtitleOnlyAction: WorkerErrorAction = {
-  id: 'use-subtitle-only',
-  label: '改用字幕-only',
-  description: '跳过视频下载和切片，只用字幕继续生成卡片。',
+const retryAction: WorkerErrorAction = {
+  id: 'retry',
+  label: '重试任务',
+  description: '使用当前配置重新执行刚才失败的任务。',
 }
 
 describe('StatusPanel', () => {
@@ -22,15 +22,15 @@ describe('StatusPanel', () => {
         status="YouTube 返回 HTTP 429"
         statusTone="warn"
         workerBusy={false}
-        workerErrorActions={[subtitleOnlyAction]}
+        workerErrorActions={[retryAction]}
         onWorkerErrorAction={onAction}
       />,
     )
 
     expect(screen.getByRole('status')).toHaveTextContent('YouTube 返回 HTTP 429')
-    fireEvent.click(screen.getByRole('button', { name: '改用字幕-only' }))
+    fireEvent.click(screen.getByRole('button', { name: '重试任务' }))
 
-    expect(onAction).toHaveBeenCalledWith('use-subtitle-only')
+    expect(onAction).toHaveBeenCalledWith('retry')
   })
 
   it('shows the running snapshot note only while worker is busy', () => {
@@ -63,4 +63,3 @@ describe('StatusPanel', () => {
     expect(screen.queryByText(/本次任务使用开始时的配置/)).not.toBeInTheDocument()
   })
 })
-

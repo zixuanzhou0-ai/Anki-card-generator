@@ -1,90 +1,96 @@
-import { FileText } from 'lucide-react'
+import { CheckCircle2, Circle, FileText } from 'lucide-react'
 
-import type { CardKind, SourceMode, TemplateId } from '../../domain/types'
-
-type CardOption = {
-  id: CardKind
-  label: string
-  note: string
-}
-
-type TemplateOption = {
-  id: TemplateId
-  label: string
-  note: string
-  locked?: boolean
-}
+import { reviewDensityOptions } from '../../domain/options'
+import type { DocumentStudyMode, ReviewDensity, SourceMode, TemplateId } from '../../domain/types'
 
 type CardTemplatePanelProps = {
-  activeTemplateLabel: string
-  cardOptions: CardOption[]
-  cardTypes: CardKind[]
+  documentStudyMode: DocumentStudyMode
   sourceMode: SourceMode
-  templateId: TemplateId
-  templateOptions: TemplateOption[]
+  reviewDensity: ReviewDensity
+  onSelectReviewDensity: (reviewDensity: ReviewDensity) => void
   onSelectTemplate: (templateId: TemplateId) => void
-  onToggleCardType: (type: CardKind) => void
+}
+
+const reviewModeCopy: Record<ReviewDensity, { label: string; note: string }> = {
+  full: {
+    label: '完整复读',
+    note: '完整解释、用法、边界和听辨提示',
+  },
+  fast: {
+    label: '快速复读',
+    note: '只保留原句、中文意思、视频、原声、慢读和表达发音',
+  },
 }
 
 export function CardTemplatePanel({
-  activeTemplateLabel,
-  cardOptions,
-  cardTypes,
+  documentStudyMode,
   sourceMode,
-  templateId,
-  templateOptions,
+  reviewDensity,
+  onSelectReviewDensity,
   onSelectTemplate,
-  onToggleCardType,
 }: CardTemplatePanelProps) {
+  const isDocument = sourceMode === 'document'
+  const activeReviewMode = reviewModeCopy[reviewDensity] ?? reviewModeCopy.full
+  const selectImmersiveMode = (density: ReviewDensity) => {
+    onSelectTemplate('immersive_v11')
+    onSelectReviewDensity(density)
+  }
+
   return (
     <section className="panel generation-panel">
-      <details className="compact-details preference-details">
-        <summary>
-          <span>卡片和模板</span>
-          <strong>{sourceMode === 'document' ? '知识点卡' : `${cardTypes.length} 类 · ${activeTemplateLabel}`}</strong>
-        </summary>
-        {sourceMode === 'document' ? (
-          <div className="doc-card-mode">
-            <FileText size={18} />
-            <div>
-              <strong>知识点卡</strong>
-              <span>正面是问题或概念提示，反面是结构化答案、解释、例子和为什么值得记。</span>
-            </div>
-          </div>
-        ) : (
-          <div className="choice-row">
-            {cardOptions.map((item) => (
-              <button
-                type="button"
-                key={item.id}
-                className={`choice ${cardTypes.includes(item.id) ? 'selected' : ''}`}
-                onClick={() => onToggleCardType(item.id)}
-              >
-                <strong>{item.label}</strong>
-                <span>{item.note}</span>
-              </button>
-            ))}
-          </div>
-        )}
-        <div className="choice-row">
-          {templateOptions.map((item) => (
-            <button
-              type="button"
-              key={item.id}
-              className={`choice template-choice ${templateId === item.id ? 'selected' : ''} ${
-                item.locked ? 'locked' : ''
-              }`}
-              onClick={() => {
-                if (!item.locked) onSelectTemplate(item.id)
-              }}
-              disabled={item.locked}
-            >
-              <strong>{item.label}</strong>
-              <span>{item.note}</span>
-            </button>
-          ))}
+      <div className="panel-heading">
+        <FileText size={20} />
+        <div className="panel-title-stack">
+          <h3>卡片模式</h3>
+          <span>
+            {isDocument
+              ? documentStudyMode === 'language_reading'
+                ? '文档精读卡'
+                : '知识问答卡'
+              : activeReviewMode.label}
+          </span>
         </div>
-      </details>
+      </div>
+      {isDocument ? (
+        <div className="doc-card-mode compact-card-mode">
+          <FileText size={18} />
+          <div>
+            <strong>{documentStudyMode === 'language_reading' ? '文档精读卡' : '知识问答卡'}</strong>
+            <span>
+              {documentStudyMode === 'language_reading'
+                ? '从文档里提取表达、词汇或语法点；不生成听力卡，可用卡默认全选。'
+                : '正面是问题或概念提示，反面是结构化答案、解释、例子和为什么值得记。'}
+            </span>
+          </div>
+        </div>
+      ) : (
+        <div className="card-template-body compact-card-mode">
+          <div className="template-radio-list" role="radiogroup" aria-label="选择卡片模式">
+            {reviewDensityOptions.map((item) => {
+              const selected = reviewDensity === item.id
+              const copy = reviewModeCopy[item.id] ?? { label: item.label, note: item.note }
+              return (
+                <button
+                  type="button"
+                  key={item.id}
+                  className={`template-radio-option ${selected ? 'selected' : ''}`}
+                  role="radio"
+                  aria-checked={selected}
+                  onClick={() => selectImmersiveMode(item.id)}
+                >
+                  <span className="option-state" aria-hidden="true">
+                    {selected ? <CheckCircle2 size={16} /> : <Circle size={16} />}
+                  </span>
+                  <span className="option-copy">
+                    <strong>{copy.label}</strong>
+                    <small>{copy.note}</small>
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
     </section>
   )
 }

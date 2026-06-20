@@ -1,6 +1,14 @@
 import type { TtsPreset } from './types'
 import { MIMO_OPENAI_BASE_URL, MIMO_TOKEN_PLAN_SGP_BASE_URL } from './providers'
 
+export const QWEN_DASHSCOPE_CN_TTS_BASE_URL = 'https://dashscope.aliyuncs.com/api/v1'
+export const QWEN_DASHSCOPE_INTL_TTS_BASE_URL = 'https://dashscope-intl.aliyuncs.com/api/v1'
+export const QWEN_TTS_DEFAULT_MODEL = 'qwen3-tts-flash'
+export const QWEN_TTS_DEFAULT_VOICE = 'Jennifer'
+export const GEMINI_VERTEX_TTS_GLOBAL_BASE_URL = 'https://aiplatform.googleapis.com'
+export const GEMINI_VERTEX_TTS_DEFAULT_MODEL = 'gemini-3.1-flash-tts-preview'
+export const GEMINI_VERTEX_TTS_DEFAULT_VOICE = 'Kore'
+
 export const mimoTtsModels = [
   { value: 'mimo-v2.5-tts', label: 'MiMo-V2.5-TTS' },
   { value: 'mimo-v2.5-tts-voicedesign', label: 'MiMo-V2.5-TTS-VoiceDesign' },
@@ -20,6 +28,105 @@ export const mimoTtsVoices = [
   '白桦',
   'default_en',
   'default_zh',
+]
+
+export const qwenTtsModels = [
+  { value: 'qwen3-tts-flash', label: 'Qwen3-TTS-Flash' },
+  { value: 'qwen3-tts-instruct-flash', label: 'Qwen3-TTS-Instruct-Flash' },
+  { value: 'qwen3-tts-vd-2026-01-26', label: 'Qwen3-TTS-VD Custom Voice' },
+  { value: 'qwen-tts-latest', label: 'Qwen-TTS Latest' },
+  { value: 'qwen-tts', label: 'Qwen-TTS' },
+]
+
+export const geminiVertexTtsModels = [
+  { value: 'gemini-3.1-flash-tts-preview', label: 'Gemini 3.1 Flash TTS Preview' },
+  { value: 'gemini-2.5-flash-tts', label: 'Gemini 2.5 Flash TTS' },
+  { value: 'gemini-2.5-pro-tts', label: 'Gemini 2.5 Pro TTS' },
+  { value: 'gemini-2.5-flash-lite-preview-tts', label: 'Gemini 2.5 Flash Lite TTS Preview' },
+]
+
+export const qwenTtsVoices = [
+  'Jennifer',
+  'Aiden',
+  'Cherry',
+  'Serena',
+  'Ethan',
+  'Chelsie',
+  'Momo',
+  'Vivian',
+  'Moon',
+  'Maia',
+  'Kai',
+  'Nofish',
+  'Bella',
+  'Ryan',
+  'Katerina',
+  'Eldric Sage',
+  'Mia',
+  'Mochi',
+  'Bellona',
+  'Vincent',
+  'Bunny',
+  'Neil',
+  'Elias',
+  'Arthur',
+  'Nini',
+  'Seren',
+  'Pip',
+  'Stella',
+  'Bodega',
+  'Sonrisa',
+  'Alek',
+  'Dolce',
+  'Sohee',
+  'Ono Anna',
+  'Lenn',
+  'Emilien',
+  'Andre',
+  'Radio Gol',
+  'Jada',
+  'Dylan',
+  'Li',
+  'Marcus',
+  'Roy',
+  'Peter',
+  'Sunny',
+  'Eric',
+  'Rocky',
+  'Kiki',
+]
+
+export const geminiVertexTtsVoices = [
+  'Kore',
+  'Aoede',
+  'Puck',
+  'Charon',
+  'Fenrir',
+  'Leda',
+  'Orus',
+  'Zephyr',
+  'Callirrhoe',
+  'Autonoe',
+  'Enceladus',
+  'Iapetus',
+  'Umbriel',
+  'Algieba',
+  'Despina',
+  'Erinome',
+  'Algenib',
+  'Rasalgethi',
+  'Laomedeia',
+  'Achernar',
+  'Alnilam',
+  'Schedar',
+  'Gacrux',
+  'Pulcherrima',
+  'Achird',
+  'Zubenelgenubi',
+  'Vindemiatrix',
+  'Sadachbia',
+  'Sadaltager',
+  'Sulafat',
 ]
 
 export const ttsPresets: TtsPreset[] = [
@@ -84,6 +191,56 @@ export const ttsPresets: TtsPreset[] = [
     key_hint: 'MiMo API Key',
   },
   {
+    id: 'qwen3-tts-flash-cn',
+    label: 'Qwen3 TTS 美语女声',
+    provider: 'qwen',
+    base_url: QWEN_DASHSCOPE_CN_TTS_BASE_URL,
+    model: QWEN_TTS_DEFAULT_MODEL,
+    voice: QWEN_TTS_DEFAULT_VOICE,
+    note: '阿里云百炼北京地域 Qwen3-TTS；Jennifer 是官方美语女声，更适合英语学习卡片。',
+    key_hint: '北京地域 DashScope / 百炼 API Key',
+  },
+  {
+    id: 'qwen3-tts-flash-aiden-cn',
+    label: 'Qwen3 TTS 美语男声',
+    provider: 'qwen',
+    base_url: QWEN_DASHSCOPE_CN_TTS_BASE_URL,
+    model: QWEN_TTS_DEFAULT_MODEL,
+    voice: 'Aiden',
+    note: '阿里云百炼北京地域 Qwen3-TTS；Aiden 是官方美语男声音色。',
+    key_hint: '北京地域 DashScope / 百炼 API Key',
+  },
+  {
+    id: 'qwen3-tts-instruct-cn',
+    label: 'Qwen3 TTS Instruct',
+    provider: 'qwen',
+    base_url: QWEN_DASHSCOPE_CN_TTS_BASE_URL,
+    model: 'qwen3-tts-instruct-flash',
+    voice: 'Cherry',
+    note: '支持指令控制的千问 3 TTS；当前使用自然清晰朗读默认指令。',
+    key_hint: '北京地域 DashScope / 百炼 API Key',
+  },
+  {
+    id: 'qwen3-tts-flash-intl',
+    label: 'Qwen3 TTS Intl',
+    provider: 'qwen',
+    base_url: QWEN_DASHSCOPE_INTL_TTS_BASE_URL,
+    model: QWEN_TTS_DEFAULT_MODEL,
+    voice: QWEN_TTS_DEFAULT_VOICE,
+    note: '新加坡/国际地域 Qwen3-TTS；需要使用对应地域的 DashScope Key。',
+    key_hint: '国际地域 DashScope API Key',
+  },
+  {
+    id: 'qwen-tts-latest-cn',
+    label: 'Qwen TTS Legacy',
+    provider: 'qwen',
+    base_url: QWEN_DASHSCOPE_CN_TTS_BASE_URL,
+    model: 'qwen-tts-latest',
+    voice: 'Cherry',
+    note: '旧版 Qwen-TTS，按 Token 计费；新项目优先使用 Qwen3 TTS。',
+    key_hint: '北京地域 DashScope / 百炼 API Key',
+  },
+  {
     id: 'grok',
     label: 'Grok / xAI TTS',
     provider: 'grok',
@@ -104,6 +261,16 @@ export const ttsPresets: TtsPreset[] = [
     key_hint: 'Gemini API Key',
   },
   {
+    id: 'gemini-31-flash-tts-vertex',
+    label: 'Gemini 3.1 TTS Vertex',
+    provider: 'gemini-vertex',
+    base_url: GEMINI_VERTEX_TTS_GLOBAL_BASE_URL,
+    model: GEMINI_VERTEX_TTS_DEFAULT_MODEL,
+    voice: GEMINI_VERTEX_TTS_DEFAULT_VOICE,
+    note: 'Google Cloud 最新 Gemini-TTS；走 Vertex AI + 本机 gcloud 登录，不需要粘贴 TTS API Key。',
+    key_hint: '本机 gcloud / Vertex AI 项目',
+  },
+  {
     id: 'openai-speech',
     label: 'OpenAI-compatible Speech',
     provider: 'openai-compatible',
@@ -115,7 +282,12 @@ export const ttsPresets: TtsPreset[] = [
   },
 ]
 
-export const featuredTtsPresetIds = new Set(['disabled', 'mimo-token-plan-sgp-tts', 'grok', 'gemini-tts'])
+export const featuredTtsPresetIds = new Set([
+  'disabled',
+  'qwen3-tts-flash-cn',
+  'mimo-token-plan-sgp-tts',
+  'gemini-31-flash-tts-vertex',
+])
 
 export const featuredTtsPresets = ttsPresets.filter((preset) => featuredTtsPresetIds.has(preset.id))
 export const advancedTtsPresets = ttsPresets.filter((preset) => !featuredTtsPresetIds.has(preset.id))

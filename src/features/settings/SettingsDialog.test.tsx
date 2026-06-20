@@ -1,16 +1,26 @@
 import '@testing-library/jest-dom/vitest'
 import type { ComponentProps } from 'react'
 import { createRef } from 'react'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { advancedApiPresets, advancedTtsPresets, defaultRequest, featuredApiPresets, featuredTtsPresets, mimoTextModels, mimoTtsModels, mimoTtsVoices } from '../../domain/options'
+import {
+  advancedApiPresets,
+  advancedTtsPresets,
+  defaultRequest,
+  featuredApiPresets,
+  featuredTtsPresets,
+  mimoTextModels,
+  mimoTtsModels,
+  mimoTtsVoices,
+  qwenTtsModels,
+  qwenTtsVoices,
+} from '../../domain/options'
 import { SettingsDialog } from './SettingsDialog'
 
 afterEach(() => cleanup())
 
 function renderDialog(overrides: Partial<ComponentProps<typeof SettingsDialog>> = {}) {
-  const secretPrefs = { rememberModelKey: false, rememberTtsKey: false }
   const props: ComponentProps<typeof SettingsDialog> = {
     apiSettings: {
       advancedApiPresets,
@@ -20,27 +30,33 @@ function renderDialog(overrides: Partial<ComponentProps<typeof SettingsDialog>> 
       apiTestTitle: '尚未测试',
       apiTestTone: 'idle',
       apiTesting: false,
+      apiKeySaved: false,
+      activeApiProfileId: 'default',
+      apiProfileDirty: false,
+      apiProfileStatus: '未保存到我的模型',
       appBusy: false,
       capabilityHelp: {},
       capabilityLabels: [],
       featuredApiPresets,
       mimoOpenAiBaseUrl: 'https://api.xiaomimimo.com/v1',
       mimoTextModels,
-      secretPrefs,
-      showAdvancedApi: false,
+      savedApiProfiles: [],
       showCapabilities: false,
       onApplyApiPreset: vi.fn(),
+      onApplySavedApiProfile: vi.fn(),
       onPatchApi: vi.fn(),
-      onSetShowAdvancedApi: vi.fn(),
+      onSaveApiProfile: vi.fn(),
       onSetShowCapabilities: vi.fn(),
       onTestApi: vi.fn(),
-      onToggleRememberModelKey: vi.fn(),
     },
     dialogRef: createRef<HTMLElement>(),
     envSettings: {
       appBusy: false,
+      envRepairing: false,
+      envRepairResult: null,
       envStatus: { ffmpeg: true, genanki: true, python: 'ok' },
       onCheckEnv: vi.fn(),
+      onRepairEnv: vi.fn(),
     },
     motionDuration: 0,
     open: true,
@@ -48,25 +64,33 @@ function renderDialog(overrides: Partial<ComponentProps<typeof SettingsDialog>> 
     settingsTab: 'api',
     ttsSettings: {
       advancedTtsPresets,
+      apiConfig: defaultRequest.api_config,
       appBusy: false,
       featuredTtsPresets,
       mimoOpenAiBaseUrl: 'https://api.xiaomimimo.com/v1',
       mimoTokenPlanSgpBaseUrl: 'https://token-plan-sgp.xiaomimimo.com/v1',
       mimoTtsModels,
       mimoTtsVoices,
-      secretPrefs,
+      qwenTtsModels,
+      qwenTtsVoices,
+      activeTtsProfileId: 'default',
+      savedTtsProfiles: [],
       showAdvancedTts: false,
       tts: defaultRequest.api_config.tts_config,
+      ttsProfileDirty: false,
+      ttsKeySaved: false,
+      ttsProfileStatus: '未保存到我的语音',
       ttsTestMessage: 'TTS 当前关闭。',
       ttsTestMeta: 'disabled',
       ttsTestTitle: 'TTS 未启用',
       ttsTestTone: 'idle',
       ttsTesting: false,
+      onApplySavedTtsProfile: vi.fn(),
       onApplyTtsPreset: vi.fn(),
       onPatchTts: vi.fn(),
+      onSaveTtsProfile: vi.fn(),
       onSetShowAdvancedTts: vi.fn(),
       onTestTts: vi.fn(),
-      onToggleRememberTtsKey: vi.fn(),
     },
     onClose: vi.fn(),
     onSettingsTabChange: vi.fn(),
@@ -95,5 +119,34 @@ describe('SettingsDialog', () => {
 
     expect(screen.getByRole('heading', { name: '语音 TTS' })).toBeInTheDocument()
     expect(props.onSettingsTabChange).toHaveBeenCalledWith('env')
+  })
+
+  it('summarizes API, TTS, and local environment health before the tabs', () => {
+    const props = renderDialog()
+
+    const health = screen.getByLabelText('设置状态总览')
+
+    expect(within(health).getByText('模型 API')).toBeInTheDocument()
+    expect(within(health).getByText('语音 TTS')).toBeInTheDocument()
+    expect(within(health).getByText('本地环境')).toBeInTheDocument()
+    expect(within(health).getAllByText('未测试')).toHaveLength(1)
+    expect(within(health).getByText('视频卡导出需要整句 TTS 和表达 TTS；请在语音页开启并测试。')).toBeInTheDocument()
+    expect(within(health).queryByText(/只使用原声/)).not.toBeInTheDocument()
+
+    fireEvent.click(within(health).getByRole('button', { name: /本地环境/ }))
+    expect(props.onSettingsTabChange).toHaveBeenCalledWith('env')
+  })
+
+  it('closes from the frosted backdrop but keeps dialog clicks inside the modal', () => {
+    const props = renderDialog()
+    const overlay = document.querySelector('.settings-overlay')
+
+    expect(overlay).not.toBeNull()
+
+    fireEvent.click(screen.getByRole('dialog', { name: '设置' }))
+    expect(props.onClose).not.toHaveBeenCalled()
+
+    fireEvent.click(overlay as Element)
+    expect(props.onClose).toHaveBeenCalledOnce()
   })
 })

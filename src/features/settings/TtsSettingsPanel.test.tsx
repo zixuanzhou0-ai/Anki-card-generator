@@ -3,7 +3,7 @@ import type { ComponentProps } from 'react'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { SecretPrefs, TtsConfig, TtsPreset } from '../../domain/types'
+import type { SavedTtsProfile, TtsConfig, TtsPreset } from '../../domain/types'
 import { TtsSettingsPanel } from './TtsSettingsPanel'
 
 afterEach(() => cleanup())
@@ -15,6 +15,7 @@ const tts: TtsConfig = {
   enabled: false,
   language: 'auto',
   model: '',
+  output_volume: 0.65,
   provider: 'disabled',
   sample_rate: 24000,
   voice: '',
@@ -29,9 +30,9 @@ const enabledTts: TtsConfig = {
   voice: 'Mia',
 }
 
-const preset: TtsPreset = {
+const mimoPreset: TtsPreset = {
   base_url: 'https://token-plan-sgp.xiaomimimo.com/v1',
-  id: 'mimo',
+  id: 'mimo-token-plan-sgp-tts',
   key_hint: '复用 MIMO Key',
   label: 'MIMO SGP TTS',
   model: 'mimo-v2.5-tts',
@@ -40,33 +41,65 @@ const preset: TtsPreset = {
   voice: 'Mia',
 }
 
-const secretPrefs: SecretPrefs = {
-  rememberModelKey: false,
-  rememberTtsKey: false,
+const qwenPreset: TtsPreset = {
+  base_url: 'https://dashscope.aliyuncs.com/api/v1',
+  id: 'qwen-tts-flash',
+  key_hint: '可复用千问 Key',
+  label: 'Qwen TTS Flash',
+  model: 'qwen3-tts-flash',
+  note: '快速语音',
+  provider: 'qwen',
+  voice: 'Jennifer',
+}
+
+const customSpeechPreset: TtsPreset = {
+  base_url: '',
+  id: 'openai-speech',
+  key_hint: '任意兼容 Speech Key',
+  label: 'OpenAI-compatible Speech',
+  model: 'gpt-4o-mini-tts',
+  note: '手动填写',
+  provider: 'openai-compatible',
+  voice: 'alloy',
 }
 
 function renderPanel(overrides: Partial<ComponentProps<typeof TtsSettingsPanel>> = {}) {
   const props: ComponentProps<typeof TtsSettingsPanel> = {
-    advancedTtsPresets: [],
+    activeTtsProfileId: 'disabled',
+    advancedTtsPresets: [qwenPreset, customSpeechPreset],
+    apiConfig: {
+      api_key: '',
+      base_url: 'https://token-plan-sgp.xiaomimimo.com/v1',
+      capabilities: ['structured_json', 'long_context'],
+      model: 'mimo-v2.5-pro',
+      provider: 'mimo',
+      tts_config: tts,
+    },
     appBusy: false,
-    featuredTtsPresets: [preset],
+    featuredTtsPresets: [mimoPreset],
     mimoOpenAiBaseUrl: 'https://api.xiaomimimo.com/v1',
     mimoTokenPlanSgpBaseUrl: 'https://token-plan-sgp.xiaomimimo.com/v1',
     mimoTtsModels: [{ label: 'MIMO V2.5 TTS', value: 'mimo-v2.5-tts' }],
     mimoTtsVoices: ['Mia', 'Chloe'],
-    secretPrefs,
+    qwenTtsModels: [{ label: 'Qwen3 TTS Flash', value: 'qwen3-tts-flash' }],
+    qwenTtsVoices: ['Jennifer', 'Aiden', 'Cherry', 'Serena'],
+    savedTtsProfiles: [],
     showAdvancedTts: false,
     tts,
+    ttsKeySaved: false,
+    ttsProfileDirty: false,
+    ttsProfileStatus: '未保存到我的语音',
     ttsTestMessage: 'TTS 当前关闭。',
     ttsTestMeta: 'disabled · 无模型名 · 无 voice',
     ttsTestTitle: 'TTS 未启用',
     ttsTestTone: 'idle',
     ttsTesting: false,
+    onApplySavedTtsProfile: vi.fn(),
     onApplyTtsPreset: vi.fn(),
     onPatchTts: vi.fn(),
+    onSaveTtsProfile: vi.fn(),
     onSetShowAdvancedTts: vi.fn(),
     onTestTts: vi.fn(),
-    onToggleRememberTtsKey: vi.fn(),
     ...overrides,
   }
   render(<TtsSettingsPanel {...props} />)
@@ -74,38 +107,89 @@ function renderPanel(overrides: Partial<ComponentProps<typeof TtsSettingsPanel>>
 }
 
 describe('TtsSettingsPanel', () => {
-  it('renders disabled state and can apply a preset', () => {
+  it('uses a searchable TTS catalog and can apply a preset', () => {
     const props = renderPanel()
 
-    fireEvent.click(screen.getByRole('button', { name: /MIMO SGP TTS/ }))
+    fireEvent.change(screen.getByPlaceholderText('搜索语音厂商、模型、voice'), { target: { value: 'qwen' } })
+    fireEvent.click(screen.getByRole('button', { name: /Qwen TTS Flash/ }))
     fireEvent.click(screen.getByRole('button', { name: /测试 TTS/ }))
 
-    expect(screen.getByText('TTS 当前关闭')).toBeInTheDocument()
-    expect(props.onApplyTtsPreset).toHaveBeenCalledWith(preset)
+    expect(screen.getByText('语音目录')).toBeInTheDocument()
+    expect(screen.getAllByText('TTS 当前关闭').length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/视频卡导出前需要开启整句 TTS 和表达 TTS/).length).toBeGreaterThan(0)
+    expect(screen.queryByText(/只使用视频原声/)).not.toBeInTheDocument()
+    expect(props.onApplyTtsPreset).toHaveBeenCalledWith(qwenPreset)
     expect(props.onTestTts).toHaveBeenCalledOnce()
   })
 
-  it('enables TTS with MIMO defaults', () => {
+  it('lets the user manually add an OpenAI-compatible Speech provider', () => {
+    const props = renderPanel()
+
+    fireEvent.click(screen.getAllByRole('button', { name: /OpenAI-compatible Speech/ })[0])
+
+    expect(props.onApplyTtsPreset).toHaveBeenCalledWith(customSpeechPreset)
+  })
+
+  it('shows saved voices at the top and applies them from the catalog', () => {
+    const savedProfile: SavedTtsProfile = {
+      auth: 'api_key',
+      base_url: 'https://voice.example/v1',
+      bit_rate: 128000,
+      enabled: true,
+      has_api_key: true,
+      id: 'voice-mine',
+      label: '我的女声',
+      language: 'auto',
+      last_test_ok: true,
+      model: 'my-tts',
+      output_volume: 0.7,
+      provider: 'openai-compatible',
+      sample_rate: 24000,
+      updated_at: '2026-06-16T00:00:00Z',
+      voice: 'my-voice',
+    }
+    const props = renderPanel({ activeTtsProfileId: 'voice-mine', savedTtsProfiles: [savedProfile] })
+
+    fireEvent.click(screen.getByRole('button', { name: /我的女声/ }))
+
+    expect(screen.getByText('我的语音')).toBeInTheDocument()
+    expect(props.onApplySavedTtsProfile).toHaveBeenCalledWith('voice-mine')
+  })
+
+  it('renders a precise TTS failed diagnostic title', () => {
+    renderPanel({
+      tts: enabledTts,
+      ttsTestMessage: 'TTS请求超时：timed out。',
+      ttsTestTitle: 'TTS 请求超时',
+      ttsTestTone: 'warn',
+    })
+
+    expect(screen.getByText('TTS 请求超时')).toBeInTheDocument()
+    expect(screen.getByText('TTS请求超时：timed out。')).toBeInTheDocument()
+  })
+
+  it('enables TTS with Qwen defaults', () => {
     const onPatchTts = vi.fn()
     renderPanel({ onPatchTts })
 
-    fireEvent.click(screen.getByLabelText(/导出时生成整句和词伙 TTS/))
+    fireEvent.click(screen.getByLabelText(/导出时生成 AI 朗读/))
 
     expect(onPatchTts).toHaveBeenCalledWith({
-      base_url: 'https://token-plan-sgp.xiaomimimo.com/v1',
+      base_url: 'https://dashscope.aliyuncs.com/api/v1',
       enabled: true,
-      model: 'mimo-v2.5-tts',
-      provider: 'mimo',
-      voice: 'Mia',
+      model: 'qwen3-tts-flash',
+      provider: 'qwen',
+      voice: 'Jennifer',
     })
   })
 
-  it('patches provider and advanced TTS fields', () => {
+  it('keeps provider, model, voice, and key fields directly editable when TTS is enabled', () => {
     const onPatchTts = vi.fn()
-    renderPanel({ onPatchTts, showAdvancedTts: true, tts: enabledTts })
+    renderPanel({ onPatchTts, tts: enabledTts })
 
     fireEvent.change(screen.getByLabelText(/语音服务/), { target: { value: 'grok' } })
-    fireEvent.change(screen.getByLabelText(/Sample Rate/), { target: { value: '48000' } })
+    fireEvent.change(screen.getByLabelText(/语音模型/), { target: { value: 'custom-tts' } })
+    fireEvent.change(screen.getByLabelText(/声音/), { target: { value: 'eve' } })
 
     expect(onPatchTts).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -114,15 +198,67 @@ describe('TtsSettingsPanel', () => {
         provider: 'grok',
       }),
     )
-    expect(onPatchTts).toHaveBeenCalledWith({ sample_rate: 48000 })
+    expect(onPatchTts).toHaveBeenCalledWith({ model: 'custom-tts' })
+    expect(onPatchTts).toHaveBeenCalledWith({ voice: 'eve' })
+    expect(screen.getByLabelText(/TTS API Key/)).toBeInTheDocument()
   })
 
-  it('toggles remember-key preference', () => {
-    const onToggleRememberTtsKey = vi.fn()
-    renderPanel({ onToggleRememberTtsKey, tts: enabledTts })
+  it('keeps low-frequency audio parameters in the advanced area', () => {
+    const onPatchTts = vi.fn()
+    renderPanel({ onPatchTts, showAdvancedTts: true, tts: enabledTts })
 
-    fireEvent.click(screen.getByLabelText(/记住本机 TTS API Key/))
+    fireEvent.change(screen.getByLabelText(/Sample Rate/), { target: { value: '48000' } })
+    fireEvent.change(screen.getByLabelText(/导出 TTS 音量/), { target: { value: '0.8' } })
 
-    expect(onToggleRememberTtsKey).toHaveBeenCalledOnce()
+    expect(onPatchTts).toHaveBeenCalledWith({ sample_rate: 48000 })
+    expect(onPatchTts).toHaveBeenCalledWith({ output_volume: 0.8 })
+    expect(screen.getByText('导出 TTS 音量：65%')).toBeInTheDocument()
+  })
+
+  it('saves the current TTS profile', () => {
+    const onSaveTtsProfile = vi.fn()
+    renderPanel({ onSaveTtsProfile, tts: enabledTts })
+
+    fireEvent.click(screen.getByRole('button', { name: /保存语音方案/ }))
+
+    expect(onSaveTtsProfile).toHaveBeenCalledOnce()
+  })
+
+  it('patches Gemini Vertex TTS provider defaults without an API key', () => {
+    const onPatchTts = vi.fn()
+    renderPanel({
+      onPatchTts,
+      tts: { ...enabledTts, provider: 'mimo', api_key: 'sk-old', model: '', voice: '' },
+    })
+
+    fireEvent.change(screen.getByLabelText(/语音服务/), { target: { value: 'gemini-vertex' } })
+
+    expect(onPatchTts).toHaveBeenCalledWith(
+      expect.objectContaining({
+        base_url: 'https://aiplatform.googleapis.com',
+        api_key: '',
+        enabled: true,
+        model: 'gemini-3.1-flash-tts-preview',
+        provider: 'gemini-vertex',
+        voice: 'Kore',
+      }),
+    )
+  })
+
+  it('explains that Gemini Vertex TTS uses local gcloud auth', () => {
+    renderPanel({
+      tts: {
+        ...enabledTts,
+        api_key: '',
+        base_url: 'https://aiplatform.googleapis.com',
+        model: 'gemini-3.1-flash-tts-preview',
+        provider: 'gemini-vertex',
+        voice: 'Kore',
+      },
+    })
+
+    expect(screen.getByText('Vertex TTS 授权')).toBeInTheDocument()
+    expect(screen.getByText('使用本机 gcloud OAuth')).toBeInTheDocument()
+    expect(screen.queryByLabelText('TTS API Key')).not.toBeInTheDocument()
   })
 })

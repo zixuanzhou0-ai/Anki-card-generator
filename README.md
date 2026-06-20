@@ -1,140 +1,175 @@
 # Anki Card Generator
 
-一个面向中文母语者的英语 Anki 卡片生成器。它可以从 YouTube / 本地视频 / SRT / 文档中提取可迁移词伙，生成带视频片段、原声、TTS、释义、例句和填空的 Anki 卡包。
+面向中文学习者的 Windows 桌面端视频制卡工具。它把本地视频 + 字幕或视频链接变成可审核、可导出、可导入 Anki 的 `.apkg` 复读卡包。
 
-当前版本：`v0.9.2-beta`
+当前测试版：`v0.9.3-beta`。
 
-## Beta 风险和数据边界
+## 它适合做什么
 
-这是 Windows 内测版本。YouTube 下载、字幕接口、模型 API、TTS 和本机 FFmpeg / Python 环境都会影响成功率。
+- 从 YouTube /公开视频链接生成语言学习卡。
+- 从本地 `mp4/webm/mkv/mov` + `srt/vtt` 字幕生成卡。
+- 在生成前先抽取并推荐学习点，用户自己决定生成哪些卡。
+- 导出 Anki `.apkg`，并通过 AnkiConnect 做导入与媒体核验。
+- 为每张视频卡保留视频片段、原声、整句 TTS、表达 TTS、中文语境义和学习提示。
 
-- YouTube 导入依赖 yt-dlp，可能因为 429、区域限制、字幕接口变化或 n challenge 失败。
-- 使用 MIMO、DeepSeek、OpenRouter、Claude、Gemini、xAI 等模型时，字幕、文档片段、卡片字段和 TTS 文本会发送给对应服务商。
-- TTS 会产生 API 调用费用；导出前请确认服务商计费规则。
-- 视频片段、字幕和文档可能受版权保护；生成的 `.apkg` 默认仅供个人学习使用，不建议公开分发。
-- 更完整的限制见 [Beta 限制说明](docs/BETA_LIMITATIONS.md)，数据流说明见 [Privacy](PRIVACY.md)。
+当前公开主流程只保留两条入口：`本地视频 + 字幕` 和 `视频链接`。历史文档制卡、实验模板和内部诊断能力不作为普通用户入口展示。
 
-## 功能
+## v0.9.3-beta 重点
 
-- 极简两片式桌面界面：左侧 Inspector 管理素材和学习设置，右侧 Workspace 负责生成、审核和导出。
-- 窗口最小尺寸保护：桌面端不会缩到破坏布局的尺寸。
-- YouTube URL 导入：自动下载视频和英文字幕。
-- 本地视频 + SRT：适合自己已有素材。
-- 文档制卡：支持 TXT、Markdown、DOCX、EPUB、PDF。
-- MIMO 词伙评审：优先保留可迁移表达，低价值内容默认不导出。
-- 自动片段预算：根据视频长度和字幕密度自动决定候选数量。
-- 自适应 Anki 模板：卡片在不同窗口尺寸下自动缩放。
-- 多音频导出：视频原声、整句 TTS、词伙 TTS。
-- Anki `.apkg` 导出：可手动导入 Anki，也可调用本机 Anki 打开。
+- **视频制卡主链路完成 8/8 真实验收矩阵**：YouTube、本地视频 + SRT、完整复读、快速复读、cold/hot cache、100+ 张一次点击压力包均已通过。
+- **启动更干净**：普通 `desktop:dev` 启动默认隐藏 Tauri 调试终端，日志仍写入文件；需要排查时可用 `desktop:dev:debug` 显示调试窗口。
+- **卡片质量闸更硬**：素材不可读、TTS 最终失败、媒体切片失败、ledger/hash mismatch、APKG verify fail 会阻止导出。
+- **用户选择更可信**：用户勾选 N 个可制卡学习点，目标就是生成 N 张卡；模型漏字段时会尽量补齐保底卡并记录诊断。
+- **缓存和速度更透明**：记录 cold/hot、cache hit/miss、TTS、媒体切片、APKG 打包和 Anki verify 阶段耗时。
+- **公开仓库更干净**：生成媒体、APKG、test runs、缓存、日志、内部 handoff 和本地密钥文件默认不会进入 Git。
 
-## 工作流程
+## 界面与成品卡
 
-```mermaid
-flowchart LR
-  A["视频 / URL / 文档"] --> B["字幕解析和自动切段"]
-  B --> C["词伙候选提取"]
-  C --> D["MIMO 质量评审"]
-  D --> E["卡片字段生成"]
-  E --> F["视频 / 原声 / TTS 媒体处理"]
-  F --> G["导出 .apkg"]
-  G --> H["导入 Anki"]
-```
+### 桌面端工作台
 
-## 界面预览
+![桌面端工作台](docs/screenshots/desktop-workspace.png)
 
-主界面采用两片式工作台：左侧收纳素材和学习设置，右侧展示质量筛选、卡片预览和导出结果；复杂选项会收在展开项里：
+### 学习点生成与审核导出
 
-![主工作台](docs/screenshots/workflow-start.png)
+![素材配置](docs/screenshots/workflow-start.png)
 
-从 YouTube URL 或本地视频生成后，右侧可以按推荐、待审、已拒绝、重复合并筛选卡片，并在导出前逐张编辑：
+![审核导出](docs/screenshots/workflow-generated.png)
 
-![生成后的卡片预览](docs/screenshots/workflow-generated.png)
+### 设置页
 
-卡片详情会显示视频片段、原句、词伙、质量评分、中文理解、搭配和老师评语：
+模型 API、TTS、本地环境检测分开配置。Vertex 模式使用本机 `gcloud` OAuth；其它 OpenAI-compatible 服务商可以保存到本机凭据。
 
-![卡片审核面板](docs/screenshots/card-review-panel.png)
+![模型 API 设置](docs/screenshots/settings-model-api.png)
 
-设置页集中管理文本模型、MIMO TTS 和本地环境检查；API Key 只在本机填写，不写入仓库：
+![TTS 设置](docs/screenshots/settings-tts.png)
 
-![设置页](docs/screenshots/settings-modal.png)
+![本地环境检测](docs/screenshots/settings-environment.png)
 
-## Windows 快速开始
+### Anki 成品卡
 
-推荐先下载 GitHub Release 里的 Windows 便携包：
+下面三张来自 `100+ 张一次点击压力包` 的真实 Anki Preview 抽查，覆盖开头、中间和结尾卡片。
 
-1. 解压 `AnkiCardGenerator-v0.9.2-beta-windows-portable.zip`。
-2. 右键 `scripts/setup_runtime.ps1`，用 PowerShell 运行；脚本会创建项目本地 `.venv`、安装 worker 依赖，并输出 `runtime_diagnostic.json`。
-3. 打开 `Anki Card Generator.exe`。
-4. 进入设置，点击“检查环境”，再填写自己的 MIMO API Key 并测试连接。
-5. 用内置示例、本地视频 + SRT，或 YouTube URL 生成并导出 `.apkg`。
+![Anki 成品卡开头](docs/screenshots/anki-card-stress-start.jpg)
 
-如果 YouTube 触发 429、n challenge 或字幕接口失败，URL 面板可以切到“只用字幕生成”或“跳过视频切片”，先把卡片做出来。
+![Anki 成品卡中间](docs/screenshots/anki-card-stress-middle.jpg)
 
-详细图文流程见 [用户指南](docs/USER_GUIDE.md)。开发和发布维护见 [架构说明](docs/ARCHITECTURE.md)，常见失败处理见 [故障排查](docs/TROUBLESHOOTING.md)。
+![Anki 成品卡结尾](docs/screenshots/anki-card-stress-end.jpg)
 
-## 必需依赖
+## 卡片模式
 
-便携包不内置这些外部运行时，首次使用前需要安装：
+普通视频制卡只暴露 `沉浸复读 V11`，并提供两种复读模式：
 
-| 依赖                     | 用途                                   |
-| ------------------------ | -------------------------------------- |
-| Python 3.11+             | 运行制卡 worker                        |
-| genanki                  | 生成 `.apkg`                           |
-| yt-dlp                   | 下载 YouTube 视频和字幕                |
-| Deno 2.0+ 或 Node.js 20+ | 帮 yt-dlp 解 YouTube EJS / n challenge |
-| pypdf                    | 读取 PDF 文档                          |
-| FFmpeg                   | 切视频、转音频、生成封面               |
-| Anki                     | 导入和复习卡片                         |
+| 模式 | 适合场景 | 卡面内容 |
+| --- | --- | --- |
+| 完整复读 | 深度学习、精听、表达复盘 | 视频、原声、整句 TTS、表达 TTS、释义、用法、误用提醒、发音和练习提示 |
+| 快速复读 | 批量复习、轻量跟读 | 正面同 V11，背面保留原句、中文意思、视频、原声、慢读 TTS 和表达 TTS |
 
-Python 依赖建议安装到项目本地 `.venv`，不要污染全局 Python：
+## 快速开始
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/setup_runtime.ps1
-```
+1. 安装或解压 Windows release 包。
+2. 打开 `Anki Card Generator.exe`。
+3. 进入 `设置 -> 本地环境`，点击 `检查环境`。
+4. 按提示安装或修复 Python、FFmpeg、Anki、AnkiConnect 等依赖。
+5. 进入 `模型 API`，选择模型服务商，测试连接并保存。
+6. 进入 `语音 TTS`，选择 TTS 服务商和音色，测试连接并保存。
+7. 回到主界面，选择 `本地视频 + 字幕` 或 `视频链接`。
+8. 点击 `抽取学习点`，等待 AI 精筛推荐/候选学习点。
+9. 勾选想生成的学习点，点击 `生成已勾选的 N 张`。
+10. 在审核页检查卡片，取消不想导出的卡。
+11. 点击 `导出可用的 N 张` 生成 `.apkg`。
+12. 使用 `打开 Anki` / `导入并核验` 检查 note、媒体、音频和卡面。
+
+完整图文教程见 [用户指南](docs/USER_GUIDE.md)。
+
+## 依赖与环境
+
+| 项目 | 用途 | 当前处理方式 |
+| --- | --- | --- |
+| Python 3.12 | 运行 worker、生成 APKG、处理媒体账本 | 原生层检测，缺失时可尝试自动安装 |
+| FFmpeg | 视频切片、原声音频、媒体转换 | 设置页检测，缺失时可尝试自动安装 |
+| yt-dlp | 视频链接下载 | worker 依赖安装 |
+| Anki 桌面端 | 导入和预览卡包 | 设置页检测，缺失时可尝试安装 |
+| AnkiConnect | 导入后核验 note/card/media | 需要用户在 Anki 插件页安装插件代码 `2055492159` |
+
+## 模型与 TTS
+
+应用支持按服务商保存模型和 TTS 配置。文本模型与 TTS 分开设置，避免把同一个 API key 和模型配置混用。
+
+常见配置包括：
+
+- Gemini Vertex / Vertex TTS：使用本机 `gcloud` OAuth。
+- OpenAI-compatible endpoint：可填自定义 base URL、model、API key。
+- Qwen / DashScope。
+- DeepSeek。
+- 其它兼容服务商。
+
+不要把真实 API key 写进源码、README、issue、日志或截图。选择“记住本地 key”时，应用优先保存到 Windows Credential Manager；不可用时使用本机 DPAPI 加密文件。
 
 ## 开发运行
 
 ```powershell
 npm install
-npm run tauri:dev
+npm.cmd run desktop:dev
 ```
 
-## 构建 Windows 包
+`desktop:dev` 会隐藏 Tauri 调试终端，只显示桌面 UI；日志仍写入：
+
+```text
+.tauri-dev-current.out
+.tauri-dev-current.err
+.vite-dev-current.out
+.vite-dev-current.err
+```
+
+需要看到调试终端时运行：
 
 ```powershell
-npm run build
-npm run tauri:build
+npm.cmd run desktop:dev:debug
 ```
 
-构建产物位于：
-
-- `src-tauri/target/release/bundle/nsis/*.exe`
-- `src-tauri/target/release/bundle/msi/*.msi`
-
-可以用脚本生成便携包：
+底层 Tauri 命令仍保留：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/package_portable.ps1 -ReleaseExe "src-tauri/target/release/Anki Card Generator.exe"
+npm.cmd run tauri:dev
 ```
 
-## 隐私和密钥
+## 验证
 
-- 不要把真实 API Key 写进源码、README、issue 或 release note。
-- API Key 只应该由用户在本机设置页填写；默认不会把文本/TTS Key 写入 localStorage。只有用户显式勾选“记住本机 Key”时，才会保存到 Windows Credential Manager。
-- 使用第三方模型或 TTS 时，字幕、文档片段和生成字段会发送给对应服务商。
-- 生成的视频、音频、`.apkg`、项目缓存默认不会提交到 Git。
-
-## 许可证状态
-
-当前仓库还没有选择正式开源许可证，代码和发行包的授权范围需要在公开推广前确认。生成的牌组如果包含第三方视频、字幕、文档摘录或合成音频，默认只用于个人学习，不应在没有授权的情况下重新分发。
-
-## 发布验证
-
-发布前请跑：
+常用检查：
 
 ```powershell
-npm run check:full
-npm run tauri:build
+npm.cmd run check
+cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
-发布清单见 [Release Checklist](docs/RELEASE_CHECKLIST.md)。
+发布前检查：
+
+```powershell
+npm.cmd run check:full
+npm.cmd run tauri:build
+```
+
+最新 release-hardening 证据状态：
+
+- 8/8 release matrix passed。
+- 202 张目标卡完成真实生成/导出/导入核验。
+- 112 张 Anki Preview 检查覆盖 1 张、20 张和 100+ 张包。
+- 100+ 压力包证明：用户一次点击生成，内部可分批，不影响用户操作模型。
+- `npm.cmd run check`、`cargo check --manifest-path src-tauri/Cargo.toml` 已通过。
+
+## 隐私、版权与安全
+
+- 使用第三方模型或 TTS 时，字幕、学习点、卡片字段和 TTS 文本会发送给用户配置的服务商。
+- 生成的视频片段、音频、字幕、`.apkg`、项目缓存和 test runs 默认不提交到 Git。
+- 第三方视频、字幕和合成音频默认仅供个人学习使用；公开分享 deck 前请确认你有权分发底层素材。
+- 不要上传真实 API key、私有视频、私有字幕、私人路径、完整生成缓存或 Anki 用户数据。
+
+## 更多文档
+
+- [用户指南](docs/USER_GUIDE.md)
+- [故障排查](docs/TROUBLESHOOTING.md)
+- [架构说明](docs/ARCHITECTURE.md)
+- [发布清单](docs/RELEASE_CHECKLIST.md)
+- [Beta 限制](docs/BETA_LIMITATIONS.md)
+- [隐私说明](PRIVACY.md)
+- [安全策略](SECURITY.md)

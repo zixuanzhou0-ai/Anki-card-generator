@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import html
 import re
+import shutil
+import subprocess
+import tempfile
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree
@@ -22,7 +25,39 @@ def read_document_source(path: str) -> str:
         return read_epub_document(document_path)
     if suffix == ".pdf":
         return read_pdf_document(document_path)
+    if suffix in {".azw", ".azw3", ".mobi", ".kindle"}:
+        return read_kindle_document(document_path)
     fail("暂不支持这个文档格式。请使用 TXT、Markdown、DOCX、EPUB 或 PDF。")
+
+
+def read_kindle_document(path: Path) -> str:
+    converter = shutil.which("ebook-convert")
+    if not converter:
+        fail(
+            "暂不直接读取 Kindle/AZW3/MOBI 电子书：没有检测到 Calibre 的 ebook-convert。"
+            "请先用 Calibre 转成 EPUB，或安装 Calibre 并确保 ebook-convert 在 PATH 中，"
+            "再在文档资料里选择 .azw3/.mobi 文件。"
+        )
+    with tempfile.TemporaryDirectory(prefix="anki_card_ebook_") as tmp:
+        epub_path = Path(tmp) / f"{path.stem}.epub"
+        try:
+            subprocess.run(
+                [converter, str(path), str(epub_path)],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=180,
+            )
+        except subprocess.TimeoutExpired:
+            fail("Kindle/AZW3/MOBI 转 EPUB 超时。请先用 Calibre 手动转成 EPUB 后再导入。")
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or exc.stdout or "").strip()
+            suffix = f"：{detail[:300]}" if detail else "。"
+            fail(f"Kindle/AZW3/MOBI 转 EPUB 失败{suffix}请先用 Calibre 手动转成 EPUB 后再导入。")
+        if not epub_path.exists() or epub_path.stat().st_size == 0:
+            fail("Kindle/AZW3/MOBI 转 EPUB 后没有生成有效文件。请先用 Calibre 手动转成 EPUB 后再导入。")
+        return read_epub_document(epub_path)
 
 
 def read_text_document(path: Path) -> str:
