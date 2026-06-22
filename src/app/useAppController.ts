@@ -638,7 +638,7 @@ export function useAppController() {
     if (typeof window === 'undefined') return
     const syncResponsiveMode = () => {
       const width = window.innerWidth
-      setResponsiveMode(width < 1080 ? 'compact' : width < 1320 ? 'medium' : 'wide')
+      setResponsiveMode(width < 1240 ? 'compact' : width < 1320 ? 'medium' : 'wide')
     }
     syncResponsiveMode()
     window.addEventListener('resize', syncResponsiveMode)
