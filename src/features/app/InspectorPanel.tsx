@@ -269,13 +269,15 @@ export function InspectorPanel({
       <section className="workflow-stage-body" aria-label={stageTitle}>
         {activeWorkspaceStage === 'source' ? (
           <>
-            <ReadinessPanel items={readiness} />
-            <SourceSetupPanel
-              request={request}
-              onPatchRequest={onPatchRequest}
-              onSelectPath={onSelectPath}
-              onSelectSourceMode={onSelectSourceMode}
-            />
+            <div className="workflow-stage-scroll">
+              <ReadinessPanel items={readiness} />
+              <SourceSetupPanel
+                request={request}
+                onPatchRequest={onPatchRequest}
+                onSelectPath={onSelectPath}
+                onSelectSourceMode={onSelectSourceMode}
+              />
+            </div>
             <div className="workflow-stage-actions">
               <button type="button" className="primary-button" onClick={goToGenerateSettings} disabled={!sourceReady}>
                 <ArrowRight size={18} />
@@ -288,30 +290,32 @@ export function InspectorPanel({
 
         {activeWorkspaceStage === 'generate' ? (
           <>
-            <StatusPanel
-              appBusy={appBusy}
-              requestEditedDuringRun={requestEditedDuringRun}
-              status={status}
-              statusTone={statusTone}
-              workerBusy={workerBusy}
-              workerErrorActions={workerErrorActions}
-              onWorkerErrorAction={onWorkerErrorAction}
-            />
-            <LearningSettingsPanel
-              levels={levels}
-              previewRate={previewRate}
-              request={request}
-              onPatchRequest={onPatchRequest}
-              onPreviewRateChange={onPreviewRateChange}
-              onSelectCurrentLevel={onSelectCurrentLevel}
-            />
-            <CardTemplatePanel
-              documentStudyMode={request.document_study_mode}
-              reviewDensity={request.review_density}
-              sourceMode={publicSourceMode}
-              onSelectReviewDensity={(reviewDensity) => onPatchRequest({ review_density: reviewDensity })}
-              onSelectTemplate={onSelectTemplate}
-            />
+            <div className="workflow-stage-scroll">
+              <StatusPanel
+                appBusy={appBusy}
+                requestEditedDuringRun={requestEditedDuringRun}
+                status={status}
+                statusTone={statusTone}
+                workerBusy={workerBusy}
+                workerErrorActions={workerErrorActions}
+                onWorkerErrorAction={onWorkerErrorAction}
+              />
+              <LearningSettingsPanel
+                levels={levels}
+                previewRate={previewRate}
+                request={request}
+                onPatchRequest={onPatchRequest}
+                onPreviewRateChange={onPreviewRateChange}
+                onSelectCurrentLevel={onSelectCurrentLevel}
+              />
+              <CardTemplatePanel
+                documentStudyMode={request.document_study_mode}
+                reviewDensity={request.review_density}
+                sourceMode={publicSourceMode}
+                onSelectReviewDensity={(reviewDensity) => onPatchRequest({ review_density: reviewDensity })}
+                onSelectTemplate={onSelectTemplate}
+              />
+            </div>
             <div className="workflow-stage-actions split">
               <button type="button" className="ghost-button" onClick={() => onWorkspaceStageChange('source')}>
                 <ArrowLeft size={18} />
@@ -327,40 +331,40 @@ export function InspectorPanel({
 
         {activeWorkspaceStage === 'review' ? (
           <>
-            {!workerBusy ? (
-              <StatusPanel
-                appBusy={appBusy}
-                requestEditedDuringRun={requestEditedDuringRun}
-                status={status}
-                statusTone={statusTone}
-                workerBusy={workerBusy}
-                workerErrorActions={workerErrorActions}
-                onWorkerErrorAction={onWorkerErrorAction}
-              />
-            ) : null}
-            <div className="panel workflow-review-card">
-              <div className="workflow-review-title">
-                <span>{reviewStageLabel}</span>
-                <strong>
-                  {workerBusy && !hasProject
-                    ? runningCommand === 'extract_learning_points'
-                      ? '正在从字幕抽取学习点'
-                      : '正在生成 APKG'
-                    : hasProject
-                      ? '检查卡片后导出 APKG'
-                      : hasLearningPointResult
-                        ? '选择学习点后一键生成 APKG'
-                        : '设置完成后先抽取学习点'}
-                </strong>
-              </div>
-              {workerBusy && !hasProject ? (
-                <div className="workflow-running-card" role="status">
-                  <strong>{Math.round(workerProgress?.percent ?? 0)}%</strong>
-                  <span>生成进度已移到右侧工作台。素材、学习设置和模板在本轮任务中已锁定。</span>
-                  <small>需要中止时，使用顶部的取消按钮。</small>
+            <div className="workflow-stage-scroll">
+              {!workerBusy ? (
+                <StatusPanel
+                  appBusy={appBusy}
+                  requestEditedDuringRun={requestEditedDuringRun}
+                  status={status}
+                  statusTone={statusTone}
+                  workerBusy={workerBusy}
+                  workerErrorActions={workerErrorActions}
+                  onWorkerErrorAction={onWorkerErrorAction}
+                />
+              ) : null}
+              <div className="panel workflow-review-card">
+                <div className="workflow-review-title">
+                  <span>{reviewStageLabel}</span>
+                  <strong>
+                    {workerBusy && !hasProject
+                      ? runningCommand === 'extract_learning_points'
+                        ? '正在从字幕抽取学习点'
+                        : '正在生成 APKG'
+                      : hasProject
+                        ? '检查卡片后导出 APKG'
+                        : hasLearningPointResult
+                          ? '选择学习点后一键生成 APKG'
+                          : '设置完成后先抽取学习点'}
+                  </strong>
                 </div>
-              ) : hasProject ? (
-                <>
+                {workerBusy && !hasProject ? (
+                  <div className="workflow-running-card" role="status">
+                    <strong>{Math.round(workerProgress?.percent ?? 0)}%</strong>
+                    <span>生成进度已移到右侧工作台。素材、学习设置和模板在本轮任务中已锁定。</span>
+                    <small>需要中止时，使用顶部的取消按钮。</small>
+                  </div>
+                ) : hasProject ? (
                   <div className="workflow-review-compact" aria-label="审核阶段摘要">
                     <strong>{selectedExportableCount}</strong>
                     <span>张可导出</span>
@@ -371,99 +375,103 @@ export function InspectorPanel({
                       {diagnosticCount > 0 ? ` · 更多学习点 ${diagnosticCount}` : ''}
                     </small>
                   </div>
-                  <div className="workflow-stage-actions split">
-                    <button type="button" className="ghost-button" onClick={() => onWorkspaceStageChange('generate')}>
-                      <SlidersHorizontal size={18} />
-                      修改设置
-                    </button>
-                    <button type="button" className="primary-button" onClick={onExport} disabled={appBusy || !hasExportableCards}>
-                      <Download size={18} />
-                      {exportButtonLabel}
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="workflow-confirm-list" aria-label="生成前确认">
-                    <span>
-                      <strong>素材</strong>
-                      <small>{sourceLabel}</small>
-                      {request.batch_enabled ? <small>{batchPackageTitle}</small> : null}
-                      {request.batch_enabled ? <small>{batchSubdeckSummary}</small> : null}
-                    </span>
-                    <span>
-                      <strong>学习</strong>
-                      <small>{levelSummary}</small>
-                    </span>
-                    <span>
-                      <strong>{hasLearningPointResult ? '将生成' : '模板'}</strong>
-                      <small>{hasLearningPointResult ? `${selectedLearningPointCount} 张卡片` : cardModeSummary}</small>
-                    </span>
-                  </div>
-                  {incompleteReadiness.length ? (
-                    <div className="workflow-preflight-warning" role="status">
-                      <strong>{hasLearningPointResult ? '生成 APKG 前还需要完成' : '抽取学习点前还需要完成'}</strong>
-                      <small>{incompleteReadiness.map((item) => `${item.label}：${item.detail}`).join(' / ')}</small>
-                      {envPreflight ? (
-                        <div className="workflow-preflight-actions" aria-label="环境快捷处理">
-                          {envUnchecked ? (
-                            <button type="button" className="preflight-primary-action" onClick={onCheckEnv} disabled={appBusy}>
-                              立即检查
-                            </button>
-                          ) : null}
-                          {showEnvRepair ? (
-                            <button type="button" className="preflight-primary-action" onClick={() => onRepairEnv('all')} disabled={appBusy}>
-                              一键修复
-                            </button>
-                          ) : null}
-                          <button type="button" className="preflight-secondary-action" onClick={onOpenEnvSettings} disabled={appBusy}>
-                            查看详情
-                          </button>
-                        </div>
-                      ) : null}
+                ) : (
+                  <>
+                    <div className="workflow-confirm-list" aria-label="生成前确认">
+                      <span>
+                        <strong>素材</strong>
+                        <small>{sourceLabel}</small>
+                        {request.batch_enabled ? <small>{batchPackageTitle}</small> : null}
+                        {request.batch_enabled ? <small>{batchSubdeckSummary}</small> : null}
+                      </span>
+                      <span>
+                        <strong>学习</strong>
+                        <small>{levelSummary}</small>
+                      </span>
+                      <span>
+                        <strong>{hasLearningPointResult ? '将生成' : '模板'}</strong>
+                        <small>{hasLearningPointResult ? `${selectedLearningPointCount} 张卡片` : cardModeSummary}</small>
+                      </span>
                     </div>
-                  ) : (
-                    <div className="workflow-preflight-ok" role="status">
-                      <strong>{hasLearningPointResult ? '可以生成 APKG' : '可以抽取学习点'}</strong>
-                      <small>
-                        {hasLearningPointResult
-                          ? '环境和模型 API 已就绪。TTS 可在导出前继续测试或配置。'
-                          : request.batch_enabled
-                            ? `本轮会按 ${batchSubdeckSummary} 逐项制卡，最终导出一个保留层级的 APKG。`
-                            : '本轮会先读取字幕，再调用模型 API 精筛词伙、口语、单词用法、语法和听力点。'}
-                      </small>
-                    </div>
-                  )}
-                  <div className="workflow-stage-actions split">
-                    <button type="button" className="ghost-button" onClick={() => onWorkspaceStageChange('generate')}>
-                      <ArrowLeft size={18} />
-                      返回学习设置
-                    </button>
-                    {hasLearningPointResult ? (
-                      <span className="workflow-action-hint">在右侧清单确认 {selectedLearningPointCount} 个学习点后生成 APKG</span>
-                    ) : (
-                      <>
-                        {showColdExtractionAction ? (
-                          <button
-                            type="button"
-                            className="ghost-button"
-                            onClick={onExtractLearningPointsWithoutCache}
-                            disabled={appBusy || !sourceReady}
-                          >
-                            <RefreshCw size={18} />
-                            不使用缓存抽取学习点
-                          </button>
+                    {incompleteReadiness.length ? (
+                      <div className="workflow-preflight-warning" role="status">
+                        <strong>{hasLearningPointResult ? '生成 APKG 前还需要完成' : '抽取学习点前还需要完成'}</strong>
+                        <small>{incompleteReadiness.map((item) => `${item.label}：${item.detail}`).join(' / ')}</small>
+                        {envPreflight ? (
+                          <div className="workflow-preflight-actions" aria-label="环境快捷处理">
+                            {envUnchecked ? (
+                              <button type="button" className="preflight-primary-action" onClick={onCheckEnv} disabled={appBusy}>
+                                立即检查
+                              </button>
+                            ) : null}
+                            {showEnvRepair ? (
+                              <button type="button" className="preflight-primary-action" onClick={() => onRepairEnv('all')} disabled={appBusy}>
+                                一键修复
+                              </button>
+                            ) : null}
+                            <button type="button" className="preflight-secondary-action" onClick={onOpenEnvSettings} disabled={appBusy}>
+                              查看详情
+                            </button>
+                          </div>
                         ) : null}
-                        <button type="button" className="primary-button" onClick={onGenerate} disabled={appBusy || !sourceReady}>
-                          <PlayCircle size={18} />
-                          开始抽取学习点
-                        </button>
-                      </>
+                      </div>
+                    ) : (
+                      <div className="workflow-preflight-ok" role="status">
+                        <strong>{hasLearningPointResult ? '可以生成 APKG' : '可以抽取学习点'}</strong>
+                        <small>
+                          {hasLearningPointResult
+                            ? '环境和模型 API 已就绪。TTS 可在导出前继续测试或配置。'
+                            : request.batch_enabled
+                              ? `本轮会按 ${batchSubdeckSummary} 逐项制卡，最终导出一个保留层级的 APKG。`
+                              : '本轮会先读取字幕，再调用模型 API 精筛词伙、口语、单词用法、语法和听力点。'}
+                        </small>
+                      </div>
                     )}
-                  </div>
-                </>
-              )}
+                  </>
+                )}
+              </div>
             </div>
+            {!workerBusy && hasProject ? (
+              <div className="workflow-stage-actions split">
+                <button type="button" className="ghost-button" onClick={() => onWorkspaceStageChange('generate')}>
+                  <SlidersHorizontal size={18} />
+                  修改设置
+                </button>
+                <button type="button" className="primary-button" onClick={onExport} disabled={appBusy || !hasExportableCards}>
+                  <Download size={18} />
+                  {exportButtonLabel}
+                </button>
+              </div>
+            ) : null}
+            {!workerBusy && !hasProject ? (
+              <div className="workflow-stage-actions split">
+                <button type="button" className="ghost-button" onClick={() => onWorkspaceStageChange('generate')}>
+                  <ArrowLeft size={18} />
+                  返回学习设置
+                </button>
+                {hasLearningPointResult ? (
+                  <span className="workflow-action-hint">在右侧清单确认 {selectedLearningPointCount} 个学习点后生成 APKG</span>
+                ) : (
+                  <>
+                    {showColdExtractionAction ? (
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        onClick={onExtractLearningPointsWithoutCache}
+                        disabled={appBusy || !sourceReady}
+                      >
+                        <RefreshCw size={18} />
+                        不使用缓存抽取学习点
+                      </button>
+                    ) : null}
+                    <button type="button" className="primary-button" onClick={onGenerate} disabled={appBusy || !sourceReady}>
+                      <PlayCircle size={18} />
+                      开始抽取学习点
+                    </button>
+                  </>
+                )}
+              </div>
+            ) : null}
           </>
         ) : null}
       </section>

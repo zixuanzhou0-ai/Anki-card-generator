@@ -513,14 +513,14 @@ button:disabled {
 }
 
 .control-column {
-  display: flex;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  align-self: stretch;
   min-width: 0;
   min-height: 0;
-  flex-direction: column;
   gap: 10px;
-  overflow-x: hidden;
-  overflow-y: auto;
-  padding: 0 4px 12px 0;
+  overflow: hidden;
+  padding: 0 4px 0 0;
   overscroll-behavior: contain;
   scroll-behavior: smooth;
   scroll-padding-block: 16px;
@@ -714,21 +714,36 @@ button:disabled {
 
 .workflow-stage-body {
   display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
   gap: 12px;
   min-height: 0;
+  overflow: hidden;
 }
 
-.workflow-stage-body > .panel {
+.workflow-stage-scroll {
+  display: grid;
+  min-height: 0;
+  gap: 12px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 4px;
+  padding-bottom: 4px;
+  overscroll-behavior: contain;
+  scroll-padding-block: 12px;
+  scrollbar-gutter: stable;
+}
+
+.workflow-stage-scroll > .panel {
   flex: 0 0 auto;
 }
 
-.workflow-stage-body > .readiness-panel,
-.workflow-stage-body > .status-panel {
+.workflow-stage-scroll > .readiness-panel,
+.workflow-stage-scroll > .status-panel {
   padding: 10px 14px;
   border-radius: var(--radius-md);
 }
 
-.workflow-stage-body > .status-panel p {
+.workflow-stage-scroll > .status-panel p {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -741,11 +756,11 @@ button:disabled {
   justify-content: flex-end;
   gap: 8px;
   order: 20;
-}
-
-.workflow-stage-body:has(.batch-source-panel) .source-panel {
-  max-height: min(560px, calc(100vh - 310px));
-  overflow: auto;
+  padding-top: 10px;
+  border-top: 1px solid rgba(60, 60, 67, 0.08);
+  background:
+    linear-gradient(180deg, rgba(245, 245, 247, 0), rgba(245, 245, 247, 0.92) 28%),
+    var(--bg);
 }
 
 .workflow-action-note {
@@ -763,16 +778,16 @@ button:disabled {
   flex: 1 1 112px;
 }
 
-.workflow-stage-body > .settings-panel,
-.workflow-stage-body > .document-study-panel {
+.workflow-stage-scroll > .settings-panel,
+.workflow-stage-scroll > .document-study-panel {
   order: 0;
 }
 
-.workflow-stage-body > .generation-panel {
+.workflow-stage-scroll > .generation-panel {
   order: 10;
 }
 
-.workflow-stage-body > .status-panel {
+.workflow-stage-scroll > .status-panel {
   order: 30;
 }
 
@@ -1831,7 +1846,7 @@ textarea:focus {
 .batch-item-list {
   display: grid;
   gap: 8px;
-  max-height: 240px;
+  max-height: min(220px, 28vh);
   overflow: auto;
   padding: 2px;
 }
@@ -7168,7 +7183,7 @@ textarea:focus {
 
 }
 
-@media (max-width: 1080px) {
+@media (max-width: 1240px) {
   .topbar {
     grid-template-columns: auto minmax(0, 1fr) auto auto;
     gap: 8px;
@@ -7218,7 +7233,7 @@ textarea:focus {
 
   .desktop-workspace.inspector-collapsed .control-column,
   .desktop-workspace.inspector-sheet .control-column {
-    display: flex;
+    display: grid;
   }
 
   .learning-point-overview {
@@ -7313,6 +7328,7 @@ textarea:focus {
 
   .control-column {
     position: fixed;
+    grid-template-rows: auto auto minmax(0, 1fr);
     top: calc(var(--topbar-h) + 8px);
     bottom: 8px;
     left: 10px;
