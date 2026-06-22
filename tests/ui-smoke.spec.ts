@@ -1,10 +1,36 @@
+import type { Locator, Page } from '@playwright/test'
 import { expect, test } from '@playwright/test'
 
+async function gotoApp(page: Page) {
+  await page.goto('/', { waitUntil: 'commit', timeout: 120_000 })
+  await expect(page.locator('.app-shell')).toBeVisible({ timeout: 120_000 })
+}
+
+async function expectReachableInViewport(locator: Locator) {
+  await locator.scrollIntoViewIfNeeded()
+  const reachability = await locator.evaluate((element) => {
+    const rect = element.getBoundingClientRect()
+    const centerX = rect.left + rect.width / 2
+    const centerY = rect.top + rect.height / 2
+    const hit = document.elementFromPoint(centerX, centerY)
+
+    return {
+      hasBox: rect.width > 0 && rect.height > 0,
+      inViewport: rect.left >= 0 && rect.top >= 0 && rect.right <= window.innerWidth && rect.bottom <= window.innerHeight,
+      hitTarget: hit === element || element.contains(hit),
+    }
+  })
+
+  expect(reachability.hasBox).toBe(true)
+  expect(reachability.inViewport).toBe(true)
+  expect(reachability.hitTarget).toBe(true)
+}
+
 test('public source selector exposes only video paths from current dev app', async ({ page }) => {
-  test.setTimeout(30_000)
+  test.setTimeout(120_000)
 
   await page.addInitScript(() => window.localStorage.clear())
-  await page.goto('/')
+  await gotoApp(page)
 
   const sourceSwitch = page.locator('[aria-label="素材来源"]')
   await expect(sourceSwitch).toBeVisible()
@@ -15,11 +41,33 @@ test('public source selector exposes only video paths from current dev app', asy
   await expect(page.getByPlaceholder('选择文档资料')).toHaveCount(0)
 })
 
+test('compact inspector keeps source and batch controls reachable at minimum desktop size', async ({ page }) => {
+  test.setTimeout(120_000)
+
+  await page.setViewportSize({ width: 1180, height: 780 })
+  await page.addInitScript(() => window.localStorage.clear())
+  await gotoApp(page)
+
+  await expect(page.locator('.desktop-workspace')).toHaveAttribute('data-responsive-mode', 'compact')
+  await expect(page.locator('.control-column')).toBeHidden()
+
+  await page.getByRole('button', { name: /素材面板/ }).click()
+  await expect(page.locator('.control-column.sheet-open')).toBeVisible()
+
+  await expectReachableInViewport(page.getByRole('button', { name: /选择素材后继续|下一步：学习设置/ }))
+  await page.getByRole('button', { name: '批量 / 文件夹' }).click()
+  await expectReachableInViewport(page.getByRole('button', { name: '选择视频文件夹批量添加' }))
+  await expectReachableInViewport(page.getByRole('button', { name: /选择素材后继续|下一步：学习设置/ }))
+
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)
+  expect(overflow).toBe(false)
+})
+
 test('desktop workflow shell supports simplified settings, video URL mode, and generation', async ({ page }) => {
-  test.setTimeout(90_000)
+  test.setTimeout(120_000)
 
   await page.addInitScript(() => window.localStorage.clear())
-  await page.goto('/')
+  await gotoApp(page)
 
   await expect(page.getByRole('heading', { name: 'Anki 卡片生成器' })).toBeVisible()
   await expect(page.getByText('生成工作台')).toBeVisible()
@@ -133,7 +181,11 @@ test('desktop workflow shell supports simplified settings, video URL mode, and g
 
   await page.setViewportSize({ width: 1180, height: 780 })
   await expect(page.locator('.window-controls')).toBeVisible()
-  await expect(page.locator('.control-column')).toBeVisible()
+  await expect(page.locator('.desktop-workspace')).toHaveAttribute('data-responsive-mode', 'compact')
+  await page.getByRole('button', { name: /素材面板/ }).click()
+  await expect(page.locator('.control-column.sheet-open')).toBeVisible()
+  await expectReachableInViewport(page.getByRole('button', { name: /导出可用的 6 张/ }))
+  await page.getByRole('button', { name: /关闭面板/ }).click()
   await page.setViewportSize({ width: 1440, height: 1000 })
 
   await page.screenshot({ path: 'test-results/ui-smoke-after-generate.png', fullPage: true })
