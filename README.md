@@ -4,6 +4,17 @@
 
 当前测试版：`v0.9.4-beta`。
 
+## 选择你的版本
+
+| 用户 | 当前应该使用什么 | 状态 |
+| --- | --- | --- |
+| Windows 用户 | GitHub Release 里的 Windows installer / MSI / portable zip | 当前可用 |
+| Windows 开发者 | 本仓库 Tauri 桌面端开发环境 | 当前可用 |
+| macOS / Linux 用户 | 当前暂无可用桌面端安装包 | 暂不支持 |
+| 开源贡献者 | 先阅读本仓库 Windows 桌面端文档 | 当前聚焦桌面端 |
+
+当前可下载产品是 **Windows 桌面端**。macOS / Linux 暂无可用安装包；请不要下载 Windows 安装器在这些系统上运行。
+
 ## 它适合做什么
 
 - 从 YouTube /公开视频链接生成语言学习卡。

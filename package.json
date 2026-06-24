@@ -4,7 +4,7 @@
   "version": "0.9.4",
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
+    "dev": "vite --host 127.0.0.1 --port 5173 --strictPort",
     "desktop:dev": "powershell -ExecutionPolicy Bypass -File scripts/start_desktop_dev.ps1",
     "desktop:dev:debug": "powershell -ExecutionPolicy Bypass -File scripts/start_desktop_dev.ps1 -ShowTauriConsole",
     "tauri:dev": "tauri dev",
