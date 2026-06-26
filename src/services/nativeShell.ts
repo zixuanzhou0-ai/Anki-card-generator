@@ -1,4 +1,5 @@
 ﻿import { convertFileSrc, invoke } from '@tauri-apps/api/core'
+import { appLocalDataDir } from '@tauri-apps/api/path'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { isTauriRuntime } from './runtime'
 
@@ -13,6 +14,15 @@ export async function selectSingleFile(filters: Array<{ name: string; extensions
 export type SelectDirectoryOptions = {
   title?: string
   defaultPath?: string | null
+}
+
+export async function defaultExportDirectory() {
+  if (!isTauriRuntime()) return null
+  try {
+    return await appLocalDataDir()
+  } catch {
+    return null
+  }
 }
 
 export async function selectDirectory(options: SelectDirectoryOptions = {}) {

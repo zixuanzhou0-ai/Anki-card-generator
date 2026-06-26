@@ -35,9 +35,9 @@ export const deepseekTextModels = [
 ]
 
 export const geminiVertexTextModels = [
-  { value: GEMINI_VERTEX_FLASH_MODEL, label: 'Gemini 3.5 Flash' },
   { value: GEMINI_VERTEX_DEFAULT_MODEL, label: 'Gemini 3.1 Pro Preview' },
   { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+  { value: GEMINI_VERTEX_FLASH_MODEL, label: 'Gemini 3.5 Flash（快速批量）' },
   { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
 ]
 
@@ -126,12 +126,12 @@ export const apiPresets: ApiPreset[] = [
   },
   {
     id: 'gemini-35-flash-vertex',
-    label: 'Gemini 3.5 Flash Vertex',
+    label: 'Gemini 3.5 Flash Vertex（快速批量）',
     provider: 'gemini-vertex',
     base_url: GEMINI_VERTEX_GLOBAL_BASE_URL,
     model: GEMINI_VERTEX_FLASH_MODEL,
     capabilities: ['structured_json', 'long_context', 'cheap_batch'],
-    note: 'Google Cloud Vertex AI 的 Gemini 3.5 Flash；适合长字幕快速筛选，使用本机 gcloud OAuth。',
+    note: 'Google Cloud Vertex AI 的 Gemini 3.5 Flash；适合长字幕快速筛选和低成本批量，不建议作为最终高质量制卡首选。使用本机 gcloud OAuth。',
     key_hint: '不需要 API Key，先运行 gcloud auth login / 设置项目',
   },
   {

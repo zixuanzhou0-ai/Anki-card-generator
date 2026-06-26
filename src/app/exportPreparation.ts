@@ -307,8 +307,8 @@ export function releaseApkgOutputGuardForProject(
     return {
       status: 'ready',
       releaseCaseId: null,
-      releaseTarget,
-      canonicalApkgPath: releaseTarget?.canonicalApkgPath ?? null,
+      releaseTarget: null,
+      canonicalApkgPath: null,
     }
   }
   const selectedOutputDir = typeof outputDir === 'string' ? outputDir : ''

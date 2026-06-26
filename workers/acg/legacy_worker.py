@@ -5653,6 +5653,11 @@ EXPORT_BLOCKING_TEXT_PATTERNS = (
     "正式导出前应使用模型精修",
     "本地待审字段",
     "适合快速预览流程",
+    "模型未完整返回",
+    "模型未返回",
+    "系统保底生成",
+    "保底生成",
+    "兜底生成",
     "不建议直接作为正式学习内容",
 )
 
@@ -5672,7 +5677,8 @@ def card_has_export_blocking_content(card: dict[str, Any]) -> bool:
         card.get("why_it_matters", ""),
         card.get("how_to_use_it", ""),
     ]
-    blob = "\n".join(str(value or "") for value in fields)
+    issue_blob = "\n".join(str(issue or "") for issue in quality.get("issues") or [])
+    blob = "\n".join([*(str(value or "") for value in fields), issue_blob])
     return any(pattern in blob for pattern in EXPORT_BLOCKING_TEXT_PATTERNS)
 
 

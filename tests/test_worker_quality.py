@@ -2306,13 +2306,14 @@ class WorkerQualityTests(unittest.TestCase):
         funnel = project["quality_funnel"]
         self.assertEqual(funnel["selected_learning_point_count"], 3)
         self.assertEqual(funnel["eligible_learning_point_count"], 3)
-        self.assertEqual(funnel["successful_learning_point_count"], 3)
-        self.assertEqual(funnel["generation_missing_count"], 0)
-        self.assertEqual(funnel["generation_reconciliation_status"], "ok")
-        self.assertEqual(funnel["card_generation_missing_learning_point_count"], 0)
-        self.assertEqual(funnel["card_generation_filtered_card_count"], 0)
+        self.assertEqual(funnel["successful_learning_point_count"], 1)
+        self.assertEqual(funnel["generation_missing_count"], 2)
+        self.assertEqual(funnel["generation_reconciliation_status"], "partial")
+        self.assertEqual(funnel["card_generation_missing_learning_point_count"], 1)
+        self.assertEqual(funnel["card_generation_filtered_card_count"], 1)
         self.assertEqual(funnel["card_generation_skipped_learning_point_count"], 0)
         self.assertEqual(funnel["user_selected_fallback_card_count"], 2)
+        self.assertEqual(funnel["review_only_card_count"], 2)
         self.assertEqual(
             funnel["successful_learning_point_count"]
             + funnel["card_generation_missing_learning_point_count"]
@@ -2322,14 +2323,17 @@ class WorkerQualityTests(unittest.TestCase):
         )
         diagnostics = project["card_generation_diagnostics"]
         self.assertEqual(diagnostics["selected_learning_point_count"], 3)
-        self.assertEqual(diagnostics["successful_learning_point_count"], 3)
-        self.assertEqual(diagnostics["generated_card_count"], 3)
-        self.assertEqual(diagnostics["exportable_card_count"], 3)
-        self.assertEqual(diagnostics["missing_learning_point_count"], 0)
-        self.assertEqual(diagnostics["model_missing_learning_point_count"], 0)
-        self.assertEqual(diagnostics["filtered_learning_point_count"], 0)
+        self.assertEqual(diagnostics["successful_learning_point_count"], 1)
+        self.assertEqual(diagnostics["generated_card_count"], 1)
+        self.assertEqual(diagnostics["exportable_card_count"], 1)
+        self.assertEqual(diagnostics["missing_learning_point_count"], 2)
+        self.assertEqual(diagnostics["model_missing_learning_point_count"], 1)
+        self.assertEqual(diagnostics["filtered_learning_point_count"], 1)
         self.assertEqual(diagnostics["skipped_learning_point_count"], 0)
-        self.assertEqual(diagnostics["items"], [])
+        self.assertEqual(
+            {item["learning_point_id"]: item["status"] for item in diagnostics["items"]},
+            {"lp-missing": "hard_failed", "lp-filtered": "filtered"},
+        )
         cards_by_lp = {
             segment["learning_point_id"]: segment["cards"][0]
             for segment in project["segments"]
@@ -2337,12 +2341,16 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(cards_by_lp["lp-good"]["answer_core"], "run the register")
         self.assertEqual(cards_by_lp["lp-missing"]["answer_core"], "get this over with")
         self.assertEqual(cards_by_lp["lp-filtered"]["answer_core"], "bad point")
-        self.assertTrue(all(card["enabled"] for card in cards_by_lp.values()))
         self.assertEqual(cards_by_lp["lp-missing"]["generation_source"], "fallback_from_selected_learning_point")
         self.assertEqual(cards_by_lp["lp-filtered"]["generation_source"], "fallback_from_selected_learning_point")
         self.assertIn("card", cards_by_lp["lp-missing"]["missing_ai_fields"])
         self.assertIn("teacher_note", cards_by_lp["lp-filtered"]["fallback_fields_filled"])
-        self.assertFalse(any(worker._legacy_worker.card_has_export_blocking_content(card) for card in cards_by_lp.values()))
+        self.assertTrue(cards_by_lp["lp-good"].get("enabled"))
+        self.assertFalse(cards_by_lp["lp-missing"].get("enabled"))
+        self.assertFalse(cards_by_lp["lp-filtered"].get("enabled"))
+        self.assertFalse(worker._legacy_worker.card_has_export_blocking_content(cards_by_lp["lp-good"]))
+        self.assertTrue(worker._legacy_worker.card_has_export_blocking_content(cards_by_lp["lp-missing"]))
+        self.assertTrue(worker._legacy_worker.card_has_export_blocking_content(cards_by_lp["lp-filtered"]))
 
     def test_generate_cards_from_learning_points_aligns_media_to_phrase_in_full_sentence(self):
         original_call_model_batches = worker._legacy_worker.call_model_batches
@@ -12589,6 +12597,22 @@ class WorkerQualityTests(unittest.TestCase):
         sensitive = {"phrase": "flat as a washboard", "english": "I mean you're flat as a washboard."}
         self.assertIn("可能冒犯", worker.v11_misuse_text(sensitive))
         self.assertEqual(worker.v11_source_translation_text(sensitive), "我是说，你平得像个搓衣板。")
+
+    def test_model_fallback_quality_issue_blocks_export(self):
+        card = {
+            "type": "phrase",
+            "phrase": "it only takes",
+            "chinese": "\u7ed3\u5408\u539f\u53e5\u7406\u89e3\u3002",
+            "definition": "\u4fdd\u5e95\u89e3\u91ca\u3002",
+            "teacher_note": "\u4fdd\u5e95\u751f\u6210\uff0c\u9700\u8981\u91cd\u65b0\u751f\u6210\u3002",
+            "quality": {
+                "score": 58,
+                "status": "needs_review",
+                "issues": ["\u7528\u6237\u5df2\u52fe\u9009\uff0c\u6a21\u578b\u672a\u5b8c\u6574\u8fd4\u56de\u65f6\u7531\u7cfb\u7edf\u4fdd\u5e95\u751f\u6210\u3002"],
+            },
+        }
+
+        self.assertTrue(worker._legacy_worker.card_has_export_blocking_content(card))
 
     def test_text_cleaning_module_filters_internal_placeholders(self):
         from acg.text_cleaning import clean_study_text, contains_internal_placeholder

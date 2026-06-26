@@ -18,7 +18,8 @@ export function buildGenerationQueueSummary({
   const count = generationQueuePoints.length
   const isDocument = request.source_mode === 'document'
   const includesVideo = !isDocument
-  const ttsEnabled =
+  const ttsRequired = !isDocument
+  const ttsConfigured =
     !isDocument &&
     Boolean(request.api_config.tts_config.enabled) &&
     request.api_config.tts_config.provider !== 'disabled'
@@ -27,8 +28,8 @@ export function buildGenerationQueueSummary({
     return total + Math.max(1, Math.ceil(text.length / 520))
   }, 0)
   const estimatedModelBatches = count > 0 ? Math.max(1, Math.ceil(textWeight / 10)) : 0
-  const estimatedMediaTasks = count * (includesVideo ? 4 : 0) + count * (ttsEnabled ? 2 : 0)
-  const highRiskShortExpressionCount = ttsEnabled
+  const estimatedMediaTasks = count * (includesVideo ? 4 : 0) + count * (ttsRequired ? 2 : 0)
+  const highRiskShortExpressionCount = ttsRequired
     ? generationQueuePoints.filter((point) => {
         const expression = (point.answer_core || point.normalized_answer || point.exact_span || '').trim()
         if (!expression) return false
@@ -36,7 +37,7 @@ export function buildGenerationQueueSummary({
         return wordCount <= 2
       }).length
     : 0
-  const estimatedTtsSemanticChecks = count * (ttsEnabled ? 2 : 0)
+  const estimatedTtsSemanticChecks = count * (ttsRequired ? 2 : 0)
   const securityWarnings = [
     request.source_mode === 'url' && sourceUrlLooksPrivate(request.source_url)
       ? request.allow_private_network_url
@@ -47,6 +48,7 @@ export function buildGenerationQueueSummary({
     request.source_mode !== 'url' && (request.video_path || request.subtitle_path || request.document_path)
       ? '本地文件路径将在本轮确认后读取'
       : '',
+    ttsRequired && !ttsConfigured ? 'TTS 未启用，视频卡导出会被阻止' : '',
   ].filter(Boolean)
   const activeBatchProgress = generationBatchProgress?.active ? generationBatchProgress : null
   const batchSize = learningPointGenerationBatchSize(count)
@@ -76,8 +78,8 @@ export function buildGenerationQueueSummary({
           : '本地视频 + SRT',
     includesVideo,
     includesOriginalAudio: includesVideo,
-    includesSentenceTts: ttsEnabled,
-    includesPhraseTts: ttsEnabled,
+    includesSentenceTts: ttsRequired,
+    includesPhraseTts: ttsRequired,
     estimatedModelBatches,
     estimatedMediaTasks,
     estimatedTtsSemanticChecks,

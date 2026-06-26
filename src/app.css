@@ -4381,6 +4381,15 @@ textarea:focus {
   line-height: 1.34;
 }
 
+
+.learning-point-warning {
+  flex-basis: 100%;
+  color: #8a4b00;
+  font-size: 11px;
+  font-style: normal;
+  line-height: 1.34;
+}
+
 .learning-point-selection-panel .learning-point-actions {
   align-items: center;
   justify-content: flex-end;

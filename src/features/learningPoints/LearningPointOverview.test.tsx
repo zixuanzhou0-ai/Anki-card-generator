@@ -276,6 +276,42 @@ describe('LearningPointOverview', () => {
     expect(screen.getByRole('button', { name: /取消当前筛选 1/ })).toBeEnabled()
   })
 
+  it('warns when every visible learning point needs source review before batching', () => {
+    const allRiskyResult: LearningPointExtractionResult = {
+      ...result,
+      learning_points: [
+        {
+          ...result.learning_points[1],
+          id: 'lp-all-risky',
+          source_sentence: 'they they are from a a different time before the internet',
+          exact_span: 'different time',
+          answer_core: 'different time',
+          normalized_answer: 'different time',
+          status: 'candidate_only',
+          source_sentence_quality_status: 'needs_review',
+          source_sentence_quality_flags: ['too_long', 'rolling_caption_uncertain'],
+        },
+      ],
+      learning_point_summary: {
+        ...result.learning_point_summary,
+        total: 1,
+        recommended: 0,
+        candidate_only: 1,
+      },
+      quality_funnel: {
+        source_sentence_quality_counts: { too_long: 1, rolling_caption_uncertain: 1 },
+      },
+    }
+
+    renderOverview([], allRiskyResult)
+
+    expect(screen.getByText(/当前没有可批量制卡项/)).toBeInTheDocument()
+    expect(screen.getByText(/字幕质量信号：长句 1 · 滚动字幕 1/)).toBeInTheDocument()
+    expect(screen.getByText('当前筛选下没有学习点')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '需复查' }))
+    expect(screen.getByText('different time')).toBeInTheDocument()
+  })
   it('keeps source-review learning points out of bulk selection while still allowing explicit manual selection', () => {
     const riskyResult: LearningPointExtractionResult = {
       ...result,
@@ -305,12 +341,16 @@ describe('LearningPointOverview', () => {
     renderOverview([], riskyResult)
 
     expect(screen.getByText(/另有 1 个学习点需复查，不会被批量勾选/)).toBeInTheDocument()
-    expect(screen.getByText('需复查')).toBeInTheDocument()
+    expect(screen.queryByText('different time')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /全选全部可批量制卡 1/ }))
     expect(screen.getByRole('button', { name: /生成 APKG · 1 张/ })).toBeEnabled()
 
-    fireEvent.click(screen.getAllByRole('checkbox')[1])
+    fireEvent.click(screen.getByRole('button', { name: '需复查' }))
+    expect(screen.getByText('different time')).toBeInTheDocument()
+    expect(screen.getAllByText('需复查').length).toBeGreaterThanOrEqual(2)
+
+    fireEvent.click(screen.getAllByRole('checkbox')[0])
     expect(screen.getByRole('button', { name: /生成 APKG · 2 张/ })).toBeEnabled()
   })
 

@@ -40,16 +40,32 @@ Windows can reserve local port ranges dynamically, which previously made fixed d
 
 ## A Black Terminal Window Appears
 
-For `v0.9.6-beta` and later, the installed Windows app should open as a GUI-only desktop app. Normal startup should not create a visible `cmd.exe`, `conhost.exe`, `powershell.exe`, or `python.exe` window.
+For `v0.9.8-beta` and later, the installed Windows app should open as a GUI-only desktop app. Normal startup should not create a visible `cmd.exe`, `conhost.exe`, `powershell.exe`, or `python.exe` window.
 
 Check these cases first:
 
-- You may be running an older installer such as `v0.9.4-beta`; install `v0.9.6-beta` or newer.
+- You may be running an older installer such as `v0.9.4-beta`; install `v0.9.8-beta` or newer.
 - You may be using the debug developer entrypoint `npm.cmd run desktop:dev:debug`, which intentionally shows a Tauri console.
 - Another local tool may have opened its own terminal; verify the process tree belongs to `anki-card-generator.exe` before treating it as an app bug.
 
 Expected process behavior after installed-app startup: `anki-card-generator.exe` may launch WebView2 child processes, but it should not have console descendants. Logs and diagnostics remain available through release smoke output and the desktop diagnostic files instead of a visible console window.
 
+## APKG Is Not Generated Or Export Says No Usable Cards
+
+For `v0.9.8-beta` and later, ordinary projects should not be blocked by release evidence directory protection. If export still fails, check the visible error first:
+
+- If the message says there are no exportable cards, open the review area and look for `需修复` cards. Model fallback cards are intentionally kept visible but blocked from export until regenerated or manually repaired.
+- If the path points to `test_runs` or an old release case directory, choose a normal user-writable folder such as Desktop, Documents, or the app data export folder.
+- If TTS or media generation fails, check the TTS/provider status and FFmpeg environment before retrying.
+
+## Gemini 3.5 Flash Cards Look Too Generic
+
+Vertex `gemini-3.5-flash` is available as a fast/low-cost model, but it is not the preferred final-quality card generator. If many cards look similar, empty, or generic:
+
+- Switch to a higher-quality model such as MIMO V2.5 Pro, DeepSeek V4 Pro, Gemini 3.1 Pro Preview, or Gemini 2.5 Pro.
+- Generate fewer learning points at once.
+- Re-run generation for the `需修复` cards instead of exporting them.
+- Treat Flash output as a fast first pass, then use a stronger model for the final card body.
 ## Local Environment Check Fails
 
 Open `设置 -> 本地环境` and click `检查环境`.

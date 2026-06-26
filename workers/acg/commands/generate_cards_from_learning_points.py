@@ -412,7 +412,7 @@ def _user_selected_fallback_card(
         "id": f"{segment['id']}_{segment.get('learning_point_id') or 'selected'}_{card_type}",
         "type": card_type,
         "type_label": "学习卡",
-        "enabled": True,
+        "enabled": False,
         "english": sentence,
         "chinese": chinese,
         "phrase": answer,
@@ -549,14 +549,15 @@ def _make_selected_card_exportable(
         issues.append("用户已勾选，保证生成。")
     quality["issues"] = issues
     next_card["quality"] = quality
-    next_card["enabled"] = True
     source = str(next_card.get("generation_source") or "")
     if source == "fallback_from_selected_learning_point":
-        pass
+        next_card["enabled"] = False
     elif fallback_fields_filled or missing_fields:
         next_card["generation_source"] = "ai_repaired"
     else:
         next_card["generation_source"] = "ai_complete"
+    if source != "fallback_from_selected_learning_point":
+        next_card["enabled"] = quality.get("status") == "recommended" and not legacy_worker.card_has_export_blocking_content(next_card)
     if missing_fields:
         next_card["missing_ai_fields"] = list(dict.fromkeys([str(item) for item in missing_fields if item]))
     if fallback_fields_filled:
@@ -913,11 +914,22 @@ def handle_generate_cards_from_learning_points(payload: dict[str, Any]) -> dict[
         ai_missing_fields_by_segment_id,
     )
     pre_filter_segments = segments
-    segments, output_filter_stats = legacy_worker.filter_usable_segments_for_output(segments, [], dedupe_cards=False)
-    output_segments = segments
-    if existing_segments:
-        segments = [*existing_segments, *segments]
-    selected_count = _generated_card_count_from_segments(segments)
+    review_segments = segments
+    output_segments, output_filter_stats = legacy_worker.filter_usable_segments_for_output(
+        review_segments,
+        [],
+        dedupe_cards=False,
+    )
+    segments = [*existing_segments, *review_segments] if existing_segments else review_segments
+    exportable_segments = [*existing_segments, *output_segments] if existing_segments else output_segments
+    selected_count = _generated_card_count_from_segments(exportable_segments)
+    review_card_count = sum(
+        1
+        for segment in segments
+        if isinstance(segment, dict)
+        for card in segment.get("cards", []) or []
+        if isinstance(card, dict)
+    )
     card_generation_diagnostic_items = _card_generation_diagnostic_items(
         selected,
         eligible_segments,
@@ -926,7 +938,7 @@ def handle_generate_cards_from_learning_points(payload: dict[str, Any]) -> dict[
         model_missing_segment_ids,
     )
     card_generation_diagnostic_counts = _card_generation_diagnostic_counts(card_generation_diagnostic_items)
-    if selected_count <= 0:
+    if selected_count <= 0 and (review_card_count <= 0 or user_selected_fallback_count <= 0):
         fail(
             "模型返回后没有可用卡片。请减少学习点数量或检查模型输出质量。",
             error_code="NO_USABLE_AI_CARDS",
@@ -947,6 +959,7 @@ def handle_generate_cards_from_learning_points(payload: dict[str, Any]) -> dict[
     successful_selected_learning_point_ids = set(current_generated_learning_point_ids) | existing_generated_selected_ids
     eligible_learning_point_ids = {str(segment.get("learning_point_id") or "") for segment in pre_filter_segments}
     generated_card_count = _generated_card_count_from_segments(output_segments)
+    review_only_card_count = max(0, review_card_count - selected_count)
     missing_learning_point_count = max(0, requested_selected_count - len(successful_selected_learning_point_ids))
     quality_funnel = legacy_worker.build_quality_funnel(
         segments,
@@ -998,6 +1011,7 @@ def handle_generate_cards_from_learning_points(payload: dict[str, Any]) -> dict[
     quality_funnel["user_selected_fallback_card_count"] = user_selected_fallback_count
     quality_funnel["ai_repaired_card_count"] = ai_repaired_card_count
     quality_funnel["card_generation_retry_count"] = card_generation_retry_count
+    quality_funnel["review_only_card_count"] = review_only_card_count
     quality_funnel["generation_timing_ms"] = timing_ms
     quality_funnel["selected_learning_point_count"] = len(selected)
     quality_funnel["eligible_learning_point_count"] = len(eligible_learning_point_ids)
@@ -1013,7 +1027,10 @@ def handle_generate_cards_from_learning_points(payload: dict[str, Any]) -> dict[
     )
     quality_funnel["card_generation_filtered_card_count"] = card_generation_diagnostic_counts["filtered"]
     quality_funnel["card_generation_skipped_learning_point_count"] = card_generation_diagnostic_counts["skipped"]
-    emit_progress("generate_cards_from_learning_points", "done", 100, f"AI 卡片生成完成：{selected_count} 张可用卡。")
+    done_message = f"AI 卡片生成完成：{selected_count} 张可用卡。"
+    if review_only_card_count > 0:
+        done_message = f"AI 卡片生成完成：{selected_count} 张可用卡，{review_only_card_count} 张需修复。"
+    emit_progress("generate_cards_from_learning_points", "done", 100, done_message)
     return {
         "id": str(payload.get("project_id") or f"project_{int(time.time())}"),
         "title": payload.get("title") or "学习点制卡",

@@ -22,6 +22,11 @@ $SmokeInput = Join-Path $OutputDir "input"
 $SmokeOut = Join-Path $OutputDir "out"
 New-Item -ItemType Directory -Force -Path $SmokeInput | Out-Null
 New-Item -ItemType Directory -Force -Path $SmokeOut | Out-Null
+$SmokeTemp = Join-Path $OutputDir "tmp"
+New-Item -ItemType Directory -Force -Path $SmokeTemp | Out-Null
+$env:TEMP = $SmokeTemp
+$env:TMP = $SmokeTemp
+$env:TMPDIR = $SmokeTemp
 
 $Video = Join-Path $SmokeInput "smoke-video.mp4"
 $Srt = Join-Path $SmokeInput "smoke-video.srt"

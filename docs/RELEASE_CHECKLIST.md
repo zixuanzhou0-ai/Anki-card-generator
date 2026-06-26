@@ -1,6 +1,6 @@
 # Release Checklist
 
-当前发布目标：`v0.9.6-beta`（package version `0.9.6`）。
+当前发布目标：`v0.9.8-beta`（package version `0.9.8`）。
 
 ## 版本与仓库边界
 
@@ -17,7 +17,7 @@
 - [ ] `docs/USER_GUIDE.md` 可按普通用户流程完成从设置到导出，并说明关于 / 版权页与 GitHub 入口。
 - [ ] `docs/TROUBLESHOOTING.md` 覆盖 Python、FFmpeg、yt-dlp、Anki、AnkiConnect、TTS、API key 常见问题。
 - [ ] `docs/screenshots/` 只保留可公开截图；截图不含 API key、本机用户名、私有路径或私人素材。
-- [ ] GitHub Release body 使用 `docs/RELEASE_NOTES_v0.9.6-beta.md`。
+- [ ] GitHub Release body 使用 `docs/RELEASE_NOTES_v0.9.8-beta.md`。
 
 ## 自动验证
 
@@ -62,7 +62,7 @@ npm.cmd run check:full
 
 - [ ] 从 release 分支开 PR 到 `main`。
 - [ ] PR CI 通过后合并。
-- [ ] 在 `main` 合并 commit 上创建 tag `v0.9.6-beta`。
+- [ ] 在 `main` 合并 commit 上创建 tag `v0.9.8-beta`。
 - [ ] 创建 GitHub Release 并上传 Windows installer、MSI、portable zip、SHA256SUMS。
 - [ ] Release note 明确这是 beta：第三方模型/TTS/视频下载可能受服务商、网络、费用和版权限制影响。
-- [ ] Release note 明确 v0.9.6-beta 的核心变化：统一学习卡、推荐质量收紧、版权页/GitHub入口、Vertex Gemini 3.5 Flash、无终端弹窗保持。
+- [ ] Release note 明确 v0.9.8-beta 的核心变化：APKG 导出路径修复、保底卡不可导出、Vertex Gemini 3.5 Flash 快速批量定位、无终端弹窗保持。

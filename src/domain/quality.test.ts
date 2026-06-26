@@ -6,6 +6,7 @@ import {
   cardHasExportBlockingContent,
   getExportSelectionStats,
   isRecommendedCardForExport,
+  isUsableCardForExport,
   qualityClass,
   qualityLabel,
   removeExportBlockedCardSelection,
@@ -262,6 +263,56 @@ describe('review quality helpers', () => {
     expect(result.selected).toBe(1)
     expect(result.project.segments[0].cards.map((card) => card.enabled)).toEqual([false, true])
     expect(result.project.quality_funnel?.selected_card_count).toBe(1)
+  })
+
+  it('treats model fallback cards as repair-required instead of exportable', () => {
+    const fallback = {
+      ...baseCard,
+      enabled: true,
+      quality: {
+        score: 58,
+        status: 'needs_review' as const,
+        issues: ['\u7528\u6237\u5df2\u52fe\u9009\uff0c\u6a21\u578b\u672a\u5b8c\u6574\u8fd4\u56de\u65f6\u7531\u7cfb\u7edf\u4fdd\u5e95\u751f\u6210\u3002'],
+      },
+    }
+    const safe = {
+      ...baseCard,
+      id: 'safe-card',
+      enabled: true,
+      quality: { score: 90, status: 'recommended' as const, issues: [] },
+    }
+    const project = {
+      id: 'project-1',
+      title: 'Project',
+      video_path: '',
+      subtitle_path: '',
+      language: 'en',
+      level: 'B1' as const,
+      template_id: 'immersive' as const,
+      content_toggles: {
+        daily: true,
+        slang: true,
+        sarcasm: true,
+        business: true,
+        culture: true,
+        profanity: false,
+        romance: false,
+        rare: false,
+      },
+      card_types: ['phrase' as const],
+      quality_funnel: { selected_card_count: 2 },
+      segments: [{ ...baseSegment, cards: [fallback, safe] }],
+      created_at: 1,
+    }
+
+    expect(cardHasExportBlockingContent(fallback)).toBe(true)
+    expect(isUsableCardForExport(baseSegment, fallback)).toBe(false)
+
+    const result = removeExportBlockedCardSelection(project)
+
+    expect(result.removed).toBe(1)
+    expect(result.selected).toBe(1)
+    expect(result.project.segments[0].cards.map((card) => card.enabled)).toEqual([false, true])
   })
 
   it('marks document draft and manual-confirmation cards as repair-required, not exportable', () => {

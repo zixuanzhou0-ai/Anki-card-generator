@@ -37,17 +37,17 @@ describe('buildReadinessItems', () => {
       apiReadyForGeneration: false,
       hasApiTestResult: false,
       ttsRequired: true,
-      ttsDetail: '可稍后测试',
+      ttsDetail: '必须先测试',
       currentSelectionCount: 3,
     })
 
-    expect(items.map((item) => item.label)).toContain('TTS 增强')
+    expect(items.map((item) => item.label)).toContain('TTS 必需')
     expect(items.find((item) => item.id === 'source')?.detail).toBe('已选视频，自动匹配字幕')
   })
 
-  it('summarizes TTS readiness without changing export gates', () => {
+  it('summarizes TTS readiness as a video export gate', () => {
     expect(buildTtsReadinessDetail({ ttsRequired: false, ttsTestResult: null })).toBe('已关闭')
-    expect(buildTtsReadinessDetail({ ttsRequired: true, ttsTestResult: null })).toBe('可稍后测试')
+    expect(buildTtsReadinessDetail({ ttsRequired: true, ttsTestResult: null })).toBe('必须先测试')
     expect(buildTtsReadinessDetail({ ttsRequired: true, ttsTestResult: { ok: true } })).toBe('导出可用')
     expect(buildTtsReadinessDetail({ ttsRequired: true, ttsTestResult: { ok: false } })).toBe('需修复后导出')
   })

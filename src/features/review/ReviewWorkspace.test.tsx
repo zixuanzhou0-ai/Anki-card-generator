@@ -295,7 +295,7 @@ describe('ReviewWorkspace', () => {
     expect(screen.getByText('处理 107 个学习点，生成 74 张；33 个未生成')).toBeInTheDocument()
     expect(screen.getByText(/硬失败 1/)).toBeInTheDocument()
     expect(screen.getByText(/质量过滤 1/)).toBeInTheDocument()
-    expect(screen.getByText(/不可制卡跳过 1/)).toBeInTheDocument()
+    expect(screen.getByText(/质量拦截跳过 1/)).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '只重试未生成 33 个' }))
     fireEvent.click(screen.getByRole('button', { name: '导出已生成 74 张' }))

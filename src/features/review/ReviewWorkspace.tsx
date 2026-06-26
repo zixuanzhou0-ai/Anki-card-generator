@@ -403,7 +403,7 @@ function PartialGenerationNotice({
             : item.status === 'filtered'
               ? '质量过滤'
               : item.status === 'skipped'
-                ? '不可制卡跳过'
+                ? '质量拦截跳过'
                 : item.status || '其他'
     acc[status] = (acc[status] ?? 0) + 1
     return acc
@@ -711,7 +711,7 @@ function LearningPointInventoryPanel({ items }: { items: LearningPointInventoryI
             <small>训练点：{item.learning_action}</small>
             <small>原因：{inventoryReason(item)}</small>
             <div className="inventory-item-actions">
-              <span>硬阻断项不会导出；原因通常是 answer_core 异常、跨度不在原句中，或模型返回了不可制卡内容。</span>
+              <span>硬阻断项不会导出；原因通常是 answer_core 异常、跨度不在原句中，或模型返回了不适合直接制卡的内容。</span>
             </div>
           </article>
         ))}

@@ -35,7 +35,7 @@ type LearningPointOverviewProps = {
 
 type TypeFilter = 'all' | LearningPointType
 type LevelFilter = 'all' | 'A1' | 'A2' | 'B1' | 'B2' | 'C1' | 'C2' | 'B1+' | 'B2+'
-type StatusFilter = 'selectable' | 'all' | LearningPointStatus
+type StatusFilter = 'batch_ready' | 'needs_review' | 'selectable' | 'all' | LearningPointStatus
 
 const typeFilters: Array<{ id: TypeFilter; label: string }> = [
   { id: 'all', label: '全部类型' },
@@ -49,7 +49,9 @@ const typeFilters: Array<{ id: TypeFilter; label: string }> = [
 
 const levelFilters: LevelFilter[] = ['all', 'A1', 'A2', 'B1', 'B2', 'C1', 'C2', 'B1+', 'B2+']
 const statusFilters: Array<{ id: StatusFilter; label: string }> = [
-  { id: 'selectable', label: '可选择' },
+  { id: 'batch_ready', label: '可批量制卡' },
+  { id: 'needs_review', label: '需复查' },
+  { id: 'selectable', label: '可手动选择' },
   { id: 'all', label: '全部状态' },
   { id: 'recommended', label: '推荐' },
   { id: 'candidate_only', label: '候选' },
@@ -89,7 +91,7 @@ export function LearningPointOverview({
 }: LearningPointOverviewProps) {
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all')
   const [levelFilter, setLevelFilter] = useState<LevelFilter>('all')
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('selectable')
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('batch_ready')
   const [showGenerationDetails, setShowGenerationDetails] = useState(false)
   const [showLearningDiagnostics, setShowLearningDiagnostics] = useState(false)
   const points = useMemo(() => result.learning_points ?? [], [result.learning_points])
@@ -116,8 +118,18 @@ export function LearningPointOverview({
     () =>
       points.filter((point) => {
         if (typeFilter !== 'all' && point.type !== typeFilter) return false
+        if (statusFilter === 'batch_ready' && !batchSelectableLearningPoint(point)) return false
+        if (statusFilter === 'needs_review' && !(selectableLearningPoint(point) && learningPointNeedsSourceReview(point))) return false
         if (statusFilter === 'selectable' && !selectableLearningPoint(point)) return false
-        if (statusFilter !== 'selectable' && statusFilter !== 'all' && point.status !== statusFilter) return false
+        if (
+          statusFilter !== 'batch_ready' &&
+          statusFilter !== 'needs_review' &&
+          statusFilter !== 'selectable' &&
+          statusFilter !== 'all' &&
+          point.status !== statusFilter
+        ) {
+          return false
+        }
         if (!levelMatches(String(point.level || point.estimated_level || ''), levelFilter)) return false
         return true
       }),
@@ -133,6 +145,22 @@ export function LearningPointOverview({
     .map((point) => point.id)
   const selectableIds = points.filter(batchSelectableLearningPoint).map((point) => point.id)
   const manualReviewCount = points.filter((point) => selectableLearningPoint(point) && learningPointNeedsSourceReview(point)).length
+  const sourceQualityCounts = result.quality_funnel?.source_sentence_quality_counts as Record<string, number> | undefined
+  const sourceQualitySignals = sourceQualityCounts
+    ? [
+        ['too_long', '长句'],
+        ['possible_bad_join', '疑似拼接'],
+        ['rolling_caption_uncertain', '滚动字幕'],
+        ['repeated_adjacent_words', '重复词'],
+        ['fragment', '残句'],
+      ]
+        .map(([key, label]) => {
+          const value = Number(sourceQualityCounts[key] ?? 0)
+          return value > 0 ? `${label} ${value}` : ''
+        })
+        .filter(Boolean)
+    : []
+  const sourceReviewHint = sourceQualitySignals.length ? `字幕质量信号：${sourceQualitySignals.slice(0, 4).join(' · ')}` : ''
   const allSelectableSelected = selectableIds.length > 0 && selectableIds.every((id) => selectedIds.has(id))
   const allRecommendedSelected = recommendedIds.length > 0 && recommendedIds.every((id) => selectedIds.has(id))
   const allVisibleSelected =
@@ -176,7 +204,7 @@ export function LearningPointOverview({
           </h2>
           <p>
             发现 {result.learning_point_summary.total} 个；推荐 {result.learning_point_summary.recommended} 个，候选{' '}
-            {result.learning_point_summary.candidate_only} 个。推荐项默认已选，候选项可手动加选；点击行只是查看，checkbox 和批量勾选才改变制卡队列。
+            {result.learning_point_summary.candidate_only} 个。默认只展示可批量制卡项；字幕拼接、滚动字幕或低置信度候选会放到“需复查”。
           </p>
         </div>
         <div className="learning-point-primary-count">
@@ -402,7 +430,13 @@ export function LearningPointOverview({
                   全部可批量制卡 {selectableIds.length} 个；当前筛选显示 {visiblePoints.length} 个，其中可批量制卡 {visibleBatchSelectablePoints.length} 个、推荐{' '}
                   {visibleRecommendedCount} 个；已勾选当前筛选 {visibleSelectedCount} 个。
                   {manualReviewCount ? ` 另有 ${manualReviewCount} 个学习点需复查，不会被批量勾选。` : ''}
+                  {sourceReviewHint ? ` ${sourceReviewHint}。` : ''}
                 </span>
+                {selectableIds.length === 0 && manualReviewCount > 0 ? (
+                  <em className="learning-point-warning">
+                    当前没有可批量制卡项；请先切到“需复查”抽查字幕拼接质量，确认后再单条生成。
+                  </em>
+                ) : null}
               </div>
               <div className="learning-point-actions">
                 <button type="button" className="ghost-button" onClick={selectAllSelectable} disabled={selectableIds.length === 0 || allSelectableSelected}>
@@ -433,11 +467,12 @@ export function LearningPointOverview({
                 const selectable = selectableLearningPoint(point)
                 const needsSourceReview = learningPointNeedsSourceReview(point)
                 const checked = selectedIds.has(point.id)
+                const checkLabel = !selectable ? '质量拦截' : needsSourceReview ? '需复查' : '选择'
                 return (
                   <article key={point.id} className={`learning-point-row status-${point.status} ${checked ? 'selected' : ''}`}>
                     <label className="learning-point-check">
                       <input type="checkbox" checked={checked} disabled={!selectable} onChange={() => togglePoint(point)} />
-                      <span>{selectable ? '选择' : '不可制卡'}</span>
+                      <span>{checkLabel}</span>
                     </label>
                     <div className="learning-point-main">
                       <div className="learning-point-title">
