@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import os
 import re
 import shutil
 import subprocess
@@ -10,6 +11,12 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 from acg.protocol import fail
+
+
+def hidden_subprocess_flags() -> dict[str, int]:
+    if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {}
 
 
 def read_document_source(path: str) -> str:
@@ -48,6 +55,7 @@ def read_kindle_document(path: Path) -> str:
                 stderr=subprocess.PIPE,
                 text=True,
                 timeout=180,
+                **hidden_subprocess_flags(),
             )
         except subprocess.TimeoutExpired:
             fail("Kindle/AZW3/MOBI 转 EPUB 超时。请先用 Calibre 手动转成 EPUB 后再导入。")
@@ -137,4 +145,3 @@ def read_pdf_document(path: Path) -> str:
     if not text:
         fail("PDF 中没有提取到可制卡文本，可能是扫描版图片 PDF。")
     return text
-

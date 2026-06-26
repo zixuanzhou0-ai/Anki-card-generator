@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-`v0.9.4-beta` is the current Windows beta. Security fixes should be made on `main` and included in the next beta release.
+`v0.9.5-beta` is the current Windows beta. Security fixes should be made on `main` and included in the next beta release.
 
 ## Reporting a vulnerability
 

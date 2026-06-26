@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import html
 import re
 import shutil
@@ -27,6 +28,13 @@ MODEL_PREFIXES = (
     "Drama Anki V1",
 )
 FIELD_SEPARATOR = "\x1f"
+
+
+def hidden_subprocess_flags() -> dict[str, int]:
+    if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {}
+
 
 REQUIRED_STUDY_TEXT_FIELDS = ("Chinese", "Definition", "TeacherNote")
 CORRUPTED_STUDY_TEXT_FIELDS = (
@@ -185,6 +193,7 @@ def ffprobe_video(path: Path) -> dict:
         encoding="utf-8",
         errors="replace",
         timeout=20,
+        **hidden_subprocess_flags(),
     )
     if completed.returncode:
         return {"ok": False, "error": completed.stderr.strip()[:300]}
