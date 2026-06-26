@@ -248,6 +248,7 @@ from acg.provider_config import (
     DEEPSEEK_THINKING_MODELS,
     GEMINI_VERTEX_DEFAULT_MODEL,
     GEMINI_VERTEX_GLOBAL_BASE_URL,
+    GEMINI_VERTEX_MODEL_ALIASES,
     GEMINI_VERTEX_PROVIDERS,
     GEMINI_VERTEX_TTS_DEFAULT_MODEL,
     GEMINI_VERTEX_TTS_DEFAULT_VOICE,
@@ -2030,11 +2031,11 @@ def fallback_cards(segment: dict[str, Any], card_types: list[str], level: str) -
         point_answer = normalized_phrase_key(
             str(point.get("answer_core") or point.get("normalized_answer") or point.get("exact_span") or segment.get("phrase") or "")
         )
-        if point_answer in {"", "key expression"} and "listening" in requested:
+        if point_answer in {"", "key expression"}:
             point["kind"] = "listening_feature"
             point["phrase_type"] = "listening_sentence"
             point["content_kind"] = "listening"
-            point["suggested_card_type"] = "listening"
+            point["suggested_card_type"] = "phrase"
             point["exact_span"] = segment.get("text", "")
             point["normalized_answer"] = segment.get("text", "")
             point["answer_core"] = segment.get("text", "")
@@ -2116,8 +2117,6 @@ def fallback_cards(segment: dict[str, Any], card_types: list[str], level: str) -
                 str(card.get("content_kind") or ""),
                 card["type_label"],
             )
-        if card_type == "listening":
-            card["type_label"] = "听力卡"
         card_quality_source = quality_source if card_type == "phrase" else "fallback"
         card["quality"] = assess_card_quality(card, segment, card_quality_source, level)
         if card_quality_source == "fallback" and card["quality"]["status"] == "reject":
@@ -2125,6 +2124,7 @@ def fallback_cards(segment: dict[str, Any], card_types: list[str], level: str) -
                 "本地草稿，需要人工确认",
                 "预览草稿，需要人工确认",
                 "字段像模板废话",
+                "目标表达像整句而不是词伙",
                 "例句只是照抄原句",
                 "老师提示和学习理由重复",
             }
@@ -2296,7 +2296,7 @@ def build_immersive_v11_prompt(project: dict[str, Any], segments: list[dict[str,
         "4) collocations 只能给自然搭配、句型框架或 1-2 个可直接模仿的新句子，用 ' / ' 分隔；不要编造不自然搭配，比如 not really + 任意 phrase。"
         "5) example 必须是新的短例句，不能照抄原句。"
         "6) context 说明什么场景会用；chinese_feel 说明中文语感；why 说明为什么值得学。每项 1 句即可。"
-        "7) teacher_note 要按卡型聚焦：listening 说听力注意点；phrase 说怎么迁移使用；cloze 说挖空答案为什么是它。"
+        "7) teacher_note 要服务同一张学习卡：把听辨提醒、迁移用法、挖空理由和边界提示合并成一句短提醒，不要拆成多张相似卡。"
         "8) 每张卡还必须给学习动作字段：learning_target=这张卡训练什么；why_it_matters=为什么值得学；"
         "how_to_use_it=下次怎么换场景使用；natural_chinese=原句自然中文译文；replacement_examples=1-2 个可替换例子；"
         "avoid_reason=不值得制卡时的原因。how_to_use_it 和 replacement_examples 必须是可以直接放进卡片背面的自然内容，"
@@ -2313,23 +2313,20 @@ def build_immersive_v11_prompt(project: dict[str, Any], segments: list[dict[str,
         "10) 每张卡必须输出 estimated_level=A1|A2|B1|B2|C1|C2，以及 difficulty_reason=一句中文说明难点来源。"
         "如果 level_mode=auto，请根据表达本身、原句语境、听力难点和迁移难度估计每张卡难度；"
         "如果 level_mode=manual，用户水平只作为解释深度和筛选倾向，不是硬过滤。"
-        "表达卡 retrieval_prompt 要问“这句里表示某个中文意思的自然表达是什么？”；"
-        "语境生词卡要问“某个词在这句里是什么意思/怎么用？”，禁止做脱离原句的词典卡。"
+        "学习卡 retrieval_prompt 要问一个明确的主动回忆问题；表达、生词、听辨和填空提示都合并在同一张卡里。"
         "好卡样例：english=Honestly, it's such a nice Monday morning. phrase=such a nice；"
         "learning_target=训练 such a nice + 名词来表达自然赞叹；how_to_use_it=such a nice day / such a nice place；"
         "teacher_note=下次想夸天气、地方或体验时，用 such a nice + 名词，比 very nice 更像真实口语。"
         "废卡样例：english=Today we are going to talk about AI models. phrase=talk about；B1 用户不推荐，因为太基础且不是真正值得学的内容。"
-        "重复卡样例：同一句同时生成听力卡、表达卡、填空卡但训练点一样时，只保留一张表达卡。"
-        "卡片规划规则：旧规则“默认每个片段只生成 1 张主卡”已取消；每个 learning_point 最多生成 1 张最合适的卡；同一句允许多个不同 learning_point。"
-        "phrase 作为表达/生词/语法的通用主卡，整合语义、中文感、例句和迁移；"
-        "listening 只在弱读、连读、缩读或听音辨句难点明显时单独生成；"
-        "cloze 只在该表达值得主动输出且不重复表达卡时单独生成，且必须输出一个且仅一个 ____。"
+        "重复卡样例：同一句同一个 learning_point 不要同时生成听力卡、表达卡、填空卡；只保留一张学习卡。"
+        "卡片规划规则：每个 learning_point 最多生成 1 张统一学习卡；同一句允许多个不同 learning_point，但每个点只对应一张卡。"
+        "统一学习卡使用 phrase 兼容类型，整合语义、中文感、例句、迁移、听辨和填空提示；不要额外输出 listening 或 cloze 卡。"
         "优先 5-12 个词的短句；超过 14 个词通常不要做精品卡。"
         f"可用卡型：{json.dumps(requested_types, ensure_ascii=False)}。"
         "如果只需要一张卡，就只返回一张；不要为了满足卡型列表而复制同一张卡。"
         "每张卡必须写 card_role: primary|specialist、learning_goal、decision_reason。"
         "返回严格 JSON，不要 Markdown。JSON 结构："
-        '{"segments":[{"id":"seg_0001","cards":[{"type":"listening|phrase|cloze",'
+        '{"segments":[{"id":"seg_0001","cards":[{"type":"phrase",'
         '"learning_point_id":"对应 learning_points[].id",'
         '"candidate_kind":"expression|contextual_vocab|grammar_pattern|listening_feature|pragmatic_risk",'
         '"exact_span":"逐词来自原句的片段","normalized_answer":"标准化英文答案",'
@@ -2917,9 +2914,10 @@ def normalize_gemini_vertex_model(value: Any) -> str:
     model = str(value or "").strip()
     if not model:
         return GEMINI_VERTEX_DEFAULT_MODEL
-    if model.lower() in GEMINI_VERTEX_UNAVAILABLE_MODEL_ALIASES:
+    normalized = model.lower()
+    if normalized in GEMINI_VERTEX_UNAVAILABLE_MODEL_ALIASES:
         return GEMINI_VERTEX_DEFAULT_MODEL
-    return model
+    return GEMINI_VERTEX_MODEL_ALIASES.get(normalized, model)
 
 
 def gemini_content_text(response: dict[str, Any]) -> str:

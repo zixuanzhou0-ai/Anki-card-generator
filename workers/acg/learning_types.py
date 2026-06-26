@@ -55,15 +55,7 @@ def card_label_for_phrase_type(phrase_type: str, fallback: str = "表达卡") ->
 
 
 def card_label_for_learning_card(phrase_type: str, content_kind: str, fallback: str = "表达卡") -> str:
-    normalized_type = str(phrase_type or "").strip()
-    if normalized_type in PHRASE_TYPE_CARD_LABELS:
-        return PHRASE_TYPE_CARD_LABELS[normalized_type]
-    normalized_kind = str(content_kind or "").strip()
-    if normalized_kind == "vocabulary":
-        return "语境生词卡"
-    if normalized_kind == "listening":
-        return "听力卡"
-    return fallback
+    return "学习卡"
 
 
 def content_kind_for_phrase_type(phrase_type: str, fallback: str = "phrase") -> str:

@@ -39,11 +39,7 @@ MEDIA_ALIGNMENT_REVIEW_ISSUE = "媒体对齐未在原句中定位到目标表达
 
 
 def _card_type_for_point(point: dict[str, Any], requested: list[str]) -> str:
-    if str(point.get("candidate_kind") or "") == "listening_feature" and "listening" in requested:
-        return "listening"
-    if str(point.get("candidate_kind") or "") == "grammar_pattern" and "cloze" in requested:
-        return "cloze"
-    return "phrase" if "phrase" in requested else (requested[0] if requested else "phrase")
+    return "phrase"
 
 
 def _point_selection_score(point: dict[str, Any]) -> float:
@@ -130,7 +126,7 @@ def _default_card(point: dict[str, Any], card_type: str, index: int) -> dict[str
     return {
         "id": f"card_{index:04d}",
         "type": card_type,
-        "type_label": legacy_worker.CARD_TYPE_LABELS.get(card_type, "表达卡"),
+        "type_label": "学习卡",
         "enabled": True,
         "learning_point_id": point.get("id"),
         "candidate_kind": point.get("candidate_kind"),
@@ -397,8 +393,6 @@ def _user_selected_fallback_card(
     if not answer or answer == "key expression":
         answer = sentence
     card_type = _card_type_for_point({**point, "candidate_kind": point.get("kind") or segment.get("candidate_kind")}, requested_card_types)
-    if card_type == "phrase" and answer == sentence:
-        card_type = "listening" if "listening" in requested_card_types else card_type
     phrase_type = str(point.get("phrase_type") or segment.get("phrase_type") or "")
     content_kind = str(point.get("content_kind") or content_kind_for_phrase_type(phrase_type))
     reason = _selected_card_fallback_text(
@@ -417,7 +411,7 @@ def _user_selected_fallback_card(
     card = {
         "id": f"{segment['id']}_{segment.get('learning_point_id') or 'selected'}_{card_type}",
         "type": card_type,
-        "type_label": legacy_worker.CARD_TYPE_LABELS.get(card_type, card_type),
+        "type_label": "学习卡",
         "enabled": True,
         "english": sentence,
         "chinese": chinese,
@@ -491,14 +485,7 @@ def _user_selected_fallback_card(
     legacy_worker.normalize_learning_action_fields(card)
     legacy_worker.repair_card_fields(card, segment, level)
     legacy_worker.sanitize_pronunciation_fields(card, language)
-    if card_type == "phrase":
-        card["type_label"] = card_label_for_learning_card(
-            str(card.get("phrase_type") or ""),
-            str(card.get("content_kind") or ""),
-            str(card.get("type_label") or "表达卡"),
-        )
-    if card_type == "listening":
-        card["type_label"] = "听力卡"
+    card["type_label"] = "学习卡"
     return card
 
 
@@ -656,7 +643,7 @@ def handle_generate_cards_from_learning_points(payload: dict[str, Any]) -> dict[
     existing_generated_selected_ids = requested_selected_ids & existing_generated_ids
     if existing_generated_ids:
         selected = [point for point in selected if str(point.get("id") or "") not in existing_generated_ids]
-    requested_card_types = [str(item) for item in payload.get("card_types") or ["phrase"]]
+    requested_card_types = legacy_worker.requested_card_types([str(item) for item in payload.get("card_types") or ["phrase"]])
     segments: list[dict[str, Any]] = []
     source_by_id, source_by_text = source_sentence_indexes(payload.get("source_sentences") or [])
     for index, point in enumerate(selected, start=1 + len(existing_segments)):

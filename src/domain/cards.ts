@@ -12,7 +12,5 @@ export const contentOptions: Array<{ key: keyof ContentToggles; label: string; d
 ]
 
 export const cardOptions: Array<{ id: CardKind; label: string; note: string }> = [
-  { id: 'listening', label: '听力卡', note: '先听原声，不显示字幕' },
-  { id: 'phrase', label: '表达/语境生词卡', note: '表达、生词用法、语境和中文感' },
-  { id: 'cloze', label: '填空卡', note: '翻面后核对关键表达' },
+  { id: 'phrase', label: '统一学习卡', note: '每个学习点只生成一张卡，合并表达、语境、听辨和填空提示' },
 ]

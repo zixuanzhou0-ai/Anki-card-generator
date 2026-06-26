@@ -1,4 +1,4 @@
-﻿import type { GenerateRequest, Project, Segment } from './types'
+import type { GenerateRequest, Project, Segment } from './types'
 import { cardOptions, levels } from './options'
 
 export function createDemoProject(request: GenerateRequest): Project {
@@ -126,7 +126,7 @@ export function createDemoProject(request: GenerateRequest): Project {
       return {
         id: `${segment.id}_${type}`,
         type,
-        type_label: type === 'phrase' && segment.phrase_type === 'vocabulary_usage' ? '语境生词卡' : label,
+        type_label: type === 'phrase' ? '学习卡' : label,
         enabled: true,
         english: segment.text,
         chinese:
