@@ -53,7 +53,7 @@ export const defaultRequest: GenerateRequest = {
   study_depth: defaultStudyDepth,
   selection_strategy: defaultSelectionStrategy,
   reuse_ai_review_cache: false,
-  card_types: ['listening', 'phrase', 'cloze'],
+  card_types: ['phrase'],
   max_segments: 0,
   api_config: {
     provider: 'openai-compatible',

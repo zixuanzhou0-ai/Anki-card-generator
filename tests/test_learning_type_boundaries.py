@@ -49,6 +49,23 @@ class LearningTypeBoundaryTests(unittest.TestCase):
                     legacy.card_label_for_learning_card(phrase_type, content_kind, "fallback"),
                 )
 
+    def test_learning_card_label_is_unified_for_all_content_kinds(self):
+        from acg import learning_types
+
+        samples = [
+            ("spoken_phrase", "phrase"),
+            ("vocabulary_usage", "vocabulary"),
+            ("listening_sentence", "listening"),
+            ("grammar_pattern", "grammar"),
+            ("unknown", "phrase"),
+        ]
+
+        for phrase_type, content_kind in samples:
+            with self.subTest(phrase_type=phrase_type, content_kind=content_kind):
+                self.assertEqual(
+                    learning_types.card_label_for_learning_card(phrase_type, content_kind, "fallback"),
+                    "学习卡",
+                )
     def test_content_kind_for_phrase_type_matches_legacy_wrapper(self):
         from acg import learning_types
 

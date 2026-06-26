@@ -60,6 +60,17 @@ const customPreset: ApiPreset = {
   provider: 'openai-compatible',
 }
 
+const vertex35Preset: ApiPreset = {
+  base_url: 'https://aiplatform.googleapis.com',
+  capabilities: ['structured_json', 'long_context', 'cheap_batch'],
+  id: 'gemini-35-flash-vertex',
+  key_hint: '不需要 API Key，先运行 gcloud auth login / 设置项目',
+  label: 'Gemini 3.5 Flash Vertex',
+  model: 'gemini-3.5-flash',
+  note: 'Vertex AI 快速长上下文筛选',
+  provider: 'gemini-vertex',
+}
+
 function renderPanel(overrides: Partial<ComponentProps<typeof ApiSettingsPanel>> = {}) {
   const props: ComponentProps<typeof ApiSettingsPanel> = {
     activeApiProfileId: 'local',
@@ -215,6 +226,24 @@ describe('ApiSettingsPanel', () => {
     expect(screen.getByText('Vertex 授权')).toBeInTheDocument()
     expect(screen.getByText('使用本机 gcloud OAuth')).toBeInTheDocument()
     expect(screen.queryByLabelText('API Key')).not.toBeInTheDocument()
+  })
+
+  it('shows Gemini 3.5 Flash as a Vertex preset and model suggestion', () => {
+    const onApplyApiPreset = vi.fn()
+    renderPanel({
+      advancedApiPresets: [vertex35Preset, deepseekPreset, customPreset],
+      mimoTextModels: [
+        { label: 'MIMO V2.5 Pro', value: 'mimo-v2.5-pro' },
+        { label: 'Gemini 3.5 Flash', value: 'gemini-3.5-flash' },
+      ],
+      onApplyApiPreset,
+    })
+
+    fireEvent.change(screen.getByPlaceholderText('搜索厂商、模型、Base URL'), { target: { value: '3.5 flash' } })
+    fireEvent.click(screen.getByRole('button', { name: /Gemini 3.5 Flash Vertex/ }))
+
+    expect(onApplyApiPreset).toHaveBeenCalledWith(vertex35Preset)
+    expect(document.querySelector('option[value="gemini-3.5-flash"]')).not.toBeNull()
   })
 
   it('toggles capabilities and saves the current model profile', () => {

@@ -1,4 +1,4 @@
-﻿import type { BatchSourceItem } from './batch'
+import type { BatchSourceItem } from './batch'
 
 export type Level = 'A1' | 'A2' | 'B1' | 'B2' | 'C1' | 'C2'
 export type LevelMode = 'auto' | 'manual'
@@ -31,7 +31,7 @@ export type Provider = 'local' | 'mimo' | 'openai-compatible' | 'claude' | 'gemi
 export type TtsProvider = 'disabled' | 'mimo' | 'qwen' | 'grok' | 'gemini' | 'gemini-vertex' | 'openai-compatible'
 export type SourceMode = 'local' | 'url' | 'document'
 export type UrlImportMode = 'video' | 'subtitles'
-export type SettingsTab = 'api' | 'tts' | 'env'
+export type SettingsTab = 'api' | 'tts' | 'env' | 'about'
 export type SegmentFilter = 'all' | 'selected' | 'unselected'
 export type PhraseReviewStatus = 'recommended' | 'needs_review' | 'reject' | 'duplicate' | 'unreviewed' | string
 export type CandidateKind =

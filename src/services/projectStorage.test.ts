@@ -375,9 +375,9 @@ describe('projectStorage document focus migration', () => {
         source_url: 'https://www.youtube.com/watch?v=old',
         source_info: { webpage_url: 'https://www.youtube.com/watch?v=old' },
         video_path:
-          'C:\\Users\\Administrator\\AppData\\Local\\com.ankicard.generator\\projects\\url_cache\\old\\source.mp4',
+          'C:\\Users\\Example\\AppData\\Local\\com.ankicard.generator\\projects\\url_cache\\old\\source.mp4',
         subtitle_path:
-          'C:\\Users\\Administrator\\AppData\\Local\\com.ankicard.generator\\projects\\url_cache\\old\\source.en.srt',
+          'C:\\Users\\Example\\AppData\\Local\\com.ankicard.generator\\projects\\url_cache\\old\\source.en.srt',
         segments: [
           {
             id: 'seg_0001',

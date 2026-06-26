@@ -18,7 +18,10 @@ import {
 } from '../../domain/options'
 import { SettingsDialog } from './SettingsDialog'
 
-afterEach(() => cleanup())
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
 
 function renderDialog(overrides: Partial<ComponentProps<typeof SettingsDialog>> = {}) {
   const props: ComponentProps<typeof SettingsDialog> = {
@@ -137,6 +140,26 @@ describe('SettingsDialog', () => {
     expect(props.onSettingsTabChange).toHaveBeenCalledWith('env')
   })
 
+  it('shows copyright and opens the GitHub repository from the about tab', () => {
+    const openSpy = vi.fn()
+    vi.stubGlobal('open', openSpy)
+
+    renderDialog({ settingsTab: 'about' })
+
+    expect(screen.getByRole('tab', { name: '关于 / 版权' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('heading', { name: 'Anki 卡片生成器' })).toBeInTheDocument()
+    expect(screen.getByText('v0.9.6-beta')).toBeInTheDocument()
+    expect(screen.getByText('版权所有 © 2026 Zixuan Zhou。保留所有权利。')).toBeInTheDocument()
+    expect(screen.getByText(/与 Anki、AnkiWeb 或其开发团队无官方隶属关系/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /GitHub 仓库/ }))
+
+    expect(openSpy).toHaveBeenCalledWith(
+      'https://github.com/zixuanzhou0-ai/Anki-card-generator',
+      '_blank',
+      'noopener,noreferrer',
+    )
+  })
   it('closes from the frosted backdrop but keeps dialog clicks inside the modal', () => {
     const props = renderDialog()
     const overlay = document.querySelector('.settings-overlay')

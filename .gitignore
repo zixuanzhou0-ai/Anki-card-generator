@@ -107,3 +107,4 @@ src-tauri/target/
 *.njsproj
 *.sln
 *.sw?
+.local-delivery*/

@@ -169,6 +169,30 @@ describe('validateServiceBaseUrl', () => {
     expect(validateApiConfigForRequest(normalized)).toBeNull()
   })
 
+  it('normalizes Gemini Vertex 3.5 aliases to the official Flash model id', () => {
+    const normalized = normalizeApiConfigForRequest({
+      provider: 'gemini-vertex',
+      base_url: 'https://aiplatform.googleapis.com',
+      api_key: '',
+      model: 'gemini-3.5',
+      capabilities: [],
+      tts_config: {
+        enabled: false,
+        provider: 'disabled',
+        base_url: '',
+        api_key: '',
+        model: '',
+        voice: '',
+        language: 'auto',
+        sample_rate: 24000,
+        bit_rate: 128000,
+      },
+    })
+
+    expect(normalized.model).toBe('gemini-3.5-flash')
+    expect(validateApiConfigForRequest(normalized)).toBeNull()
+  })
+
   it('rejects DashScope-shaped keys on MIMO Token Plan endpoints before a network request', () => {
     const apiMessage = validateApiConfigForRequest({
       provider: 'mimo',

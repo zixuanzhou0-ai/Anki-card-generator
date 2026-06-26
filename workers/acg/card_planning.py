@@ -12,8 +12,8 @@ from acg.phrases.lexicon import COMMON_FUNCTION_STARTS
 
 
 def requested_card_types(card_types: list[str]) -> list[str]:
-    requested = [str(card_type) for card_type in card_types if card_type in {"listening", "phrase", "cloze"}]
-    return requested or ["phrase"]
+    # v0.9.6 keeps legacy phrase-compatible fields but exports one unified learning card per learning point.
+    return ["phrase"]
 
 
 def has_listening_training_value(text: str) -> bool:
@@ -74,77 +74,25 @@ def usable_learning_point_span(
 
 
 def plan_card_types(segment: dict[str, Any], card_types: list[str], level: str) -> dict[str, Any]:
-    requested = requested_card_types(card_types)
-    phrase = re.sub(r"\s+", " ", str(segment.get("phrase") or "").strip())
-    text = str(segment.get("text") or "")
     candidate_kind = candidate_kind_for_segment(segment)
-
-    if candidate_kind == "listening_feature" and "listening" in requested:
-        primary = "listening"
-        reason = "这个片段的核心价值是听懂真实语速下的弱读、连读或缩读。"
-    elif "phrase" in requested and usable_learning_point_span(text, phrase, candidate_kind, str(segment.get("phrase_type") or "")):
-        primary = "phrase"
-        if candidate_kind == "contextual_vocab":
-            reason = "这个片段的核心价值是掌握一个词在原句里的真实语境义。"
-        elif candidate_kind == "grammar_pattern":
-            reason = "这个片段的核心价值是掌握一个可迁移的语法/句法框架。"
-        elif candidate_kind == "pragmatic_risk":
-            reason = "这个片段的核心价值是理解表达的语气、边界和冒犯风险。"
-        else:
-            reason = "这个片段的核心价值是把自然表达迁移到自己的口语里。"
-    elif "listening" in requested:
-        primary = "listening"
-        reason = "这个片段更适合先做听音辨句，表达本身不够适合作为主词伙。"
-    else:
-        primary = requested[0]
-        reason = "按用户选择的卡型保留一张主训练卡。"
-
-    planned = [primary]
-    optional: list[str] = []
-    skipped: dict[str, str] = {}
-
-    if "listening" in requested and primary != "listening":
-        if has_listening_training_value(text):
-            optional.append("listening")
-        else:
-            skipped["listening"] = "听力难点不明显，合并到主卡里即可。"
-    if "cloze" in requested and primary != "cloze":
-        if has_output_training_value(phrase, level):
-            optional.append("cloze")
-        else:
-            skipped["cloze"] = "表达偏基础或输出价值不足，不单独做填空卡。"
-    if "phrase" in requested and primary != "phrase":
-        skipped["phrase"] = "没有稳定、完整、可迁移的表达，不单独做表达卡。"
-
-    if optional:
-        planned.extend(card_type for card_type in optional if card_type not in planned)
-
-    for card_type in requested:
-        if card_type not in planned and card_type not in skipped:
-            skipped[card_type] = "训练目标已被主卡覆盖。"
-
+    reason_by_kind = {
+        "contextual_vocab": "统一学习卡会聚焦这个词在原句里的真实语境义。",
+        "grammar_pattern": "统一学习卡会聚焦这个可迁移的语法/句法框架。",
+        "listening_feature": "统一学习卡会把听辨提醒合并到同一张卡里，避免额外重复听力卡。",
+        "pragmatic_risk": "统一学习卡会聚焦表达的语气、边界和使用风险。",
+    }
+    skipped = {
+        str(card_type): "已合并到统一学习卡，避免为同一学习点生成重复卡。"
+        for card_type in card_types
+        if str(card_type) in {"listening", "cloze"}
+    }
     return {
-        "primary": primary,
-        "types": planned,
-        "reason": reason,
+        "primary": "phrase",
+        "types": requested_card_types(card_types),
+        "reason": reason_by_kind.get(candidate_kind, "统一学习卡会聚焦这句里最值得复习的核心学习动作。"),
         "skipped": skipped,
     }
 
 
 def card_type_for_learning_point(point: dict[str, Any], requested: list[str]) -> str:
-    kind = str(point.get("kind") or "")
-    suggested = str(point.get("suggested_card_type") or "")
-    answer = normalized_phrase_key(str(point.get("answer_core") or point.get("normalized_answer") or point.get("exact_span") or ""))
-    if answer in {"", "key expression"} and "listening" in requested:
-        return "listening"
-    if suggested in requested:
-        return suggested
-    if kind == "listening_feature" and "listening" in requested:
-        return "listening"
-    if "phrase" in requested:
-        return "phrase"
-    if "cloze" in requested:
-        return "cloze"
-    if "listening" in requested:
-        return "listening"
-    return requested[0] if requested else "phrase"
+    return "phrase"
