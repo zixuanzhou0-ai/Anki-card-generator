@@ -1,6 +1,6 @@
 # Release Checklist
 
-当前发布目标：`v0.9.5-beta`（package version `0.9.5`）。
+当前发布目标：`v0.9.6-beta`（package version `0.9.6`）。
 
 ## 版本与仓库边界
 
@@ -13,11 +13,11 @@
 ## 产品文档
 
 - [ ] README 说明当前公开主流程只包含 `本地视频 + 字幕` 和 `视频链接`。
-- [ ] README 说明完整复读、快速复读、TTS、APKG 导出、Anki 导入核验、缓存/耗时诊断。
-- [ ] `docs/USER_GUIDE.md` 可按普通用户流程完成从设置到导出。
+- [ ] README 说明统一学习卡、推荐质量规则、完整复读、快速复读、TTS、APKG 导出、Anki 导入核验、缓存/耗时诊断。
+- [ ] `docs/USER_GUIDE.md` 可按普通用户流程完成从设置到导出，并说明关于 / 版权页与 GitHub 入口。
 - [ ] `docs/TROUBLESHOOTING.md` 覆盖 Python、FFmpeg、yt-dlp、Anki、AnkiConnect、TTS、API key 常见问题。
 - [ ] `docs/screenshots/` 只保留可公开截图；截图不含 API key、本机用户名、私有路径或私人素材。
-- [ ] GitHub Release body 使用 `docs/RELEASE_NOTES_v0.9.5-beta.md`。
+- [ ] GitHub Release body 使用 `docs/RELEASE_NOTES_v0.9.6-beta.md`。
 
 ## 自动验证
 
@@ -44,13 +44,14 @@ npm.cmd run check:full
 - [ ] `.tauri-dev-current.out/.err` 和 `.vite-dev-current.out/.err` 仍写入日志。
 - [ ] `npm.cmd run desktop:dev:debug` 会显示调试终端，方便开发排查。
 - [ ] release 安装包或 portable exe 启动时不显示终端窗口；worker 调用 `ebook-convert`、`ffprobe` 等外部工具时也不弹出黑色 console。
+- [ ] `设置 -> 关于 / 版权` 显示版本、版权、Anki 独立声明和 GitHub 仓库入口。
 
 ## 视频制卡 Smoke
 
 至少跑一个小样本，确认本次终端隐藏和版本发布没有影响核心路径：
 
 - [ ] 本地视频 + 字幕或视频链接可抽取学习点。
-- [ ] 用户可勾选学习点并生成卡。
+- [ ] 用户可勾选学习点并生成统一学习卡；每个选中学习点默认只生成 1 张卡。
 - [ ] 可导出 `.apkg`。
 - [ ] Anki 导入核验通过，`failed_checks=[]`。
 - [ ] 抽查卡片里的视频、原声、整句 TTS、表达 TTS 可播放。
@@ -61,6 +62,7 @@ npm.cmd run check:full
 
 - [ ] 从 release 分支开 PR 到 `main`。
 - [ ] PR CI 通过后合并。
-- [ ] 在 `main` 合并 commit 上创建 tag `v0.9.5-beta`。
+- [ ] 在 `main` 合并 commit 上创建 tag `v0.9.6-beta`。
 - [ ] 创建 GitHub Release 并上传 Windows installer、MSI、portable zip、SHA256SUMS。
 - [ ] Release note 明确这是 beta：第三方模型/TTS/视频下载可能受服务商、网络、费用和版权限制影响。
+- [ ] Release note 明确 v0.9.6-beta 的核心变化：统一学习卡、推荐质量收紧、版权页/GitHub入口、Vertex Gemini 3.5 Flash、无终端弹窗保持。

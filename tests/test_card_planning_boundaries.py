@@ -61,6 +61,32 @@ class CardPlanningBoundaryTests(unittest.TestCase):
                     legacy.has_output_training_value(phrase, level),
                 )
 
+    def test_unified_card_types_ignore_legacy_specialist_requests(self):
+        from acg import card_planning
+
+        plan = card_planning.plan_card_types(
+            {
+                "text": "You're gonna hear the words connect in natural speech.",
+                "phrase": "gonna hear",
+                "candidate_kind": "listening_feature",
+                "phrase_type": "listening_sentence",
+            },
+            ["listening", "phrase", "cloze"],
+            "B1",
+        )
+
+        self.assertEqual(card_planning.requested_card_types(["listening", "phrase", "cloze"]), ["phrase"])
+        self.assertEqual(plan["primary"], "phrase")
+        self.assertEqual(plan["types"], ["phrase"])
+        self.assertEqual(
+            card_planning.card_type_for_learning_point(
+                {"kind": "listening_feature", "suggested_card_type": "listening", "answer_core": "gonna hear"},
+                ["listening", "phrase"],
+            ),
+            "phrase",
+        )
+        self.assertIn("listening", plan["skipped"])
+        self.assertIn("cloze", plan["skipped"])
     def test_usable_learning_point_span_matches_legacy_wrapper(self):
         from acg import card_planning
 

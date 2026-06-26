@@ -3,6 +3,7 @@ import {
   DEEPSEEK_DEFAULT_MODEL,
   DEEPSEEK_OPENAI_BASE_URL,
   GEMINI_VERTEX_DEFAULT_MODEL,
+  GEMINI_VERTEX_FLASH_MODEL,
   GEMINI_VERTEX_GLOBAL_BASE_URL,
   GEMINI_VERTEX_UNAVAILABLE_MODEL_ALIASES,
   GEMINI_VERTEX_TTS_DEFAULT_MODEL,
@@ -49,6 +50,7 @@ export function normalizeGeminiVertexModelId(value: string) {
   const normalized = value.trim().toLowerCase()
   if (!normalized) return GEMINI_VERTEX_DEFAULT_MODEL
   if (GEMINI_VERTEX_UNAVAILABLE_MODEL_ALIASES.has(normalized)) return GEMINI_VERTEX_DEFAULT_MODEL
+  if (normalized === 'gemini-3.5' || normalized === 'gemini-3.5-flash-latest') return GEMINI_VERTEX_FLASH_MODEL
   return value.trim()
 }
 

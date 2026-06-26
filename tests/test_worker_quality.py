@@ -4063,6 +4063,39 @@ class WorkerQualityTests(unittest.TestCase):
 
         self.assertIn("/models/gemini-3.1-pro-preview:generateContent", calls["url"])
 
+    def test_gemini_vertex_35_alias_maps_to_flash(self):
+        calls = {}
+        original_http_json = worker._legacy_worker.http_json
+        original_gcloud_value = worker._legacy_worker.gcloud_value
+
+        def fake_gcloud_value(args, timeout=30):
+            if args == ["config", "get-value", "core/project"]:
+                return "project-test"
+            if args == ["auth", "print-access-token"]:
+                return "ya29.test-token"
+            return ""
+
+        def fake_http_json(url, headers, body, timeout=60):
+            calls["url"] = url
+            return {"candidates": [{"content": {"parts": [{"text": '{"segments":[]}'}]}}]}
+
+        try:
+            worker._legacy_worker.gcloud_value = fake_gcloud_value
+            worker._legacy_worker.http_json = fake_http_json
+            worker.gemini_vertex_generate_content(
+                {
+                    "provider": "gemini-vertex",
+                    "base_url": "https://aiplatform.googleapis.com",
+                    "model": "gemini-3.5",
+                },
+                "Return JSON.",
+            )
+        finally:
+            worker._legacy_worker.http_json = original_http_json
+            worker._legacy_worker.gcloud_value = original_gcloud_value
+
+        self.assertIn("/models/gemini-3.5-flash:generateContent", calls["url"])
+
     def test_test_api_classifies_gemini_vertex_timeout(self):
         original_generate = worker._legacy_worker.gemini_vertex_generate_content
 
@@ -12318,6 +12351,40 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertGreater(ciba_score["value_score"], default_score["value_score"])
         self.assertLess(noise_score["value_score"], ciba_score["value_score"])
 
+    def test_learning_value_downgrades_low_transfer_or_unlocatable_answers(self):
+        from acg.scoring.learning_value import assign_learning_point_status, score_learning_point
+
+        low_transfer = {
+            "candidate_kind": "expression",
+            "phrase_type": "spoken_phrase",
+            "answer_core": "talk about",
+            "source_sentence": "Today we are going to talk about AI models.",
+            "estimated_level": "B1",
+            "value_score": 4.6,
+            "learning_action": "学习这个表达",
+        }
+        scored_low_transfer = {**low_transfer, **score_learning_point(low_transfer, "B1", {})}
+        low_transfer_status, low_transfer_reason = assign_learning_point_status(scored_low_transfer, "B1", {})
+
+        unlocatable = {
+            "candidate_kind": "expression",
+            "phrase_type": "collocation",
+            "answer_core": "take over",
+            "source_sentence": "We are going to talk about AI models today.",
+            "estimated_level": "B1",
+            "value_score": 4.6,
+            "learning_action": "训练 take over 表示接管的搭配边界。",
+            "usage_boundary": "用于职责或控制权转移，不是普通讨论。",
+        }
+        scored_unlocatable = {**unlocatable, **score_learning_point(unlocatable, "B1", {})}
+        unlocatable_status, unlocatable_reason = assign_learning_point_status(scored_unlocatable, "B1", {})
+
+        self.assertIn("low_transfer_answer", scored_low_transfer["recommendation_flags"])
+        self.assertEqual(low_transfer_status, "candidate_only")
+        self.assertIn("默认推荐", low_transfer_reason)
+        self.assertIn("answer_not_locatable", scored_unlocatable["recommendation_flags"])
+        self.assertEqual(unlocatable_status, "candidate_only")
+        self.assertIn("清楚定位", unlocatable_reason)
     def test_vocabulary_usage_cards_get_contextual_label(self):
         segments = [
             {
@@ -12362,7 +12429,7 @@ class WorkerQualityTests(unittest.TestCase):
         merged, _ = worker.merge_ai_cards(segments, ai_payload, ["phrase"], "B1")
 
         card = merged[0]["cards"][0]
-        self.assertEqual(card["type_label"], "语境生词卡")
+        self.assertEqual(card["type_label"], "学习卡")
         self.assertEqual(card["content_kind"], "vocabulary")
 
     def test_card_front_fields_use_retrieval_prompts_by_card_kind(self):
@@ -12404,8 +12471,8 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(repetition["front_prompt"], "听原声，跟读这一句。")
         self.assertEqual(repetition["front_content"], "先听一遍，再模仿语气和节奏。")
         self.assertEqual(repetition["answer"], "run the register")
-        self.assertEqual(worker.card_label_for_learning_card("", "vocabulary"), "语境生词卡")
-        self.assertEqual(worker.card_label_for_learning_card("idiom", "phrase"), "表达卡")
+        self.assertEqual(worker.card_label_for_learning_card("", "vocabulary"), "学习卡")
+        self.assertEqual(worker.card_label_for_learning_card("idiom", "phrase"), "学习卡")
 
     def test_repetition_front_fields_do_not_claim_original_audio_when_tts_only(self):
         from acg.export_fields import front_fields_for_export_media
@@ -12730,9 +12797,9 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("不能只覆盖 answer_core", prompt)
         self.assertIn("same_as_standard_reason", prompt)
         self.assertIn("不要只写短语片段", prompt)
-        self.assertIn("这句里表示某个中文意思的自然表达是什么", prompt)
+        self.assertIn("学习卡 retrieval_prompt 要问一个明确的主动回忆问题", prompt)
         self.assertIn("typed learning point", prompt)
-        self.assertIn("某个词在这句里是什么意思/怎么用", prompt)
+        self.assertIn("不要额外输出 listening 或 cloze 卡", prompt)
 
     def test_fast_review_prompt_requests_minimal_fields_to_reduce_tokens(self):
         prompt = worker.build_prompt(
@@ -14507,7 +14574,7 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("cards: []", prompt)
         self.assertIn("working with 这种孤立泛表达", prompt)
         self.assertIn("example 必须是新的短例句", prompt)
-        self.assertIn("默认每个片段只生成 1 张主卡", prompt)
+        self.assertIn("每个 learning_point 最多生成 1 张统一学习卡", prompt)
         self.assertNotIn("cards 必须包含全部需要卡型", prompt)
 
     def test_prompt_requests_learning_action_fields_and_examples(self):
@@ -14548,7 +14615,7 @@ class WorkerQualityTests(unittest.TestCase):
 
         self.assertEqual(len(cards), 1)
         self.assertEqual(cards[0]["type"], "phrase")
-        self.assertEqual(cards[0]["type_label"], "表达卡")
+        self.assertEqual(cards[0]["type_label"], "学习卡")
         self.assertEqual(cards[0]["card_role"], "primary")
 
     def test_card_planner_does_not_make_cloze_just_because_guide_exists(self):
@@ -14569,12 +14636,13 @@ class WorkerQualityTests(unittest.TestCase):
         }
         cards = worker.fallback_cards(segment, ["listening", "phrase", "cloze"], "B1")
 
-        self.assertEqual([card["type"] for card in cards], ["listening"])
+        self.assertEqual([card["type"] for card in cards], ["phrase"])
         self.assertEqual(cards[0]["quality"]["status"], "needs_review")
         self.assertFalse(cards[0]["enabled"])
         self.assertIn("预览草稿，需要人工确认", cards[0]["quality"]["issues"])
         self.assertNotIn("缺少明确目标表达", cards[0]["quality"]["issues"])
-        self.assertNotIn("例句只是照抄原句", cards[0]["quality"]["issues"])
+        self.assertIn("目标表达像整句而不是词伙", cards[0]["quality"]["issues"])
+        self.assertIn("例句只是照抄原句", cards[0]["quality"]["issues"])
 
     def test_curated_fallback_phrase_is_recommended_and_enabled(self):
         segment = {
@@ -14766,7 +14834,7 @@ class WorkerQualityTests(unittest.TestCase):
         }
         merged, _ = worker.merge_ai_cards(segments, ai_payload, ["phrase", "cloze"], "B1")
 
-        self.assertEqual([card["type"] for card in merged[0]["cards"]], ["phrase", "cloze"])
+        self.assertEqual([card["type"] for card in merged[0]["cards"]], ["phrase"])
         self.assertTrue(all(card["enabled"] for card in merged[0]["cards"]))
 
     def test_english_subtitle_selection_prefers_original_tracks(self):

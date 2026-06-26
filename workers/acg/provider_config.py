@@ -20,6 +20,10 @@ GEMINI_VERTEX_PROVIDERS = {"gemini-vertex", "vertex-gemini"}
 GEMINI_VERTEX_GLOBAL_BASE_URL = "https://aiplatform.googleapis.com"
 GEMINI_VERTEX_DEFAULT_MODEL = "gemini-3.1-pro-preview"
 GEMINI_VERTEX_UNAVAILABLE_MODEL_ALIASES = {"gemini-3.1-pro"}
+GEMINI_VERTEX_MODEL_ALIASES = {
+    "gemini-3.5": "gemini-3.5-flash",
+    "gemini-3.5-flash-latest": "gemini-3.5-flash",
+}
 DEEPSEEK_THINKING_MODELS = {"deepseek-v4-pro", "deepseek-v4-flash", "deepseek-reasoner"}
 
 

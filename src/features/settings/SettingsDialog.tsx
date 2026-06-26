@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'motion/react'
 import { Boxes, CheckCircle2, CircleAlert, Loader2, PlugZap, Settings2, X } from 'lucide-react'
 
 import type { SettingsTab } from '../../domain/types'
+import { AboutSettingsPanel } from './AboutSettingsPanel'
 import { ApiSettingsPanel } from './ApiSettingsPanel'
 import { EnvSettingsPanel } from './EnvSettingsPanel'
 import { TtsSettingsPanel } from './TtsSettingsPanel'
@@ -264,12 +265,22 @@ export function SettingsDialog({
               >
                 本地环境
               </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={settingsTab === 'about'}
+                className={settingsTab === 'about' ? 'selected' : ''}
+                onClick={() => onSettingsTabChange('about')}
+              >
+                关于 / 版权
+              </button>
             </div>
 
             <div className="settings-content">
               {settingsTab === 'env' ? <EnvSettingsPanel {...envSettings} /> : null}
               {settingsTab === 'api' ? <ApiSettingsPanel {...apiSettings} /> : null}
               {settingsTab === 'tts' ? <TtsSettingsPanel {...ttsSettings} /> : null}
+              {settingsTab === 'about' ? <AboutSettingsPanel /> : null}
             </div>
           </motion.section>
         </motion.div>

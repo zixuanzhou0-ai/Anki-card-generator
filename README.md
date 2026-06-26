@@ -2,7 +2,7 @@
 
 面向中文学习者的 Windows 桌面端视频制卡工具。它把本地视频 + 字幕或视频链接变成可审核、可导出、可导入 Anki 的 `.apkg` 复读卡包。
 
-当前测试版：`v0.9.5-beta`。
+当前测试版：`v0.9.6-beta`。
 
 ## 选择你的版本
 
@@ -25,17 +25,15 @@
 
 当前公开主流程只保留两条入口：`本地视频 + 字幕` 和 `视频链接`。历史文档制卡、实验模板和内部诊断能力不作为普通用户入口展示。
 
-## v0.9.5-beta 重点
+## v0.9.6-beta 重点
 
-- **无终端弹窗 Windows 桌面包**：`v0.9.5-beta` 是新的 Windows 安装包版本，不覆盖 `v0.9.4-beta`，方便用户用 SHA256 追踪真实下载资产。
+- **统一学习卡**：视频学习点默认只生成一种“学习卡”。听辨、表达、语境生词、语法和填空提示会合并到同一张卡里，避免同一个学习点被拆成多张内容相似的卡。
+- **推荐质量更严格**：`talk about`、`do something` 这类低迁移泛表达，或者无法在原句中定位的答案，不会再默认推荐；它们会降到候选/待审。
+- **设置页新增关于 / 版权**：应用内可查看版本、版权声明、Anki 独立声明、隐私边界，并通过 GitHub 仓库入口访问源码。
+- **Vertex Gemini 3.5 Flash**：模型配置里新增 Vertex `gemini-3.5-flash` 选项，继续使用本机 `gcloud` OAuth，不需要在应用里保存 Vertex API key。
+- **无终端弹窗保持**：安装版普通启动只显示桌面 UI；worker 调用 `ebook-convert`、`ffprobe` 等外部工具时继续隐藏 Windows console。
 - **窗口压缩时左侧控制台仍可操作**：最小宽度会进入“素材面板”模式，批量素材、文件夹选择和底部继续按钮都保持可达。
-- **左侧流程滚动更稳定**：流程状态固定，阶段内容独立滚动，主操作区不会被批量素材区域挤出窗口。
-- **视频制卡主链路完成 8/8 真实验收矩阵**：YouTube、本地视频 + SRT、完整复读、快速复读、cold/hot cache、100+ 张一次点击压力包均已通过。
-- **启动和制卡过程不再弹黑色终端**：安装版普通启动只显示桌面 UI；开发入口 `desktop:dev` 默认隐藏 Tauri/Vite 调试终端，worker 调用 `ebook-convert`、`ffprobe` 等外部工具时也使用 Windows 隐藏子进程窗口。需要排查时可用 `desktop:dev:debug` 显示调试窗口。
-- **卡片质量闸更硬**：素材不可读、TTS 最终失败、媒体切片失败、ledger/hash mismatch、APKG verify fail 会阻止导出。
-- **用户选择更可信**：用户勾选 N 个可制卡学习点，目标就是生成 N 张卡；模型漏字段时会尽量补齐保底卡并记录诊断。
-- **缓存和速度更透明**：记录 cold/hot、cache hit/miss、TTS、媒体切片、APKG 打包和 Anki verify 阶段耗时。
-- **公开仓库更干净**：生成媒体、APKG、test runs、缓存、日志、内部 handoff 和本地密钥文件默认不会进入 Git。
+- **公开仓库保持干净**：生成媒体、APKG、test runs、缓存、日志、内部 handoff 和本地密钥文件默认不会进入 Git。
 
 ## 界面与成品卡
 
@@ -59,6 +57,8 @@
 
 ![本地环境检测](docs/screenshots/settings-environment.png)
 
+![关于与版权](docs/screenshots/settings-about-copyright.png)
+
 ### Anki 成品卡
 
 下面三张来自 `100+ 张一次点击压力包` 的真实 Anki Preview 抽查，覆盖开头、中间和结尾卡片。
@@ -80,7 +80,7 @@
 
 ## 快速开始
 
-1. 安装或解压 Windows release 包；推荐使用 `v0.9.5-beta` 或更新版本。
+1. 安装或解压 Windows release 包；推荐使用 `v0.9.6-beta` 或更新版本。
 2. 打开 `Anki Card Generator.exe`。正常情况下只会出现桌面 UI，不应额外弹出黑色终端窗口。
 3. 进入 `设置 -> 本地环境`，点击 `检查环境`。
 4. 按提示安装或修复 Python、FFmpeg、Anki、AnkiConnect 等依赖。

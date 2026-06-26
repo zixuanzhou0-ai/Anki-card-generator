@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { useReducedMotion } from 'motion/react'
@@ -1378,7 +1378,7 @@ export function useAppController() {
             document_path: '',
             card_types: patch.card_types?.filter((type) => type !== 'knowledge').length
               ? patch.card_types.filter((type) => type !== 'knowledge')
-              : ['listening', 'phrase', 'cloze'],
+              : ['phrase'],
           }
         : patch
     markRequestEditedIfRunning()
@@ -1442,7 +1442,7 @@ export function useAppController() {
   const selectSourceMode = (mode: SourceMode) => {
     const publicMode: SourceMode = mode === 'document' ? 'local' : mode
     const nextCardTypes: CardKind[] = request.card_types.includes('knowledge')
-      ? ['listening', 'phrase', 'cloze']
+      ? ['phrase']
       : request.card_types
 
     lastExportFullRef.current = null
