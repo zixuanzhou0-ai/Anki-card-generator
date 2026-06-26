@@ -6,7 +6,7 @@ This guide covers the current desktop app behavior.
 
 Development startup uses two processes:
 
-1. Vite starts the local frontend at `http://127.0.0.1:1420/`.
+1. Vite starts the local frontend at `http://127.0.0.1:<selected-dev-port>/`.
 2. Tauri/Cargo compiles and starts the desktop window.
 
 If the desktop window is slow after code changes, wait for Cargo to finish. A cold Tauri build can take around a minute. A browser page showing `localhost refused connection` only means the frontend dev server is not ready or has stopped; it does not by itself prove the desktop app build is broken.
@@ -35,7 +35,20 @@ Startup diagnostics:
 
 The intended behavior is that, if `desktop:dev` fails, it exits non-zero and stops only the half-started workspace process tree so the next run starts cleanly. `npm.cmd run tauri:dev` is still available as the raw Tauri command for low-level debugging, but it is no longer the recommended everyday entrypoint.
 
-The project previously used Vite's default `5173` port. On some Windows machines that port can be reserved by the system and fail with `EACCES`; the current workspace pins development startup to `1420` to keep desktop launches repeatable.
+Windows can reserve local port ranges dynamically, which previously made fixed dev ports fail with `EACCES`. The desktop startup script now probes a small candidate list starting at `5173` and writes the selected URL into the temporary Tauri dev config.
+
+
+## A Black Terminal Window Appears
+
+For `v0.9.5-beta` and later, the installed Windows app should open as a GUI-only desktop app. Normal startup should not create a visible `cmd.exe`, `conhost.exe`, `powershell.exe`, or `python.exe` window.
+
+Check these cases first:
+
+- You may be running an older installer such as `v0.9.4-beta`; install `v0.9.5-beta` or newer.
+- You may be using the debug developer entrypoint `npm.cmd run desktop:dev:debug`, which intentionally shows a Tauri console.
+- Another local tool may have opened its own terminal; verify the process tree belongs to `anki-card-generator.exe` before treating it as an app bug.
+
+Expected process behavior after installed-app startup: `anki-card-generator.exe` may launch WebView2 child processes, but it should not have console descendants. Logs and diagnostics remain available through release smoke output and the desktop diagnostic files instead of a visible console window.
 
 ## Local Environment Check Fails
 
@@ -332,3 +345,4 @@ Before sharing screenshots or logs:
 - Redact API keys and Authorization headers.
 - Hide private file paths if needed.
 - Do not share private videos, subtitles, generated decks, or cache folders.
+

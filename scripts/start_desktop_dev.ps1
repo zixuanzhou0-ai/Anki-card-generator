@@ -23,6 +23,9 @@ $StampedOut = Join-Path $WorkspaceRoot ".tauri-dev-$Stamp.out"
 $StampedErr = Join-Path $WorkspaceRoot ".tauri-dev-$Stamp.err"
 $StampedViteOut = Join-Path $WorkspaceRoot ".vite-dev-$Stamp.out"
 $StampedViteErr = Join-Path $WorkspaceRoot ".vite-dev-$Stamp.err"
+$PreferredDevPorts = @(5173, 5273, 5373, 5473, 5573, 5673, 5773, 5873, 5973)
+$DevPort = $null
+
 
 function Get-DevProcessSnapshot {
     try {
@@ -145,6 +148,16 @@ function Test-WorkspaceCleanupCandidate {
     return $true
 }
 
+function Test-CommandLineUsesPreferredDevPort {
+    param([string]$CommandLine)
+
+    foreach ($port in $PreferredDevPorts) {
+        if ($CommandLine.Contains("--port $port")) {
+            return $true
+        }
+    }
+    return $false
+}
 function Test-WorkspaceSeedProcess {
     param(
         [Parameter(Mandatory = $true)]$Process,
@@ -172,7 +185,7 @@ function Test-WorkspaceSeedProcess {
     if ($commandLine.Contains("npm.cmd run tauri:dev")) {
         return $true
     }
-    if ($commandLine.Contains("vite") -and $commandLine.Contains("--port 1420")) {
+    if ($commandLine.Contains("vite") -and (Test-CommandLineUsesPreferredDevPort $commandLine)) {
         return $true
     }
     if ($commandLine.Contains("@tauri-apps") -and $commandLine.Contains(" dev")) {
@@ -364,7 +377,7 @@ function Test-WorkspaceViteProcess {
     $commandLine = if ($Process.CommandLine) { $Process.CommandLine.ToLowerInvariant() } else { "" }
     return $commandLine.Contains($WorkspaceNeedle) -and
         $commandLine.Contains("vite") -and
-        $commandLine.Contains("--port 1420")
+        (Test-CommandLineUsesPreferredDevPort $commandLine)
 }
 
 function Get-ProcessDepth {
@@ -457,8 +470,36 @@ function Select-AppWindowForProcess {
         Select-Object -First 1
 }
 
+function Test-LocalPortAvailable {
+    param([Parameter(Mandatory = $true)][int]$Port)
+
+    try {
+        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Parse("127.0.0.1"), $Port)
+        $listener.Start()
+        $listener.Stop()
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Select-DevPort {
+    foreach ($candidate in $PreferredDevPorts) {
+        if (Test-LocalPortAvailable -Port $candidate) {
+            return $candidate
+        }
+    }
+    throw "No available local dev port found from candidates: $($PreferredDevPorts -join ', ')."
+}
+
+function Get-DevUrl {
+    if ($null -eq $DevPort) {
+        throw "Dev port has not been selected."
+    }
+    return "http://127.0.0.1:$DevPort"
+}
 function Test-ViteReady {
-    $listener = Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort 1420 -ErrorAction SilentlyContinue |
+    $listener = Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort $DevPort -ErrorAction SilentlyContinue |
         Where-Object { $_.State -eq "Listen" } |
         Select-Object -First 1
     if ($listener) {
@@ -466,7 +507,7 @@ function Test-ViteReady {
     }
 
     try {
-        $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:1420/" -TimeoutSec 2 -Proxy $null
+        $response = Invoke-WebRequest -UseBasicParsing -Uri "$(Get-DevUrl)/" -TimeoutSec 2 -Proxy $null
         return [int]$response.StatusCode -eq 200
     } catch {
         return $false
@@ -654,12 +695,46 @@ if ($SelfTest) {
     exit 0
 }
 
+function Repair-ProcessPathEnvironment {
+    $processEnvironment = [System.Environment]::GetEnvironmentVariables("Process")
+    $pathEntries = @()
+    foreach ($key in $processEnvironment.Keys) {
+        $keyText = [string]$key
+        if ($keyText.Equals("Path", [System.StringComparison]::OrdinalIgnoreCase)) {
+            $pathEntries += [PSCustomObject]@{
+                Key = $keyText
+                Value = [string]$processEnvironment[$key]
+            }
+        }
+    }
+
+    if ($pathEntries.Count -le 1) {
+        return
+    }
+
+    $preferred = $pathEntries | Where-Object { $_.Key -ceq "Path" } | Select-Object -First 1
+    if ($null -eq $preferred) {
+        $preferred = $pathEntries | Select-Object -First 1
+    }
+
+    foreach ($entry in $pathEntries) {
+        [System.Environment]::SetEnvironmentVariable($entry.Key, $null, "Process")
+    }
+    [System.Environment]::SetEnvironmentVariable("Path", $preferred.Value, "Process")
+}
+
+Repair-ProcessPathEnvironment
+
 Write-Host "Workspace: $WorkspaceRoot"
+
+$DevPort = Select-DevPort
+$DevUrl = Get-DevUrl
+Write-Host "Initial dev server candidate: $DevUrl"
 
 $snapshot = Get-DevProcessSnapshot
 $workspaceProcesses = @(Get-WorkspaceProcessTree $snapshot)
 
-$portConnections = @(Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort 1420 -ErrorAction SilentlyContinue |
+$portConnections = @(Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort $DevPort -ErrorAction SilentlyContinue |
     Where-Object { $_.State -eq "Listen" -or $_.State -eq "Established" })
 
 $blocked = @()
@@ -678,7 +753,7 @@ foreach ($connection in $portConnections) {
 if ($blocked.Count -gt 0) {
     Write-LauncherSummary "blocked_by_non_workspace_port_owner" $blocked
     $blocked | Format-Table -AutoSize
-    throw "Port 127.0.0.1:1420 is owned by a non-workspace process. Close it manually or choose another port."
+    throw "Port 127.0.0.1:$DevPort is owned by a non-workspace process. Close it manually or choose another port."
 }
 
 if ($workspaceProcesses.Count -gt 0) {
@@ -701,6 +776,10 @@ if ($DryRun) {
     exit 0
 }
 
+$DevPort = Select-DevPort
+$DevUrl = Get-DevUrl
+Write-Host "Using dev server: $DevUrl"
+
 "" | Set-Content -LiteralPath $CurrentOut -Encoding UTF8
 "" | Set-Content -LiteralPath $CurrentErr -Encoding UTF8
 "" | Set-Content -LiteralPath $CurrentViteOut -Encoding UTF8
@@ -710,14 +789,15 @@ if ($DryRun) {
 $devConfigJson = @"
 {
   "build": {
-    "beforeDevCommand": null
+    "beforeDevCommand": null,
+    "devUrl": "$DevUrl"
   }
 }
 "@
 $devConfigJson | Set-Content -LiteralPath $DevConfigOverride -Encoding UTF8
 
-$viteArgs = @("run", "dev")
-Write-Host "Starting npm.cmd run dev"
+$viteArgs = @("exec", "vite", "--", "--host", "127.0.0.1", "--port", [string]$DevPort, "--strictPort")
+Write-Host "Starting npm.cmd exec vite on $DevUrl"
 $viteProcess = Start-Process -FilePath "npm.cmd" `
     -ArgumentList $viteArgs `
     -WorkingDirectory $WorkspaceRoot `
@@ -748,7 +828,7 @@ if (-not (Test-ViteReady)) {
         stdout = $CurrentViteOut
         stderr = $CurrentViteErr
     }
-    throw "Vite dev server did not become ready on http://127.0.0.1:1420 within the startup timeout."
+    throw "Vite dev server did not become ready on $(Get-DevUrl) within the startup timeout."
 }
 
 $tauriArgs = @("exec", "tauri", "dev", "--", "--config", $DevConfigOverride)
@@ -994,3 +1074,4 @@ Write-Host "Desktop app is ready."
 Write-Host ("Window: {0} PID {1}" -f $windowInfo.Title, $windowInfo.Pid)
 Write-Host "Tauri logs: $CurrentOut / $CurrentErr"
 Write-Host "Vite logs: $CurrentViteOut / $CurrentViteErr"
+
