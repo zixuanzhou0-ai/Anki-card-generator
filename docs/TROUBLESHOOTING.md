@@ -40,11 +40,11 @@ Windows can reserve local port ranges dynamically, which previously made fixed d
 
 ## A Black Terminal Window Appears
 
-For `v0.9.8-beta` and later, the installed Windows app should open as a GUI-only desktop app. Normal startup should not create a visible `cmd.exe`, `conhost.exe`, `powershell.exe`, or `python.exe` window.
+For `v0.9.9-beta` and later, the installed Windows app should open as a GUI-only desktop app. Normal startup should not create a visible `cmd.exe`, `conhost.exe`, `powershell.exe`, or `python.exe` window.
 
 Check these cases first:
 
-- You may be running an older installer such as `v0.9.4-beta`; install `v0.9.8-beta` or newer.
+- You may be running an older installer such as `v0.9.4-beta`; install `v0.9.9-beta` or newer.
 - You may be using the debug developer entrypoint `npm.cmd run desktop:dev:debug`, which intentionally shows a Tauri console.
 - Another local tool may have opened its own terminal; verify the process tree belongs to `anki-card-generator.exe` before treating it as an app bug.
 
@@ -52,7 +52,7 @@ Expected process behavior after installed-app startup: `anki-card-generator.exe`
 
 ## APKG Is Not Generated Or Export Says No Usable Cards
 
-For `v0.9.8-beta` and later, ordinary projects should not be blocked by release evidence directory protection. If export still fails, check the visible error first:
+For `v0.9.9-beta` and later, ordinary projects should not be blocked by release evidence directory protection. If export still fails, check the visible error first:
 
 - If the message says there are no exportable cards, open the review area and look for `需修复` cards. Model fallback cards are intentionally kept visible but blocked from export until regenerated or manually repaired.
 - If the path points to `test_runs` or an old release case directory, choose a normal user-writable folder such as Desktop, Documents, or the app data export folder.

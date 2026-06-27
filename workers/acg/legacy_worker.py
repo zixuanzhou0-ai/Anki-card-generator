@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import base64
 import binascii
@@ -249,6 +249,7 @@ from acg.provider_config import (
     GEMINI_VERTEX_DEFAULT_MODEL,
     GEMINI_VERTEX_GLOBAL_BASE_URL,
     GEMINI_VERTEX_MODEL_ALIASES,
+    GEMINI_VERTEX_PRO_PREVIEW_MODEL,
     GEMINI_VERTEX_PROVIDERS,
     GEMINI_VERTEX_TTS_DEFAULT_MODEL,
     GEMINI_VERTEX_TTS_DEFAULT_VOICE,
@@ -2916,7 +2917,7 @@ def normalize_gemini_vertex_model(value: Any) -> str:
         return GEMINI_VERTEX_DEFAULT_MODEL
     normalized = model.lower()
     if normalized in GEMINI_VERTEX_UNAVAILABLE_MODEL_ALIASES:
-        return GEMINI_VERTEX_DEFAULT_MODEL
+        return GEMINI_VERTEX_PRO_PREVIEW_MODEL
     return GEMINI_VERTEX_MODEL_ALIASES.get(normalized, model)
 
 
@@ -5732,7 +5733,7 @@ def filter_usable_segments_for_output(
             next_segment["phrase_review_status"] = "recommended"
         duplicate_cards_removed = 0
         for card in usable_cards:
-            next_card = {**card, "enabled": True}
+            next_card = {**card, "enabled": card_quality_status(card) == "recommended"}
             duplicate_key = final_output_card_duplicate_key(next_segment, next_card)
             if dedupe_cards and duplicate_key and duplicate_key in seen_card_keys:
                 stats["filtered_learning_point_count"] += 1
@@ -5779,7 +5780,7 @@ def enforce_reviewable_cards_per_source(
             quality = dict(card.get("quality") or {})
             quality["status"] = "reject"
             issues = list(quality.get("issues") or [])
-            issues.append(f"同一句可复习卡预算超过 {max_cards} 张，已从可用卡列表过滤。")
+            issues.append(f"同一句可复习卡预算超过 {max_cards} 张，已从可导出卡列表过滤。")
             quality["issues"] = list(dict.fromkeys(issues))
             quality["score"] = min(int(quality.get("score") or 0), 39)
             card["quality"] = quality
@@ -7049,11 +7050,11 @@ def build_quality_funnel(
             short_reason = "字幕片段太少或有效候选不足。"
         elif usable_cards == 0:
             if filter_stats.get("filtered_learning_point_count", 0) > 0:
-                short_reason = f"没有生成可用卡，过滤了 {filter_stats.get('filtered_learning_point_count', 0)} 个低价值或重复学习点。"
+                short_reason = f"没有生成可导出卡，过滤了 {filter_stats.get('filtered_learning_point_count', 0)} 个低价值或重复学习点。"
             else:
-                short_reason = "没有生成可用卡，可能是词伙评分不足、模型返回空或素材可学习点较少。"
+                short_reason = "没有生成可导出卡，可能是词伙评分不足、模型返回空或素材可学习点较少。"
         else:
-            short_reason = "可用卡偏少，通常是重复合并、低价值表达或模型评审较严格。"
+            short_reason = "可导出卡偏少，通常是重复合并、低价值表达或模型评审较严格。"
     else:
         short_reason = ""
     return {
@@ -7193,7 +7194,7 @@ def handle_generate_batch(payload: dict[str, Any], source_mode: str) -> dict[str
 
     if not combined_segments:
         detail = "；".join(f"{item.get('title')}: {item.get('error')}" for item in failed_items[:5])
-        fail(f"批量生成没有产出可用卡片。{detail}", error_code="BATCH_GENERATE_EMPTY", stage="batch", retryable=True)
+        fail(f"批量生成没有产出可导出卡片。{detail}", error_code="BATCH_GENERATE_EMPTY", stage="batch", retryable=True)
 
     level = payload.get("level") or (child_projects[0].get("level") if child_projects else "B1")
     collection_levels = collection_levels_from_payload(payload, level)
@@ -7224,7 +7225,7 @@ def handle_generate_batch(payload: dict[str, Any], source_mode: str) -> dict[str
     if failed_items:
         failed_summary = "；".join(f"{item['title']}：{item['error']}" for item in failed_items[:5])
         warning = f"{warning}；{failed_summary}" if warning else failed_summary
-    emit_progress("generate", "done", 100, f"批量生成完成：{len(combined_segments)} 个片段，{quality_funnel.get('selected_card_count', 0)} 张可用卡。")
+    emit_progress("generate", "done", 100, f"批量生成完成：{len(combined_segments)} 个片段，{quality_funnel.get('selected_card_count', 0)} 张可导出卡。")
     first_project = child_projects[0] if child_projects else {}
     return {
         "id": f"batch_project_{int(time.time())}",
@@ -7470,7 +7471,7 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
         )
     if source_notice and source_notice not in (warning or ""):
         warning = f"{source_notice}；{warning}" if warning else source_notice
-    emit_progress("generate", "done", 100, f"生成完成：{quality_funnel.get('usable_card_count', 0)} 张可用卡。")
+    emit_progress("generate", "done", 100, f"生成完成：{quality_funnel.get('usable_card_count', 0)} 张可导出卡。")
     return {
         "id": project_id,
         "title": title,

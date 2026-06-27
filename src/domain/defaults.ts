@@ -9,7 +9,12 @@ import {
 } from './documentStudy'
 import { defaultCollectionLevels } from './levels'
 import { defaultLanguageFocus } from './learningFocus'
-import { DEEPSEEK_DEFAULT_MODEL, DEEPSEEK_OPENAI_BASE_URL } from './providers'
+import { GEMINI_VERTEX_DEFAULT_MODEL, GEMINI_VERTEX_GLOBAL_BASE_URL } from './providers'
+import {
+  GEMINI_VERTEX_TTS_DEFAULT_MODEL,
+  GEMINI_VERTEX_TTS_DEFAULT_VOICE,
+  GEMINI_VERTEX_TTS_GLOBAL_BASE_URL,
+} from './ttsProviders'
 import { defaultReviewDensity } from './reviewDensity'
 import { defaultSelectionStrategy } from './selectionStrategy'
 import { defaultStudyDepth } from './studyDepth'
@@ -56,18 +61,18 @@ export const defaultRequest: GenerateRequest = {
   card_types: ['phrase'],
   max_segments: 0,
   api_config: {
-    provider: 'openai-compatible',
-    base_url: DEEPSEEK_OPENAI_BASE_URL,
+    provider: 'gemini-vertex',
+    base_url: GEMINI_VERTEX_GLOBAL_BASE_URL,
     api_key: '',
-    model: DEEPSEEK_DEFAULT_MODEL,
-    capabilities: ['structured_json', 'long_context'],
+    model: GEMINI_VERTEX_DEFAULT_MODEL,
+    capabilities: ['structured_json', 'long_context', 'cheap_batch'],
     tts_config: {
-      enabled: false,
-      provider: 'grok',
-      base_url: 'https://api.x.ai/v1',
+      enabled: true,
+      provider: 'gemini-vertex',
+      base_url: GEMINI_VERTEX_TTS_GLOBAL_BASE_URL,
       api_key: '',
-      model: '',
-      voice: 'eve',
+      model: GEMINI_VERTEX_TTS_DEFAULT_MODEL,
+      voice: GEMINI_VERTEX_TTS_DEFAULT_VOICE,
       language: 'auto',
       sample_rate: 24000,
       bit_rate: 128000,

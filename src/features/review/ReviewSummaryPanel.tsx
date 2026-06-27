@@ -84,7 +84,7 @@ export function ReviewSummaryPanel({
     candidate: '候选片段',
     pipeline: '智能筛选过程',
     sourceUnits: '字幕句',
-    usable: '可用卡片',
+    usable: '可导出卡片',
     duplicate: '重复合并',
   }
 

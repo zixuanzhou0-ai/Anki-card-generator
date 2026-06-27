@@ -829,14 +829,14 @@ def handle_generate_cards_from_learning_points(payload: dict[str, Any]) -> dict[
     timing_ms["card_model"] = int((time.perf_counter() - model_started) * 1000)
     if not ai_payload:
         fail(
-            "生成完整卡片失败：模型没有返回可用卡片内容。",
+            "生成完整卡片失败：模型没有返回可导出卡片内容。",
             error_code="MODEL_CARD_GENERATION_FAILED",
             stage="ai",
             retryable=True,
         )
     partial_generation_warning = ""
     if ai_payload.get("error") and not ai_payload.get("segments"):
-        message = str((ai_payload or {}).get("error") or "模型没有返回可用卡片内容。")
+        message = str((ai_payload or {}).get("error") or "模型没有返回可导出卡片内容。")
         fail(
             f"生成完整卡片失败：{message}",
             error_code=str((ai_payload or {}).get("error_code") or "MODEL_CARD_GENERATION_FAILED"),
@@ -923,6 +923,15 @@ def handle_generate_cards_from_learning_points(payload: dict[str, Any]) -> dict[
     segments = [*existing_segments, *review_segments] if existing_segments else review_segments
     exportable_segments = [*existing_segments, *output_segments] if existing_segments else output_segments
     selected_count = _generated_card_count_from_segments(exportable_segments)
+    reviewable_output_card_count = sum(
+        1
+        for segment in output_segments
+        if isinstance(segment, dict)
+        for card in segment.get("cards", []) or []
+        if isinstance(card, dict)
+        and legacy_worker.card_quality_status(card) in {"recommended", "needs_review"}
+        and not legacy_worker.card_has_export_blocking_content(card)
+    )
     review_card_count = sum(
         1
         for segment in segments
@@ -938,9 +947,9 @@ def handle_generate_cards_from_learning_points(payload: dict[str, Any]) -> dict[
         model_missing_segment_ids,
     )
     card_generation_diagnostic_counts = _card_generation_diagnostic_counts(card_generation_diagnostic_items)
-    if selected_count <= 0 and (review_card_count <= 0 or user_selected_fallback_count <= 0):
+    if selected_count <= 0 and reviewable_output_card_count <= 0:
         fail(
-            "模型返回后没有可用卡片。请减少学习点数量或检查模型输出质量。",
+            "模型返回后没有可导出卡片。请减少学习点数量或检查模型输出质量。",
             error_code="NO_USABLE_AI_CARDS",
             stage="cards",
             retryable=True,
@@ -1027,9 +1036,9 @@ def handle_generate_cards_from_learning_points(payload: dict[str, Any]) -> dict[
     )
     quality_funnel["card_generation_filtered_card_count"] = card_generation_diagnostic_counts["filtered"]
     quality_funnel["card_generation_skipped_learning_point_count"] = card_generation_diagnostic_counts["skipped"]
-    done_message = f"AI 卡片生成完成：{selected_count} 张可用卡。"
+    done_message = f"AI 卡片生成完成：{selected_count} 张可导出卡。"
     if review_only_card_count > 0:
-        done_message = f"AI 卡片生成完成：{selected_count} 张可用卡，{review_only_card_count} 张需修复。"
+        done_message = f"AI 卡片生成完成：{selected_count} 张可导出卡，{review_only_card_count} 张需修复。"
     emit_progress("generate_cards_from_learning_points", "done", 100, done_message)
     return {
         "id": str(payload.get("project_id") or f"project_{int(time.time())}"),

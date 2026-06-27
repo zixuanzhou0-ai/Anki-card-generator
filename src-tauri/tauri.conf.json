@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Anki Card Generator",
-  "version": "0.9.8",
+  "version": "0.9.9",
   "identifier": "com.ankicard.generator",
   "build": {
     "frontendDist": "../dist",

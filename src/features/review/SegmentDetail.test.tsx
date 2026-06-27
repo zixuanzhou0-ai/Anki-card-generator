@@ -67,7 +67,7 @@ describe('SegmentDetail', () => {
     fireEvent.change(screen.getByLabelText(/中文意思/), { target: { value: '想出办法' } })
 
     expect(screen.getByText('I figured it out.')).toBeInTheDocument()
-    expect(screen.getByText(/可用卡片/)).toBeInTheDocument()
+    expect(screen.getByText(/可导出卡片/)).toBeInTheDocument()
     expect(screen.getByText(/自然搭配：解决问题时的自然表达/)).toBeInTheDocument()
     expect(screen.getByText(/表达类型：自然搭配/)).toBeInTheDocument()
     expect(screen.getByText(/为什么值得学：它比 understand 更像口语里的“弄明白”。/)).toBeInTheDocument()

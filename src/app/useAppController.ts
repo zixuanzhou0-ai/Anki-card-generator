@@ -729,13 +729,13 @@ export function useAppController() {
     const shortHint =
       usableCount < 5
         ? isReading
-          ? '可用精读卡偏少，通常是语言点较弱、模型返回空或多数学习点被过滤；可以在“更多学习点”查看原因。'
+          ? '可导出精读卡偏少，通常是语言点较弱、模型返回空或多数学习点被过滤；可以在“更多学习点”查看原因。'
           : isDocument
-            ? '可用知识卡偏少，通常是文档分段较少、模型返回空或多数学习点被过滤；可以在“更多学习点”查看原因。'
-            : '可用卡偏少，通常是字幕太短、重复太多、词伙评分不足或模型返回空；可以在“更多学习点”查看原因。'
+            ? '可导出知识卡偏少，通常是文档分段较少、模型返回空或多数学习点被过滤；可以在“更多学习点”查看原因。'
+            : '可导出卡偏少，通常是字幕太短、重复太多、词伙评分不足或模型返回空；可以在“更多学习点”查看原因。'
         : ''
     const editedHint = editedDuringRun ? ' 生成期间你修改过设置；下一次生成会使用新配置。' : ''
-    const generatedLabel = isReading ? '精读卡' : isDocument ? '知识卡' : '可用卡'
+    const generatedLabel = isReading ? '精读卡' : isDocument ? '知识卡' : '卡'
     const repairHint = repairRequiredCount > 0 ? ` 已隔离 ${repairRequiredCount} 张需修复草稿卡，默认不会导出。` : ''
     const generationDiagnostics = projectToShow.card_generation_diagnostics
     const generationMissingCount = generationDiagnostics?.missing_learning_point_count ?? 0
@@ -3212,7 +3212,7 @@ export function useAppController() {
         segments,
       }
     })
-    setStatus('已反选当前生成的可用卡。')
+    setStatus('已反选当前可导出的卡。')
   }
 
   const updateCard = (segmentId: string, cardId: string, patch: Partial<Card>) => {

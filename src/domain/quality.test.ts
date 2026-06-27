@@ -148,7 +148,7 @@ describe('review quality helpers', () => {
     }
 
     expect(cardHasExportBlockingContent(reviewNoteOnly)).toBe(false)
-    expect(qualityLabel(reviewNoteOnly)).toBe('可用卡')
+    expect(qualityLabel(reviewNoteOnly)).toBe('可导出')
     expect(qualityClass(reviewNoteOnly)).toBe('usable')
     expect(isRecommendedCardForExport(baseSegment, reviewNoteOnly)).toBe(true)
   })
@@ -217,7 +217,9 @@ describe('review quality helpers', () => {
 
     expect(result.selected).toBe(2)
     expect(result.project.segments[0].cards.map((card) => card.enabled)).toEqual([true, true, false])
+    expect(isUsableCardForExport(baseSegment, review)).toBe(false)
     expect(result.project.quality_funnel?.selected_card_count).toBe(2)
+    expect(result.project.quality_funnel?.selected_exportable_card_count).toBe(1)
   })
 
   it('removes already selected draft cards before export while preserving safe selections', () => {

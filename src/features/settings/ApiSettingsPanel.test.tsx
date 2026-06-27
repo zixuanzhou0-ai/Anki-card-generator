@@ -207,7 +207,7 @@ describe('ApiSettingsPanel', () => {
         ...apiConfig,
         api_key: 'sk-old-provider-key',
         base_url: 'https://aiplatform.googleapis.com',
-        model: 'gemini-3.1-pro-preview',
+        model: 'gemini-3.5-flash',
         provider: 'gemini-vertex',
       },
       onPatchApi,
@@ -219,7 +219,7 @@ describe('ApiSettingsPanel', () => {
       expect.objectContaining({
         api_key: '',
         base_url: 'https://aiplatform.googleapis.com',
-        model: 'gemini-3.1-pro-preview',
+        model: 'gemini-3.5-flash',
         provider: 'gemini-vertex',
       }),
     )

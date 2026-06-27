@@ -13,7 +13,7 @@ export const selectionStrategyOptions: SelectionStrategyOption[] = [
   {
     id: 'catch_all',
     label: '智能筛选',
-    note: '逐句发现表达、生词、语法和听力难点，只输出可用卡片，默认全选后由你决定导出。',
+    note: '逐句发现表达、生词、语法和听力难点，只输出可导出卡片，默认全选后由你决定导出。',
     badge: '默认',
   },
 ]

@@ -1441,8 +1441,14 @@ class WorkerQualityTests(unittest.TestCase):
                                 "exact_span": "confident",
                                 "english": segments[0]["text"],
                                 "chinese": "自信的",
-                                "definition": "confident 表示有信心。",
-                                "teacher_note": "训练 confident 的语境用法。",
+                                "definition": "在当前语境里表示对自己使用英语有把握。",
+                                "collocations": "feel confident / sound confident / be confident with English",
+                                "context": segments[0]["text"],
+                                "chinese_feel": "强调使用英语时有底气、不怯场。",
+                                "teacher_note": "be confident with something 表示对某件事有把握。",
+                                "how_to_use_it": "用 be confident with 说明对某件事有把握。",
+                                "why_it_matters": "帮助区分自信情绪和对具体能力有把握的语境。",
+                                "retrieval_prompt": "这句里表示有信心的词是什么？",
                             }
                         ],
                     }
@@ -1814,6 +1820,7 @@ class WorkerQualityTests(unittest.TestCase):
                                 "chinese_feel": "安排某人暂时看收银台。",
                                 "why": "服务业高频场景表达，值得学习。",
                                 "teacher_note": "下次想说负责收银时，用 run the register，比 operate the cash register 更自然；使用边界：主要用于零售、餐饮等需要结账的服务业场景；易错提醒：register 是收银机，不是注册；中文误区：不要翻成跑登记。",
+                                "retrieval_prompt": "这句里表示负责收银的表达是什么？",
                                 "why_it_matters": "是海外生活、打工或购物时极高频的真实场景表达。",
                                 "how_to_use_it": "I used to run the register at a coffee shop.",
                                 "usage_boundary": "主要用于零售、餐饮等需要结账的服务业场景。",
@@ -8815,6 +8822,7 @@ class WorkerQualityTests(unittest.TestCase):
                 phrase = "spacing effect" if "spacing" in str(project.get("title", "")).lower() else "retrieval practice"
                 question = "为什么间隔复习能提升长期保持？" if phrase == "spacing effect" else "为什么主动回忆比重读更有效？"
                 answer = "间隔能让大脑在遗忘前后重新取回信息。" if phrase == "spacing effect" else "主动回忆训练从记忆中取回信息。"
+                definition = "间隔效应指把复习分散到不同时间以提升保持。" if phrase == "spacing effect" else "主动回忆指先从记忆中提取答案，再核对资料。"
                 evidence = "Spacing reviews across time improves long-term retention." if phrase == "spacing effect" else "Retrieval practice strengthens later access better than rereading."
                 return {
                     "segments": [
@@ -8827,7 +8835,7 @@ class WorkerQualityTests(unittest.TestCase):
                                     "retrieval_task": question,
                                     "atomic_answer": answer,
                                     "phrase": phrase,
-                                    "definition": answer,
+                                    "definition": definition,
                                     "source_evidence": evidence,
                                     "memory_hook": "把复习当成主动搜索，而不是重看。",
                                     "transfer_check": "合上资料先回答，再打开核对原文。",
@@ -13899,7 +13907,7 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(project["_source_expansion_stats"]["eligible_source_groups"], 8)
         self.assertEqual(project["_source_expansion_stats"]["requested_source_groups"], 3)
 
-    def test_default_catch_all_selection_includes_review_but_never_reject(self):
+    def test_default_catch_all_selection_defaults_to_recommended_only(self):
         segments = [
             {
                 "id": "seg_0001",
@@ -13917,7 +13925,7 @@ class WorkerQualityTests(unittest.TestCase):
 
         selected = worker.apply_default_generated_card_selection(segments, {"selection_strategy": "catch_all"})
 
-        self.assertEqual([card["enabled"] for card in selected[0]["cards"]], [True, True, False])
+        self.assertEqual([card["enabled"] for card in selected[0]["cards"]], [True, False, False])
 
     def test_pronunciation_fields_do_not_affect_quality_score(self):
         segment = {

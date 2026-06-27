@@ -20,17 +20,17 @@ const apiConfig: ApiConfig = {
   provider: 'gemini-vertex',
   base_url: 'https://aiplatform.googleapis.com',
   api_key: '',
-  model: 'gemini-3.1-pro-preview',
+  model: 'gemini-3.5-flash',
   capabilities: ['learning-points', 'card-generation'],
   tts_config: ttsConfig,
 }
 
 const savedApiProfile: SavedApiProfile = {
   id: 'vertex-quality',
-  label: 'Gemini Vertex Quality',
+  label: 'Gemini Vertex Flash',
   provider: 'gemini-vertex',
   base_url: 'https://aiplatform.googleapis.com',
-  model: 'gemini-3.1-pro-preview',
+  model: 'gemini-3.5-flash',
   capabilities: ['learning-points', 'card-generation'],
   auth: 'gcloud',
   has_api_key: false,
@@ -49,7 +49,7 @@ describe('settingsTestStatus', () => {
     expect(status.tone).toBe('idle')
     expect(status.title).toBe('尚未测试')
     expect(status.message).toContain('测试连接')
-    expect(status.meta).toBe('gemini-vertex · gemini-3.1-pro-preview')
+    expect(status.meta).toBe('gemini-vertex · gemini-3.5-flash')
   })
 
   it('builds testing API status without replacing the current config meta', () => {
@@ -62,7 +62,7 @@ describe('settingsTestStatus', () => {
     expect(status.tone).toBe('testing')
     expect(status.title).toBe('正在测试连接')
     expect(status.message).toContain('正在向当前接口')
-    expect(status.meta).toBe('gemini-vertex · gemini-3.1-pro-preview')
+    expect(status.meta).toBe('gemini-vertex · gemini-3.5-flash')
   })
 
   it('builds API result status from the latest test result', () => {
@@ -113,7 +113,7 @@ describe('settingsTestStatus', () => {
     ).toEqual({
       ok: true,
       provider: 'gemini-vertex',
-      model: 'gemini-3.1-pro-preview',
+      model: 'gemini-3.5-flash',
       message: '已保存的模型方案测试通过。配置未改变，无需重复测试。',
     })
   })

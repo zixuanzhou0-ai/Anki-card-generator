@@ -1,6 +1,6 @@
 # Privacy
 
-This document describes the data flow for Anki Card Generator `v0.9.8-beta`.
+This document describes the data flow for Anki Card Generator `v0.9.9-beta`.
 
 ## Data kept on this device
 

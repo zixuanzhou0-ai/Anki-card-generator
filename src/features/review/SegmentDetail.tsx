@@ -133,7 +133,7 @@ export function SegmentDetail({
           <div>
             <span>{isReading ? '文档精读学习点' : '文档知识学习点'}</span>
             <strong>
-              {knowledgeType || '可用卡片'}
+              {knowledgeType || '可导出卡片'}
             </strong>
           </div>
           <p>{isReading ? '精读动作' : '记忆动作'}：{segmentTrainingFocus(segment, documentStudyMode)}</p>
@@ -153,7 +153,7 @@ export function SegmentDetail({
           <div>
             <span>学习点</span>
             <strong>
-              可用卡片
+              可导出卡片
               {phraseValueScore(segment.phrase_value_score) !== null
                 ? ` · ${phraseValueScore(segment.phrase_value_score)}/5`
                 : ''}

@@ -1,4 +1,4 @@
-﻿import type { Project, QualityFunnel } from './types'
+import type { Project, QualityFunnel } from './types'
 import {
   getExportSelectionStats,
   isRecommendedCardForExport,
@@ -86,17 +86,17 @@ export function getQualityDiagnostics(project: Project | null, recommendedCount:
               ? `当前生成了 ${usableCount} 张精读卡，默认已选；可以手动取消不需要的卡。`
               : isDocument
                 ? `当前生成了 ${usableCount} 张知识卡，默认已选；可以手动取消不需要的卡。`
-                : `当前生成了 ${usableCount} 张可用卡，默认已选；可以手动取消不需要的卡。`
+                : `当前生成了 ${usableCount} 张可导出卡，默认已选；可以手动取消不需要的卡。`
             : isReading
-              ? '当前没有生成可用精读卡，可能是模型返回空或语言点被质量 gate 过滤。'
+              ? '当前没有生成可导出精读卡，可能是模型返回空或语言点被质量 gate 过滤。'
               : isDocument
-                ? '当前没有生成可用知识卡，可能是模型返回空或知识点被质量 gate 过滤。'
-                : '当前没有生成可用卡，可能是词伙评分不足、模型返回空或学习点被质量 gate 过滤。'
+                ? '当前没有生成可导出知识卡，可能是模型返回空或知识点被质量 gate 过滤。'
+                : '当前没有生成可导出卡，可能是词伙评分不足、模型返回空或学习点被质量 gate 过滤。'
           : isReading
-            ? '可用精读卡偏少，通常是语言点价值较弱或模型评审较严格。'
+            ? '可导出精读卡偏少，通常是语言点价值较弱或模型评审较严格。'
             : isDocument
-              ? '可用知识卡偏少，通常是文档片段信息不足或模型评审较严格。'
-              : '可用卡偏少，通常是重复合并、低价值表达或模型评审较严格。'
+              ? '可导出知识卡偏少，通常是文档片段信息不足或模型评审较严格。'
+              : '可导出卡偏少，通常是重复合并、低价值表达或模型评审较严格。'
       : ''
 
   return {

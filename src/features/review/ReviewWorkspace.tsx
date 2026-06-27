@@ -206,7 +206,7 @@ export function ReviewWorkspace({
             aria-pressed={reviewView === 'cards'}
             onClick={() => setReviewView('cards')}
           >
-            可用卡片
+            可导出卡片
           </button>
           <button
             type="button"
@@ -418,7 +418,7 @@ function PartialGenerationNotice({
           <span>
             {Object.entries(reasonCounts)
               .map(([label, count]) => `${label} ${count}`)
-              .join(' · ') || '部分学习点没有生成可用卡。'}
+              .join(' · ') || '部分学习点没有生成可导出卡。'}
           </span>
         </div>
         <em>查看原因</em>
@@ -674,7 +674,7 @@ function LearningPointInventoryPanel({ items }: { items: LearningPointInventoryI
       <div className="inventory-header">
         <div>
           <strong>更多学习点</strong>
-          <span>可直接学习的内容已经生成到“可用卡片”；这里说明为什么有些学习点没有制成卡片。</span>
+          <span>可直接学习的内容已经生成到“可导出卡片”；这里说明为什么有些学习点没有制成卡片。</span>
         </div>
       </div>
       <div className="inventory-filters" aria-label="候选类型筛选">
@@ -718,7 +718,7 @@ function LearningPointInventoryPanel({ items }: { items: LearningPointInventoryI
         {filteredItems.length === 0 ? (
           <div className="filter-empty-state">
             <strong>当前没有更多未制卡学习点</strong>
-            <span>合法学习点已经自动生成到“可用卡片”，导出前可以在那里勾选或取消。</span>
+            <span>合法学习点已经自动生成到“可导出卡片”，导出前可以在那里勾选或取消。</span>
           </div>
         ) : null}
       </div>

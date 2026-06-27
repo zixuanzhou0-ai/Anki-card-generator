@@ -24,7 +24,7 @@ function inventoryItem(
     estimated_level: 'B1',
     value_score: 3,
     learning_action: id === 'lp-listening' ? '识别 gonna 的弱读。' : '理解 register 在服务业场景里是收银机。',
-    reason: '合法学习点，应进入可用卡片区。',
+    reason: '合法学习点，应进入可导出卡片区。',
     status,
     ...overrides,
   }

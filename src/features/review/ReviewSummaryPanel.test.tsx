@@ -263,7 +263,7 @@ describe('ReviewSummaryPanel', () => {
 
     expect(screen.getByText('历史项目')).toBeInTheDocument()
     expect(screen.getByText(/智能筛选过程 · 发现 2 个学习点/)).toBeInTheDocument()
-    expect(screen.getByText('可用卡片')).toBeInTheDocument()
+    expect(screen.getByText('可导出卡片')).toBeInTheDocument()
     expect(screen.getByText('字幕句')).toBeInTheDocument()
     expect(screen.queryByText('文档精读过程')).not.toBeInTheDocument()
     expect(screen.queryByText('可用精读卡')).not.toBeInTheDocument()

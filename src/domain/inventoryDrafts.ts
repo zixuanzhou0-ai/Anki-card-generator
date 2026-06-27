@@ -234,7 +234,7 @@ export function materializeLearningPointInventory(project: Project) {
         ...item,
         status: 'card_generated' as const,
         card_id: item.card_id || existingCardId,
-        filter_reason: item.filter_reason || '已存在对应可用卡片。',
+        filter_reason: item.filter_reason || '已存在对应可导出卡片。',
       }
     }
 
