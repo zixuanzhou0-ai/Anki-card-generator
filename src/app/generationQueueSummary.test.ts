@@ -103,7 +103,7 @@ describe('generationQueueSummary', () => {
     expect(summary.exportableCount).toBe(2)
   })
 
-  it('summarizes local video without TTS and document queues without video media', () => {
+  it('summarizes local video with required TTS and document queues without video media', () => {
     const local = buildGenerationQueueSummary({
       generationQueuePoints: [point()],
       generationBatchProgress: null,
@@ -130,9 +130,10 @@ describe('generationQueueSummary', () => {
 
     expect(local.sourceLabel).toBe('本地视频 + SRT')
     expect(local.includesVideo).toBe(true)
-    expect(local.includesSentenceTts).toBe(false)
-    expect(local.estimatedMediaTasks).toBe(4)
+    expect(local.includesSentenceTts).toBe(true)
+    expect(local.estimatedMediaTasks).toBe(6)
     expect(local.securityWarnings).toContain('本地文件路径将在本轮确认后读取')
+    expect(local.securityWarnings).toContain('TTS 未启用，视频卡导出会被阻止')
 
     const document = buildGenerationQueueSummary({
       generationQueuePoints: [point()],

@@ -134,7 +134,7 @@ describe('validateServiceBaseUrl', () => {
     })
 
     expect(normalized.base_url).toBe('https://aiplatform.googleapis.com')
-    expect(normalized.model).toBe('gemini-3.1-pro-preview')
+    expect(normalized.model).toBe('gemini-3.5-flash')
     expect(validateApiConfigForRequest(normalized)).toBeNull()
   })
 

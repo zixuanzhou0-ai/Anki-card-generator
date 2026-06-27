@@ -163,6 +163,7 @@ import {
 import { isTauriRuntime } from '../services/runtime'
 import {
   openAnkiImport as openAnkiImportFile,
+  defaultExportDirectory,
   listDirectoryFiles,
   revealPath,
   selectDirectory,
@@ -433,7 +434,7 @@ export function useAppController() {
   const localSubtitlePath = cleanLocalPath(request.subtitle_path)
   const sourceReady = isSourceInputReady(request)
   const tts = request.api_config.tts_config
-  const ttsRequired = request.source_mode !== 'document' && tts.enabled && tts.provider !== 'disabled'
+  const ttsRequired = request.source_mode !== 'document'
   const activeApiProfileId = apiProfileIdFromConfig(request.api_config)
   const activeTtsProfileId = ttsProfileIdFromConfig(tts)
   const activeApiProfile = savedApiProfiles.find((profile) => profile.id === activeApiProfileId)
@@ -513,7 +514,10 @@ export function useAppController() {
   })
   const apiReadyForGeneration = request.api_config.provider !== 'local' && Boolean(effectiveApiTestResult?.ok)
   const apiReady = apiReadyForGeneration
-  const ttsDetail = buildTtsReadinessDetail({ ttsRequired, ttsTestResult })
+  const effectiveTtsTestResult: Pick<TtsTestResult, 'ok'> | null =
+    ttsTestResult ?? (ttsProfileDisplayStatus.savedTestOk ? { ok: true } : null)
+  const ttsReadyForGeneration = Boolean(effectiveTtsTestResult?.ok)
+  const ttsDetail = buildTtsReadinessDetail({ ttsRequired, ttsTestResult: effectiveTtsTestResult })
   const envReady = isEnvironmentReadyForGeneration({
     desktopRuntime: isTauriRuntime(),
     envStatus,
@@ -725,13 +729,13 @@ export function useAppController() {
     const shortHint =
       usableCount < 5
         ? isReading
-          ? '可用精读卡偏少，通常是语言点较弱、模型返回空或多数学习点被过滤；可以在“更多学习点”查看原因。'
+          ? '可导出精读卡偏少，通常是语言点较弱、模型返回空或多数学习点被过滤；可以在“更多学习点”查看原因。'
           : isDocument
-            ? '可用知识卡偏少，通常是文档分段较少、模型返回空或多数学习点被过滤；可以在“更多学习点”查看原因。'
-            : '可用卡偏少，通常是字幕太短、重复太多、词伙评分不足或模型返回空；可以在“更多学习点”查看原因。'
+            ? '可导出知识卡偏少，通常是文档分段较少、模型返回空或多数学习点被过滤；可以在“更多学习点”查看原因。'
+            : '可导出卡偏少，通常是字幕太短、重复太多、词伙评分不足或模型返回空；可以在“更多学习点”查看原因。'
         : ''
     const editedHint = editedDuringRun ? ' 生成期间你修改过设置；下一次生成会使用新配置。' : ''
-    const generatedLabel = isReading ? '精读卡' : isDocument ? '知识卡' : '可用卡'
+    const generatedLabel = isReading ? '精读卡' : isDocument ? '知识卡' : '卡'
     const repairHint = repairRequiredCount > 0 ? ` 已隔离 ${repairRequiredCount} 张需修复草稿卡，默认不会导出。` : ''
     const generationDiagnostics = projectToShow.card_generation_diagnostics
     const generationMissingCount = generationDiagnostics?.missing_learning_point_count ?? 0
@@ -2801,8 +2805,17 @@ export function useAppController() {
         )
         return
       }
-      if (ttsRequired && !ttsTestResult?.ok) {
-        setStatus('TTS 还没有通过测试。本轮可以先生成卡片，导出时会提示或跳过 TTS 增强。')
+      const resolvedTtsForPreflight = resolveTtsConfig(generateRequest.api_config.tts_config, resolvedApi.api)
+      if (ttsRequired && (!resolvedTtsForPreflight.enabled || resolvedTtsForPreflight.provider === 'disabled')) {
+        openPreflightSettings(
+          'tts',
+          '视频卡导出需要整句 TTS 和表达 TTS。请在“语音/TTS”里启用并测试通过后再生成 APKG。',
+        )
+        return
+      }
+      if (ttsRequired && !ttsReadyForGeneration) {
+        openPreflightSettings('tts', '视频卡导出需要先通过 TTS 测试，否则不会生成 APKG。请测试语音配置后再继续。')
+        return
       }
 
       if (
@@ -2845,9 +2858,10 @@ export function useAppController() {
     })
     setStatus('正在打开 APKG 保存目录选择器。选择后会自动生成卡片正文、TTS、视频片段并打包。')
     await waitForNextPaint()
+    const defaultOutputDir = defaultExportDirectoryForRequest(request) ?? (await defaultExportDirectory())
     const selectedOutputDir = await selectDirectory({
       title: APKG_EXPORT_DIRECTORY_DIALOG_TITLE,
-      defaultPath: defaultExportDirectoryForRequest(request),
+      defaultPath: defaultOutputDir,
     })
     if (typeof selectedOutputDir !== 'string') {
       generationAutoExportOutputDirRef.current = null
@@ -2989,11 +3003,15 @@ export function useAppController() {
       ? { ...resolvedExportTtsConfig, enabled: false, provider: 'disabled' as const }
       : resolvedExportTtsConfig
 
+    const defaultOutputDir =
+      defaultExportDirectoryForProject(projectForExport) ??
+      defaultExportDirectoryForRequest(request) ??
+      (await defaultExportDirectory())
     const outputDir =
       options.outputDir ??
       (await selectDirectory({
         title: APKG_EXPORT_DIRECTORY_DIALOG_TITLE,
-        defaultPath: defaultExportDirectoryForProject(projectForExport) ?? defaultExportDirectoryForRequest(request),
+        defaultPath: defaultOutputDir,
       }))
     if (typeof outputDir !== 'string') {
       setLastWorkerError(null)
@@ -3194,7 +3212,7 @@ export function useAppController() {
         segments,
       }
     })
-    setStatus('已反选当前生成的可用卡。')
+    setStatus('已反选当前可导出的卡。')
   }
 
   const updateCard = (segmentId: string, cardId: string, patch: Partial<Card>) => {

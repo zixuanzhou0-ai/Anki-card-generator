@@ -132,8 +132,8 @@ describe('SettingsDialog', () => {
     expect(within(health).getByText('模型 API')).toBeInTheDocument()
     expect(within(health).getByText('语音 TTS')).toBeInTheDocument()
     expect(within(health).getByText('本地环境')).toBeInTheDocument()
-    expect(within(health).getAllByText('未测试')).toHaveLength(1)
-    expect(within(health).getByText('视频卡导出需要整句 TTS 和表达 TTS；请在语音页开启并测试。')).toBeInTheDocument()
+    expect(within(health).getAllByText('未测试')).toHaveLength(2)
+    expect(within(health).getByText('开启后建议先测试 TTS。')).toBeInTheDocument()
     expect(within(health).queryByText(/只使用原声/)).not.toBeInTheDocument()
 
     fireEvent.click(within(health).getByRole('button', { name: /本地环境/ }))

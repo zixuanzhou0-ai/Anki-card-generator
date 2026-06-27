@@ -419,70 +419,73 @@ def sqlite_fallback_report(apkg: Path) -> dict:
                     )
                 finally:
                     tmp_path.unlink(missing_ok=True)
-        with tempfile.TemporaryDirectory() as temp_dir:
-            db_path = Path(temp_dir) / collection_name
-            db_path.write_bytes(archive.read(collection_name))
-            con = sqlite3.connect(db_path)
-            try:
-                models = json.loads(con.execute("select models from col").fetchone()[0])
-                model_values = list(models.values())
-                matched_models = [
-                    model
-                    for model in model_values
-                    if str(model.get("name", "")).startswith(MODEL_PREFIXES)
-                ]
-                notes = [row[0] for row in con.execute("select flds from notes").fetchall()]
-                field_notes = note_field_dicts(con, models)
-                field_report = offline_field_report(field_notes, media_names)
-                note_fields = "\n".join(notes)
-                failed_checks = []
-                if missing_archive_media:
-                    failed_checks.append("missing_archive_media")
-                if invalid_archive_media:
-                    failed_checks.append("invalid_archive_media")
-                for key in (
-                    "missing_required_fields",
-                    "missing_referenced_media",
-                    "pronunciation_meta_parse_errors",
-                    "tts_text_hash_mismatches",
-                    "phrase_tts_text_hash_mismatches",
-                    "empty_required_text_fields",
-                    "blocked_study_text_values",
-                    "corrupted_study_text_values",
-                    "video_reference_compatibility_issues",
-                ):
-                    if field_report.get(key):
-                        failed_checks.append(key)
-                if video_media_compatibility_issues:
-                    failed_checks.append("video_media_compatibility_issues")
-                return {
-                    "ok": not failed_checks,
-                    "mode": "sqlite_fallback",
-                    "apkg": str(apkg),
-                    "added": None,
-                    "note_count": len(notes),
-                    "card_count": con.execute("select count() from cards").fetchone()[0],
-                    "failed_checks": failed_checks,
-                    "models": [model.get("name") for model in matched_models],
-                    "template_names": [
-                        template.get("name")
-                        for model in matched_models
-                        for template in model.get("tmpls", [])
-                    ],
-                    "has_video_html_field": "<video" in note_fields,
-                    "has_mp4_video_source": ".mp4" in note_fields,
-                    "has_webm_video_source": ".webm" in note_fields,
-                    "has_poster_html_field": 'poster="' in note_fields,
-                    "has_audio_html_field": any("<audio" in fields and ".mp3" in fields for fields in notes),
-                    "media_files": sorted(media_map.values()),
-                    "missing_archive_media": missing_archive_media,
-                    "invalid_archive_media": invalid_archive_media,
-                    "video_media_compatibility_issues": video_media_compatibility_issues,
-                    **field_report,
-                    "media_dir": "",
-                }
-            finally:
-                con.close()
+        with tempfile.NamedTemporaryFile(suffix=f"_{collection_name}", delete=False) as tmp_db:
+            db_path = Path(tmp_db.name)
+            tmp_db.write(archive.read(collection_name))
+        con = sqlite3.connect(db_path)
+        try:
+            models = json.loads(con.execute("select models from col").fetchone()[0])
+            model_values = list(models.values())
+            matched_models = [
+                model
+                for model in model_values
+                if str(model.get("name", "")).startswith(MODEL_PREFIXES)
+            ]
+            notes = [row[0] for row in con.execute("select flds from notes").fetchall()]
+            field_notes = note_field_dicts(con, models)
+            field_report = offline_field_report(field_notes, media_names)
+            note_fields = "\n".join(notes)
+            failed_checks = []
+            if missing_archive_media:
+                failed_checks.append("missing_archive_media")
+            if invalid_archive_media:
+                failed_checks.append("invalid_archive_media")
+            for key in (
+                "missing_required_fields",
+                "missing_referenced_media",
+                "pronunciation_meta_parse_errors",
+                "tts_text_hash_mismatches",
+                "phrase_tts_text_hash_mismatches",
+                "empty_required_text_fields",
+                "blocked_study_text_values",
+                "corrupted_study_text_values",
+                "video_reference_compatibility_issues",
+            ):
+                if field_report.get(key):
+                    failed_checks.append(key)
+            if video_media_compatibility_issues:
+                failed_checks.append("video_media_compatibility_issues")
+            return {
+                "ok": not failed_checks,
+                "mode": "sqlite_fallback",
+                "apkg": str(apkg),
+                "added": None,
+                "note_count": len(notes),
+                "card_count": con.execute("select count() from cards").fetchone()[0],
+                "failed_checks": failed_checks,
+                "models": [model.get("name") for model in matched_models],
+                "template_names": [
+                    template.get("name")
+                    for model in matched_models
+                    for template in model.get("tmpls", [])
+                ],
+                "has_video_html_field": "<video" in note_fields,
+                "has_mp4_video_source": ".mp4" in note_fields,
+                "has_webm_video_source": ".webm" in note_fields,
+                "has_poster_html_field": 'poster="' in note_fields,
+                "has_audio_html_field": any("<audio" in fields and ".mp3" in fields for fields in notes),
+                "media_files": sorted(media_map.values()),
+                "missing_archive_media": missing_archive_media,
+                "invalid_archive_media": invalid_archive_media,
+                "video_media_compatibility_issues": video_media_compatibility_issues,
+                **field_report,
+                "media_dir": "",
+            }
+        finally:
+            con.close()
+            db_path.unlink(missing_ok=True)
+            Path(f"{db_path}-shm").unlink(missing_ok=True)
+            Path(f"{db_path}-wal").unlink(missing_ok=True)
 
 
 def main() -> None:

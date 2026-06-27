@@ -382,6 +382,55 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(answers["right now"]["level"], "A1")
         self.assertEqual(answers["in the mood for"]["status"], "recommended")
 
+    def test_extract_learning_points_demotes_ai_recommended_weak_new_points(self):
+        original = worker._legacy_worker.gemini_vertex_generate_content
+
+        def fake_gemini_vertex_generate_content(api, prompt, **kwargs):
+            compact = json.loads(prompt.rsplit("_JSON_START", 1)[1].strip())
+            sources = []
+            for source in compact:
+                sources.append(
+                    {
+                        "source_segment_id": source["source_segment_id"],
+                        "reviews": [],
+                        "new_learning_points": [
+                            {
+                                "id": f"{source['source_segment_id']}_age_groups",
+                                "decision": "recommend",
+                                "value_score": 4.8,
+                                "estimated_level": "A2",
+                                "exact_span": "age groups",
+                                "answer_core": "age groups",
+                                "normalized_answer": "age groups",
+                                "candidate_kind": "expression",
+                                "phrase_type": "collocation",
+                                "learning_action": "Practice age groups as a topic label.",
+                                "reason": "Model says this is useful.",
+                                "status_reason": "Model recommended this noun chunk.",
+                            }
+                        ],
+                    }
+                )
+            return json.dumps({"sources": sources}, ensure_ascii=False)
+
+        worker._legacy_worker.gemini_vertex_generate_content = fake_gemini_vertex_generate_content
+        try:
+            result = worker.extract_learning_points_from_subtitles(
+                {
+                    "language": "en",
+                    "level": "B1",
+                    "language_focus": ["phrases", "vocabulary", "grammar", "listening"],
+                    "api_config": self._ai_config(),
+                },
+                [worker.Cue(1, 1.0, 3.0, "There are different age groups in my school.")],
+            )
+        finally:
+            worker._legacy_worker.gemini_vertex_generate_content = original
+
+        point = {item["answer_core"]: item for item in result["learning_points"]}["age groups"]
+        self.assertIn("weak_noun_chunk", point["recommendation_flags"])
+        self.assertEqual(point["status"], "candidate_only")
+
     def test_extract_learning_points_soft_ai_rejects_remain_candidates(self):
         original = worker._legacy_worker.gemini_vertex_generate_content
 
@@ -1441,8 +1490,14 @@ class WorkerQualityTests(unittest.TestCase):
                                 "exact_span": "confident",
                                 "english": segments[0]["text"],
                                 "chinese": "自信的",
-                                "definition": "confident 表示有信心。",
-                                "teacher_note": "训练 confident 的语境用法。",
+                                "definition": "在当前语境里表示对自己使用英语有把握。",
+                                "collocations": "feel confident / sound confident / be confident with English",
+                                "context": segments[0]["text"],
+                                "chinese_feel": "强调使用英语时有底气、不怯场。",
+                                "teacher_note": "be confident with something 表示对某件事有把握。",
+                                "how_to_use_it": "用 be confident with 说明对某件事有把握。",
+                                "why_it_matters": "帮助区分自信情绪和对具体能力有把握的语境。",
+                                "retrieval_prompt": "这句里表示有信心的词是什么？",
                             }
                         ],
                     }
@@ -1814,6 +1869,7 @@ class WorkerQualityTests(unittest.TestCase):
                                 "chinese_feel": "安排某人暂时看收银台。",
                                 "why": "服务业高频场景表达，值得学习。",
                                 "teacher_note": "下次想说负责收银时，用 run the register，比 operate the cash register 更自然；使用边界：主要用于零售、餐饮等需要结账的服务业场景；易错提醒：register 是收银机，不是注册；中文误区：不要翻成跑登记。",
+                                "retrieval_prompt": "这句里表示负责收银的表达是什么？",
                                 "why_it_matters": "是海外生活、打工或购物时极高频的真实场景表达。",
                                 "how_to_use_it": "I used to run the register at a coffee shop.",
                                 "usage_boundary": "主要用于零售、餐饮等需要结账的服务业场景。",
@@ -2313,6 +2369,7 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(funnel["card_generation_filtered_card_count"], 0)
         self.assertEqual(funnel["card_generation_skipped_learning_point_count"], 0)
         self.assertEqual(funnel["user_selected_fallback_card_count"], 2)
+        self.assertEqual(funnel["review_only_card_count"], 0)
         self.assertEqual(
             funnel["successful_learning_point_count"]
             + funnel["card_generation_missing_learning_point_count"]
@@ -2337,12 +2394,213 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(cards_by_lp["lp-good"]["answer_core"], "run the register")
         self.assertEqual(cards_by_lp["lp-missing"]["answer_core"], "get this over with")
         self.assertEqual(cards_by_lp["lp-filtered"]["answer_core"], "bad point")
-        self.assertTrue(all(card["enabled"] for card in cards_by_lp.values()))
-        self.assertEqual(cards_by_lp["lp-missing"]["generation_source"], "fallback_from_selected_learning_point")
-        self.assertEqual(cards_by_lp["lp-filtered"]["generation_source"], "fallback_from_selected_learning_point")
+        self.assertEqual(cards_by_lp["lp-missing"]["generation_source"], "basic_from_selected_learning_point")
+        self.assertEqual(cards_by_lp["lp-filtered"]["generation_source"], "basic_from_selected_learning_point")
         self.assertIn("card", cards_by_lp["lp-missing"]["missing_ai_fields"])
-        self.assertIn("teacher_note", cards_by_lp["lp-filtered"]["fallback_fields_filled"])
-        self.assertFalse(any(worker._legacy_worker.card_has_export_blocking_content(card) for card in cards_by_lp.values()))
+        self.assertIn("teacher_note", cards_by_lp["lp-filtered"].get("fallback_fields_filled", []))
+        self.assertTrue(cards_by_lp["lp-good"].get("enabled"))
+        self.assertTrue(cards_by_lp["lp-missing"].get("enabled"))
+        self.assertTrue(cards_by_lp["lp-filtered"].get("enabled"))
+        self.assertFalse(worker._legacy_worker.card_has_export_blocking_content(cards_by_lp["lp-good"]))
+        self.assertFalse(worker._legacy_worker.card_has_export_blocking_content(cards_by_lp["lp-missing"]))
+        self.assertFalse(worker._legacy_worker.card_has_export_blocking_content(cards_by_lp["lp-filtered"]))
+
+    def test_generate_cards_from_learning_points_treats_metadata_only_repairs_as_exportable(self):
+        original_call_model_batches = worker._legacy_worker.call_model_batches
+
+        def fake_call_model_batches(project, segments):
+            segment = segments[0]
+            return {
+                "segments": [
+                    {
+                        "id": segment["id"],
+                        "cards": [
+                            {
+                                "type": "phrase",
+                                "phrase": "sort of",
+                                "english": segment["text"],
+                                "chinese": "Kind of; used to soften a statement.",
+                                "definition": "Use it to make a statement less direct or less absolute in casual speech.",
+                                "collocations": "sort of tired / sort of like / sort of works",
+                                "context": segment["text"],
+                                "example": "I'm sort of tired, but I can keep going.",
+                                "chinese_feel": "Softens the statement in casual speech.",
+                                "why": "High-frequency discourse marker for natural speech.",
+                                "difficulty": "A2",
+                                "teacher_note": "Teach sort of as a softener, not as the noun meaning of kind/type.",
+                                "cloze": "I'm ____ tired, but I can keep going.",
+                            }
+                        ],
+                    }
+                ]
+            }
+
+        worker._legacy_worker.call_model_batches = fake_call_model_batches
+        try:
+            project = worker.handle_generate_cards_from_learning_points(
+                {
+                    "project_id": "project-metadata-repair",
+                    "title": "metadata repair",
+                    "language": "en",
+                    "level": "A2",
+                    "api_config": self._ai_config(),
+                    "disable_card_generation_cache": True,
+                    "selected_learning_point_ids": ["lp-sort-of"],
+                    "learning_points": [
+                        {
+                            "id": "lp-sort-of",
+                            "source_segment_id": "src-1",
+                            "source_sentence": "I sort of talk to different age groups.",
+                            "source_time": "00:00:10.000 - 00:00:12.000",
+                            "start": 10.0,
+                            "end": 12.0,
+                            "exact_span": "sort of",
+                            "answer_core": "sort of",
+                            "normalized_answer": "sort of",
+                            "candidate_kind": "pragmatic_marker",
+                            "phrase_type": "discourse_marker",
+                            "learning_action": "Practice sort of as a spoken softener.",
+                            "learning_action_key": "pragmatic_marker:sort of",
+                            "value_score": 4.7,
+                            "reason": "High-transfer spoken discourse marker.",
+                            "confidence": "high",
+                            "status": "recommended",
+                        }
+                    ],
+                    "card_types": ["phrase"],
+                }
+            )
+        finally:
+            worker._legacy_worker.call_model_batches = original_call_model_batches
+
+        card = project["segments"][0]["cards"][0]
+        funnel = project["quality_funnel"]
+        self.assertTrue(card.get("enabled"))
+        self.assertEqual(card["generation_source"], "ai_repaired")
+        self.assertEqual(card["quality"]["status"], "recommended")
+        self.assertEqual(funnel["generation_success_count"], 1)
+        self.assertEqual(funnel["card_generation_filtered_card_count"], 0)
+        self.assertEqual(funnel["review_only_card_count"], 0)
+        self.assertFalse(worker._legacy_worker.card_has_export_blocking_content(card))
+        self.assertEqual(card["learning_point_id"], "lp-sort-of")
+        self.assertEqual(card["answer_core"], "sort of")
+        self.assertIn("answer_core", card.get("missing_ai_fields", []))
+
+    def test_generate_cards_from_learning_points_retries_missing_selected_points_individually(self):
+        original_call_model_batches = worker._legacy_worker.call_model_batches
+        called_batches: list[list[str]] = []
+
+        def make_card(segment):
+            return {
+                "type": "phrase",
+                "learning_point_id": segment["learning_point_id"],
+                "phrase": segment["answer_core"],
+                "answer_core": segment["answer_core"],
+                "english": segment["text"],
+                "chinese": f"Meaning of {segment['answer_core']}.",
+                "definition": f"Use {segment['answer_core']} naturally in this context.",
+                "collocations": segment["answer_core"],
+                "context": segment["text"],
+                "example": segment["text"],
+                "chinese_feel": "Natural spoken expression.",
+                "why": "Useful and transferable.",
+                "difficulty": "A2",
+                "teacher_note": "AI mock complete card.",
+                "cloze": segment["text"],
+            }
+
+        def fake_call_model_batches(project, segments, batch_size=10):
+            ids = [str(segment["learning_point_id"]) for segment in segments]
+            called_batches.append(ids)
+            if len(called_batches) == 1:
+                returned = [segment for segment in segments if str(segment["learning_point_id"]) == "lp-wake-up"]
+            else:
+                returned = segments
+            return {
+                "segments": [
+                    {"id": segment["id"], "cards": [make_card(segment)]}
+                    for segment in returned
+                ]
+            }
+
+        points = [
+            {
+                "id": "lp-get-out",
+                "source_segment_id": "src-1",
+                "source_sentence": "I wake up at half past 7 and get out of bed.",
+                "source_time": "00:00:10.000 - 00:00:12.000",
+                "start": 10.0,
+                "end": 12.0,
+                "exact_span": "get out of bed",
+                "answer_core": "get out of bed",
+                "normalized_answer": "get out of bed",
+                "candidate_kind": "expression",
+                "phrase_type": "collocation",
+                "learning_action": "Practice get out of bed.",
+                "learning_action_key": "expression:get out of bed",
+                "value_score": 4.7,
+                "status": "recommended",
+            },
+            {
+                "id": "lp-wake-up",
+                "source_segment_id": "src-1",
+                "source_sentence": "I wake up at half past 7 and get out of bed.",
+                "source_time": "00:00:10.000 - 00:00:12.000",
+                "start": 10.0,
+                "end": 12.0,
+                "exact_span": "wake up",
+                "answer_core": "wake up",
+                "normalized_answer": "wake up",
+                "candidate_kind": "expression",
+                "phrase_type": "phrasal_verb",
+                "learning_action": "Practice wake up.",
+                "learning_action_key": "expression:wake up",
+                "value_score": 4.1,
+                "status": "recommended",
+            },
+            {
+                "id": "lp-relax",
+                "source_segment_id": "src-2",
+                "source_sentence": "I relax for a bit after lunch.",
+                "source_time": "00:00:13.000 - 00:00:15.000",
+                "start": 13.0,
+                "end": 15.0,
+                "exact_span": "relax for a bit",
+                "answer_core": "relax for a bit",
+                "normalized_answer": "relax for a bit",
+                "candidate_kind": "expression",
+                "phrase_type": "collocation",
+                "learning_action": "Practice relax for a bit.",
+                "learning_action_key": "expression:relax for a bit",
+                "value_score": 4.7,
+                "status": "recommended",
+            },
+        ]
+
+        worker._legacy_worker.call_model_batches = fake_call_model_batches
+        try:
+            project = worker.handle_generate_cards_from_learning_points(
+                {
+                    "project_id": "project-partial-retry",
+                    "title": "partial retry",
+                    "language": "en",
+                    "level": "A2",
+                    "api_config": self._ai_config(),
+                    "disable_card_generation_cache": True,
+                    "selected_learning_point_ids": [point["id"] for point in points],
+                    "learning_points": points,
+                    "card_types": ["phrase"],
+                }
+            )
+        finally:
+            worker._legacy_worker.call_model_batches = original_call_model_batches
+
+        self.assertEqual(called_batches, [["lp-get-out", "lp-wake-up", "lp-relax"], ["lp-get-out", "lp-relax"]])
+        self.assertEqual(project["quality_funnel"]["generation_success_count"], 3)
+        self.assertEqual(project["quality_funnel"]["generation_missing_count"], 0)
+        self.assertEqual(project["quality_funnel"]["card_generation_retry_count"], 1)
+        enabled_cards = [card for segment in project["segments"] for card in segment.get("cards", []) if card.get("enabled")]
+        self.assertEqual([card["answer_core"] for card in enabled_cards], ["get out of bed", "wake up", "relax for a bit"])
 
     def test_generate_cards_from_learning_points_aligns_media_to_phrase_in_full_sentence(self):
         original_call_model_batches = worker._legacy_worker.call_model_batches
@@ -2657,8 +2915,10 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(project["card_generation_diagnostics"]["generated_card_count"], 1)
         self.assertEqual(project["card_generation_diagnostics"]["missing_learning_point_count"], 0)
         self.assertEqual(card["generation_source"], "ai_repaired")
+        self.assertTrue(card.get("enabled"))
+        self.assertEqual(card["quality"]["status"], "recommended")
         self.assertIn("definition", card["missing_ai_fields"])
-        self.assertIn("teacher_note", card["fallback_fields_filled"])
+        self.assertNotIn("fallback_fields_filled", card)
         self.assertTrue(card["definition"])
         self.assertTrue(card["teacher_note"])
 
@@ -8807,6 +9067,7 @@ class WorkerQualityTests(unittest.TestCase):
                 phrase = "spacing effect" if "spacing" in str(project.get("title", "")).lower() else "retrieval practice"
                 question = "为什么间隔复习能提升长期保持？" if phrase == "spacing effect" else "为什么主动回忆比重读更有效？"
                 answer = "间隔能让大脑在遗忘前后重新取回信息。" if phrase == "spacing effect" else "主动回忆训练从记忆中取回信息。"
+                definition = "间隔效应指把复习分散到不同时间以提升保持。" if phrase == "spacing effect" else "主动回忆指先从记忆中提取答案，再核对资料。"
                 evidence = "Spacing reviews across time improves long-term retention." if phrase == "spacing effect" else "Retrieval practice strengthens later access better than rereading."
                 return {
                     "segments": [
@@ -8819,7 +9080,7 @@ class WorkerQualityTests(unittest.TestCase):
                                     "retrieval_task": question,
                                     "atomic_answer": answer,
                                     "phrase": phrase,
-                                    "definition": answer,
+                                    "definition": definition,
                                     "source_evidence": evidence,
                                     "memory_hook": "把复习当成主动搜索，而不是重看。",
                                     "transfer_check": "合上资料先回答，再打开核对原文。",
@@ -12319,6 +12580,9 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("词霸天下实验 V1", ciba_prompt)
         self.assertIn("真实语言动作", ciba_prompt)
         self.assertIn("run the register", ciba_prompt)
+        self.assertIn("迁移测试", default_prompt)
+        self.assertIn("have break", default_prompt)
+        self.assertIn("纯名词块", default_prompt)
 
     def test_ciba_tianxia_scoring_boosts_language_actions_without_changing_default(self):
         from acg.scoring.learning_value import score_learning_point
@@ -12385,6 +12649,87 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("answer_not_locatable", scored_unlocatable["recommendation_flags"])
         self.assertEqual(unlocatable_status, "candidate_only")
         self.assertIn("清楚定位", unlocatable_reason)
+    def test_discourse_marker_learning_points_pass_contract_when_transferable(self):
+        ok, reason, normalized = worker.sanitize_learning_point_contract(
+            {
+                "candidate_kind": "expression",
+                "phrase_type": "discourse_marker",
+                "exact_span": "sort of",
+                "answer_core": "sort of",
+                "learning_action": "训练 sort of 表达口语弱化和模糊语气。",
+            },
+            "It is sort of strange at first.",
+            language="en",
+        )
+
+        self.assertTrue(ok, reason)
+        self.assertEqual(normalized["phrase_type"], "discourse_marker")
+        self.assertEqual(normalized["answer_core"], "sort of")
+
+    def test_learning_value_demotes_weak_noun_chunks_and_asr_subtitle_errors(self):
+        from acg.scoring.learning_value import assign_learning_point_status, score_learning_point
+
+        weak_noun = {
+            "candidate_kind": "expression",
+            "phrase_type": "collocation",
+            "answer_core": "age groups",
+            "source_sentence": "There are different age groups and it is only boys there.",
+            "estimated_level": "B1",
+            "value_score": 4.8,
+            "learning_action": "训练 age groups 这个名词块。",
+        }
+        scored_weak_noun = {**weak_noun, **score_learning_point(weak_noun, "B1", {})}
+        weak_status, weak_reason = assign_learning_point_status(scored_weak_noun, "B1", {})
+
+        bad_asr = {
+            "candidate_kind": "expression",
+            "phrase_type": "collocation",
+            "answer_core": "have break for 15 minutes",
+            "source_sentence": "At 10:45, we have break for 15 minutes.",
+            "estimated_level": "B1",
+            "value_score": 4.8,
+            "learning_action": "训练 have break for 15 minutes 表示休息一段时间。",
+        }
+        scored_bad_asr = {**bad_asr, **score_learning_point(bad_asr, "B1", {})}
+        bad_asr_status, _ = assign_learning_point_status(scored_bad_asr, "B1", {})
+
+        spoken_marker = {
+            "candidate_kind": "expression",
+            "phrase_type": "discourse_marker",
+            "answer_core": "sort of",
+            "source_sentence": "It is sort of strange at first.",
+            "estimated_level": "B1",
+            "value_score": 3.8,
+            "learning_action": "训练 sort of 表达口语弱化和模糊语气。",
+        }
+        scored_spoken_marker = {**spoken_marker, **score_learning_point(spoken_marker, "B1", {})}
+        marker_status, _ = assign_learning_point_status(scored_spoken_marker, "B1", {})
+
+        self.assertIn("weak_noun_chunk", scored_weak_noun["recommendation_flags"])
+        self.assertEqual(weak_status, "candidate_only")
+        self.assertIn("默认推荐", weak_reason)
+        self.assertIn("asr_grammar_suspect", scored_bad_asr["recommendation_flags"])
+        self.assertEqual(bad_asr_status, "candidate_only")
+        self.assertEqual(marker_status, "recommended")
+
+    def test_local_recall_finds_high_transfer_expression_patterns(self):
+        from acg.recall.local_learning_points import recall_local_learning_points
+
+        payload = {"level": "B1", "content_toggles": {}}
+        segment = {
+            "id": "seg_local_quality",
+            "source_sentence": (
+                "The stress is taking a toll on me, but I am under pressure "
+                "and I was wondering if we could have a break for 15 minutes."
+            ),
+        }
+        answers = {str(item.get("answer_core") or "").lower() for item in recall_local_learning_points(segment, payload)}
+
+        self.assertIn("taking a toll on", answers)
+        self.assertIn("under pressure", answers)
+        self.assertIn("i was wondering if", answers)
+        self.assertIn("have a break for 15 minutes", answers)
+
     def test_vocabulary_usage_cards_get_contextual_label(self):
         segments = [
             {
@@ -12589,6 +12934,22 @@ class WorkerQualityTests(unittest.TestCase):
         sensitive = {"phrase": "flat as a washboard", "english": "I mean you're flat as a washboard."}
         self.assertIn("可能冒犯", worker.v11_misuse_text(sensitive))
         self.assertEqual(worker.v11_source_translation_text(sensitive), "我是说，你平得像个搓衣板。")
+
+    def test_model_fallback_quality_issue_blocks_export(self):
+        card = {
+            "type": "phrase",
+            "phrase": "it only takes",
+            "chinese": "\u7ed3\u5408\u539f\u53e5\u7406\u89e3\u3002",
+            "definition": "\u4fdd\u5e95\u89e3\u91ca\u3002",
+            "teacher_note": "\u4fdd\u5e95\u751f\u6210\uff0c\u9700\u8981\u91cd\u65b0\u751f\u6210\u3002",
+            "quality": {
+                "score": 58,
+                "status": "needs_review",
+                "issues": ["\u7528\u6237\u5df2\u52fe\u9009\uff0c\u6a21\u578b\u672a\u5b8c\u6574\u8fd4\u56de\u65f6\u7531\u7cfb\u7edf\u4fdd\u5e95\u751f\u6210\u3002"],
+            },
+        }
+
+        self.assertTrue(worker._legacy_worker.card_has_export_blocking_content(card))
 
     def test_text_cleaning_module_filters_internal_placeholders(self):
         from acg.text_cleaning import clean_study_text, contains_internal_placeholder
@@ -13875,7 +14236,7 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(project["_source_expansion_stats"]["eligible_source_groups"], 8)
         self.assertEqual(project["_source_expansion_stats"]["requested_source_groups"], 3)
 
-    def test_default_catch_all_selection_includes_review_but_never_reject(self):
+    def test_default_catch_all_selection_defaults_to_recommended_only(self):
         segments = [
             {
                 "id": "seg_0001",
@@ -13893,7 +14254,7 @@ class WorkerQualityTests(unittest.TestCase):
 
         selected = worker.apply_default_generated_card_selection(segments, {"selection_strategy": "catch_all"})
 
-        self.assertEqual([card["enabled"] for card in selected[0]["cards"]], [True, True, False])
+        self.assertEqual([card["enabled"] for card in selected[0]["cards"]], [True, False, False])
 
     def test_pronunciation_fields_do_not_affect_quality_score(self):
         segment = {

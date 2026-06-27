@@ -30,6 +30,66 @@ VAGUE_LEARNING_ACTIONS = {
 }
 
 
+TRANSFER_SIGNAL_TERMS = [
+    "搭配",
+    "语境",
+    "语气",
+    "边界",
+    "连读",
+    "弱读",
+    "缩读",
+    "框架",
+    "迁移",
+    "自然",
+    "口语",
+    "用法",
+    "辨",
+    "复用",
+    "委婉",
+]
+
+WEAK_NOUN_CHUNK_ENDINGS = {
+    "group",
+    "groups",
+    "people",
+    "person",
+    "thing",
+    "things",
+    "stuff",
+    "topic",
+    "topics",
+    "example",
+    "examples",
+    "class",
+    "classes",
+    "lesson",
+    "lessons",
+    "boy",
+    "boys",
+    "girl",
+    "girls",
+    "student",
+    "students",
+}
+
+SOURCE_REVIEW_FLAGS = {
+    "possible_bad_join",
+    "too_long",
+    "rolling_caption_uncertain",
+    "repeated_adjacent_words",
+}
+
+ASR_GRAMMAR_SUSPECT_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\bhave\s+break\b",
+        r"\btake\s+break\b",
+        r"\bgo\s+school\b",
+        r"\bgo\s+work\b",
+    )
+]
+
+
 def _normalized_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip().lower())
 
@@ -57,6 +117,50 @@ def _answer_locatable(point: dict[str, Any], answer: str, words: list[str]) -> b
     return False
 
 
+def _source_quality_flags(point: dict[str, Any]) -> set[str]:
+    raw_flags = point.get("source_sentence_quality_flags") or point.get("quality_flags") or []
+    if isinstance(raw_flags, str):
+        raw_flags = [raw_flags]
+    return {str(flag) for flag in raw_flags if str(flag) and str(flag) != "clean"}
+
+
+def _has_transfer_signal(action_text: str) -> bool:
+    return any(term in action_text for term in TRANSFER_SIGNAL_TERMS)
+
+
+def _looks_like_weak_noun_chunk(answer: str, words: list[str], action_text: str) -> bool:
+    if not 2 <= len(words) <= 4:
+        return False
+    lowered = [word.lower().strip("'") for word in words]
+    if not lowered or lowered[-1] not in WEAK_NOUN_CHUNK_ENDINGS:
+        return False
+    if any(word in {"of", "for", "with", "to", "into", "out"} for word in lowered):
+        return False
+    if re.search(r"\b(?:get|make|take|have|go|come|run|turn|look|work|figure|end)\b", answer, re.IGNORECASE):
+        return False
+    return True
+
+
+def _looks_like_asr_grammar_suspect(answer: str, source_text: str) -> bool:
+    text = " ".join(part for part in [answer, source_text] if part)
+    return any(pattern.search(text) for pattern in ASR_GRAMMAR_SUSPECT_PATTERNS)
+
+
+def _strong_expression_from_noisy_source(point: dict[str, Any], words: list[str], action_text: str) -> bool:
+    phrase_type = str(point.get("phrase_type") or "")
+    if phrase_type not in {
+        "spoken_phrase",
+        "sentence_frame",
+        "collocation",
+        "discourse_marker",
+        "idiom",
+        "grammar_pattern",
+        "phrasal_verb",
+    }:
+        return False
+    return 2 <= len(words) <= 6 and _has_transfer_signal(action_text)
+
+
 def _recommendation_flags(point: dict[str, Any], answer: str, words: list[str]) -> set[str]:
     flags: set[str] = set()
     normalized_answer = _normalized_text(answer)
@@ -67,6 +171,7 @@ def _recommendation_flags(point: dict[str, Any], answer: str, words: list[str]) 
             for key in ("learning_action", "reason", "usage_boundary", "confusable_note", "teacher_note")
         )
     )
+    source_text = _source_text_for_point(point)
     if not _answer_locatable(point, answer, words):
         flags.add("answer_not_locatable")
     if normalized_answer in LOW_TRANSFER_ANSWERS:
@@ -77,10 +182,18 @@ def _recommendation_flags(point: dict[str, Any], answer: str, words: list[str]) 
         flags.add("answer_too_long")
     if re.search(r"[\u4e00-\u9fff/]{2,}", answer):
         flags.add("answer_not_clean_target")
-    transfer_terms = ["搭配", "语境", "语气", "边界", "连读", "弱读", "缩读", "框架", "迁移", "自然", "口语", "用法", "辨" ]
-    if len(words) <= 2 and not any(term in action_text for term in transfer_terms):
+    if len(words) <= 2 and not _has_transfer_signal(action_text):
         flags.add("weak_transfer_signal")
+    if _looks_like_weak_noun_chunk(normalized_answer, words, action_text):
+        flags.add("weak_noun_chunk")
+    if _looks_like_asr_grammar_suspect(normalized_answer, source_text):
+        flags.add("asr_grammar_suspect")
+    if _source_quality_flags(point) & SOURCE_REVIEW_FLAGS and not _strong_expression_from_noisy_source(
+        point, words, action_text
+    ):
+        flags.add("source_sentence_needs_review")
     return flags
+
 
 def _level_index(level: Any) -> int:
     try:
@@ -166,6 +279,12 @@ def score_learning_point(point: dict[str, Any], user_level: str, payload: dict[s
         value -= 0.45
     if "weak_transfer_signal" in flags:
         value -= 0.2
+    if "weak_noun_chunk" in flags:
+        value -= 0.65
+    if "asr_grammar_suspect" in flags:
+        value -= 0.9
+    if "source_sentence_needs_review" in flags:
+        value -= 0.35
     if not str(point.get("learning_action") or "").strip():
         value -= 0.6
     if point.get("validation_status") == "repaired":
@@ -202,8 +321,17 @@ def assign_learning_point_status(point: dict[str, Any], user_level: str, payload
         if _ciba_tianxia_mode(payload) and float(point.get("value_score") or 0) >= 3.6:
             return "candidate_only", "合法但低于当前水平；词霸天下模式保留真实语言动作给用户自行决定。"
         return "candidate_only", "合法但明显低于当前水平，作为补基础候选保留。"
-    if flags & {"answer_not_locatable", "low_transfer_answer", "answer_too_long", "answer_not_clean_target"}:
+    if flags & {
+        "answer_not_locatable",
+        "low_transfer_answer",
+        "answer_too_long",
+        "answer_not_clean_target",
+        "weak_noun_chunk",
+        "asr_grammar_suspect",
+    }:
         return "candidate_only", "合法但不够适合作为默认推荐：目标泛、过长或无法在原句中清楚定位。"
+    if "source_sentence_needs_review" in flags and value < 4.6:
+        return "candidate_only", "字幕边界或拼接质量需要复查，先保留为候选。"
     if "vague_learning_action" in flags and value < 4.3:
         return "candidate_only", "学习动作还不够具体，先作为候选保留。"
     if value >= 4.0 and distance <= 2 and kind != "listening_feature":

@@ -58,7 +58,7 @@ export function CardTemplatePanel({
             <strong>{documentStudyMode === 'language_reading' ? '文档精读卡' : '知识问答卡'}</strong>
             <span>
               {documentStudyMode === 'language_reading'
-                ? '从文档里提取表达、词汇或语法点；不生成听力卡，可用卡默认全选。'
+                ? '从文档里提取表达、词汇或语法点；不生成视频/TTS 学习卡，可导出项可一键选择。'
                 : '正面是问题或概念提示，反面是结构化答案、解释、例子和为什么值得记。'}
             </span>
           </div>

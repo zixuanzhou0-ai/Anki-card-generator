@@ -40,16 +40,33 @@ Windows can reserve local port ranges dynamically, which previously made fixed d
 
 ## A Black Terminal Window Appears
 
-For `v0.9.6-beta` and later, the installed Windows app should open as a GUI-only desktop app. Normal startup should not create a visible `cmd.exe`, `conhost.exe`, `powershell.exe`, or `python.exe` window.
+For `v0.9.11-beta` and later, the installed Windows app should open as a GUI-only desktop app. Normal startup should not create a visible `cmd.exe`, `conhost.exe`, `powershell.exe`, or `python.exe` window.
 
 Check these cases first:
 
-- You may be running an older installer such as `v0.9.4-beta`; install `v0.9.6-beta` or newer.
+- You may be running an older installer such as `v0.9.4-beta`; install `v0.9.11-beta` or newer.
 - You may be using the debug developer entrypoint `npm.cmd run desktop:dev:debug`, which intentionally shows a Tauri console.
 - Another local tool may have opened its own terminal; verify the process tree belongs to `anki-card-generator.exe` before treating it as an app bug.
 
 Expected process behavior after installed-app startup: `anki-card-generator.exe` may launch WebView2 child processes, but it should not have console descendants. Logs and diagnostics remain available through release smoke output and the desktop diagnostic files instead of a visible console window.
 
+## APKG Is Not Generated Or Export Says No Usable Cards
+
+For `v0.9.11-beta` and later, ordinary projects should not be blocked by release evidence directory protection. If export still fails, check the visible error first:
+
+- If the message says there are no exportable cards, open the review area and check whether the remaining cards are blocked by media/TTS/ledger errors or by empty model output. In `v0.9.11-beta`, selected learning points are retried individually; safe missing fields are repaired from the learning point so they should not collapse the whole APKG to 0 cards.
+- If many items are shown as candidate-only or not cardable, that is usually a quality filter: weak noun chunks, topic labels, low-transfer generic phrases, and suspicious subtitle/ASR grammar are kept out of default export. Manually select only the points you still want.
+- If the path points to `test_runs` or an old release case directory, choose a normal user-writable folder such as Desktop, Documents, or the app data export folder.
+- If TTS or media generation fails, check the TTS/provider status and FFmpeg environment before retrying.
+
+## Gemini 3.5 Flash Cards Look Too Generic
+
+Vertex `gemini-3.5-flash` is available as a fast/low-cost model. `v0.9.11-beta` adds extra guards for weak noun chunks, suspicious subtitle grammar, and missing selected-card bodies, but Flash can still be less nuanced than stronger models. If many cards look similar, empty, or generic:
+
+- Switch to a higher-quality model such as MIMO V2.5 Pro, DeepSeek V4 Pro, Gemini 3.1 Pro Preview, or Gemini 2.5 Pro.
+- Generate fewer learning points at once.
+- Prefer transferable phrases, collocations, discourse markers, sentence frames, and real listening traps over topic labels.
+- Treat Flash output as a fast first pass, then use a stronger model for final high-quality card writing.
 ## Local Environment Check Fails
 
 Open `设置 -> 本地环境` and click `检查环境`.
@@ -345,4 +362,5 @@ Before sharing screenshots or logs:
 - Redact API keys and Authorization headers.
 - Hide private file paths if needed.
 - Do not share private videos, subtitles, generated decks, or cache folders.
+
 

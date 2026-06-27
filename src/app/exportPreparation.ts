@@ -80,7 +80,7 @@ export function prepareProjectForExport(project: Project): ExportPreparationResu
     }
     projectForExport = usableSelection.project
     selectedForExport = usableSelection.selected
-    messages.push(`已自动启用 ${usableSelection.selected} 张可用卡，继续导出。`)
+    messages.push(`已自动启用 ${usableSelection.selected} 张可导出卡，继续导出。`)
     return {
       status: 'ready',
       project: projectForExport,
@@ -307,8 +307,8 @@ export function releaseApkgOutputGuardForProject(
     return {
       status: 'ready',
       releaseCaseId: null,
-      releaseTarget,
-      canonicalApkgPath: releaseTarget?.canonicalApkgPath ?? null,
+      releaseTarget: null,
+      canonicalApkgPath: null,
     }
   }
   const selectedOutputDir = typeof outputDir === 'string' ? outputDir : ''

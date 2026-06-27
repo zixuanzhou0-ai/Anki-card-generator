@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   batchSelectableLearningPoint,
+  cardableLearningPoint,
   defaultSelectedLearningPointIds,
   learningPointGenerationBatchSize,
   selectedLearningPoints,
@@ -177,6 +178,7 @@ describe('defaultSelectedLearningPointIds', () => {
     })
 
     expect(batchSelectableLearningPoint(risky)).toBe(false)
+    expect(cardableLearningPoint(risky)).toBe(true)
     expect(selectedLearningPoints([risky], new Set(['lp-risky']))).toEqual([risky])
   })
 
@@ -190,6 +192,7 @@ describe('defaultSelectedLearningPointIds', () => {
     })
 
     expect(batchSelectableLearningPoint(joined)).toBe(false)
+    expect(cardableLearningPoint(joined)).toBe(true)
     expect(selectedLearningPoints([joined], new Set(['lp-joined']))).toEqual([joined])
   })
 
@@ -203,6 +206,7 @@ describe('defaultSelectedLearningPointIds', () => {
     })
 
     expect(batchSelectableLearningPoint(nameFragment)).toBe(false)
+    expect(cardableLearningPoint(nameFragment)).toBe(true)
     expect(selectedLearningPoints([nameFragment], new Set(['lp-name-fragment']))).toEqual([nameFragment])
   })
 
@@ -216,6 +220,7 @@ describe('defaultSelectedLearningPointIds', () => {
     })
 
     expect(batchSelectableLearningPoint(captionArtifact)).toBe(false)
+    expect(cardableLearningPoint(captionArtifact)).toBe(true)
     expect(selectedLearningPoints([captionArtifact], new Set(['lp-caption-artifact']))).toEqual([captionArtifact])
   })
 
@@ -229,7 +234,15 @@ describe('defaultSelectedLearningPointIds', () => {
     })
 
     expect(batchSelectableLearningPoint(unfinishedTail)).toBe(false)
+    expect(cardableLearningPoint(unfinishedTail)).toBe(true)
     expect(selectedLearningPoints([unfinishedTail], new Set(['lp-unfinished-tail']))).toEqual([unfinishedTail])
+  })
+
+  it('excludes duplicates and hard-blocked items from cardable full selection', () => {
+    expect(cardableLearningPoint(point({ status: 'recommended' }))).toBe(true)
+    expect(cardableLearningPoint(point({ status: 'candidate_only' }))).toBe(true)
+    expect(cardableLearningPoint(point({ status: 'hidden_duplicate' }))).toBe(false)
+    expect(cardableLearningPoint(point({ status: 'hard_blocked' }))).toBe(false)
   })
 })
 

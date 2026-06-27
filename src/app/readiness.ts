@@ -34,7 +34,7 @@ export function buildTtsReadinessDetail({
   if (ttsTestResult) {
     return '需修复后导出'
   }
-  return '可稍后测试'
+  return '必须先测试'
 }
 
 export function isEnvironmentReadyForGeneration({
@@ -116,7 +116,7 @@ export function buildReadinessItems({
   if (sourceMode !== 'document') {
     items.push({
       id: 'tts',
-      label: 'TTS 增强',
+      label: ttsRequired ? 'TTS 必需' : 'TTS 增强',
       done: true,
       detail: ttsRequired ? ttsDetail : '已关闭',
     })

@@ -78,5 +78,5 @@ def learning_point_inventory_stats(inventory: list[dict[str, Any]] | None) -> di
 def apply_default_generated_card_selection(segments: list[dict[str, Any]], project: dict[str, Any]) -> list[dict[str, Any]]:
     for segment in segments:
         for card in segment.get("cards", []) or []:
-            card["enabled"] = card_quality_status(card) in {"recommended", "needs_review"}
+            card["enabled"] = card_quality_status(card) == "recommended"
     return segments

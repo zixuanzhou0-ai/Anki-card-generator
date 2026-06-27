@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 CEFR_LABELS = {
     "A1": "A1 入门",
@@ -430,9 +430,9 @@ TRANSFERABLE_FUNCTION_FRAME_PHRASES = {
     "if you want to",
 }
 CARD_TYPE_LABELS = {
-    "listening": "听力卡",
-    "phrase": "表达卡",
-    "cloze": "输出填空卡",
+    "listening": "学习卡",
+    "phrase": "学习卡",
+    "cloze": "学习卡",
     "knowledge": "知识卡",
 }
 PHRASE_GUIDE_ALIASES = {

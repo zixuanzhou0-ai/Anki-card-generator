@@ -9,14 +9,14 @@ from acg.text_cleaning import clean_study_text
 
 
 PHRASE_TYPE_CARD_LABELS = {
-    "spoken_phrase": "表达卡",
-    "sentence_frame": "表达卡",
-    "collocation": "表达卡",
-    "discourse_marker": "表达卡",
-    "idiom": "表达卡",
-    "listening_sentence": "听力卡",
-    "vocabulary_usage": "语境生词卡",
-    "grammar_pattern": "表达卡",
+    "spoken_phrase": "学习卡",
+    "sentence_frame": "学习卡",
+    "collocation": "学习卡",
+    "discourse_marker": "学习卡",
+    "idiom": "学习卡",
+    "listening_sentence": "学习卡",
+    "vocabulary_usage": "学习卡",
+    "grammar_pattern": "学习卡",
 }
 
 PHRASE_TYPE_CONTENT_KIND = {
@@ -50,11 +50,11 @@ PHRASE_TYPE_TO_CANDIDATE_KIND = {
 }
 
 
-def card_label_for_phrase_type(phrase_type: str, fallback: str = "表达卡") -> str:
+def card_label_for_phrase_type(phrase_type: str, fallback: str = "学习卡") -> str:
     return PHRASE_TYPE_CARD_LABELS.get(str(phrase_type or "").strip(), fallback)
 
 
-def card_label_for_learning_card(phrase_type: str, content_kind: str, fallback: str = "表达卡") -> str:
+def card_label_for_learning_card(phrase_type: str, content_kind: str, fallback: str = "学习卡") -> str:
     return "学习卡"
 
 

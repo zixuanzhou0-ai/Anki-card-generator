@@ -1,6 +1,6 @@
 # Privacy
 
-This document describes the data flow for Anki Card Generator `v0.9.6-beta`.
+This document describes the data flow for Anki Card Generator `v0.9.11-beta`.
 
 ## Data kept on this device
 
@@ -42,3 +42,4 @@ To remove generated data, delete the chosen project/output folders and the `rele
 ## Copyright
 
 The app can create decks containing video clips, subtitles, original audio, and synthesized TTS audio. Users are responsible for ensuring they have the right to use the source material. Generated decks are intended for personal study unless the user has permission to distribute the underlying media and text.
+

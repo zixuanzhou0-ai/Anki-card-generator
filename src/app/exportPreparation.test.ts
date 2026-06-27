@@ -238,7 +238,7 @@ describe('export directory picker defaults', () => {
     }
   })
 
-  it('keeps ordinary projects on ordinary export behavior while still deriving release targets when explicitly selected', () => {
+  it('keeps ordinary projects on ordinary export behavior even if a release-looking directory is selected', () => {
     const ordinaryProject = {
       ...projectWithCards([{ ...baseCard, enabled: true }]),
       title: '字幕素材',
@@ -255,7 +255,8 @@ describe('export directory picker defaults', () => {
     expect(releaseApkgOutputGuardForProject(ordinaryProject, releaseOutputDir)).toMatchObject({
       status: 'ready',
       releaseCaseId: null,
-      canonicalApkgPath: `${releaseOutputDir}\\youtube_a_full1_cold.apkg`,
+      releaseTarget: null,
+      canonicalApkgPath: null,
     })
   })
 })

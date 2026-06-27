@@ -155,30 +155,30 @@ describe('LearningPointOverview', () => {
   it('keeps row clicks as view-only and only checkboxes change generation selection', () => {
     renderOverview()
 
-    expect(screen.getByRole('button', { name: /生成 APKG · 2 张/ })).toBeEnabled()
+    expect(screen.getByRole('button', { name: /生成 APKG · 2 个学习点/ })).toBeEnabled()
 
     fireEvent.click(screen.getByText('Take it easy and listen first.').closest('article')!)
-    expect(screen.getByRole('button', { name: /生成 APKG · 2 张/ })).toBeEnabled()
+    expect(screen.getByRole('button', { name: /生成 APKG · 2 个学习点/ })).toBeEnabled()
 
     fireEvent.click(screen.getAllByRole('checkbox')[1])
-    expect(screen.getByRole('button', { name: /生成 APKG · 1 张/ })).toBeEnabled()
+    expect(screen.getByRole('button', { name: /生成 APKG · 1 个学习点/ })).toBeEnabled()
   })
 
   it('supports the controlled one-card path: unselect all, check one point, then generate one card', () => {
     const { onConfirmGenerateCards, onGenerateCards } = renderOverview()
 
-    fireEvent.click(screen.getByRole('button', { name: '清空勾选' }))
-    expect(screen.getByRole('button', { name: /生成 APKG · 0 张/ })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: '清空选择' }))
+    expect(screen.getByRole('button', { name: /生成 APKG · 0 个学习点/ })).toBeDisabled()
 
     fireEvent.click(screen.getAllByRole('checkbox')[0])
-    const generateButton = screen.getByRole('button', { name: /生成 APKG · 1 张/ })
+    const generateButton = screen.getByRole('button', { name: /生成 APKG · 1 个学习点/ })
     expect(generateButton).toBeEnabled()
 
     fireEvent.click(generateButton)
     expect(onGenerateCards).toHaveBeenCalledOnce()
-    expect(screen.getByRole('heading', { name: '准备生成 APKG · 1 张' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '准备生成 APKG · 1 个学习点' })).toBeInTheDocument()
     expect(screen.getByText('确认区已打开')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /生成 APKG · 1 张/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /生成 APKG · 1 个学习点/ })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '生成 APKG' })).toBeEnabled()
     expect(screen.queryByRole('button', { name: '只生成草稿' })).not.toBeInTheDocument()
     expect(document.querySelectorAll('.primary-button')).toHaveLength(1)
@@ -188,7 +188,7 @@ describe('LearningPointOverview', () => {
     expect(screen.queryByText('本地文件路径将在本轮确认后读取')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '查看生成详情' }))
-    expect(screen.getByText('卡片数')).toBeInTheDocument()
+    expect(screen.getByText('学习点')).toBeInTheDocument()
     expect(screen.getByText('本地文件路径将在本轮确认后读取')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '只生成草稿' })).not.toBeInTheDocument()
     expect(screen.queryByText(/只生成草稿/)).not.toBeInTheDocument()
@@ -203,8 +203,8 @@ describe('LearningPointOverview', () => {
     fireEvent.click(screen.getAllByRole('button', { name: '只生成这一条' })[1])
 
     expect(screen.getByText('确认区已打开')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /生成 APKG · 1 张/ })).not.toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: '准备生成 APKG · 1 张' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /生成 APKG · 1 个学习点/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '准备生成 APKG · 1 个学习点' })).toBeInTheDocument()
     expect(screen.getAllByText('take it easy').length).toBeGreaterThanOrEqual(1)
 
     fireEvent.click(screen.getByRole('button', { name: '生成 APKG' }))
@@ -214,7 +214,7 @@ describe('LearningPointOverview', () => {
   it('does not expose draft-only generation as a public secondary action', () => {
     const { onConfirmGenerateCards } = renderOverview()
 
-    fireEvent.click(screen.getByRole('button', { name: /生成 APKG · 2 张/ }))
+    fireEvent.click(screen.getByRole('button', { name: /生成 APKG · 2 个学习点/ }))
     expect(screen.queryByRole('button', { name: '只生成草稿' })).not.toBeInTheDocument()
     expect(document.querySelectorAll('.primary-button')).toHaveLength(1)
 
@@ -228,16 +228,21 @@ describe('LearningPointOverview', () => {
   it('separates global recommended selection from the current filtered selection', () => {
     renderOverview([])
 
-    expect(screen.getByRole('button', { name: /全选全部可批量制卡 2/ })).toBeEnabled()
-    expect(screen.getByRole('button', { name: /勾选全部推荐 1/ })).toBeEnabled()
+    expect(screen.getByRole('button', { name: /全选可制卡项 2/ })).toBeEnabled()
+    expect(screen.getByRole('button', { name: /只选推荐 1/ })).toBeEnabled()
     expect(screen.getByRole('button', { name: /勾选当前筛选 2/ })).toBeEnabled()
 
-    fireEvent.click(screen.getByRole('button', { name: /勾选全部推荐 1/ }))
-    expect(screen.getByRole('button', { name: /生成 APKG · 1 张/ })).toBeEnabled()
-    expect(screen.getByText(/当前推荐已勾选 1\/1 个/)).toBeInTheDocument()
-
+    fireEvent.click(screen.getByRole('button', { name: /只选推荐 1/ }))
+    expect(screen.getByRole('button', { name: /生成 APKG · 1 个学习点/ })).toBeEnabled()
+    expect(
+      screen.getAllByText(
+        (_, element) =>
+          element?.tagName === 'SMALL' &&
+          (element.textContent?.includes('当前推荐已勾选 1/1 个。') ?? false),
+      ).length,
+    ).toBeGreaterThanOrEqual(1)
     fireEvent.click(screen.getByRole('button', { name: /勾选当前筛选 2/ }))
-    expect(screen.getByRole('button', { name: /生成 APKG · 2 张/ })).toBeEnabled()
+    expect(screen.getByRole('button', { name: /生成 APKG · 2 个学习点/ })).toBeEnabled()
     expect(screen.getByRole('button', { name: /取消当前筛选 2/ })).toBeEnabled()
   })
 
@@ -272,11 +277,49 @@ describe('LearningPointOverview', () => {
     expect(screen.getByText(/当前筛选显示 1 个/)).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /勾选当前筛选 1/ }))
-    expect(screen.getByRole('button', { name: /生成 APKG · 1 张/ })).toBeEnabled()
+    expect(screen.getByRole('button', { name: /生成 APKG · 1 个学习点/ })).toBeEnabled()
     expect(screen.getByRole('button', { name: /取消当前筛选 1/ })).toBeEnabled()
   })
 
-  it('keeps source-review learning points out of bulk selection while still allowing explicit manual selection', () => {
+  it('keeps source-review legal learning points visible as cardable items', () => {
+    const allRiskyResult: LearningPointExtractionResult = {
+      ...result,
+      learning_points: [
+        {
+          ...result.learning_points[1],
+          id: 'lp-all-risky',
+          source_sentence: 'they they are from a a different time before the internet',
+          exact_span: 'different time',
+          answer_core: 'different time',
+          normalized_answer: 'different time',
+          status: 'candidate_only',
+          source_sentence_quality_status: 'needs_review',
+          source_sentence_quality_flags: ['too_long', 'rolling_caption_uncertain'],
+        },
+      ],
+      learning_point_summary: {
+        ...result.learning_point_summary,
+        total: 1,
+        recommended: 0,
+        candidate_only: 1,
+      },
+      quality_funnel: {
+        source_sentence_quality_counts: { too_long: 1, rolling_caption_uncertain: 1 },
+      },
+    }
+
+    renderOverview([], allRiskyResult)
+
+    expect(screen.getByText(/可制卡项 1 个/)).toBeInTheDocument()
+    expect(screen.getAllByText(/需复查/).length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText(/字幕质量信号：长句 1 · 滚动字幕 1/)).toBeInTheDocument()
+    expect(screen.getByText('different time')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /全选可制卡项 1/ }))
+    expect(screen.getByRole('button', { name: /生成 APKG · 1 个学习点/ })).toBeEnabled()
+  })
+
+  it('includes source-review legal learning points in full cardable selection', () => {
     const riskyResult: LearningPointExtractionResult = {
       ...result,
       learning_points: [
@@ -304,28 +347,28 @@ describe('LearningPointOverview', () => {
 
     renderOverview([], riskyResult)
 
-    expect(screen.getByText(/另有 1 个学习点需复查，不会被批量勾选/)).toBeInTheDocument()
-    expect(screen.getByText('需复查')).toBeInTheDocument()
+    expect(screen.getByText(/可制卡项 2 个/)).toBeInTheDocument()
+    expect(screen.getByText('different time')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: /全选全部可批量制卡 1/ }))
-    expect(screen.getByRole('button', { name: /生成 APKG · 1 张/ })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: /全选可制卡项 2/ }))
+    expect(screen.getByRole('button', { name: /生成 APKG · 2 个学习点/ })).toBeEnabled()
 
-    fireEvent.click(screen.getAllByRole('checkbox')[1])
-    expect(screen.getByRole('button', { name: /生成 APKG · 2 张/ })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: '需复查' }))
+    expect(screen.getByText('different time')).toBeInTheDocument()
+    expect(screen.getAllByText('需复查').length).toBeGreaterThanOrEqual(2)
   })
-
   it('supports removing a learning point from the confirmation queue without changing row selection', () => {
     renderOverview()
 
-    fireEvent.click(screen.getByRole('button', { name: /生成 APKG · 2 张/ }))
-    expect(screen.getByRole('heading', { name: '准备生成 APKG · 2 张' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /生成 APKG · 2 个学习点/ }))
+    expect(screen.getByRole('heading', { name: '准备生成 APKG · 2 个学习点' })).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '查看生成详情' }))
     fireEvent.click(screen.getByRole('button', { name: /从生成队列移除 take it easy/i }))
 
-    expect(screen.getByRole('heading', { name: '准备生成 APKG · 1 张' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '准备生成 APKG · 1 个学习点' })).toBeInTheDocument()
     expect(screen.getByText('确认区已打开')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /生成 APKG · 2 张/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /生成 APKG · 2 个学习点/ })).not.toBeInTheDocument()
   })
 
   it('shows batch generation language for queues larger than the adaptive stable batch size', () => {
@@ -351,9 +394,9 @@ describe('LearningPointOverview', () => {
 
     renderOverview(manyPoints.map((point) => point.id), manyResult)
 
-    fireEvent.click(screen.getByRole('button', { name: /生成 APKG · 49 张/ }))
+    fireEvent.click(screen.getByRole('button', { name: /生成 APKG · 49 个学习点/ }))
 
-    expect(screen.getByRole('heading', { name: /准备生成 APKG · 49 张/ })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /准备生成 APKG · 49 个学习点/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '生成 APKG' })).toBeEnabled()
     expect(screen.getByText(/每批最多 36 张/)).toBeInTheDocument()
   })

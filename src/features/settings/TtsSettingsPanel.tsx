@@ -292,7 +292,7 @@ export function TtsSettingsPanel({
             {visiblePresets.map((preset) => (
               <button
                 type="button"
-                className={`settings-catalog-item ${getTtsPresetTone(preset)} ${isPresetSelected(preset) ? 'selected' : ''}`}
+                className={`settings-catalog-item ${getTtsPresetTone(preset)} ${!activeSavedProfile && isPresetSelected(preset) ? 'selected' : ''}`}
                 key={preset.id}
                 onClick={() => onApplyTtsPreset(preset)}
               >

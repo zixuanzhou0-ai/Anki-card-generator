@@ -228,7 +228,7 @@ export function ApiSettingsPanel({
             {visiblePresets.map((preset) => (
               <button
                 type="button"
-                className={`settings-catalog-item ${getApiPresetTone(preset)} ${isPresetSelected(preset) ? 'selected' : ''}`}
+                className={`settings-catalog-item ${getApiPresetTone(preset)} ${!activeSavedProfile && isPresetSelected(preset) ? 'selected' : ''}`}
                 key={preset.id}
                 onClick={() => onApplyApiPreset(preset)}
               >

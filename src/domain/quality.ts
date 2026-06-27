@@ -9,13 +9,18 @@ export function badgeText(count: number) {
 export function qualityLabel(card: Card) {
   if (cardHasExportBlockingContent(card)) return '需修复'
   const status = card.quality?.status
+  if (status === 'recommended') return '可导出'
+  if (status === 'needs_review') return '需复查'
   if (status === 'reject') return '已过滤'
-  return '可用卡'
+  return '未验证'
 }
 
 export function qualityClass(card: Card) {
   if (cardHasExportBlockingContent(card)) return 'blocked'
-  return card.quality?.status === 'reject' ? 'filtered' : 'usable'
+  const status = card.quality?.status
+  if (status === 'recommended') return 'usable'
+  if (status === 'needs_review') return 'review'
+  return status === 'reject' ? 'filtered' : 'blocked'
 }
 
 export const segmentFilterOptions: Array<{ id: SegmentFilter; label: string }> = [
@@ -43,6 +48,11 @@ const exportBlockingTextPatterns = [
   '需要人工确认',
   '需人工确认',
   '需要 AI 精修',
+  '模型未完整返回',
+  '模型未返回',
+  '系统保底生成',
+  '保底生成',
+  '兜底生成',
   '只保证结构完整',
   '不建议直接作为正式学习内容',
   '当作本句目标表达',
@@ -369,7 +379,7 @@ export function isReviewableCardForExport(segment: Segment, card: Card) {
 }
 
 export function isUsableCardForExport(segment: Segment, card: Card) {
-  return isReviewableCardForExport(segment, card)
+  return isRecommendedCardForExport(segment, card)
 }
 
 export function getExportSelectionStats(project: Project | null): ExportSelectionStats {
@@ -400,6 +410,7 @@ export function getExportSelectionStats(project: Project | null): ExportSelectio
 
 export function applyCardSelection(project: Project, mode: 'recommended' | 'reviewable') {
   let selected = 0
+  let selectedExportable = 0
   const segments = project.segments.map((segment) => ({
     ...segment,
     cards: segment.cards.map((card) => {
@@ -408,6 +419,7 @@ export function applyCardSelection(project: Project, mode: 'recommended' | 'revi
           ? isRecommendedCardForExport(segment, card)
           : isReviewableCardForExport(segment, card)
       if (enabled) selected += 1
+      if (enabled && isUsableCardForExport(segment, card)) selectedExportable += 1
       return { ...card, enabled }
     }),
   }))
@@ -417,12 +429,12 @@ export function applyCardSelection(project: Project, mode: 'recommended' | 'revi
       ? {
           ...project.quality_funnel,
           selected_card_count: selected,
-          selected_exportable_card_count: selected,
+          selected_exportable_card_count: selectedExportable,
           selected_repair_required_card_count: 0,
         }
       : {
           selected_card_count: selected,
-          selected_exportable_card_count: selected,
+          selected_exportable_card_count: selectedExportable,
           selected_repair_required_card_count: 0,
         },
     segments,
@@ -467,7 +479,6 @@ export function removeExportBlockedCardSelection(project: Project) {
     selected,
   }
 }
-
 export function applyUsableCardSelection(project: Project) {
   let selected = 0
   const segments = project.segments.map((segment) => ({
