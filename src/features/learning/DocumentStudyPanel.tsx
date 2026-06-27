@@ -89,7 +89,7 @@ export function DocumentStudyPanel({
         <strong>{isLanguageReading ? '语言精读 · 表达/词汇/语法 · 自动判断' : '知识吸收 · 标准理解 · 中等答案'}</strong>
         <p>
           {isLanguageReading
-            ? '适合英文资料精读：只抽文档里的表达、词汇和语法框架，不做听力卡。'
+            ? '适合英文资料精读：只抽文档里的表达、词汇和语法框架，不做视频/TTS 学习卡。'
             : '适合书籍、论文、课程讲义：一张卡只记一个可回忆点，先问自己再看解释。'}
         </p>
       </div>
@@ -122,7 +122,7 @@ export function DocumentStudyPanel({
         <div className="document-reading-settings" aria-label="语言精读设置">
           <div className="document-mode-note">
             <Languages size={16} />
-            <span>文档精读不生成听力卡；这里只训练文档里的表达、词汇和语法框架。</span>
+            <span>文档精读不生成视频/TTS 学习卡；这里只训练文档里的表达、词汇和语法框架。</span>
           </div>
           <label className="learning-setting-row compact-row">
             <span>

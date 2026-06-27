@@ -1,6 +1,6 @@
 # Release Checklist
 
-当前发布目标：`v0.9.9-beta`（package version `0.9.9`）。
+当前发布目标：`v0.9.11-beta`（package version `0.9.11`）。
 
 ## 版本与仓库边界
 
@@ -17,7 +17,7 @@
 - [ ] `docs/USER_GUIDE.md` 可按普通用户流程完成从设置到导出，并说明关于 / 版权页与 GitHub 入口。
 - [ ] `docs/TROUBLESHOOTING.md` 覆盖 Python、FFmpeg、yt-dlp、Anki、AnkiConnect、TTS、API key 常见问题。
 - [ ] `docs/screenshots/` 只保留可公开截图；截图不含 API key、本机用户名、私有路径或私人素材。
-- [ ] GitHub Release body 使用 `docs/RELEASE_NOTES_v0.9.9-beta.md`。
+- [ ] GitHub Release body 使用 `docs/RELEASE_NOTES_v0.9.11-beta.md`。
 
 ## 自动验证
 
@@ -62,7 +62,8 @@ npm.cmd run check:full
 
 - [ ] 从 release 分支开 PR 到 `main`。
 - [ ] PR CI 通过后合并。
-- [ ] 在 `main` 合并 commit 上创建 tag `v0.9.9-beta`。
+- [ ] 在 `main` 合并 commit 上创建 tag `v0.9.11-beta`。
 - [ ] 创建 GitHub Release 并上传 Windows installer、MSI、portable zip、SHA256SUMS。
 - [ ] Release note 明确这是 beta：第三方模型/TTS/视频下载可能受服务商、网络、费用和版权限制影响。
-- [ ] Release note 明确 v0.9.9-beta 的核心变化：严格可导出质量闸、需复查卡保留但不导出、Vertex Gemini 3.5 Flash 默认、Vertex TTS 默认开启、无终端弹窗保持。
+- [ ] Release note 明确 v0.9.11-beta 的核心变化：Vertex 3.5 Flash 学习点质量收口、坏字幕/弱名词块降级、全选可制卡项、缺卡重试与基础学习卡补齐、Vertex TTS 默认开启、无终端弹窗保持。
+

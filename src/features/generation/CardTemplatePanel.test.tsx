@@ -71,6 +71,6 @@ describe('CardTemplatePanel', () => {
     renderPanel({ documentStudyMode: 'language_reading', sourceMode: 'document' })
 
     expect(screen.getAllByText('文档精读卡')[1]).toBeVisible()
-    expect(screen.getByText('从文档里提取表达、词汇或语法点；不生成听力卡，可导出卡默认全选。')).toBeVisible()
+    expect(screen.getByText('从文档里提取表达、词汇或语法点；不生成视频/TTS 学习卡，可导出项可一键选择。')).toBeVisible()
   })
 })

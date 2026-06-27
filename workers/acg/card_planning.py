@@ -65,7 +65,7 @@ def usable_learning_point_span(
         return 1 <= len(words) <= 3
     if kind in {"grammar_pattern", "listening_feature"}:
         return len(words) <= 12
-    if kind in {"expression", "pragmatic_risk"} and phrase_type in {"collocation", "idiom", "spoken_phrase"}:
+    if kind in {"expression", "pragmatic_risk"} and phrase_type in {"collocation", "idiom", "spoken_phrase", "discourse_marker"}:
         if 2 <= len(words) <= 7 and phrase_in_text(text, normalized):
             if not is_non_transferable_phrase(normalized) and not is_low_value_standalone_phrase(normalized):
                 if words[0] not in COMMON_FUNCTION_STARTS or allows_function_start_phrase(normalized):
@@ -78,7 +78,7 @@ def plan_card_types(segment: dict[str, Any], card_types: list[str], level: str) 
     reason_by_kind = {
         "contextual_vocab": "统一学习卡会聚焦这个词在原句里的真实语境义。",
         "grammar_pattern": "统一学习卡会聚焦这个可迁移的语法/句法框架。",
-        "listening_feature": "统一学习卡会把听辨提醒合并到同一张卡里，避免额外重复听力卡。",
+        "listening_feature": "统一学习卡会把听辨提醒合并到同一张卡里，避免额外重复学习卡。",
         "pragmatic_risk": "统一学习卡会聚焦表达的语气、边界和使用风险。",
     }
     skipped = {

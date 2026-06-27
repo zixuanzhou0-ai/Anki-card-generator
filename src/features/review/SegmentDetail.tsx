@@ -76,7 +76,7 @@ export function SegmentDetail({
       <div className="segment-toolbar">
         <div className="segment-actions">
           <button className="ghost-button" type="button" onClick={() => onSetSegmentCardsEnabled(true, segment.id)}>
-            本段全选
+            本段全选可导出
           </button>
           <button className="ghost-button" type="button" onClick={() => onSetSegmentCardsEnabled(false, segment.id)}>
             本段停用
@@ -180,7 +180,7 @@ export function SegmentDetail({
                   ? '模型或规则认为它暂时不适合做文档精读卡。'
                   : isKnowledge
                     ? '模型或规则认为它暂时不适合做知识卡。'
-                    : '模型或规则认为它暂时不适合做表达卡。')}
+                    : '模型或规则认为它暂时不适合导出为学习卡。')}
             </span>
           </div>
         ) : null}
@@ -322,7 +322,7 @@ function CardEditor({
           {card.difficulty_reason ? <p>难度判断：{card.difficulty_reason}</p> : null}
           {skippedEntries.length > 0 ? (
             <details className="skipped-card-types">
-              <summary>已合并 {skippedEntries.length} 个低价值卡型</summary>
+              <summary>已合并 {skippedEntries.length} 个低价值重复项</summary>
               <div>
                 {skippedEntries.map(([type, reason]) => (
                   <span key={type}>

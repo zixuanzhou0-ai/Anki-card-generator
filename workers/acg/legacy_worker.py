@@ -614,14 +614,14 @@ STUDY_DEPTHS = learning_settings_study_depths
 SELECTION_STRATEGIES = learning_settings_selection_strategies
 SELECTION_STRATEGY_LABELS = learning_settings_selection_strategy_labels
 PHRASE_TYPE_CARD_LABELS = {
-    "spoken_phrase": "表达卡",
-    "sentence_frame": "表达卡",
-    "collocation": "表达卡",
-    "discourse_marker": "表达卡",
-    "idiom": "表达卡",
-    "listening_sentence": "听力卡",
-    "vocabulary_usage": "语境生词卡",
-    "grammar_pattern": "表达卡",
+    "spoken_phrase": "学习卡",
+    "sentence_frame": "学习卡",
+    "collocation": "学习卡",
+    "discourse_marker": "学习卡",
+    "idiom": "学习卡",
+    "listening_sentence": "学习卡",
+    "vocabulary_usage": "学习卡",
+    "grammar_pattern": "学习卡",
 }
 PHRASE_TYPE_CONTENT_KIND = {
     "spoken_phrase": "phrase",
@@ -728,11 +728,11 @@ def max_source_expansion_groups(payload: dict[str, Any]) -> int:
     return learning_settings_max_source_expansion_groups(payload)
 
 
-def card_label_for_phrase_type(phrase_type: str, fallback: str = "表达卡") -> str:
+def card_label_for_phrase_type(phrase_type: str, fallback: str = "学习卡") -> str:
     return learning_type_card_label_for_phrase_type(phrase_type, fallback)
 
 
-def card_label_for_learning_card(phrase_type: str, content_kind: str, fallback: str = "表达卡") -> str:
+def card_label_for_learning_card(phrase_type: str, content_kind: str, fallback: str = "学习卡") -> str:
     return learning_type_card_label_for_learning_card(phrase_type, content_kind, fallback)
 
 
@@ -5316,7 +5316,7 @@ def merge_ai_cards(
                     card["type_label"] = card_label_for_learning_card(
                         str(card.get("phrase_type") or ""),
                         str(card.get("content_kind") or ""),
-                        card.get("type_label", "表达卡"),
+                        card.get("type_label", "学习卡"),
                     )
                 if ai_card is ai_template_card and not str(ai_card.get("learning_point_id") or ""):
                     card["teacher_note"] = (
@@ -5354,7 +5354,7 @@ def merge_ai_cards(
                     card["type_label"] = card_label_for_learning_card(
                         str(card.get("phrase_type") or ""),
                         str(card.get("content_kind") or ""),
-                        card.get("type_label", "表达卡"),
+                        card.get("type_label", "学习卡"),
                     )
                 card["quality"] = assess_card_quality(card, segment, "ai", level)
                 card["enabled"] = card["quality"]["status"] == "recommended"
@@ -5457,7 +5457,7 @@ def merge_ai_cards(
                     card["type_label"] = card_label_for_learning_card(
                         str(card.get("phrase_type") or ""),
                         str(card.get("content_kind") or ""),
-                        card.get("type_label", "表达卡"),
+                        card.get("type_label", "学习卡"),
                     )
                 card["quality"] = assess_card_quality(card, segment, "ai", level)
                 card["enabled"] = card["quality"]["status"] == "recommended"

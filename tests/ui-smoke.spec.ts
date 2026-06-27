@@ -66,7 +66,50 @@ test('compact inspector keeps source and batch controls reachable at minimum des
 test('desktop workflow shell supports simplified settings, video URL mode, and generation', async ({ page }) => {
   test.setTimeout(120_000)
 
-  await page.addInitScript(() => window.localStorage.clear())
+  await page.addInitScript(() => {
+    window.localStorage.clear()
+
+    const profileId = (provider: string, baseUrl: string, model: string) => {
+      const normalized = [provider, baseUrl.trim().replace(/\/+$/, ''), model.trim()].join('|')
+      let hash = 2166136261
+      for (let index = 0; index < normalized.length; index += 1) {
+        hash ^= normalized.charCodeAt(index)
+        hash = Math.imul(hash, 16777619)
+      }
+      return `api_${(hash >>> 0).toString(36)}`
+    }
+
+    const baseUrl = 'https://aiplatform.googleapis.com'
+    window.localStorage.setItem(
+      'anki-card-generator.api-profiles.v1',
+      JSON.stringify([
+        {
+          auth: 'gcloud',
+          base_url: baseUrl,
+          capabilities: ['structured_json', 'long_context', 'cheap_batch'],
+          has_api_key: false,
+          id: profileId('gemini-vertex', baseUrl, 'gemini-3.5-flash'),
+          label: 'Gemini 3.5 Flash Vertex',
+          last_test_ok: true,
+          model: 'gemini-3.5-flash',
+          provider: 'gemini-vertex',
+          updated_at: '2026-06-27T00:00:00.000Z',
+        },
+        {
+          auth: 'gcloud',
+          base_url: baseUrl,
+          capabilities: ['structured_json', 'long_context'],
+          has_api_key: false,
+          id: profileId('gemini-vertex', baseUrl, 'gemini-3.1-pro-preview'),
+          label: 'Gemini 3.1 Pro Preview Vertex',
+          last_test_ok: true,
+          model: 'gemini-3.1-pro-preview',
+          provider: 'gemini-vertex',
+          updated_at: '2026-06-27T00:00:00.000Z',
+        },
+      ]),
+    )
+  })
   await gotoApp(page)
 
   await expect(page.getByRole('heading', { name: 'Anki 卡片生成器' })).toBeVisible()
@@ -91,7 +134,27 @@ test('desktop workflow shell supports simplified settings, video URL mode, and g
   await expect(page.getByLabel('厂商和模型目录')).toBeVisible()
   await expect(page.getByLabel('厂商和模型目录').getByRole('button', { name: /OpenAI-compatible 模型/ })).toBeVisible()
   await expect(page.getByLabel('厂商和模型目录').getByRole('button', { name: /DeepSeek V4 Pro/ })).toBeVisible()
-  await expect(page.getByLabel('厂商和模型目录').getByRole('button', { name: /Gemini 3.5 Flash/ })).toBeVisible()
+  await expect(page.getByLabel('厂商和模型目录').getByRole('button', { name: /Gemini 3.5 Flash/ }).first()).toBeVisible()
+  const savedModelCards = page.locator('.settings-catalog-item.saved')
+  await expect(savedModelCards).toHaveCount(2)
+  const activeSavedModel = savedModelCards.filter({ hasText: 'Gemini 3.5 Flash Vertex' }).first()
+  const inactiveSavedModel = savedModelCards.filter({ hasText: 'Gemini 3.1 Pro Preview Vertex' }).first()
+  await expect(activeSavedModel).toHaveClass(/selected/)
+  await expect(page.getByLabel('厂商和模型目录').locator('.settings-catalog-item.selected')).toHaveCount(1)
+  await expect(inactiveSavedModel).not.toHaveClass(/selected/)
+
+  const savedModelVisuals = await inactiveSavedModel.evaluate((element) => {
+    const styles = window.getComputedStyle(element)
+    return { backgroundColor: styles.backgroundColor, boxShadow: styles.boxShadow }
+  })
+  const activeModelVisuals = await activeSavedModel.evaluate((element) => {
+    const styles = window.getComputedStyle(element)
+    return { backgroundColor: styles.backgroundColor, boxShadow: styles.boxShadow }
+  })
+  expect(savedModelVisuals.backgroundColor).not.toMatch(/52,\s*199,\s*89/)
+  expect(savedModelVisuals.boxShadow).not.toMatch(/0,\s*102,\s*204/)
+  expect(activeModelVisuals.backgroundColor).toMatch(/245,\s*249,\s*255/)
+  expect(activeModelVisuals.boxShadow).toMatch(/0,\s*102,\s*204/)
   await expect(page.getByRole('combobox', { name: 'Provider' })).toBeVisible()
   await expect(page.getByRole('textbox', { name: 'Base URL' })).toBeVisible()
   await expect(page.getByRole('combobox', { name: 'Model' })).toBeVisible()
@@ -142,13 +205,13 @@ test('desktop workflow shell supports simplified settings, video URL mode, and g
   await expect(page.getByText('in the mood').first()).toBeVisible()
   await expect(page.getByText("I'm not really in the mood right now.")).toBeVisible()
   await page.screenshot({ path: 'test-results/learning-points-layout.png', fullPage: true })
-  await page.getByLabel('学习点总览').getByRole('button', { name: '生成 APKG · 1 张' }).click()
-  await expect(page.getByRole('heading', { name: '准备生成 APKG · 1 张' })).toBeVisible()
+  await page.getByLabel('学习点总览').getByRole('button', { name: '生成 APKG · 1 个学习点' }).click()
+  await expect(page.getByRole('heading', { name: '准备生成 APKG · 1 个学习点' })).toBeVisible()
   await page.screenshot({ path: 'test-results/generation-confirm-layout.png', fullPage: true })
   await page.getByRole('region', { name: '生成确认' }).getByRole('button', { name: '生成 APKG' }).click()
 
   await expect(page.getByText('检查卡片后导出 APKG')).toBeVisible()
-  const exportButton = page.getByRole('button', { name: /导出可用的 [1-9]\d* 张/ }).first()
+  const exportButton = page.getByRole('button', { name: /导出可导出的 [1-9]\d* 张/ }).first()
   await expect(exportButton).toBeVisible()
   await expect(page.getByLabel('卡片概览')).toContainText('已选卡片')
   await expect(page.getByLabel('卡片概览')).toContainText('可导出')
@@ -193,7 +256,7 @@ test('desktop workflow shell supports simplified settings, video URL mode, and g
   await expect(page.locator('.desktop-workspace')).toHaveAttribute('data-responsive-mode', 'compact')
   await page.getByRole('button', { name: /素材面板/ }).click()
   await expect(page.locator('.control-column.sheet-open')).toBeVisible()
-  await expectReachableInViewport(page.getByRole('button', { name: /导出可用的 [1-9]\d* 张/ }).first())
+  await expectReachableInViewport(page.getByRole('button', { name: /导出可导出的 [1-9]\d* 张/ }).first())
   await page.getByRole('button', { name: /关闭面板/ }).click()
   await page.setViewportSize({ width: 1440, height: 1000 })
 

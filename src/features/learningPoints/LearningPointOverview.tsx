@@ -9,11 +9,10 @@ import type {
   LearningPointType,
 } from '../../domain/learningPoints'
 import {
-  batchSelectableLearningPoint,
+  cardableLearningPoint,
   learningPointNeedsSourceReview,
   learningPointStatusLabels,
   learningPointTypeLabels,
-  selectableLearningPoint,
   selectedLearningPoints,
 } from '../../domain/learningPoints'
 
@@ -35,7 +34,7 @@ type LearningPointOverviewProps = {
 
 type TypeFilter = 'all' | LearningPointType
 type LevelFilter = 'all' | 'A1' | 'A2' | 'B1' | 'B2' | 'C1' | 'C2' | 'B1+' | 'B2+'
-type StatusFilter = 'batch_ready' | 'needs_review' | 'selectable' | 'all' | LearningPointStatus
+type StatusFilter = 'cardable' | 'needs_review' | 'all' | LearningPointStatus
 
 const typeFilters: Array<{ id: TypeFilter; label: string }> = [
   { id: 'all', label: '全部类型' },
@@ -49,14 +48,13 @@ const typeFilters: Array<{ id: TypeFilter; label: string }> = [
 
 const levelFilters: LevelFilter[] = ['all', 'A1', 'A2', 'B1', 'B2', 'C1', 'C2', 'B1+', 'B2+']
 const statusFilters: Array<{ id: StatusFilter; label: string }> = [
-  { id: 'batch_ready', label: '可批量制卡' },
+  { id: 'cardable', label: '可制卡' },
   { id: 'needs_review', label: '需复查' },
-  { id: 'selectable', label: '可手动选择' },
   { id: 'all', label: '全部状态' },
   { id: 'recommended', label: '推荐' },
   { id: 'candidate_only', label: '候选' },
-  { id: 'hidden_duplicate', label: '重复' },
-  { id: 'hard_blocked', label: '阻断' },
+  { id: 'hidden_duplicate', label: '重复折叠' },
+  { id: 'hard_blocked', label: '不可制卡' },
 ]
 
 const levelOrder = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2']
@@ -91,7 +89,7 @@ export function LearningPointOverview({
 }: LearningPointOverviewProps) {
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all')
   const [levelFilter, setLevelFilter] = useState<LevelFilter>('all')
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('batch_ready')
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('cardable')
   const [showGenerationDetails, setShowGenerationDetails] = useState(false)
   const [showLearningDiagnostics, setShowLearningDiagnostics] = useState(false)
   const points = useMemo(() => result.learning_points ?? [], [result.learning_points])
@@ -118,13 +116,11 @@ export function LearningPointOverview({
     () =>
       points.filter((point) => {
         if (typeFilter !== 'all' && point.type !== typeFilter) return false
-        if (statusFilter === 'batch_ready' && !batchSelectableLearningPoint(point)) return false
-        if (statusFilter === 'needs_review' && !(selectableLearningPoint(point) && learningPointNeedsSourceReview(point))) return false
-        if (statusFilter === 'selectable' && !selectableLearningPoint(point)) return false
+        if (statusFilter === 'cardable' && !cardableLearningPoint(point)) return false
+        if (statusFilter === 'needs_review' && !(cardableLearningPoint(point) && learningPointNeedsSourceReview(point))) return false
         if (
-          statusFilter !== 'batch_ready' &&
+          statusFilter !== 'cardable' &&
           statusFilter !== 'needs_review' &&
-          statusFilter !== 'selectable' &&
           statusFilter !== 'all' &&
           point.status !== statusFilter
         ) {
@@ -135,16 +131,17 @@ export function LearningPointOverview({
       }),
     [levelFilter, points, statusFilter, typeFilter],
   )
-  const visibleSelectablePoints = visiblePoints.filter(selectableLearningPoint)
-  const visibleBatchSelectablePoints = visiblePoints.filter(batchSelectableLearningPoint)
-  const selectableVisibleIds = visibleBatchSelectablePoints.map((point) => point.id)
-  const visibleRecommendedCount = visiblePoints.filter((point) => point.status === 'recommended').length
-  const visibleSelectedCount = visibleSelectablePoints.filter((point) => selectedIds.has(point.id)).length
+  const visibleCardablePoints = visiblePoints.filter(cardableLearningPoint)
+  const cardableVisibleIds = visibleCardablePoints.map((point) => point.id)
+  const visibleRecommendedCount = visibleCardablePoints.filter((point) => point.status === 'recommended').length
+  const visibleNeedsReviewCardableCount = visibleCardablePoints.filter(learningPointNeedsSourceReview).length
+  const visibleSelectedCount = visibleCardablePoints.filter((point) => selectedIds.has(point.id)).length
   const recommendedIds = points
-    .filter((point) => point.status === 'recommended' && batchSelectableLearningPoint(point))
+    .filter((point) => point.status === 'recommended' && cardableLearningPoint(point))
     .map((point) => point.id)
-  const selectableIds = points.filter(batchSelectableLearningPoint).map((point) => point.id)
-  const manualReviewCount = points.filter((point) => selectableLearningPoint(point) && learningPointNeedsSourceReview(point)).length
+  const cardableIds = points.filter(cardableLearningPoint).map((point) => point.id)
+  const duplicateCount = points.filter((point) => point.status === 'hidden_duplicate').length
+  const hardBlockedCount = points.filter((point) => point.status === 'hard_blocked').length
   const sourceQualityCounts = result.quality_funnel?.source_sentence_quality_counts as Record<string, number> | undefined
   const sourceQualitySignals = sourceQualityCounts
     ? [
@@ -161,22 +158,20 @@ export function LearningPointOverview({
         .filter(Boolean)
     : []
   const sourceReviewHint = sourceQualitySignals.length ? `字幕质量信号：${sourceQualitySignals.slice(0, 4).join(' · ')}` : ''
-  const allSelectableSelected = selectableIds.length > 0 && selectableIds.every((id) => selectedIds.has(id))
+  const allCardableSelected = cardableIds.length > 0 && cardableIds.every((id) => selectedIds.has(id))
   const allRecommendedSelected = recommendedIds.length > 0 && recommendedIds.every((id) => selectedIds.has(id))
   const allVisibleSelected =
-    selectableVisibleIds.length > 0 && selectableVisibleIds.every((id) => selectedIds.has(id))
+    cardableVisibleIds.length > 0 && cardableVisibleIds.every((id) => selectedIds.has(id))
 
   const replaceSelection = (ids: string[]) => onSetSelectedIds(new Set(ids))
-  const selectAllSelectable = () => {
-    onSetSelectedIds(new Set(selectableIds))
+  const selectAllCardable = () => {
+    onSetSelectedIds(new Set(cardableIds))
   }
-  const selectAllRecommended = () => {
-    const next = new Set(selectedIds)
-    recommendedIds.forEach((id) => next.add(id))
-    onSetSelectedIds(next)
+  const selectOnlyRecommended = () => {
+    onSetSelectedIds(new Set(recommendedIds))
   }
   const togglePoint = (point: LearningPointItem) => {
-    if (!selectableLearningPoint(point)) return
+    if (!cardableLearningPoint(point)) return
     const next = new Set(selectedIds)
     if (next.has(point.id)) next.delete(point.id)
     else next.add(point.id)
@@ -185,9 +180,9 @@ export function LearningPointOverview({
   const toggleVisible = () => {
     const next = new Set(selectedIds)
     if (allVisibleSelected) {
-      selectableVisibleIds.forEach((id) => next.delete(id))
+      cardableVisibleIds.forEach((id) => next.delete(id))
     } else {
-      selectableVisibleIds.forEach((id) => next.add(id))
+      cardableVisibleIds.forEach((id) => next.add(id))
     }
     onSetSelectedIds(next)
   }
@@ -204,18 +199,18 @@ export function LearningPointOverview({
           </h2>
           <p>
             发现 {result.learning_point_summary.total} 个；推荐 {result.learning_point_summary.recommended} 个，候选{' '}
-            {result.learning_point_summary.candidate_only} 个。默认只展示可批量制卡项；字幕拼接、滚动字幕或低置信度候选会放到“需复查”。
+            {result.learning_point_summary.candidate_only} 个。默认先勾选高质量推荐；“全选可制卡项”会包含候选和需复查但合法的学习点，重复折叠和不可制卡不会进入队列。
           </p>
         </div>
         <div className="learning-point-primary-count">
           <strong>{selected.length}</strong>
-          <span>已勾选 / 可批量制卡 {selectableIds.length}</span>
+          <span>已选学习点 {selected.length} / 可制卡 {cardableIds.length}</span>
           {generationConfirmOpen ? (
             <span className="generation-confirm-open-badge">确认区已打开</span>
           ) : (
             <button type="button" className="primary-button" onClick={onGenerateCards} disabled={workerBusy || selected.length === 0}>
               <ListChecks size={18} />
-              生成 APKG · {selected.length} 张
+              生成 APKG · {selected.length} 个学习点
             </button>
           )}
           <small className="learning-point-selection-hint">
@@ -235,10 +230,10 @@ export function LearningPointOverview({
               <div>
                 <span className="hero-kicker">生成确认</span>
                 <h3>
-                  准备生成 APKG · {generationQueueSummary.count} 张
+                  准备生成 APKG · {generationQueueSummary.count} 个学习点
                 </h3>
                 <p>
-                  {generationQueueSummary.sourceLabel} · {generationQueueSummary.modeLabel}。点击开始后会先选择保存目录，再自动完成正文、TTS、媒体切片和 APKG 打包。
+                  {generationQueueSummary.sourceLabel} · {generationQueueSummary.modeLabel}。每个学习点默认生成 1 张统一学习卡；点击开始后会先选择保存目录，再自动完成正文、TTS、媒体切片和 APKG 打包。
                 </p>
               </div>
               <div className="generation-confirm-actions">
@@ -272,7 +267,7 @@ export function LearningPointOverview({
               </span>
               <span>
                 <small>可导出</small>
-                <strong>{generationQueueSummary.generatedCount}</strong>
+                <strong>{generationQueueSummary.exportableCount}</strong>
               </span>
               <span>
                 <small>硬失败</small>
@@ -294,7 +289,7 @@ export function LearningPointOverview({
             {showGenerationDetails ? (
               <div className="generation-confirm-details" aria-label="生成详情">
                 <div className="generation-confirm-metrics" aria-label="生成队列信息">
-                  <Metric label="卡片数" value={generationQueueSummary.count} />
+                  <Metric label="学习点" value={generationQueueSummary.count} />
                   <Metric label="批次数" value={generationQueueSummary.batchCount} />
                   <Metric label="每批上限" value={generationQueueSummary.batchSize} />
                   <BooleanMetric label="视频" enabled={generationQueueSummary.includesVideo} />
@@ -325,7 +320,7 @@ export function LearningPointOverview({
                 <div className="generation-queue-heading">
                   <strong>本轮队列</strong>
                   <span>
-                    预览前 {Math.min(generationQueuePoints.length, 4)} 条；保留的学习点才会进入制卡。
+                    预览前 {Math.min(generationQueuePoints.length, 4)} 条；队列里的每个学习点默认只生成一张学习卡。
                     {generationQueuePoints.length > 4 ? ` 还有 ${generationQueuePoints.length - 4} 条已在队列中。` : ''}
                   </span>
                 </div>
@@ -362,7 +357,7 @@ export function LearningPointOverview({
         <div className="learning-point-main-column">
           <div className="learning-point-diagnostic-toggle">
             <span>
-              当前显示 {visiblePoints.length} 个；已勾选 {selected.length} 个；推荐已选 {selectedRecommendedCount}/{recommendedIds.length} 个。
+              当前显示 {visiblePoints.length} 个；已选学习点 {selected.length} 个；推荐已选 {selectedRecommendedCount}/{recommendedIds.length} 个。
             </span>
             <button type="button" className="link-button" onClick={() => setShowLearningDiagnostics((current) => !current)}>
               {showLearningDiagnostics ? '收起高级诊断' : '高级诊断'}
@@ -423,33 +418,33 @@ export function LearningPointOverview({
                 </button>
               ))}
             </div>
-            <div className="learning-point-selection-panel" aria-label="批量勾选学习点">
+            <div className="learning-point-selection-panel" aria-label="批量选择学习点">
               <div className="learning-point-selection-copy">
-                <strong>批量勾选</strong>
+                <strong>批量选择</strong>
                 <span>
-                  全部可批量制卡 {selectableIds.length} 个；当前筛选显示 {visiblePoints.length} 个，其中可批量制卡 {visibleBatchSelectablePoints.length} 个、推荐{' '}
-                  {visibleRecommendedCount} 个；已勾选当前筛选 {visibleSelectedCount} 个。
-                  {manualReviewCount ? ` 另有 ${manualReviewCount} 个学习点需复查，不会被批量勾选。` : ''}
+                  可制卡项 {cardableIds.length} 个；当前筛选显示 {visiblePoints.length} 个，其中可制卡 {visibleCardablePoints.length} 个、需复查{' '}
+                  {visibleNeedsReviewCardableCount} 个、推荐 {visibleRecommendedCount} 个；已选当前筛选 {visibleSelectedCount} 个。
+                  重复折叠 {duplicateCount} 个、不可制卡 {hardBlockedCount} 个不会进入队列。
                   {sourceReviewHint ? ` ${sourceReviewHint}。` : ''}
                 </span>
-                {selectableIds.length === 0 && manualReviewCount > 0 ? (
+                {cardableIds.length === 0 ? (
                   <em className="learning-point-warning">
-                    当前没有可批量制卡项；请先切到“需复查”抽查字幕拼接质量，确认后再单条生成。
+                    当前没有可制卡项；请重新抽取或检查字幕质量，重复折叠和不可制卡项不会进入生成队列。
                   </em>
                 ) : null}
               </div>
               <div className="learning-point-actions">
-                <button type="button" className="ghost-button" onClick={selectAllSelectable} disabled={selectableIds.length === 0 || allSelectableSelected}>
-                  全选全部可批量制卡 {selectableIds.length}
+                <button type="button" className="ghost-button" onClick={selectAllCardable} disabled={cardableIds.length === 0 || allCardableSelected}>
+                  全选可制卡项 {cardableIds.length}
                 </button>
-                <button type="button" className="ghost-button" onClick={selectAllRecommended} disabled={recommendedIds.length === 0 || allRecommendedSelected}>
-                  勾选全部推荐 {recommendedIds.length}
+                <button type="button" className="ghost-button" onClick={selectOnlyRecommended} disabled={recommendedIds.length === 0 || allRecommendedSelected}>
+                  只选推荐 {recommendedIds.length}
                 </button>
-                <button type="button" className="ghost-button" onClick={toggleVisible} disabled={selectableVisibleIds.length === 0}>
-                  {allVisibleSelected ? `取消当前筛选 ${selectableVisibleIds.length}` : `勾选当前筛选 ${selectableVisibleIds.length}`}
+                <button type="button" className="ghost-button" onClick={toggleVisible} disabled={cardableVisibleIds.length === 0}>
+                  {allVisibleSelected ? `取消当前筛选 ${cardableVisibleIds.length}` : `勾选当前筛选 ${cardableVisibleIds.length}`}
                 </button>
                 <button type="button" className="ghost-button" onClick={() => replaceSelection([])} disabled={selected.length === 0}>
-                  清空勾选
+                  清空选择
                 </button>
               </div>
             </div>
@@ -459,15 +454,15 @@ export function LearningPointOverview({
             <div className="learning-point-list-top">
               <strong>学习点列表</strong>
               <span>
-                当前显示 {visiblePoints.length} 个；已勾选 {selected.length} 个。
+                当前显示 {visiblePoints.length} 个；已选学习点 {selected.length} 个。
               </span>
             </div>
             <div className="learning-point-list" aria-label="学习点列表">
               {visiblePoints.map((point) => {
-                const selectable = selectableLearningPoint(point)
+                const selectable = cardableLearningPoint(point)
                 const needsSourceReview = learningPointNeedsSourceReview(point)
                 const checked = selectedIds.has(point.id)
-                const checkLabel = !selectable ? '质量拦截' : needsSourceReview ? '需复查' : '选择'
+                const checkLabel = !selectable ? '不可制卡' : needsSourceReview ? '可制卡 · 需复查' : '选择'
                 return (
                   <article key={point.id} className={`learning-point-row status-${point.status} ${checked ? 'selected' : ''}`}>
                     <label className="learning-point-check">
@@ -505,7 +500,7 @@ export function LearningPointOverview({
               {visiblePoints.length === 0 ? (
                 <div className="filter-empty-state">
                   <strong>当前筛选下没有学习点</strong>
-                  <span>换一个级别、类型或状态筛选，再决定要生成哪些卡。</span>
+                  <span>换一个级别、类型或状态筛选，再决定要生成哪些学习卡。</span>
                 </div>
               ) : null}
             </div>

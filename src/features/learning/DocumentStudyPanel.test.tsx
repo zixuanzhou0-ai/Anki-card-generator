@@ -74,7 +74,7 @@ describe('DocumentStudyPanel', () => {
     fireEvent.click(screen.getAllByRole('button', { name: /B2表达块/ })[0])
     fireEvent.click(screen.getByRole('button', { name: /单词用法/ }))
 
-    expect(screen.getByText(/文档精读不生成听力卡/)).toBeVisible()
+    expect(screen.getByText(/文档精读不生成视频\/TTS 学习卡/)).toBeVisible()
     expect(screen.queryByRole('button', { name: /听力难点/ })).not.toBeInTheDocument()
     expect(props.onPatchRequest).toHaveBeenCalledWith({ language: 'fr' })
     expect(props.onSelectCurrentLevel).toHaveBeenCalledWith('B2')

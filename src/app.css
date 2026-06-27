@@ -5800,31 +5800,37 @@ textarea:focus {
   text-align: left;
   border: 1px solid rgba(60, 60, 67, 0.1);
   border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.64);
-  box-shadow: var(--shadow-sm);
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 1px 2px rgba(15, 15, 18, 0.04);
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease,
+    box-shadow 120ms ease;
 }
 
 .settings-health-card:hover {
   border-color: var(--line-strong);
-  background: rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.94);
 }
 
 .settings-health-card.selected {
-  border-color: rgba(0, 102, 204, 0.28);
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 0 0 2px rgba(0, 102, 204, 0.08);
+  border-color: rgba(0, 102, 204, 0.36);
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow:
+    inset 3px 0 0 rgba(0, 102, 204, 0.74),
+    0 0 0 1px rgba(0, 102, 204, 0.08);
 }
 
 .settings-health-card.ok {
-  background: linear-gradient(180deg, rgba(52, 199, 89, 0.12), rgba(255, 255, 255, 0.76));
+  border-color: rgba(52, 199, 89, 0.18);
 }
 
 .settings-health-card.warn {
-  background: linear-gradient(180deg, rgba(255, 159, 10, 0.15), rgba(255, 255, 255, 0.76));
+  border-color: rgba(255, 159, 10, 0.24);
 }
 
 .settings-health-card.testing {
-  background: linear-gradient(180deg, rgba(0, 102, 204, 0.1), rgba(255, 255, 255, 0.76));
+  border-color: rgba(0, 102, 204, 0.22);
 }
 
 .settings-health-icon {
@@ -6388,9 +6394,10 @@ textarea:focus {
 }
 
 .settings-filter-row button.selected {
-  color: var(--blue);
-  border-color: rgba(0, 102, 204, 0.24);
-  background: var(--blue-soft);
+  color: #1557a5;
+  border-color: rgba(0, 102, 204, 0.28);
+  background: rgba(0, 102, 204, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(0, 102, 204, 0.06);
 }
 
 .settings-catalog-list {
@@ -6407,33 +6414,40 @@ textarea:focus {
   grid-template-rows: auto auto auto auto;
   align-content: start;
   gap: 5px;
-  min-height: 96px;
-  padding: 10px 11px;
+  min-height: 90px;
+  padding: 11px 12px;
   text-align: left;
-  border: 1px solid rgba(60, 60, 67, 0.11);
+  border: 1px solid rgba(60, 60, 67, 0.12);
   border-radius: var(--radius-xs);
-  background: rgba(255, 255, 255, 0.76);
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 1px 2px rgba(15, 15, 18, 0.035);
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease,
+    box-shadow 120ms ease;
 }
 
 .settings-catalog-item:hover:not(:disabled) {
   border-color: rgba(0, 102, 204, 0.22);
-  background: rgba(255, 255, 255, 0.96);
+  background: rgba(248, 250, 252, 0.98);
 }
 
 .settings-catalog-item.selected {
-  border-color: rgba(0, 102, 204, 0.32);
-  background: var(--blue-soft);
-  box-shadow: inset 0 0 0 1px rgba(0, 102, 204, 0.1);
+  border-color: rgba(0, 102, 204, 0.42);
+  background: rgba(245, 249, 255, 0.96);
+  box-shadow:
+    inset 3px 0 0 rgba(0, 102, 204, 0.78),
+    0 1px 3px rgba(0, 102, 204, 0.08);
 }
 
 .settings-catalog-item.manual {
-  border-color: rgba(29, 29, 31, 0.18);
-  background: rgba(248, 250, 252, 0.92);
+  border-color: rgba(29, 29, 31, 0.16);
+  background: rgba(248, 250, 252, 0.9);
 }
 
-.settings-catalog-item.saved {
-  border-color: rgba(52, 199, 89, 0.22);
-  background: var(--green-soft);
+.settings-catalog-item.saved:not(.selected) {
+  border-color: rgba(60, 60, 67, 0.12);
+  background: rgba(255, 255, 255, 0.88);
 }
 
 .settings-catalog-item span,
@@ -6450,9 +6464,12 @@ textarea:focus {
 }
 
 .settings-catalog-item strong {
+  overflow: hidden;
   color: var(--text);
   font-size: 14px;
   line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .settings-catalog-item small {
@@ -6481,6 +6498,16 @@ textarea:focus {
   font-weight: 760;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.settings-catalog-item.saved:not(.selected) em {
+  color: #475569;
+  background: rgba(100, 116, 139, 0.12);
+}
+
+.settings-catalog-item.selected em {
+  color: #1557a5;
+  background: rgba(0, 102, 204, 0.1);
 }
 
 .settings-catalog-empty {
@@ -6590,9 +6617,9 @@ textarea:focus {
   align-items: start;
   min-height: 92px;
   padding: 13px;
-  border: 1px solid rgba(0, 102, 204, 0.18);
+  border: 1px solid rgba(0, 102, 204, 0.16);
   border-radius: var(--radius-md);
-  background: var(--blue-soft);
+  background: rgba(247, 250, 255, 0.9);
 }
 
 .settings-auth-card.settings-auth-card-compact {
@@ -6690,8 +6717,8 @@ textarea:focus {
 }
 
 .settings-profile-status.ok {
-  border-color: rgba(52, 199, 89, 0.22);
-  background: var(--green-soft);
+  border-color: rgba(52, 199, 89, 0.2);
+  background: rgba(244, 250, 246, 0.94);
 }
 
 .settings-profile-status.warn {

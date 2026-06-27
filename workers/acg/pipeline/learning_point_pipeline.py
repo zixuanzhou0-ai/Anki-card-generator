@@ -198,6 +198,9 @@ def _build_ai_learning_point_review_prompt(
         "9) 用户水平只影响推荐优先级，不作为硬过滤。"
         "10) value_score 1-5；4-5 通常 recommend，3 通常 candidate，1-2 reject。"
         "11) estimated_level 用 A1/A2/B1/B2/C1/C2。"
+        "12) recommend 必须通过迁移测试：学习者能把 answer_core 放进另一个新句子里使用；主题名、纯名词块、专有名词堆叠或离开原句没有训练动作的片段只能 candidate/reject。"
+        "13) 如果字幕疑似缺词、自动字幕拼接或语法明显不自然（例如 have break 而不是 have a break），不要 recommend；只能 candidate 并在 status_reason 提醒复查。"
+        "14) 优先推荐 2-6 词的可复用词伙、搭配、短语动词、句型框架、真实听辨或语气风险；不要为了凑数量推荐低价值表达。"
         "只返回严格 JSON，不要 Markdown。结构："
         '{"sources":[{"source_segment_id":"src","reviews":[{'
         '"id":"local id","decision":"recommend|candidate|reject|duplicate","value_score":4,'
@@ -1207,7 +1210,20 @@ def extract_learning_points_from_subtitles(payload: dict[str, Any], cues: list[C
             point.update(score)
             point["learning_action_key"] = str(point.get("learning_action_key") or learning_action_key(point))
             current_status = str(point.get("status") or "")
-            if current_status not in {"recommended", "candidate_only", "hidden_duplicate", "hard_blocked"}:
+            demotion_flags = {
+                "answer_not_locatable",
+                "low_transfer_answer",
+                "answer_too_long",
+                "answer_not_clean_target",
+                "weak_noun_chunk",
+                "asr_grammar_suspect",
+                "source_sentence_needs_review",
+                "vague_learning_action",
+            }
+            should_recompute_status = current_status not in {"recommended", "candidate_only", "hidden_duplicate", "hard_blocked"}
+            if current_status == "recommended" and set(point.get("recommendation_flags") or []) & demotion_flags:
+                should_recompute_status = True
+            if should_recompute_status:
                 status, status_reason = assign_learning_point_status(point, user_level, payload)
                 point["status"] = status
                 point["status_reason"] = status_reason

@@ -200,9 +200,9 @@ export function SettingsDialog({
             aria-labelledby="settings-title"
             tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
-            initial={{ opacity: 0, x: prefersReducedMotion ? 0 : 28 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: prefersReducedMotion ? 0 : 24 }}
+            initial={{ opacity: 0, scale: prefersReducedMotion ? 1 : 0.985 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: prefersReducedMotion ? 1 : 0.985 }}
             transition={{ duration: motionDuration, ease: 'easeOut' }}
           >
             <div className="settings-dialog-header">

@@ -226,7 +226,7 @@ describe('ReviewWorkspace', () => {
     expect(screen.getByText('缓存 2')).toBeInTheDocument()
     expect(screen.getByText('实时 3')).toBeInTheDocument()
     expect(screen.getByText('in the mood for')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /生成 APKG · 1 张/ }))
+    fireEvent.click(screen.getByRole('button', { name: /生成 APKG · 1 个学习点/ }))
     expect(onGenerateCardsFromLearningPoints).toHaveBeenCalledOnce()
   })
 
@@ -239,7 +239,7 @@ describe('ReviewWorkspace', () => {
     renderWorkspace(project, { onInvertCardSelection, onSelectSegment, onSetCardsEnabled })
 
     fireEvent.click(screen.getByRole('button', { name: '全不选' }))
-    fireEvent.click(screen.getByRole('button', { name: '反选' }))
+    fireEvent.click(screen.getByRole('button', { name: '反选可导出' }))
     fireEvent.click(screen.getByRole('button', { name: /in the mood/ }))
 
     expect(screen.getByRole('heading', { name: '审核导出' })).toBeInTheDocument()
@@ -292,13 +292,13 @@ describe('ReviewWorkspace', () => {
       qualityCounts: { total: 107, recommended: 74, review: 0, rejected: 33 },
     })
 
-    expect(screen.getByText('处理 107 个学习点，生成 74 张；33 个未生成')).toBeInTheDocument()
+    expect(screen.getByText('已选 107 个学习点，成功生成 74 张学习卡；33 个未生成')).toBeInTheDocument()
     expect(screen.getByText(/硬失败 1/)).toBeInTheDocument()
     expect(screen.getByText(/质量过滤 1/)).toBeInTheDocument()
-    expect(screen.getByText(/质量拦截跳过 1/)).toBeInTheDocument()
+    expect(screen.getByText(/不可制卡跳过 1/)).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: '只重试未生成 33 个' }))
-    fireEvent.click(screen.getByRole('button', { name: '导出已生成 74 张' }))
+    fireEvent.click(screen.getByRole('button', { name: '重试失败项 33 个' }))
+    fireEvent.click(screen.getByRole('button', { name: '继续导出 74 张' }))
 
     expect(onRetryMissingLearningPoints).toHaveBeenCalledOnce()
     expect(onExport).toHaveBeenCalledOnce()

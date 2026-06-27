@@ -177,7 +177,7 @@ export const learningPointStatusLabels: Record<LearningPointStatus, string> = {
   recommended: '推荐',
   candidate_only: '候选',
   hidden_duplicate: '重复折叠',
-  hard_blocked: '硬阻断',
+  hard_blocked: '不可制卡',
 }
 
 const SOURCE_SENTENCE_REVIEW_FLAGS = new Set([
@@ -200,6 +200,10 @@ const INCOMPLETE_SOURCE_SENTENCE_TAIL_PATTERN =
 
 export function selectableLearningPoint(point: LearningPointItem) {
   return point.status === 'recommended' || point.status === 'candidate_only'
+}
+
+export function cardableLearningPoint(point: LearningPointItem) {
+  return selectableLearningPoint(point)
 }
 
 export function learningPointNeedsSourceReview(point: LearningPointItem) {

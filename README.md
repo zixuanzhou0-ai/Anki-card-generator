@@ -2,7 +2,7 @@
 
 面向中文学习者的 Windows 桌面端视频制卡工具。它把本地视频 + 字幕或视频链接变成可审核、可导出、可导入 Anki 的 `.apkg` 复读卡包。
 
-当前测试版：`v0.9.9-beta`。
+当前测试版：`v0.9.11-beta`。
 
 ## 选择你的版本
 
@@ -25,27 +25,34 @@
 
 当前公开主流程只保留两条入口：`本地视频 + 字幕` 和 `视频链接`。历史文档制卡、实验模板和内部诊断能力不作为普通用户入口展示。
 
-## v0.9.9-beta 重点
+## v0.9.11-beta 重点
 
-- **最终导出只认可导出卡**：推荐卡必须通过质量闸且不含本地草稿、待精修、预览占位或模型保底内容；需复查卡会留在审核区说明原因，但默认不进入 APKG。
-- **生成失败更可解释**：如果模型只产出需复查卡，应用不再直接丢掉整个任务；用户能在审核区看到问题，再决定换模型、重试或人工修正。
-- **统一学习卡继续收口**：视频学习点默认只生成一种“学习卡”。听辨、表达、语境生词、语法和填空提示会合并到同一张卡里，避免同一学习点被拆成多张内容相似的卡。
-- **Vertex Gemini 3.5 Flash 作为默认快速模型**：模型配置默认使用 Vertex `gemini-3.5-flash`；Vertex 文本与 TTS 都走本机 `gcloud` OAuth，不要求用户在应用里粘贴 Vertex API Key。
+- **Vertex 3.5 Flash 质量收口**：默认快速模型继续支持 Vertex `gemini-3.5-flash`，但学习点推荐会先做迁移价值检查；`age groups` 这类纯名词块、`have break` 这类疑似坏字幕/ASR 片段不会默认推荐。
+- **用户勾选不再静默丢卡**：AI 生成卡片时如果漏掉部分已勾选学习点，系统会对缺失项单独重试一次；如果模型仍只给出残缺 JSON，会用原学习点、字幕和时间点补成基础学习卡，而不是让 APKG 变成 0 张。
+- **严格拦截真正硬失败**：视频、原声、整句 TTS、表达 TTS、媒体账本或 hash 失败仍会阻止导出；但字段可从学习点安全补齐的卡会进入可导出区，并在高级诊断里记录修复来源。
+- **统一学习卡继续收口**：视频学习点默认只生成一种“学习卡”。听辨、表达、语境生词、语法和语气提醒会合并到同一张卡里，避免同一学习点被拆成多张内容相似的卡。
 - **Vertex Gemini TTS 默认开启**：新项目默认使用 Vertex Gemini TTS 配置，导出前仍要求测试通过，避免生成晚期才发现缺语音。
-- **设置页和 UI smoke 对齐 Vertex 授权**：模型设置页显示 Vertex 授权说明，不再把 Vertex 当成普通 API Key 服务商；自动化 UI smoke 已覆盖该状态。
-- **推荐质量更严格**：`talk about`、`do something` 这类低迁移泛表达，无法在原句中定位的答案，或缺少正面回忆题/具体学习价值的卡，不会默认导出。
+- **设置页和 UI smoke 对齐 Vertex 授权**：模型设置页显示 Vertex 授权说明，不再把 Vertex 当成普通 API Key 服务商；自动化 UI smoke 覆盖该状态。
 - **无终端弹窗保持**：安装版普通启动只显示桌面 UI；worker 调用 `ebook-convert`、`ffprobe` 等外部工具时继续隐藏 Windows console。
 - **窗口压缩时左侧控制台仍可操作**：最小宽度会进入“素材面板”模式，批量素材、文件夹选择和底部继续按钮都保持可达。
 - **公开仓库保持干净**：生成媒体、APKG、test runs、缓存、日志、内部 handoff 和本地密钥文件默认不会进入 Git。
 ## 界面与成品卡
 
+以下截图来自 `v0.9.11-beta` 的最新 UI smoke 和真实 Anki Preview 抽查。
+
 ### 桌面端工作台
 
 ![桌面端工作台](docs/screenshots/desktop-workspace.png)
 
-### 学习点生成与审核导出
+### 学习点抽取与生成确认
 
 ![素材配置](docs/screenshots/workflow-start.png)
+
+![学习点总览](docs/screenshots/learning-points-overview.png)
+
+![生成确认](docs/screenshots/generation-confirm.png)
+
+### 审核导出
 
 ![审核导出](docs/screenshots/workflow-generated.png)
 
@@ -56,8 +63,6 @@
 ![模型 API 设置](docs/screenshots/settings-model-api.png)
 
 ![TTS 设置](docs/screenshots/settings-tts.png)
-
-![本地环境检测](docs/screenshots/settings-environment.png)
 
 ![关于与版权](docs/screenshots/settings-about-copyright.png)
 
@@ -70,7 +75,6 @@
 ![Anki 成品卡中间](docs/screenshots/anki-card-stress-middle.jpg)
 
 ![Anki 成品卡结尾](docs/screenshots/anki-card-stress-end.jpg)
-
 ## 卡片模式
 
 普通视频制卡只暴露 `沉浸复读 V11`，并提供两种复读模式：
@@ -82,7 +86,7 @@
 
 ## 快速开始
 
-1. 安装或解压 Windows release 包；推荐使用 `v0.9.9-beta` 或更新版本。
+1. 安装或解压 Windows release 包；推荐使用 `v0.9.11-beta` 或更新版本。
 2. 打开 `Anki Card Generator.exe`。正常情况下只会出现桌面 UI，不应额外弹出黑色终端窗口。
 3. 进入 `设置 -> 本地环境`，点击 `检查环境`。
 4. 按提示安装或修复 Python、FFmpeg、Anki、AnkiConnect 等依赖。
@@ -90,9 +94,9 @@
 6. 进入 `语音 TTS`，选择 TTS 服务商和音色，测试连接并保存。
 7. 回到主界面，选择 `本地视频 + 字幕` 或 `视频链接`。
 8. 点击 `抽取学习点`，等待 AI 精筛推荐/候选学习点。
-9. 勾选想生成的学习点，点击 `生成已勾选的 N 张`。
+9. 勾选想生成的学习点，或点击 `全选可制卡项`，再点击 `生成 APKG · N 个学习点`。
 10. 在审核页检查卡片，取消不想导出的卡。
-11. 点击 `导出可用的 N 张` 生成 `.apkg`。
+11. 点击 `导出可导出的 N 张` 或 `继续导出 N 张` 生成 `.apkg`。
 12. 使用 `打开 Anki` / `导入并核验` 检查 note、媒体、音频和卡面。
 
 完整图文教程见 [用户指南](docs/USER_GUIDE.md)。
@@ -189,3 +193,4 @@ npm.cmd run tauri:build
 - [Beta 限制](docs/BETA_LIMITATIONS.md)
 - [隐私说明](PRIVACY.md)
 - [安全策略](SECURITY.md)
+

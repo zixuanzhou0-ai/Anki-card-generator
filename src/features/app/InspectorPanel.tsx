@@ -152,7 +152,7 @@ export function InspectorPanel({
   const exportableCount = exportableCardCount ?? selectedExportableCount
   const repairCount = repairRequiredCardCount ?? 0
   const selectedRepairCount = selectedRepairRequiredCardCount ?? 0
-  const exportButtonLabel = `导出可用的 ${selectedExportableCount} 张`
+  const exportButtonLabel = `导出可导出的 ${selectedExportableCount} 张`
   const reviewStageLabel = workerBusy && !hasProject ? workerStageLabel : hasProject ? '审核导出' : hasLearningPointResult ? '生成 APKG' : '确认抽取'
   const reviewStageSummary =
     workerBusy && !hasProject

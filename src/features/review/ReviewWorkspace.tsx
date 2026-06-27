@@ -176,9 +176,9 @@ export function ReviewWorkspace({
               {workerBusy && !project
                 ? '正在按当前素材和学习设置处理字幕，完成后会自动进入下一步。'
                 : project
-                  ? '确认要导出的卡片；详细诊断默认收起，导出时仍会执行媒体和字段核验。'
+                  ? '确认要导出的学习卡；这里只能选择可导出项，导出时仍会执行媒体、TTS 和字段核验。'
                   : learningPointResult
-                    ? 'AI 已精筛学习点；推荐项默认已选，候选项可手动加选。'
+                    ? 'AI 已精筛学习点；默认先选推荐项，也可以全选可制卡项。'
                     : '先选择素材，再抽取学习点；结果会在这里展开。'}
             </p>
           </div>
@@ -186,13 +186,13 @@ export function ReviewWorkspace({
         {project ? (
           <div className="preview-actions">
             <button className="ghost-button" type="button" onClick={() => onSetCardsEnabled(true)}>
-              全选
+              全选可导出
             </button>
             <button className="ghost-button" type="button" onClick={() => onSetCardsEnabled(false)}>
               全不选
             </button>
             <button className="ghost-button" type="button" onClick={onInvertCardSelection}>
-              反选
+              反选可导出
             </button>
           </div>
         ) : null}
@@ -237,6 +237,7 @@ export function ReviewWorkspace({
           workerBusy={workerBusy}
           onExport={onExport}
           onRetryMissing={onRetryMissingLearningPoints}
+          onReviewInventory={() => setReviewView('inventory')}
         />
       ) : null}
 
@@ -381,12 +382,14 @@ function PartialGenerationNotice({
   workerBusy,
   onExport,
   onRetryMissing,
+  onReviewInventory,
 }: {
   diagnostics: Project['card_generation_diagnostics']
   exportableCount: number
   workerBusy: boolean
   onExport: () => void
   onRetryMissing: () => void
+  onReviewInventory: () => void
 }) {
   const processed = diagnostics?.processed_learning_point_count ?? diagnostics?.selected_learning_point_count ?? 0
   const generated = diagnostics?.generated_card_count ?? diagnostics?.successful_learning_point_count ?? 0
@@ -403,7 +406,7 @@ function PartialGenerationNotice({
             : item.status === 'filtered'
               ? '质量过滤'
               : item.status === 'skipped'
-                ? '质量拦截跳过'
+                ? '不可制卡跳过'
                 : item.status || '其他'
     acc[status] = (acc[status] ?? 0) + 1
     return acc
@@ -413,12 +416,12 @@ function PartialGenerationNotice({
       <summary>
         <div>
           <strong>
-            处理 {processed} 个学习点，生成 {generated} 张；{missing} 个未生成
+            已选 {processed} 个学习点，成功生成 {generated} 张学习卡；{missing} 个未生成
           </strong>
           <span>
             {Object.entries(reasonCounts)
               .map(([label, count]) => `${label} ${count}`)
-              .join(' · ') || '部分学习点没有生成可导出卡。'}
+              .join(' · ') || '部分学习点没有生成可导出的学习卡。'}
           </span>
         </div>
         <em>查看原因</em>
@@ -430,7 +433,7 @@ function PartialGenerationNotice({
           onClick={onRetryMissing}
           disabled={workerBusy || missing === 0}
         >
-          只重试未生成 {missing} 个
+          重试失败项 {missing} 个
         </button>
         <button
           className="ghost-button"
@@ -438,7 +441,10 @@ function PartialGenerationNotice({
           onClick={onExport}
           disabled={workerBusy || exportableCount === 0}
         >
-          导出已生成 {exportableCount} 张
+          继续导出 {exportableCount} 张
+        </button>
+        <button className="ghost-button" type="button" onClick={onReviewInventory} disabled={workerBusy}>
+          返回学习点调整
         </button>
       </div>
       {items.length ? (
@@ -711,14 +717,14 @@ function LearningPointInventoryPanel({ items }: { items: LearningPointInventoryI
             <small>训练点：{item.learning_action}</small>
             <small>原因：{inventoryReason(item)}</small>
             <div className="inventory-item-actions">
-              <span>硬阻断项不会导出；原因通常是 answer_core 异常、跨度不在原句中，或模型返回了不适合直接制卡的内容。</span>
+              <span>不可制卡项不会导出；原因通常是 answer_core 异常、跨度不在原句中，或模型返回了不适合直接制卡的内容。</span>
             </div>
           </article>
         ))}
         {filteredItems.length === 0 ? (
           <div className="filter-empty-state">
             <strong>当前没有更多未制卡学习点</strong>
-            <span>合法学习点已经自动生成到“可导出卡片”，导出前可以在那里勾选或取消。</span>
+            <span>合法学习点已经自动生成到“可导出卡片”，导出前可以在那里选择或取消。</span>
           </div>
         ) : null}
       </div>

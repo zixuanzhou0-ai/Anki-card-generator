@@ -506,8 +506,9 @@ def _make_selected_card_exportable(
     original_missing_fields: list[str] | None = None,
 ) -> dict[str, Any]:
     next_card = dict(card)
+    started_with_selected_fallback = str(next_card.get("generation_source") or "") == "fallback_from_selected_learning_point"
     missing_fields = list(dict.fromkeys([*_missing_selected_card_fields(next_card), *(original_missing_fields or [])]))
-    fallback_fields_filled: list[str] = list(original_missing_fields or [])
+    fallback_fields_filled: list[str] = []
     text_keys = ["chinese", "definition", "teacher_note"]
     for key in text_keys:
         value = str(next_card.get(key) or "")
@@ -537,20 +538,34 @@ def _make_selected_card_exportable(
         for issue in quality.get("issues", []) or []
         if str(issue) not in legacy_worker.EXPORT_BLOCKING_QUALITY_ISSUES
     ]
+    quality["issues"] = issues
+    next_card["quality"] = quality
     if legacy_worker.card_has_export_blocking_content(next_card):
         next_card = dict(fallback_card)
         quality = dict(next_card.get("quality") or {})
         issues = list(quality.get("issues") or [])
         fallback_fields_filled = list(fallback_card.get("fallback_fields_filled") or fallback_fields_filled or ["card"])
         missing_fields = list(dict.fromkeys([*missing_fields, "card"]))
-    quality["status"] = "recommended" if quality.get("status") == "recommended" else "needs_review"
+    exportable_after_repair = (
+        str(next_card.get("generation_source") or "") != "fallback_from_selected_learning_point"
+        and not legacy_worker.card_has_export_blocking_content(next_card)
+    )
+    quality["status"] = "recommended" if quality.get("status") == "recommended" or exportable_after_repair else "needs_review"
     quality["score"] = max(50, int(quality.get("score") or 0))
     if "用户已勾选，保证生成。" not in issues:
         issues.append("用户已勾选，保证生成。")
     quality["issues"] = issues
     next_card["quality"] = quality
     source = str(next_card.get("generation_source") or "")
-    if source == "fallback_from_selected_learning_point":
+    allow_basic_fallback_export = source == "fallback_from_selected_learning_point"
+    if source == "fallback_from_selected_learning_point" and allow_basic_fallback_export:
+        quality["status"] = "recommended"
+        quality["score"] = max(58, int(quality.get("score") or 0))
+        quality["issues"] = ["User-selected basic card generated from the learning point."]
+        next_card["quality"] = quality
+        next_card["generation_source"] = "basic_from_selected_learning_point"
+        source = "basic_from_selected_learning_point"
+    elif source == "fallback_from_selected_learning_point":
         next_card["enabled"] = False
     elif fallback_fields_filled or missing_fields:
         next_card["generation_source"] = "ai_repaired"
@@ -578,15 +593,13 @@ def _ensure_user_selected_learning_point_cards(
     for segment in segments:
         fallback_card = _user_selected_fallback_card(segment, requested_card_types, level, language)
         cards = [card for card in segment.get("cards", []) or [] if isinstance(card, dict)]
-        usable_cards = [
+        matching_cards = [
             card
             for card in cards
             if _card_belongs_to_learning_point(card, segment)
-            and not legacy_worker.card_has_export_blocking_content(card)
         ]
-        selected_card = usable_cards[0] if usable_cards else fallback_card
-        if selected_card is fallback_card or not usable_cards:
-            fallback_count += 1
+        selected_card = matching_cards[0] if matching_cards else fallback_card
+        used_fallback_input = selected_card is fallback_card or not matching_cards
         ensured_card = _make_selected_card_exportable(
             selected_card,
             segment,
@@ -594,7 +607,10 @@ def _ensure_user_selected_learning_point_cards(
             (ai_missing_fields_by_segment_id or {}).get(str(segment.get("id") or ""), []),
         )
         ensured_card = _apply_media_alignment_review_to_card(ensured_card, segment)
-        if str(ensured_card.get("generation_source") or "") == "ai_repaired":
+        generation_source = str(ensured_card.get("generation_source") or "")
+        if used_fallback_input or generation_source in {"fallback_from_selected_learning_point", "basic_from_selected_learning_point"}:
+            fallback_count += 1
+        if generation_source == "ai_repaired":
             repaired_count += 1
         phrase_review_status = (
             "needs_review"
@@ -849,11 +865,18 @@ def handle_generate_cards_from_learning_points(payload: dict[str, Any]) -> dict[
             + str(ai_payload.get("error") or "")
         )
     ai_segments = ai_payload.get("segments", []) if isinstance(ai_payload.get("segments"), list) else []
-    ai_segments_with_usable_cards = {
-        str(item.get("id") or "")
-        for item in ai_segments
-        if any(card.get("phrase") or card.get("chinese") or card.get("definition") for card in item.get("cards", []) or [])
-    }
+
+    def usable_ai_segment_ids(items: list[dict[str, Any]]) -> set[str]:
+        ids: set[str] = set()
+        for item in items:
+            item_id = str(item.get("id") or "")
+            if not item_id:
+                continue
+            if any(card.get("phrase") or card.get("chinese") or card.get("definition") for card in item.get("cards", []) or []):
+                ids.add(item_id)
+        return ids
+
+    ai_segments_with_usable_cards = usable_ai_segment_ids(ai_segments)
     card_generation_retry_count = 0
     if not ai_segments_with_usable_cards and card_generation_cache_misses > 0:
         card_generation_retry_count = 1
@@ -872,11 +895,49 @@ def handle_generate_cards_from_learning_points(payload: dict[str, Any]) -> dict[
             if card_generation_cache_write_enabled:
                 store_card_generation_cache(_cache_path, cache_key, retry_payload)
             ai_segments = ai_payload.get("segments", []) if isinstance(ai_payload.get("segments"), list) else []
-            ai_segments_with_usable_cards = {
-                str(item.get("id") or "")
+            ai_segments_with_usable_cards = usable_ai_segment_ids(ai_segments)
+        timing_ms["card_model"] = int((time.perf_counter() - model_started) * 1000)
+
+    missing_retry_segments = [
+        segment
+        for segment in segments
+        if str(segment.get("id") or "") not in ai_segments_with_usable_cards
+    ]
+    if missing_retry_segments and ai_segments_with_usable_cards and card_generation_cache_misses > 0:
+        card_generation_retry_count += 1
+        emit_progress(
+            "generate_cards_from_learning_points",
+            "ai",
+            83,
+            f"Card body missed {len(missing_retry_segments)} selected learning point(s); retrying the missing items once.",
+        )
+        supplemental_payload = legacy_worker.call_model_batches(
+            {**payload, "_progress_command": "generate_cards_from_learning_points"},
+            missing_retry_segments,
+        )
+        supplemental_segments = (
+            supplemental_payload.get("segments", [])
+            if isinstance(supplemental_payload, dict) and isinstance(supplemental_payload.get("segments"), list)
+            else []
+        )
+        supplemental_ids = usable_ai_segment_ids(supplemental_segments)
+        if supplemental_ids:
+            merged_by_id = {
+                str(item.get("id") or ""): item
                 for item in ai_segments
-                if any(card.get("phrase") or card.get("chinese") or card.get("definition") for card in item.get("cards", []) or [])
+                if str(item.get("id") or "")
             }
+            ordered_ids = [str(item.get("id") or "") for item in ai_segments if str(item.get("id") or "")]
+            for item in supplemental_segments:
+                item_id = str(item.get("id") or "")
+                if item_id not in supplemental_ids:
+                    continue
+                if item_id not in merged_by_id:
+                    ordered_ids.append(item_id)
+                merged_by_id[item_id] = item
+            ai_segments = [merged_by_id[item_id] for item_id in ordered_ids if item_id in merged_by_id]
+            ai_payload = {**ai_payload, "segments": ai_segments}
+            ai_segments_with_usable_cards = usable_ai_segment_ids(ai_segments)
         timing_ms["card_model"] = int((time.perf_counter() - model_started) * 1000)
     model_missing_segment_ids = {str(segment.get("id") or "") for segment in segments if str(segment.get("id") or "") not in ai_segments_with_usable_cards}
     ai_missing_fields_by_segment_id: dict[str, list[str]] = {}

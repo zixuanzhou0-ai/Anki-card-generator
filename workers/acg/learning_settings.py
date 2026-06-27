@@ -16,7 +16,7 @@ LANGUAGE_FOCUS_RULES = {
     "phrases": "优先选择可迁移的词伙、搭配、口语块和话语标记；phrase 必须来自原句且不能是整句。",
     "vocabulary": "可以选择原句里的一个核心单词或短搭配，但必须训练真实语境里的词义、搭配或用法，不做脱离原句的词典式生词卡。",
     "grammar": "可以选择原句里的可替换句型、结构或语法框架；重点解释它怎么换场景复用，而不是讲抽象语法术语。",
-    "listening": "只在弱读、连读、缩读、停顿切分或听音辨义明显时强化听力点；不要把所有句子都硬做听力卡。",
+    "listening": "只在弱读、连读、缩读、停顿切分或听音辨义明显时强化听辨学习点；不要把所有句子都硬做听辨点。",
 }
 STUDY_DEPTHS = {"standard", "deep"}
 SELECTION_STRATEGIES = {"catch_all", "curated", "exhaustive"}
