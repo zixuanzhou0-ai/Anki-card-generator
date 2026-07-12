@@ -1,0 +1,339 @@
+{
+  "schema": "openai.presentation.layout/v4",
+  "unit": "px",
+  "slide": {
+    "aid": "sl/m7d7dd",
+    "id": "m7d7dd",
+    "slide": 9,
+    "layoutId": "cd5538fb-1d73-469e-9212-b459df09a789",
+    "layoutName": "Title Slide",
+    "layoutType": "title",
+    "masterLayoutId": "61b55dff-e917-4521-87ba-a9f1a918312a",
+    "masterLayoutName": "Master",
+    "backgroundColor": "#FFFFFF",
+    "frame": {
+      "left": 0,
+      "top": 0,
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "theme": {
+    "colorSchemeName": "ChatGPT",
+    "colors": {
+      "accent1": "#156082",
+      "accent2": "#E97132",
+      "accent3": "#196B24",
+      "accent4": "#0F9ED5",
+      "accent5": "#A02B93",
+      "accent6": "#4EA72E",
+      "bg1": "#FFFFFF",
+      "bg2": "#000000",
+      "tx1": "#1F1F1F",
+      "tx2": "#FFFFFF",
+      "dk1": "#000000",
+      "lt1": "#FFFFFF",
+      "dk2": "#0E2841",
+      "lt2": "#E8E8E8",
+      "hlink": "#467886",
+      "folHlink": "#96607D"
+    },
+    "typefaces": [
+      "+mn-lt"
+    ]
+  },
+  "inheritedLayers": [
+    {
+      "scope": "layout",
+      "id": "cd5538fb-1d73-469e-9212-b459df09a789",
+      "name": "Title Slide",
+      "type": "title",
+      "parentLayoutId": "61b55dff-e917-4521-87ba-a9f1a918312a",
+      "elements": []
+    },
+    {
+      "scope": "master",
+      "id": "61b55dff-e917-4521-87ba-a9f1a918312a",
+      "name": "Master",
+      "type": "master",
+      "elements": []
+    }
+  ],
+  "elements": [
+    {
+      "order": 1,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/1kre1w7m",
+      "id": "1",
+      "bbox": [
+        56,
+        48,
+        920,
+        52
+      ],
+      "geometry": "rect",
+      "text": "8. 隐私、版权、API 注意事项",
+      "textPreview": "8. 隐私、版权、API 注意事项",
+      "resolvedFontSize": 40,
+      "resolvedTextStyle": {
+        "fontSize": 40,
+        "typeface": "+mn-lt",
+        "color": "#111111",
+        "bold": true,
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "8. 隐私、版权、API 注意事项"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "8. 隐私、版权、API 注意事项",
+          "resolvedTextStyle": {
+            "fontSize": 40,
+            "color": "#111111",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "8. 隐私、版权、API 注意事项",
+              "fontSize": 40,
+              "color": "#111111",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 2,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/uxc3ylc7",
+      "id": "2",
+      "bbox": [
+        56,
+        118,
+        1168,
+        1
+      ],
+      "geometry": "rect",
+      "fillColor": "#B8BCC4",
+      "lineWidth": 0
+    },
+    {
+      "order": 3,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/ji5snelo",
+      "id": "3",
+      "bbox": [
+        56,
+        150,
+        1000,
+        56
+      ],
+      "geometry": "rect",
+      "text": "不要把 API Key、OAuth token、私有视频、字幕、APKG、缓存或日志上传到 GitHub。",
+      "textPreview": "不要把 API Key、OAuth token、私有视频、字幕、APKG、缓存或日志上传到 GitHub。",
+      "resolvedFontSize": 26,
+      "resolvedTextStyle": {
+        "fontSize": 26,
+        "typeface": "+mn-lt",
+        "color": "#1F4D78",
+        "bold": true,
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "不要把 API Key、OAuth token、私有视频、字幕、APKG、缓存或日志上传到 GitHub。"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "不要把 API Key、OAuth token、私有视频、字幕、APKG、缓存或日志上传到 GitHub。",
+          "resolvedTextStyle": {
+            "fontSize": 26,
+            "color": "#1F4D78",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "不要把 API Key、OAuth token、私有视频、字幕、APKG、缓存或日志上传到 GitHub。",
+              "fontSize": 26,
+              "color": "#1F4D78",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 4,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/crmhk3q5",
+      "id": "4",
+      "bbox": [
+        70,
+        245,
+        1000,
+        180
+      ],
+      "geometry": "rect",
+      "text": "模型和 TTS 会把必要文本发送给你配置的服务商。第三方视频、字幕、原声和合成音频默认只建议个人学习使用；公开分享 deck 前请确认授权。卸载程序本体不会删除 AppData、API Key 或 Anki 数据。",
+      "textPreview": "模型和 TTS 会把必要文本发送给你配置的服务商。第三方视频、字幕、原声和合成音频默认只建议个人学习使用；公开分享 deck 前请确认授权。卸载程序本体不会删除 AppData、API Key 或 Anki 数据。",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "fontSize": 24,
+        "typeface": "+mn-lt",
+        "color": "#111111",
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 4,
+        "lines": [
+          {
+            "index": 1,
+            "text": "模型和 TTS"
+          },
+          {
+            "index": 2,
+            "text": "会把必要文本发送给你配置的服务商。第三方视频、字幕、原声和合成音频默认只建议个人"
+          },
+          {
+            "index": 3,
+            "text": "学习使用；公开分享 deck 前请确认授权。卸载程序本体不会删除 AppData、API Key 或 Anki"
+          },
+          {
+            "index": 4,
+            "text": "数据。"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "模型和 TTS 会把必要文本发送给你配置的服务商。第三方视频、字幕、原声和合成音频默认只建议个人学习使用；公开分享 deck 前请确认授权。卸载程序本体不会删除 AppData、API Key 或 Anki 数据。",
+          "resolvedTextStyle": {
+            "fontSize": 24,
+            "color": "#111111",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "模型和 TTS 会把必要文本发送给你配置的服务商。第三方视频、字幕、原声和合成音频默认只建议个人学习使用；公开分享 deck 前请确认授权。卸载程序本体不会删除 AppData、API Key 或 Anki 数据。",
+              "fontSize": 24,
+              "color": "#111111",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 5,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/1cfa9w3m",
+      "id": "5",
+      "bbox": [
+        56,
+        664,
+        420,
+        24
+      ],
+      "geometry": "rect",
+      "text": "Anki 卡片生成器 v0.9.11-beta / 9",
+      "textPreview": "Anki 卡片生成器 v0.9.11-beta / 9",
+      "resolvedFontSize": 15,
+      "resolvedTextStyle": {
+        "fontSize": 15,
+        "typeface": "+mn-lt",
+        "color": "#666666",
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Anki 卡片生成器 v0.9.11-beta / 9"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Anki 卡片生成器 v0.9.11-beta / 9",
+          "resolvedTextStyle": {
+            "fontSize": 15,
+            "color": "#666666",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Anki 卡片生成器 v0.9.11-beta / 9",
+              "fontSize": 15,
+              "color": "#666666",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    }
+  ],
+  "composeRuns": []
+}

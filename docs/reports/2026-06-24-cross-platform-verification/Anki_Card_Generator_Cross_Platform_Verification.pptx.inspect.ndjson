@@ -1,0 +1,202 @@
+{"kind":"deck","id":"pr/v9rtz4","name":"Deck"}
+{"kind":"layout","layoutId":"f4096bfd-b908-4c71-af13-1747467d6503","name":"Master","type":"master"}
+{"kind":"layout","layoutId":"ceb8c1e1-9ea6-4cfb-8e5e-4f5b4d805dcb","name":"Title Slide","type":"title"}
+{"kind":"slide","id":"sl/x54uqu","slide":1,"title":"Anki Card","textShapes":6}
+{"kind":"textbox","id":"sh/sfil0rqd","slide":1,"text":"Anki Card","textPreview":"Anki Card","textChars":9,"textLines":1,"bbox":[72,82,520,70]}
+{"kind":"textbox","id":"sh/zupwb2hw","slide":1,"text":"Generator","textPreview":"Generator","textChars":9,"textLines":1,"bbox":[72,154,720,70]}
+{"kind":"textbox","id":"sh/a9w3m94f","slide":1,"text":"v0.9.4-beta release verification, Windows desktop readiness, and Browser + Local Helper roadmap.","textPreview":"v0.9.4-beta release verification, Windows desktop readiness, and Browser + Local Helper roadmap.","textChars":96,"textLines":1,"bbox":[76,254,560,92]}
+{"kind":"shape","id":"sh/hcrmhk3q","slide":1,"bbox":[740,80,420,420]}
+{"kind":"textbox","id":"sh/z61032ls","slide":1,"text":"Current conclusion: public Windows beta is usable; browser product remains a separate planned line.","textPreview":"Current conclusion: public Windows beta is usable; browser product remains a separate planned line.","textChars":99,"textLines":1,"bbox":[766,430,368,54]}
+{"kind":"textbox","id":"sh/al87ed8b","slide":1,"text":"v0.9.4-beta | Windows desktop release","textPreview":"v0.9.4-beta | Windows desktop release","textChars":37,"textLines":1,"bbox":[72,674,520,24]}
+{"kind":"textbox","id":"sh/hk3q5o7q","slide":1,"text":"01","textPreview":"01","textChars":2,"textLines":1,"bbox":[1160,674,48,24]}
+{"kind":"image","id":"im/xc3ylc7u","slide":1,"name":"","geometry":"roundRect","alt":"Desktop workspace screenshot","bbox":[764,112,372,300]}
+{"kind":"notes","id":"nt/x54uqu","slide":1,"text":""}
+{"kind":"slide","id":"sl/s5vtaz","slide":2,"title":"ANKI CARD GENERATOR VERIFICATION","textShapes":20}
+{"kind":"textbox","id":"sh/9s36hcrm","slide":2,"text":"ANKI CARD GENERATOR VERIFICATION","textPreview":"ANKI CARD GENERATOR VERIFICATION","textChars":32,"textLines":1,"bbox":[72,48,520,30]}
+{"kind":"textbox","id":"sh/y1kre1w7","slide":2,"text":"Release Verdict","textPreview":"Release Verdict","textChars":15,"textLines":1,"bbox":[72,86,920,70]}
+{"kind":"textbox","id":"sh/rmhk3q5o","slide":2,"text":"The core product is ready for Windows beta users. The only limited item is installed WebView2 CDP automation, which is observability, not a product failure.","textPreview":"The core product is ready for Windows beta users. The only limited item is installed WebView2 CDP automation, which is observability, not...","textChars":156,"textLines":1,"bbox":[74,158,980,58]}
+{"kind":"shape","id":"sh/gfmlkjm1","slide":2,"bbox":[88,248,220,48]}
+{"kind":"textbox","id":"sh/90je9cvi","slide":2,"text":"GitHub","textPreview":"GitHub","textChars":6,"textLines":1,"bbox":[108,260,180,24]}
+{"kind":"textbox","id":"sh/yd0z6103","slide":2,"text":"About, README screenshots, Release labels","textPreview":"About, README screenshots, Release labels","textChars":41,"textLines":1,"bbox":[330,256,610,32]}
+{"kind":"shape","id":"sh/rytsvu9k","slide":2,"bbox":[980,254,128,36]}
+{"kind":"textbox","id":"sh/gr2p8nqx","slide":2,"text":"PASS","textPreview":"PASS","textChars":4,"textLines":1,"bbox":[1000,261,88,20]}
+{"kind":"shape","id":"sh/9cvixcze","slide":2,"bbox":[88,312,220,48]}
+{"kind":"textbox","id":"sh/tovahoza","slide":2,"text":"Assets","textPreview":"Assets","textChars":6,"textLines":1,"bbox":[108,324,180,24]}
+{"kind":"textbox","id":"sh/032lszqt","slide":2,"text":"Setup exe hash matches GitHub digest and SHA256SUMS","textPreview":"Setup exe hash matches GitHub digest and SHA256SUMS","textChars":51,"textLines":1,"bbox":[330,320,610,32]}
+{"kind":"shape","id":"sh/bi9s36hc","slide":2,"bbox":[980,318,128,36]}
+{"kind":"textbox","id":"sh/ixczed8v","slide":2,"text":"PASS","textPreview":"PASS","textChars":4,"textLines":1,"bbox":[1000,325,88,20]}
+{"kind":"shape","id":"sh/p0bi9s36","slide":2,"bbox":[88,376,220,48]}
+{"kind":"textbox","id":"sh/0fepkzup","slide":2,"text":"Tests","textPreview":"Tests","textChars":5,"textLines":1,"bbox":[108,388,180,24]}
+{"kind":"textbox","id":"sh/bulwval8","slide":2,"text":"Unit, UI, worker, Tauri build, release smoke","textPreview":"Unit, UI, worker, Tauri build, release smoke","textChars":44,"textLines":1,"bbox":[330,384,610,32]}
+{"kind":"shape","id":"sh/i9s36hcr","slide":2,"bbox":[980,382,128,36]}
+{"kind":"textbox","id":"sh/t47y1kre","slide":2,"text":"PASS","textPreview":"PASS","textChars":4,"textLines":1,"bbox":[1000,389,88,20]}
+{"kind":"shape","id":"sh/0je9cvix","slide":2,"bbox":[88,440,220,48]}
+{"kind":"textbox","id":"sh/g7adsji5","slide":2,"text":"Install","textPreview":"Install","textChars":7,"textLines":1,"bbox":[108,452,180,24]}
+{"kind":"textbox","id":"sh/9s36hcrm","slide":2,"text":"winget/ARP shows Anki Card Generator 0.9.4","textPreview":"winget/ARP shows Anki Card Generator 0.9.4","textChars":42,"textLines":1,"bbox":[330,448,610,32]}
+{"kind":"shape","id":"sh/y1kre1w7","slide":2,"bbox":[980,446,128,36]}
+{"kind":"textbox","id":"sh/rmhk3q5o","slide":2,"text":"PASS","textPreview":"PASS","textChars":4,"textLines":1,"bbox":[1000,453,88,20]}
+{"kind":"shape","id":"sh/gfmlkjm1","slide":2,"bbox":[88,504,220,48]}
+{"kind":"textbox","id":"sh/90je9cvi","slide":2,"text":"CDP","textPreview":"CDP","textChars":3,"textLines":1,"bbox":[108,516,180,24]}
+{"kind":"textbox","id":"sh/yd0z6103","slide":2,"text":"Installed WebView2 did not expose debug port","textPreview":"Installed WebView2 did not expose debug port","textChars":44,"textLines":1,"bbox":[330,512,610,32]}
+{"kind":"shape","id":"sh/rytsvu9k","slide":2,"bbox":[980,510,128,36]}
+{"kind":"textbox","id":"sh/gr2p8nqx","slide":2,"text":"LIMITED","textPreview":"LIMITED","textChars":7,"textLines":1,"bbox":[1000,517,88,20]}
+{"kind":"textbox","id":"sh/9cvixcze","slide":2,"text":"v0.9.4-beta | Windows desktop release","textPreview":"v0.9.4-beta | Windows desktop release","textChars":37,"textLines":1,"bbox":[72,674,520,24]}
+{"kind":"textbox","id":"sh/vahoza1g","slide":2,"text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[1160,674,48,24]}
+{"kind":"notes","id":"nt/s5vtaz","slide":2,"text":""}
+{"kind":"slide","id":"sl/3oy73q","slide":3,"title":"ANKI CARD GENERATOR VERIFICATION","textShapes":12}
+{"kind":"textbox","id":"sh/4vmtwra5","slide":3,"text":"ANKI CARD GENERATOR VERIFICATION","textPreview":"ANKI CARD GENERATOR VERIFICATION","textChars":32,"textLines":1,"bbox":[72,48,520,30]}
+{"kind":"textbox","id":"sh/bat47y1k","slide":3,"text":"What Users See on GitHub","textPreview":"What Users See on GitHub","textChars":24,"textLines":1,"bbox":[72,86,920,70]}
+{"kind":"shape","id":"sh/mp0bi9s3","slide":3,"bbox":[72,188,330,96]}
+{"kind":"shape","id":"sh/tsvu9kni","slide":3,"bbox":[90,206,34,34]}
+{"kind":"textbox","id":"sh/47y1kre1","slide":3,"text":"Windows first","textPreview":"Windows first","textChars":13,"textLines":1,"bbox":[140,203,230,26]}
+{"kind":"textbox","id":"sh/bm58z25k","slide":3,"text":"Release assets are Windows installer, MSI, and portable zip.","textPreview":"Release assets are Windows installer, MSI, and portable zip.","textChars":60,"textLines":1,"bbox":[140,235,238,38]}
+{"kind":"shape","id":"sh/m1cfa9w3","slide":3,"bbox":[474,188,330,96]}
+{"kind":"shape","id":"sh/twra5gbq","slide":3,"bbox":[492,206,34,34]}
+{"kind":"textbox","id":"sh/4byhgn29","slide":3,"text":"Clear checksum","textPreview":"Clear checksum","textChars":14,"textLines":1,"bbox":[542,203,230,26]}
+{"kind":"textbox","id":"sh/m58z25kb","slide":3,"text":"SHA256SUMS lets users verify downloaded files.","textPreview":"SHA256SUMS lets users verify downloaded files.","textChars":46,"textLines":1,"bbox":[542,235,238,38]}
+{"kind":"shape","id":"sh/bq1oryts","slide":3,"bbox":[876,188,330,96]}
+{"kind":"shape","id":"sh/4byhgn29","slide":3,"bbox":[894,206,34,34]}
+{"kind":"textbox","id":"sh/twra5gbq","slide":3,"text":"Screenshots","textPreview":"Screenshots","textChars":11,"textLines":1,"bbox":[944,203,230,26]}
+{"kind":"textbox","id":"sh/mhk3q5o7","slide":3,"text":"README shows workspace, settings, workflow, and Anki cards.","textPreview":"README shows workspace, settings, workflow, and Anki cards.","textChars":59,"textLines":1,"bbox":[944,235,238,38]}
+{"kind":"shape","id":"sh/b2hwfyxo","slide":3,"bbox":[130,360,1020,104]}
+{"kind":"textbox","id":"sh/4nap4r65","slide":3,"text":"Recommended README addition","textPreview":"Recommended README addition","textChars":27,"textLines":1,"bbox":[160,384,360,26]}
+{"kind":"textbox","id":"sh/t83itgfm","slide":3,"text":"Add a 'Choose your build' block: Windows users download current Release; macOS/Linux users follow Browser + Local Helper roadmap.","textPreview":"Add a 'Choose your build' block: Windows users download current Release; macOS/Linux users follow Browser + Local Helper roadmap.","textChars":129,"textLines":1,"bbox":[160,424,850,36]}
+{"kind":"textbox","id":"sh/mp0bi9s3","slide":3,"text":"v0.9.4-beta | Windows desktop release","textPreview":"v0.9.4-beta | Windows desktop release","textChars":37,"textLines":1,"bbox":[72,674,520,24]}
+{"kind":"textbox","id":"sh/bat47y1k","slide":3,"text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[1160,674,48,24]}
+{"kind":"notes","id":"nt/3oy73q","slide":3,"text":""}
+{"kind":"slide","id":"sl/65dc91","slide":4,"title":"ANKI CARD GENERATOR VERIFICATION","textShapes":15}
+{"kind":"textbox","id":"sh/032lszqt","slide":4,"text":"ANKI CARD GENERATOR VERIFICATION","textPreview":"ANKI CARD GENERATOR VERIFICATION","textChars":32,"textLines":1,"bbox":[72,48,520,30]}
+{"kind":"textbox","id":"sh/bi9s36hc","slide":4,"text":"Core Capability Pipeline","textPreview":"Core Capability Pipeline","textChars":24,"textLines":1,"bbox":[72,86,920,70]}
+{"kind":"shape","id":"sh/ixczed8v","slide":4,"bbox":[80,238,180,170]}
+{"kind":"textbox","id":"sh/p0bi9s36","slide":4,"text":"Input","textPreview":"Input","textChars":5,"textLines":1,"bbox":[100,270,140,30]}
+{"kind":"textbox","id":"sh/0fepkzup","slide":4,"text":"Local video + SRT or video link","textPreview":"Local video + SRT or video link","textChars":31,"textLines":1,"bbox":[102,320,136,52]}
+{"kind":"shape","id":"sh/bulwval8","slide":4,"bbox":[304,238,180,170]}
+{"kind":"textbox","id":"sh/i9s36hcr","slide":4,"text":"Extract","textPreview":"Extract","textChars":7,"textLines":1,"bbox":[324,270,140,30]}
+{"kind":"textbox","id":"sh/t47y1kre","slide":4,"text":"AI learning points and context","textPreview":"AI learning points and context","textChars":30,"textLines":1,"bbox":[326,320,136,52]}
+{"kind":"shape","id":"sh/0je9cvix","slide":4,"bbox":[528,238,180,170]}
+{"kind":"textbox","id":"sh/a5gbq1or","slide":4,"text":"Review","textPreview":"Review","textChars":6,"textLines":1,"bbox":[548,270,140,30]}
+{"kind":"textbox","id":"sh/3m94fu18","slide":4,"text":"User selects what becomes cards","textPreview":"User selects what becomes cards","textChars":31,"textLines":1,"bbox":[550,320,136,52]}
+{"kind":"shape","id":"sh/s72x4nap","slide":4,"bbox":[752,238,180,170]}
+{"kind":"textbox","id":"sh/lszqtcj6","slide":4,"text":"Generate","textPreview":"Generate","textChars":8,"textLines":1,"bbox":[772,270,140,30]}
+{"kind":"textbox","id":"sh/adsji5sn","slide":4,"text":"Video, audio, TTS, explanations","textPreview":"Video, audio, TTS, explanations","textChars":31,"textLines":1,"bbox":[774,320,136,52]}
+{"kind":"shape","id":"sh/3ylc7u54","slide":4,"bbox":[976,238,180,170]}
+{"kind":"textbox","id":"sh/sji5snel","slide":4,"text":"Verify","textPreview":"Verify","textChars":6,"textLines":1,"bbox":[996,270,140,30]}
+{"kind":"textbox","id":"sh/h4byhgn2","slide":4,"text":"APKG fields and media integrity","textPreview":"APKG fields and media integrity","textChars":31,"textLines":1,"bbox":[998,320,136,52]}
+{"kind":"textbox","id":"sh/ap4r65wj","slide":4,"text":"Validated by worker tests, Playwright UI smoke, Tauri release build, and APKG smoke verification.","textPreview":"Validated by worker tests, Playwright UI smoke, Tauri release build, and APKG smoke verification.","textChars":97,"textLines":1,"bbox":[120,484,980,36]}
+{"kind":"textbox","id":"sh/za1gvy90","slide":4,"text":"v0.9.4-beta | Windows desktop release","textPreview":"v0.9.4-beta | Windows desktop release","textChars":37,"textLines":1,"bbox":[72,674,520,24]}
+{"kind":"textbox","id":"sh/ra5gbq1o","slide":4,"text":"04","textPreview":"04","textChars":2,"textLines":1,"bbox":[1160,674,48,24]}
+{"kind":"notes","id":"nt/65dc91","slide":4,"text":""}
+{"kind":"slide","id":"sl/sictws","slide":5,"title":"ANKI CARD GENERATOR VERIFICATION","textShapes":5}
+{"kind":"textbox","id":"sh/9gr2p8nq","slide":5,"text":"ANKI CARD GENERATOR VERIFICATION","textPreview":"ANKI CARD GENERATOR VERIFICATION","textChars":32,"textLines":1,"bbox":[72,48,520,30]}
+{"kind":"textbox","id":"sh/2p8nqxs7","slide":5,"text":"Screenshots Tell the User Story","textPreview":"Screenshots Tell the User Story","textChars":31,"textLines":1,"bbox":[72,86,920,70]}
+{"kind":"textbox","id":"sh/2hwfyxob","slide":5,"text":"Public docs already show the full user journey: workspace, generation, settings, TTS, local environment, and final Anki cards.","textPreview":"Public docs already show the full user journey: workspace, generation, settings, TTS, local environment, and final Anki cards.","textChars":126,"textLines":1,"bbox":[120,460,1040,58]}
+{"kind":"textbox","id":"sh/r2p8nqxs","slide":5,"text":"v0.9.4-beta | Windows desktop release","textPreview":"v0.9.4-beta | Windows desktop release","textChars":37,"textLines":1,"bbox":[72,674,520,24]}
+{"kind":"textbox","id":"sh/kb6xkf6d","slide":5,"text":"05","textPreview":"05","textChars":2,"textLines":1,"bbox":[1160,674,48,24]}
+{"kind":"image","id":"im/qh0fepkz","slide":5,"name":"","geometry":"roundRect","alt":"Workflow start screenshot","bbox":[76,170,350,236]}
+{"kind":"image","id":"im/1w7mp0bi","slide":5,"name":"","geometry":"roundRect","alt":"Generated workflow screenshot","bbox":[466,170,350,236]}
+{"kind":"image","id":"im/8bat47y1","slide":5,"name":"","geometry":"roundRect","alt":"TTS settings screenshot","bbox":[856,170,350,236]}
+{"kind":"notes","id":"nt/sictws","slide":5,"text":""}
+{"kind":"slide","id":"sl/qq71eu","slide":6,"title":"ANKI CARD GENERATOR VERIFICATION","textShapes":17}
+{"kind":"textbox","id":"sh/eloj2t83","slide":6,"text":"ANKI CARD GENERATOR VERIFICATION","textPreview":"ANKI CARD GENERATOR VERIFICATION","textChars":32,"textLines":1,"bbox":[72,48,520,30]}
+{"kind":"textbox","id":"sh/lc7u54zi","slide":6,"text":"Release Smoke Evidence","textPreview":"Release Smoke Evidence","textChars":22,"textLines":1,"bbox":[72,86,920,70]}
+{"kind":"shape","id":"sh/7u54zido","slide":6,"bbox":[88,204,220,48]}
+{"kind":"textbox","id":"sh/ed8bat47","slide":6,"text":"Command","textPreview":"Command","textChars":7,"textLines":1,"bbox":[108,216,180,24]}
+{"kind":"textbox","id":"sh/l0rqd4vm","slide":6,"text":"npm.cmd run smoke:release","textPreview":"npm.cmd run smoke:release","textChars":25,"textLines":1,"bbox":[330,212,610,32]}
+{"kind":"shape","id":"sh/wfyxobm5","slide":6,"bbox":[980,210,128,36]}
+{"kind":"textbox","id":"sh/7mp0bi9s","slide":6,"text":"PASS","textPreview":"PASS","textChars":4,"textLines":1,"bbox":[1000,217,88,20]}
+{"kind":"shape","id":"sh/e1w7mp0b","slide":6,"bbox":[88,268,220,48]}
+{"kind":"textbox","id":"sh/0rqd4vmt","slide":6,"text":"APKG","textPreview":"APKG","textChars":4,"textLines":1,"bbox":[108,280,180,24]}
+{"kind":"textbox","id":"sh/tcj6tova","slide":6,"text":"1 note / 1 card generated and verified","textPreview":"1 note / 1 card generated and verified","textChars":38,"textLines":1,"bbox":[330,276,610,32]}
+{"kind":"shape","id":"sh/il0rqd4v","slide":6,"bbox":[980,274,128,36]}
+{"kind":"textbox","id":"sh/b6xkf6dc","slide":6,"text":"PASS","textPreview":"PASS","textChars":4,"textLines":1,"bbox":[1000,281,88,20]}
+{"kind":"shape","id":"sh/0je9cvix","slide":6,"bbox":[88,332,220,48]}
+{"kind":"textbox","id":"sh/t47y1kre","slide":6,"text":"Media","textPreview":"Media","textChars":5,"textLines":1,"bbox":[108,344,180,24]}
+{"kind":"textbox","id":"sh/idonyd0z","slide":6,"text":"MP4, WebM, poster, source audio, TTS audio","textPreview":"MP4, WebM, poster, source audio, TTS audio","textChars":42,"textLines":1,"bbox":[330,340,610,32]}
+{"kind":"shape","id":"sh/byhgn29g","slide":6,"bbox":[980,338,128,36]}
+{"kind":"textbox","id":"sh/0fepkzup","slide":6,"text":"PASS","textPreview":"PASS","textChars":4,"textLines":1,"bbox":[1000,345,88,20]}
+{"kind":"shape","id":"sh/p0bi9s36","slide":6,"bbox":[88,396,220,48]}
+{"kind":"textbox","id":"sh/tsvu9kni","slide":6,"text":"Integrity","textPreview":"Integrity","textChars":9,"textLines":1,"bbox":[108,408,180,24]}
+{"kind":"textbox","id":"sh/47y1kre1","slide":6,"text":"No missing, invalid, or unreferenced media","textPreview":"No missing, invalid, or unreferenced media","textChars":42,"textLines":1,"bbox":[330,404,610,32]}
+{"kind":"shape","id":"sh/bm58z25k","slide":6,"bbox":[980,402,128,36]}
+{"kind":"textbox","id":"sh/m1cfa9w3","slide":6,"text":"PASS","textPreview":"PASS","textChars":4,"textLines":1,"bbox":[1000,409,88,20]}
+{"kind":"textbox","id":"sh/tgfmlkjm","slide":6,"text":"The smoke test uses synthetic media and fake cached TTS, so no real API key is exposed.","textPreview":"The smoke test uses synthetic media and fake cached TTS, so no real API key is exposed.","textChars":87,"textLines":1,"bbox":[92,514,960,40]}
+{"kind":"textbox","id":"sh/4vmtwra5","slide":6,"text":"v0.9.4-beta | Windows desktop release","textPreview":"v0.9.4-beta | Windows desktop release","textChars":37,"textLines":1,"bbox":[72,674,520,24]}
+{"kind":"textbox","id":"sh/bat47y1k","slide":6,"text":"06","textPreview":"06","textChars":2,"textLines":1,"bbox":[1160,674,48,24]}
+{"kind":"image","id":"im/p0bi9s36","slide":6,"name":"","geometry":"roundRect","alt":"Anki card screenshot","bbox":[780,170,330,230]}
+{"kind":"notes","id":"nt/qq71eu","slide":6,"text":""}
+{"kind":"slide","id":"sl/n2fgmm","slide":7,"title":"ANKI CARD GENERATOR VERIFICATION","textShapes":12}
+{"kind":"textbox","id":"sh/psfil0rq","slide":7,"text":"ANKI CARD GENERATOR VERIFICATION","textPreview":"ANKI CARD GENERATOR VERIFICATION","textChars":32,"textLines":1,"bbox":[72,48,520,30]}
+{"kind":"textbox","id":"sh/e1w7mp0b","slide":7,"text":"Compact UI Regression Is Covered","textPreview":"Compact UI Regression Is Covered","textChars":32,"textLines":1,"bbox":[72,86,920,70]}
+{"kind":"shape","id":"sh/7mp0bi9s","slide":7,"bbox":[92,194,330,96]}
+{"kind":"shape","id":"sh/wval87ed","slide":7,"bbox":[110,212,34,34]}
+{"kind":"textbox","id":"sh/pg3ex0nu","slide":7,"text":"1180 x 780","textPreview":"1180 x 780","textChars":10,"textLines":1,"bbox":[160,209,230,26]}
+{"kind":"textbox","id":"sh/epkzupwb","slide":7,"text":"Minimum desktop size enters compact source-panel mode.","textPreview":"Minimum desktop size enters compact source-panel mode.","textChars":54,"textLines":1,"bbox":[160,241,238,38]}
+{"kind":"shape","id":"sh/7adsji5s","slide":7,"bbox":[476,194,330,96]}
+{"kind":"shape","id":"sh/wra5gbq1","slide":7,"bbox":[494,212,34,34]}
+{"kind":"textbox","id":"sh/lc7u54zi","slide":7,"text":"Reachable CTA","textPreview":"Reachable CTA","textChars":13,"textLines":1,"bbox":[544,209,230,26]}
+{"kind":"textbox","id":"sh/9w3m94fu","slide":7,"text":"Bottom action button stays visible or scroll-reachable.","textPreview":"Bottom action button stays visible or scroll-reachable.","textChars":55,"textLines":1,"bbox":[544,241,238,38]}
+{"kind":"shape","id":"sh/kb6xkf6d","slide":7,"bbox":[860,194,330,96]}
+{"kind":"shape","id":"sh/rqd4vmtw","slide":7,"bbox":[878,212,34,34]}
+{"kind":"textbox","id":"sh/25kb6xkf","slide":7,"text":"Batch picker","textPreview":"Batch picker","textChars":12,"textLines":1,"bbox":[928,209,230,26]}
+{"kind":"textbox","id":"sh/9knih4by","slide":7,"text":"Folder batch control can be reached and clicked.","textPreview":"Folder batch control can be reached and clicked.","textChars":48,"textLines":1,"bbox":[928,241,238,38]}
+{"kind":"shape","id":"sh/kzupwb2h","slide":7,"bbox":[150,382,980,96]}
+{"kind":"textbox","id":"sh/re1w7mp0","slide":7,"text":"Important nuance","textPreview":"Important nuance","textChars":16,"textLines":1,"bbox":[182,404,260,28]}
+{"kind":"textbox","id":"sh/2t83itgf","slide":7,"text":"Installed WebView2 did not allow CDP automation, so installed-window screenshot is limited. The layout behavior itself is covered by Playwright UI smoke.","textPreview":"Installed WebView2 did not allow CDP automation, so installed-window screenshot is limited. The layout behavior itself is covered by Play...","textChars":153,"textLines":1,"bbox":[182,440,820,32]}
+{"kind":"textbox","id":"sh/9gr2p8nq","slide":7,"text":"v0.9.4-beta | Windows desktop release","textPreview":"v0.9.4-beta | Windows desktop release","textChars":37,"textLines":1,"bbox":[72,674,520,24]}
+{"kind":"textbox","id":"sh/gvy90je9","slide":7,"text":"07","textPreview":"07","textChars":2,"textLines":1,"bbox":[1160,674,48,24]}
+{"kind":"notes","id":"nt/n2fgmm","slide":7,"text":""}
+{"kind":"slide","id":"sl/0ac7hz","slide":8,"title":"ANKI CARD GENERATOR VERIFICATION","textShapes":11}
+{"kind":"textbox","id":"sh/re1w7mp0","slide":8,"text":"ANKI CARD GENERATOR VERIFICATION","textPreview":"ANKI CARD GENERATOR VERIFICATION","textChars":32,"textLines":1,"bbox":[72,48,520,30]}
+{"kind":"textbox","id":"sh/kzupwb2h","slide":8,"text":"Browser + Local Helper Must Be Separate","textPreview":"Browser + Local Helper Must Be Separate","textChars":39,"textLines":1,"bbox":[72,86,920,70]}
+{"kind":"shape","id":"sh/9knih4by","slide":8,"bbox":[80,210,330,96]}
+{"kind":"shape","id":"sh/25kb6xkf","slide":8,"bbox":[98,228,34,34]}
+{"kind":"textbox","id":"sh/rqd4vmtw","slide":8,"text":"Windows desktop","textPreview":"Windows desktop","textChars":15,"textLines":1,"bbox":[148,225,230,26]}
+{"kind":"textbox","id":"sh/kb6xkf6d","slide":8,"text":"Tauri app owns current shipped product and native worker path.","textPreview":"Tauri app owns current shipped product and native worker path.","textChars":62,"textLines":1,"bbox":[148,257,238,38]}
+{"kind":"shape","id":"sh/9w3m94fu","slide":8,"bbox":[475,210,330,96]}
+{"kind":"shape","id":"sh/2hwfyxob","slide":8,"bbox":[493,228,34,34]}
+{"kind":"textbox","id":"sh/r2p8nqxs","slide":8,"text":"Browser web","textPreview":"Browser web","textChars":11,"textLines":1,"bbox":[543,225,230,26]}
+{"kind":"textbox","id":"sh/7ed8bat4","slide":8,"text":"Static UI, project flow, settings, and localhost helper calls.","textPreview":"Static UI, project flow, settings, and localhost helper calls.","textChars":62,"textLines":1,"bbox":[543,257,238,38]}
+{"kind":"shape","id":"sh/itgfmlkj","slide":8,"bbox":[870,210,330,96]}
+{"kind":"shape","id":"sh/pkzupwb2","slide":8,"bbox":[888,228,34,34]}
+{"kind":"textbox","id":"sh/0z61032l","slide":8,"text":"Local helper","textPreview":"Local helper","textChars":12,"textLines":1,"bbox":[938,225,230,26]}
+{"kind":"textbox","id":"sh/72x4nap4","slide":8,"text":"Files, ffmpeg, APKG export, AnkiConnect, cache, verify.","textPreview":"Files, ffmpeg, APKG export, AnkiConnect, cache, verify.","textChars":55,"textLines":1,"bbox":[938,257,238,38]}
+{"kind":"textbox","id":"sh/ih4byhgn","slide":8,"text":"Shared packages should stay narrow: types, card schema, and UI tokens only.","textPreview":"Shared packages should stay narrow: types, card schema, and UI tokens only.","textChars":75,"textLines":1,"bbox":[140,458,1000,44]}
+{"kind":"textbox","id":"sh/p8nqxs72","slide":8,"text":"v0.9.4-beta | Windows desktop release","textPreview":"v0.9.4-beta | Windows desktop release","textChars":37,"textLines":1,"bbox":[72,674,520,24]}
+{"kind":"textbox","id":"sh/0nuxc3yl","slide":8,"text":"08","textPreview":"08","textChars":2,"textLines":1,"bbox":[1160,674,48,24]}
+{"kind":"notes","id":"nt/0ac7hz","slide":8,"text":""}
+{"kind":"slide","id":"sl/j9igaj","slide":9,"title":"ANKI CARD GENERATOR VERIFICATION","textShapes":16}
+{"kind":"textbox","id":"sh/onyd0z61","slide":9,"text":"ANKI CARD GENERATOR VERIFICATION","textPreview":"ANKI CARD GENERATOR VERIFICATION","textChars":32,"textLines":1,"bbox":[72,48,520,30]}
+{"kind":"textbox","id":"sh/z25kb6xk","slide":9,"text":"Tools and Plugins Used","textPreview":"Tools and Plugins Used","textChars":22,"textLines":1,"bbox":[72,86,920,70]}
+{"kind":"shape","id":"sh/6hcrmhk3","slide":9,"bbox":[100,178,470,82]}
+{"kind":"textbox","id":"sh/dg7adsji","slide":9,"text":"GitHub / gh CLI","textPreview":"GitHub / gh CLI","textChars":15,"textLines":1,"bbox":[124,194,280,24]}
+{"kind":"textbox","id":"sh/ovahoza1","slide":9,"text":"Release, assets, README, tags, digest","textPreview":"Release, assets, README, tags, digest","textChars":37,"textLines":1,"bbox":[124,226,390,24]}
+{"kind":"shape","id":"sh/vahoza1g","slide":9,"bbox":[650,178,470,82]}
+{"kind":"textbox","id":"sh/6tovahoz","slide":9,"text":"Playwright","textPreview":"Playwright","textChars":10,"textLines":1,"bbox":[674,194,280,24]}
+{"kind":"textbox","id":"sh/dsji5sne","slide":9,"text":"UI smoke and minimum-size reachability","textPreview":"UI smoke and minimum-size reachability","textChars":38,"textLines":1,"bbox":[674,226,390,24]}
+{"kind":"shape","id":"sh/o7qpg3ex","slide":9,"bbox":[100,296,470,82]}
+{"kind":"textbox","id":"sh/q5o7qpg3","slide":9,"text":"documents","textPreview":"documents","textChars":9,"textLines":1,"bbox":[124,312,280,24]}
+{"kind":"textbox","id":"sh/jqh0fepk","slide":9,"text":"Word report generation","textPreview":"Word report generation","textChars":22,"textLines":1,"bbox":[124,344,390,24]}
+{"kind":"shape","id":"sh/8bat47y1","slide":9,"bbox":[650,296,470,82]}
+{"kind":"textbox","id":"sh/1w7mp0bi","slide":9,"text":"presentations","textPreview":"presentations","textChars":13,"textLines":1,"bbox":[674,312,280,24]}
+{"kind":"textbox","id":"sh/qh0fepkz","slide":9,"text":"Editable PowerPoint deck","textPreview":"Editable PowerPoint deck","textChars":24,"textLines":1,"bbox":[674,344,390,24]}
+{"kind":"shape","id":"sh/j2t83itg","slide":9,"bbox":[100,414,470,82]}
+{"kind":"textbox","id":"sh/8nqxs72x","slide":9,"text":"PowerShell / winget","textPreview":"PowerShell / winget","textChars":19,"textLines":1,"bbox":[124,430,280,24]}
+{"kind":"textbox","id":"sh/18jqh0fe","slide":9,"text":"Install, process, hash, smoke commands","textPreview":"Install, process, hash, smoke commands","textChars":38,"textLines":1,"bbox":[124,462,390,24]}
+{"kind":"shape","id":"sh/ulwval87","slide":9,"bbox":[650,414,470,82]}
+{"kind":"textbox","id":"sh/j6tovaho","slide":9,"text":"Secret scan","textPreview":"Secret scan","textChars":11,"textLines":1,"bbox":[674,430,280,24]}
+{"kind":"textbox","id":"sh/b2hwfyxo","slide":9,"text":"API key and artifact boundary checks","textPreview":"API key and artifact boundary checks","textChars":36,"textLines":1,"bbox":[674,462,390,24]}
+{"kind":"textbox","id":"sh/mhk3q5o7","slide":9,"text":"v0.9.4-beta | Windows desktop release","textPreview":"v0.9.4-beta | Windows desktop release","textChars":37,"textLines":1,"bbox":[72,674,520,24]}
+{"kind":"textbox","id":"sh/t83itgfm","slide":9,"text":"09","textPreview":"09","textChars":2,"textLines":1,"bbox":[1160,674,48,24]}
+{"kind":"notes","id":"nt/j9igaj","slide":9,"text":""}
+{"kind":"slide","id":"sl/lvqrzl","slide":10,"title":"ANKI CARD GENERATOR VERIFICATION","textShapes":9}
+{"kind":"textbox","id":"sh/3ylc7u54","slide":10,"text":"ANKI CARD GENERATOR VERIFICATION","textPreview":"ANKI CARD GENERATOR VERIFICATION","textChars":32,"textLines":1,"bbox":[72,48,520,30]}
+{"kind":"textbox","id":"sh/sji5snel","slide":10,"text":"Next Goals","textPreview":"Next Goals","textChars":10,"textLines":1,"bbox":[72,86,920,70]}
+{"kind":"textbox","id":"sh/h4byhgn2","slide":10,"text":"1. Publish clearer product routing: Windows Desktop now, Browser + Helper roadmap next.","textPreview":"1. Publish clearer product routing: Windows Desktop now, Browser + Helper roadmap next.","textChars":87,"textLines":1,"bbox":[120,190,980,34]}
+{"kind":"textbox","id":"sh/a5gbq1or","slide":10,"text":"2. Keep browser-web and local-helper in separate folders with explicit READMEs.","textPreview":"2. Keep browser-web and local-helper in separate folders with explicit READMEs.","textChars":79,"textLines":1,"bbox":[120,252,980,34]}
+{"kind":"textbox","id":"sh/3m94fu18","slide":10,"text":"3. Define localhost helper API: health, settings, project, media, generate, export, verify.","textPreview":"3. Define localhost helper API: health, settings, project, media, generate, export, verify.","textChars":91,"textLines":1,"bbox":[120,314,980,34]}
+{"kind":"textbox","id":"sh/s72x4nap","slide":10,"text":"4. Never upload API keys, APKGs, video/audio artifacts, test_runs, target, node_modules, or local caches.","textPreview":"4. Never upload API keys, APKGs, video/audio artifacts, test_runs, target, node_modules, or local caches.","textChars":105,"textLines":1,"bbox":[120,376,980,58]}
+{"kind":"shape","id":"sh/lszqtcj6","slide":10,"bbox":[180,498,920,64]}
+{"kind":"textbox","id":"sh/a1gvy90j","slide":10,"text":"The beta is useful now; the next leap is clean product separation.","textPreview":"The beta is useful now; the next leap is clean product separation.","textChars":66,"textLines":1,"bbox":[210,516,860,28]}
+{"kind":"textbox","id":"sh/zidonyd0","slide":10,"text":"v0.9.4-beta | Windows desktop release","textPreview":"v0.9.4-beta | Windows desktop release","textChars":37,"textLines":1,"bbox":[72,674,520,24]}
+{"kind":"textbox","id":"sh/re1w7mp0","slide":10,"text":"10","textPreview":"10","textChars":2,"textLines":1,"bbox":[1160,674,48,24]}
+{"kind":"notes","id":"nt/lvqrzl","slide":10,"text":""}

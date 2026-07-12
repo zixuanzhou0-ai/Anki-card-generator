@@ -1,0 +1,453 @@
+{
+  "schema": "openai.presentation.layout/v4",
+  "unit": "px",
+  "slide": {
+    "aid": "sl/zz4iy9",
+    "id": "zz4iy9",
+    "slide": 6,
+    "layoutId": "cd5538fb-1d73-469e-9212-b459df09a789",
+    "layoutName": "Title Slide",
+    "layoutType": "title",
+    "masterLayoutId": "61b55dff-e917-4521-87ba-a9f1a918312a",
+    "masterLayoutName": "Master",
+    "backgroundColor": "#FFFFFF",
+    "frame": {
+      "left": 0,
+      "top": 0,
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "theme": {
+    "colorSchemeName": "ChatGPT",
+    "colors": {
+      "accent1": "#156082",
+      "accent2": "#E97132",
+      "accent3": "#196B24",
+      "accent4": "#0F9ED5",
+      "accent5": "#A02B93",
+      "accent6": "#4EA72E",
+      "bg1": "#FFFFFF",
+      "bg2": "#000000",
+      "tx1": "#1F1F1F",
+      "tx2": "#FFFFFF",
+      "dk1": "#000000",
+      "lt1": "#FFFFFF",
+      "dk2": "#0E2841",
+      "lt2": "#E8E8E8",
+      "hlink": "#467886",
+      "folHlink": "#96607D"
+    },
+    "typefaces": [
+      "+mn-lt"
+    ]
+  },
+  "inheritedLayers": [
+    {
+      "scope": "layout",
+      "id": "cd5538fb-1d73-469e-9212-b459df09a789",
+      "name": "Title Slide",
+      "type": "title",
+      "parentLayoutId": "61b55dff-e917-4521-87ba-a9f1a918312a",
+      "elements": []
+    },
+    {
+      "scope": "master",
+      "id": "61b55dff-e917-4521-87ba-a9f1a918312a",
+      "name": "Master",
+      "type": "master",
+      "elements": []
+    }
+  ],
+  "elements": [
+    {
+      "order": 1,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/hgn29gr2",
+      "id": "1",
+      "bbox": [
+        56,
+        48,
+        760,
+        52
+      ],
+      "geometry": "rect",
+      "text": "5. 学习点筛选逻辑",
+      "textPreview": "5. 学习点筛选逻辑",
+      "resolvedFontSize": 40,
+      "resolvedTextStyle": {
+        "fontSize": 40,
+        "typeface": "+mn-lt",
+        "color": "#111111",
+        "bold": true,
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "5. 学习点筛选逻辑"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "5. 学习点筛选逻辑",
+          "resolvedTextStyle": {
+            "fontSize": 40,
+            "color": "#111111",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "5. 学习点筛选逻辑",
+              "fontSize": 40,
+              "color": "#111111",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 2,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/ap4r65wj",
+      "id": "2",
+      "bbox": [
+        56,
+        118,
+        1168,
+        1
+      ],
+      "geometry": "rect",
+      "fillColor": "#B8BCC4",
+      "lineWidth": 0
+    },
+    {
+      "order": 3,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/za1gvy90",
+      "id": "3",
+      "bbox": [
+        56,
+        150,
+        820,
+        44
+      ],
+      "geometry": "rect",
+      "text": "不是逐句硬切卡，而是先判断“是否值得学”。",
+      "textPreview": "不是逐句硬切卡，而是先判断“是否值得学”。",
+      "resolvedFontSize": 27,
+      "resolvedTextStyle": {
+        "fontSize": 27,
+        "typeface": "+mn-lt",
+        "color": "#1F4D78",
+        "bold": true,
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "不是逐句硬切卡，而是先判断“是否值得学”。"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "不是逐句硬切卡，而是先判断“是否值得学”。",
+          "resolvedTextStyle": {
+            "fontSize": 27,
+            "color": "#1F4D78",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "不是逐句硬切卡，而是先判断“是否值得学”。",
+              "fontSize": 27,
+              "color": "#1F4D78",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 4,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/s36hcrmh",
+      "id": "4",
+      "bbox": [
+        72,
+        230,
+        980,
+        220
+      ],
+      "geometry": "rect",
+      "text": "优先：可迁移词伙、搭配、短语动词、句型框架、听辨与语气风险。\n降级：纯主题名、弱名词块、坏字幕、目标无法定位、泛表达。\n全选可制卡项：推荐 + 候选 + 需复查但合法；排除重复折叠和不可制卡。",
+      "textPreview": "优先：可迁移词伙、搭配、短语动词、句型框架、听辨与语气风险。 | 降级：纯主题名、弱名词块、坏字幕、目标无法定位、泛表达。 | 全选可制卡项：推荐 + 候选 + 需复查但合法；排除重复折叠和不可制卡。",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "fontSize": 24,
+        "typeface": "+mn-lt",
+        "color": "#111111",
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 3,
+        "lines": [
+          {
+            "index": 1,
+            "text": "优先：可迁移词伙、搭配、短语动词、句型框架、听辨与语气风险。"
+          },
+          {
+            "index": 2,
+            "text": "降级：纯主题名、弱名词块、坏字幕、目标无法定位、泛表达。"
+          },
+          {
+            "index": 3,
+            "text": "全选可制卡项：推荐 + 候选 + 需复查但合法；排除重复折叠和不可制卡。"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "优先：可迁移词伙、搭配、短语动词、句型框架、听辨与语气风险。",
+          "resolvedTextStyle": {
+            "fontSize": 24,
+            "color": "#111111",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "优先：可迁移词伙、搭配、短语动词、句型框架、听辨与语气风险。",
+              "fontSize": 24,
+              "color": "#111111",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        },
+        {
+          "index": 2,
+          "text": "降级：纯主题名、弱名词块、坏字幕、目标无法定位、泛表达。",
+          "resolvedTextStyle": {
+            "fontSize": 24,
+            "color": "#111111",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "降级：纯主题名、弱名词块、坏字幕、目标无法定位、泛表达。",
+              "fontSize": 24,
+              "color": "#111111",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        },
+        {
+          "index": 3,
+          "text": "全选可制卡项：推荐 + 候选 + 需复查但合法；排除重复折叠和不可制卡。",
+          "resolvedTextStyle": {
+            "fontSize": 24,
+            "color": "#111111",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "全选可制卡项：推荐 + 候选 + 需复查但合法；排除重复折叠和不可制卡。",
+              "fontSize": 24,
+              "color": "#111111",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 5,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/hoza1gvy",
+      "id": "5",
+      "bbox": [
+        72,
+        500,
+        980,
+        82
+      ],
+      "geometry": "rect",
+      "fillColor": "#F4F6F9",
+      "lineColor": "#DADDE3",
+      "lineWidth": 1
+    },
+    {
+      "order": 6,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/a1gvy90j",
+      "id": "6",
+      "bbox": [
+        100,
+        526,
+        930,
+        36
+      ],
+      "geometry": "rect",
+      "text": "目标：让用户得到少而准、能复习、能迁移的学习点，而不是一堆大同小异的卡。",
+      "textPreview": "目标：让用户得到少而准、能复习、能迁移的学习点，而不是一堆大同小异的卡。",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "fontSize": 24,
+        "typeface": "+mn-lt",
+        "color": "#1F4D78",
+        "bold": true,
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "目标：让用户得到少而准、能复习、能迁移的学习点，而不是一堆大同小异的卡。"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "目标：让用户得到少而准、能复习、能迁移的学习点，而不是一堆大同小异的卡。",
+          "resolvedTextStyle": {
+            "fontSize": 24,
+            "color": "#1F4D78",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "目标：让用户得到少而准、能复习、能迁移的学习点，而不是一堆大同小异的卡。",
+              "fontSize": 24,
+              "color": "#1F4D78",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 7,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/zidonyd0",
+      "id": "7",
+      "bbox": [
+        56,
+        664,
+        420,
+        24
+      ],
+      "geometry": "rect",
+      "text": "Anki 卡片生成器 v0.9.11-beta / 6",
+      "textPreview": "Anki 卡片生成器 v0.9.11-beta / 6",
+      "resolvedFontSize": 15,
+      "resolvedTextStyle": {
+        "fontSize": 15,
+        "typeface": "+mn-lt",
+        "color": "#666666",
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Anki 卡片生成器 v0.9.11-beta / 6"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Anki 卡片生成器 v0.9.11-beta / 6",
+          "resolvedTextStyle": {
+            "fontSize": 15,
+            "color": "#666666",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Anki 卡片生成器 v0.9.11-beta / 6",
+              "fontSize": 15,
+              "color": "#666666",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    }
+  ],
+  "composeRuns": []
+}

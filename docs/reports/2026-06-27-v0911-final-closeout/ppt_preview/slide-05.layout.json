@@ -1,0 +1,317 @@
+{
+  "schema": "openai.presentation.layout/v4",
+  "unit": "px",
+  "slide": {
+    "aid": "sl/hmvg5u",
+    "id": "hmvg5u",
+    "slide": 5,
+    "layoutId": "cd5538fb-1d73-469e-9212-b459df09a789",
+    "layoutName": "Title Slide",
+    "layoutType": "title",
+    "masterLayoutId": "61b55dff-e917-4521-87ba-a9f1a918312a",
+    "masterLayoutName": "Master",
+    "backgroundColor": "#FFFFFF",
+    "frame": {
+      "left": 0,
+      "top": 0,
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "theme": {
+    "colorSchemeName": "ChatGPT",
+    "colors": {
+      "accent1": "#156082",
+      "accent2": "#E97132",
+      "accent3": "#196B24",
+      "accent4": "#0F9ED5",
+      "accent5": "#A02B93",
+      "accent6": "#4EA72E",
+      "bg1": "#FFFFFF",
+      "bg2": "#000000",
+      "tx1": "#1F1F1F",
+      "tx2": "#FFFFFF",
+      "dk1": "#000000",
+      "lt1": "#FFFFFF",
+      "dk2": "#0E2841",
+      "lt2": "#E8E8E8",
+      "hlink": "#467886",
+      "folHlink": "#96607D"
+    },
+    "typefaces": [
+      "+mn-lt"
+    ]
+  },
+  "inheritedLayers": [
+    {
+      "scope": "layout",
+      "id": "cd5538fb-1d73-469e-9212-b459df09a789",
+      "name": "Title Slide",
+      "type": "title",
+      "parentLayoutId": "61b55dff-e917-4521-87ba-a9f1a918312a",
+      "elements": []
+    },
+    {
+      "scope": "master",
+      "id": "61b55dff-e917-4521-87ba-a9f1a918312a",
+      "name": "Master",
+      "type": "master",
+      "elements": []
+    }
+  ],
+  "elements": [
+    {
+      "order": 1,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/wb2hwfyx",
+      "id": "1",
+      "bbox": [
+        56,
+        48,
+        720,
+        52
+      ],
+      "geometry": "rect",
+      "text": "4. 制卡流程",
+      "textPreview": "4. 制卡流程",
+      "resolvedFontSize": 40,
+      "resolvedTextStyle": {
+        "fontSize": 40,
+        "typeface": "+mn-lt",
+        "color": "#111111",
+        "bold": true,
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "4. 制卡流程"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "4. 制卡流程",
+          "resolvedTextStyle": {
+            "fontSize": 40,
+            "color": "#111111",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "4. 制卡流程",
+              "fontSize": 40,
+              "color": "#111111",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 2,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/3q5o7qpg",
+      "id": "2",
+      "bbox": [
+        56,
+        118,
+        1168,
+        1
+      ],
+      "geometry": "rect",
+      "fillColor": "#B8BCC4",
+      "lineWidth": 0
+    },
+    {
+      "order": 3,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/e9cvixcz",
+      "id": "3",
+      "bbox": [
+        56,
+        146,
+        1080,
+        70
+      ],
+      "geometry": "rect",
+      "text": "选择素材 → 抽取学习点 → 全选可制卡项 → 生成学习卡 → 全选可导出 → 导出 APKG",
+      "textPreview": "选择素材 → 抽取学习点 → 全选可制卡项 → 生成学习卡 → 全选可导出 → 导出 APKG",
+      "resolvedFontSize": 28,
+      "resolvedTextStyle": {
+        "fontSize": 28,
+        "typeface": "+mn-lt",
+        "color": "#1F4D78",
+        "bold": true,
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "选择素材 → 抽取学习点 → 全选可制卡项 → 生成学习卡 → 全选可导出 → 导出 APKG"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "选择素材 → 抽取学习点 → 全选可制卡项 → 生成学习卡 → 全选可导出 → 导出 APKG",
+          "resolvedTextStyle": {
+            "fontSize": 28,
+            "color": "#1F4D78",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "选择素材 → 抽取学习点 → 全选可制卡项 → 生成学习卡 → 全选可导出 → 导出 APKG",
+              "fontSize": 28,
+              "color": "#1F4D78",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 4,
+      "kind": "image",
+      "scope": "slide",
+      "aid": "im/kjm1cfa9",
+      "id": "4",
+      "bbox": [
+        68,
+        250,
+        520,
+        320
+      ],
+      "geometry": "rect",
+      "alt": "素材配置",
+      "contentType": "image/png",
+      "imageFit": "contain",
+      "imageMask": {
+        "geometry": "rect"
+      },
+      "asset": {
+        "assetId": "ea65c2b1-dd81-405c-a220-c2e0e55dc4d9",
+        "contentType": "image/png",
+        "byteLength": 147022
+      }
+    },
+    {
+      "order": 5,
+      "kind": "image",
+      "scope": "slide",
+      "aid": "im/94fu18jq",
+      "id": "5",
+      "bbox": [
+        670,
+        250,
+        520,
+        320
+      ],
+      "geometry": "rect",
+      "alt": "审核导出",
+      "contentType": "image/png",
+      "imageFit": "contain",
+      "imageMask": {
+        "geometry": "rect"
+      },
+      "asset": {
+        "assetId": "44ec7bbd-0634-4223-9770-4234b5c05771",
+        "contentType": "image/png",
+        "byteLength": 203271
+      }
+    },
+    {
+      "order": 6,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/3itgfmlk",
+      "id": "6",
+      "bbox": [
+        56,
+        664,
+        420,
+        24
+      ],
+      "geometry": "rect",
+      "text": "Anki 卡片生成器 v0.9.11-beta / 5",
+      "textPreview": "Anki 卡片生成器 v0.9.11-beta / 5",
+      "resolvedFontSize": 15,
+      "resolvedTextStyle": {
+        "fontSize": 15,
+        "typeface": "+mn-lt",
+        "color": "#666666",
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Anki 卡片生成器 v0.9.11-beta / 5"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Anki 卡片生成器 v0.9.11-beta / 5",
+          "resolvedTextStyle": {
+            "fontSize": 15,
+            "color": "#666666",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Anki 卡片生成器 v0.9.11-beta / 5",
+              "fontSize": 15,
+              "color": "#666666",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    }
+  ],
+  "composeRuns": []
+}

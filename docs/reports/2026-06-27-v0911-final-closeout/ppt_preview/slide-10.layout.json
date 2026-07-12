@@ -1,0 +1,640 @@
+{
+  "schema": "openai.presentation.layout/v4",
+  "unit": "px",
+  "slide": {
+    "aid": "sl/4wr3sj",
+    "id": "4wr3sj",
+    "slide": 10,
+    "layoutId": "cd5538fb-1d73-469e-9212-b459df09a789",
+    "layoutName": "Title Slide",
+    "layoutType": "title",
+    "masterLayoutId": "61b55dff-e917-4521-87ba-a9f1a918312a",
+    "masterLayoutName": "Master",
+    "backgroundColor": "#FFFFFF",
+    "frame": {
+      "left": 0,
+      "top": 0,
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "theme": {
+    "colorSchemeName": "ChatGPT",
+    "colors": {
+      "accent1": "#156082",
+      "accent2": "#E97132",
+      "accent3": "#196B24",
+      "accent4": "#0F9ED5",
+      "accent5": "#A02B93",
+      "accent6": "#4EA72E",
+      "bg1": "#FFFFFF",
+      "bg2": "#000000",
+      "tx1": "#1F1F1F",
+      "tx2": "#FFFFFF",
+      "dk1": "#000000",
+      "lt1": "#FFFFFF",
+      "dk2": "#0E2841",
+      "lt2": "#E8E8E8",
+      "hlink": "#467886",
+      "folHlink": "#96607D"
+    },
+    "typefaces": [
+      "+mn-lt"
+    ]
+  },
+  "inheritedLayers": [
+    {
+      "scope": "layout",
+      "id": "cd5538fb-1d73-469e-9212-b459df09a789",
+      "name": "Title Slide",
+      "type": "title",
+      "parentLayoutId": "61b55dff-e917-4521-87ba-a9f1a918312a",
+      "elements": []
+    },
+    {
+      "scope": "master",
+      "id": "61b55dff-e917-4521-87ba-a9f1a918312a",
+      "name": "Master",
+      "type": "master",
+      "elements": []
+    }
+  ],
+  "elements": [
+    {
+      "order": 1,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/bat47y1k",
+      "id": "1",
+      "bbox": [
+        56,
+        48,
+        720,
+        52
+      ],
+      "geometry": "rect",
+      "text": "9. 本版验收结果",
+      "textPreview": "9. 本版验收结果",
+      "resolvedFontSize": 40,
+      "resolvedTextStyle": {
+        "fontSize": 40,
+        "typeface": "+mn-lt",
+        "color": "#111111",
+        "bold": true,
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "9. 本版验收结果"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "9. 本版验收结果",
+          "resolvedTextStyle": {
+            "fontSize": 40,
+            "color": "#111111",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "9. 本版验收结果",
+              "fontSize": 40,
+              "color": "#111111",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 2,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/4vmtwra5",
+      "id": "2",
+      "bbox": [
+        56,
+        118,
+        1168,
+        1
+      ],
+      "geometry": "rect",
+      "fillColor": "#B8BCC4",
+      "lineWidth": 0
+    },
+    {
+      "order": 3,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/tgfmlkjm",
+      "id": "3",
+      "bbox": [
+        56,
+        150,
+        300,
+        42
+      ],
+      "geometry": "rect",
+      "text": "已通过",
+      "textPreview": "已通过",
+      "resolvedFontSize": 29,
+      "resolvedTextStyle": {
+        "fontSize": 29,
+        "typeface": "+mn-lt",
+        "color": "#1F4D78",
+        "bold": true,
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "已通过"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "已通过",
+          "resolvedTextStyle": {
+            "fontSize": 29,
+            "color": "#1F4D78",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "已通过",
+              "fontSize": 29,
+              "color": "#1F4D78",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 4,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/m1cfa9w3",
+      "id": "4",
+      "bbox": [
+        80,
+        220,
+        560,
+        300
+      ],
+      "geometry": "rect",
+      "text": "check:versions\nlint\n前端单测：62 文件 / 468 测试\nworker 单测：447 测试\nUI smoke：3 场景\nbuild + cargo check\nrelease smoke\nNSIS / MSI / portable / SHA256",
+      "textPreview": "check:versions | lint | 前端单测：62 文件 / 468 测试 | worker 单测：447 测试 | UI smoke：3 场景 | build + cargo check | release smoke | NSIS / MSI / porta...",
+      "resolvedFontSize": 23,
+      "resolvedTextStyle": {
+        "fontSize": 23,
+        "typeface": "+mn-lt",
+        "color": "#111111",
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 8,
+        "lines": [
+          {
+            "index": 1,
+            "text": "check:versions"
+          },
+          {
+            "index": 2,
+            "text": "lint"
+          },
+          {
+            "index": 3,
+            "text": "前端单测：62 文件 / 468 测试"
+          },
+          {
+            "index": 4,
+            "text": "worker 单测：447 测试"
+          },
+          {
+            "index": 5,
+            "text": "UI smoke：3 场景"
+          },
+          {
+            "index": 6,
+            "text": "build + cargo check"
+          },
+          {
+            "index": 7,
+            "text": "release smoke"
+          },
+          {
+            "index": 8,
+            "text": "NSIS / MSI / portable / SHA256"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "check:versions",
+          "resolvedTextStyle": {
+            "fontSize": 23,
+            "color": "#111111",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "check:versions",
+              "fontSize": 23,
+              "color": "#111111",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        },
+        {
+          "index": 2,
+          "text": "lint",
+          "resolvedTextStyle": {
+            "fontSize": 23,
+            "color": "#111111",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "lint",
+              "fontSize": 23,
+              "color": "#111111",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        },
+        {
+          "index": 3,
+          "text": "前端单测：62 文件 / 468 测试",
+          "resolvedTextStyle": {
+            "fontSize": 23,
+            "color": "#111111",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "前端单测：62 文件 / 468 测试",
+              "fontSize": 23,
+              "color": "#111111",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        },
+        {
+          "index": 4,
+          "text": "worker 单测：447 测试",
+          "resolvedTextStyle": {
+            "fontSize": 23,
+            "color": "#111111",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "worker 单测：447 测试",
+              "fontSize": 23,
+              "color": "#111111",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        },
+        {
+          "index": 5,
+          "text": "UI smoke：3 场景",
+          "resolvedTextStyle": {
+            "fontSize": 23,
+            "color": "#111111",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "UI smoke：3 场景",
+              "fontSize": 23,
+              "color": "#111111",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        },
+        {
+          "index": 6,
+          "text": "build + cargo check",
+          "resolvedTextStyle": {
+            "fontSize": 23,
+            "color": "#111111",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "build + cargo check",
+              "fontSize": 23,
+              "color": "#111111",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        },
+        {
+          "index": 7,
+          "text": "release smoke",
+          "resolvedTextStyle": {
+            "fontSize": 23,
+            "color": "#111111",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "release smoke",
+              "fontSize": 23,
+              "color": "#111111",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        },
+        {
+          "index": 8,
+          "text": "NSIS / MSI / portable / SHA256",
+          "resolvedTextStyle": {
+            "fontSize": 23,
+            "color": "#111111",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "NSIS / MSI / portable / SHA256",
+              "fontSize": 23,
+              "color": "#111111",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 5,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/bm58z25k",
+      "id": "5",
+      "bbox": [
+        720,
+        170,
+        390,
+        250
+      ],
+      "geometry": "rect",
+      "fillColor": "#F4F6F9",
+      "lineColor": "#DADDE3",
+      "lineWidth": 1
+    },
+    {
+      "order": 6,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/47y1kre1",
+      "id": "6",
+      "bbox": [
+        750,
+        205,
+        300,
+        34
+      ],
+      "geometry": "rect",
+      "text": "下一步",
+      "textPreview": "下一步",
+      "resolvedFontSize": 26,
+      "resolvedTextStyle": {
+        "fontSize": 26,
+        "typeface": "+mn-lt",
+        "color": "#1F4D78",
+        "bold": true,
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "下一步"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "下一步",
+          "resolvedTextStyle": {
+            "fontSize": 26,
+            "color": "#1F4D78",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "下一步",
+              "fontSize": 26,
+              "color": "#1F4D78",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 7,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/tsvu9kni",
+      "id": "7",
+      "bbox": [
+        750,
+        270,
+        320,
+        110
+      ],
+      "geometry": "rect",
+      "text": "用桌面交付文件夹里的安装包做你的最终权限和真实素材验收。通过后再推送 GitHub Release。",
+      "textPreview": "用桌面交付文件夹里的安装包做你的最终权限和真实素材验收。通过后再推送 GitHub Release。",
+      "resolvedFontSize": 22,
+      "resolvedTextStyle": {
+        "fontSize": 22,
+        "typeface": "+mn-lt",
+        "color": "#111111",
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 4,
+        "lines": [
+          {
+            "index": 1,
+            "text": "用桌面交付文件夹里的安装包"
+          },
+          {
+            "index": 2,
+            "text": "做你的最终权限和真实素材验"
+          },
+          {
+            "index": 3,
+            "text": "收。通过后再推送 GitHub"
+          },
+          {
+            "index": 4,
+            "text": "Release。"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "用桌面交付文件夹里的安装包做你的最终权限和真实素材验收。通过后再推送 GitHub Release。",
+          "resolvedTextStyle": {
+            "fontSize": 22,
+            "color": "#111111",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "用桌面交付文件夹里的安装包做你的最终权限和真实素材验收。通过后再推送 GitHub Release。",
+              "fontSize": 22,
+              "color": "#111111",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 8,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/m58z25kb",
+      "id": "8",
+      "bbox": [
+        56,
+        664,
+        420,
+        24
+      ],
+      "geometry": "rect",
+      "text": "Anki 卡片生成器 v0.9.11-beta / 10",
+      "textPreview": "Anki 卡片生成器 v0.9.11-beta / 10",
+      "resolvedFontSize": 15,
+      "resolvedTextStyle": {
+        "fontSize": 15,
+        "typeface": "+mn-lt",
+        "color": "#666666",
+        "alignment": "left",
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Anki 卡片生成器 v0.9.11-beta / 10"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Anki 卡片生成器 v0.9.11-beta / 10",
+          "resolvedTextStyle": {
+            "fontSize": 15,
+            "color": "#666666",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Anki 卡片生成器 v0.9.11-beta / 10",
+              "fontSize": 15,
+              "color": "#666666",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    }
+  ],
+  "composeRuns": []
+}

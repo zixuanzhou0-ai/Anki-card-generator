@@ -1,0 +1,89 @@
+{"kind":"deck","id":"pr/kcfvpe","name":"Deck"}
+{"kind":"layout","layoutId":"61b55dff-e917-4521-87ba-a9f1a918312a","name":"Master","type":"master"}
+{"kind":"layout","layoutId":"cd5538fb-1d73-469e-9212-b459df09a789","name":"Title Slide","type":"title"}
+{"kind":"slide","id":"sl/ubycr4","slide":1,"title":"Anki 卡片生成器","textShapes":5}
+{"kind":"textbox","id":"sh/1w7mp0bi","slide":1,"text":"Anki 卡片生成器","textPreview":"Anki 卡片生成器","textChars":10,"textLines":1,"bbox":[72,120,760,74]}
+{"kind":"textbox","id":"sh/q5o7qpg3","slide":1,"text":"v0.9.11-beta 使用说明与发布验收","textPreview":"v0.9.11-beta 使用说明与发布验收","textChars":22,"textLines":1,"bbox":[76,210,760,42]}
+{"kind":"textbox","id":"sh/jqh0fepk","slide":1,"text":"Windows 桌面端 · 从字幕筛选学习点 · 生成统一学习卡","textPreview":"Windows 桌面端 · 从字幕筛选学习点 · 生成统一学习卡","textChars":32,"textLines":1,"bbox":[76,282,820,36]}
+{"kind":"shape","id":"sh/8nqxs72x","slide":1,"bbox":[76,382,1060,120]}
+{"kind":"textbox","id":"sh/18jqh0fe","slide":1,"text":"产品原则：用户侧只有一种卡，叫“学习卡”。系统内部标签只用于筛选和解释，不再暴露成多套相似卡型。","textPreview":"产品原则：用户侧只有一种卡，叫“学习卡”。系统内部标签只用于筛选和解释，不再暴露成多套相似卡型。","textChars":48,"textLines":1,"bbox":[104,414,1000,60]}
+{"kind":"textbox","id":"sh/qh0fepkz","slide":1,"text":"Anki 卡片生成器 v0.9.11-beta / 1","textPreview":"Anki 卡片生成器 v0.9.11-beta / 1","textChars":27,"textLines":1,"bbox":[56,664,420,24]}
+{"kind":"notes","id":"nt/ubycr4","slide":1,"text":""}
+{"kind":"slide","id":"sl/a2dr7a","slide":2,"title":"1. 它解决什么问题","textShapes":4}
+{"kind":"textbox","id":"sh/pg3ex0nu","slide":2,"text":"1. 它解决什么问题","textPreview":"1. 它解决什么问题","textChars":10,"textLines":1,"bbox":[56,48,720,52]}
+{"kind":"shape","id":"sh/epkzupwb","slide":2,"bbox":[56,118,1168,1]}
+{"kind":"textbox","id":"sh/7adsji5s","slide":2,"text":"把真实视频和字幕变成可复习、可听、可看、可导入 Anki 的学习卡。","textPreview":"把真实视频和字幕变成可复习、可听、可看、可导入 Anki 的学习卡。","textChars":34,"textLines":1,"bbox":[56,150,760,60]}
+{"kind":"textbox","id":"sh/w7mp0bi9","slide":2,"text":"• 本地视频 + SRT/VTT\n• YouTube / 公开视频链接\n• AI 抽取值得学的学习点\n• 审核后导出 APKG\n• 可通过 AnkiConnect 核验媒体和字段","textPreview":"• 本地视频 + SRT/VTT | • YouTube / 公开视频链接 | • AI 抽取值得学的学习点 | • 审核后导出 APKG | • 可通过 AnkiConnect 核验媒体和字段","textChars":89,"textLines":5,"bbox":[72,250,500,260]}
+{"kind":"textbox","id":"sh/e1w7mp0b","slide":2,"text":"Anki 卡片生成器 v0.9.11-beta / 2","textPreview":"Anki 卡片生成器 v0.9.11-beta / 2","textChars":27,"textLines":1,"bbox":[56,664,420,24]}
+{"kind":"image","id":"im/0bi9s36h","slide":2,"name":"","geometry":"rect","alt":"桌面端主界面","bbox":[620,160,560,360]}
+{"kind":"notes","id":"nt/a2dr7a","slide":2,"text":""}
+{"kind":"slide","id":"sl/vnyvlu","slide":3,"title":"2. 安装方式","textShapes":6}
+{"kind":"textbox","id":"sh/q5o7qpg3","slide":3,"text":"2. 安装方式","textPreview":"2. 安装方式","textChars":7,"textLines":1,"bbox":[56,48,720,52]}
+{"kind":"shape","id":"sh/1w7mp0bi","slide":3,"bbox":[56,118,1168,1]}
+{"kind":"textbox","id":"sh/8bat47y1","slide":3,"text":"交付文件夹只保留当前版本","textPreview":"交付文件夹只保留当前版本","textChars":12,"textLines":1,"bbox":[56,150,560,42]}
+{"kind":"textbox","id":"sh/j2t83itg","slide":3,"text":"安装程序 exe：推荐普通用户使用\nMSI：适合公司或受控环境\n便携版 zip：适合临时体验或免安装\nSHA256：用于校验安装包完整性","textPreview":"安装程序 exe：推荐普通用户使用 | MSI：适合公司或受控环境 | 便携版 zip：适合临时体验或免安装 | SHA256：用于校验安装包完整性","textChars":68,"textLines":4,"bbox":[72,224,540,220]}
+{"kind":"shape","id":"sh/qh0fepkz","slide":3,"bbox":[690,158,420,290]}
+{"kind":"textbox","id":"sh/18jqh0fe","slide":3,"text":"正式安装包普通启动只显示桌面 UI，不应该额外弹出黑色终端窗口。","textPreview":"正式安装包普通启动只显示桌面 UI，不应该额外弹出黑色终端窗口。","textChars":32,"textLines":1,"bbox":[725,212,350,120]}
+{"kind":"textbox","id":"sh/8nqxs72x","slide":3,"text":"如果看到黑色窗口，先确认不是旧版、开发调试入口或源码 dev 命令。","textPreview":"如果看到黑色窗口，先确认不是旧版、开发调试入口或源码 dev 命令。","textChars":34,"textLines":1,"bbox":[725,348,350,62]}
+{"kind":"textbox","id":"sh/j6tovaho","slide":3,"text":"Anki 卡片生成器 v0.9.11-beta / 3","textPreview":"Anki 卡片生成器 v0.9.11-beta / 3","textChars":27,"textLines":1,"bbox":[56,664,420,24]}
+{"kind":"notes","id":"nt/vnyvlu","slide":3,"text":""}
+{"kind":"slide","id":"sl/uaz0ms","slide":4,"title":"3. 设置：环境、模型、TTS","textShapes":4}
+{"kind":"textbox","id":"sh/eloj2t83","slide":4,"text":"3. 设置：环境、模型、TTS","textPreview":"3. 设置：环境、模型、TTS","textChars":15,"textLines":1,"bbox":[56,48,820,52]}
+{"kind":"shape","id":"sh/lc7u54zi","slide":4,"bbox":[56,118,1168,1]}
+{"kind":"textbox","id":"sh/wra5gbq1","slide":4,"text":"第一次使用先检查本地环境，再分别测试模型 API 和 TTS。","textPreview":"第一次使用先检查本地环境，再分别测试模型 API 和 TTS。","textChars":31,"textLines":1,"bbox":[56,145,840,42]}
+{"kind":"textbox","id":"sh/7u54zido","slide":4,"text":"Vertex 使用本机 gcloud OAuth；OpenAI-compatible 服务需要 Base URL、Model 和 API Key。TTS 失败不会静默导出残缺 APKG。","textPreview":"Vertex 使用本机 gcloud OAuth；OpenAI-compatible 服务需要 Base URL、Model 和 API Key。TTS 失败不会静默导出残缺 APKG。","textChars":93,"textLines":1,"bbox":[58,204,1070,72]}
+{"kind":"textbox","id":"sh/wfyxobm5","slide":4,"text":"Anki 卡片生成器 v0.9.11-beta / 4","textPreview":"Anki 卡片生成器 v0.9.11-beta / 4","textChars":27,"textLines":1,"bbox":[56,664,420,24]}
+{"kind":"image","id":"im/fa9w3m94","slide":4,"name":"","geometry":"rect","alt":"模型 API 设置","bbox":[80,305,500,300]}
+{"kind":"image","id":"im/8v6psfil","slide":4,"name":"","geometry":"rect","alt":"TTS 设置","bbox":[690,305,500,300]}
+{"kind":"notes","id":"nt/uaz0ms","slide":4,"text":""}
+{"kind":"slide","id":"sl/hmvg5u","slide":5,"title":"4. 制卡流程","textShapes":3}
+{"kind":"textbox","id":"sh/wb2hwfyx","slide":5,"text":"4. 制卡流程","textPreview":"4. 制卡流程","textChars":7,"textLines":1,"bbox":[56,48,720,52]}
+{"kind":"shape","id":"sh/3q5o7qpg","slide":5,"bbox":[56,118,1168,1]}
+{"kind":"textbox","id":"sh/e9cvixcz","slide":5,"text":"选择素材 → 抽取学习点 → 全选可制卡项 → 生成学习卡 → 全选可导出 → 导出 APKG","textPreview":"选择素材 → 抽取学习点 → 全选可制卡项 → 生成学习卡 → 全选可导出 → 导出 APKG","textChars":47,"textLines":1,"bbox":[56,146,1080,70]}
+{"kind":"textbox","id":"sh/3itgfmlk","slide":5,"text":"Anki 卡片生成器 v0.9.11-beta / 5","textPreview":"Anki 卡片生成器 v0.9.11-beta / 5","textChars":27,"textLines":1,"bbox":[56,664,420,24]}
+{"kind":"image","id":"im/kjm1cfa9","slide":5,"name":"","geometry":"rect","alt":"素材配置","bbox":[68,250,520,320]}
+{"kind":"image","id":"im/94fu18jq","slide":5,"name":"","geometry":"rect","alt":"审核导出","bbox":[670,250,520,320]}
+{"kind":"notes","id":"nt/hmvg5u","slide":5,"text":""}
+{"kind":"slide","id":"sl/zz4iy9","slide":6,"title":"5. 学习点筛选逻辑","textShapes":5}
+{"kind":"textbox","id":"sh/hgn29gr2","slide":6,"text":"5. 学习点筛选逻辑","textPreview":"5. 学习点筛选逻辑","textChars":10,"textLines":1,"bbox":[56,48,760,52]}
+{"kind":"shape","id":"sh/ap4r65wj","slide":6,"bbox":[56,118,1168,1]}
+{"kind":"textbox","id":"sh/za1gvy90","slide":6,"text":"不是逐句硬切卡，而是先判断“是否值得学”。","textPreview":"不是逐句硬切卡，而是先判断“是否值得学”。","textChars":21,"textLines":1,"bbox":[56,150,820,44]}
+{"kind":"textbox","id":"sh/s36hcrmh","slide":6,"text":"优先：可迁移词伙、搭配、短语动词、句型框架、听辨与语气风险。\n降级：纯主题名、弱名词块、坏字幕、目标无法定位、泛表达。\n全选可制卡项：推荐 + 候选 + 需复查但合法；排除重复折叠和不可制卡。","textPreview":"优先：可迁移词伙、搭配、短语动词、句型框架、听辨与语气风险。 | 降级：纯主题名、弱名词块、坏字幕、目标无法定位、泛表达。 | 全选可制卡项：推荐 + 候选 + 需复查但合法；排除重复折叠和不可制卡。","textChars":96,"textLines":3,"bbox":[72,230,980,220]}
+{"kind":"shape","id":"sh/hoza1gvy","slide":6,"bbox":[72,500,980,82]}
+{"kind":"textbox","id":"sh/a1gvy90j","slide":6,"text":"目标：让用户得到少而准、能复习、能迁移的学习点，而不是一堆大同小异的卡。","textPreview":"目标：让用户得到少而准、能复习、能迁移的学习点，而不是一堆大同小异的卡。","textChars":36,"textLines":1,"bbox":[100,526,930,36]}
+{"kind":"textbox","id":"sh/zidonyd0","slide":6,"text":"Anki 卡片生成器 v0.9.11-beta / 6","textPreview":"Anki 卡片生成器 v0.9.11-beta / 6","textChars":27,"textLines":1,"bbox":[56,664,420,24]}
+{"kind":"notes","id":"nt/zz4iy9","slide":6,"text":""}
+{"kind":"slide","id":"sl/hnoldi","slide":7,"title":"6. 生成与导出一致性","textShapes":5}
+{"kind":"textbox","id":"sh/47y1kre1","slide":7,"text":"6. 生成与导出一致性","textPreview":"6. 生成与导出一致性","textChars":11,"textLines":1,"bbox":[56,48,820,52]}
+{"kind":"shape","id":"sh/bm58z25k","slide":7,"bbox":[56,118,1168,1]}
+{"kind":"textbox","id":"sh/m1cfa9w3","slide":7,"text":"数量必须讲清楚","textPreview":"数量必须讲清楚","textChars":7,"textLines":1,"bbox":[56,150,520,44]}
+{"kind":"textbox","id":"sh/tgfmlkjm","slide":7,"text":"学习点数量：用户选择的任务数\n生成卡片数量：AI + 基础补齐后的学习卡数\n可导出卡片数量：通过媒体、TTS、字段和质量闸的数量","textPreview":"学习点数量：用户选择的任务数 | 生成卡片数量：AI + 基础补齐后的学习卡数 | 可导出卡片数量：通过媒体、TTS、字段和质量闸的数量","textChars":64,"textLines":3,"bbox":[72,230,620,170]}
+{"kind":"shape","id":"sh/4vmtwra5","slide":7,"bbox":[740,168,390,260]}
+{"kind":"textbox","id":"sh/bat47y1k","slide":7,"text":"如果 N 个学习点只有 K 张可导出，导出前必须给出：继续导出 K 张、重试失败项、返回学习点调整。","textPreview":"如果 N 个学习点只有 K 张可导出，导出前必须给出：继续导出 K 张、重试失败项、返回学习点调整。","textChars":50,"textLines":1,"bbox":[776,220,320,132]}
+{"kind":"textbox","id":"sh/mp0bi9s3","slide":7,"text":"Anki 卡片生成器 v0.9.11-beta / 7","textPreview":"Anki 卡片生成器 v0.9.11-beta / 7","textChars":27,"textLines":1,"bbox":[56,664,420,24]}
+{"kind":"notes","id":"nt/hnoldi","slide":7,"text":""}
+{"kind":"slide","id":"sl/x9er7c","slide":8,"title":"7. 成品卡体验","textShapes":4}
+{"kind":"textbox","id":"sh/47y1kre1","slide":8,"text":"7. 成品卡体验","textPreview":"7. 成品卡体验","textChars":8,"textLines":1,"bbox":[56,48,720,52]}
+{"kind":"shape","id":"sh/bm58z25k","slide":8,"bbox":[56,118,1168,1]}
+{"kind":"textbox","id":"sh/m1cfa9w3","slide":8,"text":"正面服务复读，反面服务理解和迁移。","textPreview":"正面服务复读，反面服务理解和迁移。","textChars":17,"textLines":1,"bbox":[56,150,760,44]}
+{"kind":"textbox","id":"sh/tgfmlkjm","slide":8,"text":"正面：英文原句、视频片段、原声、整句 TTS、表达 TTS。\n反面：目标表达、中文解释、语境义、用法提醒、听辨或语气提示。","textPreview":"正面：英文原句、视频片段、原声、整句 TTS、表达 TTS。 | 反面：目标表达、中文解释、语境义、用法提醒、听辨或语气提示。","textChars":61,"textLines":2,"bbox":[56,222,520,150]}
+{"kind":"textbox","id":"sh/bat47y1k","slide":8,"text":"Anki 卡片生成器 v0.9.11-beta / 8","textPreview":"Anki 卡片生成器 v0.9.11-beta / 8","textChars":27,"textLines":1,"bbox":[56,664,420,24]}
+{"kind":"image","id":"im/h4byhgn2","slide":8,"name":"","geometry":"rect","alt":"Anki 成品卡","bbox":[640,155,460,390]}
+{"kind":"notes","id":"nt/x9er7c","slide":8,"text":""}
+{"kind":"slide","id":"sl/m7d7dd","slide":9,"title":"8. 隐私、版权、API 注意事项","textShapes":4}
+{"kind":"textbox","id":"sh/1kre1w7m","slide":9,"text":"8. 隐私、版权、API 注意事项","textPreview":"8. 隐私、版权、API 注意事项","textChars":17,"textLines":1,"bbox":[56,48,920,52]}
+{"kind":"shape","id":"sh/uxc3ylc7","slide":9,"bbox":[56,118,1168,1]}
+{"kind":"textbox","id":"sh/ji5snelo","slide":9,"text":"不要把 API Key、OAuth token、私有视频、字幕、APKG、缓存或日志上传到 GitHub。","textPreview":"不要把 API Key、OAuth token、私有视频、字幕、APKG、缓存或日志上传到 GitHub。","textChars":53,"textLines":1,"bbox":[56,150,1000,56]}
+{"kind":"textbox","id":"sh/crmhk3q5","slide":9,"text":"模型和 TTS 会把必要文本发送给你配置的服务商。第三方视频、字幕、原声和合成音频默认只建议个人学习使用；公开分享 deck 前请确认授权。卸载程序本体不会删除 AppData、API Key 或 Anki 数据。","textPreview":"模型和 TTS 会把必要文本发送给你配置的服务商。第三方视频、字幕、原声和合成音频默认只建议个人学习使用；公开分享 deck 前请确认授权。卸载程序本体不会删除 AppData、API Key 或 Anki 数据。","textChars":107,"textLines":1,"bbox":[70,245,1000,180]}
+{"kind":"textbox","id":"sh/1cfa9w3m","slide":9,"text":"Anki 卡片生成器 v0.9.11-beta / 9","textPreview":"Anki 卡片生成器 v0.9.11-beta / 9","textChars":27,"textLines":1,"bbox":[56,664,420,24]}
+{"kind":"notes","id":"nt/m7d7dd","slide":9,"text":""}
+{"kind":"slide","id":"sl/4wr3sj","slide":10,"title":"9. 本版验收结果","textShapes":6}
+{"kind":"textbox","id":"sh/bat47y1k","slide":10,"text":"9. 本版验收结果","textPreview":"9. 本版验收结果","textChars":9,"textLines":1,"bbox":[56,48,720,52]}
+{"kind":"shape","id":"sh/4vmtwra5","slide":10,"bbox":[56,118,1168,1]}
+{"kind":"textbox","id":"sh/tgfmlkjm","slide":10,"text":"已通过","textPreview":"已通过","textChars":3,"textLines":1,"bbox":[56,150,300,42]}
+{"kind":"textbox","id":"sh/m1cfa9w3","slide":10,"text":"check:versions\nlint\n前端单测：62 文件 / 468 测试\nworker 单测：447 测试\nUI smoke：3 场景\nbuild + cargo check\nrelease smoke\nNSIS / MSI / portable / SHA256","textPreview":"check:versions | lint | 前端单测：62 文件 / 468 测试 | worker 单测：447 测试 | UI smoke：3 场景 | build + cargo check | release smoke | NSIS / MSI / porta...","textChars":135,"textLines":8,"bbox":[80,220,560,300]}
+{"kind":"shape","id":"sh/bm58z25k","slide":10,"bbox":[720,170,390,250]}
+{"kind":"textbox","id":"sh/47y1kre1","slide":10,"text":"下一步","textPreview":"下一步","textChars":3,"textLines":1,"bbox":[750,205,300,34]}
+{"kind":"textbox","id":"sh/tsvu9kni","slide":10,"text":"用桌面交付文件夹里的安装包做你的最终权限和真实素材验收。通过后再推送 GitHub Release。","textPreview":"用桌面交付文件夹里的安装包做你的最终权限和真实素材验收。通过后再推送 GitHub Release。","textChars":50,"textLines":1,"bbox":[750,270,320,110]}
+{"kind":"textbox","id":"sh/m58z25kb","slide":10,"text":"Anki 卡片生成器 v0.9.11-beta / 10","textPreview":"Anki 卡片生成器 v0.9.11-beta / 10","textChars":28,"textLines":1,"bbox":[56,664,420,24]}
+{"kind":"notes","id":"nt/4wr3sj","slide":10,"text":""}
