@@ -94,6 +94,22 @@ describe('SegmentDetail', () => {
     expect(onSetSegmentCardsEnabled).toHaveBeenCalledWith(false, 'seg-1')
   })
 
+  it('shows a useful error instead of a silent black preview', () => {
+    render(
+      <SegmentDetail
+        motionDuration={0}
+        prefersReducedMotion
+        previewRate={1}
+        segment={segment}
+        videoSrc=""
+        videoError="视频预览不可用：文件未获授权"
+        onSetSegmentCardsEnabled={vi.fn()}
+        onUpdateCard={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole('alert')).toHaveTextContent('视频预览不可用：文件未获授权')
+  })
   it('shows real pronunciation fields without inferred placeholder status', () => {
     render(
       <SegmentDetail
@@ -138,8 +154,8 @@ describe('SegmentDetail', () => {
 
     expect(screen.getByText(/标准读法（IPA）：\/wʌt ɪf\//)).toBeInTheDocument()
     expect(screen.getByText(/推测口语读法：\/wəd ɪf\//)).toBeInTheDocument()
-    expect(screen.getByText(/原句听感：\/wəd ɪf wi\//)).toBeInTheDocument()
-    expect(screen.queryByText(/原句听感：已隐藏/)).not.toBeInTheDocument()
+    expect(screen.getByText(/推测原句读法：\/wəd ɪf wi\//)).toBeInTheDocument()
+    expect(screen.queryByText(/推测原句读法状态：已隐藏/)).not.toBeInTheDocument()
     expect(screen.queryByText(/未实听/)).not.toBeInTheDocument()
   })
 })

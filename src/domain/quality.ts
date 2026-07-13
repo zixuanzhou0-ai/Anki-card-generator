@@ -1,4 +1,5 @@
 import type { Card, DocumentFocus, DocumentStudyMode, Project, Segment, SegmentFilter } from './types'
+import { CARD_VERIFICATION_STALE, FALLBACK_CARD_REQUIRES_REVIEW } from './reliability'
 
 type InternalReviewStatus = 'recommended' | 'needs_review' | 'reject' | 'duplicate' | 'unreviewed'
 
@@ -165,10 +166,27 @@ export function exportBlockingReasonsForCard(card: Card) {
   const issueReasons = (card.quality?.issues ?? [])
     .filter((issue) => containsExportBlockingQualityIssue(issue))
     .map((issue) => `质量提示：${clipText(issue, 72)}`)
-  return [...reasons, ...issueReasons]
+  const reliabilityReasons: string[] = []
+  if (
+    card.generation_source === 'fallback_from_selected_learning_point' ||
+    card.generation_source === 'basic_from_selected_learning_point'
+  ) {
+    reliabilityReasons.push(`可靠性门禁：${FALLBACK_CARD_REQUIRES_REVIEW}`)
+  }
+  if (card.verification_status && card.verification_status !== 'verified') {
+    reliabilityReasons.push(
+      `可靠性门禁：${card.verification_status === 'stale' ? CARD_VERIFICATION_STALE : 'CARD_VERIFICATION_NOT_PASSED'}`,
+    )
+  }
+  return [...reasons, ...issueReasons, ...reliabilityReasons]
 }
 
 export function cardHasExportBlockingContent(card: Card) {
+  if (
+    card.generation_source === 'fallback_from_selected_learning_point' ||
+    card.generation_source === 'basic_from_selected_learning_point'
+  ) return true
+  if (card.verification_status && card.verification_status !== 'verified') return true
   if (exportBlockingCardFields.some((field) => containsExportBlockingText(card[field]))) return true
   return (card.quality?.issues ?? []).some((issue) => containsExportBlockingQualityIssue(issue))
 }

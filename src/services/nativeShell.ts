@@ -1,4 +1,4 @@
-﻿import { convertFileSrc, invoke } from '@tauri-apps/api/core'
+import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 import { appLocalDataDir } from '@tauri-apps/api/path'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { isTauriRuntime } from './runtime'
@@ -39,8 +39,10 @@ export async function listDirectoryFiles(directory: string) {
   return invoke<string[]>('list_directory_files', { directory })
 }
 
-export function toAssetUrl(path: string) {
-  return isTauriRuntime() ? convertFileSrc(path) : ''
+export async function preparePreviewAssetUrl(path: string) {
+  if (!isTauriRuntime()) return ''
+  const authorizedPath = await invoke<string>('allow_preview_asset', { path })
+  return convertFileSrc(authorizedPath)
 }
 
 export async function suggestSubtitlePath(videoPath: string, language: string) {

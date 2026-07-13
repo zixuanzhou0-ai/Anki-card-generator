@@ -13,6 +13,8 @@ export const GEMINI_VERTEX_DEFAULT_MODEL = 'gemini-3.5-flash'
 export const GEMINI_VERTEX_PRO_PREVIEW_MODEL = 'gemini-3.1-pro-preview'
 export const GEMINI_VERTEX_UNAVAILABLE_MODEL_ALIASES = new Set(['gemini-3.1-pro'])
 export const GEMINI_VERTEX_FLASH_MODEL = 'gemini-3.5-flash'
+export const HERMES_GROK_BASE_URL = 'http://127.0.0.1:8645/v1'
+export const HERMES_GROK_MODEL = 'grok-4.5'
 
 export const mimoTextModels = [
   { value: 'mimo-v2.5-pro', label: 'MiMo-V2.5-Pro' },
@@ -134,6 +136,16 @@ export const apiPresets: ApiPreset[] = [
     capabilities: ['structured_json', 'long_context', 'cheap_batch'],
     note: 'Google Cloud Vertex AI 的 Gemini 3.5 Flash；适合长字幕快速筛选和低成本批量，不建议作为最终高质量制卡首选。使用本机 gcloud OAuth。',
     key_hint: '不需要 API Key，先运行 gcloud auth login / 设置项目',
+  },
+  {
+    id: 'hermes-grok-45',
+    label: 'Hermes · Grok 4.5（本机 OAuth）',
+    provider: 'openai-compatible',
+    base_url: HERMES_GROK_BASE_URL,
+    model: HERMES_GROK_MODEL,
+    capabilities: ['structured_json', 'long_context'],
+    note: '通过本机 Hermes xAI OAuth 代理调用 Grok 4.5；应用会检测并按需启动代理，不保存 xAI Token。',
+    key_hint: '本机 OAuth · 不需要 API Key',
   },
   {
     id: 'deepseek-v4-pro',
@@ -258,6 +270,7 @@ export const apiPresets: ApiPreset[] = [
 ]
 
 export const featuredApiPresetIds = new Set([
+  'hermes-grok-45',
   'gemini-35-flash-vertex',
   'mimo-token-plan-sgp',
   'qwen37-max-cn',

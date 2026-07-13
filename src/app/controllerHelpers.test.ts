@@ -313,7 +313,7 @@ describe('controllerHelpers', () => {
       '配额或限流',
     )
 
-    expect(ttsApiTestTitle(null, true, true)).toBe('正在测试 TTS')
+    expect(ttsApiTestTitle(null, true, true)).toBe('正在测试 TTS（最长 75 秒）')
     expect(ttsApiTestTitle(null, false, false)).toBe('TTS 已关闭')
     expect(ttsApiTestTitle({ ok: true } as TtsTestResult, false, true)).toBe('TTS 连接成功')
     expect(ttsApiTestTitle({ ok: false, error_code: 'TTS_CONNECTION_FAILED' } as TtsTestResult, false, true)).toBe(

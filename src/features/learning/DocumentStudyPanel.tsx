@@ -149,6 +149,7 @@ export function DocumentStudyPanel({
             <button
               type="button"
               className={autoLevel ? 'selected' : ''}
+              aria-pressed={autoLevel}
               aria-label="自动判断文档精读水平"
               title="自动判断每张精读卡难度"
               onClick={() => onPatchRequest({ level_mode: 'auto' })}
@@ -160,6 +161,7 @@ export function DocumentStudyPanel({
                 type="button"
                 key={level.id}
                 className={!autoLevel && request.level === level.id ? 'selected' : ''}
+                aria-pressed={!autoLevel && request.level === level.id}
                 aria-label={`${level.id}${level.note}`}
                 title={`${level.label} · ${level.note}`}
                 onClick={() => onSelectCurrentLevel(level.id)}
@@ -293,6 +295,7 @@ export function DocumentStudyPanel({
                   type="button"
                   key={item.id}
                   className={request.document_depth === item.id ? 'selected' : ''}
+                  aria-pressed={request.document_depth === item.id}
                   onClick={() => onPatchRequest({ document_depth: item.id })}
                 >
                   <strong>{item.label}</strong>
@@ -313,6 +316,7 @@ export function DocumentStudyPanel({
                   type="button"
                   key={item.id}
                   className={request.document_answer_length === item.id ? 'selected' : ''}
+                  aria-pressed={request.document_answer_length === item.id}
                   onClick={() => onPatchRequest({ document_answer_length: item.id })}
                   title={item.note}
                 >

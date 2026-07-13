@@ -25,6 +25,7 @@ export function AppShell({ controller }: AppShellProps) {
     activeSegment,
     activeSegmentId,
     activeSegmentVideoSrc,
+    activeSegmentVideoError,
     activeApiProfileId,
     activeTtsProfileId,
     advancedApiPresets,
@@ -37,6 +38,9 @@ export function AppShell({ controller }: AppShellProps) {
     apiTestTitle,
     apiTestTone,
     apiTesting,
+    hermesChecking,
+    hermesStarting,
+    hermesStatus,
     activeApiKeySaved,
     apiProfileDirty,
     apiProfileStatus,
@@ -146,6 +150,8 @@ export function AppShell({ controller }: AppShellProps) {
     startWindowResize,
     status,
     statusTone,
+    refreshHermesStatus,
+    startHermesForSettings,
     testApi,
     testTts,
     toggleInspector,
@@ -178,8 +184,7 @@ export function AppShell({ controller }: AppShellProps) {
     }
     return () => {
       if (
-        window.__ANKI_RELEASE_EVIDENCE__?.buildRawObservedSnapshotHandoff ===
-        buildReleaseObservedRawSnapshotHandoff
+        window.__ANKI_RELEASE_EVIDENCE__?.buildRawObservedSnapshotHandoff === buildReleaseObservedRawSnapshotHandoff
       ) {
         delete window.__ANKI_RELEASE_EVIDENCE__
       }
@@ -194,14 +199,13 @@ export function AppShell({ controller }: AppShellProps) {
     (!project && !hasLearningPointResult && !sourceReady) ||
     (hasLearningPointResult && selectedLearningPointCount === 0)
   const primaryGenerateAction = hasLearningPointResult ? generateCardsFromLearningPoints : generate
-  const primaryGenerateLabel =
-    project
-      ? '重新抽取（可能复用缓存）'
-      : hasLearningPointResult
-        ? generationConfirmOpen
-          ? `确认区已打开 · ${generationQueueSummary.count || selectedLearningPointCount} 张`
-          : `生成 APKG · ${selectedLearningPointCount} 张`
-        : '抽取学习点'
+  const primaryGenerateLabel = project
+    ? '重新抽取（可能复用缓存）'
+    : hasLearningPointResult
+      ? generationConfirmOpen
+        ? `确认区已打开 · ${generationQueueSummary.count || selectedLearningPointCount} 张`
+        : `生成 APKG · ${selectedLearningPointCount} 张`
+      : '抽取学习点'
   const reviewTemplateLabel = request.review_density === 'fast' ? '快速复读' : '完整复读'
 
   return (
@@ -292,6 +296,7 @@ export function AppShell({ controller }: AppShellProps) {
             activeSegment={activeSegment}
             activeSegmentId={activeSegmentId}
             activeSegmentVideoSrc={activeSegmentVideoSrc}
+            activeSegmentVideoError={activeSegmentVideoError}
             activeTemplateLabel={reviewTemplateLabel}
             ankiVerifying={ankiVerifying}
             ankiVerifyResult={ankiVerifyResult}
@@ -360,19 +365,31 @@ export function AppShell({ controller }: AppShellProps) {
           capabilityHelp,
           capabilityLabels,
           featuredApiPresets,
+          hermesChecking,
+          hermesStarting,
+          hermesStatus,
           mimoOpenAiBaseUrl: MIMO_OPENAI_BASE_URL,
           mimoTextModels: [...mimoTextModels, ...qwenTextModels, ...deepseekTextModels, ...geminiVertexTextModels],
           savedApiProfiles,
           showCapabilities,
           onApplyApiPreset: applyApiPreset,
           onApplySavedApiProfile: applySavedApiProfile,
+          onCheckHermes: refreshHermesStatus,
           onPatchApi: patchApi,
           onSaveApiProfile: saveCurrentApiProfile,
           onSetShowCapabilities: setShowCapabilities,
+          onStartHermes: startHermesForSettings,
           onTestApi: testApi,
         }}
         dialogRef={settingsDialogRef}
-        envSettings={{ appBusy, envRepairing, envRepairResult, envStatus, onCheckEnv: checkEnv, onRepairEnv: repairEnv }}
+        envSettings={{
+          appBusy,
+          envRepairing,
+          envRepairResult,
+          envStatus,
+          onCheckEnv: checkEnv,
+          onRepairEnv: repairEnv,
+        }}
         motionDuration={motionDuration}
         open={settingsOpen}
         prefersReducedMotion={Boolean(prefersReducedMotion)}

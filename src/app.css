@@ -759,9 +759,7 @@ button:disabled {
   order: 20;
   padding-top: 10px;
   border-top: 1px solid rgba(60, 60, 67, 0.08);
-  background:
-    linear-gradient(180deg, rgba(245, 245, 247, 0), rgba(245, 245, 247, 0.92) 28%),
-    var(--bg);
+  background: linear-gradient(180deg, rgba(245, 245, 247, 0), rgba(245, 245, 247, 0.92) 28%), var(--bg);
 }
 
 .workflow-action-note {
@@ -2641,9 +2639,7 @@ textarea:focus {
   padding: 13px 14px;
   border: 1px solid rgba(52, 199, 89, 0.16);
   border-radius: var(--radius-md);
-  background:
-    radial-gradient(circle at 0% 0%, rgba(52, 199, 89, 0.10), transparent 42%),
-    rgba(255, 255, 255, 0.78);
+  background: radial-gradient(circle at 0% 0%, rgba(52, 199, 89, 0.1), transparent 42%), rgba(255, 255, 255, 0.78);
 }
 
 .document-recommendation-card span {
@@ -3103,6 +3099,18 @@ textarea:focus {
   grid-template-columns: minmax(300px, 0.9fr) minmax(420px, 1.1fr);
   gap: 8px;
   margin-top: 8px;
+}
+
+.reliability-summary.reliability-block .export-count-card,
+.reliability-summary.reliability-block .export-side-metrics {
+  border-color: rgba(190, 24, 93, 0.24);
+  background: rgba(255, 241, 246, 0.72);
+}
+
+.reliability-summary.reliability-pass .export-count-card,
+.reliability-summary.reliability-pass .export-side-metrics {
+  border-color: rgba(22, 101, 52, 0.2);
+  background: rgba(240, 253, 244, 0.72);
 }
 
 .public-source-guardrail {
@@ -3877,9 +3885,7 @@ textarea:focus {
   padding: 12px;
   border: 1px solid rgba(10, 132, 255, 0.26);
   border-radius: var(--radius-md);
-  background:
-    linear-gradient(180deg, rgba(245, 250, 255, 0.96), rgba(255, 255, 255, 0.86)),
-    rgba(255, 255, 255, 0.9);
+  background: linear-gradient(180deg, rgba(245, 250, 255, 0.96), rgba(255, 255, 255, 0.86)), rgba(255, 255, 255, 0.9);
   box-shadow: 0 8px 20px rgba(10, 132, 255, 0.08);
 }
 
@@ -4380,7 +4386,6 @@ textarea:focus {
   font-size: 11px;
   line-height: 1.34;
 }
-
 
 .learning-point-warning {
   flex-basis: 100%;
@@ -4956,9 +4961,7 @@ textarea:focus {
   color: var(--text);
   border-color: rgba(52, 199, 89, 0.22);
   border-radius: var(--radius-lg);
-  background:
-    linear-gradient(180deg, rgba(240, 253, 244, 0.9), rgba(255, 255, 255, 0.74)),
-    rgba(236, 253, 245, 0.88);
+  background: linear-gradient(180deg, rgba(240, 253, 244, 0.9), rgba(255, 255, 255, 0.74)), rgba(236, 253, 245, 0.88);
 }
 
 .export-result-main {
@@ -5478,6 +5481,13 @@ textarea:focus {
   background: linear-gradient(180deg, #2c2c2e, #111114);
 }
 
+.media-preview-error {
+  max-width: min(560px, 84%);
+  color: #ffd7d2;
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
+}
 .media-preview video {
   display: block;
   width: 100%;
@@ -7339,7 +7349,6 @@ textarea:focus {
   .settings-plan-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-
 }
 
 @media (max-width: 1240px) {

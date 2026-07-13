@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ApiConfig, Card, Project, Segment, TtsConfig } from '../domain/types'
+import { buildReliabilityManifest } from '../domain/reliability'
 import {
   buildProjectExportPayloadProject,
   canonicalReleaseApkgPathForOutputDirectory,
@@ -336,6 +337,38 @@ describe('prepareProjectForExport', () => {
     expect(result.statusMessage).toContain('当前没有可导出的正式卡')
     expect(result.statusMessage).toContain('请重新生成卡片')
     expect(result.statusMessage).not.toContain('文档卡')
+  })
+
+  it('fails closed when any selected learning point still needs review', () => {
+    const target = projectWithCards([
+      {
+        ...baseCard,
+        id: 'fallback-card',
+        enabled: false,
+        learning_point_id: 'lp-missing',
+        generation_source: 'fallback_from_selected_learning_point',
+        verification_status: 'needs_review',
+        quality: { score: 58, status: 'needs_review', issues: ['系统保底生成，需人工复核。'] },
+      },
+    ])
+    target.reliability_manifest = buildReliabilityManifest({
+      outcomes: [
+        {
+          learning_point_id: 'lp-missing',
+          status: 'needs_review',
+          card_id: 'fallback-card',
+          blocker_codes: ['FALLBACK_CARD_REQUIRES_REVIEW'],
+        },
+      ],
+    })
+
+    const result = prepareProjectForExport(target)
+    expect(result.status).toBe('blocked')
+    if (result.status === 'blocked') {
+      expect(result.reason).toBe('reliability_gate_blocked')
+      expect(result.reliabilityBlockerCodes).toContain('FALLBACK_CARD_REQUIRES_REVIEW')
+    }
+    expect(result.statusMessage).toContain('可靠性门禁未通过')
   })
 })
 

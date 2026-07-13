@@ -386,6 +386,7 @@ export function LearningPointOverview({
                   key={filter.id}
                   type="button"
                   className={typeFilter === filter.id ? 'selected' : ''}
+                  aria-pressed={typeFilter === filter.id}
                   onClick={() => setTypeFilter(filter.id)}
                 >
                   {filter.label}
@@ -399,6 +400,7 @@ export function LearningPointOverview({
                   key={filter}
                   type="button"
                   className={levelFilter === filter ? 'selected' : ''}
+                  aria-pressed={levelFilter === filter}
                   onClick={() => setLevelFilter(filter)}
                 >
                   {filter === 'all' ? '全部级别' : filter}
@@ -412,6 +414,7 @@ export function LearningPointOverview({
                   key={filter.id}
                   type="button"
                   className={statusFilter === filter.id ? 'selected' : ''}
+                  aria-pressed={statusFilter === filter.id}
                   onClick={() => setStatusFilter(filter.id)}
                 >
                   {filter.label}
@@ -466,7 +469,13 @@ export function LearningPointOverview({
                 return (
                   <article key={point.id} className={`learning-point-row status-${point.status} ${checked ? 'selected' : ''}`}>
                     <label className="learning-point-check">
-                      <input type="checkbox" checked={checked} disabled={!selectable} onChange={() => togglePoint(point)} />
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={!selectable}
+                        aria-label={`${checkLabel}: ${pointLabel(point)}`}
+                        onChange={() => togglePoint(point)}
+                      />
                       <span>{checkLabel}</span>
                     </label>
                     <div className="learning-point-main">

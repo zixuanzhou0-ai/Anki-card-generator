@@ -39,6 +39,44 @@ class SubtitleSentenceBoundaryTests(unittest.TestCase):
         self.assertIn("possible_bad_join", sentence["source_sentence_quality_flags"])
         self.assertEqual(sentence["source_sentence_quality_status"], "needs_review")
 
+    def test_source_sentence_flags_dangling_tail_as_needing_review(self):
+        from acg.subtitles.sentences import sentence_quality_flags, sentence_quality_status
+
+        truncated = (
+            "And the proverb, “Don’t judge a book by its cover” advises people "
+            "not to form opinions about people based"
+        )
+        flags = sentence_quality_flags(truncated, [truncated])
+
+        self.assertIn("truncated_tail", flags)
+        self.assertEqual(sentence_quality_status(flags), "needs_review")
+
+    def test_source_sentence_builder_extends_soft_window_to_close_dangling_tail(self):
+        from acg.pipeline.learning_point_pipeline import source_sentences_from_cues
+        from acg.subtitles.core import Cue
+
+        cues = [
+            Cue(12, 28.890, 30.390, "And the proverb, “Don’t"),
+            Cue(13, 30.390, 32.649, "judge a book by its cover”"),
+            Cue(14, 32.649, 34.680, "advises people not to form"),
+            Cue(15, 34.680, 36.790, "opinions about people based"),
+            Cue(16, 36.790, 38.780, "on how they look."),
+        ]
+
+        sentences = source_sentences_from_cues(cues, {"language": "en"})
+
+        self.assertEqual(len(sentences), 1)
+        self.assertEqual(
+            sentences[0]["source_sentence"],
+            (
+                "And the proverb, “Don’t judge a book by its cover” advises people "
+                "not to form opinions about people based on how they look."
+            ),
+        )
+        self.assertEqual(sentences[0]["source_cue_ids"], [12, 13, 14, 15, 16])
+        self.assertEqual(sentences[0]["source_sentence_quality_flags"], ["clean"])
+        self.assertEqual(sentences[0]["source_sentence_quality_status"], "clean")
+
     def test_source_sentence_builder_matches_pipeline_boundary(self):
         from acg import media_alignment
         from acg.pipeline.learning_point_pipeline import source_sentences_from_cues as pipeline_source_sentences_from_cues

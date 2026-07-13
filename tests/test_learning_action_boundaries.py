@@ -101,5 +101,28 @@ class LearningActionBoundaryTests(unittest.TestCase):
                 self.assertEqual(direct, via_legacy)
 
 
+    def test_normalize_learning_action_fields_repairs_valid_give_opinion_contrast(self):
+        from acg import learning_actions
+
+        card = {
+            "answer_core": "form opinions about",
+            "phrase": "form opinions about",
+            "teacher_note": (
+                "记住 form + opinion(s) + about；"
+                "易混表达：容易说 make opinions 或 give opinions，正确是 form opinions about"
+            ),
+            "chinese_learner_trap": "容易说 make opinions 或 give opinions，正确是 form opinions about",
+            "confusable_note": "不要说 give opinions；应改为 form opinions about",
+        }
+
+        learning_actions.normalize_learning_action_fields(card)
+
+        self.assertIn("make opinions 不自然", card["chinese_learner_trap"])
+        self.assertIn("give an opinion / give opinions", card["chinese_learner_trap"])
+        self.assertIn("后两者都可用，但含义不同", card["chinese_learner_trap"])
+        self.assertNotIn("give opinions，正确是", card["teacher_note"])
+        self.assertIn("已修复把 give an opinion / give opinions 错判", card["content_repair_history"][0])
+
+
 if __name__ == "__main__":
     unittest.main()

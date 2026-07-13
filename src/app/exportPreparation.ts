@@ -4,6 +4,7 @@ import {
   getExportSelectionStats,
   removeExportBlockedCardSelection,
 } from '../domain/quality'
+import { evaluateProjectReliabilityGate } from '../domain/reliability'
 import { stripStaleOrdinaryAsrGate } from '../domain/payloadSanitization'
 import {
   VIDEO_RELEASE_CASES,
@@ -29,12 +30,28 @@ export type ExportPreparationResult =
     })
   | (ExportPreparationBase & {
       status: 'blocked'
-      reason: 'no_exportable_cards' | 'selected_cards_all_repair_required'
+      reason: 'no_exportable_cards' | 'selected_cards_all_repair_required' | 'reliability_gate_blocked'
+      reliabilityBlockerCodes?: string[]
     })
 
 export function prepareProjectForExport(project: Project): ExportPreparationResult {
   let projectForExport = project
   const messages: string[] = []
+  const reliabilityGate = evaluateProjectReliabilityGate(projectForExport)
+  if (reliabilityGate.decision === 'block') {
+    return {
+      status: 'blocked',
+      reason: 'reliability_gate_blocked',
+      project: projectForExport,
+      materializedDraftCards: 0,
+      removedRepairRequiredCards: 0,
+      selectedExportableCards: 0,
+      reliabilityBlockerCodes: reliabilityGate.blockerCodes,
+      statusMessage:
+        `可靠性门禁未通过（${reliabilityGate.blockerCodes.join('、')}）。` +
+        '所有选中学习点必须完成验证后才能导出；保底卡和编辑后未复验卡不会自动进入 APKG。',
+    }
+  }
   const materializedForExport = materializeLearningPointInventory(projectForExport)
   if (materializedForExport.added > 0) {
     projectForExport = materializedForExport.project

@@ -67,12 +67,12 @@ function getEnvHealthCard(envSettings: ComponentProps<typeof EnvSettingsPanel>):
     }
   }
 
-  const blockingIssue = envStatus.status_items?.find((item) => item.status === 'blocked')
-  const actionIssue = envStatus.status_items?.find((item) => item.status === 'action')
   const coreReady = Boolean(envStatus.python && envStatus.ffmpeg && envStatus.genanki)
-  const issue = blockingIssue ?? (!coreReady ? actionIssue : undefined)
+  const issue = !coreReady
+    ? envStatus.status_items?.find((item) => item.status === 'blocked' || item.status === 'action')
+    : undefined
 
-  if (issue || !coreReady) {
+  if (!coreReady) {
     return {
       icon: 'env',
       message: issue?.fix ?? issue?.detail ?? '生成或导出依赖还没有全部就绪。',

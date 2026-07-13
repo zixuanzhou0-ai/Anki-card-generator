@@ -62,6 +62,7 @@ export function ReviewSummaryPanel({
   const cardGenerationFilteredCount = qualityFunnel.card_generation_filtered_card_count ?? 0
   const cardGenerationSkippedCount = qualityFunnel.card_generation_skipped_learning_point_count ?? 0
   const cardGenerationDiagnosticItems = project.card_generation_diagnostics?.items ?? []
+  const reliabilityManifest = project.reliability_manifest
   const hasCardGenerationDiagnostics =
     selectedLearningPointCount !== undefined ||
     successfulLearningPointCount !== undefined ||
@@ -94,6 +95,42 @@ export function ReviewSummaryPanel({
         <div className="public-source-guardrail" role="status" aria-label="历史项目提示">
           <strong>历史项目</strong>
           <span>{projectSourceStatus.notice}</span>
+        </div>
+      ) : null}
+
+      {reliabilityManifest ? (
+        <div
+          className={'review-export-summary reliability-summary reliability-' + reliabilityManifest.decision}
+          role="status"
+          aria-label="制卡可靠性"
+        >
+          <div className="export-count-card">
+            <span>制卡可靠性</span>
+            <div>
+              <strong>{reliabilityManifest.verified_count}</strong>
+              <em>{'/ ' + reliabilityManifest.selected_point_count + ' 个选点已验证'}</em>
+            </div>
+            <small>
+              {reliabilityManifest.decision === 'pass'
+                ? '全部选点已完成当前可靠性检查，可以进入导出准备。'
+                : '可靠性门禁已阻断：待复核或硬失败选点处理完成前，不会生成正式 APKG。'}
+              {' 检查档案：' + reliabilityManifest.verification_profile + '。'}
+            </small>
+          </div>
+          <div className="export-side-metrics">
+            <span>
+              <strong>{reliabilityManifest.verified_count}</strong>
+              <small>已验证</small>
+            </span>
+            <span>
+              <strong>{reliabilityManifest.needs_review_count}</strong>
+              <small>待复核</small>
+            </span>
+            <span>
+              <strong>{reliabilityManifest.hard_failed_count}</strong>
+              <small>硬失败</small>
+            </span>
+          </div>
         </div>
       ) : null}
 
@@ -199,6 +236,8 @@ export function ReviewSummaryPanel({
                       ? '保底生成'
                       : item.status === 'ai_repaired'
                         ? '字段补齐'
+                    : item.status === 'needs_review'
+                      ? '待复核'
                     : item.status === 'filtered'
                       ? '质量过滤'
                       : item.status === 'skipped'

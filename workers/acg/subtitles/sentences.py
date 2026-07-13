@@ -14,11 +14,39 @@ SENTENCE_QUALITY_NEEDS_REVIEW = "needs_review"
 
 SOURCE_SENTENCE_QUALITY_DEMOTE_FLAGS = {
     "fragment",
+    "truncated_tail",
     "possible_bad_join",
     "repeated_adjacent_words",
     "too_long",
     "rolling_caption_uncertain",
     "rolling_caption_overlap",
+}
+
+# Keep this deliberately conservative. English permits stranded prepositions
+# ("Who are you with?") and ellipsis ("I don't want to."), so a generic
+# "function word at the end" rule would reject valid spoken English. These
+# patterns describe tails that still require a complement in normal usage.
+DANGLING_SOURCE_TAIL_PATTERNS = (
+    r"\bbased on$",
+    r"\bbecause of$",
+    r"\bdue to$",
+    r"\bin order to$",
+    r"\baccording to$",
+    r"\bsuch as$",
+    r"\bas well as$",
+    r"\brather than$",
+    r"\bnot only$",
+    r"\b(?:one|some|most|many|all|none|part) of$",
+    r"\b(?:people|persons?|opinions?|views?|judg(?:e)?ments?|assumptions?|information) based$",
+)
+
+DANGLING_SOURCE_TAIL_WORDS = {
+    "although",
+    "unless",
+    "whereas",
+    "despite",
+    "including",
+    "excluding",
 }
 
 RESTART_WORDS = {
@@ -292,12 +320,35 @@ def starts_like_fragment(text: str) -> bool:
     words = [word.lower() for word in sentence_words(text)]
     if not words:
         return True
-    if text.strip()[:1] in {".", "?", "!", ",", ";", ":"}:
+    stripped = text.strip()
+    if stripped[:1] in {".", "?", "!", ",", ";", ":"}:
         return True
-    if words[0] in {"about", "of", "for", "to", "with", "from", "because", "and", "or", "but", "so"}:
+    first_char = stripped.lstrip(" " + "".join(map(chr, (9, 13, 10, 34, 39, 8220, 8216, 40))))[:1]
+    if first_char.islower() and words[0] in {
+        "about",
+        "of",
+        "for",
+        "to",
+        "with",
+        "from",
+        "because",
+        "and",
+        "or",
+        "but",
+        "so",
+    }:
         return True
-    first_char = text.strip()[:1]
     return bool(first_char and first_char.islower() and words[0] not in {"i"} and not text.lower().startswith(("i ", "i'm", "i've")))
+
+
+def ends_like_fragment(text: str) -> bool:
+    value = re.sub(r"[\s.?!,;:\"'”’)]*$", "", str(text or "").strip()).casefold()
+    if not value:
+        return True
+    if any(re.search(pattern, value) for pattern in DANGLING_SOURCE_TAIL_PATTERNS):
+        return True
+    words = sentence_words(value)
+    return bool(words and words[-1] in DANGLING_SOURCE_TAIL_WORDS)
 
 
 def has_terminal_punctuation(text: str) -> bool:
@@ -382,10 +433,16 @@ def sentence_quality_flags(text: str, cue_texts: list[str] | None = None) -> lis
     words = sentence_words(clean_text)
     flags: list[str] = []
 
-    if len(words) >= 24 or len(clean_text) >= 170:
+    if len(words) >= 32 or len(clean_text) >= 200:
         flags.append("too_long")
-    if words and (words[0].casefold() in FRAGMENT_STARTS or starts_with_lowercase_fragment(clean_text)):
+    first_char = clean_text.lstrip(" " + "".join(map(chr, (9, 13, 10, 34, 39, 8220, 8216, 40))))[:1]
+    if words and (
+        (first_char.islower() and words[0].casefold() in FRAGMENT_STARTS)
+        or starts_with_lowercase_fragment(clean_text)
+    ):
         flags.append("fragment")
+    if ends_like_fragment(clean_text):
+        flags.append("truncated_tail")
     if len(cue_texts) > 1 and (
         has_unpunctuated_sentence_restart(clean_text)
         or has_unpunctuated_question_restart(clean_text)
@@ -405,6 +462,7 @@ def sentence_quality_status(flags: list[str]) -> str:
     actionable = {flag for flag in flags if flag != SENTENCE_QUALITY_CLEAN}
     if actionable & {
         "fragment",
+        "truncated_tail",
         "possible_bad_join",
         "repeated_adjacent_words",
         "too_long",
@@ -459,7 +517,14 @@ def source_sentences_from_cues(
         while j + 1 < len(cues):
             current = merge_subtitle_parts(parts)
             gap = cues[j + 1].start - end
-            if looks_complete_sentence(current) or gap > max_gap_seconds or (end - start) >= max_window_seconds:
+            duration = end - start
+            continuation_required = ends_like_fragment(current) or has_unbalanced_quotes(current)
+            hard_window_seconds = max_window_seconds + max(3.0, max_window_seconds * 0.5)
+            if looks_complete_sentence(current) or gap > max_gap_seconds:
+                break
+            if duration >= hard_window_seconds:
+                break
+            if duration >= max_window_seconds and not continuation_required:
                 break
             j += 1
             end = cues[j].end

@@ -3,6 +3,7 @@ import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Project } from '../../domain/types'
+import { buildReliabilityManifest } from '../../domain/reliability'
 import { ReviewSummaryPanel } from './ReviewSummaryPanel'
 
 afterEach(() => cleanup())
@@ -57,6 +58,27 @@ describe('ReviewSummaryPanel', () => {
               },
             ],
           },
+          reliability_manifest: buildReliabilityManifest({
+            outcomes: [
+              {
+                learning_point_id: 'lp-good',
+                status: 'verified',
+                card_id: 'card-good',
+                blocker_codes: [],
+              },
+              {
+                learning_point_id: 'lp-missing',
+                status: 'needs_review',
+                card_id: 'card-missing',
+                blocker_codes: ['FALLBACK_CARD_REQUIRES_REVIEW'],
+              },
+              {
+                learning_point_id: 'lp-hard',
+                status: 'hard_failed',
+                blocker_codes: ['CARD_GENERATION_MISSING'],
+              },
+            ],
+          }),
         }}
         qualityCounts={{ total: 4, recommended: 2, review: 1, rejected: 1 }}
         qualityDiagnostics={{
@@ -109,6 +131,10 @@ describe('ReviewSummaryPanel', () => {
     expect(screen.getByText('字幕句')).toBeInTheDocument()
     expect(screen.getByText(/自动匹配字幕/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /无已选卡片\s*5/ })).toBeInTheDocument()
+    expect(screen.getByRole('status', { name: '制卡可靠性' })).toBeInTheDocument()
+    expect(screen.getByText('/ 3 个选点已验证')).toBeInTheDocument()
+    expect(screen.getByText(/可靠性门禁已阻断/)).toBeInTheDocument()
+    expect(screen.getByText('待复核')).toBeInTheDocument()
   })
 
   it('marks restored document projects as historical and keeps public video labels', () => {

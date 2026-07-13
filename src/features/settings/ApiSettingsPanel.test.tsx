@@ -60,6 +60,17 @@ const customPreset: ApiPreset = {
   provider: 'openai-compatible',
 }
 
+const hermesPreset: ApiPreset = {
+  base_url: 'http://127.0.0.1:8645/v1',
+  capabilities: ['structured_json', 'long_context'],
+  id: 'hermes-grok-45',
+  key_hint: '本机 OAuth · 不需要 API Key',
+  label: 'Hermes · Grok 4.5（本机 OAuth）',
+  model: 'grok-4.5',
+  note: '本机 Hermes xAI OAuth',
+  provider: 'openai-compatible',
+}
+
 const vertex35Preset: ApiPreset = {
   base_url: 'https://aiplatform.googleapis.com',
   capabilities: ['structured_json', 'long_context', 'cheap_batch'],
@@ -88,15 +99,20 @@ function renderPanel(overrides: Partial<ComponentProps<typeof ApiSettingsPanel>>
     capabilityHelp: { structured_json: '结构化输出' },
     capabilityLabels: ['structured_json'],
     featuredApiPresets: [mimoPreset],
+    hermesChecking: false,
+    hermesStarting: false,
+    hermesStatus: null,
     mimoOpenAiBaseUrl: 'https://api.xiaomimimo.com/v1',
     mimoTextModels: [{ label: 'MIMO V2.5 Pro', value: 'mimo-v2.5-pro' }],
     savedApiProfiles: [],
     showCapabilities: false,
     onApplyApiPreset: vi.fn(),
     onApplySavedApiProfile: vi.fn(),
+    onCheckHermes: vi.fn(),
     onPatchApi: vi.fn(),
     onSaveApiProfile: vi.fn(),
     onSetShowCapabilities: vi.fn(),
+    onStartHermes: vi.fn(),
     onTestApi: vi.fn(),
     ...overrides,
   }
@@ -244,6 +260,39 @@ describe('ApiSettingsPanel', () => {
 
     expect(onApplyApiPreset).toHaveBeenCalledWith(vertex35Preset)
     expect(document.querySelector('option[value="gemini-3.5-flash"]')).not.toBeNull()
+  })
+
+  it('shows Hermes Grok 4.5 as local OAuth without an API key field', () => {
+    const onCheckHermes = vi.fn()
+    const onStartHermes = vi.fn()
+    renderPanel({
+      apiConfig: {
+        ...apiConfig,
+        provider: 'openai-compatible',
+        base_url: hermesPreset.base_url,
+        model: hermesPreset.model,
+        capabilities: hermesPreset.capabilities,
+      },
+      featuredApiPresets: [hermesPreset, mimoPreset],
+      hermesStatus: {
+        state: 'stopped',
+        message: 'Hermes 与 xAI OAuth 已就绪，代理尚未启动。',
+        base_url: hermesPreset.base_url,
+        model: hermesPreset.model,
+        managed: false,
+        authenticated: true,
+      },
+      onCheckHermes,
+      onStartHermes,
+    })
+
+    expect(screen.getByRole('status', { name: 'Hermes 本机代理状态' })).toBeInTheDocument()
+    expect(screen.getByText('代理待启动')).toBeInTheDocument()
+    expect(screen.queryByLabelText('API Key')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '检测状态' }))
+    fireEvent.click(screen.getByRole('button', { name: '启动代理' }))
+    expect(onCheckHermes).toHaveBeenCalledOnce()
+    expect(onStartHermes).toHaveBeenCalledOnce()
   })
 
   it('toggles capabilities and saves the current model profile', () => {

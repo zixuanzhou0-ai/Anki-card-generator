@@ -82,19 +82,23 @@ def card_generation_diagnostic_items(
             )
             continue
         segment_id = str(segment.get("id") or "")
-        if segment_id in model_missing_segment_ids:
-            reason = "AI 未覆盖该学习点，且保底生成未完成。"
-            status = "hard_failed"
-        else:
-            status = "filtered"
-            reason = "生成后未通过硬性导出检查。"
-            pre_segment = pre_filter_by_point_id.get(point_id) or {}
+        pre_segment = pre_filter_by_point_id.get(point_id) or {}
+        pre_cards = [card for card in pre_segment.get("cards", []) or [] if isinstance(card, dict)]
+        if pre_cards:
+            status = "needs_review"
+            reason = "卡片草稿已保留，但未通过可靠性门禁。"
             issues: list[str] = []
-            for card in pre_segment.get("cards", []) or []:
+            for card in pre_cards:
                 quality = card.get("quality") if isinstance(card.get("quality"), dict) else {}
                 issues.extend(str(issue) for issue in quality.get("issues") or [] if issue)
             if issues:
                 reason = "；".join(list(dict.fromkeys(issues))[:3])
+        elif segment_id in model_missing_segment_ids:
+            reason = "AI 未覆盖该学习点，且没有形成可复核草稿。"
+            status = "hard_failed"
+        else:
+            status = "filtered"
+            reason = "生成后未通过硬性导出检查。"
         items.append(
             {
                 "learning_point_id": point_id,
@@ -109,7 +113,7 @@ def card_generation_diagnostic_items(
 
 
 def card_generation_diagnostic_counts(items: list[dict[str, Any]]) -> dict[str, int]:
-    counts = {"skipped": 0, "model_missing": 0, "hard_failed": 0, "filtered": 0}
+    counts = {"skipped": 0, "model_missing": 0, "hard_failed": 0, "filtered": 0, "needs_review": 0}
     for item in items:
         status = str(item.get("status") or "")
         if status in counts:

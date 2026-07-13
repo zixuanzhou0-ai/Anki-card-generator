@@ -221,7 +221,7 @@ export function modelApiTestTitle(result: ApiTestResult | null, testing: boolean
 }
 
 export function ttsApiTestTitle(result: TtsTestResult | null, testing: boolean, enabled: boolean) {
-  if (testing) return '正在测试 TTS'
+  if (testing) return '正在测试 TTS（最长 75 秒）'
   if (!result) return enabled ? 'TTS 已开启，尚未测试' : 'TTS 已关闭'
   if (result.ok) return 'TTS 连接成功'
   switch (result.error_code) {

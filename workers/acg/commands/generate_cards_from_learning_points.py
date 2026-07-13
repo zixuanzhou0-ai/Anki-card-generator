@@ -23,6 +23,10 @@ from acg.card_generation_diagnostics import (
     generated_learning_point_ids_from_segment as _generated_learning_point_ids_from_segment,
     segment_has_generated_learning_point_card as _segment_has_generated_learning_point_card,
 )
+from acg.card_reliability import (
+    apply_outcome_verification_status,
+    build_reliability_manifest,
+)
 from acg.generation_timing import add_generation_timing_aliases as _add_generation_timing_aliases
 from acg.learning_settings import max_learning_points_per_source
 from acg.learning_types import card_label_for_learning_card, content_kind_for_phrase_type
@@ -34,7 +38,6 @@ from acg.media_alignment import (
 from acg.protocol import emit_progress, fail
 from acg.subtitles.provenance import point_with_source_sentence_provenance, source_sentence_indexes
 
-MAX_CARD_SOURCE_SENTENCE_WORDS = 18
 MEDIA_ALIGNMENT_REVIEW_ISSUE = "媒体对齐未在原句中定位到目标表达，需复查。"
 
 
@@ -86,36 +89,15 @@ def _cloze(sentence: str, exact_span: str) -> str:
     return sentence
 
 
-def _source_sentence_for_card(point: dict[str, Any], *, max_words: int = MAX_CARD_SOURCE_SENTENCE_WORDS) -> str:
-    text = clean_adjacent_caption_repeats(legacy_worker.clean_candidate_text(str(point.get("source_sentence") or "")))
-    words = list(re.finditer(r"\S+", text))
-    if len(words) <= max_words:
-        return text
-
-    span_start = point.get("exact_span_start")
-    span_end = point.get("exact_span_end")
-    if not isinstance(span_start, (int, float)) or not isinstance(span_end, (int, float)) or span_end <= span_start:
-        phrase = str(point.get("exact_span") or point.get("answer_core") or "").strip()
-        match = re.search(re.escape(phrase), text, flags=re.IGNORECASE) if phrase else None
-        if not match:
-            return text
-        span_start, span_end = match.start(), match.end()
-
-    target_start: int | None = None
-    target_end = 0
-    for index, word in enumerate(words):
-        if word.end() > float(span_start) and target_start is None:
-            target_start = index
-        if word.start() < float(span_end):
-            target_end = index
-    if target_start is None:
-        target_start = 0
-    target_word_count = max(1, target_end - target_start + 1)
-    extra = max(0, max_words - target_word_count)
-    left = max(0, target_start - extra // 2)
-    right = min(len(words), left + max_words)
-    left = max(0, right - max_words)
-    return clean_adjacent_caption_repeats(" ".join(word.group(0) for word in words[left:right]).strip() or text)
+def _source_sentence_for_card(point: dict[str, Any]) -> str:
+    # The source sentence is evidence, not presentation copy. Truncating it to
+    # a fixed word window can silently turn a complete sentence into a fragment
+    # and invite the model to invent the missing meaning. Keep the complete
+    # normalized sentence; UI layers may collapse it visually without deleting
+    # evidence from generation, validation, pronunciation, or export.
+    return clean_adjacent_caption_repeats(
+        legacy_worker.clean_candidate_text(str(point.get("source_sentence") or ""))
+    )
 
 
 def _default_card(point: dict[str, Any], card_type: str, index: int) -> dict[str, Any]:
@@ -138,6 +120,8 @@ def _default_card(point: dict[str, Any], card_type: str, index: int) -> dict[str
         "learning_action_key": point.get("learning_action_key"),
         "confidence": point.get("confidence"),
         "validation_status": point.get("validation_status"),
+        "source_sentence_quality_flags": point.get("source_sentence_quality_flags") or [],
+        "source_sentence_quality_status": point.get("source_sentence_quality_status") or "",
         "repair_history": point.get("repair_history") or [],
         "english": sentence,
         "chinese": "",
@@ -453,6 +437,16 @@ def _user_selected_fallback_card(
         "candidate_source": segment.get("candidate_source", ""),
         "learning_point_schema_version": segment.get("learning_point_schema_version") or legacy_worker.LEARNING_POINT_SCHEMA_VERSION,
         "source_evidence": point.get("source_evidence") or segment.get("source_evidence") or sentence,
+        "source_sentence_quality_flags": (
+            point.get("source_sentence_quality_flags")
+            or segment.get("source_sentence_quality_flags")
+            or []
+        ),
+        "source_sentence_quality_status": (
+            point.get("source_sentence_quality_status")
+            or segment.get("source_sentence_quality_status")
+            or ""
+        ),
         "retrieval_prompt": f"这句里要复习的表达是什么？",
         "answer_core": answer,
         "language": legacy_worker.normalize_learning_language(language),
@@ -557,15 +551,11 @@ def _make_selected_card_exportable(
     quality["issues"] = issues
     next_card["quality"] = quality
     source = str(next_card.get("generation_source") or "")
-    allow_basic_fallback_export = source == "fallback_from_selected_learning_point"
-    if source == "fallback_from_selected_learning_point" and allow_basic_fallback_export:
-        quality["status"] = "recommended"
-        quality["score"] = max(58, int(quality.get("score") or 0))
-        quality["issues"] = ["User-selected basic card generated from the learning point."]
+    if source == "fallback_from_selected_learning_point":
+        quality["status"] = "needs_review"
+        quality["score"] = min(58, int(quality.get("score") or 58))
+        quality["issues"] = ["用户已勾选，但模型未完整返回；系统保底草稿必须人工复核。"]
         next_card["quality"] = quality
-        next_card["generation_source"] = "basic_from_selected_learning_point"
-        source = "basic_from_selected_learning_point"
-    elif source == "fallback_from_selected_learning_point":
         next_card["enabled"] = False
     elif fallback_fields_filled or missing_fields:
         next_card["generation_source"] = "ai_repaired"
@@ -633,13 +623,30 @@ def handle_generate_cards_from_learning_points(payload: dict[str, Any]) -> dict[
             retryable=True,
         )
     all_points = [point for point in payload.get("learning_points") or [] if isinstance(point, dict)]
+    point_by_id = {
+        str(point.get("id") or ""): point
+        for point in all_points
+        if str(point.get("id") or "").strip()
+    }
     if "selected_learning_point_ids" in payload:
-        selected_ids = {str(item) for item in payload.get("selected_learning_point_ids") or []}
-        selected = [point for point in all_points if str(point.get("id")) in selected_ids]
+        requested_id_order = list(
+            dict.fromkeys(
+                str(item).strip()
+                for item in payload.get("selected_learning_point_ids") or []
+                if str(item).strip()
+            )
+        )
+        requested_points = [point_by_id.get(point_id, {"id": point_id}) for point_id in requested_id_order]
+        selected = [point_by_id[point_id] for point_id in requested_id_order if point_id in point_by_id]
     else:
         selected = _default_selected_learning_points(all_points, payload)
-    requested_selected_ids = {str(point.get("id") or "") for point in selected if str(point.get("id") or "").strip()}
-    requested_selected_count = len(selected)
+        requested_points = list(selected)
+    requested_selected_ids = {
+        str(point.get("id") or "")
+        for point in requested_points
+        if str(point.get("id") or "").strip()
+    }
+    requested_selected_count = len(requested_points)
     existing_project = payload.get("existing_project") if isinstance(payload.get("existing_project"), dict) else {}
     existing_segments = [
         segment
@@ -743,24 +750,48 @@ def handle_generate_cards_from_learning_points(payload: dict[str, Any]) -> dict[
             quality_funnel["new_successful_learning_point_count"] = 0
             quality_funnel["existing_generated_selected_count"] = existing_success_count
             exportable_existing_count = _generated_card_count_from_segments(existing_segments)
+            existing_project_segments = [
+                segment
+                for segment in existing_project.get("segments", []) or []
+                if isinstance(segment, dict)
+            ]
+            existing_diagnostic_items = _card_generation_diagnostic_items(
+                requested_points,
+                existing_project_segments,
+                existing_project_segments,
+                existing_project_segments,
+                set(),
+            )
             card_generation_diagnostics = dict(existing_project.get("card_generation_diagnostics") or {})
             card_generation_diagnostics.update(
                 {
                     "processed_learning_point_count": requested_selected_count,
-                    "selected_learning_point_count": 0,
-                    "eligible_learning_point_count": 0,
+                    "selected_learning_point_count": requested_selected_count,
+                    "eligible_learning_point_count": existing_success_count,
                     "successful_learning_point_count": existing_success_count,
                     "new_successful_learning_point_count": 0,
                     "existing_generated_selected_count": existing_success_count,
                     "generated_card_count": 0,
                     "exportable_card_count": exportable_existing_count,
                     "missing_learning_point_count": missing_learning_point_count,
-                    "items": [],
+                    "items": existing_diagnostic_items,
                 }
             )
             returned_project = _without_stale_asr_hard_gate_fields(existing_project)
             explicit_tts_semantic = payload.get("tts_semantic_verification")
             explicit_tts_semantic = explicit_tts_semantic if isinstance(explicit_tts_semantic, dict) else {}
+            existing_source_fingerprint = (
+                str(existing_project.get("source_fingerprint") or "")
+                or source_fingerprint(payload)
+            )
+            reliability_manifest = build_reliability_manifest(
+                requested_points,
+                existing_project_segments,
+                existing_project_segments,
+                source_fingerprint=existing_source_fingerprint,
+                model_provider=str(existing_project.get("ai_model_provider") or ""),
+                model_name=str(existing_project.get("ai_model_name") or ""),
+            )
             return {
                 **returned_project,
                 "api_config": existing_project.get("api_config") or payload.get("api_config") or {},
@@ -768,8 +799,83 @@ def handle_generate_cards_from_learning_points(payload: dict[str, Any]) -> dict[
                 "tts_semantic_verification": explicit_tts_semantic,
                 "quality_funnel": quality_funnel,
                 "card_generation_diagnostics": card_generation_diagnostics,
+                "reliability_manifest": reliability_manifest,
+                "segments": apply_outcome_verification_status(
+                    existing_project_segments,
+                    reliability_manifest["selected_point_outcomes"],
+                ),
                 "generated_learning_point_ids": sorted(existing_generated_ids),
-                "source_fingerprint": existing_project.get("source_fingerprint") or source_fingerprint(payload),
+                "source_fingerprint": existing_source_fingerprint,
+            }
+        if requested_points:
+            empty_source_fingerprint = source_fingerprint(payload)
+            empty_model_provider = (
+                str(payload.get("ai_model_provider") or "")
+                or legacy_worker.provider_name(payload.get("api_config") or {})
+            )
+            empty_model_name = str(
+                payload.get("ai_model_name") or (payload.get("api_config") or {}).get("model") or ""
+            )
+            reliability_manifest = build_reliability_manifest(
+                requested_points,
+                [],
+                [],
+                source_fingerprint=empty_source_fingerprint,
+                model_provider=empty_model_provider,
+                model_name=empty_model_name,
+            )
+            diagnostic_items = _card_generation_diagnostic_items(
+                requested_points,
+                [],
+                [],
+                [],
+                set(),
+            )
+            return {
+                "id": str(payload.get("project_id") or f"project_{int(time.time())}"),
+                "title": payload.get("title") or "学习点制卡",
+                "source_mode": payload.get("source_mode") or "local",
+                "source_url": payload.get("source_url") or "",
+                "video_path": payload.get("video_path") or "",
+                "subtitle_path": payload.get("subtitle_path") or "",
+                "document_path": payload.get("document_path") or "",
+                "source_info": payload.get("source_info") or {},
+                "language": payload.get("language") or "en",
+                "level_mode": payload.get("level_mode") or "auto",
+                "level": payload.get("level") or "B1",
+                "template_id": payload.get("template_id") or "immersive_v11",
+                "content_toggles": payload.get("content_toggles") or {},
+                "card_types": requested_card_types,
+                "api_config": payload.get("api_config") or {},
+                "tts_config": payload.get("tts_config") or {},
+                "quality_funnel": {
+                    "selected_learning_point_count": requested_selected_count,
+                    "eligible_learning_point_count": 0,
+                    "successful_learning_point_count": 0,
+                    "generation_queue_count": requested_selected_count,
+                    "generation_success_count": 0,
+                    "generation_missing_count": requested_selected_count,
+                    "generation_reconciliation_status": "partial",
+                    "card_count": 0,
+                    "exportable_card_count": 0,
+                },
+                "card_generation_diagnostics": {
+                    "processed_learning_point_count": requested_selected_count,
+                    "selected_learning_point_count": requested_selected_count,
+                    "eligible_learning_point_count": 0,
+                    "successful_learning_point_count": 0,
+                    "generated_card_count": 0,
+                    "exportable_card_count": 0,
+                    "missing_learning_point_count": requested_selected_count,
+                    "skipped_learning_point_count": requested_selected_count,
+                    "items": diagnostic_items,
+                },
+                "reliability_manifest": reliability_manifest,
+                "generated_learning_point_ids": [],
+                "source_fingerprint": empty_source_fingerprint,
+                "segments": [],
+                "warning": "所有选中的学习点都未形成可复核卡片，已按硬失败结算。",
+                "created_at": int(time.time() * 1000),
             }
         fail("没有可生成的学习点。请至少选择一个推荐或候选学习点。", error_code="NO_SELECTED_LEARNING_POINTS", stage="cards")
     source_mode = str(payload.get("source_mode") or "").strip().lower()
@@ -984,15 +1090,6 @@ def handle_generate_cards_from_learning_points(payload: dict[str, Any]) -> dict[
     segments = [*existing_segments, *review_segments] if existing_segments else review_segments
     exportable_segments = [*existing_segments, *output_segments] if existing_segments else output_segments
     selected_count = _generated_card_count_from_segments(exportable_segments)
-    reviewable_output_card_count = sum(
-        1
-        for segment in output_segments
-        if isinstance(segment, dict)
-        for card in segment.get("cards", []) or []
-        if isinstance(card, dict)
-        and legacy_worker.card_quality_status(card) in {"recommended", "needs_review"}
-        and not legacy_worker.card_has_export_blocking_content(card)
-    )
     review_card_count = sum(
         1
         for segment in segments
@@ -1001,14 +1098,14 @@ def handle_generate_cards_from_learning_points(payload: dict[str, Any]) -> dict[
         if isinstance(card, dict)
     )
     card_generation_diagnostic_items = _card_generation_diagnostic_items(
-        selected,
+        requested_points,
         eligible_segments,
         pre_filter_segments,
         output_segments,
         model_missing_segment_ids,
     )
     card_generation_diagnostic_counts = _card_generation_diagnostic_counts(card_generation_diagnostic_items)
-    if selected_count <= 0 and reviewable_output_card_count <= 0:
+    if selected_count <= 0 and review_card_count <= 0:
         fail(
             "模型返回后没有可导出卡片。请减少学习点数量或检查模型输出质量。",
             error_code="NO_USABLE_AI_CARDS",
@@ -1083,7 +1180,7 @@ def handle_generate_cards_from_learning_points(payload: dict[str, Any]) -> dict[
     quality_funnel["card_generation_retry_count"] = card_generation_retry_count
     quality_funnel["review_only_card_count"] = review_only_card_count
     quality_funnel["generation_timing_ms"] = timing_ms
-    quality_funnel["selected_learning_point_count"] = len(selected)
+    quality_funnel["selected_learning_point_count"] = requested_selected_count
     quality_funnel["eligible_learning_point_count"] = len(eligible_learning_point_ids)
     quality_funnel["successful_learning_point_count"] = len(successful_selected_learning_point_ids)
     quality_funnel["new_successful_learning_point_count"] = len(current_generated_learning_point_ids)
@@ -1097,6 +1194,25 @@ def handle_generate_cards_from_learning_points(payload: dict[str, Any]) -> dict[
     )
     quality_funnel["card_generation_filtered_card_count"] = card_generation_diagnostic_counts["filtered"]
     quality_funnel["card_generation_skipped_learning_point_count"] = card_generation_diagnostic_counts["skipped"]
+    result_source_fingerprint = source_fingerprint(payload, source_info)
+    result_model_provider = (
+        str(payload.get("ai_model_provider") or "")
+        or legacy_worker.provider_name(payload.get("api_config") or {})
+    )
+    result_model_name = str(payload.get("ai_model_name") or (payload.get("api_config") or {}).get("model") or "")
+    reliability_manifest = build_reliability_manifest(
+        requested_points,
+        segments,
+        exportable_segments,
+        model_missing_segment_ids=model_missing_segment_ids,
+        source_fingerprint=result_source_fingerprint,
+        model_provider=result_model_provider,
+        model_name=result_model_name,
+    )
+    segments = apply_outcome_verification_status(
+        segments,
+        reliability_manifest["selected_point_outcomes"],
+    )
     done_message = f"AI 卡片生成完成：{selected_count} 张可导出卡。"
     if review_only_card_count > 0:
         done_message = f"AI 卡片生成完成：{selected_count} 张可导出卡，{review_only_card_count} 张需修复。"
@@ -1132,8 +1248,8 @@ def handle_generate_cards_from_learning_points(payload: dict[str, Any]) -> dict[
         "selection_strategy": "catch_all",
         "card_types": requested_card_types,
         "review_basis": payload.get("review_basis") or "ai_reviewed",
-        "ai_model_provider": payload.get("ai_model_provider") or legacy_worker.provider_name(payload.get("api_config") or {}),
-        "ai_model_name": payload.get("ai_model_name") or str((payload.get("api_config") or {}).get("model") or ""),
+        "ai_model_provider": result_model_provider,
+        "ai_model_name": result_model_name,
         "ai_reviewed_source_count": payload.get("ai_reviewed_source_count") or quality_funnel.get("ai_reviewed_source_count") or 0,
         "ai_reviewed_candidate_count": payload.get("ai_reviewed_candidate_count")
         or quality_funnel.get("ai_reviewed_candidate_count")
@@ -1141,10 +1257,11 @@ def handle_generate_cards_from_learning_points(payload: dict[str, Any]) -> dict[
         "local_candidate_count": payload.get("local_candidate_count") or quality_funnel.get("local_candidate_count") or 0,
         "quality_funnel": quality_funnel,
         "generated_learning_point_ids": sorted(generated_learning_point_ids),
-        "source_fingerprint": source_fingerprint(payload, source_info),
+        "source_fingerprint": result_source_fingerprint,
+        "reliability_manifest": reliability_manifest,
         "card_generation_diagnostics": {
             "processed_learning_point_count": requested_selected_count,
-            "selected_learning_point_count": len(selected),
+            "selected_learning_point_count": requested_selected_count,
             "eligible_learning_point_count": len(eligible_learning_point_ids),
             "successful_learning_point_count": len(successful_selected_learning_point_ids),
             "new_successful_learning_point_count": len(current_generated_learning_point_ids),

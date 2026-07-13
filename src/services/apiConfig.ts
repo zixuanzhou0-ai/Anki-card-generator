@@ -10,6 +10,8 @@ import {
   GEMINI_VERTEX_TTS_DEFAULT_MODEL,
   GEMINI_VERTEX_TTS_DEFAULT_VOICE,
   GEMINI_VERTEX_TTS_GLOBAL_BASE_URL,
+  HERMES_GROK_BASE_URL,
+  HERMES_GROK_MODEL,
   MIMO_OPENAI_BASE_URL,
   MIMO_TOKEN_PLAN_SGP_BASE_URL,
   QWEN_DASHSCOPE_CN_TTS_BASE_URL,
@@ -78,6 +80,21 @@ export function isDeepSeekApiConfig(api: ApiConfig) {
   return api.provider === 'openai-compatible' && (baseUrl.includes('deepseek.com') || model.startsWith('deepseek-'))
 }
 
+export const HERMES_LOCAL_PLACEHOLDER_KEY = 'hermes-local-oauth'
+
+export function isHermesLocalApiConfig(
+  api: Pick<ApiConfig, 'base_url' | 'model' | 'provider'>,
+) {
+  if (api.provider !== 'openai-compatible') return false
+  try {
+    const url = new URL(api.base_url.trim())
+    const localHost = url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '::1'
+    return localHost && url.port === '8645' && api.model.trim().toLowerCase() === HERMES_GROK_MODEL
+  } catch {
+    return false
+  }
+}
+
 export function validateServiceBaseUrl(value: string, label = 'Base URL'): string | null {
   const trimmed = value.trim()
   if (!trimmed) return `${label} 不能为空。`
@@ -99,7 +116,9 @@ export function validateServiceBaseUrl(value: string, label = 'Base URL'): strin
 
 export function validateApiConfigForRequest(api: ApiConfig): string | null {
   if (api.provider === 'local') return null
-  if (api.provider !== 'gemini-vertex' && !api.api_key.trim()) return '还没有填写 API Key。'
+  if (api.provider !== 'gemini-vertex' && !isHermesLocalApiConfig(api) && !api.api_key.trim()) {
+    return '还没有填写 API Key。'
+  }
   if (!api.model.trim()) return '还没有填写模型名。'
   if (api.provider === 'gemini-vertex') {
     return api.base_url.trim() ? validateServiceBaseUrl(api.base_url, 'Vertex AI Base URL') : null
@@ -146,6 +165,16 @@ export function normalizeApiConfigForRequest(api: ApiConfig): ApiConfig {
       ...api,
       base_url: api.base_url.trim() || GEMINI_VERTEX_GLOBAL_BASE_URL,
       model: normalizeGeminiVertexModelId(api.model),
+      capabilities: Array.from(new Set([...(api.capabilities ?? []), 'structured_json', 'long_context'])),
+    }
+  }
+
+  if (isHermesLocalApiConfig(api)) {
+    return {
+      ...api,
+      base_url: HERMES_GROK_BASE_URL,
+      model: HERMES_GROK_MODEL,
+      api_key: api.api_key.trim() || HERMES_LOCAL_PLACEHOLDER_KEY,
       capabilities: Array.from(new Set([...(api.capabilities ?? []), 'structured_json', 'long_context'])),
     }
   }

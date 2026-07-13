@@ -269,7 +269,7 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("when I was 27 years old", joined)
         self.assertIn("I left a very demanding job", joined)
 
-    def test_learning_point_card_source_sentence_uses_short_span_window(self):
+    def test_learning_point_card_source_sentence_preserves_complete_evidence(self):
         from acg.commands import generate_cards_from_learning_points as command
 
         point = {
@@ -286,8 +286,7 @@ class WorkerQualityTests(unittest.TestCase):
         sentence = command._source_sentence_for_card(point)
 
         self.assertIn("what struck me was that", sentence)
-        self.assertLessEqual(len(sentence.split()), command.MAX_CARD_SOURCE_SENTENCE_WORDS)
-        self.assertNotEqual(sentence, point["source_sentence"])
+        self.assertEqual(sentence, point["source_sentence"])
 
     def _patch_learning_point_ai_review(self):
         original = worker._legacy_worker.gemini_vertex_generate_content
@@ -1868,7 +1867,7 @@ class WorkerQualityTests(unittest.TestCase):
                                 "example": "I'll run the register while you take a break.",
                                 "chinese_feel": "安排某人暂时看收银台。",
                                 "why": "服务业高频场景表达，值得学习。",
-                                "teacher_note": "下次想说负责收银时，用 run the register，比 operate the cash register 更自然；使用边界：主要用于零售、餐饮等需要结账的服务业场景；易错提醒：register 是收银机，不是注册；中文误区：不要翻成跑登记。",
+                                "teacher_note": "下次想说负责收银时，用 run the register，比 operate the cash register 更自然；使用边界：主要用于零售、餐饮等需要结账的服务业场景；易错提醒：register 是收银机，不是注册；易混表达：不要翻成跑登记。",
                                 "retrieval_prompt": "这句里表示负责收银的表达是什么？",
                                 "why_it_matters": "是海外生活、打工或购物时极高频的真实场景表达。",
                                 "how_to_use_it": "I used to run the register at a coffee shop.",
@@ -2039,6 +2038,40 @@ class WorkerQualityTests(unittest.TestCase):
             worker._legacy_worker.call_model_batches = original_call_model_batches
 
         self.assertEqual(calls["count"], 0)
+
+    def test_generate_cards_from_learning_points_accounts_for_unknown_selected_id(self):
+        project = worker.handle_generate_cards_from_learning_points(
+            {
+                "project_id": "project-unknown-selection",
+                "title": "unknown selection",
+                "language": "en",
+                "level": "B1",
+                "api_config": self._ai_config(),
+                "selected_learning_point_ids": ["lp-does-not-exist"],
+                "learning_points": [],
+                "card_types": ["phrase"],
+            }
+        )
+
+        self.assertEqual(project["segments"], [])
+        self.assertEqual(project["quality_funnel"]["selected_learning_point_count"], 1)
+        self.assertEqual(project["quality_funnel"]["generation_missing_count"], 1)
+        manifest = project["reliability_manifest"]
+        self.assertTrue(manifest["accounting_complete"])
+        self.assertEqual(manifest["decision"], "block")
+        self.assertEqual(manifest["selected_point_count"], 1)
+        self.assertEqual(manifest["verified_count"], 0)
+        self.assertEqual(manifest["needs_review_count"], 0)
+        self.assertEqual(manifest["hard_failed_count"], 1)
+        self.assertEqual(
+            manifest["selected_point_outcomes"][0],
+            {
+                "learning_point_id": "lp-does-not-exist",
+                "status": "hard_failed",
+                "blocker_codes": ["SELECTED_POINT_NOT_AVAILABLE"],
+                "reason": "选中的学习点没有生成可复核卡片。",
+            },
+        )
 
     def test_generate_cards_from_learning_points_legacy_payload_defaults_to_recommended_only(self):
         original_call_model_batches = worker._legacy_worker.call_model_batches
@@ -2362,31 +2395,27 @@ class WorkerQualityTests(unittest.TestCase):
         funnel = project["quality_funnel"]
         self.assertEqual(funnel["selected_learning_point_count"], 3)
         self.assertEqual(funnel["eligible_learning_point_count"], 3)
-        self.assertEqual(funnel["successful_learning_point_count"], 3)
-        self.assertEqual(funnel["generation_missing_count"], 0)
-        self.assertEqual(funnel["generation_reconciliation_status"], "ok")
+        self.assertEqual(funnel["successful_learning_point_count"], 1)
+        self.assertEqual(funnel["generation_missing_count"], 2)
+        self.assertEqual(funnel["generation_reconciliation_status"], "partial")
         self.assertEqual(funnel["card_generation_missing_learning_point_count"], 0)
         self.assertEqual(funnel["card_generation_filtered_card_count"], 0)
         self.assertEqual(funnel["card_generation_skipped_learning_point_count"], 0)
         self.assertEqual(funnel["user_selected_fallback_card_count"], 2)
-        self.assertEqual(funnel["review_only_card_count"], 0)
-        self.assertEqual(
-            funnel["successful_learning_point_count"]
-            + funnel["card_generation_missing_learning_point_count"]
-            + funnel["card_generation_filtered_card_count"]
-            + funnel["card_generation_skipped_learning_point_count"],
-            funnel["selected_learning_point_count"],
-        )
+        self.assertEqual(funnel["review_only_card_count"], 2)
         diagnostics = project["card_generation_diagnostics"]
         self.assertEqual(diagnostics["selected_learning_point_count"], 3)
-        self.assertEqual(diagnostics["successful_learning_point_count"], 3)
-        self.assertEqual(diagnostics["generated_card_count"], 3)
-        self.assertEqual(diagnostics["exportable_card_count"], 3)
-        self.assertEqual(diagnostics["missing_learning_point_count"], 0)
+        self.assertEqual(diagnostics["successful_learning_point_count"], 1)
+        self.assertEqual(diagnostics["generated_card_count"], 1)
+        self.assertEqual(diagnostics["exportable_card_count"], 1)
+        self.assertEqual(diagnostics["missing_learning_point_count"], 2)
         self.assertEqual(diagnostics["model_missing_learning_point_count"], 0)
         self.assertEqual(diagnostics["filtered_learning_point_count"], 0)
         self.assertEqual(diagnostics["skipped_learning_point_count"], 0)
-        self.assertEqual(diagnostics["items"], [])
+        self.assertEqual(
+            {item["learning_point_id"]: item["status"] for item in diagnostics["items"]},
+            {"lp-missing": "needs_review", "lp-filtered": "needs_review"},
+        )
         cards_by_lp = {
             segment["learning_point_id"]: segment["cards"][0]
             for segment in project["segments"]
@@ -2394,16 +2423,27 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(cards_by_lp["lp-good"]["answer_core"], "run the register")
         self.assertEqual(cards_by_lp["lp-missing"]["answer_core"], "get this over with")
         self.assertEqual(cards_by_lp["lp-filtered"]["answer_core"], "bad point")
-        self.assertEqual(cards_by_lp["lp-missing"]["generation_source"], "basic_from_selected_learning_point")
-        self.assertEqual(cards_by_lp["lp-filtered"]["generation_source"], "basic_from_selected_learning_point")
+        self.assertEqual(cards_by_lp["lp-missing"]["generation_source"], "fallback_from_selected_learning_point")
+        self.assertEqual(cards_by_lp["lp-filtered"]["generation_source"], "fallback_from_selected_learning_point")
         self.assertIn("card", cards_by_lp["lp-missing"]["missing_ai_fields"])
         self.assertIn("teacher_note", cards_by_lp["lp-filtered"].get("fallback_fields_filled", []))
         self.assertTrue(cards_by_lp["lp-good"].get("enabled"))
-        self.assertTrue(cards_by_lp["lp-missing"].get("enabled"))
-        self.assertTrue(cards_by_lp["lp-filtered"].get("enabled"))
+        self.assertFalse(cards_by_lp["lp-missing"].get("enabled"))
+        self.assertFalse(cards_by_lp["lp-filtered"].get("enabled"))
         self.assertFalse(worker._legacy_worker.card_has_export_blocking_content(cards_by_lp["lp-good"]))
-        self.assertFalse(worker._legacy_worker.card_has_export_blocking_content(cards_by_lp["lp-missing"]))
-        self.assertFalse(worker._legacy_worker.card_has_export_blocking_content(cards_by_lp["lp-filtered"]))
+        self.assertTrue(worker._legacy_worker.card_has_export_blocking_content(cards_by_lp["lp-missing"]))
+        self.assertTrue(worker._legacy_worker.card_has_export_blocking_content(cards_by_lp["lp-filtered"]))
+        manifest = project["reliability_manifest"]
+        self.assertTrue(manifest["accounting_complete"])
+        self.assertEqual(manifest["decision"], "block")
+        self.assertEqual(manifest["selected_point_count"], 3)
+        self.assertEqual(manifest["verified_count"], 1)
+        self.assertEqual(manifest["needs_review_count"], 2)
+        self.assertEqual(manifest["hard_failed_count"], 0)
+        self.assertEqual(
+            {item["learning_point_id"]: item["status"] for item in manifest["selected_point_outcomes"]},
+            {"lp-good": "verified", "lp-missing": "needs_review", "lp-filtered": "needs_review"},
+        )
 
     def test_generate_cards_from_learning_points_treats_metadata_only_repairs_as_exportable(self):
         original_call_model_batches = worker._legacy_worker.call_model_batches
@@ -2807,52 +2847,49 @@ class WorkerQualityTests(unittest.TestCase):
                 "blocked_quality_issue_count": 0,
             }
 
-        stderr = io.StringIO()
         worker._legacy_worker.call_model_batches = fake_call_model_batches
         worker._legacy_worker.filter_usable_segments_for_output = leaky_filter
         try:
-            with redirect_stderr(stderr), self.assertRaises(SystemExit):
-                worker.handle_generate_cards_from_learning_points(
-                    {
-                        "project_id": "blocked-output-test",
-                        "title": "test",
-                        "language": "en",
-                        "level": "B1",
-                        "api_config": self._ai_config(),
-                        "disable_card_generation_cache": True,
-                        "selected_learning_point_ids": ["lp-blocked-output"],
-                        "learning_points": [
-                            {
-                                "id": "lp-blocked-output",
-                                "source_segment_id": "src-blocked-output",
-                                "source_sentence": "I need to stay on track this week.",
-                                "source_time": "00:00:03.000 - 00:00:06.000",
-                                "start": 3.0,
-                                "end": 6.0,
-                                "exact_span": "stay on track",
-                                "answer_core": "stay on track",
-                                "candidate_kind": "expression",
-                                "phrase_type": "spoken_phrase",
-                                "learning_action": "训练 stay on track 的自然用法。",
-                                "value_score": 4.3,
-                                "status": "recommended",
-                            }
-                        ],
-                        "card_types": ["phrase"],
-                    }
-                )
+            project = worker.handle_generate_cards_from_learning_points(
+                {
+                    "project_id": "blocked-output-test",
+                    "title": "test",
+                    "language": "en",
+                    "level": "B1",
+                    "api_config": self._ai_config(),
+                    "disable_card_generation_cache": True,
+                    "selected_learning_point_ids": ["lp-blocked-output"],
+                    "learning_points": [
+                        {
+                            "id": "lp-blocked-output",
+                            "source_segment_id": "src-blocked-output",
+                            "source_sentence": "I need to stay on track this week.",
+                            "source_time": "00:00:03.000 - 00:00:06.000",
+                            "start": 3.0,
+                            "end": 6.0,
+                            "exact_span": "stay on track",
+                            "answer_core": "stay on track",
+                            "candidate_kind": "expression",
+                            "phrase_type": "spoken_phrase",
+                            "learning_action": "训练 stay on track 的自然用法。",
+                            "value_score": 4.3,
+                            "status": "recommended",
+                        }
+                    ],
+                    "card_types": ["phrase"],
+                }
+            )
         finally:
             worker._legacy_worker.call_model_batches = original_call_model_batches
             worker._legacy_worker.filter_usable_segments_for_output = original_filter_usable_segments
 
-        error_line = next(
-            line for line in stderr.getvalue().splitlines() if line.startswith("__ANKI_CARD_ERROR__")
-        )
-        payload = json.loads(error_line.replace("__ANKI_CARD_ERROR__", "", 1))
-        self.assertEqual(payload["error_code"], "NO_USABLE_AI_CARDS")
-        details = payload["details"]
-        self.assertEqual(details["failed_learning_points"][0]["learning_point_id"], "lp-blocked-output")
-        self.assertEqual(details["failed_learning_points"][0]["status"], "filtered")
+        self.assertEqual(project["card_generation_diagnostics"]["exportable_card_count"], 0)
+        manifest = project["reliability_manifest"]
+        self.assertEqual(manifest["decision"], "block")
+        self.assertEqual(manifest["verified_count"], 0)
+        self.assertEqual(manifest["needs_review_count"], 1)
+        self.assertEqual(manifest["selected_point_outcomes"][0]["learning_point_id"], "lp-blocked-output")
+        self.assertEqual(manifest["selected_point_outcomes"][0]["status"], "needs_review")
 
     def test_generate_cards_from_learning_points_repairs_partial_ai_card(self):
         original_call_model_batches = worker._legacy_worker.call_model_batches
@@ -12542,6 +12579,7 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn('"learning_action":"contextual_meaning|expression_recall|listening_discrimination|collocation_boundary|chinese_learner_trap|conceptual_action|grammar_pattern"', ciba_prompt)
         self.assertIn('"conceptual_action":"概念动作感"', ciba_prompt)
         self.assertIn('"chinese_learner_trap":"中文学习者误区"', ciba_prompt)
+        self.assertIn("不得把语法正确、自然的近义表达称为错误或中式英语", ciba_prompt)
 
     def test_ciba_tianxia_ai_review_prompt_is_template_isolated(self):
         from acg.pipeline import learning_point_pipeline
@@ -13609,7 +13647,7 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("迁移句", ciba[3])
         self.assertIn("搭配边界", ciba[3])
         self.assertIn("原句场景", ciba[3])
-        self.assertIn("真实听辨", ciba[3])
+        self.assertIn("发音提示", ciba[3])
         self.assertIn("--ciba-paper", ciba[1])
         self.assertIn("ciba-focus-card", ciba[2] + ciba[3])
         self.assertIn("ciba-core-group", ciba[3])
@@ -13673,7 +13711,7 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("{{#Context}}<p class=\"v11-source-translation\">{{Context}}</p>{{/Context}}", v11[3])
         self.assertIn("怎么用", v11[3])
         self.assertIn("别误用", v11[3])
-        self.assertIn("自己造句", v11[3])
+        self.assertIn("搭配 / 迁移句", v11[3])
         self.assertIn("understanding-block", v11[3])
         self.assertIn("boundary-block", v11[3])
         self.assertIn("transfer-block", v11[3])
@@ -13744,7 +13782,7 @@ class WorkerQualityTests(unittest.TestCase):
                     self.assertIn("v11-info-block", back, name)
                     self.assertIn("怎么用", back, name)
                     self.assertIn("别误用", back, name)
-                    self.assertIn("自己造句", back, name)
+                    self.assertIn("搭配 / 迁移句", back, name)
                 elif template_id == "ciba_tianxia_v1":
                     self.assertIn("ciba-core-group", back, name)
                     self.assertIn("ciba-priority-grid", back, name)
@@ -14657,6 +14695,49 @@ class WorkerQualityTests(unittest.TestCase):
         )
 
         self.assertEqual(segments, [])
+
+    def test_quality_rejects_truncated_source_evidence_and_blocks_export(self):
+        truncated = (
+            "And the proverb, “Don’t judge a book by its cover” advises people "
+            "not to form opinions about people based"
+        )
+        card = {
+            "type": "phrase",
+            "english": truncated,
+            "phrase": "form opinions about",
+            "answer_core": "form opinions about",
+            "candidate_kind": "expression",
+            "content_kind": "phrase",
+            "chinese": "对……形成看法。",
+            "definition": "form opinions about 表示对某人或某事形成看法。",
+            "collocations": "form opinions about a topic / form an opinion about the issue",
+            "context": "用于讨论观点如何形成。",
+            "example": "Try not to form opinions about people too quickly.",
+            "teacher_note": "form 强调看法逐渐形成的过程。",
+            "learning_goal": "训练 form opinions about 的自然搭配。",
+            "difficulty": "B1 日常交流",
+            "cloze": truncated.replace("form opinions about", "____", 1),
+        }
+
+        quality = worker.assess_card_quality(card, {"text": truncated}, "ai", "B1")
+        card["quality"] = quality
+
+        self.assertEqual(quality["status"], "reject")
+        self.assertIn("原句疑似截断", quality["issues"])
+        self.assertTrue(worker.ends_like_fragment(truncated))
+        self.assertTrue(worker.card_has_export_blocking_content(card))
+
+    def test_source_tail_gate_keeps_valid_spoken_ellipsis_and_stranded_prepositions(self):
+        complete_sources = [
+            "That’s what I was talking about.",
+            "Who are you with?",
+            "I don’t want to.",
+            "The report is based on evidence.",
+            "The decision is evidence based.",
+        ]
+
+        for source in complete_sources:
+            self.assertFalse(worker.ends_like_fragment(source), source)
 
     def test_quality_rejects_template_noise_and_bad_collocation(self):
         card = {

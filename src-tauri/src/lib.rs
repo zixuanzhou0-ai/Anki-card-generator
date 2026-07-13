@@ -3,8 +3,9 @@ use std::{
     collections::{HashMap, VecDeque},
     env, fs,
     io::{BufRead, BufReader, Read, Write},
+    net::TcpStream,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -44,6 +45,11 @@ const GENERATE_WORKER_PAYLOAD_LIMIT_BYTES: usize = 1_500_000;
 const COMPLETED_WORKER_JOB_LIMIT: usize = 20;
 const DIRECTORY_LIST_MAX_FILES: usize = 2000;
 const DIRECTORY_LIST_MAX_DEPTH: usize = 4;
+const HERMES_PROXY_HOST: &str = "127.0.0.1";
+const HERMES_PROXY_PORT: u16 = 8645;
+const HERMES_PROXY_BASE_URL: &str = "http://127.0.0.1:8645/v1";
+const HERMES_PROXY_MODEL: &str = "grok-4.5";
+const SUPPORTED_PREVIEW_VIDEO_EXTENSIONS: &[&str] = &["mp4", "mkv", "webm", "mov", "m4v", "avi"];
 const SUPPORTED_BULK_FILE_EXTENSIONS: &[&str] = &[
     "mp4", "mkv", "webm", "mov", "m4v", "srt", "vtt", "txt", "md", "markdown", "docx", "epub",
     "pdf", "azw", "azw3", "mobi",
@@ -75,6 +81,28 @@ fn detach_gui_process(command: &mut Command) {
 struct WorkerJobs {
     jobs: Arc<Mutex<HashMap<String, RunningJob>>>,
     completed: Arc<Mutex<CompletedWorkerJobs>>,
+}
+
+#[derive(Default)]
+struct HermesProxyRuntime {
+    child: Mutex<Option<Child>>,
+}
+
+impl Drop for HermesProxyRuntime {
+    fn drop(&mut self) {
+        let _ = stop_managed_hermes(self);
+    }
+}
+
+#[derive(Serialize)]
+struct HermesProxyStatus {
+    state: String,
+    message: String,
+    base_url: String,
+    model: String,
+    executable: Option<String>,
+    managed: bool,
+    authenticated: bool,
 }
 
 #[derive(Clone)]
@@ -510,6 +538,405 @@ fn command_version(name: &str, args: &[&str]) -> Option<String> {
     command_first_line(command)
 }
 
+fn hermes_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(path) = env::var("HERMES_EXE") {
+        push_unique_path(&mut candidates, PathBuf::from(path));
+    }
+    if let Some(path) = command_path("hermes") {
+        push_unique_path(&mut candidates, PathBuf::from(path));
+    }
+    if let Ok(local_app_data) = env::var("LOCALAPPDATA") {
+        push_unique_path(
+            &mut candidates,
+            PathBuf::from(local_app_data)
+                .join("hermes")
+                .join("hermes-agent")
+                .join("venv")
+                .join("Scripts")
+                .join("hermes.exe"),
+        );
+    }
+    candidates
+}
+
+fn find_hermes() -> Option<PathBuf> {
+    hermes_candidates().into_iter().find(|path| path.exists())
+}
+
+fn parse_hermes_health_response(response: &str) -> Option<bool> {
+    let (headers, body) = response.split_once("\r\n\r\n")?;
+    if !headers.lines().next()?.contains(" 200 ") {
+        return None;
+    }
+    let payload: Value = serde_json::from_str(body.trim()).ok()?;
+    if payload.get("status").and_then(Value::as_str) != Some("ok") {
+        return None;
+    }
+    let upstream = payload
+        .get("upstream")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !upstream.contains("xai") && !upstream.contains("grok") {
+        return None;
+    }
+    Some(
+        payload
+            .get("authenticated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    )
+}
+
+enum HermesHealthProbe {
+    NotListening,
+    Hermes { authenticated: bool },
+    OtherService,
+}
+
+fn probe_hermes_health() -> HermesHealthProbe {
+    let address = format!("{HERMES_PROXY_HOST}:{HERMES_PROXY_PORT}");
+    let Ok(socket_address) = address.parse() else {
+        return HermesHealthProbe::NotListening;
+    };
+    let Ok(mut stream) = TcpStream::connect_timeout(&socket_address, Duration::from_millis(350)) else {
+        return HermesHealthProbe::NotListening;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(700)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(700)));
+    let request = format!(
+        "GET /health HTTP/1.1\r\nHost: {HERMES_PROXY_HOST}:{HERMES_PROXY_PORT}\r\nConnection: close\r\n\r\n"
+    );
+    if stream.write_all(request.as_bytes()).is_err() {
+        return HermesHealthProbe::OtherService;
+    }
+    let mut response = String::new();
+    if stream.read_to_string(&mut response).is_err() {
+        return HermesHealthProbe::OtherService;
+    }
+    match parse_hermes_health_response(&response) {
+        Some(authenticated) => HermesHealthProbe::Hermes { authenticated },
+        None => HermesHealthProbe::OtherService,
+    }
+}
+
+fn hermes_xai_auth_ready(executable: &Path) -> bool {
+    let mut command = Command::new(executable);
+    command.args(["proxy", "status"]);
+    hide_console_window(&mut command);
+    command
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| {
+            let text = format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .to_ascii_lowercase();
+            text.lines()
+                .any(|line| line.contains("[xai") && line.contains("ready"))
+        })
+        .unwrap_or(false)
+}
+
+fn hermes_managed_running(runtime: &HermesProxyRuntime) -> bool {
+    let Ok(mut guard) = runtime.child.lock() else {
+        return false;
+    };
+    let Some(child) = guard.as_mut() else {
+        return false;
+    };
+    match child.try_wait() {
+        Ok(None) => true,
+        _ => {
+            guard.take();
+            false
+        }
+    }
+}
+
+fn stop_managed_hermes(runtime: &HermesProxyRuntime) -> Result<bool, String> {
+    let mut guard = runtime
+        .child
+        .lock()
+        .map_err(|_| "Hermes 代理状态锁不可用。".to_string())?;
+    let Some(mut child) = guard.take() else {
+        return Ok(false);
+    };
+    let pid = child.id();
+    let tree_result = kill_process_tree(pid);
+    if tree_result.is_err() {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+    tree_result.map(|_| true)
+}
+
+fn normalize_http_proxy_url(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        return Some(trimmed.to_string());
+    }
+    if trimmed.contains("://") || !trimmed.contains(':') {
+        return None;
+    }
+    Some(format!("http://{trimmed}"))
+}
+
+fn select_http_proxy_server(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if !trimmed.contains('=') {
+        return normalize_http_proxy_url(trimmed);
+    }
+
+    for wanted in ["https", "http"] {
+        for entry in trimmed.split(';') {
+            let Some((scheme, address)) = entry.split_once('=') else {
+                continue;
+            };
+            if scheme.trim().eq_ignore_ascii_case(wanted) {
+                if let Some(proxy) = normalize_http_proxy_url(address) {
+                    return Some(proxy);
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn read_wininet_proxy_value(name: &str) -> Option<String> {
+    let mut command = Command::new("reg.exe");
+    command.args([
+        "query",
+        r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+        "/v",
+        name,
+    ]);
+    hide_console_window(&mut command);
+    let output = command.output().ok()?.stdout;
+    let text = String::from_utf8_lossy(&output);
+    text.lines().find_map(|line| {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        if fields
+            .first()
+            .is_some_and(|field| field.eq_ignore_ascii_case(name))
+        {
+            fields.last().map(|value| (*value).to_string())
+        } else {
+            None
+        }
+    })
+}
+
+#[cfg(windows)]
+fn windows_system_proxy_url() -> Option<String> {
+    let enabled = read_wininet_proxy_value("ProxyEnable")?;
+    if enabled != "0x1" && enabled != "1" {
+        return None;
+    }
+    select_http_proxy_server(&read_wininet_proxy_value("ProxyServer")?)
+}
+
+fn hermes_upstream_proxy_url() -> Option<String> {
+    #[cfg(windows)]
+    if let Some(proxy) = windows_system_proxy_url() {
+        return Some(proxy);
+    }
+
+    ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
+        .into_iter()
+        .find_map(|name| env::var(name).ok())
+        .and_then(|value| select_http_proxy_server(&value))
+}
+
+fn hermes_proxy_compat_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        candidates.push(
+            resource_dir
+                .join("workers")
+                .join("acg")
+                .join("hermes_proxy_compat"),
+        );
+    }
+    if let Ok(current_dir) = env::current_dir() {
+        candidates.push(
+            current_dir
+                .join("workers")
+                .join("acg")
+                .join("hermes_proxy_compat"),
+        );
+    }
+    candidates.into_iter().find(|path| path.is_dir())
+}
+
+fn configure_hermes_network_compat(command: &mut Command, app: &tauri::AppHandle) {
+    let (Some(proxy), Some(compat_dir)) =
+        (hermes_upstream_proxy_url(), hermes_proxy_compat_dir(app))
+    else {
+        return;
+    };
+
+    let mut python_paths = vec![compat_dir];
+    if let Some(existing) = env::var_os("PYTHONPATH") {
+        python_paths.extend(env::split_paths(&existing));
+    }
+    if let Ok(joined) = env::join_paths(python_paths) {
+        command.env("PYTHONPATH", joined);
+    }
+    command.env("ANKI_CARD_HERMES_TRUST_ENV", "1");
+    command.env("HTTPS_PROXY", &proxy);
+    command.env("HTTP_PROXY", &proxy);
+    command.env("https_proxy", &proxy);
+    command.env("http_proxy", proxy);
+}
+
+fn hermes_proxy_status(runtime: &HermesProxyRuntime) -> HermesProxyStatus {
+    let executable = find_hermes();
+    let managed = hermes_managed_running(runtime);
+    let executable_text = executable
+        .as_ref()
+        .map(|path| path.to_string_lossy().to_string());
+    let status = |state: &str, message: &str, authenticated: bool| HermesProxyStatus {
+        state: state.to_string(),
+        message: message.to_string(),
+        base_url: HERMES_PROXY_BASE_URL.to_string(),
+        model: HERMES_PROXY_MODEL.to_string(),
+        executable: executable_text.clone(),
+        managed,
+        authenticated,
+    };
+
+    let Some(executable) = executable else {
+        return status(
+            "missing",
+            "未找到 Hermes。请先安装 Hermes，或设置 HERMES_EXE 指向 hermes.exe。",
+            false,
+        );
+    };
+
+    match probe_hermes_health() {
+        HermesHealthProbe::Hermes { authenticated: true } => status(
+            "ready",
+            if managed {
+                "Hermes Grok 4.5 本机代理已由应用启动并通过 OAuth 健康检查。"
+            } else {
+                "检测到已运行的 Hermes Grok 4.5 本机代理，应用将直接复用。"
+            },
+            true,
+        ),
+        HermesHealthProbe::Hermes { authenticated: false } => status(
+            "oauth_unready",
+            "Hermes 代理已运行，但 xAI OAuth 未就绪。请运行 hermes auth add xai-oauth。",
+            false,
+        ),
+        HermesHealthProbe::OtherService => status(
+            "port_conflict",
+            "本机 8645 端口已被非 Hermes 服务占用；应用不会结束该进程。",
+            false,
+        ),
+        HermesHealthProbe::NotListening if hermes_xai_auth_ready(&executable) => status(
+            "stopped",
+            "Hermes 与 xAI OAuth 已就绪，代理尚未启动。",
+            true,
+        ),
+        HermesHealthProbe::NotListening => status(
+            "oauth_unready",
+            "Hermes 已安装，但 xAI OAuth 未就绪。请运行 hermes auth add xai-oauth。",
+            false,
+        ),
+    }
+}
+
+#[tauri::command]
+fn check_hermes_proxy(state: State<'_, HermesProxyRuntime>) -> Result<HermesProxyStatus, String> {
+    Ok(hermes_proxy_status(&state))
+}
+
+#[tauri::command]
+fn start_hermes_proxy(
+    app: tauri::AppHandle,
+    state: State<'_, HermesProxyRuntime>,
+) -> Result<HermesProxyStatus, String> {
+    let current = hermes_proxy_status(&state);
+    if current.state == "ready" || current.state == "missing" || current.state == "oauth_unready" || current.state == "port_conflict" {
+        return Ok(current);
+    }
+
+    let executable = find_hermes().ok_or_else(|| "未找到 Hermes 可执行文件。".to_string())?;
+    let mut command = Command::new(&executable);
+    command.args([
+        "proxy",
+        "start",
+        "--provider",
+        "xai",
+        "--host",
+        HERMES_PROXY_HOST,
+        "--port",
+        &HERMES_PROXY_PORT.to_string(),
+    ]);
+    configure_hermes_network_compat(&mut command, &app);
+    command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    hide_console_window(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Hermes 代理启动失败：{error}"))?;
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline {
+        if let Ok(Some(exit_status)) = child.try_wait() {
+            return Ok(HermesProxyStatus {
+                state: "error".to_string(),
+                message: format!("Hermes 代理启动后提前退出：{exit_status}"),
+                base_url: HERMES_PROXY_BASE_URL.to_string(),
+                model: HERMES_PROXY_MODEL.to_string(),
+                executable: Some(executable.to_string_lossy().to_string()),
+                managed: false,
+                authenticated: false,
+            });
+        }
+        if matches!(
+            probe_hermes_health(),
+            HermesHealthProbe::Hermes { authenticated: true }
+        ) {
+            let mut guard = state
+                .child
+                .lock()
+                .map_err(|_| "Hermes 代理状态锁不可用。".to_string())?;
+            *guard = Some(child);
+            drop(guard);
+            return Ok(hermes_proxy_status(&state));
+        }
+        thread::sleep(Duration::from_millis(150));
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+    Ok(HermesProxyStatus {
+        state: "error".to_string(),
+        message: "Hermes 代理在 20 秒内没有通过健康检查，已停止本次启动的进程。".to_string(),
+        base_url: HERMES_PROXY_BASE_URL.to_string(),
+        model: HERMES_PROXY_MODEL.to_string(),
+        executable: Some(executable.to_string_lossy().to_string()),
+        managed: false,
+        authenticated: false,
+    })
+}
+
+#[tauri::command]
+fn stop_owned_hermes_proxy(state: State<'_, HermesProxyRuntime>) -> Result<HermesProxyStatus, String> {
+    stop_managed_hermes(&state)?;
+    Ok(hermes_proxy_status(&state))
+}
+
 fn native_status_item(id: &str, label: &str, status: &str, detail: String, fix: &str) -> Value {
     json!({
         "id": id,
@@ -554,7 +981,8 @@ fn worker_idle_timeout(command: &str) -> Duration {
         "extract_learning_points" => Duration::from_secs(300),
         "generate_cards_from_learning_points" => Duration::from_secs(420),
         "generate" | "export" => Duration::from_secs(600),
-        "test_api" | "test_tts" | "verify_anki_import" => Duration::from_secs(120),
+        "test_tts" => Duration::from_secs(75),
+        "test_api" | "verify_anki_import" => Duration::from_secs(120),
         _ => Duration::from_secs(180),
     }
 }
@@ -2202,6 +2630,53 @@ fn file_extension_supported_for_bulk_import(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+fn preview_video_extension_supported(path: &Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .map(|value| {
+            SUPPORTED_PREVIEW_VIDEO_EXTENSIONS
+                .iter()
+                .any(|allowed| value.eq_ignore_ascii_case(allowed))
+        })
+        .unwrap_or(false)
+}
+
+fn resolve_preview_asset_path(path: &Path) -> Result<PathBuf, String> {
+    if !path.exists() || !path.is_file() {
+        return Err(format!("预览媒体不存在或不是文件：{}", path.display()));
+    }
+    let resolved = path
+        .canonicalize()
+        .map_err(|err| format!("无法解析预览媒体 {}：{err}", path.display()))?;
+    if !preview_video_extension_supported(&resolved) {
+        return Err("只允许预览 mp4、mkv、webm、mov、m4v 或 avi 视频文件。".to_string());
+    }
+    Ok(resolved)
+}
+
+fn preview_asset_frontend_path(path: &Path) -> String {
+    let value = path.to_string_lossy();
+    #[cfg(windows)]
+    {
+        if let Some(stripped) = value.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{}", stripped);
+        }
+        if let Some(stripped) = value.strip_prefix(r"\\?\") {
+            return stripped.to_string();
+        }
+    }
+    value.into_owned()
+}
+
+#[tauri::command]
+fn allow_preview_asset(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    let requested = PathBuf::from(clean_user_path(&path));
+    let resolved = resolve_preview_asset_path(&requested)?;
+    app.asset_protocol_scope()
+        .allow_file(&resolved)
+        .map_err(|err| format!("无法授权此预览媒体：{err}"))?;
+    Ok(preview_asset_frontend_path(&resolved))
+}
 fn directory_listing_root_blocked(path: &Path) -> bool {
     let Ok(resolved) = path.canonicalize() else {
         return true;
@@ -2422,6 +2897,7 @@ pub fn run() {
     }));
     tauri::Builder::default()
         .manage(WorkerJobs::default())
+        .manage(HermesProxyRuntime::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             run_worker,
@@ -2434,8 +2910,12 @@ pub fn run() {
             record_renderer_error,
             suggest_subtitle_path,
             list_directory_files,
+            allow_preview_asset,
             reveal_path,
             open_anki_import,
+            check_hermes_proxy,
+            start_hermes_proxy,
+            stop_owned_hermes_proxy,
             save_secret,
             load_secret,
             delete_secret
@@ -2459,6 +2939,10 @@ pub fn run() {
             let lifecycle_app = app.handle().clone();
             let lifecycle_window = window.clone();
             window.on_window_event(move |event| {
+                if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                    let runtime = lifecycle_app.state::<HermesProxyRuntime>();
+                    let _ = stop_managed_hermes(runtime.inner());
+                }
                 let event_debug = format!("{event:?}");
                 let event_name = event_debug
                     .split([' ', '{', '('])
@@ -2564,6 +3048,40 @@ mod tests {
     }
 
     #[test]
+    fn hermes_health_parser_requires_xai_identity_and_reports_auth() {
+        let ready = concat!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n",
+            r#"{"status":"ok","upstream":"xAI Grok OAuth","authenticated":true}"#
+        );
+        let not_ready = concat!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n",
+            r#"{"status":"ok","upstream":"xAI Grok OAuth","authenticated":false}"#
+        );
+        let unrelated = concat!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n",
+            r#"{"status":"ok","upstream":"other","authenticated":true}"#
+        );
+
+        assert_eq!(parse_hermes_health_response(ready), Some(true));
+        assert_eq!(parse_hermes_health_response(not_ready), Some(false));
+        assert_eq!(parse_hermes_health_response(unrelated), None);
+    }
+
+    #[test]
+    fn hermes_proxy_parser_prefers_https_and_rejects_non_http_schemes() {
+        assert_eq!(
+            select_http_proxy_server("http=127.0.0.1:8080;https=127.0.0.1:8443"),
+            Some("http://127.0.0.1:8443".to_string())
+        );
+        assert_eq!(
+            select_http_proxy_server("https://proxy.example:443"),
+            Some("https://proxy.example:443".to_string())
+        );
+        assert_eq!(select_http_proxy_server("socks5://127.0.0.1:1080"), None);
+        assert_eq!(select_http_proxy_server("not-a-proxy"), None);
+    }
+
+    #[test]
     fn bulk_directory_listing_only_accepts_supported_extensions() {
         assert!(file_extension_supported_for_bulk_import(Path::new("clip.mp4")));
         assert!(file_extension_supported_for_bulk_import(Path::new("notes.MD")));
@@ -2572,6 +3090,29 @@ mod tests {
         assert!(!file_extension_supported_for_bulk_import(Path::new("archive.zip")));
     }
 
+    #[test]
+    fn preview_asset_only_accepts_supported_video_files() {
+        assert!(preview_video_extension_supported(Path::new("lesson.MP4")));
+        assert!(preview_video_extension_supported(Path::new("lesson.webm")));
+        assert!(!preview_video_extension_supported(Path::new("lesson.html")));
+        assert!(!preview_video_extension_supported(Path::new("lesson.apkg")));
+    }
+
+    #[test]
+    fn preview_asset_resolver_rejects_non_video_files() {
+        let root = env::temp_dir().join(format!(
+            "anki_card_preview_asset_test_{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("create preview test dir");
+        let text_file = root.join("not-video.txt");
+        fs::write(&text_file, b"not a video").expect("write preview test file");
+
+        let error = resolve_preview_asset_path(&text_file).expect_err("reject non-video file");
+        assert!(error.contains("只允许预览"));
+
+        let _ = fs::remove_dir_all(root);
+    }
     #[test]
     fn generated_apkg_directory_requires_export_marker() {
         let root = env::temp_dir().join(format!(

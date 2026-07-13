@@ -25,6 +25,64 @@ LEARNING_ACTION_VALUES = {
 }
 
 
+_FORM_OPINION_PATTERN = re.compile(r"\bform\s+(?:an\s+)?opinions?\b", re.IGNORECASE)
+_GIVE_OPINION_PATTERN = re.compile(r"\bgive\s+(?:an\s+)?opinions?\b", re.IGNORECASE)
+_FALSE_ERROR_CUES = (
+    "别说",
+    "不要说",
+    "不自然",
+    "错误",
+    "中式英语",
+    "正确是",
+    "应改为",
+    "instead",
+    "incorrect",
+    "wrong",
+    "unnatural",
+    "chinglish",
+)
+_FORM_GIVE_OPINION_BOUNDARY = (
+    "make opinions 不自然；give an opinion / give opinions 表示“表达或提出意见”，"
+    "form an opinion / form opinions 强调“形成看法”；后两者都可用，但含义不同。"
+)
+
+
+def _mislabels_give_opinion_as_wrong(value: Any, target: str) -> bool:
+    text = clean_study_text(value)
+    if not text or not _FORM_OPINION_PATTERN.search(target) or not _GIVE_OPINION_PATTERN.search(text):
+        return False
+    lowered = text.lower()
+    return any(cue in lowered for cue in _FALSE_ERROR_CUES)
+
+
+def sanitize_known_valid_contrasts(card: dict[str, Any]) -> None:
+    """Repair deterministic false-error claims that would teach a valid contrast as bad English."""
+    target = clean_study_text(card.get("answer_core") or card.get("phrase") or "")
+    if not _FORM_OPINION_PATTERN.search(target):
+        return
+
+    repaired = False
+    for key in ("chinese_learner_trap", "confusable_note"):
+        if _mislabels_give_opinion_as_wrong(card.get(key), target):
+            card[key] = _FORM_GIVE_OPINION_BOUNDARY
+            repaired = True
+
+    teacher_note = clean_study_text(card.get("teacher_note"))
+    if _mislabels_give_opinion_as_wrong(teacher_note, target):
+        parts = [part.strip() for part in re.split(r"[；;]+", teacher_note) if part.strip()]
+        kept = [part for part in parts if not _mislabels_give_opinion_as_wrong(part, target)]
+        kept.append(f"易混表达：{_FORM_GIVE_OPINION_BOUNDARY}")
+        card["teacher_note"] = "；".join(dict.fromkeys(kept))
+        repaired = True
+
+    if repaired:
+        repairs = card.setdefault("content_repair_history", [])
+        if isinstance(repairs, list):
+            message = "已修复把 give an opinion / give opinions 错判为不自然英语的语义边界。"
+            if message not in repairs:
+                repairs.append(message)
+
+
 def normalized_contains_text(haystack: Any, needle: Any) -> bool:
     haystack_marker = re.sub(r"[\s\W_]+", "", clean_study_text(haystack).lower(), flags=re.UNICODE)
     needle_marker = re.sub(r"[\s\W_]+", "", clean_study_text(needle).lower(), flags=re.UNICODE)
@@ -52,6 +110,7 @@ def learning_action_for_card(card: dict[str, Any]) -> str:
 
 
 def normalize_learning_action_fields(card: dict[str, Any]) -> None:
+    sanitize_known_valid_contrasts(card)
     learning_target = normalized_action_text(card.get("learning_target"))
     why_it_matters = normalized_action_text(card.get("why_it_matters"))
     how_to_use_it = normalized_action_text(card.get("how_to_use_it"))
@@ -131,7 +190,7 @@ def normalize_learning_action_fields(card: dict[str, Any]) -> None:
     if confusable_note and not normalized_contains_text(teacher_note, confusable_note):
         extra_notes.append(f"易错提醒：{confusable_note}")
     if chinese_learner_trap and not normalized_contains_text(teacher_note, chinese_learner_trap):
-        extra_notes.append(f"中文误区：{chinese_learner_trap}")
+        extra_notes.append(f"易混表达：{chinese_learner_trap}")
     if extra_notes:
         merged_note = "；".join(extra_notes)
         if teacher_note and merged_note not in teacher_note:

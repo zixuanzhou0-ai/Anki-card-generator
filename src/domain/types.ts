@@ -153,7 +153,26 @@ export type ApiPreset = {
   key_hint: string
 }
 
-export type SavedProfileAuth = 'api_key' | 'gcloud' | 'none'
+export type SavedProfileAuth = 'api_key' | 'gcloud' | 'local_oauth' | 'none'
+
+export type HermesProxyState =
+  | 'missing'
+  | 'stopped'
+  | 'oauth_unready'
+  | 'starting'
+  | 'ready'
+  | 'port_conflict'
+  | 'error'
+
+export type HermesProxyStatus = {
+  state: HermesProxyState
+  message: string
+  base_url: string
+  model: string
+  executable?: string
+  managed: boolean
+  authenticated: boolean
+}
 
 export type SavedApiProfile = {
   id: string
@@ -486,6 +505,8 @@ export type WorkerProgress = {
 }
 
 export type WorkerCommand =
+  | 'test_api'
+  | 'test_tts'
   | 'extract_learning_points'
   | 'generate_cards_from_learning_points'
   | 'generate'
@@ -643,6 +664,7 @@ export type CardGenerationDiagnosticItem = {
     | 'model_missing'
     | 'hard_failed'
     | 'filtered'
+    | 'needs_review'
     | 'ai_repaired'
     | 'fallback_from_selected_learning_point'
     | string
@@ -667,6 +689,51 @@ export type CardGenerationDiagnostics = {
   missing_ai_fields?: Record<string, string[]>
   media_integrity_summary?: Record<string, unknown>
   items?: CardGenerationDiagnosticItem[]
+}
+
+export type ReliabilityDecision = 'pass' | 'block' | 'partial_requires_confirmation'
+
+export type SelectedPointOutcomeStatus = 'verified' | 'needs_review' | 'hard_failed'
+
+export type SelectedPointOutcome = {
+  learning_point_id: string
+  status: SelectedPointOutcomeStatus
+  card_id?: string
+  blocker_codes: string[]
+  reason?: string
+}
+
+export type FieldProvenance = {
+  source:
+    | 'subtitle_exact'
+    | 'source_context'
+    | 'model_generated'
+    | 'deterministic_rule'
+    | 'user_edited'
+    | 'subtitle_inferred'
+    | 'audio_verified'
+  source_ref?: string
+  confidence?: number
+  verifier_status: 'passed' | 'warning' | 'blocked' | 'not_checked'
+  verifier_codes: string[]
+  verified_at?: string
+}
+
+export type ReliabilityManifest = {
+  schema_version: 1
+  verification_profile: 'structural_v1' | string
+  decision: ReliabilityDecision
+  accounting_complete: boolean
+  selected_point_count: number
+  verified_count: number
+  needs_review_count: number
+  hard_failed_count: number
+  selected_point_outcomes: SelectedPointOutcome[]
+  blocker_codes: string[]
+  source_fingerprint?: string
+  model_provider?: string
+  model_name?: string
+  created_at: number
 }
 
 export type GenerationRunState =
@@ -919,6 +986,9 @@ export type Card = {
   source_pronunciation_status?: string
   pronunciation_meta?: PronunciationMeta | string | null
   generation_source?: 'ai_complete' | 'ai_repaired' | 'fallback_from_selected_learning_point' | string
+  verification_status?: 'verified' | 'needs_review' | 'stale' | 'blocked'
+  verification_stale_fields?: string[]
+  field_provenance?: Record<string, FieldProvenance>
   missing_ai_fields?: string[]
   fallback_fields_filled?: string[]
   replacement_examples?: string | string[]
@@ -1040,6 +1110,7 @@ export type Project = {
   batch_items?: BatchSourceItem[]
   quality_funnel?: QualityFunnel
   card_generation_diagnostics?: CardGenerationDiagnostics
+  reliability_manifest?: ReliabilityManifest
   learning_point_inventory?: LearningPointInventoryItem[]
   generated_learning_point_ids?: string[]
   generated_document_point_ids?: string[]

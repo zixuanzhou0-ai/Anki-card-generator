@@ -27,6 +27,7 @@ import { WorkerProgressPanel } from '../generation/WorkerProgressPanel'
 import { LearningPointOverview } from '../learningPoints/LearningPointOverview'
 import { EmptyWorkbench } from './EmptyWorkbench'
 import { ExportResultPanel } from './ExportResultPanel'
+import { ReliabilitySummaryPanel } from './ReliabilitySummaryPanel'
 import { ReviewSummaryPanel } from './ReviewSummaryPanel'
 import { SegmentDetail } from './SegmentDetail'
 import { SegmentList } from './SegmentList'
@@ -37,6 +38,7 @@ type ReviewWorkspaceProps = {
   activeSegment?: Segment
   activeSegmentId: string | null
   activeSegmentVideoSrc: string
+  activeSegmentVideoError: string
   activeTemplateLabel: string
   ankiVerifying: boolean
   ankiVerifyResult: AnkiVerifyResult | null
@@ -89,6 +91,7 @@ export function ReviewWorkspace({
   activeSegment,
   activeSegmentId,
   activeSegmentVideoSrc,
+  activeSegmentVideoError,
   activeTemplateLabel,
   ankiVerifying,
   ankiVerifyResult,
@@ -149,8 +152,8 @@ export function ReviewWorkspace({
   const missingGenerationCount = generationDiagnostics?.missing_learning_point_count ?? 0
   const showExportFailureNotice = Boolean(
     lastWorkerError?.command === 'export' &&
-      !lastWorkerError.ok &&
-      (project || lastWorkerError.error_code === 'RELEASE_APKG_TARGET_INVALID'),
+    !lastWorkerError.ok &&
+    (project || lastWorkerError.error_code === 'RELEASE_APKG_TARGET_INVALID'),
   )
   return (
     <section
@@ -241,6 +244,8 @@ export function ReviewWorkspace({
         />
       ) : null}
 
+      {project ? <ReliabilitySummaryPanel manifest={project.reliability_manifest} /> : null}
+
       {project ? (
         <div className="review-simple-summary" aria-label="卡片概览">
           <span>
@@ -282,7 +287,7 @@ export function ReviewWorkspace({
           activeTemplateLabel={activeTemplateLabel}
           language={language}
           level={level}
-          project={project}
+          project={{ ...project, reliability_manifest: undefined }}
           qualityCounts={qualityCounts}
           qualityDiagnostics={qualityDiagnostics}
           qualityFunnel={qualityFunnel}
@@ -364,6 +369,7 @@ export function ReviewWorkspace({
                   previewRate={previewRate}
                   segment={activeSegment}
                   videoSrc={activeSegmentVideoSrc}
+                  videoError={activeSegmentVideoError}
                   onSetSegmentCardsEnabled={onSetCardsEnabled}
                   onUpdateCard={onUpdateCard}
                 />
@@ -717,7 +723,9 @@ function LearningPointInventoryPanel({ items }: { items: LearningPointInventoryI
             <small>训练点：{item.learning_action}</small>
             <small>原因：{inventoryReason(item)}</small>
             <div className="inventory-item-actions">
-              <span>不可制卡项不会导出；原因通常是 answer_core 异常、跨度不在原句中，或模型返回了不适合直接制卡的内容。</span>
+              <span>
+                不可制卡项不会导出；原因通常是 answer_core 异常、跨度不在原句中，或模型返回了不适合直接制卡的内容。
+              </span>
             </div>
           </article>
         ))}

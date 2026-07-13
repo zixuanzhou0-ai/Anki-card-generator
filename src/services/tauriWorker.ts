@@ -1,4 +1,4 @@
-﻿import { invoke } from '@tauri-apps/api/core'
+import { invoke } from '@tauri-apps/api/core'
 import type { EnvRepairResult, EnvStatus, WorkerCommand, WorkerFinishedEvent, WorkerJob } from '../domain/types'
 import { isTauriRuntime } from './runtime'
 
@@ -28,6 +28,32 @@ export async function getWorkerJobStatus(jobId: string): Promise<WorkerFinishedE
 
 export async function readWorkerJobResult<T>(jobId: string): Promise<T> {
   return invoke<T>('read_worker_job_result', { jobId })
+}
+
+export async function runWorkerJobAndWait<T>(
+  command: WorkerCommand,
+  payload: unknown,
+  pollIntervalMs = 250,
+): Promise<T> {
+  const { job_id: jobId } = await startWorkerJob(command, payload)
+
+  for (;;) {
+    const finished = await getWorkerJobStatus(jobId)
+    if (!finished) {
+      await new Promise((resolve) => window.setTimeout(resolve, pollIntervalMs))
+      continue
+    }
+    if (!finished.ok) {
+      throw new Error(finished.error || `${command} 后台任务失败。`)
+    }
+    if (typeof finished.result !== 'undefined') {
+      return finished.result as T
+    }
+    if (finished.result_ref) {
+      return readWorkerJobResult<T>(jobId)
+    }
+    throw new Error(`${command} 后台任务已完成，但没有返回结果。`)
+  }
 }
 
 export async function recordRendererError(payload: unknown): Promise<void> {

@@ -11,6 +11,7 @@ from acg.text_cleaning import clean_study_text
 MEDIA_SUBTITLE_PARTIAL_EXPORT_BLOCK_THRESHOLD = 0.55
 MEDIA_ALIGNMENT_PHRASE_NOT_FOUND_REASON = "phrase_not_found_in_media_alignment_text"
 SOURCE_SENTENCE_QUALITY_MEDIA_BLOCK_FLAGS = {
+    "truncated_tail",
     "possible_bad_join",
     "rolling_caption_uncertain",
     "rolling_caption_overlap",

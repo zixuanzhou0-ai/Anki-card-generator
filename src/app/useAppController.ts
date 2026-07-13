@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { useReducedMotion } from 'motion/react'
@@ -17,6 +17,7 @@ import type {
   EnvStatus,
   ExportResult,
   GenerateRequest,
+  HermesProxyStatus,
   InspectorState,
   LanguageFocus,
   Level,
@@ -78,6 +79,7 @@ import {
   segmentMatchesFilter,
   isUsableCardForExport,
 } from '../domain/quality'
+import { applyCardPatchWithReliabilityInvalidation } from '../domain/reliability'
 import {
   ankiOpenImportRequestedStatusMessage,
   ankiOpenImportStartingStatusMessage,
@@ -120,6 +122,7 @@ import {
   selectedLearningPoints,
 } from '../domain/learningPoints'
 import {
+  isHermesLocalApiConfig,
   isMimoApiConfig,
   isMimoTokenPlanBase,
   isMimoTokenPlanKey,
@@ -157,10 +160,15 @@ import {
   recordRendererError,
   repairBootstrapEnv,
   runWorker,
+  runWorkerJobAndWait,
   saveSecret,
   startWorkerJob,
 } from '../services/tauriWorker'
 import { isTauriRuntime } from '../services/runtime'
+import {
+  checkHermesProxy as checkHermesProxyRuntime,
+  startHermesProxy as startHermesProxyRuntime,
+} from '../services/hermes'
 import {
   openAnkiImport as openAnkiImportFile,
   defaultExportDirectory,
@@ -169,7 +177,7 @@ import {
   selectDirectory,
   selectSingleFile,
   suggestSubtitlePath,
-  toAssetUrl,
+  preparePreviewAssetUrl,
 } from '../services/nativeShell'
 import { redactSensitiveText } from '../services/redaction'
 import {
@@ -271,7 +279,11 @@ function releaseApkgTargetGuardFailureEvent(guard: ReleaseApkgBlockedGuard): Wor
 
 function normalizedComparablePath(pathValue: string | null | undefined): string {
   return typeof pathValue === 'string'
-    ? pathValue.trim().replace(/[/\\]+/g, '/').replace(/\/+$/, '').toLowerCase()
+    ? pathValue
+        .trim()
+        .replace(/[/\\]+/g, '/')
+        .replace(/\/+$/, '')
+        .toLowerCase()
     : ''
 }
 
@@ -323,6 +335,9 @@ export function useAppController() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [apiTesting, setApiTesting] = useState(false)
   const [apiTestResult, setApiTestResult] = useState<ApiTestResult | null>(null)
+  const [hermesChecking, setHermesChecking] = useState(false)
+  const [hermesStarting, setHermesStarting] = useState(false)
+  const [hermesStatus, setHermesStatus] = useState<HermesProxyStatus | null>(null)
   const [ttsTesting, setTtsTesting] = useState(false)
   const [ttsTestResult, setTtsTestResult] = useState<TtsTestResult | null>(null)
   const [lastExport, setLastExport] = useState<ExportResult | null>(null)
@@ -331,6 +346,8 @@ export function useAppController() {
   const [ankiVerifying, setAnkiVerifying] = useState(false)
   const [ankiVerifyResult, setAnkiVerifyResult] = useState<AnkiVerifyResult | null>(null)
   const [previewRate, setPreviewRate] = useState(0.75)
+  const [previewVideoSrc, setPreviewVideoSrc] = useState('')
+  const [previewVideoError, setPreviewVideoError] = useState('')
   const [workerProgress, setWorkerProgress] = useState<WorkerProgress | null>(null)
   const [generationBatchProgress, setGenerationBatchProgress] = useState<GenerationBatchProgress | null>(null)
   const [cardGenerationCacheNamespace, setCardGenerationCacheNamespace] = useState<string | null>(null)
@@ -364,6 +381,52 @@ export function useAppController() {
   const handledWorkerFinishIdsRef = useRef<Set<string>>(new Set())
   const processingWorkerFinishIdsRef = useRef<Set<string>>(new Set())
   const handleWorkerFinishedRef = useRef<(payload: WorkerFinishedEvent) => Promise<void>>(async () => {})
+
+  const refreshHermesStatus = useCallback(async () => {
+    setHermesChecking(true)
+    try {
+      const next = await checkHermesProxyRuntime()
+      setHermesStatus(next)
+      return next
+    } catch (error) {
+      const next: HermesProxyStatus = {
+        state: 'error',
+        message: 'Hermes 状态检测失败：' + redactSensitiveText(error),
+        base_url: 'http://127.0.0.1:8645/v1',
+        model: 'grok-4.5',
+        managed: false,
+        authenticated: false,
+      }
+      setHermesStatus(next)
+      return next
+    } finally {
+      setHermesChecking(false)
+    }
+  }, [])
+
+  const startHermesForSettings = useCallback(async () => {
+    setHermesStarting(true)
+    try {
+      const next = await startHermesProxyRuntime()
+      setHermesStatus(next)
+      setStatus(next.message)
+      return next
+    } catch (error) {
+      const next: HermesProxyStatus = {
+        state: 'error',
+        message: 'Hermes 代理启动失败：' + redactSensitiveText(error),
+        base_url: 'http://127.0.0.1:8645/v1',
+        model: 'grok-4.5',
+        managed: false,
+        authenticated: false,
+      }
+      setHermesStatus(next)
+      setStatus(next.message)
+      return next
+    } finally {
+      setHermesStarting(false)
+    }
+  }, [])
 
   const captureReleaseEvidenceRawSnapshot = (event: ReleaseEvidenceRawSnapshotEvent) => {
     releaseEvidenceRawSnapshotRef.current = reduceReleaseEvidenceRawSnapshot(
@@ -604,6 +667,13 @@ export function useAppController() {
     () => (lastWorkerError ? getWorkerErrorActions(lastWorkerError.error_code, lastWorkerError.fallbacks) : []),
     [lastWorkerError],
   )
+  const hermesApiConfigured = isHermesLocalApiConfig(request.api_config)
+
+  useEffect(() => {
+    if (settingsOpen && settingsTab === 'api' && hermesApiConfigured) {
+      void refreshHermesStatus()
+    }
+  }, [hermesApiConfigured, refreshHermesStatus, settingsOpen, settingsTab])
 
   useEffect(() => {
     const current = workerOperationRef.current
@@ -674,6 +744,36 @@ export function useAppController() {
     }
   }, [project])
 
+  const previewVideoPath = project?.video_path?.trim() ?? ''
+
+  useEffect(() => {
+    let cancelled = false
+    setPreviewVideoSrc('')
+    setPreviewVideoError('')
+    if (!previewVideoPath)
+      return () => {
+        cancelled = true
+      }
+
+    void preparePreviewAssetUrl(previewVideoPath)
+      .then((url) => {
+        if (!cancelled) setPreviewVideoSrc(url)
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return
+        const message = error instanceof Error ? error.message : String(error)
+        setPreviewVideoError(`视频预览不可用：${message}`)
+        void recordRendererError({
+          source: 'preview_asset',
+          message,
+          video_path: previewVideoPath,
+        }).catch(() => undefined)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [previewVideoPath])
   useEffect(() => {
     if (!project || projectMatchesRequest(project, request)) return
     lastExportFullRef.current = null
@@ -1445,9 +1545,7 @@ export function useAppController() {
 
   const selectSourceMode = (mode: SourceMode) => {
     const publicMode: SourceMode = mode === 'document' ? 'local' : mode
-    const nextCardTypes: CardKind[] = request.card_types.includes('knowledge')
-      ? ['phrase']
-      : request.card_types
+    const nextCardTypes: CardKind[] = request.card_types.includes('knowledge') ? ['phrase'] : request.card_types
 
     lastExportFullRef.current = null
     activeAnkiVerifyApkgPathRef.current = null
@@ -1537,11 +1635,13 @@ export function useAppController() {
       }
       setApiProfileDirty(false)
       setStatus(
-        profile.auth === 'gcloud'
-          ? `已保存模型方案：${profile.label}。它使用本机 gcloud OAuth，不需要 API Key。`
-          : profile.has_api_key
-            ? `已保存模型方案：${profile.label}，API Key 已单独保存到系统凭据。`
-            : `已保存模型方案：${profile.label}。这个方案还没有保存 API Key。`,
+        profile.auth === 'local_oauth'
+          ? '已保存模型方案：' + profile.label + '。它使用 Hermes 本机 OAuth，不保存 xAI Token。'
+          : profile.auth === 'gcloud'
+            ? `已保存模型方案：${profile.label}。它使用本机 gcloud OAuth，不需要 API Key。`
+            : profile.has_api_key
+              ? `已保存模型方案：${profile.label}，API Key 已单独保存到系统凭据。`
+              : `已保存模型方案：${profile.label}。这个方案还没有保存 API Key。`,
       )
     } catch {
       setStatus('模型方案保存失败，请确认系统凭据可写。')
@@ -1615,11 +1715,13 @@ export function useAppController() {
           },
     )
     setStatus(
-      profile.auth === 'api_key' && !profile.has_api_key
-        ? `已切换到模型方案：${profile.label}。这个方案没有保存 API Key。`
-        : profile.auth === 'api_key'
-          ? `已切换到模型方案：${profile.label}。Key 已保存，测试或生成前会短时读取。`
-          : `已切换到模型方案：${profile.label}。`,
+      profile.auth === 'local_oauth'
+        ? '已切换到模型方案：' + profile.label + '。测试或生成时会按需启动 Hermes 本机代理。'
+        : profile.auth === 'api_key' && !profile.has_api_key
+          ? `已切换到模型方案：${profile.label}。这个方案没有保存 API Key。`
+          : profile.auth === 'api_key'
+            ? `已切换到模型方案：${profile.label}。Key 已保存，测试或生成前会短时读取。`
+            : `已切换到模型方案：${profile.label}。`,
     )
   }
 
@@ -1693,12 +1795,17 @@ export function useAppController() {
           },
     )
     setApiProfileDirty(!savedProfile)
+    if (isHermesLocalApiConfig({ ...request.api_config, ...nextConfig })) {
+      await refreshHermesStatus()
+    }
     setStatus(
       savedProfile
         ? `已套用已保存的 ${preset.label} 方案。`
-        : preset.provider === 'gemini-vertex' || preset.provider === 'local'
-          ? `已套用 ${preset.label} 预设，建议保存为我的模型方案。`
-          : `已套用 ${preset.label} 预设，请填写 API Key 后保存方案并测试连接。`,
+        : preset.id === 'hermes-grok-45'
+          ? '已套用 ' + preset.label + ' 预设；测试连接时会按需启动本机代理。'
+          : preset.provider === 'gemini-vertex' || preset.provider === 'local'
+            ? `已套用 ${preset.label} 预设，建议保存为我的模型方案。`
+            : `已套用 ${preset.label} 预设，请填写 API Key 后保存方案并测试连接。`,
     )
   }
 
@@ -2031,6 +2138,24 @@ export function useAppController() {
       patchRequest({ api_config: { ...normalizedApi, api_key: request.api_config.api_key } })
       setStatus('已自动修正模型 API 配置，再开始测试连接。')
     }
+    if (isHermesLocalApiConfig(normalizedApi)) {
+      const proxy = await startHermesForSettings()
+      if (proxy.state !== 'ready') {
+        const result: ApiTestResult = {
+          ok: false,
+          provider: normalizedApi.provider,
+          model: normalizedApi.model,
+          message: proxy.message,
+          error_code: proxy.state === 'oauth_unready' ? 'MODEL_AUTH_FAILED' : 'MODEL_CONNECTION_FAILED',
+          stage: 'hermes_proxy',
+          retryable: proxy.state === 'stopped' || proxy.state === 'error',
+        }
+        setApiTestResult(result)
+        setStatus('API 测试失败：' + proxy.message)
+        return
+      }
+    }
+
     let api: ApiConfig
     try {
       api = await loadApiConfigForWorker(normalizedApi)
@@ -2091,7 +2216,7 @@ export function useAppController() {
         setApiTestResult(result)
         setStatus(result.message)
       } else {
-        const result = await runWorker<ApiTestResult>('test_api', { api_config: api })
+        const result = await runWorkerJobAndWait<ApiTestResult>('test_api', { api_config: api })
         setApiTestResult(result)
         rememberSavedApiTestResult(api, result)
         setStatus(result.ok ? `API 测试通过：${result.message}` : `API 测试失败：${result.message}`)
@@ -2204,7 +2329,7 @@ export function useAppController() {
     setTtsTesting(true)
     setTtsTestResult(null)
     setWorkerProgress(null)
-    setStatus('正在测试 TTS 语音接口。')
+    setStatus('正在测试 TTS 语音接口（最长等待 75 秒，应用不会被卡死）。')
     try {
       if (!isTauriRuntime()) {
         const result: TtsTestResult = {
@@ -2217,7 +2342,7 @@ export function useAppController() {
         setTtsTestResult(result)
         setStatus(result.message)
       } else {
-        const result = await runWorker<TtsTestResult>('test_tts', {
+        const result = await runWorkerJobAndWait<TtsTestResult>('test_tts', {
           tts_config: currentTts,
           api_config: apiConfigForTts,
           language: request.language,
@@ -2271,7 +2396,6 @@ export function useAppController() {
     const resolvedApi = resolveGenerateApiConfig(apiConfigForWorker, generateRequest.source_mode)
     if (isTauriRuntime()) {
       const openApiSettings = (message: string) => {
-        setActiveWorkspaceStage('generate')
         setSettingsTab('api')
         setSettingsOpen(true)
         setStatus(message)
@@ -2498,7 +2622,6 @@ export function useAppController() {
     const resolvedApi = resolveGenerateApiConfig(apiConfigForWorker, generateRequest.source_mode)
     if (isTauriRuntime()) {
       const openPreflightSettings = (tab: SettingsTab, message: string) => {
-        setActiveWorkspaceStage('generate')
         setSettingsTab(tab)
         setSettingsOpen(true)
         setStatus(message)
@@ -2764,7 +2887,6 @@ export function useAppController() {
     const resolvedApi = resolveGenerateApiConfig(apiConfigForWorker, generateRequest.source_mode)
     if (isTauriRuntime()) {
       const openPreflightSettings = (tab: SettingsTab, message: string) => {
-        setActiveWorkspaceStage('generate')
         setSettingsTab(tab)
         setSettingsOpen(true)
         setStatus(message)
@@ -2807,10 +2929,7 @@ export function useAppController() {
       }
       const resolvedTtsForPreflight = resolveTtsConfig(generateRequest.api_config.tts_config, resolvedApi.api)
       if (ttsRequired && (!resolvedTtsForPreflight.enabled || resolvedTtsForPreflight.provider === 'disabled')) {
-        openPreflightSettings(
-          'tts',
-          '视频卡导出需要整句 TTS 和表达 TTS。请在“语音/TTS”里启用并测试通过后再生成 APKG。',
-        )
+        openPreflightSettings('tts', '视频卡导出需要整句 TTS 和表达 TTS。请在“语音/TTS”里启用并测试通过后再生成 APKG。')
         return
       }
       if (ttsRequired && !ttsReadyForGeneration) {
@@ -3219,17 +3338,7 @@ export function useAppController() {
     clearStaleReviewResults()
     setProject((current) => {
       if (!current) return current
-      return {
-        ...current,
-        segments: current.segments.map((segment) =>
-          segment.id === segmentId
-            ? {
-                ...segment,
-                cards: segment.cards.map((card) => (card.id === cardId ? { ...card, ...patch } : card)),
-              }
-            : segment,
-        ),
-      }
+      return applyCardPatchWithReliabilityInvalidation(current, segmentId, cardId, patch)
     })
   }
 
@@ -3321,13 +3430,15 @@ export function useAppController() {
     })
 
   const activeSegment = project?.segments.find((segment) => segment.id === activeSegmentId)
-  const activeSegmentVideoSrc = activeSegment && project?.video_path ? toAssetUrl(project.video_path) : ''
+  const activeSegmentVideoSrc = activeSegment ? previewVideoSrc : ''
+  const activeSegmentVideoError = activeSegment ? previewVideoError : ''
 
   return {
     activeWorkspaceStage,
     activeSegment,
     activeSegmentId,
     activeSegmentVideoSrc,
+    activeSegmentVideoError,
     activeTemplate,
     activeApiKeySaved,
     advancedApiPresets,
@@ -3340,6 +3451,9 @@ export function useAppController() {
     apiTestTitle,
     apiTestTone,
     apiTesting,
+    hermesChecking,
+    hermesStarting,
+    hermesStatus,
     appBusy,
     applyApiPreset,
     applyCollectionPreset,
@@ -3462,6 +3576,8 @@ export function useAppController() {
     status,
     statusTone,
     templateOptions,
+    startHermesForSettings,
+    refreshHermesStatus,
     testApi,
     testTts,
     toggleCardType,

@@ -330,6 +330,7 @@ from acg.subtitles.discovery import (
 )
 from acg.subtitles.sentences import (
     append_caption_text as subtitle_append_caption_text,
+    ends_like_fragment as subtitle_ends_like_fragment,
     has_unbalanced_quotes as subtitle_has_unbalanced_quotes,
     incremental_caption_text as subtitle_incremental_caption_text,
     normalize_rolling_cues as subtitle_normalize_rolling_cues,
@@ -915,6 +916,10 @@ def has_unbalanced_quotes(text: str) -> bool:
 
 def starts_like_fragment(text: str) -> bool:
     return subtitle_starts_like_fragment(text)
+
+
+def ends_like_fragment(text: str) -> bool:
+    return subtitle_ends_like_fragment(text)
 
 
 def looks_like_video_intro(text: str) -> bool:
@@ -1537,6 +1542,9 @@ def quality_issue_labels(
     if starts_like_fragment(text):
         issues.append("原句像截断片段")
         score -= 18
+    if ends_like_fragment(text):
+        issues.append("原句疑似截断")
+        score -= 54
     phrase_lower = phrase.lower()
     if is_expression_like and is_non_transferable_phrase(phrase_lower):
         issues.append("表达太像视频口播引入语")
@@ -1621,6 +1629,8 @@ def quality_issue_labels(
 def quality_from_score(score: int, issues: list[str]) -> dict[str, Any]:
     serious_issues = {
         "缺少英文原句",
+        "原句疑似截断",
+        "原句证据边界需复核",
         "缺少明确目标表达",
         "表达像半截词串",
         "表达可能从功能词开头",
@@ -1679,6 +1689,14 @@ def assess_card_quality(
         str(card.get("content_kind") or ""),
         str(card.get("candidate_kind") or ""),
     )
+    source_quality_status = str(
+        card.get("source_sentence_quality_status")
+        or segment.get("source_sentence_quality_status")
+        or ""
+    ).strip()
+    if source_quality_status == "needs_review" and "原句疑似截断" not in issues:
+        issues.append("原句证据边界需复核")
+        score -= 54
     text_fields = [
         card.get("english", ""),
         card.get("chinese", ""),
@@ -2096,6 +2114,8 @@ def fallback_cards(segment: dict[str, Any], card_types: list[str], level: str) -
             "candidate_source": segment.get("candidate_source", ""),
             "learning_point_schema_version": segment.get("learning_point_schema_version") or LEARNING_POINT_SCHEMA_VERSION,
             "source_evidence": point.get("source_evidence") or segment.get("source_evidence") or segment.get("text", ""),
+            "source_sentence_quality_flags": segment.get("source_sentence_quality_flags") or [],
+            "source_sentence_quality_status": segment.get("source_sentence_quality_status") or "",
             "retrieval_prompt": "",
             "answer_core": answer,
             "language": normalize_learning_language(segment.get("language", "en")),
@@ -2140,7 +2160,7 @@ def fallback_cards(segment: dict[str, Any], card_types: list[str], level: str) -
 def pronunciation_prompt_instruction(language_code: str) -> str:
     profile = pronunciation_profile(language_code)
     common = (
-        "发音字段使用 legacy key，但 UI 会显示为标准读法/推测口语读法/原句听感："
+        "发音字段使用 legacy key，但 UI 会显示为标准读法/推测口语读法/推测原句读法："
         f"pronunciation_meta 必须包含 language_code={profile['code']}、accent_profile={profile['accent_profile']}、"
         f"notation_system={profile['notation_system']}、generation_basis、field_confidence、same_as_standard_reason、validation_issues。"
         "V1 没有音频实听/ASR/forced alignment；除非输入明确提供实听证据，否则 generation_basis 必须是 subtitle_inferred，"
@@ -2348,7 +2368,7 @@ def build_immersive_v11_prompt(project: dict[str, Any], segments: list[dict[str,
         '"retrieval_prompt":"正面明确回忆题","answer_core":"核心答案",'
         '"phonetic_ipa":"标准读法；按当前 language 的 notation_system 输出",'
         '"spoken_ipa":"字幕推测的 answer_core 口语读法；未实听时不得 high confidence",'
-        '"source_spoken_ipa":"完整原句听感，覆盖目标语言原句主要词/音节，不要只写短语片段","pronunciation_note":"中文发音教学说明，不写未实听/已隐藏等系统状态",'
+        '"source_spoken_ipa":"完整原句推测读法，覆盖目标语言原句主要词/音节，不要只写短语片段","pronunciation_note":"中文发音教学说明，不写未实听/已隐藏等系统状态",'
         '"pronunciation_confidence":"high|medium|low",'
         '"pronunciation_meta":{"language_code":"en|fr|es|ja|ru","accent_profile":"...","notation_system":"...",'
         '"generation_basis":"audio_verified|subtitle_inferred|dictionary_only","field_confidence":{"phonetic_ipa":"high|medium|low",'
@@ -2383,7 +2403,7 @@ def ciba_tianxia_card_prompt_instruction(project: dict[str, Any]) -> str:
         "teacher_note 必须解释具体操作：这个表达怎么迁移、搭配边界是什么、中文学习者哪里容易误会。"
         "usage_boundary 和 confusable_note 不能写空话，必须结合本句说明对象、语气、场景或错误用法。"
         "新增三项必须服务于主动复习：learning_action 只能从 contextual_meaning|expression_recall|listening_discrimination|collocation_boundary|chinese_learner_trap|conceptual_action|grammar_pattern 中选一个；"
-        "conceptual_action 写概念动作感，例如 hold back=把情绪往回压住，不让它出来；chinese_learner_trap 写中文学习者误区，不能泛泛说注意语境。"
+        "conceptual_action 写概念动作感，例如 hold back=把情绪往回压住，不让它出来；chinese_learner_trap 只写有可靠依据的母语迁移误区或近义表达差别，不能泛泛说注意语境。不得把语法正确、自然的近义表达称为错误或中式英语；若只是语义或语域不同，必须明确说明“都可用，但差别是……”，无法确认时留空。"
         "这两个字段都必须短：各 1 句，优先 20-36 个中文字，不要写成段落，避免背面过载。"
         f"当前模板 id={normalize_template_id(project.get('template_id'))}。"
     )
@@ -5637,6 +5657,8 @@ def final_output_card_duplicate_key(segment: dict[str, Any], card: dict[str, Any
 
 
 EXPORT_BLOCKING_QUALITY_ISSUES = {
+    "原句疑似截断",
+    "原句证据边界需复核",
     "本地草稿，需要人工确认",
     "预览草稿，需要人工确认",
     "字段像模板废话",
@@ -5664,6 +5686,13 @@ EXPORT_BLOCKING_TEXT_PATTERNS = (
 
 
 def card_has_export_blocking_content(card: dict[str, Any]) -> bool:
+    if str(card.get("validation_status") or "").strip() == "reject":
+        return True
+    if str(card.get("source_sentence_quality_status") or "").strip() == "needs_review":
+        return True
+    english = str(card.get("english") or "").strip()
+    if english and ends_like_fragment(english):
+        return True
     quality = card.get("quality") if isinstance(card.get("quality"), dict) else {}
     issues = {str(issue) for issue in quality.get("issues") or []}
     if issues & EXPORT_BLOCKING_QUALITY_ISSUES:
@@ -11482,8 +11511,8 @@ LANGUAGE_BACK_TEMPLATE_V11 = """
       <section class="v11-source-block evidence-anchor">
         <div class="v11-source-label">原句</div>
         <p class="v11-source">{{English}}</p>
-        {{#SourceSpokenIpa}}<p class="v11-source-ipa"><span>原句听感</span><strong>{{SourceSpokenIpa}}</strong></p>{{/SourceSpokenIpa}}
-        {{^SourceSpokenIpa}}{{#SourcePronunciationStatus}}<p class="v11-source-ipa is-status"><span>原句听感</span><strong>{{SourcePronunciationStatus}}</strong></p>{{/SourcePronunciationStatus}}{{/SourceSpokenIpa}}
+        {{#SourceSpokenIpa}}<p class="v11-source-ipa"><span>推测原句读法</span><strong>{{SourceSpokenIpa}}</strong></p>{{/SourceSpokenIpa}}
+        {{^SourceSpokenIpa}}{{#SourcePronunciationStatus}}<p class="v11-source-ipa is-status"><span>推测原句读法</span><strong>{{SourcePronunciationStatus}}</strong></p>{{/SourcePronunciationStatus}}{{/SourceSpokenIpa}}
         {{#Context}}<p class="v11-source-translation">{{Context}}</p>{{/Context}}
       </section>
       <div class="v11-sound-actions is-left">
@@ -11495,7 +11524,7 @@ LANGUAGE_BACK_TEMPLATE_V11 = """
   <section class="v11-info-grid">
     {{#Definition}}<div class="v11-info-block understanding-block"><div class="v11-info-head"><span class="v11-icon">?</span><strong>怎么用</strong></div><p>{{Definition}}</p></div>{{/Definition}}
     {{#TeacherNote}}<div class="v11-info-block boundary-block"><div class="v11-info-head"><span class="v11-icon">!</span><strong>别误用</strong></div><p>{{TeacherNote}}</p></div>{{/TeacherNote}}
-    {{#Collocations}}<div class="v11-info-block transfer-block"><div class="v11-info-head"><span class="v11-icon">↔</span><strong>自己造句</strong></div><p>{{Collocations}}</p></div>{{/Collocations}}
+    {{#Collocations}}<div class="v11-info-block transfer-block"><div class="v11-info-head"><span class="v11-icon">↔</span><strong>搭配 / 迁移句</strong></div><p>{{Collocations}}</p></div>{{/Collocations}}
   </section>
 </div>
 """ + V11_CARD_SCRIPT
@@ -12236,7 +12265,7 @@ LANGUAGE_BACK_TEMPLATE_CIBA_V1 = """
 
     <section class="ciba-conceptual-stack">
       {{#ConceptualAction}}<article class="ciba-conceptual-block"><strong>概念动作感</strong><p>{{ConceptualAction}}</p></article>{{/ConceptualAction}}
-      {{#ChineseLearnerTrap}}<article class="ciba-conceptual-block ciba-trap-block"><strong>中文脑子易错</strong><p>{{ChineseLearnerTrap}}</p></article>{{/ChineseLearnerTrap}}
+      {{#ChineseLearnerTrap}}<article class="ciba-conceptual-block ciba-trap-block"><strong>易混表达与区别</strong><p>{{ChineseLearnerTrap}}</p></article>{{/ChineseLearnerTrap}}
     </section>
   </section>
 
@@ -12249,11 +12278,11 @@ LANGUAGE_BACK_TEMPLATE_CIBA_V1 = """
     </section>
   </section>
 
-  {{#PronunciationNote}}<section class="ciba-listening-block"><strong>真实听辨</strong><p>{{PronunciationNote}}</p></section>{{/PronunciationNote}}
+  {{#PronunciationNote}}<section class="ciba-listening-block"><strong>发音提示</strong><p>{{PronunciationNote}}</p></section>{{/PronunciationNote}}
   {{#SpokenIpa}}<section class="ciba-listening-block"><strong>{{SpokenPronunciationLabel}}</strong><p>{{SpokenIpa}}</p></section>{{/SpokenIpa}}
   {{^SpokenIpa}}{{#PronunciationStatus}}<section class="ciba-listening-block"><strong>{{SpokenPronunciationLabel}}</strong><p>{{PronunciationStatus}}</p></section>{{/PronunciationStatus}}{{/SpokenIpa}}
-  {{#SourceSpokenIpa}}<section class="ciba-listening-block"><strong>原句听感</strong><p>{{SourceSpokenIpa}}</p></section>{{/SourceSpokenIpa}}
-  {{^SourceSpokenIpa}}{{#SourcePronunciationStatus}}<section class="ciba-listening-block"><strong>原句听感</strong><p>{{SourcePronunciationStatus}}</p></section>{{/SourcePronunciationStatus}}{{/SourceSpokenIpa}}
+  {{#SourceSpokenIpa}}<section class="ciba-listening-block"><strong>推测原句读法</strong><p>{{SourceSpokenIpa}}</p></section>{{/SourceSpokenIpa}}
+  {{^SourceSpokenIpa}}{{#SourcePronunciationStatus}}<section class="ciba-listening-block"><strong>推测原句读法</strong><p>{{SourcePronunciationStatus}}</p></section>{{/SourcePronunciationStatus}}{{/SourceSpokenIpa}}
 </div>
 """
 

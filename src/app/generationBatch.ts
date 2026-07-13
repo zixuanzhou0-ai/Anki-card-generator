@@ -7,6 +7,7 @@ import type {
   QualityFunnel,
 } from '../domain/types'
 import { isUsableCardForExport } from '../domain/quality'
+import { bindReliabilityManifestToSegments, mergeReliabilityManifests } from '../domain/reliability'
 
 export type GenerationBatchProgress = {
   active: boolean
@@ -321,10 +322,12 @@ export function mergeGeneratedBatchProject(previous: Project | null, next: Proje
       mergedSegments: segments,
       generatedIds,
     })
+    const reliabilityManifest = bindReliabilityManifestToSegments(next.reliability_manifest, segments)
     return {
       ...next,
       segments,
       generated_learning_point_ids: generatedIds,
+      reliability_manifest: reliabilityManifest,
       quality_funnel: qualityFunnelWithReconciledGeneration(
         aggregateGenerationBatchQualityFunnel(undefined, next.quality_funnel, runtime),
         diagnostics,
@@ -347,11 +350,16 @@ export function mergeGeneratedBatchProject(previous: Project | null, next: Proje
     mergedSegments,
     generatedIds,
   })
+  const reliabilityManifest = bindReliabilityManifestToSegments(
+    mergeReliabilityManifests(previous.reliability_manifest, next.reliability_manifest),
+    mergedSegments,
+  )
   return {
     ...previous,
     ...next,
     segments: mergedSegments,
     generated_learning_point_ids: generatedIds,
+    reliability_manifest: reliabilityManifest,
     quality_funnel: qualityFunnelWithReconciledGeneration(
       aggregateGenerationBatchQualityFunnel(previous.quality_funnel, next.quality_funnel, runtime),
       diagnostics,

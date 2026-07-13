@@ -41,15 +41,20 @@ function renderDialog(overrides: Partial<ComponentProps<typeof SettingsDialog>> 
       capabilityHelp: {},
       capabilityLabels: [],
       featuredApiPresets,
+      hermesChecking: false,
+      hermesStarting: false,
+      hermesStatus: null,
       mimoOpenAiBaseUrl: 'https://api.xiaomimimo.com/v1',
       mimoTextModels,
       savedApiProfiles: [],
       showCapabilities: false,
       onApplyApiPreset: vi.fn(),
       onApplySavedApiProfile: vi.fn(),
+      onCheckHermes: vi.fn(),
       onPatchApi: vi.fn(),
       onSaveApiProfile: vi.fn(),
       onSetShowCapabilities: vi.fn(),
+      onStartHermes: vi.fn(),
       onTestApi: vi.fn(),
     },
     dialogRef: createRef<HTMLElement>(),
@@ -140,6 +145,34 @@ describe('SettingsDialog', () => {
     expect(props.onSettingsTabChange).toHaveBeenCalledWith('env')
   })
 
+  it('keeps optional Anki integration separate from generation readiness', () => {
+    renderDialog({
+      envSettings: {
+        appBusy: false,
+        envRepairing: false,
+        envRepairResult: null,
+        envStatus: {
+          python: '3.12',
+          ffmpeg: true,
+          genanki: true,
+          yt_dlp: true,
+          anki_installed: false,
+          anki_connect: false,
+          status_items: [
+            { id: 'anki', label: 'Anki', status: 'blocked', detail: '未安装 Anki。' },
+          ],
+        },
+        onCheckEnv: vi.fn(),
+        onRepairEnv: vi.fn(),
+      },
+    })
+
+    const health = screen.getByLabelText('设置状态总览')
+    expect(within(health).getByText('基本可用')).toBeInTheDocument()
+    expect(within(health).getByText('Anki 桌面端、Anki 直连还需要单独确认。')).toBeInTheDocument()
+    expect(within(health).queryByText('需要处理')).not.toBeInTheDocument()
+  })
+
   it('shows copyright and opens the GitHub repository from the about tab', () => {
     const openSpy = vi.fn()
     vi.stubGlobal('open', openSpy)
@@ -148,7 +181,7 @@ describe('SettingsDialog', () => {
 
     expect(screen.getByRole('tab', { name: '关于 / 版权' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByRole('heading', { name: 'Anki 卡片生成器' })).toBeInTheDocument()
-    expect(screen.getByText('v0.9.6-beta')).toBeInTheDocument()
+    expect(screen.getByText('v0.9.11-beta')).toBeInTheDocument()
     expect(screen.getByText('版权所有 © 2026 Zixuan Zhou。保留所有权利。')).toBeInTheDocument()
     expect(screen.getByText(/与 Anki、AnkiWeb 或其开发团队无官方隶属关系/)).toBeInTheDocument()
 

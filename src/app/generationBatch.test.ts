@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { buildReliabilityManifest } from '../domain/reliability'
 import {
   aggregateGenerationBatchQualityFunnel,
   generatedLearningPointIdsFromProject,
@@ -445,5 +446,61 @@ describe('generation batch reconciliation', () => {
       card_generation_cache_aggregate_complete: true,
       selected_exportable_card_count: 3,
     })
+  })
+
+  it('merges every batch outcome and rebinds card ids after renumbering', () => {
+    const firstProject = makeProject(['lp-1'])
+    firstProject.reliability_manifest = buildReliabilityManifest({
+      outcomes: [{ learning_point_id: 'lp-1', status: 'verified', card_id: 'old-card-1', blocker_codes: [] }],
+      createdAt: 1,
+    })
+    const first = mergeGeneratedBatchProject(
+      null,
+      firstProject,
+      makeRuntime({ activeBatchIds: ['lp-1'], totalBatches: 2, completedBatches: 1 }),
+    )
+
+    const secondProject = makeProject(['lp-2'])
+    secondProject.segments[0].cards[0] = {
+      ...secondProject.segments[0].cards[0],
+      enabled: false,
+      verification_status: 'needs_review',
+      generation_source: 'fallback_from_selected_learning_point',
+      quality: { score: 58, status: 'needs_review', issues: ['系统保底生成，需人工复核。'] },
+    }
+    secondProject.reliability_manifest = buildReliabilityManifest({
+      outcomes: [
+        {
+          learning_point_id: 'lp-2',
+          status: 'needs_review',
+          card_id: 'old-card-1',
+          blocker_codes: ['FALLBACK_CARD_REQUIRES_REVIEW'],
+        },
+      ],
+      createdAt: 2,
+    })
+
+    const merged = mergeGeneratedBatchProject(
+      first,
+      secondProject,
+      makeRuntime({
+        activeBatchIds: ['lp-2'],
+        totalBatches: 2,
+        completedBatches: 2,
+        completedCount: 2,
+      }),
+    )
+
+    expect(merged.reliability_manifest).toMatchObject({
+      selected_point_count: 2,
+      accounting_complete: true,
+      verified_count: 1,
+      needs_review_count: 1,
+      decision: 'block',
+    })
+    expect(merged.reliability_manifest?.selected_point_outcomes.map((outcome) => outcome.card_id)).toEqual([
+      'card_lp_0001_01',
+      'card_lp_0002_01',
+    ])
   })
 })

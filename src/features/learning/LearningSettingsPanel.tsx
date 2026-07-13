@@ -75,6 +75,7 @@ export function LearningSettingsPanel({
             <button
               type="button"
               className={autoLevel ? 'selected' : ''}
+              aria-pressed={autoLevel}
               aria-label="自动判断学习水平"
               title="自动判断每张卡的难度"
               onClick={() => onPatchRequest({ level_mode: 'auto' })}
@@ -86,6 +87,7 @@ export function LearningSettingsPanel({
                 type="button"
                 key={level.id}
                 className={!autoLevel && request.level === level.id ? 'selected' : ''}
+                aria-pressed={!autoLevel && request.level === level.id}
                 aria-label={`${level.id}${level.note}`}
                 title={`${level.label} · ${level.note}`}
                 onClick={() => onSelectCurrentLevel(level.id)}

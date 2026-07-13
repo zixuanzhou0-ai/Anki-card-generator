@@ -14,6 +14,35 @@ describe('validateServiceBaseUrl', () => {
     expect(validateServiceBaseUrl('https://api.example.com/v1')).toBeNull()
   })
 
+  it('normalizes Hermes Grok 4.5 with a non-secret in-memory placeholder', () => {
+    const normalized = normalizeApiConfigForRequest({
+      provider: 'openai-compatible',
+      base_url: 'http://localhost:8645/v1/',
+      api_key: '',
+      model: 'grok-4.5',
+      capabilities: [],
+      tts_config: {
+        enabled: false,
+        provider: 'disabled',
+        base_url: '',
+        api_key: '',
+        model: '',
+        voice: '',
+        language: 'auto',
+        sample_rate: 24000,
+        bit_rate: 128000,
+      },
+    })
+
+    expect(validateApiConfigForRequest(normalized)).toBeNull()
+    expect(normalized).toMatchObject({
+      base_url: 'http://127.0.0.1:8645/v1',
+      model: 'grok-4.5',
+      api_key: 'hermes-local-oauth',
+      capabilities: expect.arrayContaining(['structured_json', 'long_context']),
+    })
+  })
+
   it('accepts local http provider URLs for development', () => {
     expect(validateServiceBaseUrl('http://localhost:11434/v1')).toBeNull()
     expect(validateServiceBaseUrl('http://127.0.0.1:8000/v1')).toBeNull()

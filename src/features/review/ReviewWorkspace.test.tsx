@@ -24,6 +24,7 @@ function renderWorkspace(project: Project | null, overrides = {}) {
     activeSegment: firstSegment,
     activeSegmentId: firstSegment?.id ?? null,
     activeSegmentVideoSrc: '',
+    activeSegmentVideoError: '',
     activeTemplateLabel: '沉浸语言 V10',
     ankiVerifying: false,
     ankiVerifyResult: null,
@@ -349,8 +350,7 @@ describe('ReviewWorkspace', () => {
         details: {
           release_case_id: 'local_srt_full1_cold',
           selected_output_dir: 'D:\\Administrator\\Documents',
-          expected_directory_pattern:
-            '...\\video_release_hardening_YYYYMMDD_HHMMSS\\cases\\local_srt_full1_cold\\apkg',
+          expected_directory_pattern: '...\\video_release_hardening_YYYYMMDD_HHMMSS\\cases\\local_srt_full1_cold\\apkg',
         },
       },
     })
@@ -375,8 +375,7 @@ describe('ReviewWorkspace', () => {
         details: {
           release_case_id: 'local_srt_full1_cold',
           selected_output_dir: 'D:\\Administrator\\Documents',
-          expected_directory_pattern:
-            '...\\video_release_hardening_YYYYMMDD_HHMMSS\\cases\\local_srt_full1_cold\\apkg',
+          expected_directory_pattern: '...\\video_release_hardening_YYYYMMDD_HHMMSS\\cases\\local_srt_full1_cold\\apkg',
         },
       },
     })

@@ -7,6 +7,7 @@ import type {
   TtsConfig,
   TtsPreset,
 } from '../domain/types'
+import { isHermesLocalApiConfig } from './apiConfig'
 
 export const API_PROFILES_STORAGE_KEY = 'anki-card-generator.api-profiles.v1'
 export const TTS_PROFILES_STORAGE_KEY = 'anki-card-generator.tts-profiles.v1'
@@ -45,9 +46,10 @@ function writeStorageArray<T>(key: string, value: T[]) {
   window.localStorage.setItem(key, JSON.stringify(value))
 }
 
-export function apiAuthMode(api: Pick<ApiConfig, 'provider'>): SavedProfileAuth {
+export function apiAuthMode(api: Pick<ApiConfig, 'base_url' | 'model' | 'provider'>): SavedProfileAuth {
   if (api.provider === 'local') return 'none'
   if (api.provider === 'gemini-vertex') return 'gcloud'
+  if (isHermesLocalApiConfig(api)) return 'local_oauth'
   return 'api_key'
 }
 

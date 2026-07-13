@@ -56,6 +56,10 @@ describe('LearningSettingsPanel', () => {
   it('selects auto and manual learning levels', () => {
     const props = renderPanel({ request: { ...defaultRequest, level_mode: 'manual', level: 'B1' } })
 
+    expect(screen.getByRole('button', { name: '自动判断学习水平' })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('button', { name: /B1自然口语/ })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: /B2表达块/ })).toHaveAttribute('aria-pressed', 'false')
+
     fireEvent.click(screen.getByRole('button', { name: '自动判断学习水平' }))
     fireEvent.click(screen.getByRole('button', { name: /B2表达块/ }))
 

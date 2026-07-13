@@ -1,13 +1,14 @@
 import { useMemo, useState } from 'react'
 import { Boxes, CheckCircle2, CircleAlert, Cloud, KeyRound, PlugZap, Save, Search } from 'lucide-react'
 
-import type { ApiConfig, ApiPreset, Provider, SavedApiProfile } from '../../domain/types'
+import type { ApiConfig, ApiPreset, HermesProxyStatus, Provider, SavedApiProfile } from '../../domain/types'
 import {
   DEEPSEEK_DEFAULT_MODEL,
   DEEPSEEK_OPENAI_BASE_URL,
   GEMINI_VERTEX_DEFAULT_MODEL,
   GEMINI_VERTEX_GLOBAL_BASE_URL,
 } from '../../domain/options'
+import { isHermesLocalApiConfig } from '../../services/apiConfig'
 import { ConnectionTestCard } from './ConnectionTestCard'
 import { catalogFilters, filterApiPreset, filterSavedApiProfile, getApiPresetTone, type CatalogFilter } from './settingsRecommendations'
 
@@ -33,15 +34,20 @@ type ApiSettingsPanelProps = {
   capabilityHelp: Record<string, string>
   capabilityLabels: string[]
   featuredApiPresets: ApiPreset[]
+  hermesChecking: boolean
+  hermesStarting: boolean
+  hermesStatus: HermesProxyStatus | null
   mimoOpenAiBaseUrl: string
   mimoTextModels: ModelOption[]
   savedApiProfiles: SavedApiProfile[]
   showCapabilities: boolean
   onApplyApiPreset: (preset: ApiPreset) => void
+  onCheckHermes: () => void
   onApplySavedApiProfile: (profileId: string) => void
   onPatchApi: (patch: Partial<ApiConfig>) => void
   onSaveApiProfile: () => void
   onSetShowCapabilities: (value: boolean | ((current: boolean) => boolean)) => void
+  onStartHermes: () => void
   onTestApi: () => void
 }
 
@@ -62,15 +68,20 @@ export function ApiSettingsPanel({
   capabilityHelp,
   capabilityLabels,
   featuredApiPresets,
+  hermesChecking,
+  hermesStarting,
+  hermesStatus,
   mimoOpenAiBaseUrl,
   mimoTextModels,
   savedApiProfiles,
   showCapabilities,
   onApplyApiPreset,
   onApplySavedApiProfile,
+  onCheckHermes,
   onPatchApi,
   onSaveApiProfile,
   onSetShowCapabilities,
+  onStartHermes,
   onTestApi,
 }: ApiSettingsPanelProps) {
   const [catalogFilter, setCatalogFilter] = useState<CatalogFilter>('all')
@@ -137,6 +148,7 @@ export function ApiSettingsPanel({
     })
   }
 
+  const usesHermesLocal = isHermesLocalApiConfig(apiConfig)
   const selectedPreset = allApiPresets.find(isPresetSelected)
   const activeSavedProfile = savedApiProfiles.find((profile) => profile.id === activeApiProfileId)
   const providerLabel: Record<Provider, string> = {
@@ -151,12 +163,31 @@ export function ApiSettingsPanel({
   const currentModelMeta =
     apiConfig.provider === 'local'
       ? '无需 API Key，仅用于演示预览，不可正式制卡'
-      : apiConfig.provider === 'gemini-vertex'
-        ? `${apiConfig.model || GEMINI_VERTEX_DEFAULT_MODEL} · 使用本机 gcloud OAuth`
-        : `${apiConfig.model || '未填写模型名'} · ${apiConfig.base_url || '原生端点'}`
+      : usesHermesLocal
+        ? `${apiConfig.model} · Hermes 本机 xAI OAuth`
+        : apiConfig.provider === 'gemini-vertex'
+          ? `${apiConfig.model || GEMINI_VERTEX_DEFAULT_MODEL} · 使用本机 gcloud OAuth`
+          : `${apiConfig.model || '未填写模型名'} · ${apiConfig.base_url || '原生端点'}`
   const authReady =
-    apiConfig.provider !== 'local' && (apiConfig.provider === 'gemini-vertex' || apiKeySaved || Boolean(apiConfig.api_key.trim()))
-  const readinessLabel = apiConfig.provider === 'local' ? '需要正式模型' : authReady ? '授权已就绪' : '需要填写 Key'
+    apiConfig.provider !== 'local' &&
+    (apiConfig.provider === 'gemini-vertex' ||
+      (usesHermesLocal && hermesStatus?.state === 'ready') ||
+      apiKeySaved ||
+      Boolean(apiConfig.api_key.trim()))
+  const readinessLabel =
+    apiConfig.provider === 'local'
+      ? '需要正式模型'
+      : usesHermesLocal
+        ? hermesStatus?.state === 'ready'
+          ? '本机 OAuth 已就绪'
+          : hermesStatus?.state === 'stopped'
+            ? '代理待启动'
+            : hermesStatus?.state === 'oauth_unready'
+              ? 'OAuth 未就绪'
+              : '需要检测 Hermes'
+        : authReady
+          ? '授权已就绪'
+          : '需要填写 Key'
   const catalogEmpty = !visibleSavedProfiles.length && !visiblePresets.length
 
   return (
@@ -220,7 +251,13 @@ export function ApiSettingsPanel({
                 <strong>{profile.label}</strong>
                 <small>
                   {profile.provider} · {profile.model || '未填写模型'} ·{' '}
-                  {profile.auth === 'gcloud' ? 'gcloud OAuth' : profile.has_api_key ? '已保存 Key' : '未保存 Key'}
+                  {profile.auth === 'gcloud'
+                    ? 'gcloud OAuth'
+                    : profile.auth === 'local_oauth'
+                      ? 'Hermes 本机 OAuth'
+                      : profile.has_api_key
+                        ? '已保存 Key'
+                        : '未保存 Key'}
                 </small>
                 <em>已保存</em>
               </button>
@@ -253,9 +290,11 @@ export function ApiSettingsPanel({
           <div className={`settings-profile-status ${apiProfileDirty ? 'warn' : 'ok'}`}>
             <span>{apiProfileStatus}</span>
             <small>
-              {apiConfig.provider === 'gemini-vertex'
-                ? 'Vertex 使用本机 gcloud OAuth，不保存 API Key。'
-                : '保存后 Key 只绑定当前模型，不会共享给其他厂商。'}
+              {usesHermesLocal
+                ? 'Hermes 使用本机 xAI OAuth；应用不读取或保存真实 xAI Token。'
+                : apiConfig.provider === 'gemini-vertex'
+                  ? 'Vertex 使用本机 gcloud OAuth，不保存 API Key。'
+                  : '保存后 Key 只绑定当前模型，不会共享给其他厂商。'}
             </small>
           </div>
           <div className="api-grid settings-direct-config-grid">
@@ -307,7 +346,24 @@ export function ApiSettingsPanel({
                 ))}
               </datalist>
             </label>
-            {apiConfig.provider === 'gemini-vertex' ? (
+            {usesHermesLocal ? (
+              <div className="settings-auth-card settings-auth-card-compact" role="status" aria-label="Hermes 本机代理状态">
+                <PlugZap size={18} />
+                <div>
+                  <span>Hermes 本机 OAuth</span>
+                  <strong>{hermesStatus?.state === 'ready' ? 'Grok 4.5 已就绪' : '等待本机代理'}</strong>
+                  <small>{hermesStatus?.message ?? '点击检测状态；测试连接时也会按需启动 Hermes 代理。'}</small>
+                  <div className="settings-inline-actions">
+                    <button type="button" className="secondary-button" onClick={onCheckHermes} disabled={hermesChecking || appBusy}>
+                      {hermesChecking ? '检测中…' : '检测状态'}
+                    </button>
+                    <button type="button" className="secondary-button" onClick={onStartHermes} disabled={hermesStarting || appBusy}>
+                      {hermesStarting ? '启动中…' : hermesStatus?.state === 'ready' ? '重新检测' : '启动代理'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : apiConfig.provider === 'gemini-vertex' ? (
               <div className="settings-auth-card settings-auth-card-compact">
                 <Cloud size={18} />
                 <div>
