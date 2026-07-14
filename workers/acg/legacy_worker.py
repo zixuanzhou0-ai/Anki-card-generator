@@ -16292,6 +16292,171 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def trusted_anki_media_directory(media_dir: Path) -> bool:
+    if os.name != "nt":
+        return False
+    app_data = str(os.environ.get("APPDATA") or "").strip()
+    if not app_data:
+        return False
+    try:
+        trusted_root = (Path(app_data) / "Anki2").resolve()
+        resolved_media_dir = media_dir.resolve()
+        resolved_media_dir.relative_to(trusted_root)
+    except (OSError, ValueError):
+        return False
+    return resolved_media_dir.name.lower() == "collection.media" and resolved_media_dir.is_dir()
+
+
+def is_anki_cross_drive_media_error(error: Exception) -> bool:
+    message = str(error).lower()
+    return any(
+        marker in message
+        for marker in (
+            "cross-device",
+            "different disk drive",
+            "os error 17",
+            "不同的磁盘驱动器",
+            "无法将文件移到不同",
+        )
+    )
+
+
+def restore_anki_media_file_direct(
+    source_path: Path,
+    anki_media_dir: Path,
+    filename: str,
+    expected_hash: str,
+) -> str:
+    if not trusted_anki_media_directory(anki_media_dir):
+        return "Anki 媒体目录不在受信任的用户配置范围内，已拒绝直接恢复。"
+
+    destination = anki_media_dir / filename
+    try:
+        if destination.exists():
+            if destination.is_file() and file_sha256(destination) == expected_hash:
+                return ""
+            return "Anki 媒体目录中已有同名但内容不同的文件，已拒绝覆盖。"
+
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=".anki-card-generator-media-",
+            suffix=".tmp",
+            dir=str(anki_media_dir),
+        )
+        os.close(descriptor)
+        temporary_path = Path(temporary_name)
+        try:
+            shutil.copyfile(source_path, temporary_path)
+            if file_sha256(temporary_path) != expected_hash:
+                return "目标目录临时文件哈希校验失败，已拒绝写入。"
+            if destination.exists():
+                if destination.is_file() and file_sha256(destination) == expected_hash:
+                    return ""
+                return "恢复期间出现同名媒体冲突，已拒绝覆盖。"
+            os.replace(temporary_path, destination)
+            if file_sha256(destination) != expected_hash:
+                return "写入后的 Anki 媒体哈希校验失败。"
+            return ""
+        finally:
+            temporary_path.unlink(missing_ok=True)
+    except OSError as err:
+        return str(err)
+
+
+def restore_missing_anki_media(
+    missing_names: list[str],
+    expected_manifest: dict[str, dict[str, Any]],
+    media_dir: Path,
+    anki_media_dir: Path,
+    anki_url: str,
+) -> dict[str, Any]:
+    restored: list[str] = []
+    restored_by: dict[str, str] = {}
+    failures: list[dict[str, str]] = []
+    total = len(missing_names)
+    for index, name in enumerate(sorted(set(missing_names)), start=1):
+        normalized_name = Path(name).name
+        if not normalized_name or normalized_name != name:
+            failures.append({"file": name, "error": "媒体文件名不安全，已拒绝恢复。"})
+            continue
+
+        source_path = media_dir / normalized_name
+        if not source_path.exists() or not source_path.is_file():
+            failures.append({"file": name, "error": "导出媒体源文件不存在。"})
+            continue
+
+        expected_hash = str((expected_manifest.get(name) or {}).get("sha256") or "")
+        try:
+            actual_hash = file_sha256(source_path)
+        except OSError as err:
+            failures.append({"file": name, "error": str(err)})
+            continue
+        if not expected_hash or actual_hash != expected_hash:
+            failures.append(
+                {
+                    "file": name,
+                    "error": "导出媒体源文件哈希与清单不一致，已拒绝恢复。",
+                    "expected_sha256": expected_hash,
+                    "actual_sha256": actual_hash,
+                }
+            )
+            continue
+
+        emit_progress(
+            "verify_anki_import",
+            "restore_media",
+            30 + int((index / max(1, total)) * 20),
+            f"APKG 未带入全部媒体，正在安全补齐 {index}/{total}。",
+        )
+        try:
+            stored_name = anki_connect(
+                "storeMediaFile",
+                {
+                    "filename": normalized_name,
+                    "data": base64.b64encode(source_path.read_bytes()).decode("ascii"),
+                },
+                anki_url,
+            )
+        except Exception as err:
+            if is_anki_cross_drive_media_error(err):
+                direct_error = restore_anki_media_file_direct(
+                    source_path,
+                    anki_media_dir,
+                    normalized_name,
+                    expected_hash,
+                )
+                if not direct_error:
+                    restored.append(name)
+                    restored_by[name] = "trusted_atomic_copy"
+                    continue
+                failures.append(
+                    {
+                        "file": name,
+                        "error": direct_error,
+                        "anki_connect_error": str(err),
+                    }
+                )
+            else:
+                failures.append({"file": name, "error": str(err)})
+            continue
+
+        if Path(str(stored_name or "")).name != normalized_name:
+            failures.append(
+                {
+                    "file": name,
+                    "error": f"AnkiConnect 返回了意外的媒体文件名：{stored_name}",
+                }
+            )
+            continue
+        restored.append(name)
+        restored_by[name] = "anki_connect"
+
+    return {
+        "attempted": bool(missing_names),
+        "restored": restored,
+        "restored_by": restored_by,
+        "failures": failures,
+    }
+
 def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
     timing_started = time.perf_counter()
     timing_ms: dict[str, int] = {}
@@ -16590,6 +16755,31 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
     tts_semantic_failures = tts_semantic_failure_items(expected_referenced_manifest)
     tts_semantic_summary = tts_semantic_verification_summary(tts_manual_items, expected_referenced_manifest)
     manifest_check = compare_media_manifest(expected_referenced_manifest, anki_media_dir, anki_url=anki_url, max_attempts=1)
+    media_recovery: dict[str, Any] = {"attempted": False, "restored": [], "restored_by": {}, "failures": []}
+    if import_attempted and manifest_check["missing"]:
+        recovery_started = time.perf_counter()
+        media_recovery = restore_missing_anki_media(
+            manifest_check["missing"],
+            expected_referenced_manifest,
+            media_dir,
+            anki_media_dir,
+            anki_url,
+        )
+        timing_ms["anki_media_recovery"] = int((time.perf_counter() - recovery_started) * 1000)
+        manifest_check = compare_media_manifest(
+            expected_referenced_manifest,
+            anki_media_dir,
+            anki_url=anki_url,
+            max_attempts=3,
+        )
+        for audit_item in audio_audit_verify_items:
+            imported_media = audit_item.get("anki_media_exists")
+            if not isinstance(imported_media, dict):
+                continue
+            audit_item["anki_media_exists"] = {
+                name: imported_media_exists_for_audit(anki_media_dir / name)
+                for name in imported_media
+            }
     tts_audio_duration_issues = imported_tts_audio_duration_issues(
         expected_referenced_manifest,
         anki_media_dir,
@@ -16691,6 +16881,8 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
         duplicate_imported_cards=duplicate_imported_cards,
         tts_manual_items=tts_manual_items,
     )
+    if not failed_checks and media_recovery["restored"]:
+        message = f"{message} 已安全补齐 {len(media_recovery['restored'])} 个未随包导入的媒体文件。"
 
     return with_verify_timing(
         {
@@ -16729,6 +16921,11 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
             "media_count_expected": len(expected_manifest),
             "media_count_referenced": len(referenced_media),
             "media_count_checked": manifest_check["checked"],
+            "media_recovery_attempted": media_recovery["attempted"],
+            "media_recovered_count": len(media_recovery["restored"]),
+            "media_recovered": media_recovery["restored"],
+            "media_recovery_methods": media_recovery["restored_by"],
+            "media_recovery_failures": media_recovery["failures"],
             "missing_media": manifest_check["missing"],
             "mismatched_media": manifest_check["mismatched"],
             "inaccessible_media": manifest_check.get("inaccessible", []),

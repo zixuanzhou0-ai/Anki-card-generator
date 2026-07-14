@@ -68,6 +68,15 @@ async function assertNoHorizontalOverflow(page, label) {
   assert.ok(metrics.scrollWidth <= metrics.clientWidth, `${label} overflowed horizontally: ${JSON.stringify(metrics)}`)
 }
 
+async function expectResponsiveMode(page, expected, timeout = 5_000) {
+  await page.waitForFunction(
+    (mode) => document.querySelector('.desktop-workspace')?.getAttribute('data-responsive-mode') === mode,
+    expected,
+    { timeout },
+  )
+  assert.equal(await page.locator('.desktop-workspace').getAttribute('data-responsive-mode'), expected)
+}
+
 async function runCase(name, options, callback) {
   const context = await browser.newContext(options)
   const page = await context.newPage()
@@ -102,7 +111,7 @@ await runCase('source-selector', { viewport: { width: 1440, height: 1000 } }, as
 await runCase('compact-workbench', { viewport: { width: 1180, height: 780 } }, async (page) => {
   await page.addInitScript(() => window.localStorage.clear())
   await gotoApp(page)
-  assert.equal(await page.locator('.desktop-workspace').getAttribute('data-responsive-mode'), 'compact')
+  await expectResponsiveMode(page, 'compact')
   assert.equal(await page.locator('.control-column').isVisible(), false)
 
   const toggle = page.getByRole('button', { name: /素材面板/ })
@@ -249,7 +258,7 @@ await runCase('settings-and-workflow', { viewport: { width: 1540, height: 1080 }
   }
 
   await page.setViewportSize({ width: 1180, height: 780 })
-  assert.equal(await page.locator('.desktop-workspace').getAttribute('data-responsive-mode'), 'compact')
+  await expectResponsiveMode(page, 'compact')
   await page.getByRole('button', { name: /素材面板/ }).click()
   await expectVisible(page.locator('.control-column.sheet-open'), 'compact review sheet')
   await expectReachableInViewport(page.getByRole('button', { name: /导出可导出的 [1-9]\d* 张/ }).first(), 'compact export action')
