@@ -31,6 +31,9 @@ export type GenerationBatchRuntime = GenerationBatchProgress & {
   apiConfig: ApiConfig
 }
 
+export function retryCardGenerationCacheNamespace(now = Date.now()) {
+  return `retry_${now}`
+}
 export function retryLearningPointIdsAfterBatchFailure({
   queueIds,
   completedCount,
@@ -99,6 +102,22 @@ export function countCardsInSegments(segments: Project['segments']) {
 
 export function countEnabledCardsInSegments(segments: Project['segments']) {
   return segments.reduce((total, segment) => total + (segment.cards?.filter((card) => card.enabled !== false).length ?? 0), 0)
+}
+
+function replacePreviousLearningPointSegments(
+  previousSegments: Project['segments'],
+  nextSegments: Project['segments'],
+) {
+  const replacementIds = new Set(generatedLearningPointIdsFromProject({ segments: nextSegments }))
+  if (replacementIds.size === 0) return previousSegments
+
+  return previousSegments.flatMap((segment) => {
+    const segmentPointId = String(segment.learning_point_id || '')
+    if (segmentPointId && replacementIds.has(segmentPointId)) return []
+
+    const cards = segment.cards.filter((card) => !replacementIds.has(String(card.learning_point_id || '')))
+    return cards.length > 0 ? [{ ...segment, cards }] : []
+  })
 }
 
 function mergeDiagnosticItems(
@@ -342,7 +361,8 @@ export function mergeGeneratedBatchProject(previous: Project | null, next: Proje
       ...generatedLearningPointIdsFromProject(next),
     ]),
   ]
-  const mergedSegments = renumberBatchSegments([...(previous.segments ?? []), ...(next.segments ?? [])])
+  const retainedPreviousSegments = replacePreviousLearningPointSegments(previous.segments ?? [], next.segments ?? [])
+  const mergedSegments = renumberBatchSegments([...retainedPreviousSegments, ...(next.segments ?? [])])
   const diagnostics = reconcileBatchDiagnostics({
     previous: previousDiagnostics,
     next: nextDiagnostics,

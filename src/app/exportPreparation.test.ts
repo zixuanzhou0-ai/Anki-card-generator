@@ -263,6 +263,43 @@ describe('export directory picker defaults', () => {
 })
 
 describe('prepareProjectForExport', () => {
+  it('removes superseded fallback drafts only when a verified usable replacement exists', () => {
+    const safeCard: Card = {
+      ...baseCard,
+      id: 'safe-lp-1',
+      enabled: true,
+      learning_point_id: 'lp-1',
+      verification_status: 'verified',
+    }
+    const fallbackCard: Card = {
+      ...baseCard,
+      id: 'fallback-lp-1',
+      enabled: false,
+      learning_point_id: 'lp-1',
+      verification_status: 'needs_review',
+      generation_source: 'fallback_from_selected_learning_point',
+      quality: { score: 58, status: 'needs_review', issues: ['系统保底生成，需人工复核。'] },
+    }
+    const project = projectWithCards([safeCard])
+    project.segments[0] = { ...project.segments[0], id: 'safe-segment', learning_point_id: 'lp-1' }
+    project.segments.push({
+      ...project.segments[0],
+      id: 'fallback-segment',
+      cards: [fallbackCard],
+    })
+    project.reliability_manifest = buildReliabilityManifest({
+      outcomes: [{ learning_point_id: 'lp-1', status: 'verified', card_id: safeCard.id, blocker_codes: [] }],
+      createdAt: 1,
+    })
+
+    const result = prepareProjectForExport(project)
+
+    expect(result.status).toBe('ready')
+    expect(result.project.segments.map((segment) => segment.id)).toEqual(['safe-segment'])
+    expect(result.removedRepairRequiredCards).toBe(1)
+    expect(result.selectedExportableCards).toBe(1)
+    expect(result.statusMessage).toContain('已清理 1 张已被正式卡替代的旧保底草稿')
+  })
   it('removes selected repair-required drafts and continues with remaining selected exportable cards', () => {
     const draft: Card = {
       ...baseCard,

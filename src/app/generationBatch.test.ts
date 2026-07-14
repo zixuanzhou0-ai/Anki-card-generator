@@ -7,7 +7,14 @@ import {
   generationBatchProgressSnapshot,
   mergeGeneratedBatchProject,
   retryLearningPointIdsAfterBatchFailure,
+  retryCardGenerationCacheNamespace,
 } from './generationBatch'
+
+describe('retryCardGenerationCacheNamespace', () => {
+  it('creates a fresh deterministic namespace for a retry run', () => {
+    expect(retryCardGenerationCacheNamespace(123456)).toBe('retry_123456')
+  })
+})
 
 function makeRuntime(overrides: Record<string, unknown> = {}) {
   return {
@@ -502,5 +509,71 @@ describe('generation batch reconciliation', () => {
       'card_lp_0001_01',
       'card_lp_0002_01',
     ])
+  })
+  it('replaces stale fallback drafts when a retry succeeds without dropping unrelated drafts', () => {
+    const previous = makeProject(['lp-1', 'lp-2', 'lp-3'])
+    previous.generated_learning_point_ids = ['lp-1']
+    ;[1, 2].forEach((index) => {
+      previous.segments[index].cards[0] = {
+        ...previous.segments[index].cards[0],
+        enabled: false,
+        verification_status: 'needs_review',
+        generation_source: 'fallback_from_selected_learning_point',
+        quality: { score: 58, status: 'needs_review', issues: ['系统保底生成，需人工复核。'] },
+      }
+    })
+    previous.reliability_manifest = buildReliabilityManifest({
+      outcomes: [
+        { learning_point_id: 'lp-1', status: 'verified', card_id: 'old-card-1', blocker_codes: [] },
+        {
+          learning_point_id: 'lp-2',
+          status: 'needs_review',
+          card_id: 'old-card-2',
+          blocker_codes: ['FALLBACK_CARD_REQUIRES_REVIEW'],
+        },
+        {
+          learning_point_id: 'lp-3',
+          status: 'needs_review',
+          card_id: 'old-card-3',
+          blocker_codes: ['FALLBACK_CARD_REQUIRES_REVIEW'],
+        },
+      ],
+      createdAt: 1,
+    })
+
+    const retry = makeProject(['lp-2'])
+    retry.reliability_manifest = buildReliabilityManifest({
+      outcomes: [{ learning_point_id: 'lp-2', status: 'verified', card_id: 'retry-card', blocker_codes: [] }],
+      createdAt: 2,
+    })
+
+    const merged = mergeGeneratedBatchProject(
+      previous,
+      retry,
+      makeRuntime({
+        activeBatchIds: ['lp-2'],
+        queueIds: ['lp-2'],
+        batchSize: 1,
+        totalBatches: 1,
+        completedBatches: 1,
+        completedCount: 1,
+        baseGeneratedLearningPointIds: ['lp-1'],
+      }),
+    )
+
+    expect(merged.segments.map((segment: any) => segment.learning_point_id)).toEqual(['lp-1', 'lp-3', 'lp-2'])
+    expect(merged.segments.flatMap((segment: any) => segment.cards)).toHaveLength(3)
+    expect(
+      merged.segments.filter((segment: any) => segment.learning_point_id === 'lp-2').flatMap((segment: any) => segment.cards),
+    ).toHaveLength(1)
+    expect(merged.reliability_manifest).toMatchObject({
+      selected_point_count: 3,
+      verified_count: 2,
+      needs_review_count: 1,
+      decision: 'block',
+    })
+    expect(
+      merged.reliability_manifest?.selected_point_outcomes.find((outcome) => outcome.learning_point_id === 'lp-2'),
+    ).toMatchObject({ status: 'verified', blocker_codes: [] })
   })
 })

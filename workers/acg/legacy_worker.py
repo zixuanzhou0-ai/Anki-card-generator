@@ -2245,8 +2245,11 @@ def build_fast_review_prompt(project: dict[str, Any], segments: list[dict[str, A
         "如果学习点低价值或无法做成清楚回忆题，返回该片段 cards: []。"
         f"学习语言：{profile['label']}（code={language_code}）。level_mode：{level_mode}。用户水平：{current_level}。"
         f"需要卡型：{', '.join(requested_types)}。快速模式默认优先 phrase 主卡，除非 learning_point 明确是听力或填空。"
+        "每个输出 segment.id 必须逐字复制对应输入 segment.id；禁止从 seg_0001 或 seg_lp_0001 重新编号。"
+        "每张卡的 learning_point_id 也必须逐字复制输入 learning_points[].id。"
+        "输出 segment 数必须和输入 segment 数相同；不制卡也要保留原 id 并返回 cards: []。"
         "返回严格 JSON，不要 Markdown。JSON 结构："
-        "{\"segments\":[{\"id\":\"seg_0001\",\"cards\":[{\"type\":\"phrase|listening|cloze\",\"learning_point_id\":\"对应 learning_points[].id\",\"candidate_kind\":\"expression|contextual_vocab|grammar_pattern|listening_feature|pragmatic_risk\",\"exact_span\":\"来自原句的片段\",\"phrase\":\"重点表达或单词\",\"answer_core\":\"核心答案\",\"english\":\"原句\",\"chinese\":\"语境中文义\",\"definition\":\"一句短释义\",\"chinese_feel\":\"一句中文语感\",\"teacher_note\":\"一句短提醒\",\"retrieval_prompt\":\"正面明确回忆题\"}]}]}。"
+        "{\"segments\":[{\"id\":\"COPY_EXACT_INPUT_SEGMENT_ID\",\"cards\":[{\"type\":\"phrase|listening|cloze\",\"learning_point_id\":\"对应 learning_points[].id\",\"candidate_kind\":\"expression|contextual_vocab|grammar_pattern|listening_feature|pragmatic_risk\",\"exact_span\":\"来自原句的片段\",\"phrase\":\"重点表达或单词\",\"answer_core\":\"核心答案\",\"english\":\"原句\",\"chinese\":\"语境中文义\",\"definition\":\"一句短释义\",\"chinese_feel\":\"一句中文语感\",\"teacher_note\":\"一句短提醒\",\"retrieval_prompt\":\"正面明确回忆题\"}]}]}。"
         "候选字幕_JSON_START\n"
         + json.dumps(compact, ensure_ascii=False)
     )
@@ -2346,8 +2349,11 @@ def build_immersive_v11_prompt(project: dict[str, Any], segments: list[dict[str,
         f"可用卡型：{json.dumps(requested_types, ensure_ascii=False)}。"
         "如果只需要一张卡，就只返回一张；不要为了满足卡型列表而复制同一张卡。"
         "每张卡必须写 card_role: primary|specialist、learning_goal、decision_reason。"
+        "每个输出 segment.id 必须逐字复制对应输入 segment.id；禁止从 seg_0001 或 seg_lp_0001 重新编号。"
+        "每张卡的 learning_point_id 也必须逐字复制输入 learning_points[].id。"
+        "输出 segment 数必须和输入 segment 数相同；不制卡也要保留原 id 并返回 cards: []。"
         "返回严格 JSON，不要 Markdown。JSON 结构："
-        '{"segments":[{"id":"seg_0001","cards":[{"type":"phrase",'
+        '{"segments":[{"id":"COPY_EXACT_INPUT_SEGMENT_ID","cards":[{"type":"phrase",'
         '"learning_point_id":"对应 learning_points[].id",'
         '"candidate_kind":"expression|contextual_vocab|grammar_pattern|listening_feature|pragmatic_risk",'
         '"exact_span":"逐词来自原句的片段","normalized_answer":"标准化英文答案",'
@@ -3208,6 +3214,8 @@ def call_model(project: dict[str, Any], segments: list[dict[str, Any]]) -> dict[
 
 
 def final_card_batch_size(api: dict[str, Any], requested: int = 10) -> int:
+    if is_hermes_local_config(api):
+        return max(1, min(6, requested if requested > 0 else 6))
     if is_mimo_config(api):
         return 4
     if is_gemini_vertex_thinking_config(api):
@@ -3224,6 +3232,10 @@ def final_card_batch_size(api: dict[str, Any], requested: int = 10) -> int:
 def final_card_generation_concurrency(api: dict[str, Any], total_batches: int) -> int:
     if total_batches <= 1:
         return 1
+    if is_hermes_local_config(api):
+        # The managed local Hermes proxy shares one OAuth-backed upstream
+        # session. Serial requests avoid interleaved/truncated JSON responses.
+        return 1
     if is_mimo_config(api):
         return min(2, total_batches)
     if is_gemini_vertex_thinking_config(api):
@@ -3234,6 +3246,121 @@ def final_card_generation_concurrency(api: dict[str, Any], total_batches: int) -
         return min(3, total_batches)
     return 1
 
+
+def is_hermes_local_config(config: dict[str, Any]) -> bool:
+    model = str(config.get("model") or "").strip().lower()
+    if model != "grok-4.5":
+        return False
+    try:
+        parsed = urllib.parse.urlparse(str(config.get("base_url") or "").strip())
+    except ValueError:
+        return False
+    return parsed.hostname in {"127.0.0.1", "localhost", "::1"} and parsed.port == 8645
+
+
+def _segment_learning_point_ids(segment: dict[str, Any]) -> set[str]:
+    ids = {str(segment.get("learning_point_id") or "").strip()}
+    ids.update(
+        str(point.get("id") or point.get("learning_point_id") or "").strip()
+        for point in segment.get("learning_points", []) or []
+        if isinstance(point, dict)
+    )
+    return {item for item in ids if item}
+
+
+def _model_segment_learning_point_ids(segment: dict[str, Any]) -> set[str]:
+    ids = _segment_learning_point_ids(segment)
+    ids.update(
+        str(card.get("learning_point_id") or "").strip()
+        for card in segment.get("cards", []) or []
+        if isinstance(card, dict)
+    )
+    return {item for item in ids if item}
+
+
+def _alignment_values(segment: dict[str, Any]) -> set[str]:
+    values = {
+        str(segment.get(key) or "").strip().casefold()
+        for key in ("phrase", "answer_core", "exact_span", "normalized_answer")
+    }
+    for point in segment.get("learning_points", []) or []:
+        if not isinstance(point, dict):
+            continue
+        values.update(
+            str(point.get(key) or "").strip().casefold()
+            for key in ("answer_core", "exact_span", "normalized_answer", "phrase")
+        )
+    for card in segment.get("cards", []) or []:
+        if not isinstance(card, dict):
+            continue
+        values.update(
+            str(card.get(key) or "").strip().casefold()
+            for key in ("phrase", "answer_core", "exact_span", "normalized_answer")
+        )
+    return {re.sub(r"\s+", " ", item) for item in values if item}
+
+
+def _positionally_aligned_model_segment(model_segment: dict[str, Any], requested_segment: dict[str, Any]) -> bool:
+    model_values = _alignment_values(model_segment)
+    requested_values = _alignment_values(requested_segment)
+    if model_values & requested_values:
+        return True
+    source_text = re.sub(r"\s+", " ", str(requested_segment.get("text") or "").strip().casefold())
+    return bool(source_text and any(value in source_text for value in model_values if len(value) >= 2))
+
+
+def reconcile_model_segment_ids(
+    requested_segments: list[dict[str, Any]],
+    model_segments: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Repair model-renumbered IDs only when the original learning point proves the mapping."""
+    requested_by_id = {
+        str(segment.get("id") or "").strip(): segment
+        for segment in requested_segments
+        if str(segment.get("id") or "").strip()
+    }
+    requested_ids_by_learning_point: dict[str, set[str]] = {}
+    for segment_id, segment in requested_by_id.items():
+        for learning_point_id in _segment_learning_point_ids(segment):
+            requested_ids_by_learning_point.setdefault(learning_point_id, set()).add(segment_id)
+
+    used_ids: set[str] = set()
+    reconciled: list[dict[str, Any]] = []
+    allow_positional_fallback = len(model_segments) == len(requested_segments)
+    for index, model_segment in enumerate(model_segments):
+        if not isinstance(model_segment, dict):
+            continue
+        original_id = str(model_segment.get("id") or "").strip()
+        matched_ids: set[str] = set()
+        model_learning_point_ids = _model_segment_learning_point_ids(model_segment)
+        for learning_point_id in model_learning_point_ids:
+            matched_ids.update(requested_ids_by_learning_point.get(learning_point_id, set()))
+
+        target_id = ""
+        if len(matched_ids) == 1:
+            candidate_id = next(iter(matched_ids))
+            if candidate_id not in used_ids:
+                target_id = candidate_id
+        if not target_id and original_id in requested_by_id and original_id not in used_ids:
+            expected_learning_point_ids = _segment_learning_point_ids(requested_by_id[original_id])
+            if not model_learning_point_ids or model_learning_point_ids & expected_learning_point_ids:
+                target_id = original_id
+        if not target_id and allow_positional_fallback and index < len(requested_segments):
+            positional_segment = requested_segments[index]
+            positional_id = str(positional_segment.get("id") or "").strip()
+            if (
+                positional_id
+                and positional_id not in used_ids
+                and _positionally_aligned_model_segment(model_segment, positional_segment)
+            ):
+                target_id = positional_id
+
+        next_segment = dict(model_segment)
+        if target_id:
+            next_segment["id"] = target_id
+            used_ids.add(target_id)
+        reconciled.append(next_segment)
+    return reconciled
 
 def retryable_model_payload(payload: dict[str, Any]) -> bool:
     if payload.get("retryable") is True:
@@ -3256,7 +3383,15 @@ def call_model_batch_with_retry(
             {"error_code": "MODEL_UNAVAILABLE", "stage": "ai", "retryable": False}
         ]
     if "error" not in payload:
-        return list(payload.get("segments", []) or []), [], []
+        model_segments = payload.get("segments")
+        if isinstance(model_segments, list) and model_segments:
+            return reconcile_model_segment_ids(batch, model_segments), [], []
+        payload = {
+            "error": "模型返回了 JSON，但缺少非空 segments 数组。",
+            "error_code": "MODEL_INVALID_STRUCTURE",
+            "stage": "ai",
+            "retryable": True,
+        }
 
     error_message = str(payload.get("error") or "模型批次失败")
     details = {

@@ -13959,6 +13959,90 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(worker.max_learning_points_per_source({"selection_strategy": "exhaustive"}), 4)
         self.assertEqual(worker.max_learning_points_per_source({"selection_strategy": "curated"}), 4)
 
+    def test_hermes_grok_card_generation_is_small_and_serial(self):
+        api = {
+            "provider": "openai-compatible",
+            "base_url": "http://127.0.0.1:8645/v1",
+            "model": "grok-4.5",
+        }
+
+        self.assertTrue(worker.is_hermes_local_config(api))
+        self.assertEqual(worker.final_card_batch_size(api, 10), 6)
+        self.assertEqual(worker.final_card_generation_concurrency(api, 4), 1)
+        self.assertFalse(
+            worker.is_hermes_local_config(
+                {**api, "base_url": "https://example.com/v1"}
+            )
+        )
+
+    def test_model_segment_ids_are_reconciled_by_learning_point_id(self):
+        requested = [
+            {
+                "id": "seg_lp_0019",
+                "learning_point_id": "lp-actions",
+                "text": "Actions speak louder than words.",
+                "answer_core": "Actions speak louder than words",
+                "learning_points": [{"id": "lp-actions", "answer_core": "Actions speak louder than words"}],
+            },
+            {
+                "id": "seg_lp_0020",
+                "learning_point_id": "lp-opinions",
+                "text": "People form opinions about it.",
+                "answer_core": "form opinions about",
+                "learning_points": [{"id": "lp-opinions", "answer_core": "form opinions about"}],
+            },
+        ]
+        model_segments = [
+            {
+                "id": "seg_lp_0001",
+                "cards": [{"learning_point_id": "lp-actions", "phrase": "Actions speak louder than words"}],
+            },
+            {
+                "id": "seg_lp_0001",
+                "cards": [{"learning_point_id": "lp-opinions", "phrase": "form opinions about"}],
+            },
+        ]
+
+        reconciled = worker.reconcile_model_segment_ids(requested, model_segments)
+
+        self.assertEqual([item["id"] for item in reconciled], ["seg_lp_0019", "seg_lp_0020"])
+        self.assertEqual([item["id"] for item in model_segments], ["seg_lp_0001", "seg_lp_0001"])
+
+    def test_positional_id_repair_requires_semantic_alignment(self):
+        requested = [
+            {"id": "seg_a", "text": "Use common sense here.", "answer_core": "common sense"},
+            {"id": "seg_b", "text": "This evidence was passed down.", "answer_core": "passed down"},
+        ]
+        model_segments = [
+            {"id": "renumbered_1", "cards": [{"phrase": "common sense"}]},
+            {"id": "renumbered_1", "cards": [{"phrase": "invented mismatch"}]},
+        ]
+
+        reconciled = worker.reconcile_model_segment_ids(requested, model_segments)
+
+        self.assertEqual(reconciled[0]["id"], "seg_a")
+        self.assertEqual(reconciled[1]["id"], "renumbered_1")
+
+    def test_card_prompt_requires_exact_input_ids(self):
+        segment = {
+            "id": "seg_lp_0042",
+            "source_time": "00:00:01 - 00:00:02",
+            "text": "Use common sense here.",
+            "phrase": "common sense",
+            "answer_core": "common sense",
+            "candidate_kind": "expression",
+            "recommendation": "keep",
+            "learning_points": [{"id": "lp-common-sense", "answer_core": "common sense"}],
+        }
+
+        prompt = worker.build_immersive_v11_prompt(
+            {"language": "en", "level": "B1", "card_types": ["phrase"]},
+            [segment],
+        )
+
+        self.assertIn("逐字复制对应输入 segment.id", prompt)
+        self.assertIn("COPY_EXACT_INPUT_SEGMENT_ID", prompt)
+        self.assertIn("seg_lp_0042", prompt)
     def test_vertex_thinking_final_card_batch_size_is_not_clamped_to_three(self):
         api = {"provider": "gemini-vertex", "model": "gemini-3.1-pro-preview"}
         self.assertEqual(worker.final_card_batch_size(api, 10), 8)

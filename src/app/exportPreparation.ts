@@ -2,6 +2,7 @@ import { materializeLearningPointInventory } from '../domain/inventoryDrafts'
 import {
   applyUsableCardSelection,
   getExportSelectionStats,
+  isUsableCardForExport,
   removeExportBlockedCardSelection,
 } from '../domain/quality'
 import { evaluateProjectReliabilityGate } from '../domain/reliability'
@@ -34,9 +35,51 @@ export type ExportPreparationResult =
       reliabilityBlockerCodes?: string[]
     })
 
+function removeSupersededRepairDraftSegments(project: Project) {
+  const verifiedPointIds = new Set(
+    (project.reliability_manifest?.selected_point_outcomes ?? [])
+      .filter((outcome) => outcome.status === 'verified')
+      .map((outcome) => outcome.learning_point_id)
+      .filter(Boolean),
+  )
+  if (verifiedPointIds.size === 0) return { project, removedCards: 0 }
+
+  const pointIdsWithUsableCards = new Set<string>()
+  project.segments.forEach((segment) => {
+    segment.cards.forEach((card) => {
+      const pointId = String(card.learning_point_id || segment.learning_point_id || '')
+      if (pointId && verifiedPointIds.has(pointId) && isUsableCardForExport(segment, card)) {
+        pointIdsWithUsableCards.add(pointId)
+      }
+    })
+  })
+  if (pointIdsWithUsableCards.size === 0) return { project, removedCards: 0 }
+
+  let removedCards = 0
+  const segments = project.segments.filter((segment) => {
+    const pointIds = new Set(
+      [segment.learning_point_id, ...segment.cards.map((card) => card.learning_point_id)]
+        .map((value) => String(value || ''))
+        .filter(Boolean),
+    )
+    const isSupersededRepairOnlySegment =
+      pointIds.size > 0 &&
+      [...pointIds].every((pointId) => pointIdsWithUsableCards.has(pointId)) &&
+      segment.cards.length > 0 &&
+      segment.cards.every((card) => !isUsableCardForExport(segment, card))
+    if (isSupersededRepairOnlySegment) removedCards += segment.cards.length
+    return !isSupersededRepairOnlySegment
+  })
+  return removedCards > 0 ? { project: { ...project, segments }, removedCards } : { project, removedCards: 0 }
+}
+
 export function prepareProjectForExport(project: Project): ExportPreparationResult {
-  let projectForExport = project
+  const supersededDraftCleanup = removeSupersededRepairDraftSegments(project)
+  let projectForExport = supersededDraftCleanup.project
   const messages: string[] = []
+  if (supersededDraftCleanup.removedCards > 0) {
+    messages.push(`已清理 ${supersededDraftCleanup.removedCards} 张已被正式卡替代的旧保底草稿。`)
+  }
   const reliabilityGate = evaluateProjectReliabilityGate(projectForExport)
   if (reliabilityGate.decision === 'block') {
     return {
@@ -44,7 +87,7 @@ export function prepareProjectForExport(project: Project): ExportPreparationResu
       reason: 'reliability_gate_blocked',
       project: projectForExport,
       materializedDraftCards: 0,
-      removedRepairRequiredCards: 0,
+      removedRepairRequiredCards: supersededDraftCleanup.removedCards,
       selectedExportableCards: 0,
       reliabilityBlockerCodes: reliabilityGate.blockerCodes,
       statusMessage:
@@ -72,7 +115,7 @@ export function prepareProjectForExport(project: Project): ExportPreparationResu
         reason: 'selected_cards_all_repair_required',
         project: projectForExport,
         materializedDraftCards: materializedForExport.added,
-        removedRepairRequiredCards: safeSelection.removed,
+        removedRepairRequiredCards: supersededDraftCleanup.removedCards + safeSelection.removed,
         selectedExportableCards: 0,
         statusMessage:
           `已移除 ${safeSelection.removed} 张需修复/不可导出的卡片；当前没有剩余可导出的正式卡。` +
@@ -90,7 +133,7 @@ export function prepareProjectForExport(project: Project): ExportPreparationResu
         reason: 'no_exportable_cards',
         project: projectForExport,
         materializedDraftCards: materializedForExport.added,
-        removedRepairRequiredCards: safeSelection.removed,
+        removedRepairRequiredCards: supersededDraftCleanup.removedCards + safeSelection.removed,
         selectedExportableCards: 0,
         statusMessage: '当前没有可导出的正式卡。请重新生成卡片，或手动修正“需修复”的草稿字段后再导出。',
       }
@@ -102,7 +145,7 @@ export function prepareProjectForExport(project: Project): ExportPreparationResu
       status: 'ready',
       project: projectForExport,
       materializedDraftCards: materializedForExport.added,
-      removedRepairRequiredCards: safeSelection.removed,
+      removedRepairRequiredCards: supersededDraftCleanup.removedCards + safeSelection.removed,
       selectedExportableCards: selectedForExport,
       autoSelectedUsableCards: usableSelection.selected,
       statusMessage: messages.join(' '),
@@ -113,7 +156,7 @@ export function prepareProjectForExport(project: Project): ExportPreparationResu
     status: 'ready',
     project: projectForExport,
     materializedDraftCards: materializedForExport.added,
-    removedRepairRequiredCards: safeSelection.removed,
+    removedRepairRequiredCards: supersededDraftCleanup.removedCards + safeSelection.removed,
     selectedExportableCards: selectedForExport,
     autoSelectedUsableCards: 0,
     statusMessage: messages.join(' '),

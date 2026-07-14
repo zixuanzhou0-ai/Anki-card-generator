@@ -2,13 +2,10 @@ import type { CandidateKind, GenerateRequest, Level, ReviewDensity } from './typ
 
 export const DEFAULT_INITIAL_SELECTED_LEARNING_POINT_LIMIT = 12
 export const MIN_LEARNING_POINT_GENERATION_BATCH_SIZE = 12
-export const MAX_LEARNING_POINT_GENERATION_BATCH_SIZE = 48
+export const MAX_LEARNING_POINT_GENERATION_BATCH_SIZE = 12
 
 export function learningPointGenerationBatchSize(count: number) {
-  const normalized = Math.max(0, Math.floor(Number.isFinite(count) ? count : 0))
-  if (normalized <= MIN_LEARNING_POINT_GENERATION_BATCH_SIZE) return MIN_LEARNING_POINT_GENERATION_BATCH_SIZE
-  if (normalized <= 48) return 24
-  if (normalized <= 120) return 36
+  void count
   return MAX_LEARNING_POINT_GENERATION_BATCH_SIZE
 }
 
