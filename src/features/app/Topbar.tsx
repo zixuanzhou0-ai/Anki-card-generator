@@ -1,24 +1,19 @@
 import type { MouseEvent } from 'react'
-import { CheckCircle2, Download, Layers3, Loader2, Minus, Settings2, Square, Wand2, X } from 'lucide-react'
+import { AlertCircle, CheckCircle2, Layers3, Loader2, Minus, Settings2, Square, X } from 'lucide-react'
+
+import type { WorkflowReadinessSnapshot, WorkflowStageId } from '../../app/readiness'
 
 type WindowAction = 'minimize' | 'toggleMaximize' | 'close'
 
 type TopbarProps = {
-  appBusy: boolean
-  generateDisabled: boolean
-  generateLabel: string
-  hasExportableCards: boolean
-  hasProject: boolean
   inspectorActive: boolean
   inspectorActionLabel: string
   isCancelling: boolean
-  showGenerateButton?: boolean
   status: string
   statusTone: string
   workerBusy: boolean
+  workflowReadiness: WorkflowReadinessSnapshot
   onCancelCurrentWorker: () => void
-  onExport: () => void
-  onGenerate: () => void
   onMouseDown: (event: MouseEvent<HTMLElement>) => void
   onDoubleClick: (event: MouseEvent<HTMLElement>) => void
   onOpenSettings: () => void
@@ -26,28 +21,48 @@ type TopbarProps = {
   onWindowAction: (action: WindowAction) => void
 }
 
+const stageLabels: Record<WorkflowStageId, string> = {
+  setup: '启动准备',
+  extract: '抽取学习点',
+  generate: '生成卡片',
+  export: '审核导出',
+  verify: 'Anki 核验',
+}
+
 export function Topbar({
-  appBusy,
-  generateDisabled,
-  generateLabel,
-  hasExportableCards,
-  hasProject,
   inspectorActive,
   inspectorActionLabel,
   isCancelling,
-  showGenerateButton = true,
   status,
   statusTone,
   workerBusy,
+  workflowReadiness,
   onCancelCurrentWorker,
   onDoubleClick,
-  onExport,
-  onGenerate,
   onMouseDown,
   onOpenSettings,
   onToggleInspector,
   onWindowAction,
 }: TopbarProps) {
+  const stageLabel = stageLabels[workflowReadiness.stage]
+  const readinessText = workflowReadiness.canProceed
+    ? workflowReadiness.stage === 'verify'
+      ? workflowReadiness.primaryActionLabel
+      : stageLabel + '已就绪'
+    : workflowReadiness.primaryActionLabel + ' · ' + workflowReadiness.blockers[0]?.title
+  const operationNeedsAttention = statusTone === 'warn' || /取消|暂停|丢弃/.test(status)
+  const showOperationStatus = workerBusy || operationNeedsAttention
+  const visibleStatus = showOperationStatus ? status : readinessText
+  const visibleTone = workerBusy
+    ? statusTone
+    : operationNeedsAttention
+      ? statusTone === 'warn'
+        ? 'warning'
+        : 'idle'
+      : workflowReadiness.canProceed
+        ? 'success'
+        : 'warning'
+
   return (
     <header className="topbar" onMouseDown={onMouseDown} onDoubleClick={onDoubleClick}>
       <div className="brand-lockup">
@@ -59,15 +74,34 @@ export function Topbar({
           <h1>Anki 卡片生成器</h1>
         </div>
       </div>
+      <div className="topbar-stage" aria-label="当前步骤">
+        <span>当前步骤</span>
+        <strong>{stageLabel}</strong>
+      </div>
       <div className="window-drag-region" />
       <div className="topbar-actions">
-        <div className={`status-chip ${statusTone}`} title={status} role="status" aria-live="polite" aria-atomic="true">
-          <CheckCircle2 size={16} />
-          <span>{status}</span>
+        <div
+          className={'status-chip ' + visibleTone}
+          title={showOperationStatus ? status : workflowReadiness.blockers[0]?.detail ?? visibleStatus}
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          {workerBusy ? (
+            <Loader2 className="spin" size={16} />
+          ) : operationNeedsAttention ? (
+            <AlertCircle size={16} />
+          ) : workflowReadiness.canProceed ? (
+            <CheckCircle2 size={16} />
+          ) : (
+            <AlertCircle size={16} />
+          )}
+          <span>{visibleStatus}</span>
         </div>
         <button
           className="ghost-button quiet-button inspector-toggle"
           type="button"
+          data-inspector-toggle="true"
           onClick={onToggleInspector}
           aria-pressed={inspectorActive}
           aria-expanded={inspectorActive}
@@ -83,18 +117,6 @@ export function Topbar({
           <button className="ghost-button cancel-button" type="button" onClick={onCancelCurrentWorker} disabled={isCancelling}>
             {isCancelling ? <Loader2 className="spin" size={18} /> : <X size={18} />}
             {isCancelling ? '取消中' : '取消任务'}
-          </button>
-        ) : null}
-        {hasProject && hasExportableCards && !workerBusy ? (
-          <button className="ghost-button command-export" type="button" onClick={onExport} disabled={appBusy}>
-            <Download size={18} />
-            导出
-          </button>
-        ) : null}
-        {showGenerateButton ? (
-          <button className="primary-button" type="button" onClick={onGenerate} disabled={appBusy || generateDisabled}>
-            {appBusy ? <Loader2 className="spin" size={18} /> : <Wand2 size={18} />}
-            {generateLabel}
           </button>
         ) : null}
       </div>

@@ -113,7 +113,12 @@ import {
 } from '../domain/projectMetrics'
 import type { WorkerErrorActionId } from '../domain/workerErrors'
 import { getWorkerErrorActions } from '../domain/workerErrors'
-import { buildReadinessItems, buildTtsReadinessDetail, isEnvironmentReadyForGeneration } from './readiness'
+import {
+  buildReadinessItems,
+  buildTtsReadinessDetail,
+  buildWorkflowReadiness,
+  isEnvironmentReadyForGeneration,
+} from './readiness'
 import { isSourceInputReady } from '../domain/sourceValidation'
 import type { LearningPointExtractionResult } from '../domain/learningPoints'
 import {
@@ -195,6 +200,7 @@ import {
   generationBatchProgressSnapshot,
   mergeGeneratedBatchProject,
   retryLearningPointIdsAfterBatchFailure,
+  retryCardGenerationCacheNamespace,
 } from './generationBatch'
 import type { GenerationBatchProgress, GenerationBatchRuntime } from './generationBatch'
 import {
@@ -602,8 +608,27 @@ export function useAppController() {
     apiReadyForGeneration: apiReady,
     hasApiTestResult: Boolean(effectiveApiTestResult),
     ttsRequired,
+    ttsReadyForGeneration,
     ttsDetail,
     currentSelectionCount,
+  })
+  const workflowReadiness = buildWorkflowReadiness({
+    sourceReady,
+    environmentReady: envReady,
+    environmentChecked: Boolean(envStatus),
+    apiProvider: request.api_config.provider,
+    apiReady: apiReadyForGeneration,
+    apiTested: Boolean(effectiveApiTestResult),
+    ttsRequired,
+    ttsReady: ttsReadyForGeneration,
+    ttsTested: Boolean(effectiveTtsTestResult),
+    selectedLearningPointCount,
+    hasLearningPoints: Boolean(learningPointResult),
+    hasProject: Boolean(project),
+    exportableCardCount: exportSelectionStats.selectedExportableCards,
+    repairRequiredCardCount: exportSelectionStats.repairRequiredCards,
+    hasExport: Boolean(lastExport),
+    ankiVerified: Boolean(ankiVerifyResult?.ok),
   })
   const apiTestStatus = buildApiTestStatus({
     result: effectiveApiTestResult,
@@ -1009,12 +1034,11 @@ export function useAppController() {
     const outputDir = generationAutoExportOutputDirRef.current
     if (!outputDir) return false
     generationAutoExportOutputDirRef.current = null
-    await startExportForProject({
+    return startExportForProject({
       projectOverride: generatedProject,
       outputDir,
       auto: true,
     })
-    return true
   }
 
   async function handleWorkerFinished(payloadInput: WorkerFinishedEvent) {
@@ -1402,16 +1426,8 @@ export function useAppController() {
     const focusTimer = window.setTimeout(() => {
       settingsDialogRef.current?.focus()
     }, 0)
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault()
-        setSettingsOpen(false)
-      }
-    }
-    window.addEventListener('keydown', handleKeyDown)
     return () => {
       window.clearTimeout(focusTimer)
-      window.removeEventListener('keydown', handleKeyDown)
       previouslyFocused?.focus()
     }
   }, [settingsOpen])
@@ -2840,6 +2856,10 @@ export function useAppController() {
       return
     }
     generationRetryBaseProjectRef.current = currentProject
+    // A retry must never reuse a cached fallback or structurally incomplete model response.
+    // A fresh namespace also keeps the successful prior cards available only through the
+    // explicit base project merge, where the reliability gate can account for them.
+    setCardGenerationCacheNamespace(retryCardGenerationCacheNamespace())
     const missingSelection = new Set(missingIds)
     lastExportFullRef.current = null
     activeAnkiVerifyApkgPathRef.current = null
@@ -3451,6 +3471,7 @@ export function useAppController() {
     apiTestTitle,
     apiTestTone,
     apiTesting,
+    apiReadyForGeneration,
     hermesChecking,
     hermesStarting,
     hermesStatus,
@@ -3516,6 +3537,7 @@ export function useAppController() {
     qualityDiagnostics,
     qualityFunnel,
     readiness,
+    workflowReadiness,
     buildReleaseObservedRawSnapshotHandoff,
     buildReleaseObservedTimingCacheSnapshot,
     releaseEvidenceSummary,
@@ -3587,6 +3609,8 @@ export function useAppController() {
     toggleLanguageFocus,
     toggleInspector,
     tts,
+    ttsReadyForGeneration,
+    ttsRequired,
     ttsProfileDirty,
     ttsProfileStatus,
     ttsTesting,

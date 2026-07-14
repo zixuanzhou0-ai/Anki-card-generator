@@ -69,6 +69,7 @@ function renderDialog(overrides: Partial<ComponentProps<typeof SettingsDialog>> 
     motionDuration: 0,
     open: true,
     prefersReducedMotion: true,
+    settingsMode: 'simple',
     settingsTab: 'api',
     ttsSettings: {
       advancedTtsPresets,
@@ -101,6 +102,8 @@ function renderDialog(overrides: Partial<ComponentProps<typeof SettingsDialog>> 
       onTestTts: vi.fn(),
     },
     onClose: vi.fn(),
+    onRerunOnboarding: vi.fn(),
+    onSettingsModeChange: vi.fn(),
     onSettingsTabChange: vi.fn(),
     ...overrides,
   }
@@ -109,6 +112,13 @@ function renderDialog(overrides: Partial<ComponentProps<typeof SettingsDialog>> 
 }
 
 describe('SettingsDialog', () => {
+  it('switches display modes without owning or resetting configuration fields', () => {
+    const props = renderDialog()
+
+    expect(screen.getByRole('button', { name: '简单' })).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(screen.getByRole('button', { name: '高级' }))
+    expect(props.onSettingsModeChange).toHaveBeenCalledWith('advanced')
+  })
   it('renders the selected tab and closes from the header', () => {
     const props = renderDialog()
 
@@ -117,6 +127,14 @@ describe('SettingsDialog', () => {
     expect(screen.getByRole('dialog', { name: '设置' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: '模型 API' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByRole('heading', { name: '模型 API' })).toBeInTheDocument()
+    expect(props.onClose).toHaveBeenCalledOnce()
+  })
+
+  it('routes Escape through the parent close callback', () => {
+    const props = renderDialog()
+
+    fireEvent.keyDown(screen.getByRole('dialog', { name: '设置' }), { key: 'Escape' })
+
     expect(props.onClose).toHaveBeenCalledOnce()
   })
 

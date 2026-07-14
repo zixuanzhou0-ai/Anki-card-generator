@@ -1,6 +1,6 @@
 import type { ComponentProps, RefObject } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { Boxes, CheckCircle2, CircleAlert, Loader2, PlugZap, Settings2, X } from 'lucide-react'
+import { Boxes, CheckCircle2, CircleAlert, Loader2, PlugZap, RotateCcw, Settings2, X } from 'lucide-react'
 
 import type { SettingsTab } from '../../domain/types'
 import { AboutSettingsPanel } from './AboutSettingsPanel'
@@ -15,9 +15,12 @@ type SettingsDialogProps = {
   motionDuration: number
   open: boolean
   prefersReducedMotion: boolean
+  settingsMode: 'simple' | 'advanced'
   settingsTab: SettingsTab
   ttsSettings: ComponentProps<typeof TtsSettingsPanel>
   onClose: () => void
+  onRerunOnboarding: () => void
+  onSettingsModeChange: (mode: 'simple' | 'advanced') => void
   onSettingsTabChange: (tab: SettingsTab) => void
 }
 
@@ -173,9 +176,12 @@ export function SettingsDialog({
   motionDuration,
   open,
   prefersReducedMotion,
+  settingsMode,
   settingsTab,
   ttsSettings,
   onClose,
+  onRerunOnboarding,
+  onSettingsModeChange,
   onSettingsTabChange,
 }: SettingsDialogProps) {
   const healthCards = getSettingsHealthCards({ apiSettings, envSettings, ttsSettings })
@@ -193,13 +199,19 @@ export function SettingsDialog({
           transition={{ duration: motionDuration }}
         >
           <motion.section
-            className="settings-dialog"
+            className={'settings-dialog settings-mode-' + settingsMode}
             ref={dialogRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby="settings-title"
             tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+              if (event.key !== 'Escape') return
+              event.preventDefault()
+              event.stopPropagation()
+              onClose()
+            }}
             initial={{ opacity: 0, scale: prefersReducedMotion ? 1 : 0.985 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: prefersReducedMotion ? 1 : 0.985 }}
@@ -210,9 +222,33 @@ export function SettingsDialog({
                 <p className="eyebrow">Settings</p>
                 <h2 id="settings-title">设置</h2>
               </div>
-              <button className="icon-button" type="button" onClick={onClose} aria-label="关闭设置">
-                <X size={18} />
-              </button>
+              <div className="settings-header-actions">
+                <div className="settings-mode-switch" role="group" aria-label="设置显示模式">
+                  <button
+                    type="button"
+                    className={settingsMode === 'simple' ? 'selected' : ''}
+                    aria-pressed={settingsMode === 'simple'}
+                    onClick={() => onSettingsModeChange('simple')}
+                  >
+                    简单
+                  </button>
+                  <button
+                    type="button"
+                    className={settingsMode === 'advanced' ? 'selected' : ''}
+                    aria-pressed={settingsMode === 'advanced'}
+                    onClick={() => onSettingsModeChange('advanced')}
+                  >
+                    高级
+                  </button>
+                </div>
+                <button className="ghost-button settings-rerun-button" type="button" onClick={onRerunOnboarding}>
+                  <RotateCcw size={17} />
+                  重新运行启动检查
+                </button>
+                <button className="icon-button" type="button" onClick={onClose} aria-label="关闭设置">
+                  <X size={18} />
+                </button>
+              </div>
             </div>
             <div className="settings-health-strip" aria-label="设置状态总览">
               {healthCards.map((card) => (
@@ -278,8 +314,8 @@ export function SettingsDialog({
 
             <div className="settings-content">
               {settingsTab === 'env' ? <EnvSettingsPanel {...envSettings} /> : null}
-              {settingsTab === 'api' ? <ApiSettingsPanel {...apiSettings} /> : null}
-              {settingsTab === 'tts' ? <TtsSettingsPanel {...ttsSettings} /> : null}
+              {settingsTab === 'api' ? <ApiSettingsPanel {...apiSettings} simpleMode={settingsMode === 'simple'} /> : null}
+              {settingsTab === 'tts' ? <TtsSettingsPanel {...ttsSettings} simpleMode={settingsMode === 'simple'} /> : null}
               {settingsTab === 'about' ? <AboutSettingsPanel /> : null}
             </div>
           </motion.section>

@@ -15,7 +15,9 @@ import type {
   SourceMode,
   WorkerProgress,
   WorkerFinishedEvent,
+  WorkspaceStage,
 } from '../../domain/types'
+import type { WorkflowReadinessSnapshot } from '../../app/readiness'
 import type {
   GenerationQueueSummary,
   LearningPointExtractionResult,
@@ -67,6 +69,8 @@ type ReviewWorkspaceProps = {
   visibleSegments: Segment[]
   workerBusy: boolean
   workerProgress: WorkerProgress | null
+  workflowReadiness?: WorkflowReadinessSnapshot
+  workspaceStage: WorkspaceStage
   status: string
   onOpenAnkiImport: () => void
   onRevealExport: () => void
@@ -120,6 +124,8 @@ export function ReviewWorkspace({
   visibleSegments,
   workerBusy,
   workerProgress,
+  workflowReadiness,
+  workspaceStage,
   status,
   onOpenAnkiImport,
   onRevealExport,
@@ -277,7 +283,7 @@ export function ReviewWorkspace({
             onClick={onExtractLearningPointsWithoutCache}
             disabled={workerBusy}
           >
-            不使用缓存重新抽取
+            重新分析素材
           </button>
         </div>
       ) : null}
@@ -336,6 +342,7 @@ export function ReviewWorkspace({
               generationConfirmOpen={generationConfirmOpen}
               generationQueuePoints={generationQueuePoints}
               generationQueueSummary={generationQueueSummary}
+              workflowReadiness={workflowReadiness}
               onCloseGenerationConfirm={onCloseGenerationConfirm}
               onConfirmGenerateCards={onConfirmGenerateCardsFromLearningPoints}
               onExtractWithoutCache={onExtractLearningPointsWithoutCache}
@@ -345,7 +352,7 @@ export function ReviewWorkspace({
               onSetSelectedIds={onSetSelectedLearningPointIds}
             />
           ) : !project ? (
-            <EmptyWorkbench level={level} sourceMode={sourceMode} templateLabel={activeTemplateLabel} />
+            <EmptyWorkbench level={level} sourceMode={sourceMode} templateLabel={activeTemplateLabel} workspaceStage={workspaceStage} />
           ) : reviewView === 'inventory' ? (
             <LearningPointInventoryPanel items={diagnosticInventory} />
           ) : (
@@ -409,7 +416,9 @@ function PartialGenerationNotice({
           ? '保底生成'
           : item.status === 'ai_repaired'
             ? '字段补齐'
-            : item.status === 'filtered'
+            : item.status === 'needs_review'
+              ? '需复查草稿'
+              : item.status === 'filtered'
               ? '质量过滤'
               : item.status === 'skipped'
                 ? '不可制卡跳过'
@@ -422,9 +431,10 @@ function PartialGenerationNotice({
       <summary>
         <div>
           <strong>
-            已选 {processed} 个学习点，成功生成 {generated} 张学习卡；{missing} 个未生成
+            已处理 {processed} 个学习点，{exportableCount} 张通过可靠性检查；{missing} 个需重试
           </strong>
           <span>
+            {generated > exportableCount ? `系统保留了 ${generated} 张草稿，但不完整内容不会进入 APKG。 ` : ''}
             {Object.entries(reasonCounts)
               .map(([label, count]) => `${label} ${count}`)
               .join(' · ') || '部分学习点没有生成可导出的学习卡。'}
@@ -439,7 +449,7 @@ function PartialGenerationNotice({
           onClick={onRetryMissing}
           disabled={workerBusy || missing === 0}
         >
-          重试失败项 {missing} 个
+          重试未通过项 {missing} 个
         </button>
         <button
           className="ghost-button"

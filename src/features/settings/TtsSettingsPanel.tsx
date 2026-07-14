@@ -32,6 +32,7 @@ type TtsSettingsPanelProps = {
   qwenTtsVoices: string[]
   activeTtsProfileId: string
   savedTtsProfiles: SavedTtsProfile[]
+  simpleMode?: boolean
   showAdvancedTts: boolean
   tts: TtsConfig
   ttsProfileDirty: boolean
@@ -64,6 +65,7 @@ export function TtsSettingsPanel({
   qwenTtsVoices,
   activeTtsProfileId,
   savedTtsProfiles,
+  simpleMode = false,
   showAdvancedTts,
   tts,
   ttsProfileDirty,
@@ -234,8 +236,8 @@ export function TtsSettingsPanel({
       <div className="settings-setup-hero">
         <div>
           <span>语音目录</span>
-          <strong>选择 TTS 厂商，也可以手动接入 Speech 接口。</strong>
-          <small>语音目录只负责填表；Base URL、Model、voice 和音量都可以继续调整。</small>
+          <strong>{simpleMode ? '选择一个语音方案。' : '选择 TTS 厂商，也可以手动接入 Speech 接口。'}</strong>
+          <small>{simpleMode ? '选择方案，完成授权，然后生成一段真实测试语音。' : '语音目录只负责填表；Base URL、Model、voice 和音量都可以继续调整。'}</small>
         </div>
         <div className={`settings-readiness-pill ${ttsAuthReady ? 'ok' : 'warn'}`}>
           {ttsAuthReady ? <CheckCircle2 size={16} /> : <CircleAlert size={16} />}

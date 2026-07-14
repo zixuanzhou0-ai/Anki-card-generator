@@ -13,7 +13,6 @@ import {
 } from 'lucide-react'
 
 import type {
-  EnvRepairTarget,
   GenerateRequest,
   Level,
   SourceMode,
@@ -21,15 +20,16 @@ import type {
   WorkerProgress,
   WorkspaceStage,
 } from '../../domain/types'
+import type { ReadinessBlockerAction, WorkflowReadinessSnapshot } from '../../app/readiness'
 import type { WorkerErrorAction, WorkerErrorActionId } from '../../domain/workerErrors'
 import { batchItemsForSource } from '../../domain/batch'
 import { sourceRequirementMessage } from '../../domain/sourceValidation'
 import { CardTemplatePanel } from '../generation/CardTemplatePanel'
-import { ReadinessPanel } from '../generation/ReadinessPanel'
 import type { ReadinessItem } from '../generation/ReadinessPanel'
 import { StatusPanel } from '../generation/StatusPanel'
 import { LearningSettingsPanel } from '../learning/LearningSettingsPanel'
 import { SourceSetupPanel } from '../source/SourceSetupPanel'
+import { SetupCheckPanel } from './SetupCheckPanel'
 
 type LevelOption = {
   id: Level
@@ -49,6 +49,7 @@ type InspectorPanelProps = {
   levels: LevelOption[]
   previewRate: number
   readiness: ReadinessItem[]
+  workflowReadiness: WorkflowReadinessSnapshot
   request: GenerateRequest
   requestEditedDuringRun: boolean
   selectedCardCount: number
@@ -63,14 +64,12 @@ type InspectorPanelProps = {
   workerErrorActions: WorkerErrorAction[]
   workerProgress: WorkerProgress | null
   onCloseSheet: () => void
-  onCheckEnv: () => void
   onExport: () => void
   onExtractLearningPointsWithoutCache: () => void
   onGenerate: () => void
-  onOpenEnvSettings: () => void
   onPatchRequest: (patch: Partial<GenerateRequest>) => void
   onPreviewRateChange: (rate: number) => void
-  onRepairEnv: (target: EnvRepairTarget) => void
+  onResolveReadiness: (action: ReadinessBlockerAction) => void
   onSelectCurrentLevel: (level: Level) => void
   onSelectPath: (kind: 'video' | 'subtitle' | 'video-folder') => void
   onSelectSourceMode: (mode: SourceMode) => void
@@ -91,6 +90,7 @@ export function InspectorPanel({
   levels,
   previewRate,
   readiness,
+  workflowReadiness,
   request,
   requestEditedDuringRun,
   selectedCardCount,
@@ -105,14 +105,12 @@ export function InspectorPanel({
   workerErrorActions,
   workerProgress,
   onCloseSheet,
-  onCheckEnv,
   onExport,
   onExtractLearningPointsWithoutCache,
   onGenerate,
-  onOpenEnvSettings,
   onPatchRequest,
   onPreviewRateChange,
-  onRepairEnv,
+  onResolveReadiness,
   onSelectCurrentLevel,
   onSelectPath,
   onSelectSourceMode,
@@ -121,16 +119,6 @@ export function InspectorPanel({
   onWorkerErrorAction,
 }: InspectorPanelProps) {
   const sourceReady = readiness.find((item) => item.id === 'source')?.done ?? false
-  const extractionReadinessIds = new Set(['source', 'env', 'api'])
-  const cardGenerationReadinessIds = new Set(['source', 'env', 'api'])
-  const incompleteReadiness = readiness.filter((item) => {
-    if (hasProject) return !item.done
-    if (hasLearningPointResult) return cardGenerationReadinessIds.has(item.id) && !item.done
-    return extractionReadinessIds.has(item.id) && !item.done
-  })
-  const envPreflight = incompleteReadiness.find((item) => item.id === 'env')
-  const envUnchecked = envPreflight?.detail === '未检查'
-  const showEnvRepair = Boolean(envPreflight && !envUnchecked)
   const showColdExtractionAction = !hasProject && !hasLearningPointResult && !request.batch_enabled && request.source_mode !== 'document'
   const publicSourceMode = request.source_mode === 'document' ? 'local' : request.source_mode
   const activeBatchItems = request.batch_enabled ? batchItemsForSource(request.batch_items ?? [], publicSourceMode) : []
@@ -266,11 +254,12 @@ export function InspectorPanel({
         </ol>
       </section>
 
+      <SetupCheckPanel busy={appBusy} snapshot={workflowReadiness} onResolve={onResolveReadiness} />
+
       <section className="workflow-stage-body" aria-label={stageTitle}>
         {activeWorkspaceStage === 'source' ? (
           <>
             <div className="workflow-stage-scroll">
-              <ReadinessPanel items={readiness} />
               <SourceSetupPanel
                 request={request}
                 onPatchRequest={onPatchRequest}
@@ -393,37 +382,24 @@ export function InspectorPanel({
                         <small>{hasLearningPointResult ? `${selectedLearningPointCount} 张卡片` : cardModeSummary}</small>
                       </span>
                     </div>
-                    {incompleteReadiness.length ? (
+                    {workflowReadiness.blockers.length > 0 ? (
                       <div className="workflow-preflight-warning" role="status">
-                        <strong>{hasLearningPointResult ? '生成 APKG 前还需要完成' : '抽取学习点前还需要完成'}</strong>
-                        <small>{incompleteReadiness.map((item) => `${item.label}：${item.detail}`).join(' / ')}</small>
-                        {envPreflight ? (
-                          <div className="workflow-preflight-actions" aria-label="环境快捷处理">
-                            {envUnchecked ? (
-                              <button type="button" className="preflight-primary-action" onClick={onCheckEnv} disabled={appBusy}>
-                                立即检查
-                              </button>
-                            ) : null}
-                            {showEnvRepair ? (
-                              <button type="button" className="preflight-primary-action" onClick={() => onRepairEnv('all')} disabled={appBusy}>
-                                一键修复
-                              </button>
-                            ) : null}
-                            <button type="button" className="preflight-secondary-action" onClick={onOpenEnvSettings} disabled={appBusy}>
-                              查看详情
-                            </button>
-                          </div>
-                        ) : null}
+                        <strong>{workflowReadiness.primaryActionLabel}</strong>
+                        <small>
+                          {workflowReadiness.blockers
+                            .map((item) => item.title + '：' + item.detail)
+                            .join(' / ')}
+                        </small>
                       </div>
                     ) : (
                       <div className="workflow-preflight-ok" role="status">
-                        <strong>{hasLearningPointResult ? '可以生成 APKG' : '可以抽取学习点'}</strong>
+                        <strong>{workflowReadiness.primaryActionLabel}</strong>
                         <small>
                           {hasLearningPointResult
-                            ? '环境和模型 API 已就绪。TTS 可在导出前继续测试或配置。'
+                            ? '模型、环境、TTS 和学习点选择均已通过同一套可靠性检查。'
                             : request.batch_enabled
-                              ? `本轮会按 ${batchSubdeckSummary} 逐项制卡，最终导出一个保留层级的 APKG。`
-                              : '本轮会先读取字幕，再调用模型 API 精筛词伙、口语、单词用法、语法和听力点。'}
+                              ? '本轮会逐项制卡，最终导出一个保留层级的 APKG。'
+                              : '本轮会读取字幕，并调用已验证的模型抽取学习点。'}
                         </small>
                       </div>
                     )}
@@ -464,9 +440,14 @@ export function InspectorPanel({
                         不使用缓存抽取学习点
                       </button>
                     ) : null}
-                    <button type="button" className="primary-button" onClick={onGenerate} disabled={appBusy || !sourceReady}>
+                    <button
+                      type="button"
+                      className="primary-button"
+                      onClick={onGenerate}
+                      disabled={appBusy || !workflowReadiness.canProceed}
+                    >
                       <PlayCircle size={18} />
-                      开始抽取学习点
+                      {workflowReadiness.primaryActionLabel}
                     </button>
                   </>
                 )}

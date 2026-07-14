@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { buildReadinessItems, buildTtsReadinessDetail, isEnvironmentReadyForGeneration } from './readiness'
+import {
+  buildReadinessItems,
+  buildTtsReadinessDetail,
+  buildWorkflowReadiness,
+  isEnvironmentReadyForGeneration,
+} from './readiness'
 
 describe('buildReadinessItems', () => {
   it('does not expose hidden document source copy in readiness labels', () => {
@@ -15,6 +20,7 @@ describe('buildReadinessItems', () => {
       apiReadyForGeneration: true,
       hasApiTestResult: true,
       ttsRequired: false,
+      ttsReadyForGeneration: true,
       ttsDetail: '已关闭',
       currentSelectionCount: 1,
     })
@@ -37,6 +43,7 @@ describe('buildReadinessItems', () => {
       apiReadyForGeneration: false,
       hasApiTestResult: false,
       ttsRequired: true,
+      ttsReadyForGeneration: false,
       ttsDetail: '必须先测试',
       currentSelectionCount: 3,
     })
@@ -88,5 +95,97 @@ describe('buildReadinessItems', () => {
         sourceMode: 'document',
       }),
     ).toBe(false)
+  })
+})
+describe('buildWorkflowReadiness', () => {
+  const base = {
+    sourceReady: true,
+    environmentReady: true,
+    environmentChecked: true,
+    apiProvider: 'openai',
+    apiReady: true,
+    apiTested: true,
+    ttsRequired: true,
+    ttsReady: true,
+    ttsTested: true,
+    selectedLearningPointCount: 1,
+    hasLearningPoints: false,
+    hasProject: false,
+    exportableCardCount: 0,
+    repairRequiredCardCount: 0,
+    hasExport: false,
+    ankiVerified: false,
+  }
+
+  it('never reports an unchecked desktop environment as ready', () => {
+    const snapshot = buildWorkflowReadiness({
+      ...base,
+      environmentReady: false,
+      environmentChecked: false,
+    })
+
+    expect(snapshot.stage).toBe('setup')
+    expect(snapshot.canProceed).toBe(false)
+    expect(snapshot.blockers.find((item) => item.id === 'environment')?.state).toBe('unknown')
+    expect(snapshot.primaryActionLabel).toBe('完成 1 项准备')
+  })
+
+  it('allows extraction before TTS testing but blocks video-card generation', () => {
+    const extract = buildWorkflowReadiness({
+      ...base,
+      ttsReady: false,
+      ttsTested: false,
+    })
+    expect(extract.stage).toBe('extract')
+    expect(extract.canProceed).toBe(true)
+    expect(extract.warnings.find((item) => item.id === 'tts')?.title).toBe('TTS 尚未测试')
+
+    const generate = buildWorkflowReadiness({
+      ...base,
+      hasLearningPoints: true,
+      ttsReady: false,
+      ttsTested: false,
+    })
+    expect(generate.stage).toBe('generate')
+    expect(generate.canProceed).toBe(false)
+    expect(generate.blockers.find((item) => item.id === 'tts')?.state).toBe('unknown')
+  })
+
+  it('keeps generated APKG separate from real Anki verification', () => {
+    const exported = buildWorkflowReadiness({
+      ...base,
+      hasLearningPoints: true,
+      hasProject: true,
+      exportableCardCount: 1,
+      hasExport: true,
+    })
+    expect(exported.stage).toBe('verify')
+    expect(exported.canProceed).toBe(false)
+    expect(exported.blockers.map((item) => item.id)).toEqual(['anki'])
+
+    const verified = buildWorkflowReadiness({
+      ...base,
+      hasLearningPoints: true,
+      hasProject: true,
+      exportableCardCount: 1,
+      hasExport: true,
+      ankiVerified: true,
+    })
+    expect(verified.canProceed).toBe(true)
+    expect(verified.primaryActionLabel).toBe('已在 Anki 中核验')
+  })
+
+  it('never mixes repair-required cards into the export gate', () => {
+    const blocked = buildWorkflowReadiness({
+      ...base,
+      hasLearningPoints: true,
+      hasProject: true,
+      exportableCardCount: 0,
+      repairRequiredCardCount: 2,
+    })
+    expect(blocked.stage).toBe('export')
+    expect(blocked.canProceed).toBe(false)
+    expect(blocked.blockers.find((item) => item.id === 'cards')).toBeTruthy()
+    expect(blocked.warnings.find((item) => item.id === 'cards')?.detail).toContain('2 张卡片不会混入本次导出')
   })
 })

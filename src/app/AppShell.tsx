@@ -1,9 +1,11 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { InspectorPanel } from '../features/app/InspectorPanel'
 import { publicSourceModeFor } from '../domain/publicSource'
 import { Topbar } from '../features/app/Topbar'
 import { ReviewWorkspace } from '../features/review/ReviewWorkspace'
 import { SettingsDialog } from '../features/settings/SettingsDialog'
+import { OnboardingWizard } from '../features/onboarding/OnboardingWizard'
+import { loadUiPreferences, saveUiPreferences } from '../services/uiPreferences'
 import type { AppController } from './useAppController'
 
 type AppShellProps = {
@@ -20,6 +22,10 @@ declare global {
 }
 
 export function AppShell({ controller }: AppShellProps) {
+  const [uiPreferences, setUiPreferences] = useState(loadUiPreferences)
+  const [onboardingOpen, setOnboardingOpen] = useState(false)
+  const [onboardingRunId, setOnboardingRunId] = useState(0)
+  const [settingsReturnToOnboarding, setSettingsReturnToOnboarding] = useState(false)
   const {
     activeWorkspaceStage,
     activeSegment,
@@ -38,6 +44,7 @@ export function AppShell({ controller }: AppShellProps) {
     apiTestTitle,
     apiTestTone,
     apiTesting,
+    apiReadyForGeneration,
     hermesChecking,
     hermesStarting,
     hermesStatus,
@@ -102,6 +109,7 @@ export function AppShell({ controller }: AppShellProps) {
     qualityDiagnostics,
     qualityFunnel,
     readiness,
+    workflowReadiness,
     buildReleaseObservedRawSnapshotHandoff,
     buildReleaseObservedTimingCacheSnapshot,
     request,
@@ -156,6 +164,8 @@ export function AppShell({ controller }: AppShellProps) {
     testTts,
     toggleInspector,
     tts,
+    ttsReadyForGeneration,
+    ttsRequired,
     activeTtsKeySaved,
     ttsProfileDirty,
     ttsProfileStatus,
@@ -191,42 +201,66 @@ export function AppShell({ controller }: AppShellProps) {
     }
   }, [buildReleaseObservedRawSnapshotHandoff, buildReleaseObservedTimingCacheSnapshot, isDesktopRuntime])
 
+  useEffect(() => {
+    if (isDesktopRuntime && !uiPreferences.onboardingCompleted) {
+      setOnboardingOpen(true)
+    }
+  }, [isDesktopRuntime, uiPreferences.onboardingCompleted])
+
+  useEffect(() => {
+    if (!inspectorSheetOpen || settingsOpen || generationConfirmOpen || onboardingOpen) return
+
+    const closeInspectorOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      setInspectorState('collapsed')
+      window.requestAnimationFrame(() => {
+        document.querySelector<HTMLButtonElement>('[data-inspector-toggle="true"]')?.focus()
+      })
+    }
+
+    window.addEventListener('keydown', closeInspectorOnEscape)
+    return () => window.removeEventListener('keydown', closeInspectorOnEscape)
+  }, [generationConfirmOpen, inspectorSheetOpen, onboardingOpen, setInspectorState, settingsOpen])
+
+  const dismissOnboarding = () => {
+    const nextPreferences = { ...uiPreferences, onboardingCompleted: true as const }
+    setUiPreferences(nextPreferences)
+    saveUiPreferences(nextPreferences)
+    setOnboardingOpen(false)
+  }
+
+  const openOnboardingSettings = (tab: 'api' | 'tts') => {
+    setSettingsTab(tab)
+    setSettingsReturnToOnboarding(true)
+    setOnboardingOpen(false)
+    setSettingsOpen(true)
+  }
+
+  const closeSettings = () => {
+    setSettingsOpen(false)
+    if (!settingsReturnToOnboarding) return
+    setSettingsReturnToOnboarding(false)
+    setOnboardingOpen(true)
+  }
+
   const hasLearningPointResult = Boolean(learningPointResult && !project)
-  const sourceReady = readiness.find((item) => item.id === 'source')?.done ?? false
   const publicSourceMode = publicSourceModeFor(request.source_mode)
-  const topbarGenerateDisabled =
-    workerBusy ||
-    (!project && !hasLearningPointResult && !sourceReady) ||
-    (hasLearningPointResult && selectedLearningPointCount === 0)
   const primaryGenerateAction = hasLearningPointResult ? generateCardsFromLearningPoints : generate
-  const primaryGenerateLabel = project
-    ? '重新抽取（可能复用缓存）'
-    : hasLearningPointResult
-      ? generationConfirmOpen
-        ? `确认区已打开 · ${generationQueueSummary.count || selectedLearningPointCount} 张`
-        : `生成 APKG · ${selectedLearningPointCount} 张`
-      : '抽取学习点'
   const reviewTemplateLabel = request.review_density === 'fast' ? '快速复读' : '完整复读'
 
   return (
     <div className="app-shell">
       <Topbar
-        appBusy={appBusy}
-        generateDisabled={topbarGenerateDisabled}
-        hasExportableCards={selectedExportableCardCount > 0}
-        hasProject={Boolean(project)}
         inspectorActionLabel={inspectorActionLabel}
         inspectorActive={inspectorState === 'open' || inspectorState === 'collapsing' || inspectorSheetOpen}
         isCancelling={isCancelling}
-        showGenerateButton={!hasLearningPointResult}
         status={status}
         statusTone={statusTone}
         workerBusy={workerBusy}
+        workflowReadiness={workflowReadiness}
         onCancelCurrentWorker={cancelCurrentWorker}
         onDoubleClick={handleTopbarDoubleClick}
-        onExport={exportApkg}
-        generateLabel={primaryGenerateLabel}
-        onGenerate={primaryGenerateAction}
         onMouseDown={startWindowDrag}
         onOpenSettings={() => setSettingsOpen(true)}
         onToggleInspector={toggleInspector}
@@ -265,6 +299,7 @@ export function AppShell({ controller }: AppShellProps) {
             selectedRepairRequiredCardCount={selectedRepairRequiredCardCount}
             selectedLearningPointCount={selectedLearningPointCount}
             readiness={readiness}
+            workflowReadiness={workflowReadiness}
             request={request}
             requestEditedDuringRun={requestEditedDuringRun}
             status={status}
@@ -272,18 +307,43 @@ export function AppShell({ controller }: AppShellProps) {
             workerBusy={workerBusy}
             workerErrorActions={workerErrorActions}
             workerProgress={workerProgress}
-            onCheckEnv={checkEnv}
             onCloseSheet={() => setInspectorState('collapsed')}
             onExport={exportApkg}
             onExtractLearningPointsWithoutCache={extractLearningPointsWithoutCache}
             onGenerate={primaryGenerateAction}
-            onOpenEnvSettings={() => {
-              setSettingsTab('env')
-              setSettingsOpen(true)
-            }}
             onPatchRequest={patchRequest}
             onPreviewRateChange={setPreviewRate}
-            onRepairEnv={repairEnv}
+            onResolveReadiness={(action) => {
+              if (action === 'select_source') {
+                setActiveWorkspaceStage('source')
+                return
+              }
+              if (action === 'check_environment') {
+                checkEnv()
+                return
+              }
+              if (action === 'repair_environment') {
+                repairEnv('all')
+                return
+              }
+              if (action === 'test_api') {
+                setSettingsTab('api')
+                setSettingsOpen(true)
+                return
+              }
+              if (action === 'test_tts') {
+                setSettingsTab('tts')
+                setSettingsOpen(true)
+                return
+              }
+              if (action === 'select_learning_points' || action === 'repair_cards') {
+                setActiveWorkspaceStage('review')
+                return
+              }
+              if (action === 'open_anki') {
+                openAnkiImport()
+              }
+            }}
             onSelectCurrentLevel={selectCurrentLevel}
             onSelectPath={selectPath}
             onSelectSourceMode={selectSourceMode}
@@ -325,6 +385,8 @@ export function AppShell({ controller }: AppShellProps) {
             visibleSegments={visibleSegments}
             workerBusy={workerBusy}
             workerProgress={workerProgress}
+            workflowReadiness={workflowReadiness}
+            workspaceStage={activeWorkspaceStage}
             status={status}
             onCloseGenerationConfirm={closeGenerationConfirm}
             onConfirmGenerateCardsFromLearningPoints={confirmGenerateCardsFromLearningPoints}
@@ -346,6 +408,20 @@ export function AppShell({ controller }: AppShellProps) {
           />
         </section>
       </main>
+
+      <OnboardingWizard
+        key={onboardingRunId}
+        apiReady={apiReadyForGeneration}
+        envStatus={envStatus}
+        open={isDesktopRuntime && onboardingOpen}
+        ttsReady={ttsReadyForGeneration}
+        ttsRequired={ttsRequired}
+        onCheckEnv={checkEnv}
+        onComplete={dismissOnboarding}
+        onOpenApiSettings={() => openOnboardingSettings('api')}
+        onOpenTtsSettings={() => openOnboardingSettings('tts')}
+        onSkip={dismissOnboarding}
+      />
 
       <SettingsDialog
         apiSettings={{
@@ -393,6 +469,7 @@ export function AppShell({ controller }: AppShellProps) {
         motionDuration={motionDuration}
         open={settingsOpen}
         prefersReducedMotion={Boolean(prefersReducedMotion)}
+        settingsMode={uiPreferences.settingsMode}
         settingsTab={settingsTab}
         ttsSettings={{
           advancedTtsPresets,
@@ -425,7 +502,18 @@ export function AppShell({ controller }: AppShellProps) {
           onSetShowAdvancedTts: setShowAdvancedTts,
           onTestTts: testTts,
         }}
-        onClose={() => setSettingsOpen(false)}
+        onClose={closeSettings}
+        onRerunOnboarding={() => {
+          setSettingsReturnToOnboarding(false)
+          setSettingsOpen(false)
+          setOnboardingRunId((current) => current + 1)
+          setOnboardingOpen(true)
+        }}
+        onSettingsModeChange={(settingsMode) => {
+          const nextPreferences = { ...uiPreferences, settingsMode }
+          setUiPreferences(nextPreferences)
+          saveUiPreferences(nextPreferences)
+        }}
         onSettingsTabChange={setSettingsTab}
       />
 

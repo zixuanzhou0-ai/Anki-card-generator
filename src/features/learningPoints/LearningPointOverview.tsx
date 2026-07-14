@@ -1,5 +1,7 @@
-import { useMemo, useState } from 'react'
-import { Filter, Layers3, ListChecks, Sparkles, Trash2 } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Filter, Layers3, ListChecks, Search, Sparkles, Trash2 } from 'lucide-react'
+
+import type { WorkflowReadinessSnapshot } from '../../app/readiness'
 
 import type {
   GenerationQueueSummary,
@@ -23,6 +25,7 @@ type LearningPointOverviewProps = {
   generationConfirmOpen: boolean
   generationQueuePoints: LearningPointItem[]
   generationQueueSummary: GenerationQueueSummary
+  workflowReadiness?: WorkflowReadinessSnapshot
   onCloseGenerationConfirm: () => void
   onConfirmGenerateCards: () => void
   onExtractWithoutCache: () => void
@@ -79,6 +82,7 @@ export function LearningPointOverview({
   generationConfirmOpen,
   generationQueuePoints,
   generationQueueSummary,
+  workflowReadiness,
   onCloseGenerationConfirm,
   onConfirmGenerateCards,
   onExtractWithoutCache,
@@ -89,10 +93,77 @@ export function LearningPointOverview({
 }: LearningPointOverviewProps) {
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all')
   const [levelFilter, setLevelFilter] = useState<LevelFilter>('all')
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('cardable')
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(() =>
+    result.learning_point_summary.recommended > 0 ? 'recommended' : 'cardable',
+  )
+  const [searchQuery, setSearchQuery] = useState('')
+  const [showFilters, setShowFilters] = useState(false)
   const [showGenerationDetails, setShowGenerationDetails] = useState(false)
   const [showLearningDiagnostics, setShowLearningDiagnostics] = useState(false)
+  const confirmPanelRef = useRef<HTMLElement>(null)
+  const returnFocusIdRef = useRef<string | null>(null)
+  const closeConfirmationRef = useRef(onCloseGenerationConfirm)
   const points = useMemo(() => result.learning_points ?? [], [result.learning_points])
+  const hasRecommendedPoints = result.learning_point_summary.recommended > 0
+
+  useEffect(() => {
+    setStatusFilter(hasRecommendedPoints ? 'recommended' : 'cardable')
+    setSearchQuery('')
+    setShowFilters(false)
+  }, [hasRecommendedPoints, result.id])
+
+  useEffect(() => {
+    closeConfirmationRef.current = onCloseGenerationConfirm
+  }, [onCloseGenerationConfirm])
+
+  useEffect(() => {
+    if (!generationConfirmOpen) {
+      const returnFocusId = returnFocusIdRef.current
+      if (returnFocusId) {
+        const target = Array.from(document.querySelectorAll<HTMLElement>('[data-focus-return]')).find(
+          (element) => element.dataset.focusReturn === returnFocusId,
+        )
+        target?.focus()
+        returnFocusIdRef.current = null
+      }
+      return
+    }
+    const panel = confirmPanelRef.current
+    panel?.focus()
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        closeConfirmationRef.current()
+        return
+      }
+      if (event.key !== 'Tab' || !panel) return
+      const focusable = Array.from(
+        panel.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      )
+      if (!focusable.length) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [generationConfirmOpen])
+  const rememberReturnFocus = (element: HTMLElement) => {
+    returnFocusIdRef.current = element.dataset.focusReturn ?? null
+  }
+
   const modelLabel = [result.ai_model_provider, result.ai_model_name].filter(Boolean).join(' · ')
   const selected = selectedLearningPoints(points, selectedIds)
   const selectedRecommendedCount = selected.filter((point) => point.status === 'recommended').length
@@ -115,7 +186,15 @@ export function LearningPointOverview({
   const visiblePoints = useMemo(
     () =>
       points.filter((point) => {
-        if (typeFilter !== 'all' && point.type !== typeFilter) return false
+        const query = searchQuery.trim().toLocaleLowerCase()
+        if (
+          query &&
+          ![pointLabel(point), point.source_sentence, point.exact_span, point.learning_action]
+            .filter(Boolean)
+            .some((value) => String(value).toLocaleLowerCase().includes(query))
+        ) {
+          return false
+        }        if (typeFilter !== 'all' && point.type !== typeFilter) return false
         if (statusFilter === 'cardable' && !cardableLearningPoint(point)) return false
         if (statusFilter === 'needs_review' && !(cardableLearningPoint(point) && learningPointNeedsSourceReview(point))) return false
         if (
@@ -129,7 +208,7 @@ export function LearningPointOverview({
         if (!levelMatches(String(point.level || point.estimated_level || ''), levelFilter)) return false
         return true
       }),
-    [levelFilter, points, statusFilter, typeFilter],
+    [levelFilter, points, searchQuery, statusFilter, typeFilter],
   )
   const visibleCardablePoints = visiblePoints.filter(cardableLearningPoint)
   const cardableVisibleIds = visibleCardablePoints.map((point) => point.id)
@@ -208,9 +287,20 @@ export function LearningPointOverview({
           {generationConfirmOpen ? (
             <span className="generation-confirm-open-badge">确认区已打开</span>
           ) : (
-            <button type="button" className="primary-button" onClick={onGenerateCards} disabled={workerBusy || selected.length === 0}>
+            <button
+              type="button"
+              className="primary-button"
+              data-focus-return="generate-selected"
+              onClick={(event) => {
+                rememberReturnFocus(event.currentTarget)
+                onGenerateCards()
+              }}
+              disabled={workerBusy || selected.length === 0}
+            >
               <ListChecks size={18} />
-              生成 APKG · {selected.length} 个学习点
+              {workflowReadiness?.canProceed === false
+                ? workflowReadiness.primaryActionLabel
+                : `生成选中的 ${selected.length} 张`}
             </button>
           )}
           <small className="learning-point-selection-hint">
@@ -218,14 +308,21 @@ export function LearningPointOverview({
             {selectedRecommendedCount}/{recommendedIds.length} 个。
           </small>
           <button type="button" className="ghost-button compact-secondary-action" onClick={onExtractWithoutCache} disabled={workerBusy}>
-            不使用缓存重新抽取
+            重新分析素材
           </button>
         </div>
       </div>
 
       <div className={`learning-point-review-grid ${generationConfirmOpen ? 'has-confirm' : ''}`}>
         {generationConfirmOpen ? (
-          <section className="generation-confirm-panel" aria-label="生成确认">
+          <section
+            className="generation-confirm-panel"
+            aria-label="生成确认"
+            aria-modal="true"
+            ref={confirmPanelRef}
+            role="dialog"
+            tabIndex={-1}
+          >
             <div className="generation-confirm-header">
               <div>
                 <span className="hero-kicker">生成确认</span>
@@ -241,16 +338,34 @@ export function LearningPointOverview({
                   type="button"
                   className="primary-button generation-confirm-primary"
                   onClick={onConfirmGenerateCards}
-                  disabled={workerBusy || generationQueueSummary.count === 0}
+                  disabled={
+                    workerBusy ||
+                    generationQueueSummary.count === 0 ||
+                    workflowReadiness?.canProceed === false
+                  }
                 >
                   <ListChecks size={18} />
-                  生成 APKG
+                  {workflowReadiness?.canProceed === false
+                    ? workflowReadiness.primaryActionLabel
+                    : '生成 APKG'}
                 </button>
                 <button type="button" className="ghost-button" onClick={onCloseGenerationConfirm} disabled={workerBusy}>
                   返回调整
                 </button>
               </div>
             </div>
+
+            {workflowReadiness && workflowReadiness.blockers.length > 0 ? (
+              <div className="generation-confirm-blockers" role="status">
+                <strong>{workflowReadiness.primaryActionLabel}</strong>
+                {workflowReadiness.blockers.map((blocker) => (
+                  <span key={blocker.id}>
+                    <b>{blocker.title}</b>
+                    <small>{blocker.detail}</small>
+                  </span>
+                ))}
+              </div>
+            ) : null}
 
             <div className="generation-run-summary-strip" aria-label="生成运行状态">
               <span>
@@ -378,7 +493,54 @@ export function LearningPointOverview({
             </div>
           ) : null}
 
+          <div className="learning-point-view-controls" aria-label="学习点视图">
+            <div className="learning-point-view-switch">
+              <button
+                type="button"
+                className={statusFilter === 'recommended' ? 'selected' : ''}
+                aria-pressed={statusFilter === 'recommended'}
+                disabled={!hasRecommendedPoints}
+                onClick={() => setStatusFilter('recommended')}
+              >
+                推荐 {recommendedIds.length}
+              </button>
+              <button
+                type="button"
+                className={statusFilter === 'cardable' ? 'selected' : ''}
+                aria-pressed={statusFilter === 'cardable'}
+                onClick={() => setStatusFilter('cardable')}
+              >
+                全部可制卡 {cardableIds.length}
+              </button>
+            </div>
+            <label className="learning-point-search">
+              <Search size={16} />
+              <input
+                aria-label="搜索学习点"
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="搜索表达、原句或学习动作"
+              />
+            </label>
+            <button
+              type="button"
+              className="ghost-button learning-point-filter-toggle"
+              aria-expanded={showFilters}
+              onClick={() => setShowFilters((current) => !current)}
+            >
+              <Filter size={16} />
+              {showFilters ? '收起筛选' : '筛选'}
+            </button>
+          </div>
+          {!hasRecommendedPoints ? (
+            <div className="learning-point-recommended-fallback" role="status">
+              本次没有高置信推荐项，已自动显示全部可制卡项；请结合原句与“需复查”标记选择。
+            </div>
+          ) : null}
+
           <div className="learning-point-toolbar" aria-label="学习点筛选">
+            {showFilters ? (
+              <>
             <div className="learning-point-filter-row">
               <Filter size={16} />
               {typeFilters.map((filter) => (
@@ -421,6 +583,8 @@ export function LearningPointOverview({
                 </button>
               ))}
             </div>
+              </>
+            ) : null}
             <div className="learning-point-selection-panel" aria-label="批量选择学习点">
               <div className="learning-point-selection-copy">
                 <strong>批量选择</strong>
@@ -497,7 +661,16 @@ export function LearningPointOverview({
                       ) : null}
                       {selectable ? (
                         <div className="learning-point-row-actions">
-                          <button type="button" className="ghost-button" onClick={() => onGenerateSinglePoint(point.id)} disabled={workerBusy}>
+                          <button
+                             type="button"
+                             className="ghost-button"
+                             data-focus-return={`single-${point.id}`}
+                             onClick={(event) => {
+                               rememberReturnFocus(event.currentTarget)
+                               onGenerateSinglePoint(point.id)
+                             }}
+                             disabled={workerBusy}
+                           >
                             只生成这一条
                           </button>
                         </div>

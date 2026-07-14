@@ -11,11 +11,12 @@ describe('EmptyWorkbench', () => {
         level="B1"
         sourceMode="document"
         templateLabel="沉浸语言"
+        workspaceStage="source"
       />,
     )
 
-    expect(screen.getByText('审核区会在生成后展开')).toBeInTheDocument()
-    expect(screen.getByText(/一键生成 APKG/)).toBeInTheDocument()
+    expect(screen.getByText('先确认视频和字幕是否匹配')).toBeInTheDocument()
+    expect(screen.getByText(/SRT 可以手动选择/)).toBeInTheDocument()
     expect(screen.getByText('本地视频')).toBeInTheDocument()
     expect(screen.queryByText('文档资料')).not.toBeInTheDocument()
     expect(screen.queryByText(/生成卡片并导出/)).not.toBeInTheDocument()

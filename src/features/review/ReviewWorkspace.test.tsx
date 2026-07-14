@@ -77,6 +77,7 @@ function renderWorkspace(project: Project | null, overrides = {}) {
     visibleSegments: project?.segments ?? [],
     workerBusy: false,
     workerProgress: null,
+    workspaceStage: 'source' as const,
     status: '准备生成 Anki 卡片。',
     onOpenAnkiImport: vi.fn(),
     onRevealExport: vi.fn(),
@@ -107,7 +108,7 @@ describe('ReviewWorkspace', () => {
     renderWorkspace(null)
 
     expect(screen.getByRole('heading', { name: '生成工作台' })).toBeInTheDocument()
-    expect(screen.getByText('审核区会在生成后展开')).toBeInTheDocument()
+    expect(screen.getByText('先确认视频和字幕是否匹配')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /开始生成/ })).not.toBeInTheDocument()
   })
 
@@ -227,7 +228,7 @@ describe('ReviewWorkspace', () => {
     expect(screen.getByText('缓存 2')).toBeInTheDocument()
     expect(screen.getByText('实时 3')).toBeInTheDocument()
     expect(screen.getByText('in the mood for')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /生成 APKG · 1 个学习点/ }))
+    fireEvent.click(screen.getByRole('button', { name: /生成选中的 1 张/ }))
     expect(onGenerateCardsFromLearningPoints).toHaveBeenCalledOnce()
   })
 
@@ -259,7 +260,7 @@ describe('ReviewWorkspace', () => {
         selected_learning_point_count: 107,
         processed_learning_point_count: 107,
         successful_learning_point_count: 74,
-        generated_card_count: 74,
+        generated_card_count: 107,
         exportable_card_count: 74,
         missing_learning_point_count: 33,
         items: [
@@ -293,12 +294,14 @@ describe('ReviewWorkspace', () => {
       qualityCounts: { total: 107, recommended: 74, review: 0, rejected: 33 },
     })
 
-    expect(screen.getByText('已选 107 个学习点，成功生成 74 张学习卡；33 个未生成')).toBeInTheDocument()
+    expect(screen.getByText('已处理 107 个学习点，74 张通过可靠性检查；33 个需重试')).toBeInTheDocument()
+    expect(screen.getByText(/系统保留了 107 张草稿，但不完整内容不会进入 APKG/)).toBeInTheDocument()
+    expect(screen.queryByText(/成功生成 107 张/)).not.toBeInTheDocument()
     expect(screen.getByText(/硬失败 1/)).toBeInTheDocument()
     expect(screen.getByText(/质量过滤 1/)).toBeInTheDocument()
     expect(screen.getByText(/不可制卡跳过 1/)).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: '重试失败项 33 个' }))
+    fireEvent.click(screen.getByRole('button', { name: '重试未通过项 33 个' }))
     fireEvent.click(screen.getByRole('button', { name: '继续导出 74 张' }))
 
     expect(onRetryMissingLearningPoints).toHaveBeenCalledOnce()

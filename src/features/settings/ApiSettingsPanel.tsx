@@ -40,6 +40,7 @@ type ApiSettingsPanelProps = {
   mimoOpenAiBaseUrl: string
   mimoTextModels: ModelOption[]
   savedApiProfiles: SavedApiProfile[]
+  simpleMode?: boolean
   showCapabilities: boolean
   onApplyApiPreset: (preset: ApiPreset) => void
   onCheckHermes: () => void
@@ -74,6 +75,7 @@ export function ApiSettingsPanel({
   mimoOpenAiBaseUrl,
   mimoTextModels,
   savedApiProfiles,
+  simpleMode = false,
   showCapabilities,
   onApplyApiPreset,
   onApplySavedApiProfile,
@@ -200,8 +202,8 @@ export function ApiSettingsPanel({
       <div className="settings-setup-hero">
         <div>
           <span>模型目录</span>
-          <strong>选择厂商，也可以直接手动填写。</strong>
-          <small>推荐只负责筛选目录；Base URL、Model 和 API Key 始终可编辑。</small>
+          <strong>{simpleMode ? '选择一个模型方案。' : '选择厂商，也可以直接手动填写。'}</strong>
+          <small>{simpleMode ? '选择方案，完成授权，然后测试连接；连接参数保留在高级模式。' : '推荐只负责筛选目录；Base URL、Model 和 API Key 始终可编辑。'}</small>
         </div>
         <div className={`settings-readiness-pill ${authReady ? 'ok' : 'warn'}`}>
           {authReady ? <CheckCircle2 size={16} /> : <CircleAlert size={16} />}
