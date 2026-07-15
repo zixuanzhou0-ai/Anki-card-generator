@@ -85,6 +85,7 @@ import {
   ankiOpenImportStartingStatusMessage,
   ankiVerifyStartingStatusMessage,
   ankiVerifyWorkerStartedMessage,
+  buildAnkiMediaPreparationPayload,
   buildAnkiVerifyPayload,
   exportResultForAnkiVerify,
   prepareAnkiVerifyStart,
@@ -175,6 +176,7 @@ import {
   startHermesProxy as startHermesProxyRuntime,
 } from '../services/hermes'
 import {
+  ensureAnkiRunning,
   openAnkiImport as openAnkiImportFile,
   defaultExportDirectory,
   listDirectoryFiles,
@@ -3233,13 +3235,36 @@ export function useAppController() {
   }
 
   const openAnkiImport = async () => {
-    if (!lastExport?.apkg_path) return
+    const exportForImport = exportResultForAnkiVerify(lastExportFullRef.current, lastExport)
+    const preparation = prepareAnkiVerifyStart({
+      workerBusy,
+      exportResult: exportForImport,
+      tauriRuntime: isTauriRuntime(),
+    })
+    if (!preparation.ok) {
+      if (preparation.statusMessage) setStatus(preparation.statusMessage)
+      return
+    }
     setStatus(ankiOpenImportStartingStatusMessage())
+    setAnkiVerifying(true)
     try {
-      await openAnkiImportFile(lastExport.apkg_path)
+      await ensureAnkiRunning()
+      const prepared = await runWorkerJobAndWait<{
+        ok: boolean
+        message?: string
+        media_recovery_failures?: Array<{ file?: string; error?: string }>
+      }>('verify_anki_import', buildAnkiMediaPreparationPayload(preparation.exportResult))
+      if (!prepared.ok) {
+        throw new Error(prepared.message || 'Anki 媒体安全预置失败。')
+      }
+      await openAnkiImportFile(preparation.exportResult.apkg_path)
       setStatus(ankiOpenImportRequestedStatusMessage())
     } catch (error) {
-      setStatus(redactSensitiveText(error))
+      setStatus(
+        `无法安全打开 Anki 导入：${redactSensitiveText(error)}。请确认 Anki 已打开且 AnkiConnect 可用后重试。`,
+      )
+    } finally {
+      setAnkiVerifying(false)
     }
   }
 

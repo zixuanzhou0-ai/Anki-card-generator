@@ -259,5 +259,61 @@ class CardGenerationDiagnosticsBoundaryTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             worker.COMMANDS["export"]({"project": project})
 
+    def test_export_reliability_allows_verified_subset_with_unselected_repair_draft(self):
+        from acg import card_reliability
+
+        verified_segment = {
+            "id": "seg-safe",
+            "learning_point_id": "lp-safe",
+            "cards": [
+                self._card(
+                    "lp-safe",
+                    id="card-safe",
+                    enabled=True,
+                    generation_source="ai_complete",
+                    verification_status="verified",
+                )
+            ],
+        }
+        repair_segment = {
+            "id": "seg-repair",
+            "learning_point_id": "lp-repair",
+            "cards": [
+                self._card(
+                    "lp-repair",
+                    id="card-repair",
+                    enabled=False,
+                    generation_source="fallback_from_selected_learning_point",
+                    verification_status="needs_review",
+                    quality={"status": "needs_review", "issues": ["系统保底生成，需人工复核。"]},
+                )
+            ],
+        }
+        scoped_manifest = {
+            "schema_version": 1,
+            "verification_profile": "structural_v1",
+            "decision": "pass",
+            "accounting_complete": True,
+            "selected_point_count": 1,
+            "verified_count": 1,
+            "needs_review_count": 0,
+            "hard_failed_count": 0,
+            "selected_point_outcomes": [
+                {
+                    "learning_point_id": "lp-safe",
+                    "status": "verified",
+                    "card_id": "card-safe",
+                    "blocker_codes": [],
+                }
+            ],
+            "blocker_codes": [],
+        }
+        project = {
+            "reliability_manifest": scoped_manifest,
+            "segments": [verified_segment, repair_segment],
+        }
+
+        self.assertEqual(card_reliability.export_reliability_blockers(project), [])
+
 if __name__ == "__main__":
     unittest.main()

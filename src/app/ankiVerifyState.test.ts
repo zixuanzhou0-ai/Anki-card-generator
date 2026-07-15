@@ -6,6 +6,7 @@ import {
   ankiOpenImportStartingStatusMessage,
   ankiVerifyStartingStatusMessage,
   ankiVerifyWorkerStartedMessage,
+  buildAnkiMediaPreparationPayload,
   buildAnkiVerifyPayload,
   exportResultForAnkiVerify,
   prepareAnkiVerifyStart,
@@ -106,13 +107,24 @@ describe('buildAnkiVerifyPayload', () => {
       import_apkg: true,
     })
   })
+
+  it('builds a media-only preparation payload for the native Anki dialog', () => {
+    const result = exportResult()
+
+    expect(buildAnkiMediaPreparationPayload(result)).toEqual({
+      export_result: result,
+      import_apkg: false,
+      prepare_media_only: true,
+      wait_for_anki_seconds: 15,
+    })
+  })
 })
 
 describe('Anki verify copy', () => {
   it('keeps manual import and verify status copy stable', () => {
     expect(ankiVerifyStartingStatusMessage()).toBe('正在通过 AnkiConnect 导入当前 APKG，并核验卡片、媒体和音频取证。')
     expect(ankiVerifyWorkerStartedMessage()).toBe('Anki 导入与媒体核验已在后台运行。')
-    expect(ankiOpenImportStartingStatusMessage()).toBe('正在用 Anki 打开 APKG。')
-    expect(ankiOpenImportRequestedStatusMessage()).toContain('手动导入该 APKG')
+    expect(ankiOpenImportStartingStatusMessage()).toContain('安全预置')
+    expect(ankiOpenImportRequestedStatusMessage()).toContain('媒体已安全准备')
   })
 })

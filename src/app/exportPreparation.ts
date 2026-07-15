@@ -5,7 +5,7 @@ import {
   isUsableCardForExport,
   removeExportBlockedCardSelection,
 } from '../domain/quality'
-import { evaluateProjectReliabilityGate } from '../domain/reliability'
+import { buildReliabilityManifest, evaluateProjectReliabilityGate } from '../domain/reliability'
 import { stripStaleOrdinaryAsrGate } from '../domain/payloadSanitization'
 import {
   VIDEO_RELEASE_CASES,
@@ -73,27 +73,52 @@ function removeSupersededRepairDraftSegments(project: Project) {
   return removedCards > 0 ? { project: { ...project, segments }, removedCards } : { project, removedCards: 0 }
 }
 
+function exportScopedReliabilityManifest(project: Project) {
+  const manifest = project.reliability_manifest
+  if (!manifest) return undefined
+
+  const selectedPointIds = new Set<string>()
+  let selectedCardsWithoutPointId = 0
+  project.segments.forEach((segment) => {
+    segment.cards.forEach((card) => {
+      if (!card.enabled || !isUsableCardForExport(segment, card)) return
+      const pointId = String(card.learning_point_id || segment.learning_point_id || '').trim()
+      if (pointId) selectedPointIds.add(pointId)
+      else selectedCardsWithoutPointId += 1
+    })
+  })
+
+  return buildReliabilityManifest({
+    outcomes: manifest.selected_point_outcomes.filter((outcome) => selectedPointIds.has(outcome.learning_point_id)),
+    selectedPointCount: selectedPointIds.size + selectedCardsWithoutPointId,
+    sourceFingerprint: manifest.source_fingerprint,
+    modelProvider: manifest.model_provider,
+    modelName: manifest.model_name,
+    verificationProfile: manifest.verification_profile,
+    createdAt: manifest.created_at,
+  })
+}
+
+function evaluateExportSelectionReliability(project: Project) {
+  const scopedManifest = exportScopedReliabilityManifest(project)
+  return evaluateProjectReliabilityGate({
+    ...project,
+    ...(scopedManifest ? { reliability_manifest: scopedManifest } : {}),
+    // Reliability is an export contract. Disabled repair drafts remain available
+    // in the review UI, but must not block the verified subset the user chose.
+    segments: project.segments.map((segment) => ({
+      ...segment,
+      cards: segment.cards.filter((card) => card.enabled),
+    })),
+  })
+}
+
 export function prepareProjectForExport(project: Project): ExportPreparationResult {
   const supersededDraftCleanup = removeSupersededRepairDraftSegments(project)
   let projectForExport = supersededDraftCleanup.project
   const messages: string[] = []
   if (supersededDraftCleanup.removedCards > 0) {
     messages.push(`已清理 ${supersededDraftCleanup.removedCards} 张已被正式卡替代的旧保底草稿。`)
-  }
-  const reliabilityGate = evaluateProjectReliabilityGate(projectForExport)
-  if (reliabilityGate.decision === 'block') {
-    return {
-      status: 'blocked',
-      reason: 'reliability_gate_blocked',
-      project: projectForExport,
-      materializedDraftCards: 0,
-      removedRepairRequiredCards: supersededDraftCleanup.removedCards,
-      selectedExportableCards: 0,
-      reliabilityBlockerCodes: reliabilityGate.blockerCodes,
-      statusMessage:
-        `可靠性门禁未通过（${reliabilityGate.blockerCodes.join('、')}）。` +
-        '所有选中学习点必须完成验证后才能导出；保底卡和编辑后未复验卡不会自动进入 APKG。',
-    }
   }
   const materializedForExport = materializeLearningPointInventory(projectForExport)
   if (materializedForExport.added > 0) {
@@ -125,6 +150,7 @@ export function prepareProjectForExport(project: Project): ExportPreparationResu
     messages.push(`已移除 ${safeSelection.removed} 张需修复/不可导出的卡片，继续导出剩余 ${selectedForExport} 张。`)
   }
 
+  let autoSelectedUsableCards = 0
   if (selectedForExport === 0) {
     const usableSelection = applyUsableCardSelection(projectForExport)
     if (usableSelection.selected === 0) {
@@ -140,15 +166,23 @@ export function prepareProjectForExport(project: Project): ExportPreparationResu
     }
     projectForExport = usableSelection.project
     selectedForExport = usableSelection.selected
+    autoSelectedUsableCards = usableSelection.selected
     messages.push(`已自动启用 ${usableSelection.selected} 张可导出卡，继续导出。`)
+  }
+
+  const reliabilityGate = evaluateExportSelectionReliability(projectForExport)
+  if (reliabilityGate.decision === 'block') {
     return {
-      status: 'ready',
+      status: 'blocked',
+      reason: 'reliability_gate_blocked',
       project: projectForExport,
       materializedDraftCards: materializedForExport.added,
       removedRepairRequiredCards: supersededDraftCleanup.removedCards + safeSelection.removed,
       selectedExportableCards: selectedForExport,
-      autoSelectedUsableCards: usableSelection.selected,
-      statusMessage: messages.join(' '),
+      reliabilityBlockerCodes: reliabilityGate.blockerCodes,
+      statusMessage:
+        `可靠性门禁未通过（${reliabilityGate.blockerCodes.join('、')}）。` +
+        '实际导出的学习点必须全部完成验证；未选中的保底草稿和待修复卡不会进入 APKG。',
     }
   }
 
@@ -158,7 +192,7 @@ export function prepareProjectForExport(project: Project): ExportPreparationResu
     materializedDraftCards: materializedForExport.added,
     removedRepairRequiredCards: supersededDraftCleanup.removedCards + safeSelection.removed,
     selectedExportableCards: selectedForExport,
-    autoSelectedUsableCards: 0,
+    autoSelectedUsableCards,
     statusMessage: messages.join(' '),
   }
 }
@@ -430,6 +464,7 @@ export function buildProjectExportPayloadProject({
     project.source_mode === 'document'
       ? project
       : (stripStaleOrdinaryAsrGate(project as Project & Record<string, unknown>) as Project)
+  const scopedReliabilityManifest = exportScopedReliabilityManifest(projectForExport)
   const apiConfigForExport = stripStaleOrdinaryAsrGate(apiConfig as ApiConfig & Record<string, unknown>) as ApiConfig
   const cacheReadPolicy = disableMediaCacheRead
     ? {
@@ -440,6 +475,7 @@ export function buildProjectExportPayloadProject({
 
   return {
     ...projectForExport,
+    ...(scopedReliabilityManifest ? { reliability_manifest: scopedReliabilityManifest } : {}),
     ...cacheReadPolicy,
     template_id: publicTemplateId,
     api_config: {

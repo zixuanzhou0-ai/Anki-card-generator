@@ -2767,6 +2767,48 @@ fn reveal_path_allowed(app: &tauri::AppHandle, target: &Path) -> bool {
     false
 }
 
+fn configure_anki_import_process(command: &mut Command, launch_dir: &Path) {
+    command.current_dir(launch_dir);
+
+    #[cfg(windows)]
+    {
+        // Anki's package importer persists extracted media with an atomic rename.
+        // Keep every temporary-file convention, plus the process working directory,
+        // on the same user-data volume so Windows does not raise ERROR_NOT_SAME_DEVICE
+        // (os error 17) when the desktop app itself was launched from another drive.
+        command.env("TEMP", launch_dir);
+        command.env("TMP", launch_dir);
+        command.env("TMPDIR", launch_dir);
+    }
+}
+
+fn anki_import_runtime_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let launch_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|err| format!("无法确定 Anki 导入临时目录：{err}"))?
+        .join("anki-import-runtime");
+    fs::create_dir_all(&launch_dir).map_err(|err| format!("无法准备 Anki 导入临时目录：{err}"))?;
+    Ok(launch_dir)
+}
+
+#[tauri::command]
+fn ensure_anki_running(app: tauri::AppHandle) -> Result<(), String> {
+    if process_running("anki.exe") {
+        return Ok(());
+    }
+
+    let anki = find_anki()?;
+    let launch_dir = anki_import_runtime_dir(&app)?;
+    let mut command = Command::new(anki);
+    configure_anki_import_process(&mut command, &launch_dir);
+    detach_gui_process(&mut command);
+    command
+        .spawn()
+        .map_err(|err| format!("无法启动 Anki：{err}"))?;
+    Ok(())
+}
+
 #[tauri::command]
 fn open_anki_import(app: tauri::AppHandle, apkg_path: String) -> Result<(), String> {
     let apkg = PathBuf::from(apkg_path);
@@ -2784,8 +2826,10 @@ fn open_anki_import(app: tauri::AppHandle, apkg_path: String) -> Result<(), Stri
     }
 
     let anki = find_anki()?;
+    let launch_dir = anki_import_runtime_dir(&app)?;
     let mut command = Command::new(anki);
     command.arg(apkg);
+    configure_anki_import_process(&mut command, &launch_dir);
     detach_gui_process(&mut command);
     command
         .spawn()
@@ -2912,6 +2956,7 @@ pub fn run() {
             list_directory_files,
             allow_preview_asset,
             reveal_path,
+            ensure_anki_running,
             open_anki_import,
             check_hermes_proxy,
             start_hermes_proxy,
@@ -3045,6 +3090,32 @@ mod tests {
         let candidates = anki_candidates_from_parts(None, None, Vec::new());
 
         assert!(candidates.contains(&PathBuf::from(r"D:\Anki\anki.exe")));
+    }
+
+    #[test]
+    fn anki_import_process_uses_isolated_working_and_temp_directory() {
+        let launch_dir =
+            PathBuf::from(r"C:\Users\Example\AppData\Local\AnkiCardGenerator\anki-import-runtime");
+        let mut command = Command::new(r"C:\Program Files\Anki\anki.exe");
+
+        configure_anki_import_process(&mut command, &launch_dir);
+
+        assert_eq!(command.get_current_dir(), Some(launch_dir.as_path()));
+        #[cfg(windows)]
+        {
+            let configured: std::collections::HashMap<_, _> = command
+                .get_envs()
+                .filter_map(|(name, value)| value.map(|value| (name.to_owned(), value.to_owned())))
+                .collect();
+            for name in ["TEMP", "TMP", "TMPDIR"] {
+                assert_eq!(
+                    configured
+                        .get(std::ffi::OsStr::new(name))
+                        .map(|value| value.as_os_str()),
+                    Some(launch_dir.as_os_str()),
+                );
+            }
+        }
     }
 
     #[test]

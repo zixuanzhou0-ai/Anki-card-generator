@@ -43,6 +43,15 @@ export function buildAnkiVerifyPayload(exportResult: ExportResult) {
   }
 }
 
+export function buildAnkiMediaPreparationPayload(exportResult: ExportResult) {
+  return {
+    export_result: exportResult,
+    import_apkg: false,
+    prepare_media_only: true,
+    wait_for_anki_seconds: 15,
+  }
+}
+
 export function ankiVerifyStartingStatusMessage() {
   return '正在通过 AnkiConnect 导入当前 APKG，并核验卡片、媒体和音频取证。'
 }
@@ -52,9 +61,9 @@ export function ankiVerifyWorkerStartedMessage() {
 }
 
 export function ankiOpenImportStartingStatusMessage() {
-  return '正在用 Anki 打开 APKG。'
+  return '正在启动 Anki，并安全预置本次 APKG 的媒体文件。'
 }
 
 export function ankiOpenImportRequestedStatusMessage() {
-  return '已请求用 Anki 打开 APKG；如果没有弹出导入窗口，请在 Anki 里手动导入该 APKG，然后点击“核验媒体”。'
+  return '媒体已安全准备，Anki 导入选项已打开；确认导入后可继续点击“导入并核验本次牌组”。'
 }

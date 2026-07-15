@@ -57,3 +57,7 @@ export async function revealPath(path: string) {
 export async function openAnkiImport(apkgPath: string) {
   await invoke('open_anki_import', { apkgPath })
 }
+
+export async function ensureAnkiRunning() {
+  await invoke('ensure_anki_running')
+}

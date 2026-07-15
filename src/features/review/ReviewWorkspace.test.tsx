@@ -308,6 +308,42 @@ describe('ReviewWorkspace', () => {
     expect(onExport).toHaveBeenCalledOnce()
   })
 
+  it('collapses the partial notice and removes the duplicate continue action after export succeeds', () => {
+    const project: Project = {
+      ...createDemoProject(defaultRequest),
+      card_generation_diagnostics: {
+        selected_learning_point_count: 10,
+        processed_learning_point_count: 10,
+        successful_learning_point_count: 9,
+        generated_card_count: 10,
+        exportable_card_count: 9,
+        missing_learning_point_count: 1,
+        items: [
+          {
+            learning_point_id: 'lp-repair',
+            answer_core: 'get rid of',
+            status: 'needs_review',
+            reason: '保底卡需要人工复核。',
+          },
+        ],
+      },
+    }
+
+    renderWorkspace(project, {
+      qualityCounts: { total: 10, recommended: 9, review: 1, rejected: 0 },
+      lastExport: {
+        apkg_path: 'E:\\ANKI\\out\\source.apkg',
+        media_dir: 'E:\\ANKI\\out\\media',
+        cards: 9,
+        segments: 9,
+      },
+    })
+
+    expect(screen.getByText('可用卡片已导出')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '继续导出 9 张' })).not.toBeInTheDocument()
+    expect(screen.getByText('已导出 9 张；待修复项未包含在 APKG 中')).toBeInTheDocument()
+  })
+
   it('shows export quality gate details in the review area', () => {
     const project = createDemoProject(defaultRequest)
     renderWorkspace(project, {

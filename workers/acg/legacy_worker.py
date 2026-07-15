@@ -369,6 +369,7 @@ from acg.media_manifest import (
     media_manifest as media_manifest_core,
 )
 from acg.media_refs import extract_media_references, missing_video_required_media_roles
+from acg.presentation import build_card_presentation
 from acg.model_json import (
     extract_json_object as model_json_extract_json_object,
     strip_reasoning_text as model_json_strip_reasoning_text,
@@ -10937,7 +10938,8 @@ body,
   overflow: hidden;
 }
 .learning-hierarchy-system {
-  --recall-accent: #0066df;
+  --recall-accent: #245B85;
+  --recall-accent-soft: rgba(36, 91, 133, 0.09);
   --evidence-accent: #34c759;
   --boundary-accent: #b56a19;
   --transfer-accent: #5856d6;
@@ -10982,7 +10984,7 @@ body,
 }
 .v11-pill {
   background: rgba(0, 122, 255, 0.10);
-  color: #0066df;
+  color: var(--recall-accent);
 }
 .v11-difficulty {
   background: rgba(88, 86, 214, 0.10);
@@ -11082,7 +11084,16 @@ body,
   font-weight: 760;
 }
 .v11-video-stage.is-sound-on .v11-video-cue {
-  background: rgba(0, 102, 204, 0.86);
+  background: rgba(36, 91, 133, 0.92);
+}
+.v11-video-stage.is-paused .v11-video-cue {
+  background: rgba(36, 91, 133, 0.72);
+}
+.v11-video-stage.is-error {
+  box-shadow: inset 0 0 0 3px rgba(178, 58, 53, 0.82);
+}
+.v11-video-stage.is-error .v11-video-cue {
+  background: rgba(178, 58, 53, 0.92);
 }
 .v11-sound-actions {
   display: flex;
@@ -11121,7 +11132,7 @@ body,
   font-size: 18px;
 }
 .v11-play {
-  color: #0066df;
+  color: var(--recall-accent);
   font-size: 1.1em;
   line-height: 1;
 }
@@ -11168,6 +11179,14 @@ body,
   align-items: center;
   margin-top: 4px;
 }
+.v11-phrase-line .v11-answer-title,
+.v11-phrase-line .fast-answer-title {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.v11-phrase-line .v11-speaker {
+  flex: 0 0 44px;
+}
 .v11-answer-title {
   margin: 0;
   color: #050506;
@@ -11187,17 +11206,17 @@ body,
 }
 .v11-speaker {
   display: inline-grid;
-  width: 42px;
-  height: 42px;
+  width: 44px;
+  height: 44px;
   place-items: center;
   border-radius: 14px;
-  color: #0066df;
+  color: var(--recall-accent);
   font-size: 20px;
   font-weight: 900;
 }
 .v11-chinese-core {
   margin: 8px 0 0;
-  color: #0066df;
+  color: var(--recall-accent);
   font-size: clamp(20px, 3.4vw, 27px);
   line-height: 1.3;
   font-weight: 820;
@@ -11235,7 +11254,7 @@ body,
   font-weight: 760;
 }
 .v11-ipa-row.is-spoken strong {
-  color: #0057c2;
+  color: var(--recall-accent);
 }
 .v11-ipa-row.is-status strong {
   color: #6e6e73;
@@ -11271,7 +11290,7 @@ body,
 .v11-source-block {
   margin-top: clamp(18px, 3.2vw, 26px);
   padding-left: clamp(14px, 2.4vw, 20px);
-  border-left: 3px solid rgba(0, 102, 223, 0.18);
+  border-left: 3px solid rgba(36, 91, 133, 0.18);
 }
 .v11-source-label {
   color: #6e6e73;
@@ -11286,6 +11305,17 @@ body,
   line-height: 1.24;
   font-weight: 850;
   overflow-wrap: break-word;
+}
+.target-expression {
+  padding: 0 0.08em;
+  border-radius: 4px;
+  background: var(--recall-accent-soft);
+  color: var(--recall-accent);
+  font-size: 1.08em;
+  font-weight: 800;
+  line-height: inherit;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
 }
 .v11-source-ipa {
   display: grid;
@@ -11325,17 +11355,91 @@ body,
 }
 .v11-info-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: clamp(14px, 2.4vw, 24px);
   margin-top: clamp(32px, 5vw, 48px);
 }
+.v11-info-grid:empty {
+  display: none;
+}
 .v11-info-block {
-  min-height: 150px;
+  min-height: 0;
   padding: clamp(18px, 3vw, 26px);
   border: 1px solid rgba(60, 60, 67, 0.13);
   border-radius: 20px;
   background: #ffffff;
   box-shadow: 0 1px 0 rgba(0, 0, 0, 0.03);
+}
+.v11-info-block:only-child {
+  grid-column: 1 / -1;
+}
+.v11-example-block {
+  margin-top: clamp(18px, 3vw, 26px);
+  padding: clamp(18px, 3vw, 26px);
+  border: 1px solid rgba(36, 91, 133, 0.16);
+  border-radius: 20px;
+  background: rgba(36, 91, 133, 0.035);
+}
+.v11-example-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding-left: 1.35em;
+  color: #313943;
+  font-size: clamp(17px, 3vw, 21px);
+  line-height: 1.55;
+}
+.v11-example-list li {
+  padding-left: 0.25em;
+  overflow-wrap: break-word;
+}
+.v11-sound-button,
+.v11-speaker,
+.v11-video-stage {
+  transition: border-color 140ms ease, background-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
+}
+.v11-sound-button.is-playing,
+.v11-speaker.is-playing {
+  border-color: var(--recall-accent);
+  background: var(--recall-accent-soft);
+  color: var(--recall-accent);
+  box-shadow: 0 0 0 3px rgba(36, 91, 133, 0.12);
+}
+.v11-sound-button.is-paused,
+.v11-speaker.is-paused {
+  border-color: rgba(36, 91, 133, 0.38);
+  color: var(--recall-accent);
+}
+.v11-sound-button.is-error,
+.v11-speaker.is-error {
+  border-color: #b23a35;
+  color: #b23a35;
+  background: rgba(178, 58, 53, 0.07);
+}
+.v11-sound-button:focus-visible,
+.v11-speaker:focus-visible,
+.v11-video-stage:focus-visible {
+  outline: 3px solid rgba(36, 91, 133, 0.35);
+  outline-offset: 3px;
+}
+.v11-live-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .v11-sound-button,
+  .v11-speaker,
+  .v11-video-stage,
+  .v11-video-toggle {
+    transition: none !important;
+  }
 }
 .v11-info-head {
   display: flex;
@@ -11353,7 +11457,7 @@ body,
   place-items: center;
   border-radius: 999px;
   background: rgba(0, 122, 255, 0.10);
-  color: #0066df;
+  color: var(--recall-accent);
 }
 .v11-info-block:nth-child(2) .v11-icon {
   background: rgba(255, 149, 0, 0.14);
@@ -11459,58 +11563,112 @@ V11_CARD_SCRIPT = """
   function rootFor(node) {
     return node && node.closest ? (node.closest(".v11-card") || document) : document;
   }
+  var AUDIO_COPY = {
+    original: { idle: "\u64ad\u653e\u539f\u58f0", playing: "\u6682\u505c\u539f\u58f0", paused: "\u7ee7\u7eed\u539f\u58f0", ended: "\u518d\u542c\u539f\u58f0", error: "\u539f\u58f0\u64ad\u653e\u5931\u8d25\uff0c\u70b9\u51fb\u91cd\u8bd5" },
+    slow: { idle: "\u64ad\u653e\u6162\u8bfb", playing: "\u6682\u505c\u6162\u8bfb", paused: "\u7ee7\u7eed\u6162\u8bfb", ended: "\u518d\u542c\u6162\u8bfb", error: "\u6162\u8bfb\u64ad\u653e\u5931\u8d25\uff0c\u70b9\u51fb\u91cd\u8bd5" },
+    phrase: { idle: "\u64ad\u653e\u8868\u8fbe\u53d1\u97f3", playing: "\u6682\u505c\u8868\u8fbe\u53d1\u97f3", paused: "\u7ee7\u7eed\u8868\u8fbe\u53d1\u97f3", ended: "\u518d\u542c\u8868\u8fbe\u53d1\u97f3", error: "\u8868\u8fbe\u53d1\u97f3\u64ad\u653e\u5931\u8d25\uff0c\u70b9\u51fb\u91cd\u8bd5" }
+  };
+
+  function announce(root, message) {
+    var region = root.querySelector(".v11-live-status");
+    if (region) region.textContent = message || "";
+  }
+
+  function copyFor(button, state) {
+    var role = button.getAttribute("data-media-role") || "original";
+    var copy = AUDIO_COPY[role] || AUDIO_COPY.original;
+    return copy[state] || copy.idle;
+  }
+
+  function setV11AudioState(button, state, shouldAnnounce) {
+    if (!button) return;
+    button.setAttribute("data-media-state", state);
+    button.classList.toggle("is-playing", state === "playing");
+    button.classList.toggle("is-paused", state === "paused");
+    button.classList.toggle("is-error", state === "error");
+    button.setAttribute("aria-pressed", state === "playing" ? "true" : "false");
+    var message = copyFor(button, state);
+    var label = button.querySelector(".v11-button-label");
+    if (label) label.textContent = message;
+    button.setAttribute("aria-label", message);
+    button.setAttribute("title", message);
+    if (shouldAnnounce) announce(rootFor(button), message);
+  }
+
+  function audioButtonFor(audio) {
+    var root = rootFor(audio);
+    var source = audio && audio.closest ? audio.closest(".v11-media-source") : null;
+    if (!source) return null;
+    var selector = source.classList.contains("audio-slow") ? ".audio-slow" : (source.classList.contains("audio-phrase") ? ".audio-phrase" : ".audio-original");
+    return root.querySelector('[data-media-selector="' + selector + '"]');
+  }
+
+  function resetAudio(audio) {
+    if (!audio) return;
+    audio.pause();
+    try { audio.currentTime = 0; } catch (error) {}
+    setV11AudioState(audioButtonFor(audio), "idle", false);
+  }
 
   window.playV11Audio = function(button, selector) {
     var root = rootFor(button);
     var audio = root.querySelector(selector + " audio");
-    if (!audio) return;
-    document.querySelectorAll("audio").forEach(function(node) {
-      if (node !== audio) {
-        node.pause();
-        try { node.currentTime = 0; } catch (error) {}
-      }
-    });
-    document.querySelectorAll(".v11-video-stage video").forEach(function(node) {
-      node.pause();
-      node.muted = false;
-      var stage = node.closest(".v11-video-stage");
-      if (stage) {
-        setV11VideoState(stage, "ready");
-      }
-    });
-    try { audio.currentTime = 0; } catch (error) {}
+    if (!audio) {
+      setV11AudioState(button, "error", true);
+      return;
+    }
+    var state = button.getAttribute("data-media-state") || "idle";
+    if (state === "playing") {
+      audio.pause();
+      setV11AudioState(button, "paused", true);
+      return;
+    }
+    pauseOtherMedia(audio);
+    if (state !== "paused") {
+      try { audio.currentTime = 0; } catch (error) {}
+    }
     audio.playbackRate = 1;
     var playResult = audio.play();
-    if (playResult && playResult.catch) playResult.catch(function() {});
+    if (playResult && playResult.then) {
+      playResult.then(function() {
+        setV11AudioState(button, "playing", true);
+      }).catch(function() {
+        setV11AudioState(button, "error", true);
+      });
+    } else {
+      setV11AudioState(button, "playing", true);
+    }
   };
 
-  function setV11VideoState(stage, state) {
+  function setV11VideoState(stage, state, shouldAnnounce) {
+    if (!stage) return;
     var cue = stage.querySelector(".v11-video-cue");
     var toggle = stage.querySelector(".v11-video-toggle");
-    stage.classList.toggle("is-muted-preview", state === "ready");
-    stage.classList.toggle("is-sound-on", state === "sound");
+    var messages = { idle: "\u70b9\u51fb\u64ad\u653e\u89c6\u9891", playing: "\u89c6\u9891\u64ad\u653e\u4e2d", paused: "\u89c6\u9891\u5df2\u6682\u505c", error: "\u89c6\u9891\u64ad\u653e\u5931\u8d25" };
+    var message = messages[state] || messages.idle;
+    stage.setAttribute("data-media-state", state);
+    stage.classList.toggle("is-muted-preview", state === "idle");
+    stage.classList.toggle("is-sound-on", state === "playing");
     stage.classList.toggle("is-paused", state === "paused");
-    if (cue) {
-      cue.textContent = state === "sound" ? "复读循环中" : (state === "paused" ? "已暂停" : "点画面开始复读");
-    }
-    if (toggle) {
-      toggle.textContent = state === "sound" ? "II" : "▶";
-    }
+    stage.classList.toggle("is-error", state === "error");
+    stage.setAttribute("aria-pressed", state === "playing" ? "true" : "false");
+    stage.setAttribute("aria-label", message);
+
+    if (cue) cue.textContent = message;
+    if (toggle) toggle.textContent = state === "playing" ? "II" : "\u25b6";
+    if (shouldAnnounce) announce(rootFor(stage), message);
   }
 
-  function pauseOtherMedia(activeVideo) {
+  function pauseOtherMedia(activeMedia) {
     document.querySelectorAll("audio").forEach(function(node) {
-      node.pause();
-      try { node.currentTime = 0; } catch (error) {}
+      if (node !== activeMedia) resetAudio(node);
     });
     document.querySelectorAll(".v11-video-stage video").forEach(function(node) {
-      if (node !== activeVideo) {
+      if (node !== activeMedia) {
         node.pause();
         node.muted = false;
-        var stage = node.closest(".v11-video-stage");
-        if (stage) {
-          setV11VideoState(stage, "ready");
-        }
+        try { node.currentTime = 0; } catch (error) {}
+        setV11VideoState(node.closest(".v11-video-stage"), "idle", false);
       }
     });
   }
@@ -11518,23 +11676,53 @@ V11_CARD_SCRIPT = """
   window.toggleV11Video = function(stage) {
     if (!stage) return;
     var video = stage.querySelector("video");
-    if (!video) return;
-    if (video.paused) {
-      pauseOtherMedia(video);
-      if (video.currentTime >= Math.max(0, video.duration - 0.1)) {
-        try { video.currentTime = 0; } catch (error) {}
-      }
-      video.loop = true;
-      video.muted = false;
-      video.volume = 1;
-      var playResult = video.play();
-      if (playResult && playResult.catch) playResult.catch(function() {});
-      setV11VideoState(stage, "sound");
-    } else {
+    if (!video) {
+      setV11VideoState(stage, "error", true);
+      return;
+    }
+    if (!video.paused) {
       video.pause();
-      setV11VideoState(stage, "paused");
+      setV11VideoState(stage, "paused", true);
+      return;
+    }
+    pauseOtherMedia(video);
+    if (video.currentTime >= Math.max(0, video.duration - 0.1)) {
+      try { video.currentTime = 0; } catch (error) {}
+    }
+    video.loop = true;
+    video.muted = false;
+    video.volume = 1;
+    var playResult = video.play();
+    if (playResult && playResult.then) {
+      playResult.then(function() {
+        setV11VideoState(stage, "playing", true);
+      }).catch(function() {
+        setV11VideoState(stage, "error", true);
+      });
+    } else {
+      setV11VideoState(stage, "playing", true);
     }
   };
+  function setupV11AudioButtons() {
+    document.querySelectorAll(".v11-card [data-media-selector]").forEach(function(button) {
+      var root = rootFor(button);
+      var selector = button.getAttribute("data-media-selector");
+      var audio = selector ? root.querySelector(selector + " audio") : null;
+      setV11AudioState(button, audio ? "idle" : "error", false);
+      if (!audio || audio.getAttribute("data-v11-state-bound")) return;
+      audio.addEventListener("play", function() {
+        setV11AudioState(button, "playing", false);
+      });
+      audio.addEventListener("ended", function() {
+        setV11AudioState(button, "ended", true);
+      });
+      audio.addEventListener("error", function() {
+        setV11AudioState(button, "error", true);
+      });
+      audio.setAttribute("data-v11-state-bound", "1");
+    });
+  }
+
 
   function setupV11Videos() {
     document.querySelectorAll(".v11-video-stage").forEach(function(stage) {
@@ -11555,7 +11743,13 @@ V11_CARD_SCRIPT = """
       video.loop = true;
       video.muted = false;
       video.playsInline = true;
-      setV11VideoState(stage, "ready");
+      if (!video.getAttribute("data-v11-state-bound")) {
+        video.addEventListener("error", function() {
+          setV11VideoState(stage, "error", true);
+        });
+        video.setAttribute("data-v11-state-bound", "1");
+      }
+      setV11VideoState(stage, "idle", false);
     });
   }
 
@@ -11572,6 +11766,8 @@ V11_CARD_SCRIPT = """
   }
 
   function setupV11Card() {
+    pauseOtherMedia(null);
+    setupV11AudioButtons();
     setupV11Videos();
     setupV11TextSizing();
   }
@@ -11597,16 +11793,17 @@ LANGUAGE_FRONT_TEMPLATE_V11 = """
     {{#FrontContent}}<p>{{FrontContent}}</p>{{/FrontContent}}
   </section>
   {{#Video}}
-  <section class="v11-video-stage evidence-anchor" onclick="toggleV11Video(this)" role="button" tabindex="0" aria-label="播放视频复读">
+  <section class="v11-video-stage evidence-anchor" onclick="toggleV11Video(this)" role="button" tabindex="0" aria-label="点击播放视频" aria-pressed="false">
     {{Video}}
     <span class="v11-video-toggle">▶</span>
-    <span class="v11-video-cue">点画面开始复读</span>
+    <span class="v11-video-cue">点击播放视频</span>
   </section>
   {{/Video}}
   <section class="v11-sound-actions">
-    {{#Audio}}<span class="v11-media-source audio-original">{{Audio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-original')"><span class="v11-play">▶</span><span>只听原声</span></button>{{/Audio}}
-    {{#TtsAudio}}<span class="v11-media-source audio-slow">{{TtsAudio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-slow')"><span class="v11-play">▶</span><span>慢读跟读</span></button>{{/TtsAudio}}
+    {{#Audio}}<span class="v11-media-source audio-original">{{Audio}}</span><button class="v11-sound-button" data-media-selector=".audio-original" data-media-role="original" data-media-state="idle" aria-pressed="false" onclick="playV11Audio(this, '.audio-original')"><span class="v11-play">▶</span><span class="v11-button-label">播放原声</span></button>{{/Audio}}
+    {{#TtsAudio}}<span class="v11-media-source audio-slow">{{TtsAudio}}</span><button class="v11-sound-button" data-media-selector=".audio-slow" data-media-role="slow" data-media-state="idle" aria-pressed="false" onclick="playV11Audio(this, '.audio-slow')"><span class="v11-play">▶</span><span class="v11-button-label">播放慢读</span></button>{{/TtsAudio}}
   </section>
+  <span class="v11-live-status" aria-live="polite"></span>
 </div>
 """ + V11_CARD_SCRIPT
 
@@ -11618,49 +11815,50 @@ LANGUAGE_BACK_TEMPLATE_V11 = """
     {{#Difficulty}}<span class="v11-difficulty">{{Difficulty}}</span>{{/Difficulty}}
   </div>
   <section class="v11-answer-layout answer-anchor">
-    {{#Video}}
-    <div class="v11-video-stage evidence-anchor" onclick="toggleV11Video(this)" role="button" tabindex="0" aria-label="播放视频复读">
-      {{Video}}
-      <span class="v11-video-toggle">▶</span>
-      <span class="v11-video-cue">点画面开始复读</span>
-      <span class="v11-video-time">{{SourceTime}}</span>
-    </div>
-    {{/Video}}
     <div class="v11-answer-main">
       <div class="v11-time">{{SourceTime}}</div>
       <div class="v11-label">{{CardType}}</div>
       <div class="v11-phrase-line">
         <h1 class="v11-answer-title">{{Answer}}</h1>
-        {{#PhraseTtsAudio}}<span class="v11-media-source audio-phrase">{{PhraseTtsAudio}}</span><button class="v11-speaker" onclick="playV11Audio(this, '.audio-phrase')" aria-label="播放表达发音">▶</button>{{/PhraseTtsAudio}}
+        {{#PhraseTtsAudio}}<span class="v11-media-source audio-phrase">{{PhraseTtsAudio}}</span><button class="v11-speaker" data-media-selector=".audio-phrase" data-media-role="phrase" data-media-state="idle" aria-label="播放表达发音" aria-pressed="false" title="播放表达发音" onclick="playV11Audio(this, '.audio-phrase')">▶</button>{{/PhraseTtsAudio}}
       </div>
-      {{#Chinese}}<p class="v11-chinese-core">{{Chinese}}</p>{{/Chinese}}
-      {{#ChineseFeel}}<p class="v11-answer-note">{{ChineseFeel}}</p>{{/ChineseFeel}}
+      {{#Chinese}}<p class="v11-chinese-core">{{#ChineseDisplay}}{{ChineseDisplay}}{{/ChineseDisplay}}{{^ChineseDisplay}}{{Chinese}}{{/ChineseDisplay}}</p>{{/Chinese}}
+      {{#ChineseFeel}}<p class="v11-answer-note">{{#ChineseFeelDisplay}}{{ChineseFeelDisplay}}{{/ChineseFeelDisplay}}{{^ChineseFeelDisplay}}{{ChineseFeel}}{{/ChineseFeelDisplay}}</p>{{/ChineseFeel}}
       <div class="v11-pronunciation">
         {{#PhoneticIpa}}<div class="v11-ipa-row is-standard"><span>标准读法{{#StandardPronunciationHint}}（{{StandardPronunciationHint}}）{{/StandardPronunciationHint}}</span><strong>{{PhoneticIpa}}</strong></div>{{/PhoneticIpa}}
         {{#SpokenIpa}}<div class="v11-ipa-row is-spoken"><span>{{SpokenPronunciationLabel}}</span><strong>{{SpokenIpa}}</strong></div>{{/SpokenIpa}}
         {{^SpokenIpa}}{{#PronunciationStatus}}<div class="v11-ipa-row is-spoken is-status"><span>{{SpokenPronunciationLabel}}</span><strong>{{PronunciationStatus}}</strong></div>{{/PronunciationStatus}}{{/SpokenIpa}}
         {{#SpokenIpa}}{{#PronunciationStatus}}<div class="v11-ipa-row is-spoken is-status"><span>读法状态</span><strong>{{PronunciationStatus}}</strong></div>{{/PronunciationStatus}}{{/SpokenIpa}}
-        {{#PronunciationNote}}<div class="v11-pronunciation-note"><span>发音说明</span><p>{{PronunciationNote}}</p></div>{{/PronunciationNote}}
+        {{#PronunciationNote}}<div class="v11-pronunciation-note"><span>发音说明</span><p>{{#PronunciationNoteDisplay}}{{PronunciationNoteDisplay}}{{/PronunciationNoteDisplay}}{{^PronunciationNoteDisplay}}{{PronunciationNote}}{{/PronunciationNoteDisplay}}</p></div>{{/PronunciationNote}}
       </div>
       <hr class="v11-divider">
       <section class="v11-source-block evidence-anchor">
         <div class="v11-source-label">原句</div>
-        <p class="v11-source">{{English}}</p>
+        {{#EnglishDisplay}}<p class="v11-source">{{EnglishDisplay}}</p>{{/EnglishDisplay}}
+        {{^EnglishDisplay}}<p class="v11-source">{{English}}</p>{{/EnglishDisplay}}
         {{#SourceSpokenIpa}}<p class="v11-source-ipa"><span>推测原句读法</span><strong>{{SourceSpokenIpa}}</strong></p>{{/SourceSpokenIpa}}
         {{^SourceSpokenIpa}}{{#SourcePronunciationStatus}}<p class="v11-source-ipa is-status"><span>推测原句读法</span><strong>{{SourcePronunciationStatus}}</strong></p>{{/SourcePronunciationStatus}}{{/SourceSpokenIpa}}
-        {{#Context}}<p class="v11-source-translation">{{Context}}</p>{{/Context}}
+        {{#Context}}<p class="v11-source-translation">{{#ContextDisplay}}{{ContextDisplay}}{{/ContextDisplay}}{{^ContextDisplay}}{{Context}}{{/ContextDisplay}}</p>{{/Context}}
       </section>
       <div class="v11-sound-actions is-left">
-        {{#Audio}}<span class="v11-media-source audio-original">{{Audio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-original')"><span class="v11-play">▶</span><span>只听原声</span></button>{{/Audio}}
-        {{#TtsAudio}}<span class="v11-media-source audio-slow">{{TtsAudio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-slow')"><span class="v11-play">▶</span><span>慢读跟读</span></button>{{/TtsAudio}}
+        {{#Audio}}<span class="v11-media-source audio-original">{{Audio}}</span><button class="v11-sound-button" data-media-selector=".audio-original" data-media-role="original" data-media-state="idle" aria-pressed="false" onclick="playV11Audio(this, '.audio-original')"><span class="v11-play">▶</span><span class="v11-button-label">播放原声</span></button>{{/Audio}}
+        {{#TtsAudio}}<span class="v11-media-source audio-slow">{{TtsAudio}}</span><button class="v11-sound-button" data-media-selector=".audio-slow" data-media-role="slow" data-media-state="idle" aria-pressed="false" onclick="playV11Audio(this, '.audio-slow')"><span class="v11-play">▶</span><span class="v11-button-label">播放慢读</span></button>{{/TtsAudio}}
       </div>
     </div>
+    {{#Video}}
+    <div class="v11-video-stage evidence-anchor" onclick="toggleV11Video(this)" role="button" tabindex="0" aria-label="点击播放视频" aria-pressed="false">
+      {{Video}}
+      <span class="v11-video-toggle">▶</span>
+      <span class="v11-video-cue">点击播放视频</span>
+    </div>
+    {{/Video}}
   </section>
   <section class="v11-info-grid">
-    {{#Definition}}<div class="v11-info-block understanding-block"><div class="v11-info-head"><span class="v11-icon">?</span><strong>怎么用</strong></div><p>{{Definition}}</p></div>{{/Definition}}
-    {{#TeacherNote}}<div class="v11-info-block boundary-block"><div class="v11-info-head"><span class="v11-icon">!</span><strong>别误用</strong></div><p>{{TeacherNote}}</p></div>{{/TeacherNote}}
-    {{#Collocations}}<div class="v11-info-block transfer-block"><div class="v11-info-head"><span class="v11-icon">↔</span><strong>搭配 / 迁移句</strong></div><p>{{Collocations}}</p></div>{{/Collocations}}
+    {{#Definition}}<div class="v11-info-block understanding-block"><div class="v11-info-head"><span class="v11-icon">?</span><strong>怎么用</strong></div><p>{{#DefinitionDisplay}}{{DefinitionDisplay}}{{/DefinitionDisplay}}{{^DefinitionDisplay}}{{Definition}}{{/DefinitionDisplay}}</p></div>{{/Definition}}
+    {{#TeacherNote}}<div class="v11-info-block boundary-block"><div class="v11-info-head"><span class="v11-icon">!</span><strong>别误用</strong></div><p>{{#TeacherNoteDisplay}}{{TeacherNoteDisplay}}{{/TeacherNoteDisplay}}{{^TeacherNoteDisplay}}{{TeacherNote}}{{/TeacherNoteDisplay}}</p></div>{{/TeacherNote}}
   </section>
+  {{#TransferExamplesDisplay}}<section class="v11-example-block transfer-block"><div class="v11-info-head"><span class="v11-icon">↗</span><strong>例句与迁移</strong></div>{{TransferExamplesDisplay}}</section>{{/TransferExamplesDisplay}}
+  <span class="v11-live-status" aria-live="polite"></span>
 </div>
 """ + V11_CARD_SCRIPT
 
@@ -11718,16 +11916,17 @@ LANGUAGE_FRONT_TEMPLATE_V11_FAST = """
     {{#FrontContent}}<p>{{FrontContent}}</p>{{/FrontContent}}
   </section>
   {{#Video}}
-  <section class="v11-video-stage evidence-anchor" onclick="toggleV11Video(this)" role="button" tabindex="0" aria-label="播放视频复读">
+  <section class="v11-video-stage evidence-anchor" onclick="toggleV11Video(this)" role="button" tabindex="0" aria-label="点击播放视频" aria-pressed="false">
     {{Video}}
     <span class="v11-video-toggle">▶</span>
-    <span class="v11-video-cue">点画面开始复读</span>
+    <span class="v11-video-cue">点击播放视频</span>
   </section>
   {{/Video}}
   <section class="v11-sound-actions">
-    {{#Audio}}<span class="v11-media-source audio-original">{{Audio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-original')"><span class="v11-play">▶</span><span>只听原声</span></button>{{/Audio}}
-    {{#TtsAudio}}<span class="v11-media-source audio-slow">{{TtsAudio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-slow')"><span class="v11-play">▶</span><span>慢读跟读</span></button>{{/TtsAudio}}
+    {{#Audio}}<span class="v11-media-source audio-original">{{Audio}}</span><button class="v11-sound-button" data-media-selector=".audio-original" data-media-role="original" data-media-state="idle" aria-pressed="false" onclick="playV11Audio(this, '.audio-original')"><span class="v11-play">▶</span><span class="v11-button-label">播放原声</span></button>{{/Audio}}
+    {{#TtsAudio}}<span class="v11-media-source audio-slow">{{TtsAudio}}</span><button class="v11-sound-button" data-media-selector=".audio-slow" data-media-role="slow" data-media-state="idle" aria-pressed="false" onclick="playV11Audio(this, '.audio-slow')"><span class="v11-play">▶</span><span class="v11-button-label">播放慢读</span></button>{{/TtsAudio}}
   </section>
+  <span class="v11-live-status" aria-live="polite"></span>
 </div>
 """ + V11_CARD_SCRIPT
 
@@ -11738,28 +11937,29 @@ LANGUAGE_BACK_TEMPLATE_V11_FAST = """
     <span class="v11-pill">▮ 快速背卡</span>
     {{#Difficulty}}<span class="v11-difficulty">{{Difficulty}}</span>{{/Difficulty}}
   </div>
-  {{#Video}}
-  <section class="v11-video-stage evidence-anchor" onclick="toggleV11Video(this)" role="button" tabindex="0" aria-label="播放视频复读">
-    {{Video}}
-    <span class="v11-video-toggle">▶</span>
-    <span class="v11-video-cue">点画面开始复读</span>
-    <span class="v11-video-time">{{SourceTime}}</span>
-  </section>
-  {{/Video}}
   <section class="fast-answer-focus answer-anchor">
     <div class="v11-label">{{CardType}}</div>
     <div class="v11-phrase-line">
       <h1 class="fast-answer-title">{{Answer}}</h1>
-      {{#PhraseTtsAudio}}<span class="v11-media-source audio-phrase">{{PhraseTtsAudio}}</span><button class="v11-speaker" onclick="playV11Audio(this, '.audio-phrase')" aria-label="播放表达发音">▶</button>{{/PhraseTtsAudio}}
+      {{#PhraseTtsAudio}}<span class="v11-media-source audio-phrase">{{PhraseTtsAudio}}</span><button class="v11-speaker" data-media-selector=".audio-phrase" data-media-role="phrase" data-media-state="idle" aria-label="播放表达发音" aria-pressed="false" title="播放表达发音" onclick="playV11Audio(this, '.audio-phrase')">▶</button>{{/PhraseTtsAudio}}
     </div>
-    {{#Chinese}}<p class="fast-meaning"><strong>语境义</strong>：{{Chinese}}</p>{{/Chinese}}
-    {{#ChineseFeel}}<p class="fast-context">{{ChineseFeel}}</p>{{/ChineseFeel}}
-    {{#English}}<p class="fast-context evidence-anchor">{{English}}</p>{{/English}}
+    {{#Chinese}}<p class="fast-meaning"><strong>语境义</strong>：{{#ChineseDisplay}}{{ChineseDisplay}}{{/ChineseDisplay}}{{^ChineseDisplay}}{{Chinese}}{{/ChineseDisplay}}</p>{{/Chinese}}
+    {{#ChineseFeel}}<p class="fast-context">{{#ChineseFeelDisplay}}{{ChineseFeelDisplay}}{{/ChineseFeelDisplay}}{{^ChineseFeelDisplay}}{{ChineseFeel}}{{/ChineseFeelDisplay}}</p>{{/ChineseFeel}}
+    {{#EnglishDisplay}}<p class="fast-context evidence-anchor">{{EnglishDisplay}}</p>{{/EnglishDisplay}}
+    {{^EnglishDisplay}}{{#English}}<p class="fast-context evidence-anchor">{{English}}</p>{{/English}}{{/EnglishDisplay}}
     <div class="v11-sound-actions is-left fast-audio-row">
-      {{#Audio}}<span class="v11-media-source audio-original">{{Audio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-original')"><span class="v11-play">▶</span><span>原声</span></button>{{/Audio}}
-      {{#TtsAudio}}<span class="v11-media-source audio-slow">{{TtsAudio}}</span><button class="v11-sound-button" onclick="playV11Audio(this, '.audio-slow')"><span class="v11-play">▶</span><span>慢读</span></button>{{/TtsAudio}}
+      {{#Audio}}<span class="v11-media-source audio-original">{{Audio}}</span><button class="v11-sound-button" data-media-selector=".audio-original" data-media-role="original" data-media-state="idle" aria-pressed="false" onclick="playV11Audio(this, '.audio-original')"><span class="v11-play">▶</span><span class="v11-button-label">播放原声</span></button>{{/Audio}}
+      {{#TtsAudio}}<span class="v11-media-source audio-slow">{{TtsAudio}}</span><button class="v11-sound-button" data-media-selector=".audio-slow" data-media-role="slow" data-media-state="idle" aria-pressed="false" onclick="playV11Audio(this, '.audio-slow')"><span class="v11-play">▶</span><span class="v11-button-label">播放慢读</span></button>{{/TtsAudio}}
     </div>
   </section>
+  {{#Video}}
+  <section class="v11-video-stage evidence-anchor" onclick="toggleV11Video(this)" role="button" tabindex="0" aria-label="点击播放视频" aria-pressed="false">
+    {{Video}}
+    <span class="v11-video-toggle">▶</span>
+    <span class="v11-video-cue">点击播放视频</span>
+  </section>
+  {{/Video}}
+  <span class="v11-live-status" aria-live="polite"></span>
 </div>
 """ + V11_CARD_SCRIPT
 
@@ -12474,7 +12674,11 @@ def anki_template_version(template_id: str, deck_kind_code: str = "video_languag
     template_id = normalize_template_id(template_id)
     if deck_kind_code not in {"video_language", "subtitle_language"}:
         return "V10"
-    return "V12" if template_id in {"immersive_v11", "ciba_tianxia_v1"} else "V10"
+    if template_id == "immersive_v11":
+        return "V14"
+    if template_id == "ciba_tianxia_v1":
+        return "V12"
+    return "V10"
 
 
 def uses_v11_repetition_front(template_id: str, deck_kind_code: str = "video_language") -> bool:
@@ -15084,6 +15288,19 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     template_version = anki_template_version(template_id, deck_kind_code)
     is_ciba_template = normalize_template_id(template_id) == "ciba_tianxia_v1"
     use_v11_repetition_front = uses_v11_repetition_front(template_id, deck_kind_code)
+    presentation_field_specs = (
+        [
+            {"name": "EnglishDisplay"},
+            {"name": "ChineseDisplay"},
+            {"name": "ChineseFeelDisplay"},
+            {"name": "PronunciationNoteDisplay"},
+            {"name": "ContextDisplay"},
+            {"name": "DefinitionDisplay"},
+            {"name": "TeacherNoteDisplay"},
+            {"name": "TransferExamplesDisplay"},
+        ]
+        if use_v11_repetition_front else []
+    )
     model = genanki.Model(
         stable_id(f"anki-card-model-{template_version.lower()}-{template_family}", 1000000000),
         f"Anki Card Generator {template_version} - {template_label}",
@@ -15109,6 +15326,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             {"name": "SpokenPronunciationLabel"},
             {"name": "StandardPronunciationHint"},
             {"name": "English"},
+            *presentation_field_specs,
             {"name": "Chinese"},
             {"name": "Phrase"},
             {"name": "Definition"},
@@ -15170,6 +15388,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     phrase_tts_cache_hit_by_phrase: dict[str, bool] = {}
     phrase_tts_semantic_by_phrase: dict[str, dict[str, Any]] = {}
     warnings: list[str] = []
+    presentation_warnings: list[dict[str, Any]] = []
     tts_failure_items: list[dict[str, Any]] = []
     tts_config = normalized_tts_config(project)
     tts_requested = bool(tts_config["enabled"] and tts_config["provider"] != "disabled")
@@ -15976,6 +16195,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     **source_identity,
                 }
             )
+            why_field = card.get("why", "")
             if is_ciba_template:
                 meaning_field = ciba_contextual_meaning_text(card)
                 definition_field = ciba_language_action_text(card)
@@ -15991,6 +16211,38 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                 context_field = document_reading_context_text(card) if deck_kind_code == "document_reading" else export_context_text(card, use_v11_repetition_front)
                 teacher_note_field = export_teacher_note_text(card, use_v11_repetition_front)
                 chinese_feel_field = v11_answer_note_text(card) if use_v11_repetition_front else card.get("chinese_feel", "")
+            presentation_values: list[str] = []
+            if use_v11_repetition_front:
+                presentation_card = {**segment, **card}
+                presentation = build_card_presentation(
+                    presentation_card,
+                    source_text=note_source_sentence,
+                    meaning_text=meaning_field,
+                    answer_note_text=chinese_feel_field,
+                    pronunciation_note_text=card.get("pronunciation_note", ""),
+                    source_translation_text=context_field,
+                    usage_text=definition_field,
+                    misuse_text=teacher_note_field,
+                    example_values=[collocations_field],
+                )
+                presentation_values = [
+                    presentation.source_html,
+                    presentation.meaning_html,
+                    presentation.answer_note_html,
+                    presentation.pronunciation_note_html,
+                    presentation.source_translation_html,
+                    presentation.usage_html,
+                    presentation.misuse_html,
+                    presentation.example_items_html,
+                ]
+                if presentation.warnings:
+                    warning_item = {
+                        "card_id": export_card_id,
+                        "learning_point_id": str(card.get("learning_point_id") or segment.get("learning_point_id") or ""),
+                        "warnings": list(presentation.warnings),
+                    }
+                    presentation_warnings.append(warning_item)
+                    card_media_ledger[-1]["presentation_warnings"] = list(presentation.warnings)
                 why_field = card.get("why", "")
             pronunciation_meta = ensure_card_pronunciation_meta(card, project.get("language", "en"))
             note = genanki.Note(
@@ -16017,6 +16269,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     anki_text(spoken_label_for_meta(pronunciation_meta)),
                     anki_text(standard_hint_for_meta(pronunciation_meta, project.get("language", "en"))),
                     anki_study_text(note_source_sentence),
+                    *presentation_values,
                     anki_text(meaning_field),
                     anki_study_text(card.get("phrase", "")),
                     anki_study_text(definition_field),
@@ -16242,6 +16495,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         "media_manifest": exported_media_manifest,
         "media_ledger": media_ledger,
         "card_media_ledger": card_media_ledger,
+        "presentation_warnings": presentation_warnings,
         "tts_manual_review_items": tts_manual_items,
         "tts_semantic_failures": tts_semantic_failures,
         "tts_semantic_verification": tts_semantic_summary,
@@ -16272,6 +16526,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             "media_bytes": media_bytes,
             "media_mb": round(media_bytes / (1024 * 1024), 1),
             "card_media_ledger_items": len(card_media_ledger),
+            "presentation_warning_cards": len(presentation_warnings),
             "subtitle_diagnostic_status": export_subtitle_status,
             "subtitle_path": export_subtitle_path,
             "media_subtitle_alignment": audio_audit_info.get("media_subtitle_alignment", {}),
@@ -16368,6 +16623,7 @@ def restore_missing_anki_media(
     media_dir: Path,
     anki_media_dir: Path,
     anki_url: str,
+    progress_label: str = "APKG 未带入全部媒体，正在安全补齐",
 ) -> dict[str, Any]:
     restored: list[str] = []
     restored_by: dict[str, str] = {}
@@ -16405,7 +16661,7 @@ def restore_missing_anki_media(
             "verify_anki_import",
             "restore_media",
             30 + int((index / max(1, total)) * 20),
-            f"APKG 未带入全部媒体，正在安全补齐 {index}/{total}。",
+            f"{progress_label} {index}/{total}。",
         )
         try:
             stored_name = anki_connect(
@@ -16457,6 +16713,91 @@ def restore_missing_anki_media(
         "failures": failures,
     }
 
+
+def inspect_anki_media_for_preload(
+    expected_manifest: dict[str, dict[str, Any]],
+    anki_media_dir: Path,
+) -> dict[str, Any]:
+    missing: list[str] = []
+    already_present: list[str] = []
+    conflicts: list[dict[str, str]] = []
+    failures: list[dict[str, str]] = []
+
+    for name in sorted(expected_manifest):
+        normalized_name = Path(name).name
+        if not normalized_name or normalized_name != name:
+            failures.append({"file": name, "error": "媒体文件名不安全，已拒绝预置。"})
+            continue
+
+        expected_hash = str((expected_manifest.get(name) or {}).get("sha256") or "").strip()
+        if not expected_hash:
+            failures.append({"file": name, "error": "媒体清单缺少 sha256，已拒绝预置。"})
+            continue
+
+        destination = anki_media_dir / normalized_name
+        if not destination.exists():
+            missing.append(name)
+            continue
+        if not destination.is_file():
+            conflicts.append({"file": name, "error": "Anki 媒体目录中存在同名非文件项，已拒绝覆盖。"})
+            continue
+        try:
+            actual_hash = file_sha256(destination)
+        except OSError as err:
+            failures.append({"file": name, "error": str(err)})
+            continue
+        if actual_hash == expected_hash:
+            already_present.append(name)
+        else:
+            conflicts.append(
+                {
+                    "file": name,
+                    "error": "Anki 媒体目录中已有同名但内容不同的文件，已拒绝覆盖。",
+                    "expected_sha256": expected_hash,
+                    "actual_sha256": actual_hash,
+                }
+            )
+
+    return {
+        "missing": missing,
+        "already_present": already_present,
+        "conflicts": conflicts,
+        "failures": failures,
+    }
+
+
+def merge_anki_media_recovery(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
+    restored = list(dict.fromkeys([*(first.get("restored") or []), *(second.get("restored") or [])]))
+    restored_by = dict(first.get("restored_by") or {})
+    restored_by.update(second.get("restored_by") or {})
+    return {
+        "attempted": bool(first.get("attempted") or second.get("attempted")),
+        "restored": restored,
+        "restored_by": restored_by,
+        "failures": [*(first.get("failures") or []), *(second.get("failures") or [])],
+    }
+
+
+def wait_for_anki_media_directory(anki_url: str, timeout_seconds: float = 0.0) -> Path:
+    timeout_seconds = max(0.0, min(float(timeout_seconds or 0.0), 20.0))
+    deadline = time.monotonic() + timeout_seconds
+    last_error: Exception | None = None
+    while True:
+        try:
+            media_dir_text = str(anki_connect("getMediaDirPath", {}, anki_url) or "").strip()
+            if not media_dir_text:
+                raise RuntimeError("AnkiConnect 没有返回可用的 collection.media 目录。")
+            media_dir = Path(media_dir_text)
+            if not media_dir.is_dir():
+                raise RuntimeError("AnkiConnect 返回的 collection.media 目录不存在。")
+            return media_dir
+        except Exception as err:
+            last_error = err
+            if time.monotonic() >= deadline:
+                raise last_error
+            time.sleep(0.4)
+
+
 def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
     timing_started = time.perf_counter()
     timing_ms: dict[str, int] = {}
@@ -16505,9 +16846,13 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
         query = f'deck:"{deck_name}" {query}'
 
     import_attempted = bool(payload.get("import_apkg"))
+    prepare_media_only = bool(payload.get("prepare_media_only"))
     import_result: Any = None
     import_error = ""
-    if import_attempted:
+    prepared_anki_media_dir: Path | None = None
+    media_preload = {"missing": [], "already_present": [], "conflicts": [], "failures": []}
+    media_recovery: dict[str, Any] = {"attempted": False, "restored": [], "restored_by": {}, "failures": []}
+    if import_attempted or prepare_media_only:
         if not apkg_path.exists() or not apkg_path.is_file():
             return with_verify_timing(
                 {
@@ -16515,7 +16860,7 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
                     "message": f"找不到要导入的 APKG：{apkg_path}",
                     "failed_checks": ["apkg_missing_for_import"],
                     "query": query,
-                    "import_attempted": True,
+                    "import_attempted": import_attempted,
                     "import_result": False,
                 }
             )
@@ -16526,7 +16871,7 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
                     "message": f"导入路径不是 APKG 文件：{apkg_path}",
                     "failed_checks": ["apkg_invalid_for_import"],
                     "query": query,
-                    "import_attempted": True,
+                    "import_attempted": import_attempted,
                     "import_result": False,
                 }
             )
@@ -16536,9 +16881,120 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
         apkg_mtime_ms = int(apkg_stat.st_mtime * 1000)
         emit_progress(
             "verify_anki_import",
+            "prepare_media",
+            5,
+            "正在连接 Anki，并检查本次 APKG 的媒体落盘条件。",
+        )
+        preparation_started = time.perf_counter()
+        try:
+            prepared_anki_media_dir = wait_for_anki_media_directory(
+                anki_url,
+                payload.get("wait_for_anki_seconds") or 0,
+            )
+        except Exception as err:
+            timing_ms["anki_media_prepare"] = int((time.perf_counter() - preparation_started) * 1000)
+            return with_verify_timing(
+                {
+                    "ok": False,
+                    "message": f"无法连接 AnkiConnect 或读取媒体目录：{err}",
+                    "failed_checks": ["anki_connect"],
+                    "query": query,
+                    "import_attempted": import_attempted,
+                    "import_result": False,
+                }
+            )
+
+        media_preload = inspect_anki_media_for_preload(expected_manifest, prepared_anki_media_dir)
+        preload_issues = [*media_preload["failures"], *media_preload["conflicts"]]
+        if preload_issues:
+            timing_ms["anki_media_prepare"] = int((time.perf_counter() - preparation_started) * 1000)
+            return with_verify_timing(
+                {
+                    "ok": False,
+                    "message": "Anki 媒体预置被安全阻止：存在不安全文件名、缺失哈希或同名内容冲突。",
+                    "failed_checks": ["anki_media_preload_conflict"],
+                    "query": query,
+                    "import_attempted": import_attempted,
+                    "import_result": False,
+                    "media_preload_conflicts": media_preload["conflicts"],
+                    "media_preload_failures": media_preload["failures"],
+                }
+            )
+
+        media_recovery = restore_missing_anki_media(
+            media_preload["missing"],
+            expected_manifest,
+            media_dir,
+            prepared_anki_media_dir,
+            anki_url,
+            progress_label="正在为安全导入预置 Anki 媒体",
+        )
+        timing_ms["anki_media_prepare"] = int((time.perf_counter() - preparation_started) * 1000)
+        if media_recovery["failures"]:
+            source_integrity_failed = any(
+                "哈希与清单不一致" in str(item.get("error") or "")
+                for item in media_recovery["failures"]
+            )
+            return with_verify_timing(
+                {
+                    "ok": False,
+                    "message": (
+                        "导出后的媒体内容与导出清单不一致，已停止导入，避免把被修改的媒体写入 Anki。"
+                        if source_integrity_failed
+                        else "无法在导入前安全预置全部媒体，已停止导入。"
+                    ),
+                    "failed_checks": [
+                        (
+                            "anki_media_source_integrity_failed"
+                            if source_integrity_failed
+                            else "anki_media_preload_failed"
+                        )
+                    ],
+                    "query": query,
+                    "import_attempted": import_attempted,
+                    "import_result": False,
+                    "media_recovery_attempted": media_recovery["attempted"],
+                    "media_recovered_count": 0,
+                    "media_recovered": [],
+                    "media_recovery_methods": {},
+                    "media_recovery_failures": media_recovery["failures"],
+                }
+            )
+
+        if prepare_media_only:
+            prepared_count = len(media_recovery["restored"])
+            already_present_count = len(media_preload["already_present"])
+            return with_verify_timing(
+                {
+                    "ok": True,
+                    "message": (
+                        f"Anki 安全导入准备完成：已预置 {prepared_count} 个媒体文件，"
+                        f"{already_present_count} 个文件已存在且哈希一致。"
+                    ),
+                    "failed_checks": [],
+                    "query": query,
+                    "import_attempted": False,
+                    "import_result": None,
+                    "apkg_path": apkg_path_text,
+                    "apkg_sha256": apkg_sha256,
+                    "apkg_size_bytes": apkg_size_bytes,
+                    "apkg_mtime_ms": apkg_mtime_ms,
+                    "media_prepared_count": prepared_count,
+                    "media_already_present_count": already_present_count,
+                    "media_recovery_attempted": media_recovery["attempted"],
+                    "media_recovered_count": prepared_count,
+                    "media_recovered": media_recovery["restored"],
+                    "media_recovery_methods": media_recovery["restored_by"],
+                    "media_recovery_failures": media_recovery["failures"],
+                }
+            )
+
+    if import_attempted:
+        emit_progress(
+            "verify_anki_import",
             "import",
-            8,
-            "正在通过 AnkiConnect 导入当前 APKG；导入完成后会核验媒体、字段和音频取证。",
+            55,
+            "媒体已安全预置，正在通过 AnkiConnect 导入当前 APKG。",
         )
         import_started = time.perf_counter()
         try:
@@ -16580,7 +17036,7 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
         )
         card_ids = anki_connect("findCards", {"query": query}, anki_url)
         card_infos = anki_connect("cardsInfo", {"cards": card_ids or []}, anki_url) if card_ids else []
-        anki_media_dir = Path(str(anki_connect("getMediaDirPath", {}, anki_url) or ""))
+        anki_media_dir = prepared_anki_media_dir or Path(str(anki_connect("getMediaDirPath", {}, anki_url) or ""))
     except Exception as err:
         timing_ms["anki_query"] = int((time.perf_counter() - query_started) * 1000)
         return with_verify_timing(
@@ -16755,16 +17211,16 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
     tts_semantic_failures = tts_semantic_failure_items(expected_referenced_manifest)
     tts_semantic_summary = tts_semantic_verification_summary(tts_manual_items, expected_referenced_manifest)
     manifest_check = compare_media_manifest(expected_referenced_manifest, anki_media_dir, anki_url=anki_url, max_attempts=1)
-    media_recovery: dict[str, Any] = {"attempted": False, "restored": [], "restored_by": {}, "failures": []}
     if import_attempted and manifest_check["missing"]:
         recovery_started = time.perf_counter()
-        media_recovery = restore_missing_anki_media(
+        post_import_recovery = restore_missing_anki_media(
             manifest_check["missing"],
             expected_referenced_manifest,
             media_dir,
             anki_media_dir,
             anki_url,
         )
+        media_recovery = merge_anki_media_recovery(media_recovery, post_import_recovery)
         timing_ms["anki_media_recovery"] = int((time.perf_counter() - recovery_started) * 1000)
         manifest_check = compare_media_manifest(
             expected_referenced_manifest,
@@ -16882,7 +17338,7 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
         tts_manual_items=tts_manual_items,
     )
     if not failed_checks and media_recovery["restored"]:
-        message = f"{message} 已安全补齐 {len(media_recovery['restored'])} 个未随包导入的媒体文件。"
+        message = f"{message} 已在导入前安全预置或补齐 {len(media_recovery['restored'])} 个媒体文件。"
 
     return with_verify_timing(
         {
@@ -16926,6 +17382,9 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
             "media_recovered": media_recovery["restored"],
             "media_recovery_methods": media_recovery["restored_by"],
             "media_recovery_failures": media_recovery["failures"],
+            "media_already_present_count": len(media_preload["already_present"]),
+            "media_preload_conflicts": media_preload["conflicts"],
+            "media_preload_failures": media_preload["failures"],
             "missing_media": manifest_check["missing"],
             "mismatched_media": manifest_check["mismatched"],
             "inaccessible_media": manifest_check.get("inaccessible", []),

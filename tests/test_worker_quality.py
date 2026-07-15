@@ -8350,7 +8350,7 @@ class WorkerQualityTests(unittest.TestCase):
                         "start": 0,
                         "end": 1,
                         "source_time": "00:00:00.000 - 00:00:01.000",
-                        "text": "Can you run the register for a minute?",
+                        "text": "Can you calibrate the nozzle before we start?",
                         "cards": [
                             {
                                 "id": "card_1",
@@ -8361,6 +8361,10 @@ class WorkerQualityTests(unittest.TestCase):
                                 "chinese": "开始前你能校准一下喷嘴吗？",
                                 "phrase": "calibrate the nozzle",
                                 "answer_core": "calibrate the nozzle",
+                                "exact_span": "calibrate the nozzle",
+                                "exact_span_start": 8,
+                                "exact_span_end": 28,
+                                "example": "Please calibrate the nozzle now. / We calibrate the nozzle before each run.",
                                 "definition": "很常见，先抓住表达再回看上下文。",
                                 "how_to_use_it": "不要只背中文翻译。",
                                 "teacher_note": "复习时先听语气。",
@@ -8374,6 +8378,8 @@ class WorkerQualityTests(unittest.TestCase):
 
             result = worker.handle_export({"project": project, "output_dir": str(output_dir)})
             self.assertEqual(result["quality_audit"]["empty_required_fields"], 0)
+            self.assertEqual(result["template_version"], "V14")
+            self.assertEqual(result["presentation_warnings"], [])
             report = verify_apkg.sqlite_fallback_report(Path(result["apkg_path"]))
             self.assertEqual(report["empty_required_text_fields"], [])
 
@@ -8394,6 +8400,21 @@ class WorkerQualityTests(unittest.TestCase):
             self.assertIn("calibrate the nozzle", verify_apkg.plain_field_text(notes[0]["TeacherNote"]))
             self.assertNotIn("很常见", verify_apkg.plain_field_text(notes[0]["Definition"]))
             self.assertNotIn("注意语境", verify_apkg.plain_field_text(notes[0]["TeacherNote"]))
+            self.assertEqual(notes[0]["English"], "Can you calibrate the nozzle before we start?")
+            self.assertIn(
+                '<mark class="target-expression">calibrate the nozzle</mark>',
+                notes[0]["EnglishDisplay"],
+            )
+            self.assertIn(
+                '<mark class="target-expression">calibrate the nozzle</mark>',
+                notes[0]["DefinitionDisplay"],
+            )
+            self.assertIn(
+                '<mark class="target-expression">calibrate the nozzle</mark>',
+                notes[0]["TeacherNoteDisplay"],
+            )
+            self.assertIn('<ul class="v11-example-list">', notes[0]["TransferExamplesDisplay"])
+            self.assertEqual(verify_apkg.plain_field_text(notes[0]["Example"]), "Please calibrate the nozzle now. / We calibrate the nozzle before each run.")
 
     def test_worker_fail_emits_machine_readable_error(self):
         from acg.protocol import ERROR_PREFIX, fail
@@ -9704,6 +9725,53 @@ class WorkerQualityTests(unittest.TestCase):
         )
         self.assertEqual(text_mismatches[1]["media_window_subtitle_text"], "unrelated media subtitle")
 
+    def test_audio_audit_allows_optional_empty_tts_text(self):
+        from acg.audio_audit import (
+            audio_audit_imported_text_mismatches,
+            build_audio_audit_items,
+            media_text_hash,
+        )
+
+        sentence = "A reliable source sentence."
+        self.assertEqual(media_text_hash(""), "")
+        items = build_audio_audit_items(
+            [
+                {
+                    "card_id": "card-optional",
+                    "segment_id": "segment-optional",
+                    "sentence_tts_text": sentence,
+                    "sentence_tts_audio": "sentence.mp3",
+                    "phrase_tts_text": "",
+                    "phrase_tts_audio": "",
+                }
+            ],
+            {
+                "sentence.mp3": {
+                    "sha256": "sentence-sha",
+                    "text_hash": media_text_hash(sentence),
+                    "semantic_verification": "passed",
+                }
+            },
+            deck_name="Deck",
+            model_name="Model",
+            deck_kind="subtitle_language",
+        )
+
+        self.assertEqual(items[0]["sentence_tts_expected_text"], sentence)
+        self.assertNotIn("phrase_tts_expected_text", items[0])
+        self.assertNotIn("phrase_tts_file", items[0])
+        sentence_actual, mismatches = audio_audit_imported_text_mismatches(
+            "card-optional",
+            {},
+            {
+                "English": {"value": ""},
+                "Answer": {"value": ""},
+                "Phrase": {"value": ""},
+            },
+        )
+        self.assertEqual(sentence_actual, "")
+        self.assertEqual(mismatches, [])
+
     def test_compare_media_manifest_detects_media_collision(self):
         from acg.media_manifest import compare_media_manifest, media_manifest
 
@@ -10151,6 +10219,80 @@ class WorkerQualityTests(unittest.TestCase):
             [action for action, _ in calls].index("findCards"),
         )
 
+    def test_verify_anki_import_can_prepare_media_before_native_anki_dialog(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            apkg_path = Path(temp_dir) / "deck.apkg"
+            apkg_path.write_bytes(b"fake apkg for native dialog")
+            export_dir = Path(temp_dir) / "export_media"
+            export_dir.mkdir()
+            media_name = "sample_original.mp3"
+            media_bytes = b"trusted media bytes"
+            (export_dir / media_name).write_bytes(media_bytes)
+            manifest = worker.media_manifest([str(export_dir / media_name)])
+            anki_dir = Path(temp_dir) / "anki_media"
+            anki_dir.mkdir()
+            original_anki_connect = worker._legacy_worker.anki_connect
+
+            def fake_anki_connect(action, params=None, url=""):
+                calls.append((action, params or {}))
+                if action == "getMediaDirPath":
+                    return str(anki_dir)
+                if action == "storeMediaFile":
+                    stored_bytes = base64.b64decode(params["data"])
+                    (anki_dir / params["filename"]).write_bytes(stored_bytes)
+                    return params["filename"]
+                if action == "importPackage":
+                    raise AssertionError("prepare_media_only must not import the package")
+                raise AssertionError(action)
+
+            try:
+                worker._legacy_worker.anki_connect = fake_anki_connect
+                result = worker.handle_verify_anki_import(
+                    {
+                        "prepare_media_only": True,
+                        "import_apkg": False,
+                        "export_result": {
+                            "apkg_path": str(apkg_path),
+                            "deck_name": "Native Dialog Preparation",
+                            "cards": 1,
+                            "media_manifest": manifest,
+                            "media_summary": {"media_files": 1},
+                            "media_dir": str(export_dir),
+                        },
+                    }
+                )
+                stored_media_bytes = (anki_dir / media_name).read_bytes()
+            finally:
+                worker._legacy_worker.anki_connect = original_anki_connect
+
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["import_attempted"])
+        self.assertIsNone(result["import_result"])
+        self.assertEqual(result["media_prepared_count"], 1)
+        self.assertEqual(result["media_already_present_count"], 0)
+        self.assertEqual(stored_media_bytes, media_bytes)
+        self.assertNotIn("importPackage", [action for action, _ in calls])
+
+    def test_anki_media_preload_blocks_same_name_with_different_content(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            anki_dir = Path(temp_dir) / "collection.media"
+            anki_dir.mkdir()
+            media_name = "sample_original.mp3"
+            (anki_dir / media_name).write_bytes(b"old unrelated bytes")
+            expected_hash = hashlib.sha256(b"new trusted bytes").hexdigest()
+
+            result = worker._legacy_worker.inspect_anki_media_for_preload(
+                {media_name: {"sha256": expected_hash, "bytes": len(b"new trusted bytes")}},
+                anki_dir,
+            )
+
+        self.assertEqual(result["missing"], [])
+        self.assertEqual(result["already_present"], [])
+        self.assertEqual(len(result["conflicts"]), 1)
+        self.assertEqual(result["conflicts"][0]["file"], media_name)
+        self.assertEqual(result["failures"], [])
+
     def test_verify_anki_import_restores_missing_package_media_through_anki_connect(self):
         calls = []
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -10379,7 +10521,8 @@ class WorkerQualityTests(unittest.TestCase):
                 worker._legacy_worker.anki_connect = original_anki_connect
 
         self.assertFalse(result["ok"])
-        self.assertIn("missing_imported_media", result["failed_checks"])
+        self.assertIn("anki_media_source_integrity_failed", result["failed_checks"])
+        self.assertIn("媒体内容与导出清单不一致", result["message"])
         self.assertEqual(result["media_recovered_count"], 0)
         self.assertEqual(len(result["media_recovery_failures"]), 1)
         self.assertIn("哈希", result["media_recovery_failures"][0]["error"])
@@ -13911,6 +14054,7 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertNotIn("自己造句", ciba[3])
         self.assertIn("v11-video-stage", v11[2])
         self.assertEqual(v11_fast[0], "沉浸复读 V11 · 快速复读")
+        self.assertEqual(worker.anki_template_version("immersive_v11", "video_language"), "V14")
         self.assertIn("fast-review-card", v11_fast[1] + v11_fast[2] + v11_fast[3])
         self.assertNotEqual(v11_fast[2], v11[2])
         self.assertIn("语境义", v11_fast[3])
@@ -13918,33 +14062,48 @@ class WorkerQualityTests(unittest.TestCase):
             self.assertIn(field, v11[2] + v11[3])
             self.assertIn(field, v11_fast[2] + v11_fast[3])
         self.assertIn("{{PhraseTtsAudio}}", v11_fast[3])
-        self.assertLess(v11_fast[3].index("v11-video-stage"), v11_fast[3].index("fast-answer-focus"))
+        self.assertLess(v11_fast[3].index("fast-answer-focus"), v11_fast[3].index("v11-video-stage"))
         self.assertNotIn("怎么用", v11_fast[3])
         self.assertNotIn("别误用", v11_fast[3])
-        self.assertNotIn("自己造句", v11_fast[3])
+        self.assertNotIn("例句与迁移", v11_fast[3])
         self.assertNotIn("词霸天下", v11_fast[2] + v11_fast[3])
         self.assertNotIn("语言动作", v11_fast[2] + v11_fast[3])
-        self.assertNotIn("迁移句", v11_fast[2] + v11_fast[3])
         self.assertNotIn("v11-info-grid", v11_fast[3])
-        self.assertIn("v11-video-stage", v11[2])
-        self.assertLess(v11[3].index("v11-video-stage"), v11[3].index("v11-answer-main"))
+        self.assertLess(v11[3].index("v11-answer-main"), v11[3].index("v11-video-stage"))
+        self.assertLess(v11[3].index('{{Answer}}</h1>'), v11[3].index('data-media-role="phrase"'))
+        self.assertLess(v11[3].index('data-media-role="phrase"'), v11[3].index("{{#Chinese}}"))
+        self.assertLess(v11_fast[3].index('{{Answer}}</h1>'), v11_fast[3].index('data-media-role="phrase"'))
+        self.assertLess(v11_fast[3].index('data-media-role="phrase"'), v11_fast[3].index("{{#Chinese}}"))
+        self.assertEqual(v11[3].count('data-media-role="phrase"'), 1)
+        self.assertEqual(v11_fast[3].count('data-media-role="phrase"'), 1)
+        self.assertIn(".v11-video-stage.is-error", v11[1])
+        self.assertIn(".v11-video-stage.is-paused", v11[1])
         self.assertIn(".v11-answer-layout > .v11-video-stage", v11[1])
         self.assertIn(".v11-back .v11-answer-layout", v11[1])
         self.assertIn("flex-direction: column", v11[1])
-        self.assertIn('aria-label="播放视频复读"', v11[2] + v11[3])
+        self.assertIn('aria-label="点击播放视频"', v11[2] + v11[3])
         self.assertIn('stage.addEventListener("keydown"', v11[2] + v11[3])
         self.assertIn("▮ 复读卡", v11[2] + v11[3])
         self.assertIn("playV11Audio", v11[2] + v11[3])
         self.assertIn("toggleV11Video", v11[2] + v11[3])
-        self.assertIn("点画面开始复读", v11[2] + v11[3])
-        self.assertIn("复读循环中", v11[2] + v11[3])
-        self.assertIn("只听原声", v11[2] + v11[3])
-        self.assertIn("慢读跟读", v11[2] + v11[3])
+        self.assertIn("播放原声", v11[2] + v11[3])
+        self.assertIn("播放慢读", v11[2] + v11[3])
+        self.assertIn('data-media-state="idle"', v11[2] + v11[3])
+        self.assertIn('aria-live="polite"', v11[2] + v11[3])
+        self.assertIn("setV11AudioState", v11[2] + v11[3])
         self.assertIn('<div class="v11-label">{{CardType}}</div>', v11[3])
-        self.assertIn("{{#Context}}<p class=\"v11-source-translation\">{{Context}}</p>{{/Context}}", v11[3])
+        self.assertIn("{{ContextDisplay}}", v11[3])
         self.assertIn("怎么用", v11[3])
         self.assertIn("别误用", v11[3])
-        self.assertIn("搭配 / 迁移句", v11[3])
+        self.assertIn("例句与迁移", v11[3])
+        self.assertIn("{{EnglishDisplay}}", v11[3])
+        self.assertIn("{{TransferExamplesDisplay}}", v11[3])
+        self.assertIn("{{ChineseDisplay}}", v11[3])
+        self.assertIn("{{ChineseFeelDisplay}}", v11[3])
+        self.assertIn("{{PronunciationNoteDisplay}}", v11[3])
+        self.assertIn("{{ContextDisplay}}", v11[3])
+        self.assertIn("{{DefinitionDisplay}}", v11[3])
+        self.assertIn("{{TeacherNoteDisplay}}", v11[3])
         self.assertIn("understanding-block", v11[3])
         self.assertIn("boundary-block", v11[3])
         self.assertIn("transfer-block", v11[3])
@@ -13952,19 +14111,23 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertNotIn("怎么迁移", v11[3])
         self.assertNotIn("语言动作", v11[3])
         self.assertNotIn("词霸天下", v11[3])
+        self.assertIn(".target-expression", v11[1])
+        self.assertIn("font-size: 1.08em", v11[1])
+        self.assertNotIn("box-shadow: inset 0 -2px", v11[1])
+        self.assertIn("width: 44px", v11[1])
+        self.assertNotIn("target-expression", v11[2])
         self.assertIn("v11-answer-title.is-long", v11[1])
         self.assertIn("setupV11TextSizing", v11[2] + v11[3])
-        self.assertIn("{{#ChineseFeel}}<p class=\"v11-answer-note\">{{ChineseFeel}}</p>{{/ChineseFeel}}", v11[3])
+        self.assertIn("{{ChineseFeelDisplay}}", v11[3])
         self.assertIn("{{#PhoneticIpa}}", v11[3])
         self.assertIn("标准读法", v11[3])
         self.assertIn("{{SpokenPronunciationLabel}}", v11[3])
         self.assertIn("v11-ipa-row is-spoken", v11[3])
         self.assertIn(".v11-source-block", v11[1])
         self.assertIn("grid-template-columns: max-content minmax(0, 1fr)", v11[1])
-        self.assertLess(v11[3].index("<p class=\"v11-source\">{{English}}</p>"), v11[3].index("v11-source-ipa"))
+        self.assertLess(v11[3].index("{{#EnglishDisplay}}"), v11[3].index("v11-source-ipa"))
         self.assertLess(v11[3].index("v11-source-ipa"), v11[3].index("v11-source-translation"))
         self.assertNotIn("overflow-wrap: anywhere", v11[1])
-        self.assertIn("white-space: pre-line", v11[1])
         self.assertNotIn("<audio controls", v11[2] + v11[3])
         self.assertEqual(language[0], "视频语言 V10")
         self.assertEqual(knowledge[0], "文档知识 V10")
@@ -14015,7 +14178,7 @@ class WorkerQualityTests(unittest.TestCase):
                     self.assertIn("v11-info-block", back, name)
                     self.assertIn("怎么用", back, name)
                     self.assertIn("别误用", back, name)
-                    self.assertIn("搭配 / 迁移句", back, name)
+                    self.assertIn("例句与迁移", back, name)
                 elif template_id == "ciba_tianxia_v1":
                     self.assertIn("ciba-core-group", back, name)
                     self.assertIn("ciba-priority-grid", back, name)

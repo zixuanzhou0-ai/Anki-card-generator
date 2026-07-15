@@ -11,8 +11,13 @@ from acg.text_cleaning import clean_study_text
 from acg.tts_text import clean_tts_input_text
 
 
+def optional_tts_text(value: Any) -> str:
+    raw = str(value or "").strip()
+    return clean_tts_input_text(raw) if raw else ""
+
+
 def media_text_hash(value: Any) -> str:
-    text = clean_tts_input_text(str(value or "")).lower()
+    text = optional_tts_text(value).lower()
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12] if text else ""
 
 
@@ -149,9 +154,9 @@ def audio_audit_imported_text_mismatches(
     fields: dict[str, Any],
 ) -> tuple[str, list[dict[str, Any]]]:
     mismatches: list[dict[str, Any]] = []
-    sentence_expected = clean_tts_input_text(audit_item.get("sentence_tts_expected_text") or "")
-    sentence_actual = clean_tts_input_text(anki_field_plain_text(fields, "English"))
-    card_display_expected = clean_tts_input_text(audit_item.get("card_display_sentence") or "")
+    sentence_expected = optional_tts_text(audit_item.get("sentence_tts_expected_text"))
+    sentence_actual = optional_tts_text(anki_field_plain_text(fields, "English"))
+    card_display_expected = optional_tts_text(audit_item.get("card_display_sentence"))
     if (
         card_display_expected
         and sentence_actual
@@ -186,8 +191,8 @@ def audio_audit_imported_text_mismatches(
                 "actual_text_hash": media_text_hash(sentence_actual),
             }
         )
-    phrase_expected = clean_tts_input_text(audit_item.get("phrase_tts_expected_text") or "")
-    phrase_actual = clean_tts_input_text(
+    phrase_expected = optional_tts_text(audit_item.get("phrase_tts_expected_text"))
+    phrase_actual = optional_tts_text(
         anki_field_plain_text(fields, "Answer") or anki_field_plain_text(fields, "Phrase")
     )
     if phrase_expected and phrase_actual and media_text_hash(phrase_expected) != media_text_hash(phrase_actual):
@@ -273,8 +278,8 @@ def build_audio_audit_items(
             ),
             "source_sentence": clean_study_text(card_media.get("sentence_tts_text") or ""),
             "visible_answer": clean_study_text(card_media.get("answer") or card_media.get("phrase_tts_text") or ""),
-            "sentence_tts_expected_text": clean_tts_input_text(card_media.get("sentence_tts_text") or ""),
-            "phrase_tts_expected_text": clean_tts_input_text(card_media.get("phrase_tts_text") or ""),
+            "sentence_tts_expected_text": optional_tts_text(card_media.get("sentence_tts_text")),
+            "phrase_tts_expected_text": optional_tts_text(card_media.get("phrase_tts_text")),
             "video_webm": Path(str(card_media.get("video_webm") or "")).name,
             "video_mp4": Path(str(card_media.get("video_mp4") or "")).name,
             "poster": Path(str(card_media.get("poster") or "")).name,

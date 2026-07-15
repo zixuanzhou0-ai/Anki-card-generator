@@ -243,6 +243,7 @@ export function ReviewWorkspace({
         <PartialGenerationNotice
           diagnostics={generationDiagnostics}
           exportableCount={qualityCounts.recommended}
+          exportCompleted={Boolean(lastExport)}
           workerBusy={workerBusy}
           onExport={onExport}
           onRetryMissing={onRetryMissingLearningPoints}
@@ -392,6 +393,7 @@ export function ReviewWorkspace({
 function PartialGenerationNotice({
   diagnostics,
   exportableCount,
+  exportCompleted,
   workerBusy,
   onExport,
   onRetryMissing,
@@ -399,6 +401,7 @@ function PartialGenerationNotice({
 }: {
   diagnostics: Project['card_generation_diagnostics']
   exportableCount: number
+  exportCompleted: boolean
   workerBusy: boolean
   onExport: () => void
   onRetryMissing: () => void
@@ -427,7 +430,7 @@ function PartialGenerationNotice({
     return acc
   }, {})
   return (
-    <details className="partial-generation-notice" open>
+    <details className="partial-generation-notice" open={!exportCompleted}>
       <summary>
         <div>
           <strong>
@@ -440,7 +443,7 @@ function PartialGenerationNotice({
               .join(' · ') || '部分学习点没有生成可导出的学习卡。'}
           </span>
         </div>
-        <em>查看原因</em>
+        <em>{exportCompleted ? '可用卡片已导出' : '查看原因'}</em>
       </summary>
       <div className="partial-generation-actions">
         <button
@@ -451,14 +454,20 @@ function PartialGenerationNotice({
         >
           重试未通过项 {missing} 个
         </button>
-        <button
-          className="ghost-button"
-          type="button"
-          onClick={onExport}
-          disabled={workerBusy || exportableCount === 0}
-        >
-          继续导出 {exportableCount} 张
-        </button>
+        {exportCompleted ? (
+          <span className="partial-generation-exported" role="status">
+            已导出 {exportableCount} 张；待修复项未包含在 APKG 中
+          </span>
+        ) : (
+          <button
+            className="ghost-button"
+            type="button"
+            onClick={onExport}
+            disabled={workerBusy || exportableCount === 0}
+          >
+            继续导出 {exportableCount} 张
+          </button>
+        )}
         <button className="ghost-button" type="button" onClick={onReviewInventory} disabled={workerBusy}>
           返回学习点调整
         </button>

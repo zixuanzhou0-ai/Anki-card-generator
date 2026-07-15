@@ -1,7 +1,7 @@
 import type { WorkerFinishedEvent } from '../domain/types'
 
 const ANKI_CONNECT_DISCONNECTED_MESSAGE =
-  'AnkiConnect 未连接，已生成 APKG；请点击“用 Anki 打开 APKG”手动导入。手动导入后可重新启动 AnkiConnect，再点击“我已导入，核验本次牌组”。'
+  'AnkiConnect 未连接，APKG 已安全保留。请先打开 Anki 并确认 AnkiConnect 可用，再重试“用 Anki 打开 APKG”；应用会先校验并预置媒体，避免 Anki 26.5 的媒体写入失败。'
 
 export function clearStaleReviewWorkerError(error: WorkerFinishedEvent | null): WorkerFinishedEvent | null {
   if (!error) return null

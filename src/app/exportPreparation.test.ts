@@ -376,20 +376,32 @@ describe('prepareProjectForExport', () => {
     expect(result.statusMessage).not.toContain('文档卡')
   })
 
-  it('fails closed when any selected learning point still needs review', () => {
-    const target = projectWithCards([
-      {
-        ...baseCard,
-        id: 'fallback-card',
-        enabled: false,
-        learning_point_id: 'lp-missing',
-        generation_source: 'fallback_from_selected_learning_point',
-        verification_status: 'needs_review',
-        quality: { score: 58, status: 'needs_review', issues: ['系统保底生成，需人工复核。'] },
-      },
-    ])
+  it('exports a verified selected subset while retaining an unselected repair draft for later retry', () => {
+    const safeCard: Card = {
+      ...baseCard,
+      id: 'safe-card',
+      enabled: true,
+      learning_point_id: 'lp-safe',
+      verification_status: 'verified',
+    }
+    const fallbackCard: Card = {
+      ...baseCard,
+      id: 'fallback-card',
+      enabled: false,
+      learning_point_id: 'lp-missing',
+      generation_source: 'fallback_from_selected_learning_point',
+      verification_status: 'needs_review',
+      quality: { score: 58, status: 'needs_review', issues: ['系统保底生成，需人工复核。'] },
+    }
+    const target = projectWithCards([safeCard, fallbackCard])
     target.reliability_manifest = buildReliabilityManifest({
       outcomes: [
+        {
+          learning_point_id: 'lp-safe',
+          status: 'verified',
+          card_id: 'safe-card',
+          blocker_codes: [],
+        },
         {
           learning_point_id: 'lp-missing',
           status: 'needs_review',
@@ -400,10 +412,80 @@ describe('prepareProjectForExport', () => {
     })
 
     const result = prepareProjectForExport(target)
+    expect(result.status).toBe('ready')
+    expect(result.selectedExportableCards).toBe(1)
+    expect(result.project.reliability_manifest?.decision).toBe('block')
+
+    const payloadProject = buildProjectExportPayloadProject({
+      project: result.project,
+      templateId: 'immersive',
+      apiConfig: {
+        provider: 'openai-compatible',
+        base_url: '',
+        api_key: '',
+        model: '',
+        capabilities: [],
+        tts_config: {
+          enabled: false,
+          provider: 'disabled',
+          base_url: '',
+          api_key: '',
+          model: '',
+          voice: '',
+          language: 'auto',
+          sample_rate: 24000,
+          bit_rate: 128000,
+        },
+      },
+      ttsConfig: {
+        enabled: false,
+        provider: 'disabled',
+        base_url: '',
+        api_key: '',
+        model: '',
+        voice: '',
+        language: 'auto',
+        sample_rate: 24000,
+        bit_rate: 128000,
+      },
+    })
+    expect(payloadProject.reliability_manifest).toMatchObject({
+      decision: 'pass',
+      selected_point_count: 1,
+      verified_count: 1,
+      needs_review_count: 0,
+    })
+    expect(
+      payloadProject.reliability_manifest?.selected_point_outcomes.map((outcome) => outcome.learning_point_id),
+    ).toEqual(['lp-safe'])
+  })
+
+  it('fails closed when an actually selected exportable learning point still needs review', () => {
+    const target = projectWithCards([
+      {
+        ...baseCard,
+        id: 'review-card',
+        enabled: true,
+        learning_point_id: 'lp-missing',
+        verification_status: 'verified',
+      },
+    ])
+    target.reliability_manifest = buildReliabilityManifest({
+      outcomes: [
+        {
+          learning_point_id: 'lp-missing',
+          status: 'needs_review',
+          card_id: 'review-card',
+          blocker_codes: ['CARD_VERIFICATION_NOT_PASSED'],
+        },
+      ],
+    })
+
+    const result = prepareProjectForExport(target)
     expect(result.status).toBe('blocked')
     if (result.status === 'blocked') {
       expect(result.reason).toBe('reliability_gate_blocked')
-      expect(result.reliabilityBlockerCodes).toContain('FALLBACK_CARD_REQUIRES_REVIEW')
+      expect(result.reliabilityBlockerCodes).toContain('CARD_VERIFICATION_NOT_PASSED')
     }
     expect(result.statusMessage).toContain('可靠性门禁未通过')
   })

@@ -50,9 +50,14 @@ export function ExportResultPanel({
             <button className="ghost-button" type="button" onClick={onRevealExport}>
               定位文件
             </button>
-            <button className="primary-button" type="button" onClick={onOpenAnkiImport}>
-              <ExternalLink size={18} />
-              用 Anki 打开 APKG
+            <button
+              className="primary-button"
+              type="button"
+              onClick={onOpenAnkiImport}
+              disabled={ankiVerifying}
+            >
+              {ankiVerifying ? <Loader2 className="spin" size={18} /> : <ExternalLink size={18} />}
+              {ankiVerifying ? '正在准备 Anki 导入' : '用 Anki 打开 APKG'}
             </button>
             <button className="ghost-button" type="button" onClick={onVerifyAnkiImport} disabled={ankiVerifying}>
               {ankiVerifying ? <Loader2 className="spin" size={18} /> : <PlugZap size={18} />}

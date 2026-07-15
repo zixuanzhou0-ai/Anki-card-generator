@@ -43,7 +43,8 @@ describe('workerFailureStatusMessage', () => {
     }
 
     expect(isAnkiConnectDisconnectedFailure(error)).toBe(true)
-    expect(workerFailureStatusMessage(error)).toContain('请点击“用 Anki 打开 APKG”手动导入')
+    expect(workerFailureStatusMessage(error)).toContain('请先打开 Anki 并确认 AnkiConnect 可用')
+    expect(workerFailureStatusMessage(error)).toContain('应用会先校验并预置媒体')
     expect(workerFailureStatusMessage(error)).toContain('错误码：ANKI_CONNECT_UNAVAILABLE')
     expect(workerFailureStatusMessage(error)).toContain('阶段：anki_verify')
   })
