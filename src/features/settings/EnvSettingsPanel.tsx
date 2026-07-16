@@ -7,6 +7,7 @@ type EnvSettingsPanelProps = {
   envRepairing: boolean
   envRepairResult: EnvRepairResult | null
   envStatus: EnvStatus | null
+  simpleMode?: boolean
   onCheckEnv: () => void
   onRepairEnv: (target?: EnvRepairTarget) => void
 }
@@ -168,12 +169,17 @@ export function EnvSettingsPanel({
   envRepairing,
   envRepairResult,
   envStatus,
+  simpleMode = false,
   onCheckEnv,
   onRepairEnv,
 }: EnvSettingsPanelProps) {
   const readiness = getEnvReadiness(envStatus)
   const capabilityCards = getCapabilityCards(envStatus)
   const hasRepairableIssue = !envStatus || Boolean(envStatus.status_items?.some((item) => item.status !== 'ok'))
+  const simpleIssues = envStatus?.status_items?.filter((item) => item.status !== 'ok') ?? []
+  const simpleRepairNeeded = Boolean(
+    envStatus && (!envStatus.python || !envStatus.ffmpeg || !envStatus.genanki || simpleIssues.length),
+  )
 
   return (
     <section className="settings-section settings-section-single">
@@ -194,7 +200,7 @@ export function EnvSettingsPanel({
           )}
         </div>
         <div className="env-readiness-copy">
-          <span className="label">本地环境诊断中心</span>
+          <span className="label">{simpleMode ? '本地环境' : '本地环境诊断中心'}</span>
           <strong>{readiness.title}</strong>
           <p>{readiness.detail}</p>
           <small>{readiness.meta}</small>
@@ -205,109 +211,149 @@ export function EnvSettingsPanel({
         </button>
       </div>
       <p>这里检查的是本机依赖，不包含任何 API Key；模型和 TTS 的连通性请在前两个设置页单独测试。</p>
-      <div className="env-repair-toolbar">
-        <button
-          className="primary-button"
-          type="button"
-          onClick={() => onRepairEnv('all')}
-          disabled={appBusy || !hasRepairableIssue}
-        >
-          {envRepairing ? <Loader2 className="spin" size={18} /> : <Settings2 size={18} />}
-          一键修复全部可修复项
-        </button>
-        <button className="ghost-button" type="button" onClick={onCheckEnv} disabled={appBusy}>
-          重新检查
-        </button>
-        <small>
-          会尝试安装推荐 Python 3.12、修复 Python 依赖、FFmpeg、Deno/Node 和 Anki；AnkiConnect 需要在 Anki 内确认安装，系统会打开 Anki 并给出插件代码。
-        </small>
-      </div>
-      <div className="env-capability-grid" aria-label="本地能力状态">
-        {capabilityCards.map((item) => (
-          <div className={`env-capability-card ${item.ok ? 'ok' : 'warn'}`} key={item.id}>
-            <strong>{item.label}</strong>
-            <span>{item.ok ? '可用' : '待处理'}</span>
-            <small>{item.detail}</small>
-            {!item.ok && item.repairTarget ? (
-              <button type="button" onClick={() => onRepairEnv(item.repairTarget)} disabled={appBusy}>
-                {envRepairing ? <Loader2 className="spin" size={14} /> : null}
-                {item.repairLabel}
-              </button>
-            ) : null}
-          </div>
-        ))}
-      </div>
-      <div className="settings-row">
-        <div className="env-grid">
-          {envStatus ? (
-            <>
-              <span>Python {envStatus.python ?? '-'}</span>
-              <span className={envStatus.ffmpeg ? 'ok' : 'warn'}>ffmpeg</span>
-              <span className={envStatus.genanki ? 'ok' : 'warn'}>genanki</span>
-              <span className={envStatus.yt_dlp ? 'ok' : 'warn'}>yt-dlp {envStatus.yt_dlp_version ?? ''}</span>
-              <span className={envStatus.yt_dlp_js_runtime ? 'ok' : 'warn'}>
-                JS {envStatus.yt_dlp_js_runtime || '未配置'}
-              </span>
-              <span className={envStatus.anki_installed ? 'ok' : 'warn'}>
-                Anki {envStatus.anki_installed ? (envStatus.anki_running ? '运行中' : '已安装') : '未安装'}
-              </span>
-              <span className={envStatus.anki_connect ? 'ok' : 'warn'}>
-                AnkiConnect {envStatus.anki_connect ? '可用' : '未连接'}
-              </span>
-            </>
-          ) : (
-            <span>尚未检查</span>
-          )}
+      {simpleMode ? (
+        <div className="settings-simple-env">
+          {simpleRepairNeeded ? (
+            <button className="primary-button" type="button" onClick={() => onRepairEnv('all')} disabled={appBusy}>
+              {envRepairing ? <Loader2 className="spin" size={18} /> : <Settings2 size={18} />}
+              修复所需环境
+            </button>
+          ) : null}
+          {simpleIssues.length ? (
+            <div className="env-checklist settings-simple-env-issues" aria-label="需要处理的环境项目">
+              {simpleIssues.map((item) => (
+                <div className={`env-check-item ${item.status}`} key={item.id}>
+                  <strong>{item.label}</strong>
+                  <span>{item.detail}</span>
+                  {item.fix ? <small>{item.fix}</small> : null}
+                </div>
+              ))}
+            </div>
+          ) : simpleRepairNeeded ? (
+            <div className="env-checklist settings-simple-env-issues" aria-label="需要处理的环境项目">
+              <div className="env-check-item blocked">
+                <strong>本地生成环境</strong>
+                <span>Python、FFmpeg 或 APKG 导出依赖尚未全部就绪。</span>
+              </div>
+            </div>
+          ) : null}
+          {envRepairResult ? (
+            <div className={`env-repair-log ${envRepairResult.ok ? 'ok' : 'warn'}`} aria-label="环境修复结果">
+              <div className="env-repair-log-head">
+                <strong>{envRepairResult.ok ? '修复步骤已完成' : '修复步骤需要继续处理'}</strong>
+                <span>{envRepairResult.summary}</span>
+              </div>
+            </div>
+          ) : null}
         </div>
-      </div>
-      <div className="first-run-steps" aria-label="普通用户 5 步安装">
-        {firstRunSteps.map((step, index) => (
-          <span key={step}>
-            <strong>{index + 1}</strong>
-            {step}
-          </span>
-        ))}
-      </div>
-      {envStatus?.status_items?.length ? (
-        <div className="env-checklist" aria-label="环境检查明细">
-          {envStatus.status_items.map((item) => {
-            const repairAction = getStatusRepairAction(item)
-            return (
-              <div className={`env-check-item ${item.status}`} key={item.id}>
+      ) : (
+        <>
+          <div className="env-repair-toolbar">
+            <button
+              className="primary-button"
+              type="button"
+              onClick={() => onRepairEnv('all')}
+              disabled={appBusy || !hasRepairableIssue}
+            >
+              {envRepairing ? <Loader2 className="spin" size={18} /> : <Settings2 size={18} />}
+              一键修复全部可修复项
+            </button>
+            <button className="ghost-button" type="button" onClick={onCheckEnv} disabled={appBusy}>
+              重新检查
+            </button>
+            <small>
+              会尝试安装推荐 Python 3.12、修复 Python 依赖、FFmpeg、Deno/Node 和 Anki；AnkiConnect 需要在 Anki
+              内确认安装，系统会打开 Anki 并给出插件代码。
+            </small>
+          </div>
+          <div className="env-capability-grid" aria-label="本地能力状态">
+            {capabilityCards.map((item) => (
+              <div className={`env-capability-card ${item.ok ? 'ok' : 'warn'}`} key={item.id}>
                 <strong>{item.label}</strong>
-                <span>{item.detail}</span>
-                {item.status !== 'ok' && item.fix ? <small>{item.fix}</small> : null}
-                {repairAction ? (
-                  <button type="button" onClick={() => onRepairEnv(repairAction.target)} disabled={appBusy}>
-                    {repairAction.label}
+                <span>{item.ok ? '可用' : '待处理'}</span>
+                <small>{item.detail}</small>
+                {!item.ok && item.repairTarget ? (
+                  <button type="button" onClick={() => onRepairEnv(item.repairTarget)} disabled={appBusy}>
+                    {envRepairing ? <Loader2 className="spin" size={14} /> : null}
+                    {item.repairLabel}
                   </button>
                 ) : null}
               </div>
-            )
-          })}
-        </div>
-      ) : null}
-      {envRepairResult ? (
-        <div className={`env-repair-log ${envRepairResult.ok ? 'ok' : 'warn'}`} aria-label="环境修复日志">
-          <div className="env-repair-log-head">
-            <strong>{envRepairResult.ok ? '修复步骤已完成' : '修复步骤需要继续处理'}</strong>
-            <span>{envRepairResult.summary}</span>
+            ))}
           </div>
-          {envRepairResult.actions.map((action) => (
-            <div className={`env-repair-action ${action.status}`} key={`${action.id}-${action.label}`}>
-              <strong>{action.label}</strong>
-              <span>{action.detail}</span>
-              {action.next_step ? <small>{action.next_step}</small> : null}
+          <div className="settings-row">
+            <div className="env-grid">
+              {envStatus ? (
+                <>
+                  <span>Python {envStatus.python ?? '-'}</span>
+                  <span className={envStatus.ffmpeg ? 'ok' : 'warn'}>ffmpeg</span>
+                  <span className={envStatus.genanki ? 'ok' : 'warn'}>genanki</span>
+                  <span className={envStatus.yt_dlp ? 'ok' : 'warn'}>yt-dlp {envStatus.yt_dlp_version ?? ''}</span>
+                  <span className={envStatus.yt_dlp_js_runtime ? 'ok' : 'warn'}>
+                    JS {envStatus.yt_dlp_js_runtime || '未配置'}
+                  </span>
+                  <span className={envStatus.anki_installed ? 'ok' : 'warn'}>
+                    Anki {envStatus.anki_installed ? (envStatus.anki_running ? '运行中' : '已安装') : '未安装'}
+                  </span>
+                  <span className={envStatus.anki_connect ? 'ok' : 'warn'}>
+                    AnkiConnect {envStatus.anki_connect ? '可用' : '未连接'}
+                  </span>
+                </>
+              ) : (
+                <span>尚未检查</span>
+              )}
             </div>
-          ))}
-        </div>
-      ) : null}
-      {envStatus?.worker ? (
-        <small className="diagnostic-footnote">
-          Worker: {envStatus.worker}
-          {envStatus.python_executable ? ` · Python: ${envStatus.python_executable}` : ''}
-        </small>
-      ) : null}
+          </div>
+          <div className="first-run-steps" aria-label="普通用户 5 步安装">
+            {firstRunSteps.map((step, index) => (
+              <span key={step}>
+                <strong>{index + 1}</strong>
+                {step}
+              </span>
+            ))}
+          </div>
+          {envStatus?.status_items?.length ? (
+            <div className="env-checklist" aria-label="环境检查明细">
+              {envStatus.status_items.map((item) => {
+                const repairAction = getStatusRepairAction(item)
+                return (
+                  <div className={`env-check-item ${item.status}`} key={item.id}>
+                    <strong>{item.label}</strong>
+                    <span>{item.detail}</span>
+                    {item.status !== 'ok' && item.fix ? <small>{item.fix}</small> : null}
+                    {repairAction ? (
+                      <button type="button" onClick={() => onRepairEnv(repairAction.target)} disabled={appBusy}>
+                        {repairAction.label}
+                      </button>
+                    ) : null}
+                  </div>
+                )
+              })}
+            </div>
+          ) : null}
+          {envRepairResult ? (
+            <div className={`env-repair-log ${envRepairResult.ok ? 'ok' : 'warn'}`} aria-label="环境修复日志">
+              <div className="env-repair-log-head">
+                <strong>{envRepairResult.ok ? '修复步骤已完成' : '修复步骤需要继续处理'}</strong>
+                <span>{envRepairResult.summary}</span>
+              </div>
+              {envRepairResult.actions.map((action) => (
+                <div className={`env-repair-action ${action.status}`} key={`${action.id}-${action.label}`}>
+                  <strong>{action.label}</strong>
+                  <span>{action.detail}</span>
+                  {action.next_step ? <small>{action.next_step}</small> : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {envStatus?.worker ? (
+            <small className="diagnostic-footnote">
+              Worker: {envStatus.worker}
+              {envStatus.python_executable ? ` · Python: ${envStatus.python_executable}` : ''}
+            </small>
+          ) : null}
+        </>
+      )}
     </section>
   )
 }

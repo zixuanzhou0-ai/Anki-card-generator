@@ -1,7 +1,8 @@
 import type { ComponentProps, RefObject } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { Boxes, CheckCircle2, CircleAlert, Loader2, PlugZap, RotateCcw, Settings2, X } from 'lucide-react'
+import { Boxes, CheckCircle2, CircleAlert, Layers3, Loader2, PlugZap, RotateCcw, Settings2, X } from 'lucide-react'
 
+import { useModalFocusTrap } from '../../app/useModalFocusTrap'
 import type { SettingsTab } from '../../domain/types'
 import { AboutSettingsPanel } from './AboutSettingsPanel'
 import { ApiSettingsPanel } from './ApiSettingsPanel'
@@ -15,11 +16,16 @@ type SettingsDialogProps = {
   motionDuration: number
   open: boolean
   prefersReducedMotion: boolean
+  dirty: boolean
+  saving: boolean
   settingsMode: 'simple' | 'advanced'
   settingsTab: SettingsTab
   ttsSettings: ComponentProps<typeof TtsSettingsPanel>
+  onApplyWithoutVerification: () => void
   onClose: () => void
+  onDiscardChanges: () => void
   onRerunOnboarding: () => void
+  onSaveAndVerify: () => void
   onSettingsModeChange: (mode: 'simple' | 'advanced') => void
   onSettingsTabChange: (tab: SettingsTab) => void
 }
@@ -27,7 +33,8 @@ type SettingsDialogProps = {
 type HealthTone = 'idle' | 'ok' | 'testing' | 'warn'
 
 type SettingsHealthCard = {
-  icon: 'api' | 'env' | 'tts'
+  icon: 'anki' | 'api' | 'env' | 'tts'
+  actionLabel?: string
   message: string
   meta: string
   status: string
@@ -62,7 +69,7 @@ function getEnvHealthCard(envSettings: ComponentProps<typeof EnvSettingsPanel>):
     return {
       icon: 'env',
       message: '先检查本机依赖；缺少 Python 时也可以一键安装推荐运行环境。',
-      meta: 'Python 3.12 · FFmpeg · genanki · yt-dlp · Anki · AnkiConnect',
+      meta: 'Python 3.12 · FFmpeg · genanki · yt-dlp',
       status: '未检查',
       tab: 'env',
       title: '本地环境',
@@ -87,19 +94,57 @@ function getEnvHealthCard(envSettings: ComponentProps<typeof EnvSettingsPanel>):
     }
   }
 
-  const optionalMissing = [
-    !envStatus.yt_dlp ? 'YouTube 导入' : '',
-    !envStatus.anki_installed ? 'Anki 桌面端' : '',
-    !envStatus.anki_connect ? 'Anki 直连' : '',
-  ].filter(Boolean)
+  const optionalMissing = [!envStatus.yt_dlp ? 'YouTube 导入' : ''].filter(Boolean)
   return {
     icon: 'env',
-    message: optionalMissing.length ? `${optionalMissing.join('、')}还需要单独确认。` : '生成、切片和 APKG 导出所需依赖已就绪。',
+    message: optionalMissing.length
+      ? `${optionalMissing.join('、')}还需要单独确认。`
+      : '生成、切片和 APKG 导出所需依赖已就绪。',
     meta: envStatus.python ? `Python ${envStatus.python}` : '核心依赖已就绪',
     status: optionalMissing.length ? '基本可用' : '已就绪',
     tab: 'env',
     title: '本地环境',
     tone: optionalMissing.length ? 'idle' : 'ok',
+  }
+}
+
+function getAnkiHealthCard(envSettings: ComponentProps<typeof EnvSettingsPanel>): SettingsHealthCard {
+  const { envStatus } = envSettings
+  if (envStatus?.anki_connect) {
+    return {
+      icon: 'anki',
+      actionLabel: '导入与核验',
+      message: 'AnkiConnect 已连接，可以在导入后继续核验牌组、卡片和媒体。',
+      meta: '导入与核验 · 当前连接可用',
+      status: 'AnkiConnect 可用',
+      tab: 'env',
+      title: 'Anki',
+      tone: 'ok',
+    }
+  }
+  if (envStatus?.anki_installed === false) {
+    return {
+      icon: 'anki',
+      actionLabel: '导入与核验',
+      message: '未检测到 Anki 桌面端；生成 APKG 不受影响，导入前需要先安装。',
+      meta: '导入与核验 · 仅导入阶段要求',
+      status: '需要安装',
+      tab: 'env',
+      title: 'Anki',
+      tone: 'warn',
+    }
+  }
+  return {
+    icon: 'anki',
+    actionLabel: '导入与核验',
+    message: envStatus?.anki_installed
+      ? 'Anki 已安装；点击导入时会检查 AnkiConnect，并给出唯一修复动作。'
+      : '尚未检查 Anki；只在导入牌组时检查，不阻塞卡片生成和 APKG 导出。',
+    meta: '导入与核验 · 导入时确认',
+    status: '导入时检查',
+    tab: 'env',
+    title: 'Anki',
+    tone: 'idle',
   }
 }
 
@@ -147,6 +192,7 @@ function getSettingsHealthCards({
       tone: ttsTone,
     },
     getEnvHealthCard(envSettings),
+    getAnkiHealthCard(envSettings),
   ]
 }
 
@@ -166,6 +212,9 @@ function SettingsHealthIcon({ icon, tone }: Pick<SettingsHealthCard, 'icon' | 't
   if (icon === 'tts') {
     return <PlugZap size={19} />
   }
+  if (icon === 'anki') {
+    return <Layers3 size={19} />
+  }
   return <Settings2 size={19} />
 }
 
@@ -176,15 +225,50 @@ export function SettingsDialog({
   motionDuration,
   open,
   prefersReducedMotion,
+  dirty,
+  saving,
   settingsMode,
   settingsTab,
   ttsSettings,
+  onApplyWithoutVerification,
   onClose,
+  onDiscardChanges,
   onRerunOnboarding,
+  onSaveAndVerify,
   onSettingsModeChange,
   onSettingsTabChange,
 }: SettingsDialogProps) {
   const healthCards = getSettingsHealthCards({ apiSettings, envSettings, ttsSettings })
+  const visibleHealthCards =
+    settingsMode === 'simple'
+      ? healthCards.map((card) =>
+          card.icon === 'api' || card.icon === 'tts'
+            ? { ...card, meta: card.tone === 'ok' ? '当前方案已验证' : '只显示完成此能力所需的设置' }
+            : card,
+        )
+      : healthCards
+  const activeHealthCard = visibleHealthCards.find((card) => card.tab === settingsTab)
+  const transactionStatus = dirty ? '更改尚未应用到制卡流程。' : '当前设置已应用。'
+  const settingsAnnouncement = saving
+    ? '正在验证并保存当前草稿…'
+    : activeHealthCard
+      ? `${activeHealthCard.title}：${activeHealthCard.status}。${activeHealthCard.message} ${transactionStatus}`
+      : transactionStatus
+  const actionsDisabled = saving || apiSettings.appBusy || ttsSettings.appBusy
+  const requestClose = (nextAction: () => void = onClose) => {
+    if (dirty) {
+      const discard = window.confirm('设置还有尚未应用的更改。要放弃这些更改吗？')
+      if (!discard) return
+      onDiscardChanges()
+    }
+    nextAction()
+  }
+  useModalFocusTrap({
+    active: open,
+    containerRef: dialogRef,
+    initialFocusRef: dialogRef,
+    onEscape: requestClose,
+  })
 
   return (
     <AnimatePresence>
@@ -192,7 +276,7 @@ export function SettingsDialog({
         <motion.div
           className="settings-overlay"
           role="presentation"
-          onClick={onClose}
+          onClick={() => requestClose()}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -206,12 +290,6 @@ export function SettingsDialog({
             aria-labelledby="settings-title"
             tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
-            onKeyDown={(event) => {
-              if (event.key !== 'Escape') return
-              event.preventDefault()
-              event.stopPropagation()
-              onClose()
-            }}
             initial={{ opacity: 0, scale: prefersReducedMotion ? 1 : 0.985 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: prefersReducedMotion ? 1 : 0.985 }}
@@ -241,21 +319,25 @@ export function SettingsDialog({
                     高级
                   </button>
                 </div>
-                <button className="ghost-button settings-rerun-button" type="button" onClick={onRerunOnboarding}>
+                <button
+                  className="ghost-button settings-rerun-button"
+                  type="button"
+                  onClick={() => requestClose(onRerunOnboarding)}
+                >
                   <RotateCcw size={17} />
                   重新运行启动检查
                 </button>
-                <button className="icon-button" type="button" onClick={onClose} aria-label="关闭设置">
+                <button className="icon-button" type="button" onClick={() => requestClose()} aria-label="关闭设置">
                   <X size={18} />
                 </button>
               </div>
             </div>
             <div className="settings-health-strip" aria-label="设置状态总览">
-              {healthCards.map((card) => (
+              {visibleHealthCards.map((card) => (
                 <button
-                  aria-label={`${card.title}：${card.status}，打开${card.title} 设置`}
+                  aria-label={`${card.title}：${card.status}，${card.actionLabel ? `打开${card.actionLabel}区域` : `打开${card.title} 设置`}`}
                   className={`settings-health-card ${card.tone} ${settingsTab === card.tab ? 'selected' : ''}`}
-                  key={card.tab}
+                  key={`${card.tab}-${card.title}`}
                   type="button"
                   onClick={() => onSettingsTabChange(card.tab)}
                 >
@@ -313,10 +395,33 @@ export function SettingsDialog({
             </div>
 
             <div className="settings-content">
-              {settingsTab === 'env' ? <EnvSettingsPanel {...envSettings} /> : null}
-              {settingsTab === 'api' ? <ApiSettingsPanel {...apiSettings} simpleMode={settingsMode === 'simple'} /> : null}
-              {settingsTab === 'tts' ? <TtsSettingsPanel {...ttsSettings} simpleMode={settingsMode === 'simple'} /> : null}
+              {settingsTab === 'env' ? (
+                <EnvSettingsPanel {...envSettings} simpleMode={settingsMode === 'simple'} />
+              ) : null}
+              {settingsTab === 'api' ? (
+                <ApiSettingsPanel {...apiSettings} hideSaveAction simpleMode={settingsMode === 'simple'} />
+              ) : null}
+              {settingsTab === 'tts' ? (
+                <TtsSettingsPanel {...ttsSettings} hideSaveAction simpleMode={settingsMode === 'simple'} />
+              ) : null}
               {settingsTab === 'about' ? <AboutSettingsPanel /> : null}
+            </div>
+            <div className="settings-config-actions settings-transaction-actions" aria-label="设置应用操作">
+              <span role="status" aria-live="polite" aria-atomic="true">
+                {settingsAnnouncement}
+              </span>
+              <button
+                className="secondary-button"
+                type="button"
+                disabled={actionsDisabled || !dirty}
+                onClick={onApplyWithoutVerification}
+              >
+                应用但稍后验证
+              </button>
+              <button className="primary-button" type="button" disabled={actionsDisabled} onClick={onSaveAndVerify}>
+                {saving ? <Loader2 className="spin" size={18} /> : <CheckCircle2 size={18} />}
+                {saving ? '验证中…' : '保存并验证'}
+              </button>
             </div>
           </motion.section>
         </motion.div>

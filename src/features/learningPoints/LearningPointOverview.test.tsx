@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { LearningPointExtractionResult } from '../../domain/learningPoints'
-import type { WorkflowReadinessSnapshot } from '../../app/readiness'
+import type { ActionGate, WorkflowActionId } from '../../app/workflowState'
 import { learningPointGenerationBatchSize, selectedLearningPoints } from '../../domain/learningPoints'
 import { LearningPointOverview } from './LearningPointOverview'
 
@@ -78,15 +78,26 @@ const result: LearningPointExtractionResult = {
 function renderOverview(
   initialSelectedIds = ['lp-1', 'lp-2'],
   activeResult = result,
-  workflowReadiness?: WorkflowReadinessSnapshot,
+  primaryActionOverride?: ActionGate,
+  initialGenerationConfirmOpen = false,
 ) {
-  const onGenerateCards = vi.fn()
+  const onRunWorkflowAction = vi.fn()
+  const onResolveBlockers = vi.fn()
   const onConfirmGenerateCards = vi.fn()
 
   function Harness() {
     const [selectedIds, setSelectedIds] = useState(() => new Set(initialSelectedIds))
-    const [confirmOpen, setConfirmOpen] = useState(false)
-    const [queueIds, setQueueIds] = useState<Set<string> | null>(null)
+    const [confirmOpen, setConfirmOpen] = useState(initialGenerationConfirmOpen)
+    const [queueIds, setQueueIds] = useState<Set<string> | null>(() =>
+      initialGenerationConfirmOpen ? new Set(initialSelectedIds) : null,
+    )
+    const primaryAction: ActionGate = primaryActionOverride ?? {
+      action: 'generate_cards',
+      state: selectedIds.size > 0 ? 'available' : 'blocked',
+      primaryLabel: selectedIds.size > 0 ? '生成选中的 ' + String(selectedIds.size) + ' 张' : '至少选择 1 个学习点',
+      blockers: [],
+      warnings: [],
+    }
     const queueSelectedIds = queueIds ?? selectedIds
     const queuePoints = selectedLearningPoints(activeResult.learning_points, queueSelectedIds)
     const batchSize = learningPointGenerationBatchSize(queuePoints.length)
@@ -109,18 +120,21 @@ function renderOverview(
       estimatedModelBatches: queuePoints.length > 0 ? 1 : 0,
       estimatedMediaTasks: queuePoints.length * 6,
       estimatedTtsSemanticChecks: queuePoints.length * 2,
-      highRiskShortExpressionCount: queuePoints.filter((point) => point.answer_core.split(/\s+/).filter(Boolean).length <= 2).length,
+      highRiskShortExpressionCount: queuePoints.filter(
+        (point) => point.answer_core.split(/\s+/).filter(Boolean).length <= 2,
+      ).length,
       ttsSemanticPassed: 0,
       ttsSemanticFailed: 0,
       ttsSemanticManualReview: 0,
       securityWarnings: ['本地文件路径将在本轮确认后读取'],
       highRisk: queuePoints.length >= 50,
     }
-    const openConfirm = () => {
+    const runWorkflowAction = (action: WorkflowActionId) => {
+      onRunWorkflowAction(action)
+      if (action !== 'generate_cards') return
       const nextQueue = selectedLearningPoints(activeResult.learning_points, selectedIds)
       setQueueIds(new Set(nextQueue.map((point) => point.id)))
       setConfirmOpen(true)
-      onGenerateCards()
     }
     return (
       <LearningPointOverview
@@ -130,11 +144,12 @@ function renderOverview(
         generationConfirmOpen={confirmOpen}
         generationQueuePoints={queuePoints}
         generationQueueSummary={queueSummary}
-        workflowReadiness={workflowReadiness}
+        primaryAction={primaryAction}
         onCloseGenerationConfirm={() => setConfirmOpen(false)}
         onConfirmGenerateCards={onConfirmGenerateCards}
         onExtractWithoutCache={vi.fn()}
-        onGenerateCards={openConfirm}
+        onResolveBlockers={onResolveBlockers}
+        onRunWorkflowAction={runWorkflowAction}
         onGenerateSinglePoint={(pointId) => {
           const single = new Set([pointId])
           setSelectedIds(single)
@@ -154,7 +169,7 @@ function renderOverview(
   }
 
   render(<Harness />)
-  return { onConfirmGenerateCards, onGenerateCards }
+  return { onConfirmGenerateCards, onResolveBlockers, onRunWorkflowAction }
 }
 
 describe('LearningPointOverview', () => {
@@ -172,21 +187,21 @@ describe('LearningPointOverview', () => {
   })
 
   it('supports the controlled one-card path: unselect all, check one point, then generate one card', () => {
-    const { onConfirmGenerateCards, onGenerateCards } = renderOverview()
+    const { onConfirmGenerateCards, onRunWorkflowAction } = renderOverview()
 
     fireEvent.click(screen.getByRole('button', { name: '清空选择' }))
-    expect(screen.getByRole('button', { name: /生成选中的 0 张/ })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '至少选择 1 个学习点' })).toBeDisabled()
 
     fireEvent.click(screen.getAllByRole('checkbox')[0])
     const generateButton = screen.getByRole('button', { name: /生成选中的 1 张/ })
     expect(generateButton).toBeEnabled()
 
     fireEvent.click(generateButton)
-    expect(onGenerateCards).toHaveBeenCalledOnce()
-    expect(screen.getByRole('heading', { name: '准备生成 APKG · 1 个学习点' })).toBeInTheDocument()
+    expect(onRunWorkflowAction).toHaveBeenCalledWith('generate_cards')
+    expect(screen.getByRole('heading', { name: '准备生成卡片草稿 · 1 个学习点' })).toBeInTheDocument()
     expect(screen.getByText('确认区已打开')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /生成选中的 1 张/ })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '生成 APKG' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: '生成卡片草稿' })).toBeEnabled()
     expect(screen.queryByRole('button', { name: '只生成草稿' })).not.toBeInTheDocument()
     expect(document.querySelectorAll('.primary-button')).toHaveLength(1)
     expect(screen.queryByText('卡片数')).not.toBeInTheDocument()
@@ -200,7 +215,7 @@ describe('LearningPointOverview', () => {
     expect(screen.queryByRole('button', { name: '只生成草稿' })).not.toBeInTheDocument()
     expect(screen.queryByText(/只生成草稿/)).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: '生成 APKG' }))
+    fireEvent.click(screen.getByRole('button', { name: '生成卡片草稿' }))
     expect(onConfirmGenerateCards).toHaveBeenCalledOnce()
   })
 
@@ -212,10 +227,10 @@ describe('LearningPointOverview', () => {
 
     expect(screen.getByText('确认区已打开')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /生成选中的 1 张/ })).not.toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: '准备生成 APKG · 1 个学习点' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '准备生成卡片草稿 · 1 个学习点' })).toBeInTheDocument()
     expect(screen.getAllByText('take it easy').length).toBeGreaterThanOrEqual(1)
 
-    fireEvent.click(screen.getByRole('button', { name: '生成 APKG' }))
+    fireEvent.click(screen.getByRole('button', { name: '生成卡片草稿' }))
     expect(onConfirmGenerateCards).toHaveBeenCalledOnce()
   })
 
@@ -246,8 +261,7 @@ describe('LearningPointOverview', () => {
     expect(
       screen.getAllByText(
         (_, element) =>
-          element?.tagName === 'SMALL' &&
-          (element.textContent?.includes('当前推荐已勾选 1/1 个。') ?? false),
+          element?.tagName === 'SMALL' && (element.textContent?.includes('当前推荐已勾选 1/1 个。') ?? false),
       ).length,
     ).toBeGreaterThanOrEqual(1)
     fireEvent.click(screen.getByRole('button', { name: /勾选当前筛选 2/ }))
@@ -374,12 +388,12 @@ describe('LearningPointOverview', () => {
     renderOverview()
 
     fireEvent.click(screen.getByRole('button', { name: /生成选中的 2 张/ }))
-    expect(screen.getByRole('heading', { name: '准备生成 APKG · 2 个学习点' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '准备生成卡片草稿 · 2 个学习点' })).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '查看生成详情' }))
     fireEvent.click(screen.getByRole('button', { name: /从生成队列移除 take it easy/i }))
 
-    expect(screen.getByRole('heading', { name: '准备生成 APKG · 1 个学习点' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '准备生成卡片草稿 · 1 个学习点' })).toBeInTheDocument()
     expect(screen.getByText('确认区已打开')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /生成选中的 2 张/ })).not.toBeInTheDocument()
   })
@@ -405,12 +419,15 @@ describe('LearningPointOverview', () => {
       },
     }
 
-    renderOverview(manyPoints.map((point) => point.id), manyResult)
+    renderOverview(
+      manyPoints.map((point) => point.id),
+      manyResult,
+    )
 
     fireEvent.click(screen.getByRole('button', { name: /生成选中的 49 张/ }))
 
-    expect(screen.getByRole('heading', { name: /准备生成 APKG · 49 个学习点/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '生成 APKG' })).toBeEnabled()
+    expect(screen.getByRole('heading', { name: /准备生成卡片草稿 · 49 个学习点/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '生成卡片草稿' })).toBeEnabled()
     expect(screen.getByText(/内部将分 5 批稳定处理，每批最多 12 张/)).toBeInTheDocument()
   })
   it('defaults to recommended items, preserves hidden selection, and searches across cardable points', () => {
@@ -458,35 +475,93 @@ describe('LearningPointOverview', () => {
     expect(screen.queryByRole('dialog', { name: '生成确认' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /生成选中的 1 张/ })).toHaveFocus()
   })
+  it('portals one modal dialog above the workbench and keeps keyboard focus inside it', () => {
+    renderOverview(['lp-1'], result, undefined, true)
 
-  it('shows unified blockers and prevents a false-success generation action', () => {
-    const blockedSnapshot: WorkflowReadinessSnapshot = {
-      stage: 'generate',
-      canProceed: false,
+    const dialog = screen.getByRole('dialog', { name: '生成确认' })
+    const modalLayer = dialog.closest('[data-generation-confirm-modal="true"]')
+    expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1)
+    expect(modalLayer).toHaveClass('generation-confirm-modal-layer')
+    expect(dialog.closest('.learning-point-overview')).toBeNull()
+    expect(dialog).toHaveFocus()
+
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(screen.getByRole('button', { name: '生成卡片草稿' })).toHaveFocus()
+
+    const lastModalButton = screen.getByRole('button', { name: '查看生成详情' })
+    lastModalButton.focus()
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(screen.getByRole('button', { name: '生成卡片草稿' })).toHaveFocus()
+
+    screen.getByRole('button', { name: '重新分析素材' }).focus()
+    expect(dialog).toHaveFocus()
+  })
+
+  it('resolves blockers from the selection action without starting generation', () => {
+    const blockedAction: ActionGate = {
+      action: 'generate_cards',
+      state: 'blocked',
       blockers: [
         {
           id: 'tts',
-          stage: 'generate',
-          state: 'blocked',
+          severity: 'blocker',
+          action: 'generate_cards',
           title: 'TTS 尚未通过测试',
           detail: '已授权，但必须先完成一次真实语音测试。',
-          action: 'test_tts',
+          resolutionLabel: '测试语音',
         },
       ],
       warnings: [],
-      primaryActionLabel: '完成 1 项准备',
+      primaryLabel: '还需完成 1 项准备',
     }
 
-    renderOverview(['lp-1'], result, blockedSnapshot)
-    expect(screen.queryByRole('button', { name: /生成选中的 1 张/ })).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '完成 1 项准备' }))
+    const { onConfirmGenerateCards, onResolveBlockers, onRunWorkflowAction } = renderOverview(
+      ['lp-1'],
+      result,
+      blockedAction,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '还需完成 1 项准备' }))
+
+    expect(onResolveBlockers).toHaveBeenCalledWith(blockedAction.blockers)
+    expect(onRunWorkflowAction).not.toHaveBeenCalled()
+    expect(onConfirmGenerateCards).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog', { name: '生成确认' })).not.toBeInTheDocument()
+  })
+
+  it('turns a blocked confirmation action into the same recovery action', () => {
+    const blockedAction: ActionGate = {
+      action: 'generate_cards',
+      state: 'blocked',
+      blockers: [
+        {
+          id: 'tts',
+          severity: 'blocker',
+          action: 'generate_cards',
+          title: 'TTS 尚未通过测试',
+          detail: '已授权，但必须先完成一次真实语音测试。',
+          resolutionLabel: '测试语音',
+        },
+      ],
+      warnings: [],
+      primaryLabel: '还需完成 1 项准备',
+    }
+
+    const { onConfirmGenerateCards, onResolveBlockers, onRunWorkflowAction } = renderOverview(
+      ['lp-1'],
+      result,
+      blockedAction,
+      true,
+    )
+    const recoveryButton = screen.getByRole('button', { name: '还需完成 1 项准备' })
+    expect(recoveryButton).toBeEnabled()
+    fireEvent.click(recoveryButton)
 
     expect(screen.getByText('TTS 尚未通过测试')).toBeInTheDocument()
     expect(screen.getByText('已授权，但必须先完成一次真实语音测试。')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '完成 1 项准备' })).toBeDisabled()
-    expect(screen.queryByRole('button', { name: '生成 APKG' })).not.toBeInTheDocument()
+    expect(onResolveBlockers).toHaveBeenCalledWith(blockedAction.blockers)
+    expect(onRunWorkflowAction).not.toHaveBeenCalled()
+    expect(onConfirmGenerateCards).not.toHaveBeenCalled()
   })
-
   it.each([50, 100])('shows stable batching and high-volume risk guidance for %i cards', (count) => {
     const manyPoints = Array.from({ length: count }, (_, index) => ({
       ...result.learning_points[index % result.learning_points.length],
@@ -508,13 +583,20 @@ describe('LearningPointOverview', () => {
       },
     }
 
-    renderOverview(manyPoints.map((point) => point.id), manyResult)
+    renderOverview(
+      manyPoints.map((point) => point.id),
+      manyResult,
+    )
     fireEvent.click(screen.getByRole('button', { name: new RegExp(`生成选中的 ${count} 张`) }))
 
-    expect(screen.getByRole('heading', { name: new RegExp(`准备生成 APKG · ${count} 个学习点`) })).toBeInTheDocument()
-    expect(screen.getByText(new RegExp(`内部将分 ${Math.ceil(count / 12)} 批稳定处理，每批最多 12 张`))).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: new RegExp(`准备生成卡片草稿 · ${count} 个学习点`) })).toBeInTheDocument()
+    expect(
+      screen.getByText(new RegExp(`内部将分 ${Math.ceil(count / 12)} 批稳定处理，每批最多 12 张`)),
+    ).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '查看生成详情' }))
-    expect(screen.getByText('本轮达到 50 张以上，模型、TTS 和媒体任务会明显变慢；建议先用少量样本确认质量。')).toBeInTheDocument()
+    expect(
+      screen.getByText('本轮达到 50 张以上，模型、TTS 和媒体任务会明显变慢；建议先用少量样本确认质量。'),
+    ).toBeInTheDocument()
     cleanup()
   })
 })

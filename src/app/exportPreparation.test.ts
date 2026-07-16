@@ -168,11 +168,13 @@ describe('export directory picker defaults', () => {
       ...projectWithCards([{ ...baseCard, enabled: true }]),
       title: 'local_srt_full1_cold',
       source_mode: 'local',
+      source_info: { case_id: 'local_srt_full1_cold' },
     } as Project
     const expectedOutputDir =
       'E:\\ANKI\\test_runs\\video_release_hardening_20260620_033203\\cases\\local_srt_full1_cold\\apkg'
 
     expect(releaseCaseIdForProject(releaseProject)).toBe('local_srt_full1_cold')
+    expect(releaseCaseIdForProject({ title: 'local_srt_full1_cold' })).toBeNull()
     expect(releaseCaseIdForProject({ title: '普通项目', source_info: { case_id: 'youtube_a_full1_cold' } })).toBe(
       'youtube_a_full1_cold',
     )
@@ -318,7 +320,7 @@ describe('prepareProjectForExport', () => {
     expect(result.removedRepairRequiredCards).toBe(1)
     expect(result.selectedExportableCards).toBe(1)
     expect(result.project.segments[0].cards.map((card) => card.enabled)).toEqual([false, true])
-    expect(result.statusMessage).toContain('已移除 1 张需修复')
+    expect(result.statusMessage).toContain('已自动排除 1 张需修复')
   })
 
   it('blocks before output-directory selection when all selected cards are repair drafts', () => {

@@ -1,4 +1,4 @@
-import type { GenerateRequest } from '../domain/types'
+import type { ApiConfig, GenerateRequest } from '../domain/types'
 
 const SOURCE_CONTRACT_KEYS = [
   'source_mode',
@@ -15,7 +15,6 @@ const LEARNING_CONTRACT_KEYS = [
   'level_mode',
   'level',
   'collection_levels',
-  'template_id',
   'review_density',
   'card_style',
   'card_types',
@@ -26,10 +25,23 @@ const LEARNING_CONTRACT_KEYS = [
   'max_segments',
 ] satisfies Array<keyof GenerateRequest>
 
-const EXPORT_RUNTIME_CONTRACT_KEYS = ['api_config'] satisfies Array<keyof GenerateRequest>
+const EXPORT_RUNTIME_CONTRACT_KEYS = ['api_config', 'template_id'] satisfies Array<keyof GenerateRequest>
 
 function hasOwnKey(patch: Partial<GenerateRequest>, key: keyof GenerateRequest) {
   return Object.prototype.hasOwnProperty.call(patch, key)
+}
+
+function normalizedModelConnection(config: ApiConfig) {
+  return {
+    provider: config.provider,
+    baseUrl: config.base_url.trim().replace(/\/+$/u, '').toLowerCase(),
+    model: config.model.trim(),
+    capabilities: [...config.capabilities].sort(),
+  }
+}
+
+export function modelApiConfigChangeInvalidatesLearningArtifacts(current: ApiConfig, next: ApiConfig) {
+  return JSON.stringify(normalizedModelConnection(current)) !== JSON.stringify(normalizedModelConnection(next))
 }
 
 export function requestPatchTouchesSourceMaterial(patch: Partial<GenerateRequest>) {

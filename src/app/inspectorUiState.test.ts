@@ -12,7 +12,7 @@ describe('inspectorUiState', () => {
       }),
     ).toMatchObject({
       inspectorSheetOpen: false,
-      inspectorActionLabel: '素材面板',
+      inspectorActionLabel: '流程',
       motionDuration: 0.2,
     })
 
@@ -24,7 +24,7 @@ describe('inspectorUiState', () => {
       }),
     ).toMatchObject({
       inspectorSheetOpen: true,
-      inspectorActionLabel: '关闭面板',
+      inspectorActionLabel: '关闭流程',
     })
   })
 
@@ -35,7 +35,7 @@ describe('inspectorUiState', () => {
         inspectorState: 'collapsed',
         prefersReducedMotion: false,
       }).inspectorActionLabel,
-    ).toBe('打开面板')
+    ).toBe('展开流程')
 
     expect(
       buildInspectorUiState({
@@ -43,7 +43,7 @@ describe('inspectorUiState', () => {
         inspectorState: 'open',
         prefersReducedMotion: false,
       }).inspectorActionLabel,
-    ).toBe('收起面板')
+    ).toBe('收起流程')
   })
 
   it('disables motion duration when reduced motion is preferred', () => {

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Boxes, CheckCircle2, CircleAlert, Cloud, KeyRound, PlugZap, Save, Search } from 'lucide-react'
+import { Boxes, CheckCircle2, CircleAlert, Cloud, KeyRound, PlugZap, Save, Search, Trash2 } from 'lucide-react'
 
 import type { ApiConfig, ApiPreset, HermesProxyStatus, Provider, SavedApiProfile } from '../../domain/types'
 import {
@@ -10,7 +10,13 @@ import {
 } from '../../domain/options'
 import { isHermesLocalApiConfig } from '../../services/apiConfig'
 import { ConnectionTestCard } from './ConnectionTestCard'
-import { catalogFilters, filterApiPreset, filterSavedApiProfile, getApiPresetTone, type CatalogFilter } from './settingsRecommendations'
+import {
+  catalogFilters,
+  filterApiPreset,
+  filterSavedApiProfile,
+  getApiPresetTone,
+  type CatalogFilter,
+} from './settingsRecommendations'
 
 type ModelOption = {
   label: string
@@ -41,9 +47,11 @@ type ApiSettingsPanelProps = {
   mimoTextModels: ModelOption[]
   savedApiProfiles: SavedApiProfile[]
   simpleMode?: boolean
+  hideSaveAction?: boolean
   showCapabilities: boolean
   onApplyApiPreset: (preset: ApiPreset) => void
   onCheckHermes: () => void
+  onDeleteSavedCredential?: () => void
   onApplySavedApiProfile: (profileId: string) => void
   onPatchApi: (patch: Partial<ApiConfig>) => void
   onSaveApiProfile: () => void
@@ -76,10 +84,12 @@ export function ApiSettingsPanel({
   mimoTextModels,
   savedApiProfiles,
   simpleMode = false,
+  hideSaveAction = false,
   showCapabilities,
   onApplyApiPreset,
   onApplySavedApiProfile,
   onCheckHermes,
+  onDeleteSavedCredential,
   onPatchApi,
   onSaveApiProfile,
   onSetShowCapabilities,
@@ -88,7 +98,10 @@ export function ApiSettingsPanel({
 }: ApiSettingsPanelProps) {
   const [catalogFilter, setCatalogFilter] = useState<CatalogFilter>('all')
   const [catalogSearch, setCatalogSearch] = useState('')
-  const allApiPresets = useMemo(() => [...featuredApiPresets, ...advancedApiPresets], [advancedApiPresets, featuredApiPresets])
+  const allApiPresets = useMemo(
+    () => [...featuredApiPresets, ...advancedApiPresets],
+    [advancedApiPresets, featuredApiPresets],
+  )
   const visibleSavedProfiles = useMemo(
     () => savedApiProfiles.filter((profile) => filterSavedApiProfile(profile, catalogFilter, catalogSearch)),
     [catalogFilter, catalogSearch, savedApiProfiles],
@@ -190,7 +203,15 @@ export function ApiSettingsPanel({
         : authReady
           ? '授权已就绪'
           : '需要填写 Key'
-  const catalogEmpty = !visibleSavedProfiles.length && !visiblePresets.length
+  const catalogSavedProfiles = simpleMode ? savedApiProfiles : visibleSavedProfiles
+  const catalogPresets = simpleMode ? featuredApiPresets : visiblePresets
+  const catalogEmpty = !catalogSavedProfiles.length && !catalogPresets.length
+  const canDeleteSavedCredential =
+    apiKeySaved &&
+    apiConfig.provider !== 'local' &&
+    apiConfig.provider !== 'gemini-vertex' &&
+    !usesHermesLocal &&
+    Boolean(onDeleteSavedCredential)
 
   return (
     <section className="settings-section settings-section-single">
@@ -203,7 +224,11 @@ export function ApiSettingsPanel({
         <div>
           <span>模型目录</span>
           <strong>{simpleMode ? '选择一个模型方案。' : '选择厂商，也可以直接手动填写。'}</strong>
-          <small>{simpleMode ? '选择方案，完成授权，然后测试连接；连接参数保留在高级模式。' : '推荐只负责筛选目录；Base URL、Model 和 API Key 始终可编辑。'}</small>
+          <small>
+            {simpleMode
+              ? '选择方案，完成授权，然后测试连接；连接参数保留在高级模式。'
+              : '推荐只负责筛选目录；Base URL、Model 和 API Key 始终可编辑。'}
+          </small>
         </div>
         <div className={`settings-readiness-pill ${authReady ? 'ok' : 'warn'}`}>
           {authReady ? <CheckCircle2 size={16} /> : <CircleAlert size={16} />}
@@ -213,28 +238,37 @@ export function ApiSettingsPanel({
 
       <div className="settings-directory-layout">
         <aside className="settings-directory-panel" aria-label="厂商和模型目录">
-          <label className="settings-search-field">
-            <Search size={16} />
-            <input
-              value={catalogSearch}
-              onChange={(event) => setCatalogSearch(event.target.value)}
-              placeholder="搜索厂商、模型、Base URL"
-            />
-          </label>
-          <div className="settings-filter-row" aria-label="模型目录筛选">
-            {catalogFilters.map((filter) => (
-              <button
-                type="button"
-                key={filter.id}
-                className={catalogFilter === filter.id ? 'selected' : ''}
-                onClick={() => setCatalogFilter(filter.id)}
-              >
-                {filter.label}
-              </button>
-            ))}
-          </div>
+          {!simpleMode ? (
+            <>
+              <label className="settings-search-field">
+                <Search size={16} />
+                <input
+                  value={catalogSearch}
+                  onChange={(event) => setCatalogSearch(event.target.value)}
+                  placeholder="搜索厂商、模型、Base URL"
+                />
+              </label>
+              <div className="settings-filter-row" aria-label="模型目录筛选">
+                {catalogFilters.map((filter) => (
+                  <button
+                    type="button"
+                    key={filter.id}
+                    className={catalogFilter === filter.id ? 'selected' : ''}
+                    onClick={() => setCatalogFilter(filter.id)}
+                  >
+                    {filter.label}
+                  </button>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div className="settings-simple-directory-heading">
+              <strong>选择模型方案</strong>
+              <small>优先使用已保存方案或推荐方案；自定义连接参数在高级模式中设置。</small>
+            </div>
+          )}
           <div className="settings-catalog-list">
-            {catalogFilter !== 'saved' ? (
+            {!simpleMode && catalogFilter !== 'saved' ? (
               <button type="button" className="settings-catalog-item manual" onClick={applyCustomModel}>
                 <span>手动添加</span>
                 <strong>OpenAI-compatible 模型</strong>
@@ -242,7 +276,10 @@ export function ApiSettingsPanel({
                 <em>自定义</em>
               </button>
             ) : null}
-            {visibleSavedProfiles.map((profile) => (
+            {simpleMode && catalogSavedProfiles.length ? (
+              <p className="settings-catalog-group-label">已保存方案</p>
+            ) : null}
+            {catalogSavedProfiles.map((profile) => (
               <button
                 type="button"
                 className={`settings-catalog-item saved ${profile.id === activeApiProfileId ? 'selected' : ''}`}
@@ -252,7 +289,11 @@ export function ApiSettingsPanel({
                 <span>我的模型</span>
                 <strong>{profile.label}</strong>
                 <small>
-                  {profile.provider} · {profile.model || '未填写模型'} ·{' '}
+                  {simpleMode ? null : (
+                    <>
+                      {profile.provider} · {profile.model || '未填写模型'} ·{' '}
+                    </>
+                  )}
                   {profile.auth === 'gcloud'
                     ? 'gcloud OAuth'
                     : profile.auth === 'local_oauth'
@@ -264,7 +305,8 @@ export function ApiSettingsPanel({
                 <em>已保存</em>
               </button>
             ))}
-            {visiblePresets.map((preset) => (
+            {simpleMode ? <p className="settings-catalog-group-label">推荐方案</p> : null}
+            {catalogPresets.map((preset) => (
               <button
                 type="button"
                 className={`settings-catalog-item ${getApiPresetTone(preset)} ${!activeSavedProfile && isPresetSelected(preset) ? 'selected' : ''}`}
@@ -274,12 +316,22 @@ export function ApiSettingsPanel({
                 <span>{preset.provider}</span>
                 <strong>{preset.label}</strong>
                 <small>
-                  {preset.model || '手动填写模型'} · {preset.base_url || '原生端点'}
+                  {simpleMode ? (
+                    preset.note
+                  ) : (
+                    <>
+                      {preset.model || '手动填写模型'} · {preset.base_url || '原生端点'}
+                    </>
+                  )}
                 </small>
                 <em>{preset.key_hint}</em>
               </button>
             ))}
-            {catalogEmpty ? <div className="settings-catalog-empty">没有找到匹配的厂商或模型。</div> : null}
+            {catalogEmpty ? (
+              <div className="settings-catalog-empty">
+                {simpleMode ? '还没有推荐或已保存的模型方案。' : '没有找到匹配的厂商或模型。'}
+              </div>
+            ) : null}
           </div>
         </aside>
 
@@ -287,7 +339,19 @@ export function ApiSettingsPanel({
           <div className="settings-current-main">
             <span>当前配置</span>
             <strong>{currentModelTitle}</strong>
-            <small>{currentModelMeta}</small>
+            <small>
+              {simpleMode
+                ? usesHermesLocal
+                  ? '本机 Hermes OAuth'
+                  : apiConfig.provider === 'gemini-vertex'
+                    ? '本机 gcloud OAuth'
+                    : apiConfig.provider === 'local'
+                      ? '仅用于预览，不能正式制卡'
+                      : apiKeySaved
+                        ? 'API Key 已保存在本机系统凭据'
+                        : '需要填写并验证 API Key'
+                : currentModelMeta}
+            </small>
           </div>
           <div className={`settings-profile-status ${apiProfileDirty ? 'warn' : 'ok'}`}>
             <span>{apiProfileStatus}</span>
@@ -300,66 +364,87 @@ export function ApiSettingsPanel({
             </small>
           </div>
           <div className="api-grid settings-direct-config-grid">
-            <label className="field settings-provider-field">
-              <span>Provider</span>
-              <select value={apiConfig.provider} onChange={(event) => handleProviderChange(event.target.value as Provider)}>
-                <option value="local">预览模式（不可正式制卡）</option>
-                <option value="mimo">MIMO / 小米</option>
-                <option value="openai-compatible">OpenAI-compatible</option>
-                <option value="claude">Claude 原生</option>
-                <option value="gemini">Gemini 原生</option>
-                <option value="gemini-vertex">Gemini Vertex</option>
-              </select>
-            </label>
-            <label className="field settings-long-field">
-              <span>Base URL</span>
-              <input
-                value={apiConfig.base_url}
-                onChange={(event) => onPatchApi({ base_url: event.target.value })}
-                placeholder={
-                  apiConfig.provider === 'mimo'
-                    ? mimoOpenAiBaseUrl
-                    : apiConfig.provider === 'gemini-vertex'
-                      ? GEMINI_VERTEX_GLOBAL_BASE_URL
-                      : 'https://api.deepseek.com'
-                }
-              />
-            </label>
-            <label className="field settings-long-field">
-              <span>Model</span>
-              <input
-                aria-label="Model"
-                value={apiConfig.model}
-                onChange={(event) => onPatchApi({ model: event.target.value })}
-                list="api-text-models"
-                placeholder={
-                  apiConfig.provider === 'mimo'
-                    ? 'mimo-v2.5-pro'
-                    : apiConfig.provider === 'gemini-vertex'
-                      ? GEMINI_VERTEX_DEFAULT_MODEL
-                      : 'deepseek-v4-pro'
-                }
-              />
-              <datalist id="api-text-models">
-                {mimoTextModels.map((model) => (
-                  <option key={model.value} value={model.value}>
-                    {model.label}
-                  </option>
-                ))}
-              </datalist>
-            </label>
+            {!simpleMode ? (
+              <>
+                <label className="field settings-provider-field">
+                  <span>Provider</span>
+                  <select
+                    value={apiConfig.provider}
+                    onChange={(event) => handleProviderChange(event.target.value as Provider)}
+                  >
+                    <option value="local">预览模式（不可正式制卡）</option>
+                    <option value="mimo">MIMO / 小米</option>
+                    <option value="openai-compatible">OpenAI-compatible</option>
+                    <option value="claude">Claude 原生</option>
+                    <option value="gemini">Gemini 原生</option>
+                    <option value="gemini-vertex">Gemini Vertex</option>
+                  </select>
+                </label>
+                <label className="field settings-long-field">
+                  <span>Base URL</span>
+                  <input
+                    value={apiConfig.base_url}
+                    onChange={(event) => onPatchApi({ base_url: event.target.value })}
+                    placeholder={
+                      apiConfig.provider === 'mimo'
+                        ? mimoOpenAiBaseUrl
+                        : apiConfig.provider === 'gemini-vertex'
+                          ? GEMINI_VERTEX_GLOBAL_BASE_URL
+                          : 'https://api.deepseek.com'
+                    }
+                  />
+                </label>
+                <label className="field settings-long-field">
+                  <span>Model</span>
+                  <input
+                    aria-label="Model"
+                    value={apiConfig.model}
+                    onChange={(event) => onPatchApi({ model: event.target.value })}
+                    list="api-text-models"
+                    placeholder={
+                      apiConfig.provider === 'mimo'
+                        ? 'mimo-v2.5-pro'
+                        : apiConfig.provider === 'gemini-vertex'
+                          ? GEMINI_VERTEX_DEFAULT_MODEL
+                          : 'deepseek-v4-pro'
+                    }
+                  />
+                  <datalist id="api-text-models">
+                    {mimoTextModels.map((model) => (
+                      <option key={model.value} value={model.value}>
+                        {model.label}
+                      </option>
+                    ))}
+                  </datalist>
+                </label>
+              </>
+            ) : null}
             {usesHermesLocal ? (
-              <div className="settings-auth-card settings-auth-card-compact" role="status" aria-label="Hermes 本机代理状态">
+              <div
+                className="settings-auth-card settings-auth-card-compact"
+                role="status"
+                aria-label="Hermes 本机代理状态"
+              >
                 <PlugZap size={18} />
                 <div>
                   <span>Hermes 本机 OAuth</span>
                   <strong>{hermesStatus?.state === 'ready' ? 'Grok 4.5 已就绪' : '等待本机代理'}</strong>
                   <small>{hermesStatus?.message ?? '点击检测状态；测试连接时也会按需启动 Hermes 代理。'}</small>
                   <div className="settings-inline-actions">
-                    <button type="button" className="secondary-button" onClick={onCheckHermes} disabled={hermesChecking || appBusy}>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={onCheckHermes}
+                      disabled={hermesChecking || appBusy}
+                    >
                       {hermesChecking ? '检测中…' : '检测状态'}
                     </button>
-                    <button type="button" className="secondary-button" onClick={onStartHermes} disabled={hermesStarting || appBusy}>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={onStartHermes}
+                      disabled={hermesStarting || appBusy}
+                    >
                       {hermesStarting ? '启动中…' : hermesStatus?.state === 'ready' ? '重新检测' : '启动代理'}
                     </button>
                   </div>
@@ -372,6 +457,15 @@ export function ApiSettingsPanel({
                   <span>Vertex 授权</span>
                   <strong>使用本机 gcloud OAuth</strong>
                   <small>不需要填写 API Key；测试连接会检查 gcloud 登录、项目权限、模型名和区域端点。</small>
+                </div>
+              </div>
+            ) : simpleMode && apiKeySaved ? (
+              <div className="settings-auth-card settings-auth-card-compact">
+                <KeyRound size={18} />
+                <div>
+                  <span>API Key 授权</span>
+                  <strong>已保存在本机系统凭据</strong>
+                  <small>当前方案可直接测试；如需替换 Key，请进入高级模式。</small>
                 </div>
               </div>
             ) : (
@@ -393,17 +487,38 @@ export function ApiSettingsPanel({
               </label>
             )}
           </div>
-          <div className="settings-config-actions">
-            <button className="primary-button settings-save-button" type="button" onClick={onSaveApiProfile} disabled={appBusy}>
-              <Save size={17} />
-              保存模型方案
-            </button>
-          </div>
+          {!hideSaveAction ? (
+            <div className="settings-config-actions">
+              <button
+                className="primary-button settings-save-button"
+                type="button"
+                onClick={onSaveApiProfile}
+                disabled={appBusy}
+              >
+                <Save size={17} />
+                保存模型方案
+              </button>
+            </div>
+          ) : null}
+          {canDeleteSavedCredential ? (
+            <div className="settings-config-actions settings-credential-actions" aria-label="已保存的模型凭据">
+              <button
+                className="secondary-button cancel-button"
+                type="button"
+                onClick={onDeleteSavedCredential}
+                disabled={apiTesting || appBusy}
+                title="只删除当前模型保存在本机系统凭据中的 Key"
+              >
+                <Trash2 size={16} aria-hidden="true" />
+                删除已保存的 Key
+              </button>
+            </div>
+          ) : null}
           <ConnectionTestCard
             buttonLabel="测试连接"
             disabled={apiTesting || appBusy}
             message={apiTestMessage}
-            meta={apiTestMeta}
+            meta={simpleMode ? (apiTestOk ? '当前方案已验证' : '测试会验证授权与服务可用性') : apiTestMeta}
             ok={apiTestOk}
             statusLabel="连接状态"
             testing={apiTesting}
@@ -415,59 +530,63 @@ export function ApiSettingsPanel({
         </div>
       </div>
 
-      <button
-        className="capability-heading collapsible-heading"
-        type="button"
-        onClick={() => onSetShowCapabilities((value) => !value)}
-      >
-        <KeyRound size={18} />
-        <strong>模型能力标签</strong>
-        <span>{showCapabilities ? '收起' : '高级选项，默认不用改'}</span>
-      </button>
-      {showCapabilities ? (
-        <div className="capabilities capability-grid">
-          {capabilityLabels.map((capability) => {
-            const selected = apiConfig.capabilities.includes(capability)
-            return (
-              <button
-                type="button"
-                key={capability}
-                className={selected ? 'cap selected' : 'cap'}
-                onClick={() => {
-                  const capabilities = selected
-                    ? apiConfig.capabilities.filter((item) => item !== capability)
-                    : [...apiConfig.capabilities, capability]
-                  onPatchApi({ capabilities })
-                }}
-              >
-                <strong>{capability}</strong>
-                <span>{capabilityHelp[capability]}</span>
-              </button>
-            )
-          })}
-        </div>
-      ) : null}
+      {!simpleMode ? (
+        <>
+          <button
+            className="capability-heading collapsible-heading"
+            type="button"
+            onClick={() => onSetShowCapabilities((value) => !value)}
+          >
+            <KeyRound size={18} />
+            <strong>模型能力标签</strong>
+            <span>{showCapabilities ? '收起' : '高级选项，默认不用改'}</span>
+          </button>
+          {showCapabilities ? (
+            <div className="capabilities capability-grid">
+              {capabilityLabels.map((capability) => {
+                const selected = apiConfig.capabilities.includes(capability)
+                return (
+                  <button
+                    type="button"
+                    key={capability}
+                    className={selected ? 'cap selected' : 'cap'}
+                    onClick={() => {
+                      const capabilities = selected
+                        ? apiConfig.capabilities.filter((item) => item !== capability)
+                        : [...apiConfig.capabilities, capability]
+                      onPatchApi({ capabilities })
+                    }}
+                  >
+                    <strong>{capability}</strong>
+                    <span>{capabilityHelp[capability]}</span>
+                  </button>
+                )
+              })}
+            </div>
+          ) : null}
 
-      <details className="settings-disclosure">
-        <summary>
-          <span>高级说明</span>
-          <strong>安全 / 费用 / 自定义厂商</strong>
-        </summary>
-        <div className="settings-callout">
-          <PlugZap size={18} />
-          <div>
-            <strong>目录只是帮你填表，不会锁死配置。</strong>
-            <p>选择任意厂商后仍可继续修改 Base URL、Model 和能力标签；其他兼容 OpenAI API 的服务商直接选自定义。</p>
-          </div>
-        </div>
-        <div className="settings-callout risk-callout">
-          <CircleAlert size={18} />
-          <div>
-            <strong>字幕、学习点和卡片字段会发送给你选择的模型服务商。</strong>
-            <p>API Key 保存到本机凭据；界面只显示“已保存”，不会长期回显明文。</p>
-          </div>
-        </div>
-      </details>
+          <details className="settings-disclosure">
+            <summary>
+              <span>高级说明</span>
+              <strong>安全 / 费用 / 自定义厂商</strong>
+            </summary>
+            <div className="settings-callout">
+              <PlugZap size={18} />
+              <div>
+                <strong>目录只是帮你填表，不会锁死配置。</strong>
+                <p>选择任意厂商后仍可继续修改 Base URL、Model 和能力标签；其他兼容 OpenAI API 的服务商直接选自定义。</p>
+              </div>
+            </div>
+            <div className="settings-callout risk-callout">
+              <CircleAlert size={18} />
+              <div>
+                <strong>字幕、学习点和卡片字段会发送给你选择的模型服务商。</strong>
+                <p>API Key 保存到本机凭据；界面只显示“已保存”，不会长期回显明文。</p>
+              </div>
+            </div>
+          </details>
+        </>
+      ) : null}
     </section>
   )
 }

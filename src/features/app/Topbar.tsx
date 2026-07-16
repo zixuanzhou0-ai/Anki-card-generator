@@ -1,19 +1,19 @@
 import type { MouseEvent } from 'react'
-import { AlertCircle, CheckCircle2, Layers3, Loader2, Minus, Settings2, Square, X } from 'lucide-react'
+import { AlertCircle, CheckCircle2, Info, Layers3, Loader2, Minus, Settings2, Square, X } from 'lucide-react'
 
-import type { WorkflowReadinessSnapshot, WorkflowStageId } from '../../app/readiness'
+import type { OperationState, ProductStep, WorkflowUiSnapshot } from '../../app/workflowState'
 
 type WindowAction = 'minimize' | 'toggleMaximize' | 'close'
 
 type TopbarProps = {
   inspectorActive: boolean
   inspectorActionLabel: string
-  isCancelling: boolean
-  status: string
-  statusTone: string
-  workerBusy: boolean
-  workflowReadiness: WorkflowReadinessSnapshot
+  workflowUiSnapshot: WorkflowUiSnapshot
+  modalActive?: boolean
+  forceCancelBusy?: boolean
   onCancelCurrentWorker: () => void
+  onForceCancel?: () => void
+  showForceCancel?: boolean
   onMouseDown: (event: MouseEvent<HTMLElement>) => void
   onDoubleClick: (event: MouseEvent<HTMLElement>) => void
   onOpenSettings: () => void
@@ -21,50 +21,46 @@ type TopbarProps = {
   onWindowAction: (action: WindowAction) => void
 }
 
-const stageLabels: Record<WorkflowStageId, string> = {
-  setup: '启动准备',
-  extract: '抽取学习点',
-  generate: '生成卡片',
-  export: '审核导出',
-  verify: 'Anki 核验',
+type StatusPresentation = {
+  text: string
+  title: string
+  tone: 'idle' | 'success' | 'warning' | 'working'
+  icon: 'alert' | 'info' | 'loader' | 'success'
 }
+
+const stepNumbers: Record<ProductStep, 1 | 2 | 3> = {
+  source: 1,
+  select: 2,
+  deliver: 3,
+}
+
+const activeOperationStates = new Set<OperationState>(['queued', 'running', 'cancelling'])
+const attentionOperationStates = new Set<OperationState>(['failed', 'cancelled', 'interrupted'])
 
 export function Topbar({
   inspectorActive,
   inspectorActionLabel,
-  isCancelling,
-  status,
-  statusTone,
-  workerBusy,
-  workflowReadiness,
+  workflowUiSnapshot,
+  modalActive = false,
+  forceCancelBusy = false,
   onCancelCurrentWorker,
+  onForceCancel,
+  showForceCancel = false,
   onDoubleClick,
   onMouseDown,
   onOpenSettings,
   onToggleInspector,
   onWindowAction,
 }: TopbarProps) {
-  const stageLabel = stageLabels[workflowReadiness.stage]
-  const readinessText = workflowReadiness.canProceed
-    ? workflowReadiness.stage === 'verify'
-      ? workflowReadiness.primaryActionLabel
-      : stageLabel + '已就绪'
-    : workflowReadiness.primaryActionLabel + ' · ' + workflowReadiness.blockers[0]?.title
-  const operationNeedsAttention = statusTone === 'warn' || /取消|暂停|丢弃/.test(status)
-  const showOperationStatus = workerBusy || operationNeedsAttention
-  const visibleStatus = showOperationStatus ? status : readinessText
-  const visibleTone = workerBusy
-    ? statusTone
-    : operationNeedsAttention
-      ? statusTone === 'warn'
-        ? 'warning'
-        : 'idle'
-      : workflowReadiness.canProceed
-        ? 'success'
-        : 'warning'
+  const { operation, step } = workflowUiSnapshot
+  const statusPresentation = selectStatusPresentation(workflowUiSnapshot)
+  const operationActive = operation ? activeOperationStates.has(operation.state) : false
+  const isCancelling = operation?.state === 'cancelling'
+  const showCancel = operationActive && operation?.cancellable === true
+  const showForceCancelAction = isCancelling && showForceCancel && typeof onForceCancel === 'function'
 
   return (
-    <header className="topbar" onMouseDown={onMouseDown} onDoubleClick={onDoubleClick}>
+    <header className="topbar" aria-hidden={modalActive || undefined} inert={modalActive || undefined} onMouseDown={onMouseDown} onDoubleClick={onDoubleClick}>
       <div className="brand-lockup">
         <div className="app-mark" aria-hidden="true">
           <img src="app-icon.png" alt="" />
@@ -76,27 +72,27 @@ export function Topbar({
       </div>
       <div className="topbar-stage" aria-label="当前步骤">
         <span>当前步骤</span>
-        <strong>{stageLabel}</strong>
+        <strong>{`第 ${String(stepNumbers[step])}/3 步：${workflowUiSnapshot.heading}`}</strong>
       </div>
       <div className="window-drag-region" />
       <div className="topbar-actions">
         <div
-          className={'status-chip ' + visibleTone}
-          title={showOperationStatus ? status : workflowReadiness.blockers[0]?.detail ?? visibleStatus}
-          role="status"
-          aria-live="polite"
-          aria-atomic="true"
+          className={'status-chip ' + statusPresentation.tone}
+          title={statusPresentation.title}
+          role={modalActive ? undefined : 'status'}
+          aria-live={modalActive ? undefined : 'polite'}
+          aria-atomic={modalActive ? undefined : 'true'}
         >
-          {workerBusy ? (
+          {statusPresentation.icon === 'loader' ? (
             <Loader2 className="spin" size={16} />
-          ) : operationNeedsAttention ? (
+          ) : statusPresentation.icon === 'alert' ? (
             <AlertCircle size={16} />
-          ) : workflowReadiness.canProceed ? (
+          ) : statusPresentation.icon === 'success' ? (
             <CheckCircle2 size={16} />
           ) : (
-            <AlertCircle size={16} />
+            <Info size={16} />
           )}
-          <span>{visibleStatus}</span>
+          <span>{statusPresentation.text}</span>
         </div>
         <button
           className="ghost-button quiet-button inspector-toggle"
@@ -113,10 +109,28 @@ export function Topbar({
           <Settings2 size={18} />
           设置
         </button>
-        {workerBusy ? (
-          <button className="ghost-button cancel-button" type="button" onClick={onCancelCurrentWorker} disabled={isCancelling}>
+        {showCancel ? (
+          <button
+            className="ghost-button cancel-button"
+            type="button"
+            onClick={onCancelCurrentWorker}
+            disabled={isCancelling}
+          >
             {isCancelling ? <Loader2 className="spin" size={18} /> : <X size={18} />}
             {isCancelling ? '取消中' : '取消任务'}
+          </button>
+        ) : null}
+        {showForceCancelAction ? (
+          <button
+            className="ghost-button cancel-button force-cancel-button"
+            type="button"
+            aria-label="强制结束任务"
+            aria-busy={forceCancelBusy || undefined}
+            onClick={onForceCancel}
+            disabled={forceCancelBusy}
+          >
+            {forceCancelBusy ? <Loader2 className="spin" size={18} /> : <AlertCircle size={18} />}
+            {forceCancelBusy ? '正在强制结束…' : '强制结束任务'}
           </button>
         ) : null}
       </div>
@@ -133,4 +147,72 @@ export function Topbar({
       </div>
     </header>
   )
+}
+
+function selectStatusPresentation(snapshot: WorkflowUiSnapshot): StatusPresentation {
+  const { operation, notice, primaryAction } = snapshot
+
+  if (operation && activeOperationStates.has(operation.state)) {
+    const text = operation.message?.trim() || operation.phaseLabel?.trim() || primaryAction.primaryLabel
+    return {
+      text,
+      title: text,
+      tone: 'working',
+      icon: 'loader',
+    }
+  }
+
+  if (operation && attentionOperationStates.has(operation.state)) {
+    const fallbackText =
+      operation.state === 'failed'
+        ? '任务失败'
+        : operation.state === 'cancelled'
+          ? '任务已取消'
+          : primaryAction.primaryLabel
+    const text = operation.message?.trim() || operation.phaseLabel?.trim() || fallbackText
+    return {
+      text,
+      title: text,
+      tone: 'warning',
+      icon: 'alert',
+    }
+  }
+
+  if (notice) {
+    const title = notice.detail?.trim() || notice.title
+    if (notice.tone === 'success') {
+      return { text: notice.title, title, tone: 'success', icon: 'success' }
+    }
+    if (notice.tone === 'warning' || notice.tone === 'error') {
+      return { text: notice.title, title, tone: 'warning', icon: 'alert' }
+    }
+    return { text: notice.title, title, tone: 'idle', icon: 'info' }
+  }
+
+  if (primaryAction.state === 'blocked') {
+    const blocker = primaryAction.blockers[0]
+    const text = blocker ? `${primaryAction.primaryLabel} · ${blocker.title}` : primaryAction.primaryLabel
+    return {
+      text,
+      title: blocker?.detail ?? text,
+      tone: 'warning',
+      icon: 'alert',
+    }
+  }
+
+  if (primaryAction.state === 'completed') {
+    return {
+      text: primaryAction.primaryLabel,
+      title: primaryAction.primaryLabel,
+      tone: 'success',
+      icon: 'success',
+    }
+  }
+
+  return {
+    text: primaryAction.primaryLabel,
+    title: primaryAction.primaryLabel,
+    tone: 'idle',
+    icon: 'info',
+  }
 }

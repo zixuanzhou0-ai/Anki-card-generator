@@ -61,6 +61,39 @@ describe('EnvSettingsPanel', () => {
     expect(screen.getByText(/Worker: E:\\ANKI\\workers\\anki_worker.py/)).toBeInTheDocument()
   })
 
+  it('keeps technical paths out of simple mode while preserving them in advanced mode', () => {
+    const envStatus = {
+      anki_connect: true,
+      anki_installed: true,
+      ffmpeg: true,
+      genanki: true,
+      python: '3.12.0',
+      python_executable: 'E:\\ANKI\\.venv\\Scripts\\python.exe',
+      worker: 'E:\\ANKI\\workers\\anki_worker.py',
+      yt_dlp: true,
+    }
+    const props = {
+      appBusy: false,
+      envRepairing: false,
+      envRepairResult: null,
+      envStatus,
+      onCheckEnv: vi.fn(),
+      onRepairEnv: vi.fn(),
+    }
+    const { rerender } = render(<EnvSettingsPanel {...props} simpleMode />)
+
+    expect(screen.getByText('本地环境')).toBeInTheDocument()
+    expect(screen.queryByText(/Worker:/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Python: E:\\ANKI\\.venv/)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('本地能力状态')).not.toBeInTheDocument()
+
+    rerender(<EnvSettingsPanel {...props} simpleMode={false} />)
+
+    expect(screen.getByText(/Worker: E:\\ANKI\\workers\\anki_worker.py/)).toBeInTheDocument()
+    expect(screen.getByText(/Python: E:\\ANKI\\.venv\\Scripts\\python.exe/)).toBeInTheDocument()
+    expect(screen.getByLabelText('本地能力状态')).toBeInTheDocument()
+  })
+
   it('shows repair actions and calls the repair handler', () => {
     const onRepairEnv = vi.fn()
     render(

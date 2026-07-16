@@ -30,6 +30,8 @@ describe('OnboardingWizard', () => {
     expect(props.onCheckEnv).toHaveBeenCalledOnce()
     expect(props.onOpenApiSettings).not.toHaveBeenCalled()
     expect(props.onOpenTtsSettings).not.toHaveBeenCalled()
+    expect(document.querySelectorAll('[aria-live], [role="status"]')).toHaveLength(1)
+    expect(screen.getByRole('status')).toHaveTextContent('当前是欢迎与隐私说明')
     expect(screen.getByText(/模型与 TTS 只在你主动点击测试时发起请求/)).toBeVisible()
   })
 
@@ -38,6 +40,8 @@ describe('OnboardingWizard', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '继续' }))
     expect(screen.getByRole('heading', { name: '生成与 Anki 核验能力' })).toBeVisible()
+    expect(screen.getByRole('status')).toHaveTextContent('本地环境：正在检查核心生成依赖')
+    expect(document.querySelectorAll('[aria-live], [role="status"]')).toHaveLength(1)
     expect(screen.getByText(/继续不会伪造完成状态/)).toBeVisible()
 
     fireEvent.click(screen.getByRole('button', { name: '继续' }))
@@ -56,5 +60,40 @@ describe('OnboardingWizard', () => {
     fireEvent.click(screen.getByRole('button', { name: '稍后设置' }))
     expect(props.onSkip).toHaveBeenCalledOnce()
     expect(props.onComplete).not.toHaveBeenCalled()
+  })
+
+  it('keeps Tab and Shift+Tab focus inside the wizard', () => {
+    renderWizard()
+    const first = screen.getByRole('button', { name: '稍后设置' })
+    const last = screen.getByRole('button', { name: '继续' })
+
+    last.focus()
+    fireEvent.keyDown(last, { key: 'Tab' })
+    expect(first).toHaveFocus()
+
+    first.focus()
+    fireEvent.keyDown(first, { key: 'Tab', shiftKey: true })
+    expect(last).toHaveFocus()
+  })
+
+  it('routes Escape to defer setup', () => {
+    const props = renderWizard()
+
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+
+    expect(props.onSkip).toHaveBeenCalledOnce()
+  })
+
+  it('restores focus to the element that opened the wizard', () => {
+    const trigger = document.createElement('button')
+    trigger.textContent = '重新运行启动检查'
+    document.body.append(trigger)
+    trigger.focus()
+
+    renderWizard()
+    cleanup()
+
+    expect(trigger).toHaveFocus()
+    trigger.remove()
   })
 })

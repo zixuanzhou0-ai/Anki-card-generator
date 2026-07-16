@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { ExportResult } from '../domain/types'
 import {
+  ankiVerificationPassed,
   ankiOpenImportRequestedStatusMessage,
   ankiOpenImportStartingStatusMessage,
   ankiVerifyStartingStatusMessage,
@@ -48,6 +49,14 @@ describe('exportResultForAnkiVerify', () => {
     })
 
     expect(exportResultForAnkiVerify(full, null)).toBeNull()
+  })
+})
+
+describe('ankiVerificationPassed', () => {
+  it('requires both ok and an empty failed-check list', () => {
+    expect(ankiVerificationPassed({ ok: true, failed_checks: [] })).toBe(true)
+    expect(ankiVerificationPassed({ ok: true, failed_checks: ['media_missing'] })).toBe(false)
+    expect(ankiVerificationPassed({ ok: false, failed_checks: [] })).toBe(false)
   })
 })
 
@@ -105,6 +114,7 @@ describe('buildAnkiVerifyPayload', () => {
     expect(buildAnkiVerifyPayload(result)).toEqual({
       export_result: result,
       import_apkg: true,
+      wait_for_anki_seconds: 30,
     })
   })
 

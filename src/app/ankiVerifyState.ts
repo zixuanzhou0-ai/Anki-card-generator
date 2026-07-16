@@ -1,4 +1,4 @@
-import type { ExportResult } from '../domain/types'
+import type { AnkiVerifyResult, ExportResult } from '../domain/types'
 
 export type AnkiVerifyStartPreparation =
   | {
@@ -9,6 +9,12 @@ export type AnkiVerifyStartPreparation =
       ok: false
       statusMessage?: string
     }
+
+export function ankiVerificationPassed(
+  result: Pick<AnkiVerifyResult, 'ok' | 'failed_checks'> | null | undefined,
+): boolean {
+  return Boolean(result?.ok && (result.failed_checks?.length ?? 0) === 0)
+}
 
 export function exportResultForAnkiVerify(fullExport: ExportResult | null, compactExport: ExportResult | null) {
   if (!compactExport) return null
@@ -40,6 +46,7 @@ export function buildAnkiVerifyPayload(exportResult: ExportResult) {
   return {
     export_result: exportResult,
     import_apkg: true,
+    wait_for_anki_seconds: 30,
   }
 }
 

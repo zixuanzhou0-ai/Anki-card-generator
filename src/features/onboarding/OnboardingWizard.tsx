@@ -11,6 +11,7 @@ import {
   Volume2,
 } from 'lucide-react'
 
+import { useModalFocusTrap } from '../../app/useModalFocusTrap'
 import type { EnvStatus } from '../../domain/types'
 
 type OnboardingWizardProps = {
@@ -42,7 +43,14 @@ export function OnboardingWizard({
 }: OnboardingWizardProps) {
   const [step, setStep] = useState(0)
   const checkedOnOpenRef = useRef(false)
+  const dialogRef = useRef<HTMLElement>(null)
   const headingRef = useRef<HTMLHeadingElement>(null)
+  useModalFocusTrap({
+    active: open,
+    containerRef: dialogRef,
+    initialFocusRef: headingRef,
+    onEscape: onSkip,
+  })
 
   useEffect(() => {
     if (!open) {
@@ -68,17 +76,34 @@ export function OnboardingWizard({
   ] as const
   const coreEnvironmentReady = Boolean(envStatus?.python && envStatus.ffmpeg && envStatus.genanki)
   const atLastStep = step === stepLabels.length - 1
+  const modalAnnouncement =
+    step === 0
+      ? '启动向导已打开，共四个步骤；当前是欢迎与隐私说明。'
+      : step === 1
+        ? coreEnvironmentReady
+          ? '本地环境：核心生成环境已就绪。'
+          : envStatus
+            ? '本地环境：核心环境尚未完全就绪，继续不会伪造完成状态。'
+            : '本地环境：正在检查核心生成依赖；继续不会伪造完成状态。'
+        : step === 2
+          ? apiReady
+            ? '模型：连接已验证。'
+            : '模型：尚未验证，需要配置并完成真实测试。'
+          : ttsReady
+            ? '语音：TTS 已验证。'
+            : '语音：TTS 尚未验证，需要配置并完成真实测试。'
+  const modalAnnouncementReady =
+    step === 0 || (step === 1 && coreEnvironmentReady) || (step === 2 && apiReady) || (step === 3 && ttsReady)
 
   return (
     <div className="onboarding-backdrop">
       <section
         className="onboarding-dialog"
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="onboarding-title"
-        onKeyDown={(event) => {
-          if (event.key === 'Escape') onSkip()
-        }}
+        tabIndex={-1}
       >
         <aside className="onboarding-rail" aria-label="启动向导步骤">
           <div className="onboarding-brand">
@@ -104,24 +129,40 @@ export function OnboardingWizard({
         <div className="onboarding-content">
           {step === 0 ? (
             <div className="onboarding-step">
-              <span className="onboarding-step-icon"><MessageSquareText size={24} /></span>
+              <span className="onboarding-step-icon">
+                <MessageSquareText size={24} />
+              </span>
               <p className="eyebrow">4 个短步骤</p>
-              <h2 id="onboarding-title" ref={headingRef} tabIndex={-1}>先确认外部能力，再开始第一张卡片</h2>
+              <h2 id="onboarding-title" ref={headingRef} tabIndex={-1}>
+                先确认外部能力，再开始第一张卡片
+              </h2>
               <p className="onboarding-lead">
                 视频、字幕和导出文件在本机处理；只有学习点抽取、卡片内容和语音生成会按你的配置调用模型服务。
               </p>
               <div className="onboarding-principles">
-                <span><LockKeyhole size={19} /><strong>密钥不写入 UI 偏好</strong><small>向导只保存完成状态和显示模式。</small></span>
-                <span><HardDrive size={19} /><strong>失败不会输出半成品</strong><small>环境、模型、TTS 都有独立闸门。</small></span>
+                <span>
+                  <LockKeyhole size={19} />
+                  <strong>密钥不写入 UI 偏好</strong>
+                  <small>向导只保存完成状态和显示模式。</small>
+                </span>
+                <span>
+                  <HardDrive size={19} />
+                  <strong>失败不会输出半成品</strong>
+                  <small>环境、模型、TTS 都有独立闸门。</small>
+                </span>
               </div>
             </div>
           ) : null}
 
           {step === 1 ? (
             <div className="onboarding-step">
-              <span className="onboarding-step-icon"><HardDrive size={24} /></span>
+              <span className="onboarding-step-icon">
+                <HardDrive size={24} />
+              </span>
               <p className="eyebrow">本地环境</p>
-              <h2 id="onboarding-title" ref={headingRef} tabIndex={-1}>生成与 Anki 核验能力</h2>
+              <h2 id="onboarding-title" ref={headingRef} tabIndex={-1}>
+                生成与 Anki 核验能力
+              </h2>
               <p className="onboarding-lead">已自动执行只读检查。缺少的项目可以稍后在设置中逐项或一键修复。</p>
               <div className="onboarding-check-grid">
                 {envChecks.map(([label, ready]) => (
@@ -135,17 +176,19 @@ export function OnboardingWizard({
               <button type="button" className="ghost-button onboarding-inline-action" onClick={onCheckEnv}>
                 重新检查
               </button>
-              <p className={'onboarding-summary ' + (coreEnvironmentReady ? 'ready' : 'warning')}>
-                {coreEnvironmentReady ? '核心生成环境已就绪。' : '核心环境尚未完全就绪，继续不会伪造完成状态。'}
-              </p>
+
             </div>
           ) : null}
 
           {step === 2 ? (
             <div className="onboarding-step">
-              <span className="onboarding-step-icon"><Sparkles size={24} /></span>
+              <span className="onboarding-step-icon">
+                <Sparkles size={24} />
+              </span>
               <p className="eyebrow">模型</p>
-              <h2 id="onboarding-title" ref={headingRef} tabIndex={-1}>优先使用本机 Hermes Grok 4.5</h2>
+              <h2 id="onboarding-title" ref={headingRef} tabIndex={-1}>
+                优先使用本机 Hermes Grok 4.5
+              </h2>
               <p className="onboarding-lead">
                 推荐方案会连接你本机的 Hermes 代理；OpenAI、DeepSeek、通义和自定义兼容服务仍可在设置中选择。
               </p>
@@ -165,9 +208,13 @@ export function OnboardingWizard({
 
           {step === 3 ? (
             <div className="onboarding-step">
-              <span className="onboarding-step-icon"><Volume2 size={24} /></span>
+              <span className="onboarding-step-icon">
+                <Volume2 size={24} />
+              </span>
               <p className="eyebrow">语音 / TTS</p>
-              <h2 id="onboarding-title" ref={headingRef} tabIndex={-1}>让整句和目标表达都有可验证语音</h2>
+              <h2 id="onboarding-title" ref={headingRef} tabIndex={-1}>
+                让整句和目标表达都有可验证语音
+              </h2>
               <p className="onboarding-lead">
                 视频语言卡默认要求整句 TTS 与表达 TTS。仅保存授权不算就绪，必须完成一次真实测试。
               </p>
@@ -184,12 +231,23 @@ export function OnboardingWizard({
             </div>
           ) : null}
 
+          <p
+            className={'onboarding-summary ' + (modalAnnouncementReady ? 'ready' : 'warning')}
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            {modalAnnouncement}
+          </p>
           <footer className="onboarding-footer">
-            <button type="button" className="text-button" onClick={onSkip}>稍后设置</button>
+            <button type="button" className="text-button" onClick={onSkip}>
+              稍后设置
+            </button>
             <div>
               {step > 0 ? (
                 <button type="button" className="ghost-button" onClick={() => setStep((current) => current - 1)}>
-                  <ArrowLeft size={18} />上一步
+                  <ArrowLeft size={18} />
+                  上一步
                 </button>
               ) : null}
               <button

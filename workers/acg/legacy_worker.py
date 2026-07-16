@@ -15301,10 +15301,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         ]
         if use_v11_repetition_front else []
     )
-    model = genanki.Model(
-        stable_id(f"anki-card-model-{template_version.lower()}-{template_family}", 1000000000),
-        f"Anki Card Generator {template_version} - {template_label}",
-        fields=[
+    model_field_specs = [
             {"name": "CardId"},
             {"name": "CardType"},
             {"name": "Video"},
@@ -15348,7 +15345,12 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             {"name": "SourceLabel"},
             {"name": "UnderstandLabel"},
             {"name": "UseLabel"},
-        ],
+    ]
+    model_field_names = [str(field["name"]) for field in model_field_specs]
+    model = genanki.Model(
+        stable_id(f"anki-card-model-{template_version.lower()}-{template_family}", 1000000000),
+        f"Anki Card Generator {template_version} - {template_label}",
+        fields=model_field_specs,
         templates=[
             {
                 "name": template_label,
@@ -16245,9 +16247,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     card_media_ledger[-1]["presentation_warnings"] = list(presentation.warnings)
                 why_field = card.get("why", "")
             pronunciation_meta = ensure_card_pronunciation_meta(card, project.get("language", "en"))
-            note = genanki.Note(
-                model=model,
-                fields=[
+            note_fields = [
                     anki_text(export_card_id),
                     anki_study_text(card.get("type_label", card.get("type", ""))),
                     anki_video_html(video_webm_name, video_mp4_name, poster_name, controls=not use_v11_repetition_front, muted=False),
@@ -16291,7 +16291,11 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                     anki_text(template_labels["source_label"]),
                     anki_text(template_labels["understand_label"]),
                     anki_text(template_labels["use_label"]),
-                ],
+            ]
+            card_media_ledger[-1]["note_content_sha256"] = note_content_sha256(model_field_names, note_fields)
+            note = genanki.Note(
+                model=model,
+                fields=note_fields,
                 tags=[
                     f"anki_card_generator_{template_version.lower()}",
                     project.get("language", "English"),
@@ -16495,6 +16499,13 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         "media_manifest": exported_media_manifest,
         "media_ledger": media_ledger,
         "card_media_ledger": card_media_ledger,
+        "note_content_fingerprint": {
+            "schema_version": NOTE_CONTENT_FINGERPRINT_SCHEMA_VERSION,
+            "algorithm": NOTE_CONTENT_FINGERPRINT_ALGORITHM,
+            "serialization": NOTE_CONTENT_FINGERPRINT_SERIALIZATION,
+            "field_names": model_field_names,
+            "card_count": len(card_media_ledger),
+        },
         "presentation_warnings": presentation_warnings,
         "tts_manual_review_items": tts_manual_items,
         "tts_semantic_failures": tts_semantic_failures,
@@ -16798,15 +16809,241 @@ def wait_for_anki_media_directory(anki_url: str, timeout_seconds: float = 0.0) -
             time.sleep(0.4)
 
 
+def anki_import_preflight_query(deck_name: str, anki_tag: str) -> str:
+    def quote(value: str) -> str:
+        return str(value or "").replace("\\", "\\\\").replace('"', '\\"')
+
+    return f'deck:"{quote(deck_name)}" tag:"{quote(anki_tag)}"'
+
+
+NOTE_CONTENT_FINGERPRINT_SCHEMA_VERSION = 1
+NOTE_CONTENT_FINGERPRINT_ALGORITHM = "sha256"
+NOTE_CONTENT_FINGERPRINT_SERIALIZATION = "json-field-pairs-v1"
+
+
+def note_content_sha256(field_names: list[str], field_values: list[Any]) -> str:
+    """Fingerprint a note's complete fields in the model-defined order."""
+    if len(field_names) != len(field_values):
+        raise ValueError("note field names and values must have equal lengths")
+    field_pairs = [
+        [str(name), "" if value is None else str(value)]
+        for name, value in zip(field_names, field_values)
+    ]
+    serialized = json.dumps(field_pairs, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def exported_card_ids_for_import_preflight(export_result: dict[str, Any]) -> set[str]:
+    card_media_ledger = (
+        export_result.get("card_media_ledger")
+        if isinstance(export_result.get("card_media_ledger"), list)
+        else []
+    )
+    audio_audit_items, _ = load_audio_audit_from_export_result(export_result)
+    return {
+        str(item.get("card_id") or "").strip()
+        for item in [*card_media_ledger, *audio_audit_items]
+        if isinstance(item, dict) and str(item.get("card_id") or "").strip()
+    }
+
+
+def exported_note_content_fingerprints_for_import_preflight(
+    export_result: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str]:
+    metadata = export_result.get("note_content_fingerprint")
+    if not isinstance(metadata, dict):
+        return None, "content_fingerprint_metadata_missing"
+    if metadata.get("schema_version") != NOTE_CONTENT_FINGERPRINT_SCHEMA_VERSION:
+        return None, "content_fingerprint_schema_unsupported"
+    if str(metadata.get("algorithm") or "").lower() != NOTE_CONTENT_FINGERPRINT_ALGORITHM:
+        return None, "content_fingerprint_algorithm_unsupported"
+    if str(metadata.get("serialization") or "") != NOTE_CONTENT_FINGERPRINT_SERIALIZATION:
+        return None, "content_fingerprint_serialization_unsupported"
+
+    raw_field_names = metadata.get("field_names")
+    if not isinstance(raw_field_names, list):
+        return None, "content_fingerprint_fields_missing"
+    field_names = [str(name or "").strip() for name in raw_field_names]
+    if not field_names or any(not name for name in field_names) or len(set(field_names)) != len(field_names):
+        return None, "content_fingerprint_fields_invalid"
+
+    card_media_ledger = export_result.get("card_media_ledger")
+    if not isinstance(card_media_ledger, list) or not card_media_ledger:
+        return None, "content_fingerprint_ledger_missing"
+    try:
+        expected_count = int(metadata.get("card_count"))
+    except (TypeError, ValueError):
+        return None, "content_fingerprint_card_count_invalid"
+    if expected_count != len(card_media_ledger):
+        return None, "content_fingerprint_card_count_mismatch"
+
+    hashes_by_card_id: dict[str, str] = {}
+    for item in card_media_ledger:
+        if not isinstance(item, dict):
+            return None, "content_fingerprint_ledger_invalid"
+        card_id = str(item.get("card_id") or "").strip()
+        digest = str(item.get("note_content_sha256") or "").strip().lower()
+        if not card_id or card_id in hashes_by_card_id:
+            return None, "content_fingerprint_card_ids_invalid"
+        if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+            return None, "content_fingerprint_hash_invalid"
+        hashes_by_card_id[card_id] = digest
+
+    if len(hashes_by_card_id) != expected_count:
+        return None, "content_fingerprint_coverage_mismatch"
+    return {"field_names": field_names, "hashes_by_card_id": hashes_by_card_id}, ""
+
+
+def imported_note_content_sha256(card_info: dict[str, Any], field_names: list[str]) -> str | None:
+    fields = card_info.get("fields")
+    if not isinstance(fields, dict) or any(name not in fields for name in field_names):
+        return None
+    values: list[Any] = []
+    for name in field_names:
+        field = fields.get(name)
+        if not isinstance(field, dict) or "value" not in field:
+            return None
+        values.append(field.get("value"))
+    return note_content_sha256(field_names, values)
+
+
+def anki_deck_is_within_export(imported_deck_name: str, deck_name: str) -> bool:
+    imported = str(imported_deck_name or "").strip()
+    expected = str(deck_name or "").strip()
+    return bool(imported and expected and (imported == expected or imported.startswith(f"{expected}::")))
+
+
+def inspect_existing_anki_import(
+    export_result: dict[str, Any],
+    *,
+    deck_name: str,
+    anki_tag: str,
+    expected_cards: int,
+    anki_url: str,
+) -> dict[str, Any]:
+    # A failed or ambiguous preflight must never suppress importPackage.
+    # Current exports are matched by their complete CardId evidence. The
+    # count-only fallback is reserved for legacy cards that expose no CardId
+    # and is still scoped by an exact deck + tag query.
+
+    strict_query = anki_import_preflight_query(deck_name, anki_tag)
+    result: dict[str, Any] = {
+        "complete": False,
+        "query": strict_query,
+        "evidence": "none",
+        "expected_cards": expected_cards,
+        "matched_cards": 0,
+        "error": None,
+        "reason": "insufficient_evidence",
+    }
+    if not deck_name or not anki_tag or expected_cards <= 0:
+        return result
+
+    try:
+        found_card_ids = list(anki_connect("findCards", {"query": strict_query}, anki_url) or [])
+        card_infos = (
+            list(anki_connect("cardsInfo", {"cards": found_card_ids}, anki_url) or [])
+            if found_card_ids
+            else []
+        )
+    except Exception as err:
+        result["error"] = str(err)
+        result["reason"] = "query_failed"
+        return result
+
+    # A strict Anki query is the primary deck/tag boundary. If cardsInfo also
+    # reports a deck, reject any result that escaped that boundary. Parent deck
+    # exports legitimately contain cards in child decks.
+    if any(
+        (imported_deck := anki_card_deck_name(info))
+        and not anki_deck_is_within_export(imported_deck, deck_name)
+        for info in card_infos
+    ):
+        result["reason"] = "deck_scope_mismatch"
+        return result
+
+    card_infos_by_export_id: dict[str, list[dict[str, Any]]] = {}
+    for info in card_infos:
+        export_card_id = anki_field_plain_text((info.get("fields") or {}), "CardId").strip()
+        if export_card_id:
+            card_infos_by_export_id.setdefault(export_card_id, []).append(info)
+
+    expected_card_ids = exported_card_ids_for_import_preflight(export_result)
+    imported_card_ids = set(card_infos_by_export_id)
+    result["matched_cards"] = len(expected_card_ids & imported_card_ids)
+
+    if expected_card_ids:
+        result["evidence"] = "card_id_only"
+        if len(expected_card_ids) != expected_cards:
+            result["reason"] = "incomplete_export_card_id_evidence"
+            return result
+        missing_card_ids = sorted(expected_card_ids - imported_card_ids)
+        if missing_card_ids:
+            result["reason"] = "missing_export_card_ids"
+            result["missing_card_ids"] = missing_card_ids
+            return result
+
+        fingerprint, fingerprint_error = exported_note_content_fingerprints_for_import_preflight(export_result)
+        if fingerprint is None:
+            result["reason"] = fingerprint_error
+            return result
+        hashes_by_card_id = fingerprint["hashes_by_card_id"]
+        if set(hashes_by_card_id) != expected_card_ids:
+            result["reason"] = "content_fingerprint_card_id_mismatch"
+            return result
+        field_names = fingerprint["field_names"]
+        mismatched_card_ids = [
+            card_id
+            for card_id in sorted(expected_card_ids)
+            if not any(
+                imported_note_content_sha256(info, field_names) == hashes_by_card_id[card_id]
+                for info in card_infos_by_export_id.get(card_id, [])
+            )
+        ]
+        if mismatched_card_ids:
+            result["reason"] = "note_content_fingerprint_mismatch"
+            result["mismatched_card_ids"] = mismatched_card_ids
+            return result
+        result["evidence"] = "card_id+content_sha256"
+        result["complete"] = True
+        result["reason"] = "all_export_card_ids_and_content_match"
+        return result
+
+    # If Anki exposes CardId values but the export result cannot identify the
+    # current package, an equal count may belong to an older package. Import in
+    # that case instead of guessing. Count-only matching is only for legacy
+    # packages whose notes genuinely have no CardId field/value.
+    if imported_card_ids:
+        result["reason"] = "current_export_card_ids_unavailable"
+        return result
+
+    result["evidence"] = "legacy_unbound"
+    if len(found_card_ids) != expected_cards or len(card_infos) != expected_cards:
+        result["reason"] = "strict_count_mismatch"
+        return result
+    result["matched_cards"] = len(card_infos)
+    result["reason"] = "legacy_content_fingerprint_unavailable"
+    return result
+
+
 def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
     timing_started = time.perf_counter()
     timing_ms: dict[str, int] = {}
+    import_skipped_existing = False
+    import_existing_check: dict[str, Any] = {}
 
     def with_verify_timing(result: dict[str, Any]) -> dict[str, Any]:
         timing_ms["anki_verify"] = int((time.perf_counter() - timing_started) * 1000)
         timing_ms["total"] = timing_ms["anki_verify"]
         add_verify_anki_import_timing_aliases(timing_ms)
-        return {**result, "timing_ms": dict(timing_ms)}
+        enriched = {
+            **result,
+            "import_skipped_existing": bool(import_skipped_existing),
+            "timing_ms": dict(timing_ms),
+        }
+        if import_existing_check:
+            enriched["import_existing_check"] = dict(import_existing_check)
+        return enriched
 
     export_result = payload.get("export_result") or {}
     deck_name = str(payload.get("deck_name") or export_result.get("deck_name") or "").strip()
@@ -16992,39 +17229,65 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
     if import_attempted:
         emit_progress(
             "verify_anki_import",
-            "import",
-            55,
-            "媒体已安全预置，正在通过 AnkiConnect 导入当前 APKG。",
+            "import_preflight",
+            52,
+            "正在确认当前 APKG 是否已完整导入，避免重复写入。",
         )
-        import_started = time.perf_counter()
-        try:
-            import_result = anki_connect("importPackage", {"path": str(apkg_path)}, anki_url)
-        except Exception as err:
-            import_error = str(err)
+        import_preflight_started = time.perf_counter()
+        expected_cards_for_preflight = int(export_result.get("cards") or payload.get("expected_cards") or 0)
+        import_existing_check = inspect_existing_anki_import(
+            export_result,
+            deck_name=deck_name,
+            anki_tag=anki_tag,
+            expected_cards=expected_cards_for_preflight,
+            anki_url=anki_url,
+        )
+        timing_ms["anki_import_preflight"] = int((time.perf_counter() - import_preflight_started) * 1000)
+        import_skipped_existing = bool(import_existing_check.get("complete"))
+
+        if import_skipped_existing:
+            emit_progress(
+                "verify_anki_import",
+                "import_preflight",
+                55,
+                "当前 APKG 已完整存在，已跳过重复导入，继续执行完整核验。",
+            )
+        else:
+            emit_progress(
+                "verify_anki_import",
+                "import",
+                55,
+                "媒体已安全预置，正在通过 AnkiConnect 导入当前 APKG。",
+            )
+            import_started = time.perf_counter()
+            try:
+                import_result = anki_connect("importPackage", {"path": str(apkg_path)}, anki_url)
+            except Exception as err:
+                import_error = str(err)
+                timing_ms["anki_import"] = int((time.perf_counter() - import_started) * 1000)
+                return with_verify_timing(
+                    {
+                        "ok": False,
+                        "message": f"AnkiConnect 导入 APKG 失败：{import_error}",
+                        "failed_checks": ["anki_import_failed"],
+                        "query": query,
+                        "import_attempted": True,
+                        "import_result": False,
+                        "import_error": import_error,
+                    }
+                )
             timing_ms["anki_import"] = int((time.perf_counter() - import_started) * 1000)
-            return with_verify_timing(
-                {
-                    "ok": False,
-                    "message": f"AnkiConnect 导入 APKG 失败：{import_error}",
-                    "failed_checks": ["anki_import_failed"],
-                    "query": query,
-                    "import_attempted": True,
-                    "import_result": False,
-                    "import_error": import_error,
-                }
-            )
-        timing_ms["anki_import"] = int((time.perf_counter() - import_started) * 1000)
-        if import_result is False:
-            return with_verify_timing(
-                {
-                    "ok": False,
-                    "message": "AnkiConnect 没有成功导入 APKG。",
-                    "failed_checks": ["anki_import_failed"],
-                    "query": query,
-                    "import_attempted": True,
-                    "import_result": False,
-                }
-            )
+            if import_result is False:
+                return with_verify_timing(
+                    {
+                        "ok": False,
+                        "message": "AnkiConnect 没有成功导入 APKG。",
+                        "failed_checks": ["anki_import_failed"],
+                        "query": query,
+                        "import_attempted": True,
+                        "import_result": False,
+                    }
+                )
 
     query_started = time.perf_counter()
     try:
@@ -17339,6 +17602,8 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
     )
     if not failed_checks and media_recovery["restored"]:
         message = f"{message} 已在导入前安全预置或补齐 {len(media_recovery['restored'])} 个媒体文件。"
+    if import_skipped_existing:
+        message = f"{message} 当前 APKG 已完整存在，已跳过重复导入。"
 
     return with_verify_timing(
         {

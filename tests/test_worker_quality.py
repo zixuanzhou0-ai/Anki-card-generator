@@ -10155,8 +10155,9 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(result["source_identity"]["source_fingerprint"], "file:freshsource1234")
         self.assertEqual(result["source_fingerprint"], "file:freshsource1234")
 
-    def test_verify_anki_import_can_import_apkg_before_checking_cards(self):
+    def test_verify_anki_import_prechecks_before_importing_new_apkg(self):
         calls = []
+        imported = False
         with tempfile.TemporaryDirectory() as temp_dir:
             apkg_path = Path(temp_dir) / "deck.apkg"
             apkg_path.write_bytes(b"fake apkg for importPackage mock")
@@ -10167,16 +10168,19 @@ class WorkerQualityTests(unittest.TestCase):
             original_anki_connect = worker._legacy_worker.anki_connect
 
             def fake_anki_connect(action, params=None, url=""):
+                nonlocal imported
                 calls.append((action, params or {}))
                 if action == "importPackage":
                     self.assertEqual(params["path"], str(apkg_path))
+                    imported = True
                     return True
                 if action == "findCards":
-                    return [123]
+                    return [123] if imported else []
                 if action == "cardsInfo":
                     return [
                         {
                             "cardId": 123,
+                            "deckName": "Import Then Verify",
                             "fields": {
                                 "Video": {"value": ""},
                                 "Audio": {"value": ""},
@@ -10210,14 +10214,404 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertTrue(result["import_attempted"])
         self.assertTrue(result["import_result"])
+        self.assertFalse(result["import_skipped_existing"])
         self.assertEqual(result["apkg_path"], str(apkg_path))
         self.assertEqual(result["apkg_sha256"], expected_apkg_sha256)
         self.assertEqual(result["apkg_size_bytes"], expected_apkg_size_bytes)
         self.assertGreater(result["apkg_mtime_ms"], 0)
-        self.assertLess(
-            [action for action, _ in calls].index("importPackage"),
-            [action for action, _ in calls].index("findCards"),
+        actions = [action for action, _ in calls]
+        self.assertLess(actions.index("findCards"), actions.index("importPackage"))
+        self.assertLess(actions.index("importPackage"), len(actions) - 1 - actions[::-1].index("findCards"))
+
+    def test_verify_anki_import_skips_import_when_all_export_card_ids_exist(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            apkg_path = Path(temp_dir) / "deck.apkg"
+            apkg_path.write_bytes(b"already imported package")
+            anki_dir = Path(temp_dir) / "anki_media"
+            anki_dir.mkdir()
+            original_anki_connect = worker._legacy_worker.anki_connect
+            field_names = ["CardId", "Answer"]
+            field_values = {
+                "export-card-1": ["export-card-1", "first answer"],
+                "export-card-2": ["export-card-2", "second answer"],
+            }
+
+            def fake_anki_connect(action, params=None, url=""):
+                calls.append((action, params or {}))
+                if action == "getMediaDirPath":
+                    return str(anki_dir)
+                if action == "findCards":
+                    return [101, 102]
+                if action == "cardsInfo":
+                    return [
+                        {
+                            "cardId": card_id,
+                            "deckName": "Already Imported",
+                            "fields": {
+                                "CardId": {"value": export_card_id},
+                                "Answer": {"value": field_values[export_card_id][1]},
+                            },
+                        }
+                        for card_id, export_card_id in [(101, "export-card-1"), (102, "export-card-2")]
+                    ]
+                if action == "importPackage":
+                    raise AssertionError("a fully existing package must not be imported again")
+                raise AssertionError(action)
+
+            try:
+                worker._legacy_worker.anki_connect = fake_anki_connect
+                result = worker.handle_verify_anki_import(
+                    {
+                        "import_apkg": True,
+                        "export_result": {
+                            "apkg_path": str(apkg_path),
+                            "deck_name": "Already Imported",
+                            "anki_tag": "anki_card_generator_v12",
+                            "cards": 2,
+                            "card_media_ledger": [
+                                {
+                                    "card_id": card_id,
+                                    "sentence_tts_text": "sentence",
+                                    "phrase_tts_text": "phrase",
+                                    "note_content_sha256": worker._legacy_worker.note_content_sha256(
+                                        field_names, values
+                                    ),
+                                }
+                                for card_id, values in field_values.items()
+                            ],
+                            "note_content_fingerprint": {
+                                "schema_version": 1,
+                                "algorithm": "sha256",
+                                "serialization": "json-field-pairs-v1",
+                                "field_names": field_names,
+                                "card_count": 2,
+                            },
+                            "media_manifest": {},
+                            "media_summary": {"media_files": 0},
+                            "media_dir": str(Path(temp_dir) / "export_media"),
+                        },
+                    }
+                )
+            finally:
+                worker._legacy_worker.anki_connect = original_anki_connect
+
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["import_attempted"])
+        self.assertIsNone(result["import_result"])
+        self.assertTrue(result["import_skipped_existing"])
+        self.assertEqual(result["import_existing_check"]["evidence"], "card_id+content_sha256")
+        self.assertNotIn("importPackage", [action for action, _ in calls])
+        preflight_query = next(params["query"] for action, params in calls if action == "findCards")
+        self.assertEqual(preflight_query, 'deck:"Already Imported" tag:"anki_card_generator_v12"')
+
+    def test_verify_anki_import_reimports_same_card_id_when_note_content_changed(self):
+        calls = []
+        imported = False
+        with tempfile.TemporaryDirectory() as temp_dir:
+            apkg_path = Path(temp_dir) / "deck.apkg"
+            apkg_path.write_bytes(b"updated package")
+            anki_dir = Path(temp_dir) / "anki_media"
+            anki_dir.mkdir()
+            original_anki_connect = worker._legacy_worker.anki_connect
+            field_names = ["CardId", "Answer"]
+            expected_values = ["export-card-1", "new answer"]
+
+            def fake_anki_connect(action, params=None, url=""):
+                nonlocal imported
+                calls.append((action, params or {}))
+                if action == "getMediaDirPath":
+                    return str(anki_dir)
+                if action == "findCards":
+                    return [101]
+                if action == "cardsInfo":
+                    return [
+                        {
+                            "cardId": 101,
+                            "deckName": "Updated Content",
+                            "fields": {
+                                "CardId": {"value": "export-card-1"},
+                                "Answer": {"value": "new answer" if imported else "old answer"},
+                            },
+                        }
+                    ]
+                if action == "importPackage":
+                    imported = True
+                    return True
+                raise AssertionError(action)
+
+            try:
+                worker._legacy_worker.anki_connect = fake_anki_connect
+                result = worker.handle_verify_anki_import(
+                    {
+                        "import_apkg": True,
+                        "export_result": {
+                            "apkg_path": str(apkg_path),
+                            "deck_name": "Updated Content",
+                            "anki_tag": "anki_card_generator_v12",
+                            "cards": 1,
+                            "card_media_ledger": [
+                                {
+                                    "card_id": "export-card-1",
+                                    "sentence_tts_text": "updated sentence",
+                                    "phrase_tts_text": "updated phrase",
+                                    "note_content_sha256": worker._legacy_worker.note_content_sha256(
+                                        field_names, expected_values
+                                    ),
+                                }
+                            ],
+                            "note_content_fingerprint": {
+                                "schema_version": 1,
+                                "algorithm": "sha256",
+                                "serialization": "json-field-pairs-v1",
+                                "field_names": field_names,
+                                "card_count": 1,
+                            },
+                            "media_manifest": {},
+                            "media_summary": {"media_files": 0},
+                            "media_dir": str(Path(temp_dir) / "export_media"),
+                        },
+                    }
+                )
+            finally:
+                worker._legacy_worker.anki_connect = original_anki_connect
+
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["import_result"])
+        self.assertFalse(result["import_skipped_existing"])
+        self.assertEqual(result["import_existing_check"]["reason"], "note_content_fingerprint_mismatch")
+        self.assertEqual([action for action, _ in calls].count("importPackage"), 1)
+
+    def test_verify_anki_import_imports_when_only_some_export_card_ids_exist(self):
+        calls = []
+        imported = False
+        with tempfile.TemporaryDirectory() as temp_dir:
+            apkg_path = Path(temp_dir) / "deck.apkg"
+            apkg_path.write_bytes(b"partially imported package")
+            anki_dir = Path(temp_dir) / "anki_media"
+            anki_dir.mkdir()
+            original_anki_connect = worker._legacy_worker.anki_connect
+
+            def fake_anki_connect(action, params=None, url=""):
+                nonlocal imported
+                calls.append((action, params or {}))
+                if action == "getMediaDirPath":
+                    return str(anki_dir)
+                if action == "findCards":
+                    return [101, 102] if imported else [101]
+                if action == "cardsInfo":
+                    ids = params["cards"]
+                    return [
+                        {
+                            "cardId": card_id,
+                            "deckName": "Partial Import",
+                            "fields": {"CardId": {"value": f"export-card-{card_id - 100}"}},
+                        }
+                        for card_id in ids
+                    ]
+                if action == "importPackage":
+                    imported = True
+                    return True
+                raise AssertionError(action)
+
+            try:
+                worker._legacy_worker.anki_connect = fake_anki_connect
+                result = worker.handle_verify_anki_import(
+                    {
+                        "import_apkg": True,
+                        "export_result": {
+                            "apkg_path": str(apkg_path),
+                            "deck_name": "Partial Import",
+                            "cards": 2,
+                            "card_media_ledger": [
+                                {"card_id": "export-card-1", "sentence_tts_text": "sentence", "phrase_tts_text": "phrase"},
+                                {"card_id": "export-card-2", "sentence_tts_text": "sentence", "phrase_tts_text": "phrase"},
+                            ],
+                            "media_manifest": {},
+                            "media_summary": {"media_files": 0},
+                            "media_dir": str(Path(temp_dir) / "export_media"),
+                        },
+                    }
+                )
+            finally:
+                worker._legacy_worker.anki_connect = original_anki_connect
+
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["import_skipped_existing"])
+        self.assertTrue(result["import_result"])
+        self.assertEqual(result["import_existing_check"]["reason"], "missing_export_card_ids")
+        self.assertEqual([action for action, _ in calls].count("importPackage"), 1)
+
+    def test_verify_anki_import_does_not_skip_same_count_with_different_card_ids(self):
+        calls = []
+        imported = False
+        with tempfile.TemporaryDirectory() as temp_dir:
+            apkg_path = Path(temp_dir) / "deck.apkg"
+            apkg_path.write_bytes(b"new package with same count")
+            anki_dir = Path(temp_dir) / "anki_media"
+            anki_dir.mkdir()
+            original_anki_connect = worker._legacy_worker.anki_connect
+
+            def fake_anki_connect(action, params=None, url=""):
+                nonlocal imported
+                calls.append((action, params or {}))
+                if action == "getMediaDirPath":
+                    return str(anki_dir)
+                if action == "findCards":
+                    return [301, 302]
+                if action == "cardsInfo":
+                    prefix = "current" if imported else "old"
+                    return [
+                        {
+                            "cardId": card_id,
+                            "deckName": "Reused Deck",
+                            "fields": {"CardId": {"value": f"{prefix}-card-{index}"}},
+                        }
+                        for index, card_id in enumerate(params["cards"], 1)
+                    ]
+                if action == "importPackage":
+                    imported = True
+                    return True
+                raise AssertionError(action)
+
+            try:
+                worker._legacy_worker.anki_connect = fake_anki_connect
+                result = worker.handle_verify_anki_import(
+                    {
+                        "import_apkg": True,
+                        "export_result": {
+                            "apkg_path": str(apkg_path),
+                            "deck_name": "Reused Deck",
+                            "cards": 2,
+                            "card_media_ledger": [
+                                {"card_id": "current-card-1", "sentence_tts_text": "sentence", "phrase_tts_text": "phrase"},
+                                {"card_id": "current-card-2", "sentence_tts_text": "sentence", "phrase_tts_text": "phrase"},
+                            ],
+                            "media_manifest": {},
+                            "media_summary": {"media_files": 0},
+                            "media_dir": str(Path(temp_dir) / "export_media"),
+                        },
+                    }
+                )
+            finally:
+                worker._legacy_worker.anki_connect = original_anki_connect
+
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["import_skipped_existing"])
+        self.assertTrue(result["import_result"])
+        self.assertEqual([action for action, _ in calls].count("importPackage"), 1)
+
+    def test_verify_anki_import_query_failure_never_suppresses_import(self):
+        calls = []
+        find_calls = 0
+        with tempfile.TemporaryDirectory() as temp_dir:
+            apkg_path = Path(temp_dir) / "deck.apkg"
+            apkg_path.write_bytes(b"query failure package")
+            anki_dir = Path(temp_dir) / "anki_media"
+            anki_dir.mkdir()
+            original_anki_connect = worker._legacy_worker.anki_connect
+
+            def fake_anki_connect(action, params=None, url=""):
+                nonlocal find_calls
+                calls.append((action, params or {}))
+                if action == "getMediaDirPath":
+                    return str(anki_dir)
+                if action == "findCards":
+                    find_calls += 1
+                    if find_calls == 1:
+                        raise RuntimeError("temporary Anki query failure")
+                    return [501]
+                if action == "cardsInfo":
+                    return [
+                        {
+                            "cardId": 501,
+                            "deckName": "Query Failure",
+                            "fields": {"CardId": {"value": "query-card-1"}},
+                        }
+                    ]
+                if action == "importPackage":
+                    return True
+                raise AssertionError(action)
+
+            try:
+                worker._legacy_worker.anki_connect = fake_anki_connect
+                result = worker.handle_verify_anki_import(
+                    {
+                        "import_apkg": True,
+                        "export_result": {
+                            "apkg_path": str(apkg_path),
+                            "deck_name": "Query Failure",
+                            "cards": 1,
+                            "card_media_ledger": [{"card_id": "query-card-1", "sentence_tts_text": "sentence", "phrase_tts_text": "phrase"}],
+                            "media_manifest": {},
+                            "media_summary": {"media_files": 0},
+                            "media_dir": str(Path(temp_dir) / "export_media"),
+                        },
+                    }
+                )
+            finally:
+                worker._legacy_worker.anki_connect = original_anki_connect
+
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["import_skipped_existing"])
+        self.assertTrue(result["import_result"])
+        self.assertEqual(result["import_existing_check"]["reason"], "query_failed")
+        self.assertEqual([action for action, _ in calls].count("importPackage"), 1)
+
+    def test_verify_anki_import_legacy_fallback_requires_strict_deck_tag_and_count(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            apkg_path = Path(temp_dir) / "deck.apkg"
+            apkg_path.write_bytes(b"legacy package")
+            anki_dir = Path(temp_dir) / "anki_media"
+            anki_dir.mkdir()
+            original_anki_connect = worker._legacy_worker.anki_connect
+
+            def fake_anki_connect(action, params=None, url=""):
+                calls.append((action, params or {}))
+                if action == "getMediaDirPath":
+                    return str(anki_dir)
+                if action == "findCards":
+                    return [601, 602]
+                if action == "cardsInfo":
+                    return [
+                        {"cardId": card_id, "deckName": "Legacy Deck", "fields": {}}
+                        for card_id in params["cards"]
+                    ]
+                if action == "importPackage":
+                    calls.append(("legacyImportConfirmed", {}))
+                    return True
+                raise AssertionError(action)
+
+            try:
+                worker._legacy_worker.anki_connect = fake_anki_connect
+                result = worker.handle_verify_anki_import(
+                    {
+                        "import_apkg": True,
+                        "export_result": {
+                            "apkg_path": str(apkg_path),
+                            "deck_name": "Legacy Deck",
+                            "anki_tag": "anki_card_generator_v10",
+                            "cards": 2,
+                            "media_manifest": {},
+                            "media_summary": {"media_files": 0},
+                            "media_dir": str(Path(temp_dir) / "export_media"),
+                        },
+                    }
+                )
+            finally:
+                worker._legacy_worker.anki_connect = original_anki_connect
+
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["import_skipped_existing"])
+        self.assertTrue(result["import_result"])
+        self.assertEqual(result["import_existing_check"]["evidence"], "legacy_unbound")
+        self.assertEqual(result["import_existing_check"]["reason"], "legacy_content_fingerprint_unavailable")
+        self.assertEqual(
+            next(params["query"] for action, params in calls if action == "findCards"),
+            'deck:"Legacy Deck" tag:"anki_card_generator_v10"',
         )
+        self.assertEqual([action for action, _ in calls].count("importPackage"), 1)
 
     def test_verify_anki_import_can_prepare_media_before_native_anki_dialog(self):
         calls = []

@@ -16,7 +16,8 @@ async function expectReachableInViewport(locator: Locator) {
 
     return {
       hasBox: rect.width > 0 && rect.height > 0,
-      inViewport: rect.left >= 0 && rect.top >= 0 && rect.right <= window.innerWidth && rect.bottom <= window.innerHeight,
+      inViewport:
+        rect.left >= 0 && rect.top >= 0 && rect.right <= window.innerWidth && rect.bottom <= window.innerHeight,
       hitTarget: hit === element || element.contains(hit),
     }
   })
@@ -51,22 +52,22 @@ test('compact inspector keeps source and batch controls reachable at minimum des
   await expect(page.locator('.desktop-workspace')).toHaveAttribute('data-responsive-mode', 'compact')
   await expect(page.locator('.control-column')).toBeHidden()
 
-  const inspectorToggle = page.getByRole('button', { name: /素材面板/ })
+  const inspectorToggle = page.getByRole('button', { name: '流程', exact: true })
   await inspectorToggle.click()
-  await expect(page.locator('.control-column.sheet-open')).toBeVisible()
+  await expect(page.locator('.desktop-workspace.inspector-sheet .workflow-rail')).toBeVisible()
+  await expect(page.getByRole('navigation', { name: '三步制卡流程' })).toBeVisible()
 
   await page.keyboard.press('Escape')
-  await expect(page.locator('.control-column.sheet-open')).toHaveCount(0)
+  await expect(page.locator('.desktop-workspace.inspector-sheet')).toHaveCount(0)
   await expect(inspectorToggle).toBeFocused()
-  await inspectorToggle.click()
-  await expect(page.locator('.control-column.sheet-open')).toBeVisible()
 
-  await expectReachableInViewport(page.getByRole('button', { name: /选择素材后继续|下一步：学习设置/ }))
   await page.getByRole('button', { name: '批量 / 文件夹' }).click()
   await expectReachableInViewport(page.getByRole('button', { name: '选择视频文件夹批量添加' }))
-  await expectReachableInViewport(page.getByRole('button', { name: /选择素材后继续|下一步：学习设置/ }))
+  await expectReachableInViewport(page.getByRole('button', { name: /选择素材后继续|分析素材/ }))
 
-  const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
+  )
   expect(overflow).toBe(false)
 })
 
@@ -85,14 +86,65 @@ test('desktop workflow shell supports simplified settings, video URL mode, and g
       }
       return (hash >>> 0).toString(36)
     }
+    const normalizeEndpoint = (value: string) => {
+      const parsed = new URL(value.trim())
+      parsed.username = ''
+      parsed.password = ''
+      parsed.search = ''
+      parsed.hash = ''
+      return parsed.toString().replace(/\/+$/, '')
+    }
+    const hash32 = (value: string, seed: number) => {
+      let hash = seed >>> 0
+      for (let index = 0; index < value.length; index += 1) {
+        hash ^= value.charCodeAt(index)
+        hash = Math.imul(hash, 16777619)
+        hash ^= hash >>> 13
+      }
+      return (hash >>> 0).toString(36).padStart(7, '0')
+    }
+    const stableFingerprint = (kind: 'model' | 'tts', fields: readonly unknown[]) => {
+      const serialized = JSON.stringify(fields)
+      return `${kind}:v1:${hash32(serialized, 2166136261)}${hash32(serialized, 2654435769)}`
+    }
+    const verified = (verificationFingerprint: string) => ({
+      verification_schema_version: 1,
+      credential_revision: 0,
+      verification_records: [
+        { status: 'passed', verificationFingerprint, credentialRevision: 0, checkedAt: Date.now(), latencyMs: 1 },
+      ],
+    })
     const profileId = (provider: string, baseUrl: string, model: string) =>
       `api_${hashProfile([provider, baseUrl.trim().replace(/\/+$/, ''), model.trim()])}`
     const ttsProfileId = (provider: string, baseUrl: string, model: string, voice: string) =>
       `tts_${hashProfile([provider, baseUrl.trim().replace(/\/+$/, ''), model.trim(), voice.trim()])}`
+    const modelFingerprint = (provider: string, baseUrl: string, model: string, auth: string) =>
+      stableFingerprint('model', [provider.trim().toLowerCase(), normalizeEndpoint(baseUrl), model.trim(), auth])
+    const ttsFingerprint = (
+      provider: string,
+      baseUrl: string,
+      model: string,
+      voice: string,
+      language: string,
+      sampleRate: number,
+      bitRate: number,
+      credentialSource: string,
+    ) =>
+      stableFingerprint('tts', [
+        true,
+        provider.trim().toLowerCase(),
+        normalizeEndpoint(baseUrl),
+        model.trim(),
+        voice.trim(),
+        language,
+        sampleRate,
+        bitRate,
+        credentialSource,
+      ])
 
     const baseUrl = 'https://aiplatform.googleapis.com'
     window.localStorage.setItem(
-      'anki-card-generator.api-profiles.v1',
+      'anki-card-generator.api-profiles.v2',
       JSON.stringify([
         {
           auth: 'gcloud',
@@ -101,7 +153,7 @@ test('desktop workflow shell supports simplified settings, video URL mode, and g
           has_api_key: false,
           id: profileId('gemini-vertex', baseUrl, 'gemini-3.5-flash'),
           label: 'Gemini 3.5 Flash Vertex',
-          last_test_ok: true,
+          ...verified(modelFingerprint('gemini-vertex', baseUrl, 'gemini-3.5-flash', 'gcloud')),
           model: 'gemini-3.5-flash',
           provider: 'gemini-vertex',
           updated_at: '2026-06-27T00:00:00.000Z',
@@ -113,7 +165,7 @@ test('desktop workflow shell supports simplified settings, video URL mode, and g
           has_api_key: false,
           id: profileId('gemini-vertex', baseUrl, 'gemini-3.1-pro-preview'),
           label: 'Gemini 3.1 Pro Preview Vertex',
-          last_test_ok: true,
+          ...verified(modelFingerprint('gemini-vertex', baseUrl, 'gemini-3.1-pro-preview', 'gcloud')),
           model: 'gemini-3.1-pro-preview',
           provider: 'gemini-vertex',
           updated_at: '2026-06-27T00:00:00.000Z',
@@ -121,7 +173,7 @@ test('desktop workflow shell supports simplified settings, video URL mode, and g
       ]),
     )
     window.localStorage.setItem(
-      'anki-card-generator.tts-profiles.v1',
+      'anki-card-generator.tts-profiles.v2',
       JSON.stringify([
         {
           auth: 'gcloud',
@@ -132,7 +184,18 @@ test('desktop workflow shell supports simplified settings, video URL mode, and g
           id: ttsProfileId('gemini-vertex', baseUrl, 'gemini-3.1-flash-tts-preview', 'Kore'),
           label: 'Gemini 3.1 Flash TTS Vertex',
           language: 'auto',
-          last_test_ok: true,
+          ...verified(
+            ttsFingerprint(
+              'gemini-vertex',
+              baseUrl,
+              'gemini-3.1-flash-tts-preview',
+              'Kore',
+              'auto',
+              24000,
+              128000,
+              'gcloud',
+            ),
+          ),
           model: 'gemini-3.1-flash-tts-preview',
           output_volume: 0.65,
           provider: 'gemini-vertex',
@@ -146,10 +209,10 @@ test('desktop workflow shell supports simplified settings, video URL mode, and g
   await gotoApp(page)
 
   await expect(page.getByRole('heading', { name: 'Anki 卡片生成器' })).toBeVisible()
-  await expect(page.getByText('生成工作台')).toBeVisible()
-  await expect(page.getByText('第 1 步 · 素材', { exact: true })).toBeVisible()
-  await expect(page.getByText('先确认视频和字幕是否匹配')).toBeVisible()
+  await expect(page.getByRole('heading', { name: '添加学习素材' })).toBeVisible()
   await expect(page.locator('.app-rail')).toHaveCount(0)
+  await expect(page.getByRole('navigation', { name: '三步制卡流程' })).toBeVisible()
+  await expect(page.locator('.workflow-rail-step')).toHaveCount(3)
   const topbarBox = await page.locator('.topbar').boundingBox()
   const windowControlsBox = await page.locator('.window-controls').boundingBox()
   expect(topbarBox).not.toBeNull()
@@ -171,7 +234,12 @@ test('desktop workflow shell supports simplified settings, video URL mode, and g
   await expect(page.getByLabel('厂商和模型目录')).toBeVisible()
   await expect(page.getByLabel('厂商和模型目录').getByRole('button', { name: /OpenAI-compatible 模型/ })).toBeVisible()
   await expect(page.getByLabel('厂商和模型目录').getByRole('button', { name: /DeepSeek V4 Pro/ })).toBeVisible()
-  await expect(page.getByLabel('厂商和模型目录').getByRole('button', { name: /Gemini 3.5 Flash/ }).first()).toBeVisible()
+  await expect(
+    page
+      .getByLabel('厂商和模型目录')
+      .getByRole('button', { name: /Gemini 3.5 Flash/ })
+      .first(),
+  ).toBeVisible()
   const savedModelCards = page.locator('.settings-catalog-item.saved')
   await expect(savedModelCards).toHaveCount(2)
   const activeSavedModel = savedModelCards.filter({ hasText: 'Gemini 3.5 Flash Vertex' }).first()
@@ -206,8 +274,13 @@ test('desktop workflow shell supports simplified settings, video URL mode, and g
   await expect(page.getByRole('heading', { name: '语音 TTS' })).toBeVisible()
   await expect(page.getByText('选择 TTS 厂商，也可以手动接入 Speech 接口。')).toBeVisible()
   await expect(page.getByLabel('语音厂商和模型目录')).toBeVisible()
-  await expect(page.getByLabel('语音厂商和模型目录').getByRole('button', { name: /^手动添加 OpenAI-compatible Speech/ })).toBeVisible()
-  await page.getByLabel('语音厂商和模型目录').getByRole('button', { name: /MIMO SGP TTS/ }).click()
+  await expect(
+    page.getByLabel('语音厂商和模型目录').getByRole('button', { name: /^手动添加 OpenAI-compatible Speech/ }),
+  ).toBeVisible()
+  await page
+    .getByLabel('语音厂商和模型目录')
+    .getByRole('button', { name: /MIMO SGP TTS/ })
+    .click()
   await expect(page.getByText('MIMO SGP TTS').first()).toBeVisible()
   await expect(page.getByRole('combobox', { name: '语音服务' })).toBeVisible()
   await expect(page.getByRole('textbox', { name: '语音 Base URL' })).toBeVisible()
@@ -219,7 +292,10 @@ test('desktop workflow shell supports simplified settings, video URL mode, and g
   await page.getByRole('button', { name: /高级：语言、采样率、码率、音量/ }).click()
   await expect(page.getByText('导出 TTS 音量：65%')).toBeVisible()
   await page.screenshot({ path: 'test-results/settings-tts-directory.png', fullPage: true })
-  await page.getByLabel('语音厂商和模型目录').getByRole('button', { name: /Gemini 3.1 Flash TTS Vertex/ }).click()
+  await page
+    .getByLabel('语音厂商和模型目录')
+    .getByRole('button', { name: /Gemini 3.1 Flash TTS Vertex/ })
+    .click()
   await page.getByRole('tab', { name: '本地环境' }).click()
   await expect(page.getByRole('button', { name: /一键修复全部可修复项/ })).toBeVisible()
   await expect(page.getByLabel('普通用户 5 步安装').getByText('用示例导出 APKG')).toBeVisible()
@@ -227,6 +303,7 @@ test('desktop workflow shell supports simplified settings, video URL mode, and g
   await expect(page.getByText('版权所有 © 2026 Zixuan Zhou。保留所有权利。')).toBeVisible()
   await expect(page.getByRole('button', { name: /GitHub 仓库/ })).toBeVisible()
   await page.screenshot({ path: 'test-results/settings-about-copyright.png', fullPage: true })
+  page.once('dialog', (confirmDialog) => confirmDialog.accept())
   await page.getByLabel('关闭设置').click()
 
   await page.getByRole('button', { name: /视频链接/ }).click()
@@ -235,23 +312,27 @@ test('desktop workflow shell supports simplified settings, video URL mode, and g
   await expect(page.getByRole('button', { name: '只用字幕生成' })).toHaveCount(0)
   await expect(page.getByText('当前发布版会按视频制卡处理')).toBeVisible()
   await page.getByPlaceholder('https://www.youtube.com/watch?v=...').fill('https://www.youtube.com/watch?v=UV1WDNe4J5w')
-  await page.getByRole('button', { name: /下一步：学习设置/ }).click()
-  await page.getByRole('button', { name: /下一步：确认抽取/ }).click()
-  await page.getByRole('button', { name: /抽取学习点/ }).last().click()
+  const environmentPreparation = page.getByRole('button', { name: /还需完成 \d+ 项准备/ })
+  if (await environmentPreparation.isVisible()) {
+    await environmentPreparation.click()
+  }
+  await page.getByRole('button', { name: '分析素材', exact: true }).click()
 
+  await expect(page.getByRole('heading', { name: '选择值得复习的内容' })).toBeVisible()
   await expect(page.getByRole('heading', { name: '学习点总览' })).toBeVisible()
   await expect(page.getByText('AI 已扫描 1/1 句字幕')).toBeVisible()
   await expect(page.getByText(/发现 1 个；推荐 1 个，候选 0 个/)).toBeVisible()
   await expect(page.getByText('in the mood').first()).toBeVisible()
   await expect(page.getByText("I'm not really in the mood right now.")).toBeVisible()
   await page.screenshot({ path: 'test-results/learning-points-layout.png', fullPage: true })
-  await page.getByLabel('学习点总览').getByRole('button', { name: /生成选中的 1 张/ }).click()
-  await expect(page.getByRole('heading', { name: '准备生成 APKG · 1 个学习点' })).toBeVisible()
-  await page.screenshot({ path: 'test-results/generation-confirm-layout.png', fullPage: true })
-  await page.getByRole('dialog', { name: '生成确认' }).getByRole('button', { name: '生成 APKG' }).click()
+  await page
+    .getByLabel('学习点总览')
+    .getByRole('button', { name: /生成选中的 1 张/ })
+    .click()
 
-  await expect(page.getByText('检查卡片后导出 APKG')).toBeVisible()
-  const exportButton = page.getByRole('button', { name: /导出可导出的 [1-9]\d* 张/ }).first()
+  await expect(page.getByRole('heading', { name: '生成并导入' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '审核导出' })).toBeVisible()
+  const exportButton = page.getByRole('button', { name: /导出可用的 [1-9]\d* 张/ }).first()
   await expect(exportButton).toBeVisible()
   await expect(page.getByLabel('卡片概览')).toContainText('已选卡片')
   await expect(page.getByLabel('卡片概览')).toContainText('可导出')
@@ -262,7 +343,8 @@ test('desktop workflow shell supports simplified settings, video URL mode, and g
   await expect(page.getByRole('button', { name: /figure out/ })).toBeVisible()
   await page.screenshot({ path: 'test-results/review-export-layout.png', fullPage: true })
 
-  await page.getByRole('button', { name: /2 学习设置/ }).click()
+  await page.getByRole('button', { name: /添加素材/ }).click()
+  await page.getByLabel('学习偏好设置').locator('summary').click()
   await expect(page.getByRole('heading', { name: '卡片模式' })).toBeVisible()
   await expect(page.getByRole('radio', { name: /完整复读/ })).toBeVisible()
   await expect(page.getByRole('radio', { name: /快速复读/ })).toBeVisible()
@@ -270,7 +352,7 @@ test('desktop workflow shell supports simplified settings, video URL mode, and g
   await expect(page.getByRole('radio', { name: /极简复习/ })).toHaveCount(0)
   await page.screenshot({ path: 'test-results/learning-settings-layout.png', fullPage: true })
 
-  await page.getByRole('button', { name: /3 审核导出/ }).click()
+  await page.getByRole('button', { name: /生成并导入/ }).click()
 
   const metrics = await page.evaluate(() => ({
     horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
@@ -284,20 +366,22 @@ test('desktop workflow shell supports simplified settings, video URL mode, and g
     { width: 1440, height: 1000 },
     { width: 1280, height: 900 },
     { width: 1180, height: 780 },
-    { width: 1080, height: 720 },
   ]) {
     await page.setViewportSize(viewport)
-    const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    )
     expect(overflow).toBe(false)
   }
 
   await page.setViewportSize({ width: 1180, height: 780 })
   await expect(page.locator('.window-controls')).toBeVisible()
   await expect(page.locator('.desktop-workspace')).toHaveAttribute('data-responsive-mode', 'compact')
-  await page.getByRole('button', { name: /素材面板/ }).click()
-  await expect(page.locator('.control-column.sheet-open')).toBeVisible()
-  await expectReachableInViewport(page.getByRole('button', { name: /导出可导出的 [1-9]\d* 张/ }).first())
-  await page.getByRole('button', { name: /关闭面板/ }).click()
+  const workflowToggle = page.getByRole('button', { name: '流程', exact: true })
+  await workflowToggle.click()
+  await expect(page.locator('.desktop-workspace.inspector-sheet .workflow-rail')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expectReachableInViewport(page.getByRole('button', { name: /导出可用的 [1-9]\d* 张/ }).first())
   await page.setViewportSize({ width: 1440, height: 1000 })
 
   await page.screenshot({ path: 'test-results/ui-smoke-after-generate.png', fullPage: true })

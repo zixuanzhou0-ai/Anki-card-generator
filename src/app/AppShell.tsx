@@ -1,15 +1,86 @@
 import { useEffect, useState } from 'react'
-import { InspectorPanel } from '../features/app/InspectorPanel'
 import { publicSourceModeFor } from '../domain/publicSource'
 import { Topbar } from '../features/app/Topbar'
+import { WorkflowRail } from '../features/app/WorkflowRail'
 import { ReviewWorkspace } from '../features/review/ReviewWorkspace'
 import { SettingsDialog } from '../features/settings/SettingsDialog'
 import { OnboardingWizard } from '../features/onboarding/OnboardingWizard'
+import { SourceWorkspace } from '../features/source/SourceWorkspace'
 import { loadUiPreferences, saveUiPreferences } from '../services/uiPreferences'
+import {
+  selectProductStepForArtifact,
+  type ArtifactStage,
+  type ProductStep,
+  type WorkflowActionId,
+  type WorkflowIssue,
+} from './workflowState'
+import { resolutionForWorkflowIssue } from './workflowIssueResolution'
 import type { AppController } from './useAppController'
 
 type AppShellProps = {
   controller: AppController
+}
+
+export function existingArtifactDestination(artifactStage: ArtifactStage): ProductStep | null {
+  const destination = selectProductStepForArtifact(artifactStage)
+  return destination === 'source' ? null : destination
+}
+
+export function sourcePrimaryTarget(artifactStage: ArtifactStage): ProductStep | 'extract_learning_points' {
+  return existingArtifactDestination(artifactStage) ?? 'extract_learning_points'
+}
+
+export function deliveryFooterSummary(
+  artifactStage: ArtifactStage,
+  exportableCardCount: number,
+  operationMessage?: string,
+): { title: string; detail: string } {
+  if (artifactStage === 'anki_verified') {
+    return {
+      title: '已在 Anki 中核验',
+      detail: '牌组、卡片和媒体已经通过本次核验。',
+    }
+  }
+  if (artifactStage === 'apkg_ready') {
+    return {
+      title: 'APKG 已生成，尚未导入 Anki',
+      detail: '文件已经安全保存；导入与核验仍需要你明确触发。',
+    }
+  }
+  return {
+    title: artifactStage === 'drafts_ready' ? `${exportableCardCount} 张可安全导出` : operationMessage || '等待安全产物',
+    detail: '生成、导出、导入与核验严格区分，已完成结果不会被重复执行。',
+  }
+}
+
+const WORKFLOW_SCROLL_CONTAINER_SELECTOR = '.source-workspace-content, .workflow-step-scroll'
+
+function workflowScrollContainers(root: ParentNode = document): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(WORKFLOW_SCROLL_CONTAINER_SELECTOR))
+}
+
+export function resetWorkflowStepViewport(
+  previousScrollContainers: readonly HTMLElement[] = [],
+  root: ParentNode = document,
+): void {
+  const scrollContainers = new Set([...previousScrollContainers, ...workflowScrollContainers(root)])
+  scrollContainers.forEach((container) => {
+    // Direct assignment is always instant and must not inherit motion preferences.
+    container.scrollTop = 0
+  })
+  root.querySelector<HTMLElement>('[data-workflow-page-title="true"]')?.focus({ preventScroll: true })
+}
+
+export function modalBackgroundAttributes(active: boolean): { 'aria-hidden'?: true; inert?: true } {
+  return active ? { 'aria-hidden': true, inert: true } : {}
+}
+
+export function appModalActive(
+  settingsOpen: boolean,
+  onboardingVisible: boolean,
+  generationConfirmOpen: boolean,
+): boolean {
+  return settingsOpen || onboardingVisible || generationConfirmOpen
 }
 
 declare global {
@@ -28,19 +99,17 @@ export function AppShell({ controller }: AppShellProps) {
   const [settingsReturnToOnboarding, setSettingsReturnToOnboarding] = useState(false)
   const {
     activeWorkspaceStage,
+    productStep,
     activeSegment,
     activeSegmentId,
     activeSegmentVideoSrc,
     activeSegmentVideoError,
-    activeApiProfileId,
-    activeTtsProfileId,
     advancedApiPresets,
     advancedTtsPresets,
     ankiVerifying,
     ankiVerifyResult,
     apiTestMessage,
     apiTestMeta,
-    apiTestResult,
     apiTestTitle,
     apiTestTone,
     apiTesting,
@@ -48,15 +117,15 @@ export function AppShell({ controller }: AppShellProps) {
     hermesChecking,
     hermesStarting,
     hermesStatus,
-    activeApiKeySaved,
-    apiProfileDirty,
-    apiProfileStatus,
     appBusy,
     applyApiPreset,
     applySavedApiProfile,
     applySavedTtsProfile,
     applyTtsPreset,
     cancelCurrentWorker,
+    forceCancelCurrentWorker,
+    forceCancelBusy,
+    showForceCancel,
     capabilityHelp,
     capabilityLabels,
     checkEnv,
@@ -65,22 +134,21 @@ export function AppShell({ controller }: AppShellProps) {
     envRepairResult,
     envStatus,
     exportApkg,
+    extractLearningPoints,
     extractLearningPointsWithoutCache,
     featuredApiPresets,
     featuredTtsPresets,
     geminiVertexTextModels,
-    generate,
     generationConfirmOpen,
     generationQueuePoints,
     generationQueueSummary,
     generateCardsFromLearningPoints,
     generateSingleLearningPoint,
-    handleTopbarDoubleClick,
     handleWorkerErrorAction,
+    handleTopbarDoubleClick,
     inspectorActionLabel,
     inspectorSheetOpen,
     inspectorState,
-    isCancelling,
     isDesktopRuntime,
     lastExport,
     lastWorkerError,
@@ -95,9 +163,11 @@ export function AppShell({ controller }: AppShellProps) {
     qwenTtsModels,
     qwenTtsVoices,
     motionDuration,
+    openAnkiImport,
+    outputDirectory,
+    changeOutputDirectory,
     closeGenerationConfirm,
     confirmGenerateCardsFromLearningPoints,
-    openAnkiImport,
     patchApi,
     patchRequest,
     patchTts,
@@ -108,30 +178,23 @@ export function AppShell({ controller }: AppShellProps) {
     qualityCounts,
     qualityDiagnostics,
     qualityFunnel,
-    readiness,
-    workflowReadiness,
+    workflowUiSnapshot,
     buildReleaseObservedRawSnapshotHandoff,
     buildReleaseObservedTimingCacheSnapshot,
     request,
-    requestEditedDuringRun,
     responsiveMode,
     revealExport,
     removeGenerationQueueLearningPoint,
     retryMissingLearningPoints,
     repairEnv,
+    resumeRecoveredWorkflow,
     runWindowAction,
     savedApiProfiles,
     savedTtsProfiles,
-    saveCurrentApiProfile,
-    saveCurrentTtsProfile,
     segmentFilter,
     segmentReviewCounts,
     selectedCardCount,
     selectedExportableCardCount,
-    exportableCardCount,
-    repairRequiredCardCount,
-    selectedRepairRequiredCardCount,
-    selectedLearningPointCount,
     selectedLearningPointIds,
     invertCardSelection,
     selectCurrentLevel,
@@ -141,6 +204,7 @@ export function AppShell({ controller }: AppShellProps) {
     selectTemplate,
     setCardsEnabled,
     setActiveWorkspaceStage,
+    setProductStep,
     setInspectorState,
     setPreviewRate,
     setSegmentFilter,
@@ -152,27 +216,45 @@ export function AppShell({ controller }: AppShellProps) {
     settingsDialogRef,
     settingsOpen,
     settingsTab,
+    settingsApiConfig,
+    settingsTts,
+    settingsActiveApiProfileId,
+    settingsActiveTtsProfileId,
+    settingsActiveApiKeySaved,
+    settingsActiveTtsKeySaved,
+    settingsApiProfileDirty,
+    settingsTtsProfileDirty,
+    settingsApiProfileStatus,
+    settingsTtsProfileStatus,
+    settingsApiTestOk,
+    settingsTtsTestOk,
+    settingsDraftDirty,
+    settingsDraftMode,
+    settingsSaving,
+    beginSettingsDraftSession,
+    setSettingsDraftDisplayMode,
+    discardSettingsChanges,
+    deleteSavedApiCredential,
+    deleteSavedTtsCredential,
+    endSettingsDraftSession,
+    saveSettingsAndVerify,
+    applySettingsDraftLater,
+    abandonRecoveredWorkflow,
     showAdvancedTts,
     showCapabilities,
     startWindowDrag,
     startWindowResize,
     status,
-    statusTone,
     refreshHermesStatus,
     startHermesForSettings,
     testApi,
     testTts,
     toggleInspector,
-    tts,
     ttsReadyForGeneration,
     ttsRequired,
-    activeTtsKeySaved,
-    ttsProfileDirty,
-    ttsProfileStatus,
     ttsTesting,
     ttsTestMessage,
     ttsTestMeta,
-    ttsTestResult,
     ttsTestTitle,
     ttsTestTone,
     updateCard,
@@ -183,6 +265,9 @@ export function AppShell({ controller }: AppShellProps) {
     workerProgress,
   } = controller
 
+  useEffect(() => {
+    if (settingsOpen) beginSettingsDraftSession(uiPreferences.settingsMode)
+  }, [beginSettingsDraftSession, settingsOpen, uiPreferences.settingsMode])
   useEffect(() => {
     if (typeof window === 'undefined' || !isDesktopRuntime) {
       if (typeof window !== 'undefined') delete window.__ANKI_RELEASE_EVIDENCE__
@@ -238,28 +323,127 @@ export function AppShell({ controller }: AppShellProps) {
   }
 
   const closeSettings = () => {
+    endSettingsDraftSession()
     setSettingsOpen(false)
     if (!settingsReturnToOnboarding) return
     setSettingsReturnToOnboarding(false)
     setOnboardingOpen(true)
   }
 
-  const hasLearningPointResult = Boolean(learningPointResult && !project)
+  const persistSettingsMode = () => {
+    const nextPreferences = { ...uiPreferences, settingsMode: settingsDraftMode }
+    setUiPreferences(nextPreferences)
+    saveUiPreferences(nextPreferences)
+  }
+
+  const handleSaveSettings = async () => {
+    if (!settingsDraftDirty && settingsDraftMode !== uiPreferences.settingsMode) {
+      persistSettingsMode()
+      return
+    }
+    if (await saveSettingsAndVerify()) persistSettingsMode()
+  }
+
+  const handleApplySettingsLater = async () => {
+    if (!settingsDraftDirty) {
+      persistSettingsMode()
+      return
+    }
+    if (await applySettingsDraftLater()) persistSettingsMode()
+  }
+
+  const settingsDirty = settingsDraftDirty || settingsDraftMode !== uiPreferences.settingsMode
+
   const publicSourceMode = publicSourceModeFor(request.source_mode)
-  const primaryGenerateAction = hasLearningPointResult ? generateCardsFromLearningPoints : generate
   const reviewTemplateLabel = request.review_density === 'fast' ? '快速复读' : '完整复读'
+  const deliverySummary = deliveryFooterSummary(
+    workflowUiSnapshot.artifactStage,
+    selectedExportableCardCount,
+    workflowUiSnapshot.operation?.message,
+  )
+  const navigateProductStep = (step: AppController['productStep']) => {
+    const outgoingScrollContainers = workflowScrollContainers()
+    setProductStep(step)
+    setActiveWorkspaceStage(step === 'source' ? 'source' : 'review')
+    if (inspectorSheetOpen) setInspectorState('collapsed')
+    window.requestAnimationFrame(() => {
+      resetWorkflowStepViewport(outgoingScrollContainers)
+    })
+  }
+
+  const resolveWorkflowIssues = (issues: WorkflowIssue[]) => {
+    const issue = issues[0]
+    switch (resolutionForWorkflowIssue(issue)) {
+      case 'check_environment':
+        void checkEnv()
+        return
+      case 'repair_environment':
+        void repairEnv('all')
+        return
+      case 'test_api':
+        void testApi()
+        return
+      case 'open_api_settings':
+        setSettingsTab('api')
+        setSettingsOpen(true)
+        return
+      case 'test_tts':
+        void testTts()
+        return
+      case 'open_tts_settings':
+        setSettingsTab('tts')
+        setSettingsOpen(true)
+        return
+      case 'navigate_source':
+        navigateProductStep('source')
+        return
+      case 'navigate_select':
+        navigateProductStep('select')
+        return
+      case 'none':
+        return
+    }
+  }
+
+  const runWorkflowAction = (action: WorkflowActionId) => {
+    if (action === 'resume_task') {
+      void resumeRecoveredWorkflow()
+      return
+    }
+    if (action === 'analyze_source') {
+      const target = sourcePrimaryTarget(workflowUiSnapshot.artifactStage)
+      if (target === 'extract_learning_points') void extractLearningPoints()
+      else navigateProductStep(target)
+      return
+    }
+    if (action === 'generate_cards') {
+      generateCardsFromLearningPoints()
+      return
+    }
+    if (action === 'export_cards') {
+      void exportApkg()
+      return
+    }
+    if (action === 'import_and_verify') {
+      void verifyAnkiImport()
+      return
+    }
+    resolveWorkflowIssues(workflowUiSnapshot.primaryAction.blockers)
+  }
+  const onboardingVisible = isDesktopRuntime && onboardingOpen
+  const modalActive = appModalActive(settingsOpen, onboardingVisible, generationConfirmOpen)
 
   return (
     <div className="app-shell">
       <Topbar
         inspectorActionLabel={inspectorActionLabel}
         inspectorActive={inspectorState === 'open' || inspectorState === 'collapsing' || inspectorSheetOpen}
-        isCancelling={isCancelling}
-        status={status}
-        statusTone={statusTone}
-        workerBusy={workerBusy}
-        workflowReadiness={workflowReadiness}
+        workflowUiSnapshot={workflowUiSnapshot}
+        modalActive={modalActive}
         onCancelCurrentWorker={cancelCurrentWorker}
+        onForceCancel={forceCancelCurrentWorker}
+        forceCancelBusy={forceCancelBusy}
+        showForceCancel={showForceCancel}
         onDoubleClick={handleTopbarDoubleClick}
         onMouseDown={startWindowDrag}
         onOpenSettings={() => setSettingsOpen(true)}
@@ -267,145 +451,163 @@ export function AppShell({ controller }: AppShellProps) {
         onWindowAction={runWindowAction}
       />
 
-      <main className="workspace">
+      <main className="workspace" {...modalBackgroundAttributes(modalActive)}>
         <section className={`desktop-workspace inspector-${inspectorState}`} data-responsive-mode={responsiveMode}>
           {inspectorSheetOpen ? (
             <button
               className="inspector-backdrop"
               type="button"
-              aria-label="关闭素材面板遮罩"
+              aria-label="关闭流程面板遮罩"
               onClick={() => setInspectorState('collapsed')}
             />
           ) : null}
-          <InspectorPanel
-            activeWorkspaceStage={activeWorkspaceStage}
-            appBusy={appBusy}
-            diagnosticCount={
-              (qualityFunnel.candidate_only_learning_point_count ?? 0) +
-              (qualityFunnel.hidden_duplicate_learning_point_count ?? 0) +
-              (qualityFunnel.hard_blocked_learning_point_count ?? 0)
-            }
-            generatedCardCount={qualityCounts.total}
-            hasExportableCards={selectedExportableCardCount > 0}
-            hasLearningPointResult={hasLearningPointResult}
-            hasProject={Boolean(project)}
-            inspectorSheetOpen={inspectorSheetOpen}
-            levels={levels}
-            previewRate={previewRate}
-            selectedCardCount={selectedCardCount}
-            selectedExportableCardCount={selectedExportableCardCount}
-            exportableCardCount={exportableCardCount}
-            repairRequiredCardCount={repairRequiredCardCount}
-            selectedRepairRequiredCardCount={selectedRepairRequiredCardCount}
-            selectedLearningPointCount={selectedLearningPointCount}
-            readiness={readiness}
-            workflowReadiness={workflowReadiness}
+          <WorkflowRail
+            snapshot={workflowUiSnapshot}
             request={request}
-            requestEditedDuringRun={requestEditedDuringRun}
-            status={status}
-            statusTone={statusTone}
-            workerBusy={workerBusy}
-            workerErrorActions={workerErrorActions}
-            workerProgress={workerProgress}
-            onCloseSheet={() => setInspectorState('collapsed')}
-            onExport={exportApkg}
-            onExtractLearningPointsWithoutCache={extractLearningPointsWithoutCache}
-            onGenerate={primaryGenerateAction}
-            onPatchRequest={patchRequest}
-            onPreviewRateChange={setPreviewRate}
-            onResolveReadiness={(action) => {
-              if (action === 'select_source') {
-                setActiveWorkspaceStage('source')
-                return
-              }
-              if (action === 'check_environment') {
-                checkEnv()
-                return
-              }
-              if (action === 'repair_environment') {
-                repairEnv('all')
-                return
-              }
-              if (action === 'test_api') {
-                setSettingsTab('api')
-                setSettingsOpen(true)
-                return
-              }
-              if (action === 'test_tts') {
-                setSettingsTab('tts')
-                setSettingsOpen(true)
-                return
-              }
-              if (action === 'select_learning_points' || action === 'repair_cards') {
-                setActiveWorkspaceStage('review')
-                return
-              }
-              if (action === 'open_anki') {
-                openAnkiImport()
-              }
-            }}
-            onSelectCurrentLevel={selectCurrentLevel}
-            onSelectPath={selectPath}
-            onSelectSourceMode={selectSourceMode}
-            onSelectTemplate={selectTemplate}
-            onWorkspaceStageChange={setActiveWorkspaceStage}
-            onWorkerErrorAction={handleWorkerErrorAction}
+            learningPointCount={learningPointResult?.learning_points.length ?? 0}
+            draftCardCount={qualityCounts.total}
+            onStepChange={navigateProductStep}
           />
 
-          <ReviewWorkspace
-            activeSegment={activeSegment}
-            activeSegmentId={activeSegmentId}
-            activeSegmentVideoSrc={activeSegmentVideoSrc}
-            activeSegmentVideoError={activeSegmentVideoError}
-            activeTemplateLabel={reviewTemplateLabel}
-            ankiVerifying={ankiVerifying}
-            ankiVerifyResult={ankiVerifyResult}
-            lastExport={lastExport}
-            lastWorkerError={lastWorkerError}
-            language={request.language}
-            level={request.level}
-            learningPointResult={learningPointResult}
-            motionDuration={motionDuration}
-            prefersReducedMotion={Boolean(prefersReducedMotion)}
-            previewPanelRef={previewPanelRef}
-            previewRate={previewRate}
-            project={project}
-            qualityCounts={qualityCounts}
-            qualityDiagnostics={qualityDiagnostics}
-            qualityFunnel={qualityFunnel}
-            selectedCardCount={selectedCardCount}
-            selectedLearningPointIds={selectedLearningPointIds}
-            generationConfirmOpen={generationConfirmOpen}
-            generationQueuePoints={generationQueuePoints}
-            generationQueueSummary={generationQueueSummary}
-            segmentFilter={segmentFilter}
-            segmentReviewCounts={segmentReviewCounts}
-            sourceMode={publicSourceMode}
-            templateId={request.template_id}
-            visibleSegments={visibleSegments}
-            workerBusy={workerBusy}
-            workerProgress={workerProgress}
-            workflowReadiness={workflowReadiness}
-            workspaceStage={activeWorkspaceStage}
-            status={status}
-            onCloseGenerationConfirm={closeGenerationConfirm}
-            onConfirmGenerateCardsFromLearningPoints={confirmGenerateCardsFromLearningPoints}
-            onExport={exportApkg}
-            onExtractLearningPointsWithoutCache={extractLearningPointsWithoutCache}
-            onOpenAnkiImport={openAnkiImport}
-            onRevealExport={revealExport}
-            onSegmentFilterChange={setSegmentFilter}
-            onInvertCardSelection={invertCardSelection}
-            onGenerateCardsFromLearningPoints={generateCardsFromLearningPoints}
-            onGenerateSingleLearningPoint={generateSingleLearningPoint}
-            onRemoveGenerationQueueLearningPoint={removeGenerationQueueLearningPoint}
-            onRetryMissingLearningPoints={retryMissingLearningPoints}
-            onSelectSegment={selectSegment}
-            onSetCardsEnabled={setCardsEnabled}
-            onSetSelectedLearningPointIds={setSelectedLearningPointIds}
-            onUpdateCard={updateCard}
-            onVerifyAnkiImport={verifyAnkiImport}
-          />
+          {productStep === 'source' ? (
+            <SourceWorkspace
+              snapshot={workflowUiSnapshot}
+              request={request}
+              levels={levels}
+              previewRate={previewRate}
+              onPatchRequest={patchRequest}
+              onPreviewRateChange={setPreviewRate}
+              onSelectCurrentLevel={selectCurrentLevel}
+              onSelectPath={selectPath}
+              onSelectSourceMode={selectSourceMode}
+              onSelectReviewDensity={(reviewDensity) => patchRequest({ review_density: reviewDensity })}
+              onSelectTemplate={selectTemplate}
+              onPrimaryAction={runWorkflowAction}
+              onAbandonRecovery={() => {
+                void abandonRecoveredWorkflow()
+              }}
+              onResolveBlockers={resolveWorkflowIssues}
+              workerErrorActions={workerErrorActions}
+              onWorkerErrorAction={handleWorkerErrorAction}
+            />
+          ) : (
+            <section className="workflow-step-workspace" aria-labelledby="workflow-step-title">
+              <header className="workflow-step-header">
+                <span>第 {productStep === 'select' ? 2 : 3}/3 步</span>
+                <h1 id="workflow-step-title" data-workflow-page-title="true" tabIndex={-1}>
+                  {workflowUiSnapshot.heading}
+                </h1>
+                <p>{workflowUiSnapshot.description}</p>
+              </header>
+              <div className="workflow-step-scroll">
+                {' '}
+                <ReviewWorkspace
+                  activeSegment={activeSegment}
+                  activeSegmentId={activeSegmentId}
+                  activeSegmentVideoSrc={activeSegmentVideoSrc}
+                  activeSegmentVideoError={activeSegmentVideoError}
+                  activeTemplateLabel={reviewTemplateLabel}
+                  ankiVerifying={ankiVerifying}
+                  ankiVerifyResult={ankiVerifyResult}
+                  lastExport={lastExport}
+                  lastWorkerError={lastWorkerError}
+                  language={request.language}
+                  level={request.level}
+                  learningPointResult={learningPointResult}
+                  motionDuration={motionDuration}
+                  prefersReducedMotion={Boolean(prefersReducedMotion)}
+                  previewPanelRef={previewPanelRef}
+                  previewRate={previewRate}
+                  preferLearningPointSelection={productStep === 'select'}
+                  project={project}
+                  qualityCounts={qualityCounts}
+                  qualityDiagnostics={qualityDiagnostics}
+                  qualityFunnel={qualityFunnel}
+                  selectedCardCount={selectedCardCount}
+                  selectedLearningPointIds={selectedLearningPointIds}
+                  generationConfirmOpen={generationConfirmOpen}
+                  generationQueuePoints={generationQueuePoints}
+                  generationQueueSummary={generationQueueSummary}
+                  segmentFilter={segmentFilter}
+                  segmentReviewCounts={segmentReviewCounts}
+                  sourceMode={publicSourceMode}
+                  templateId={request.template_id}
+                  visibleSegments={visibleSegments}
+                  workerBusy={workerBusy}
+                  workerProgress={workerProgress}
+                  primaryAction={workflowUiSnapshot.primaryAction}
+                  workerErrorActions={workerErrorActions}
+                  workspaceStage={activeWorkspaceStage}
+                  status={status}
+                  onCloseGenerationConfirm={closeGenerationConfirm}
+                  onConfirmGenerateCardsFromLearningPoints={confirmGenerateCardsFromLearningPoints}
+                  onExport={exportApkg}
+                  onExtractLearningPointsWithoutCache={extractLearningPointsWithoutCache}
+                  onRevealExport={revealExport}
+                  onSegmentFilterChange={setSegmentFilter}
+                  onInvertCardSelection={invertCardSelection}
+                  onOpenAnkiImport={openAnkiImport}
+                  onResolveBlockers={resolveWorkflowIssues}
+                  onRunWorkflowAction={runWorkflowAction}
+                  onGenerateSingleLearningPoint={generateSingleLearningPoint}
+                  onRemoveGenerationQueueLearningPoint={removeGenerationQueueLearningPoint}
+                  onRetryMissingLearningPoints={retryMissingLearningPoints}
+                  onSelectSegment={selectSegment}
+                  onSetCardsEnabled={setCardsEnabled}
+                  onSetSelectedLearningPointIds={setSelectedLearningPointIds}
+                  onUpdateCard={updateCard}
+                  onWorkerErrorAction={handleWorkerErrorAction}
+                  onVerifyAnkiImport={verifyAnkiImport}
+                  showExportPrimaryAction={false}
+                />
+              </div>
+              {productStep === 'deliver' ? (
+                <footer className="workflow-delivery-action-bar">
+                  <div>
+                    <strong>{deliverySummary.title}</strong>
+                    <small>
+                      {workflowUiSnapshot.primaryAction.blockers[0]?.detail ?? deliverySummary.detail}
+                    </small>
+                    <small className="workflow-output-directory" title={outputDirectory || '导出时选择保存目录'}>
+                      {outputDirectory ? `保存到：${outputDirectory}` : '尚未选择保存目录；导出时再选择。'}
+                    </small>
+                  </div>
+                  <button type="button" className="ghost-button" onClick={() => void changeOutputDirectory()}>
+                    更改保存目录
+                  </button>
+                  {workflowUiSnapshot.primaryAction.action === 'resume_task' ? (
+                    <button type="button" className="secondary-button" onClick={() => void abandonRecoveredWorkflow()}>
+                      放弃恢复
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="primary-button"
+                    data-variant="primary"
+                    disabled={
+                      workflowUiSnapshot.primaryAction.state === 'running' ||
+                      workflowUiSnapshot.primaryAction.state === 'completed' ||
+                      (workflowUiSnapshot.primaryAction.state === 'blocked' &&
+                        !workflowUiSnapshot.primaryAction.blockers.some((issue) =>
+                          ['environment', 'api', 'tts', 'selection_empty', 'learning_points_missing'].includes(
+                            issue.id,
+                          ),
+                        ))
+                    }
+                    onClick={() => {
+                      if (workflowUiSnapshot.primaryAction.state === 'blocked') {
+                        resolveWorkflowIssues(workflowUiSnapshot.primaryAction.blockers)
+                      } else {
+                        runWorkflowAction(workflowUiSnapshot.primaryAction.action)
+                      }
+                    }}
+                  >
+                    {workflowUiSnapshot.primaryAction.primaryLabel}
+                  </button>
+                </footer>
+              ) : null}
+            </section>
+          )}
         </section>
       </main>
 
@@ -413,7 +615,7 @@ export function AppShell({ controller }: AppShellProps) {
         key={onboardingRunId}
         apiReady={apiReadyForGeneration}
         envStatus={envStatus}
-        open={isDesktopRuntime && onboardingOpen}
+        open={onboardingVisible}
         ttsReady={ttsReadyForGeneration}
         ttsRequired={ttsRequired}
         onCheckEnv={checkEnv}
@@ -426,17 +628,17 @@ export function AppShell({ controller }: AppShellProps) {
       <SettingsDialog
         apiSettings={{
           advancedApiPresets,
-          apiConfig: request.api_config,
+          apiConfig: settingsApiConfig,
           apiTestMessage,
           apiTestMeta,
-          apiTestOk: apiTestResult?.ok,
+          apiTestOk: settingsApiTestOk,
           apiTestTitle,
           apiTestTone,
           apiTesting,
-          apiKeySaved: activeApiKeySaved,
-          activeApiProfileId,
-          apiProfileDirty,
-          apiProfileStatus,
+          apiKeySaved: settingsActiveApiKeySaved,
+          activeApiProfileId: settingsActiveApiProfileId,
+          apiProfileDirty: settingsApiProfileDirty,
+          apiProfileStatus: settingsApiProfileStatus,
           appBusy,
           capabilityHelp,
           capabilityLabels,
@@ -452,7 +654,12 @@ export function AppShell({ controller }: AppShellProps) {
           onApplySavedApiProfile: applySavedApiProfile,
           onCheckHermes: refreshHermesStatus,
           onPatchApi: patchApi,
-          onSaveApiProfile: saveCurrentApiProfile,
+          onDeleteSavedCredential: () => {
+            void deleteSavedApiCredential()
+          },
+          onSaveApiProfile: () => {
+            void handleSaveSettings()
+          },
           onSetShowCapabilities: setShowCapabilities,
           onStartHermes: startHermesForSettings,
           onTestApi: testApi,
@@ -469,11 +676,11 @@ export function AppShell({ controller }: AppShellProps) {
         motionDuration={motionDuration}
         open={settingsOpen}
         prefersReducedMotion={Boolean(prefersReducedMotion)}
-        settingsMode={uiPreferences.settingsMode}
+        settingsMode={settingsDraftMode}
         settingsTab={settingsTab}
         ttsSettings={{
           advancedTtsPresets,
-          apiConfig: request.api_config,
+          apiConfig: settingsApiConfig,
           appBusy,
           featuredTtsPresets,
           mimoOpenAiBaseUrl: MIMO_OPENAI_BASE_URL,
@@ -482,38 +689,49 @@ export function AppShell({ controller }: AppShellProps) {
           mimoTtsVoices,
           qwenTtsModels,
           qwenTtsVoices,
-          activeTtsProfileId,
+          activeTtsProfileId: settingsActiveTtsProfileId,
           savedTtsProfiles,
           showAdvancedTts,
-          tts,
-          ttsKeySaved: activeTtsKeySaved,
-          ttsProfileDirty,
-          ttsProfileStatus,
+          tts: settingsTts,
+          ttsKeySaved: settingsActiveTtsKeySaved,
+          ttsProfileDirty: settingsTtsProfileDirty,
+          ttsProfileStatus: settingsTtsProfileStatus,
           ttsTestMessage,
           ttsTestMeta,
-          ttsTestOk: ttsTestResult?.ok,
+          ttsTestOk: settingsTtsTestOk,
           ttsTestTitle,
           ttsTestTone,
           ttsTesting,
           onApplySavedTtsProfile: applySavedTtsProfile,
           onApplyTtsPreset: applyTtsPreset,
           onPatchTts: patchTts,
-          onSaveTtsProfile: saveCurrentTtsProfile,
+          onDeleteSavedCredential: () => {
+            void deleteSavedTtsCredential()
+          },
+          onSaveTtsProfile: () => {
+            void handleSaveSettings()
+          },
           onSetShowAdvancedTts: setShowAdvancedTts,
           onTestTts: testTts,
         }}
+        dirty={settingsDirty}
+        saving={settingsSaving}
+        onApplyWithoutVerification={() => {
+          void handleApplySettingsLater()
+        }}
         onClose={closeSettings}
+        onDiscardChanges={discardSettingsChanges}
+        onSaveAndVerify={() => {
+          void handleSaveSettings()
+        }}
         onRerunOnboarding={() => {
           setSettingsReturnToOnboarding(false)
+          endSettingsDraftSession()
           setSettingsOpen(false)
           setOnboardingRunId((current) => current + 1)
           setOnboardingOpen(true)
         }}
-        onSettingsModeChange={(settingsMode) => {
-          const nextPreferences = { ...uiPreferences, settingsMode }
-          setUiPreferences(nextPreferences)
-          saveUiPreferences(nextPreferences)
-        }}
+        onSettingsModeChange={setSettingsDraftDisplayMode}
         onSettingsTabChange={setSettingsTab}
       />
 

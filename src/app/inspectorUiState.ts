@@ -19,11 +19,11 @@ export function buildInspectorUiState({
   const inspectorActionLabel =
     responsiveMode === 'compact'
       ? inspectorSheetOpen
-        ? '关闭面板'
-        : '素材面板'
+        ? '关闭流程'
+        : '流程'
       : inspectorState === 'collapsed'
-        ? '打开面板'
-        : '收起面板'
+        ? '展开流程'
+        : '收起流程'
 
   return {
     inspectorSheetOpen,

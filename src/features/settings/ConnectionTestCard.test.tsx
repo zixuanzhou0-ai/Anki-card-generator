@@ -27,6 +27,7 @@ describe('ConnectionTestCard', () => {
 
     expect(screen.getByText('连接状态')).toBeInTheDocument()
     expect(screen.getByText('mimo · model')).toBeInTheDocument()
+    expect(document.querySelectorAll('[aria-live], [role="status"]')).toHaveLength(0)
     expect(onTest).toHaveBeenCalledOnce()
   })
 

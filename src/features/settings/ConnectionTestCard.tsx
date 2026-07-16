@@ -28,7 +28,7 @@ export function ConnectionTestCard({
   onTest,
 }: ConnectionTestCardProps) {
   return (
-    <div className={`api-test-card ${tone}`} aria-live="polite" aria-atomic="true">
+    <div className={`api-test-card ${tone}`}>
       <div className="api-test-icon" aria-hidden="true">
         {testing ? (
           <Loader2 className="spin" size={22} />

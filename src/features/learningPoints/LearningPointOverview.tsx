@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Filter, Layers3, ListChecks, Search, Sparkles, Trash2 } from 'lucide-react'
 
-import type { WorkflowReadinessSnapshot } from '../../app/readiness'
+import type { ActionGate, WorkflowActionId, WorkflowIssue } from '../../app/workflowState'
 
 import type {
   GenerationQueueSummary,
@@ -25,11 +26,12 @@ type LearningPointOverviewProps = {
   generationConfirmOpen: boolean
   generationQueuePoints: LearningPointItem[]
   generationQueueSummary: GenerationQueueSummary
-  workflowReadiness?: WorkflowReadinessSnapshot
+  primaryAction: ActionGate
   onCloseGenerationConfirm: () => void
   onConfirmGenerateCards: () => void
   onExtractWithoutCache: () => void
-  onGenerateCards: () => void
+  onResolveBlockers: (blockers: WorkflowIssue[]) => void
+  onRunWorkflowAction: (action: WorkflowActionId) => void
   onGenerateSinglePoint: (pointId: string) => void
   onRemoveGenerationQueuePoint: (pointId: string) => void
   onSetSelectedIds: (ids: Set<string>) => void
@@ -82,11 +84,12 @@ export function LearningPointOverview({
   generationConfirmOpen,
   generationQueuePoints,
   generationQueueSummary,
-  workflowReadiness,
+  primaryAction,
   onCloseGenerationConfirm,
   onConfirmGenerateCards,
   onExtractWithoutCache,
-  onGenerateCards,
+  onResolveBlockers,
+  onRunWorkflowAction,
   onGenerateSinglePoint,
   onRemoveGenerationQueuePoint,
   onSetSelectedIds,
@@ -146,18 +149,27 @@ export function LearningPointOverview({
       if (!focusable.length) return
       const first = focusable[0]
       const last = focusable[focusable.length - 1]
-      if (event.shiftKey && document.activeElement === first) {
+      const activeElement = document.activeElement
+      if (activeElement === panel || !panel.contains(activeElement)) {
+        event.preventDefault()
+        ;(event.shiftKey ? last : first).focus()
+      } else if (event.shiftKey && activeElement === first) {
         event.preventDefault()
         last.focus()
-      } else if (!event.shiftKey && document.activeElement === last) {
+      } else if (!event.shiftKey && activeElement === last) {
         event.preventDefault()
         first.focus()
       }
     }
+    const keepFocusInside = (event: FocusEvent) => {
+      if (event.target instanceof Node && !panel?.contains(event.target)) panel?.focus()
+    }
 
     document.addEventListener('keydown', handleKeyDown)
+    document.addEventListener('focusin', keepFocusInside)
     return () => {
       document.removeEventListener('keydown', handleKeyDown)
+      document.removeEventListener('focusin', keepFocusInside)
     }
   }, [generationConfirmOpen])
   const rememberReturnFocus = (element: HTMLElement) => {
@@ -166,23 +178,48 @@ export function LearningPointOverview({
 
   const modelLabel = [result.ai_model_provider, result.ai_model_name].filter(Boolean).join(' · ')
   const selected = selectedLearningPoints(points, selectedIds)
+  const blockerRecoveryAvailable = primaryAction.state === 'blocked' && primaryAction.blockers.length > 0
+  const primaryActionDisabled =
+    selected.length === 0 ||
+    primaryAction.state === 'running' ||
+    primaryAction.state === 'completed' ||
+    (primaryAction.state === 'blocked' && !blockerRecoveryAvailable)
+  const runPrimaryAction = () => {
+    if (primaryAction.state === 'blocked') {
+      onResolveBlockers(primaryAction.blockers)
+      return
+    }
+    onRunWorkflowAction(primaryAction.action)
+  }
+  const runConfirmationAction = () => {
+    if (primaryAction.state === 'blocked') {
+      onResolveBlockers(primaryAction.blockers)
+      return
+    }
+    onConfirmGenerateCards()
+  }
   const selectedRecommendedCount = selected.filter((point) => point.status === 'recommended').length
-  const sourceSentenceCount = Number(result.quality_funnel?.source_sentence_count ?? result.source_sentences?.length ?? 0)
-  const reviewedSourceCount = Number(result.ai_reviewed_source_count ?? result.quality_funnel?.ai_reviewed_source_count ?? 0)
+  const sourceSentenceCount = Number(
+    result.quality_funnel?.source_sentence_count ?? result.source_sentences?.length ?? 0,
+  )
+  const reviewedSourceCount = Number(
+    result.ai_reviewed_source_count ?? result.quality_funnel?.ai_reviewed_source_count ?? 0,
+  )
   const cacheHits = Number(result.quality_funnel?.ai_review_cache_hits ?? 0)
   const cacheMisses = Number(result.quality_funnel?.ai_review_cache_misses ?? 0)
   const cacheReadEnabled = result.quality_funnel?.ai_review_cache_read_enabled !== false
-  const cacheSummary =
-    !cacheReadEnabled
-      ? '本次未使用 AI 精筛缓存。'
-      : cacheHits > 0
+  const cacheSummary = !cacheReadEnabled
+    ? '本次未使用 AI 精筛缓存。'
+    : cacheHits > 0
       ? `本次复用了 ${cacheHits} 批 AI 精筛缓存，实时调用 ${cacheMisses} 批。`
       : cacheMisses > 0
         ? `本次实时调用 ${cacheMisses} 批 AI 精筛，没有复用缓存。`
         : ''
   const hasSourceScanStats = sourceSentenceCount > 0 || reviewedSourceCount > 0
   const diagnosticCount =
-    (result.ai_rejected_count ?? 0) + result.learning_point_summary.hidden_duplicate + result.learning_point_summary.hard_blocked
+    (result.ai_rejected_count ?? 0) +
+    result.learning_point_summary.hidden_duplicate +
+    result.learning_point_summary.hard_blocked
   const visiblePoints = useMemo(
     () =>
       points.filter((point) => {
@@ -194,9 +231,11 @@ export function LearningPointOverview({
             .some((value) => String(value).toLocaleLowerCase().includes(query))
         ) {
           return false
-        }        if (typeFilter !== 'all' && point.type !== typeFilter) return false
+        }
+        if (typeFilter !== 'all' && point.type !== typeFilter) return false
         if (statusFilter === 'cardable' && !cardableLearningPoint(point)) return false
-        if (statusFilter === 'needs_review' && !(cardableLearningPoint(point) && learningPointNeedsSourceReview(point))) return false
+        if (statusFilter === 'needs_review' && !(cardableLearningPoint(point) && learningPointNeedsSourceReview(point)))
+          return false
         if (
           statusFilter !== 'cardable' &&
           statusFilter !== 'needs_review' &&
@@ -221,7 +260,9 @@ export function LearningPointOverview({
   const cardableIds = points.filter(cardableLearningPoint).map((point) => point.id)
   const duplicateCount = points.filter((point) => point.status === 'hidden_duplicate').length
   const hardBlockedCount = points.filter((point) => point.status === 'hard_blocked').length
-  const sourceQualityCounts = result.quality_funnel?.source_sentence_quality_counts as Record<string, number> | undefined
+  const sourceQualityCounts = result.quality_funnel?.source_sentence_quality_counts as
+    | Record<string, number>
+    | undefined
   const sourceQualitySignals = sourceQualityCounts
     ? [
         ['too_long', '长句'],
@@ -236,11 +277,12 @@ export function LearningPointOverview({
         })
         .filter(Boolean)
     : []
-  const sourceReviewHint = sourceQualitySignals.length ? `字幕质量信号：${sourceQualitySignals.slice(0, 4).join(' · ')}` : ''
+  const sourceReviewHint = sourceQualitySignals.length
+    ? `字幕质量信号：${sourceQualitySignals.slice(0, 4).join(' · ')}`
+    : ''
   const allCardableSelected = cardableIds.length > 0 && cardableIds.every((id) => selectedIds.has(id))
   const allRecommendedSelected = recommendedIds.length > 0 && recommendedIds.every((id) => selectedIds.has(id))
-  const allVisibleSelected =
-    cardableVisibleIds.length > 0 && cardableVisibleIds.every((id) => selectedIds.has(id))
+  const allVisibleSelected = cardableVisibleIds.length > 0 && cardableVisibleIds.every((id) => selectedIds.has(id))
 
   const replaceSelection = (ids: string[]) => onSetSelectedIds(new Set(ids))
   const selectAllCardable = () => {
@@ -278,12 +320,15 @@ export function LearningPointOverview({
           </h2>
           <p>
             发现 {result.learning_point_summary.total} 个；推荐 {result.learning_point_summary.recommended} 个，候选{' '}
-            {result.learning_point_summary.candidate_only} 个。默认先勾选高质量推荐；“全选可制卡项”会包含候选和需复查但合法的学习点，重复折叠和不可制卡不会进入队列。
+            {result.learning_point_summary.candidate_only}{' '}
+            个。默认先勾选高质量推荐；“全选可制卡项”会包含候选和需复查但合法的学习点，重复折叠和不可制卡不会进入队列。
           </p>
         </div>
         <div className="learning-point-primary-count">
           <strong>{selected.length}</strong>
-          <span>已选学习点 {selected.length} / 可制卡 {cardableIds.length}</span>
+          <span>
+            已选学习点 {selected.length} / 可制卡 {cardableIds.length}
+          </span>
           {generationConfirmOpen ? (
             <span className="generation-confirm-open-badge">确认区已打开</span>
           ) : (
@@ -293,188 +338,213 @@ export function LearningPointOverview({
               data-focus-return="generate-selected"
               onClick={(event) => {
                 rememberReturnFocus(event.currentTarget)
-                onGenerateCards()
+                runPrimaryAction()
               }}
-              disabled={workerBusy || selected.length === 0}
+              disabled={primaryActionDisabled}
             >
               <ListChecks size={18} />
-              {workflowReadiness?.canProceed === false
-                ? workflowReadiness.primaryActionLabel
-                : `生成选中的 ${selected.length} 张`}
+              {primaryAction.primaryLabel}
             </button>
           )}
           <small className="learning-point-selection-hint">
-            筛选只改变列表；批量勾选才会改变队列。当前推荐已勾选{' '}
-            {selectedRecommendedCount}/{recommendedIds.length} 个。
+            筛选只改变列表；批量勾选才会改变队列。当前推荐已勾选 {selectedRecommendedCount}/{recommendedIds.length} 个。
           </small>
-          <button type="button" className="ghost-button compact-secondary-action" onClick={onExtractWithoutCache} disabled={workerBusy}>
+          <button
+            type="button"
+            className="ghost-button compact-secondary-action"
+            onClick={onExtractWithoutCache}
+            disabled={workerBusy}
+          >
             重新分析素材
           </button>
         </div>
       </div>
 
       <div className={`learning-point-review-grid ${generationConfirmOpen ? 'has-confirm' : ''}`}>
-        {generationConfirmOpen ? (
-          <section
-            className="generation-confirm-panel"
-            aria-label="生成确认"
-            aria-modal="true"
-            ref={confirmPanelRef}
-            role="dialog"
-            tabIndex={-1}
-          >
-            <div className="generation-confirm-header">
-              <div>
-                <span className="hero-kicker">生成确认</span>
-                <h3>
-                  准备生成 APKG · {generationQueueSummary.count} 个学习点
-                </h3>
-                <p>
-                  {generationQueueSummary.sourceLabel} · {generationQueueSummary.modeLabel}。每个学习点默认生成 1 张统一学习卡；点击开始后会先选择保存目录，再自动完成正文、TTS、媒体切片和 APKG 打包。
-                </p>
-              </div>
-              <div className="generation-confirm-actions">
-                <button
-                  type="button"
-                  className="primary-button generation-confirm-primary"
-                  onClick={onConfirmGenerateCards}
-                  disabled={
-                    workerBusy ||
-                    generationQueueSummary.count === 0 ||
-                    workflowReadiness?.canProceed === false
-                  }
+        {generationConfirmOpen && typeof document !== 'undefined'
+          ? createPortal(
+              <div className="generation-confirm-modal-layer" data-generation-confirm-modal="true">
+                <section
+                  className="generation-confirm-panel"
+                  aria-label="生成确认"
+                  aria-modal="true"
+                  ref={confirmPanelRef}
+                  role="dialog"
+                  tabIndex={-1}
                 >
-                  <ListChecks size={18} />
-                  {workflowReadiness?.canProceed === false
-                    ? workflowReadiness.primaryActionLabel
-                    : '生成 APKG'}
-                </button>
-                <button type="button" className="ghost-button" onClick={onCloseGenerationConfirm} disabled={workerBusy}>
-                  返回调整
-                </button>
-              </div>
-            </div>
-
-            {workflowReadiness && workflowReadiness.blockers.length > 0 ? (
-              <div className="generation-confirm-blockers" role="status">
-                <strong>{workflowReadiness.primaryActionLabel}</strong>
-                {workflowReadiness.blockers.map((blocker) => (
-                  <span key={blocker.id}>
-                    <b>{blocker.title}</b>
-                    <small>{blocker.detail}</small>
-                  </span>
-                ))}
-              </div>
-            ) : null}
-
-            <div className="generation-run-summary-strip" aria-label="生成运行状态">
-              <span>
-                <small>已选</small>
-                <strong>{generationQueueSummary.count}</strong>
-              </span>
-              <span>
-                <small>已处理</small>
-                <strong>{generationQueueSummary.completedCount}</strong>
-              </span>
-              <span>
-                <small>已生成</small>
-                <strong>{generationQueueSummary.generatedCount}</strong>
-              </span>
-              <span>
-                <small>可导出</small>
-                <strong>{generationQueueSummary.exportableCount}</strong>
-              </span>
-              <span>
-                <small>硬失败</small>
-                <strong>{generationQueueSummary.missingCount}</strong>
-              </span>
-            </div>
-
-            <div className="generation-confirm-minor">
-              <span>
-                {generationQueueSummary.batchMode
-                  ? `内部将分 ${generationQueueSummary.batchCount} 批稳定处理，每批最多 ${generationQueueSummary.batchSize} 张；用户只需要点一次。`
-                  : '本轮会直接进入一键生成 APKG。'}
-              </span>
-              <button type="button" className="link-button" onClick={() => setShowGenerationDetails((current) => !current)}>
-                {showGenerationDetails ? '收起生成详情' : '查看生成详情'}
-              </button>
-            </div>
-
-            {showGenerationDetails ? (
-              <div className="generation-confirm-details" aria-label="生成详情">
-                <div className="generation-confirm-metrics" aria-label="生成队列信息">
-                  <Metric label="学习点" value={generationQueueSummary.count} />
-                  <Metric label="批次数" value={generationQueueSummary.batchCount} />
-                  <Metric label="每批上限" value={generationQueueSummary.batchSize} />
-                  <BooleanMetric label="视频" enabled={generationQueueSummary.includesVideo} />
-                  <BooleanMetric label="原声" enabled={generationQueueSummary.includesOriginalAudio} />
-                  <BooleanMetric label="整句 TTS" enabled={generationQueueSummary.includesSentenceTts} />
-                  <BooleanMetric label="表达 TTS" enabled={generationQueueSummary.includesPhraseTts} />
-                  {generationQueueSummary.highRiskShortExpressionCount ? (
-                    <Metric label="短表达" value={generationQueueSummary.highRiskShortExpressionCount} />
-                  ) : null}
-                </div>
-                {generationQueueSummary.highRisk ? (
-                  <p className="generation-risk-note">本轮达到 50 张以上，模型、TTS 和媒体任务会明显变慢；建议先用少量样本确认质量。</p>
-                ) : null}
-                {generationQueueSummary.batchMode ? (
-                  <p className="generation-batch-note">
-                    已启用稳定分批：当前已完成 {generationQueueSummary.completedBatches}/{generationQueueSummary.batchCount} 批；已处理{' '}
-                    {generationQueueSummary.completedCount}/{generationQueueSummary.count}，已生成 {generationQueueSummary.generatedCount}，
-                    未生成 {generationQueueSummary.missingCount}。
-                  </p>
-                ) : null}
-                {generationQueueSummary.securityWarnings.length ? (
-                  <div className="generation-security-note" aria-label="生成安全提示">
-                    {generationQueueSummary.securityWarnings.map((warning) => (
-                      <span key={warning}>{warning}</span>
-                    ))}
-                  </div>
-                ) : null}
-                <div className="generation-queue-heading">
-                  <strong>本轮队列</strong>
-                  <span>
-                    预览前 {Math.min(generationQueuePoints.length, 4)} 条；队列里的每个学习点默认只生成一张学习卡。
-                    {generationQueuePoints.length > 4 ? ` 还有 ${generationQueuePoints.length - 4} 条已在队列中。` : ''}
-                  </span>
-                </div>
-                <div className="generation-queue-list" aria-label="本轮生成队列">
-                  {generationQueuePoints.slice(0, 4).map((point) => (
-                    <div key={point.id} className="generation-queue-item">
-                      <span>
-                        <strong>{pointLabel(point)}</strong>
-                        <small>{point.source_time || point.source_segment_id}</small>
-                      </span>
+                  <div className="generation-confirm-header">
+                    <div>
+                      <span className="hero-kicker">生成确认</span>
+                      <h3>准备生成卡片草稿 · {generationQueueSummary.count} 个学习点</h3>
+                      <p>
+                        {generationQueueSummary.sourceLabel} · {generationQueueSummary.modeLabel}。每个学习点默认生成 1
+                        张统一学习卡草稿；生成完成后先审核，再由你明确选择目录并导出 APKG。
+                      </p>
+                    </div>
+                    <div className="generation-confirm-actions">
                       <button
                         type="button"
-                        className="icon-text-button"
-                        onClick={() => onRemoveGenerationQueuePoint(point.id)}
-                        disabled={workerBusy}
-                        aria-label={`从生成队列移除 ${pointLabel(point)}`}
+                        className="primary-button generation-confirm-primary"
+                        onClick={runConfirmationAction}
+                        disabled={
+                          generationQueueSummary.count === 0 ||
+                          primaryAction.state === 'running' ||
+                          primaryAction.state === 'completed' ||
+                          (primaryAction.state === 'blocked' && !blockerRecoveryAvailable)
+                        }
                       >
-                        <Trash2 size={15} />
-                        移除
+                        <ListChecks size={18} />
+                        {primaryAction.state === 'available' ? '生成卡片草稿' : primaryAction.primaryLabel}
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        onClick={onCloseGenerationConfirm}
+                        disabled={workerBusy}
+                      >
+                        返回调整
                       </button>
                     </div>
-                  ))}
-                  {generationQueuePoints.length > 4 ? (
-                    <span className="generation-queue-more">
-                      其余 {generationQueuePoints.length - 4} 条会一起生成，可用“返回调整”回到列表调整勾选。
-                    </span>
+                  </div>
+
+                  {primaryAction.blockers.length > 0 ? (
+                    <div className="generation-confirm-blockers" role="status">
+                      <strong>{primaryAction.primaryLabel}</strong>
+                      {primaryAction.blockers.map((blocker) => (
+                        <span key={blocker.id}>
+                          <b>{blocker.title}</b>
+                          <small>{blocker.detail}</small>
+                        </span>
+                      ))}
+                    </div>
                   ) : null}
-                </div>
-              </div>
-            ) : null}
-          </section>
-        ) : null}
+
+                  <div className="generation-run-summary-strip" aria-label="生成运行状态">
+                    <span>
+                      <small>已选</small>
+                      <strong>{generationQueueSummary.count}</strong>
+                    </span>
+                    <span>
+                      <small>已处理</small>
+                      <strong>{generationQueueSummary.completedCount}</strong>
+                    </span>
+                    <span>
+                      <small>已生成</small>
+                      <strong>{generationQueueSummary.generatedCount}</strong>
+                    </span>
+                    <span>
+                      <small>可导出</small>
+                      <strong>{generationQueueSummary.exportableCount}</strong>
+                    </span>
+                    <span>
+                      <small>硬失败</small>
+                      <strong>{generationQueueSummary.missingCount}</strong>
+                    </span>
+                  </div>
+
+                  <div className="generation-confirm-minor">
+                    <span>
+                      {generationQueueSummary.batchMode
+                        ? `内部将分 ${generationQueueSummary.batchCount} 批稳定处理，每批最多 ${generationQueueSummary.batchSize} 张；用户只需要点一次。`
+                        : '本轮会直接生成卡片草稿，审核后再导出 APKG。'}
+                    </span>
+                    <button
+                      type="button"
+                      className="link-button"
+                      onClick={() => setShowGenerationDetails((current) => !current)}
+                    >
+                      {showGenerationDetails ? '收起生成详情' : '查看生成详情'}
+                    </button>
+                  </div>
+
+                  {showGenerationDetails ? (
+                    <div className="generation-confirm-details" aria-label="生成详情">
+                      <div className="generation-confirm-metrics" aria-label="生成队列信息">
+                        <Metric label="学习点" value={generationQueueSummary.count} />
+                        <Metric label="批次数" value={generationQueueSummary.batchCount} />
+                        <Metric label="每批上限" value={generationQueueSummary.batchSize} />
+                        <BooleanMetric label="视频" enabled={generationQueueSummary.includesVideo} />
+                        <BooleanMetric label="原声" enabled={generationQueueSummary.includesOriginalAudio} />
+                        <BooleanMetric label="整句 TTS" enabled={generationQueueSummary.includesSentenceTts} />
+                        <BooleanMetric label="表达 TTS" enabled={generationQueueSummary.includesPhraseTts} />
+                        {generationQueueSummary.highRiskShortExpressionCount ? (
+                          <Metric label="短表达" value={generationQueueSummary.highRiskShortExpressionCount} />
+                        ) : null}
+                      </div>
+                      {generationQueueSummary.highRisk ? (
+                        <p className="generation-risk-note">
+                          本轮达到 50 张以上，模型、TTS 和媒体任务会明显变慢；建议先用少量样本确认质量。
+                        </p>
+                      ) : null}
+                      {generationQueueSummary.batchMode ? (
+                        <p className="generation-batch-note">
+                          已启用稳定分批：当前已完成 {generationQueueSummary.completedBatches}/
+                          {generationQueueSummary.batchCount} 批；已处理 {generationQueueSummary.completedCount}/
+                          {generationQueueSummary.count}，已生成 {generationQueueSummary.generatedCount}， 未生成{' '}
+                          {generationQueueSummary.missingCount}。
+                        </p>
+                      ) : null}
+                      {generationQueueSummary.securityWarnings.length ? (
+                        <div className="generation-security-note" aria-label="生成安全提示">
+                          {generationQueueSummary.securityWarnings.map((warning) => (
+                            <span key={warning}>{warning}</span>
+                          ))}
+                        </div>
+                      ) : null}
+                      <div className="generation-queue-heading">
+                        <strong>本轮队列</strong>
+                        <span>
+                          预览前 {Math.min(generationQueuePoints.length, 4)}{' '}
+                          条；队列里的每个学习点默认只生成一张学习卡。
+                          {generationQueuePoints.length > 4
+                            ? ` 还有 ${generationQueuePoints.length - 4} 条已在队列中。`
+                            : ''}
+                        </span>
+                      </div>
+                      <div className="generation-queue-list" aria-label="本轮生成队列">
+                        {generationQueuePoints.slice(0, 4).map((point) => (
+                          <div key={point.id} className="generation-queue-item">
+                            <span>
+                              <strong>{pointLabel(point)}</strong>
+                              <small>{point.source_time || point.source_segment_id}</small>
+                            </span>
+                            <button
+                              type="button"
+                              className="icon-text-button"
+                              onClick={() => onRemoveGenerationQueuePoint(point.id)}
+                              disabled={workerBusy}
+                              aria-label={`从生成队列移除 ${pointLabel(point)}`}
+                            >
+                              <Trash2 size={15} />
+                              移除
+                            </button>
+                          </div>
+                        ))}
+                        {generationQueuePoints.length > 4 ? (
+                          <span className="generation-queue-more">
+                            其余 {generationQueuePoints.length - 4} 条会一起生成，可用“返回调整”回到列表调整勾选。
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
+                </section>
+              </div>,
+              document.body,
+            )
+          : null}
 
         <div className="learning-point-main-column">
           <div className="learning-point-diagnostic-toggle">
             <span>
-              当前显示 {visiblePoints.length} 个；已选学习点 {selected.length} 个；推荐已选 {selectedRecommendedCount}/{recommendedIds.length} 个。
+              当前显示 {visiblePoints.length} 个；已选学习点 {selected.length} 个；推荐已选 {selectedRecommendedCount}/
+              {recommendedIds.length} 个。
             </span>
-            <button type="button" className="link-button" onClick={() => setShowLearningDiagnostics((current) => !current)}>
+            <button
+              type="button"
+              className="link-button"
+              onClick={() => setShowLearningDiagnostics((current) => !current)}
+            >
               {showLearningDiagnostics ? '收起高级诊断' : '高级诊断'}
             </button>
           </div>
@@ -541,57 +611,58 @@ export function LearningPointOverview({
           <div className="learning-point-toolbar" aria-label="学习点筛选">
             {showFilters ? (
               <>
-            <div className="learning-point-filter-row">
-              <Filter size={16} />
-              {typeFilters.map((filter) => (
-                <button
-                  key={filter.id}
-                  type="button"
-                  className={typeFilter === filter.id ? 'selected' : ''}
-                  aria-pressed={typeFilter === filter.id}
-                  onClick={() => setTypeFilter(filter.id)}
-                >
-                  {filter.label}
-                </button>
-              ))}
-            </div>
-            <div className="learning-point-filter-row">
-              <Layers3 size={16} />
-              {levelFilters.map((filter) => (
-                <button
-                  key={filter}
-                  type="button"
-                  className={levelFilter === filter ? 'selected' : ''}
-                  aria-pressed={levelFilter === filter}
-                  onClick={() => setLevelFilter(filter)}
-                >
-                  {filter === 'all' ? '全部级别' : filter}
-                </button>
-              ))}
-            </div>
-            <div className="learning-point-filter-row">
-              <Sparkles size={16} />
-              {statusFilters.map((filter) => (
-                <button
-                  key={filter.id}
-                  type="button"
-                  className={statusFilter === filter.id ? 'selected' : ''}
-                  aria-pressed={statusFilter === filter.id}
-                  onClick={() => setStatusFilter(filter.id)}
-                >
-                  {filter.label}
-                </button>
-              ))}
-            </div>
+                <div className="learning-point-filter-row">
+                  <Filter size={16} />
+                  {typeFilters.map((filter) => (
+                    <button
+                      key={filter.id}
+                      type="button"
+                      className={typeFilter === filter.id ? 'selected' : ''}
+                      aria-pressed={typeFilter === filter.id}
+                      onClick={() => setTypeFilter(filter.id)}
+                    >
+                      {filter.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="learning-point-filter-row">
+                  <Layers3 size={16} />
+                  {levelFilters.map((filter) => (
+                    <button
+                      key={filter}
+                      type="button"
+                      className={levelFilter === filter ? 'selected' : ''}
+                      aria-pressed={levelFilter === filter}
+                      onClick={() => setLevelFilter(filter)}
+                    >
+                      {filter === 'all' ? '全部级别' : filter}
+                    </button>
+                  ))}
+                </div>
+                <div className="learning-point-filter-row">
+                  <Sparkles size={16} />
+                  {statusFilters.map((filter) => (
+                    <button
+                      key={filter.id}
+                      type="button"
+                      className={statusFilter === filter.id ? 'selected' : ''}
+                      aria-pressed={statusFilter === filter.id}
+                      onClick={() => setStatusFilter(filter.id)}
+                    >
+                      {filter.label}
+                    </button>
+                  ))}
+                </div>
               </>
             ) : null}
             <div className="learning-point-selection-panel" aria-label="批量选择学习点">
               <div className="learning-point-selection-copy">
                 <strong>批量选择</strong>
                 <span>
-                  可制卡项 {cardableIds.length} 个；当前筛选显示 {visiblePoints.length} 个，其中可制卡 {visibleCardablePoints.length} 个、需复查{' '}
-                  {visibleNeedsReviewCardableCount} 个、推荐 {visibleRecommendedCount} 个；已选当前筛选 {visibleSelectedCount} 个。
-                  重复折叠 {duplicateCount} 个、不可制卡 {hardBlockedCount} 个不会进入队列。
+                  可制卡项 {cardableIds.length} 个；当前筛选显示 {visiblePoints.length} 个，其中可制卡{' '}
+                  {visibleCardablePoints.length} 个、需复查 {visibleNeedsReviewCardableCount} 个、推荐{' '}
+                  {visibleRecommendedCount} 个；已选当前筛选 {visibleSelectedCount} 个。 重复折叠 {duplicateCount}{' '}
+                  个、不可制卡 {hardBlockedCount} 个不会进入队列。
                   {sourceReviewHint ? ` ${sourceReviewHint}。` : ''}
                 </span>
                 {cardableIds.length === 0 ? (
@@ -601,16 +672,38 @@ export function LearningPointOverview({
                 ) : null}
               </div>
               <div className="learning-point-actions">
-                <button type="button" className="ghost-button" onClick={selectAllCardable} disabled={cardableIds.length === 0 || allCardableSelected}>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={selectAllCardable}
+                  disabled={cardableIds.length === 0 || allCardableSelected}
+                >
                   全选可制卡项 {cardableIds.length}
                 </button>
-                <button type="button" className="ghost-button" onClick={selectOnlyRecommended} disabled={recommendedIds.length === 0 || allRecommendedSelected}>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={selectOnlyRecommended}
+                  disabled={recommendedIds.length === 0 || allRecommendedSelected}
+                >
                   只选推荐 {recommendedIds.length}
                 </button>
-                <button type="button" className="ghost-button" onClick={toggleVisible} disabled={cardableVisibleIds.length === 0}>
-                  {allVisibleSelected ? `取消当前筛选 ${cardableVisibleIds.length}` : `勾选当前筛选 ${cardableVisibleIds.length}`}
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={toggleVisible}
+                  disabled={cardableVisibleIds.length === 0}
+                >
+                  {allVisibleSelected
+                    ? `取消当前筛选 ${cardableVisibleIds.length}`
+                    : `勾选当前筛选 ${cardableVisibleIds.length}`}
                 </button>
-                <button type="button" className="ghost-button" onClick={() => replaceSelection([])} disabled={selected.length === 0}>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => replaceSelection([])}
+                  disabled={selected.length === 0}
+                >
                   清空选择
                 </button>
               </div>
@@ -631,7 +724,10 @@ export function LearningPointOverview({
                 const checked = selectedIds.has(point.id)
                 const checkLabel = !selectable ? '不可制卡' : needsSourceReview ? '可制卡 · 需复查' : '选择'
                 return (
-                  <article key={point.id} className={`learning-point-row status-${point.status} ${checked ? 'selected' : ''}`}>
+                  <article
+                    key={point.id}
+                    className={`learning-point-row status-${point.status} ${checked ? 'selected' : ''}`}
+                  >
                     <label className="learning-point-check">
                       <input
                         type="checkbox"
@@ -662,15 +758,15 @@ export function LearningPointOverview({
                       {selectable ? (
                         <div className="learning-point-row-actions">
                           <button
-                             type="button"
-                             className="ghost-button"
-                             data-focus-return={`single-${point.id}`}
-                             onClick={(event) => {
-                               rememberReturnFocus(event.currentTarget)
-                               onGenerateSinglePoint(point.id)
-                             }}
-                             disabled={workerBusy}
-                           >
+                            type="button"
+                            className="ghost-button"
+                            data-focus-return={`single-${point.id}`}
+                            onClick={(event) => {
+                              rememberReturnFocus(event.currentTarget)
+                              onGenerateSinglePoint(point.id)
+                            }}
+                            disabled={workerBusy}
+                          >
                             只生成这一条
                           </button>
                         </div>

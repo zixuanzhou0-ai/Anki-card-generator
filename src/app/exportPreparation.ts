@@ -14,7 +14,14 @@ import {
   type VideoReleaseCaseId,
 } from '../domain/releaseEvidenceLayout'
 import { publicTemplateIdFor } from '../domain/templates'
-import type { ApiConfig, GenerateRequest, Project, TemplateId, TtsConfig, TtsSemanticVerificationConfig } from '../domain/types'
+import type {
+  ApiConfig,
+  GenerateRequest,
+  Project,
+  TemplateId,
+  TtsConfig,
+  TtsSemanticVerificationConfig,
+} from '../domain/types'
 
 type ExportPreparationBase = {
   project: Project
@@ -147,7 +154,9 @@ export function prepareProjectForExport(project: Project): ExportPreparationResu
           '请重新生成，或手动修正草稿字段后再导出。',
       }
     }
-    messages.push(`已移除 ${safeSelection.removed} 张需修复/不可导出的卡片，继续导出剩余 ${selectedForExport} 张。`)
+    messages.push(
+      `已自动排除 ${safeSelection.removed} 张需修复/不可导出的卡片；本次将导出可用的 ${selectedForExport} 张。`,
+    )
   }
 
   let autoSelectedUsableCards = 0
@@ -167,7 +176,7 @@ export function prepareProjectForExport(project: Project): ExportPreparationResu
     projectForExport = usableSelection.project
     selectedForExport = usableSelection.selected
     autoSelectedUsableCards = usableSelection.selected
-    messages.push(`已自动启用 ${usableSelection.selected} 张可导出卡，继续导出。`)
+    messages.push(`已自动启用 ${usableSelection.selected} 张可导出卡；无需再次确认。`)
   }
 
   const reliabilityGate = evaluateExportSelectionReliability(projectForExport)
@@ -251,7 +260,9 @@ function recordValue(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : null
 }
 
-export function releaseCaseIdForProject(project: ReleaseCaseProjectIdentity | null | undefined): VideoReleaseCaseId | null {
+export function releaseCaseIdForProject(
+  project: ReleaseCaseProjectIdentity | null | undefined,
+): VideoReleaseCaseId | null {
   const record = recordValue(project)
   if (!record) return null
   const sourceInfo = recordValue(record.source_info)
@@ -260,7 +271,6 @@ export function releaseCaseIdForProject(project: ReleaseCaseProjectIdentity | nu
     record.case_id,
     sourceInfo?.release_case_id,
     sourceInfo?.case_id,
-    record.title,
   ]
   return candidates.find(isVideoReleaseCaseId) ?? null
 }
@@ -321,9 +331,8 @@ export function defaultExportDirectoryForProject(
 ): string | null {
   if (project.source_mode !== 'local') return null
   const sourceInfo = project.source_info && typeof project.source_info === 'object' ? project.source_info : null
-  const sourceInfoVideoPath = sourceInfo && 'video_path' in sourceInfo && typeof sourceInfo.video_path === 'string'
-    ? sourceInfo.video_path
-    : null
+  const sourceInfoVideoPath =
+    sourceInfo && 'video_path' in sourceInfo && typeof sourceInfo.video_path === 'string' ? sourceInfo.video_path : null
   const sourceInfoSubtitlePath =
     sourceInfo && 'subtitle_path' in sourceInfo && typeof sourceInfo.subtitle_path === 'string'
       ? sourceInfo.subtitle_path
@@ -414,7 +423,11 @@ export function releaseApkgOutputGuardForProject(
       releaseTarget,
       selectedOutputDir,
       expectedDirectoryPattern: releaseApkgDirectoryPattern(releaseCaseId, expectedRunSegment),
-      statusMessage: releaseApkgTargetGuardMessage({ caseId: releaseCaseId, target: releaseTarget, expectedRunSegment }),
+      statusMessage: releaseApkgTargetGuardMessage({
+        caseId: releaseCaseId,
+        target: releaseTarget,
+        expectedRunSegment,
+      }),
     }
   }
   if (releaseTarget.caseId !== releaseCaseId) {
@@ -425,7 +438,11 @@ export function releaseApkgOutputGuardForProject(
       releaseTarget,
       selectedOutputDir,
       expectedDirectoryPattern: releaseApkgDirectoryPattern(releaseCaseId, expectedRunSegment),
-      statusMessage: releaseApkgTargetGuardMessage({ caseId: releaseCaseId, target: releaseTarget, expectedRunSegment }),
+      statusMessage: releaseApkgTargetGuardMessage({
+        caseId: releaseCaseId,
+        target: releaseTarget,
+        expectedRunSegment,
+      }),
     }
   }
   if (expectedRunSegment && releaseTarget.runSegment !== expectedRunSegment) {
@@ -436,7 +453,11 @@ export function releaseApkgOutputGuardForProject(
       releaseTarget,
       selectedOutputDir,
       expectedDirectoryPattern: releaseApkgDirectoryPattern(releaseCaseId, expectedRunSegment),
-      statusMessage: releaseApkgTargetGuardMessage({ caseId: releaseCaseId, target: releaseTarget, expectedRunSegment }),
+      statusMessage: releaseApkgTargetGuardMessage({
+        caseId: releaseCaseId,
+        target: releaseTarget,
+        expectedRunSegment,
+      }),
     }
   }
   return {

@@ -1,24 +1,27 @@
-import { CheckCircle2, ChevronDown, ExternalLink, Loader2, PlugZap } from 'lucide-react'
+import { CheckCircle2, ChevronDown, Loader2, PlugZap } from 'lucide-react'
 
 import type { AnkiVerifyResult, ExportResult } from '../../domain/types'
+import { ankiVerificationPassed } from '../../app/ankiVerifyState'
 
 type ExportResultPanelProps = {
   ankiVerifying: boolean
   ankiVerifyResult: AnkiVerifyResult | null
   lastExport: ExportResult
-  onOpenAnkiImport: () => void
+  onOpenAnkiImport?: () => void
   onRevealExport: () => void
   onVerifyAnkiImport: () => void
+  showManualImportFallback?: boolean
+  showPrimaryAction?: boolean
 }
 
 function hasVerifyEvidenceDetails(ankiVerifyResult: AnkiVerifyResult) {
   return Boolean(
     ankiVerifyResult.audio_audit_verify_path ||
-      ankiVerifyResult.missing_media?.length ||
-      ankiVerifyResult.audio_audit_mismatches?.length ||
-      ankiVerifyResult.card_media_ledger_mismatches?.length ||
-      ankiVerifyResult.media_ledger_card_text_mismatches?.length ||
-      ankiVerifyResult.mismatched_media?.length,
+    ankiVerifyResult.missing_media?.length ||
+    ankiVerifyResult.audio_audit_mismatches?.length ||
+    ankiVerifyResult.card_media_ledger_mismatches?.length ||
+    ankiVerifyResult.media_ledger_card_text_mismatches?.length ||
+    ankiVerifyResult.mismatched_media?.length,
   )
 }
 
@@ -29,14 +32,17 @@ export function ExportResultPanel({
   onOpenAnkiImport,
   onRevealExport,
   onVerifyAnkiImport,
+  showManualImportFallback = false,
+  showPrimaryAction = true,
 }: ExportResultPanelProps) {
   const showExportEvidenceDetails = Boolean(
     lastExport.anki_manual_import_hint || lastExport.deck_name || lastExport.apkg_path || lastExport.audio_audit_path,
   )
   const showVerifyEvidenceDetails = ankiVerifyResult ? hasVerifyEvidenceDetails(ankiVerifyResult) : false
 
+  const verificationPassed = ankiVerificationPassed(ankiVerifyResult)
   return (
-    <div className="export-result" role="status">
+    <div className="export-result">
       <div className="export-result-main">
         <div className="export-result-head">
           <span className="export-result-title">
@@ -50,19 +56,17 @@ export function ExportResultPanel({
             <button className="ghost-button" type="button" onClick={onRevealExport}>
               定位文件
             </button>
-            <button
-              className="primary-button"
-              type="button"
-              onClick={onOpenAnkiImport}
-              disabled={ankiVerifying}
-            >
-              {ankiVerifying ? <Loader2 className="spin" size={18} /> : <ExternalLink size={18} />}
-              {ankiVerifying ? '正在准备 Anki 导入' : '用 Anki 打开 APKG'}
-            </button>
-            <button className="ghost-button" type="button" onClick={onVerifyAnkiImport} disabled={ankiVerifying}>
-              {ankiVerifying ? <Loader2 className="spin" size={18} /> : <PlugZap size={18} />}
-              导入并核验本次牌组
-            </button>
+            {showManualImportFallback && onOpenAnkiImport ? (
+              <button className="ghost-button" type="button" onClick={onOpenAnkiImport} disabled={ankiVerifying}>
+                使用 Anki 打开 APKG
+              </button>
+            ) : null}
+            {showPrimaryAction ? (
+              <button className="primary-button" type="button" onClick={onVerifyAnkiImport} disabled={ankiVerifying}>
+                {ankiVerifying ? <Loader2 className="spin" size={18} /> : <PlugZap size={18} />}
+                {ankiVerifying ? '正在导入并核验' : '导入 Anki 并核验'}
+              </button>
+            ) : null}
           </div>
         </div>
         {lastExport.media_summary ? (
@@ -101,7 +105,9 @@ export function ExportResultPanel({
             <div className="export-paths" aria-label="导出文件路径">
               <span>
                 <small>导入提示</small>
-                <strong>{lastExport.anki_manual_import_hint || '先用 Anki 打开 APKG；导入后回到这里核验本次牌组。'}</strong>
+                <strong>
+                  {lastExport.anki_manual_import_hint || '先用 Anki 打开 APKG；导入后回到这里核验本次牌组。'}
+                </strong>
               </span>
               {lastExport.deck_name ? (
                 <span title={lastExport.deck_name}>
@@ -124,8 +130,8 @@ export function ExportResultPanel({
         ) : null}
       </div>
       {ankiVerifyResult ? (
-        <div className={`anki-verify-result ${ankiVerifyResult.ok ? 'ok' : 'warn'}`}>
-          <strong>{ankiVerifyResult.ok ? '媒体一致' : '需要检查媒体'}</strong>
+        <div className={`anki-verify-result ${verificationPassed ? 'ok' : 'warn'}`}>
+          <strong>{verificationPassed ? '已在 Anki 中核验' : '已导入，但核验未通过'}</strong>
           <span>
             卡片 {ankiVerifyResult.card_count ?? 0}
             {ankiVerifyResult.expected_cards ? `/${ankiVerifyResult.expected_cards}` : ''} · 媒体{' '}
@@ -133,7 +139,8 @@ export function ExportResultPanel({
           </span>
           {ankiVerifyResult.duplicate_imported_card_count ? (
             <small>
-              同名 deck 中已有旧导入 {ankiVerifyResult.duplicate_imported_card_count} 张；本次只按 audio_audit 匹配卡核验。
+              同名 deck 中已有旧导入 {ankiVerifyResult.duplicate_imported_card_count} 张；本次只按 audio_audit
+              匹配卡核验。
             </small>
           ) : null}
           {ankiVerifyResult.failed_checks?.length ? <small>{ankiVerifyResult.failed_checks.join(' / ')}</small> : null}
@@ -153,7 +160,9 @@ export function ExportResultPanel({
                 </span>
               </summary>
               <div className="verify-evidence-list" aria-label="Anki 核验证据详情">
-                {ankiVerifyResult.audio_audit_verify_path ? <small>verify audit：{ankiVerifyResult.audio_audit_verify_path}</small> : null}
+                {ankiVerifyResult.audio_audit_verify_path ? (
+                  <small>verify audit：{ankiVerifyResult.audio_audit_verify_path}</small>
+                ) : null}
                 {ankiVerifyResult.missing_media?.length ? (
                   <small>缺失：{ankiVerifyResult.missing_media.slice(0, 3).join('、')}</small>
                 ) : null}
@@ -186,7 +195,11 @@ export function ExportResultPanel({
                 ) : null}
                 {ankiVerifyResult.mismatched_media?.length ? (
                   <small>
-                    哈希不一致：{ankiVerifyResult.mismatched_media.slice(0, 3).map((item) => item.file).join('、')}
+                    哈希不一致：
+                    {ankiVerifyResult.mismatched_media
+                      .slice(0, 3)
+                      .map((item) => item.file)
+                      .join('、')}
                   </small>
                 ) : null}
               </div>

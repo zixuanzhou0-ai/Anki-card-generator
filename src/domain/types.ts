@@ -496,15 +496,19 @@ export type WorkerProgress = {
   stage_label?: string
   phase?: string
   percent: number
+  indeterminate?: boolean
   message: string
   completed_batches?: number
   total_batches?: number
   elapsed_ms?: number
+  last_progress_at_ms?: number
   cache_hits?: number
   cache_misses?: number
 }
 
 export type WorkerCommand =
+  | 'check_env'
+  | 'repair_env'
   | 'test_api'
   | 'test_tts'
   | 'extract_learning_points'

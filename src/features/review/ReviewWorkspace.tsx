@@ -17,7 +17,9 @@ import type {
   WorkerFinishedEvent,
   WorkspaceStage,
 } from '../../domain/types'
-import type { WorkflowReadinessSnapshot } from '../../app/readiness'
+import { isAnkiConnectDisconnectedFailure } from '../../app/exportFailureState'
+import type { ActionGate, WorkflowActionId, WorkflowIssue } from '../../app/workflowState'
+import type { WorkerErrorAction, WorkerErrorActionId } from '../../domain/workerErrors'
 import type {
   GenerationQueueSummary,
   LearningPointExtractionResult,
@@ -26,6 +28,7 @@ import type {
 import type { QualityCounts, QualityDiagnostics } from '../../domain/projectMetrics'
 import { candidateKindLabel, clipText, phraseTypeLabel } from '../../domain/quality'
 import { WorkerProgressPanel } from '../generation/WorkerProgressPanel'
+import { WorkerErrorActionsPanel } from '../generation/StatusPanel'
 import { LearningPointOverview } from '../learningPoints/LearningPointOverview'
 import { EmptyWorkbench } from './EmptyWorkbench'
 import { ExportResultPanel } from './ExportResultPanel'
@@ -51,6 +54,7 @@ type ReviewWorkspaceProps = {
   learningPointResult: LearningPointExtractionResult | null
   motionDuration: number
   prefersReducedMotion: boolean
+  preferLearningPointSelection?: boolean
   previewPanelRef: RefObject<HTMLElement | null>
   previewRate: number
   project: Project | null
@@ -62,6 +66,7 @@ type ReviewWorkspaceProps = {
   generationConfirmOpen: boolean
   generationQueuePoints: LearningPointItem[]
   generationQueueSummary: GenerationQueueSummary
+  showExportPrimaryAction?: boolean
   segmentFilter: SegmentFilter
   segmentReviewCounts: SegmentReviewCounts
   sourceMode: SourceMode
@@ -69,25 +74,28 @@ type ReviewWorkspaceProps = {
   visibleSegments: Segment[]
   workerBusy: boolean
   workerProgress: WorkerProgress | null
-  workflowReadiness?: WorkflowReadinessSnapshot
+  primaryAction: ActionGate
+  workerErrorActions: WorkerErrorAction[]
   workspaceStage: WorkspaceStage
   status: string
-  onOpenAnkiImport: () => void
   onRevealExport: () => void
   onSegmentFilterChange: (filter: SegmentFilter) => void
   onCloseGenerationConfirm: () => void
   onConfirmGenerateCardsFromLearningPoints: () => void
   onExport: () => void
   onExtractLearningPointsWithoutCache: () => void
-  onGenerateCardsFromLearningPoints: () => void
+  onResolveBlockers: (blockers: WorkflowIssue[]) => void
+  onRunWorkflowAction: (action: WorkflowActionId) => void
   onGenerateSingleLearningPoint: (pointId: string) => void
   onInvertCardSelection: () => void
+  onOpenAnkiImport: () => void
   onRemoveGenerationQueueLearningPoint: (pointId: string) => void
   onRetryMissingLearningPoints: () => void
   onSelectSegment: (segmentId: string) => void
   onSetCardsEnabled: (enabled: boolean, segmentId?: string) => void
   onSetSelectedLearningPointIds: (ids: Set<string>) => void
   onUpdateCard: (segmentId: string, cardId: string, patch: Partial<Card>) => void
+  onWorkerErrorAction: (actionId: WorkerErrorActionId) => void
   onVerifyAnkiImport: () => void
 }
 
@@ -106,9 +114,10 @@ export function ReviewWorkspace({
   learningPointResult,
   motionDuration,
   prefersReducedMotion,
+  preferLearningPointSelection = false,
   previewPanelRef,
   previewRate,
-  project,
+  project: projectArtifact,
   qualityCounts,
   qualityDiagnostics,
   qualityFunnel,
@@ -117,6 +126,7 @@ export function ReviewWorkspace({
   generationConfirmOpen,
   generationQueuePoints,
   generationQueueSummary,
+  showExportPrimaryAction = true,
   segmentFilter,
   segmentReviewCounts,
   sourceMode,
@@ -124,27 +134,31 @@ export function ReviewWorkspace({
   visibleSegments,
   workerBusy,
   workerProgress,
-  workflowReadiness,
+  primaryAction,
+  workerErrorActions,
   workspaceStage,
   status,
-  onOpenAnkiImport,
   onRevealExport,
   onSegmentFilterChange,
   onCloseGenerationConfirm,
   onConfirmGenerateCardsFromLearningPoints,
   onExport,
   onExtractLearningPointsWithoutCache,
-  onGenerateCardsFromLearningPoints,
+  onResolveBlockers,
+  onRunWorkflowAction,
   onGenerateSingleLearningPoint,
   onInvertCardSelection,
+  onOpenAnkiImport,
   onRemoveGenerationQueueLearningPoint,
   onRetryMissingLearningPoints,
   onSelectSegment,
   onSetCardsEnabled,
   onSetSelectedLearningPointIds,
   onUpdateCard,
+  onWorkerErrorAction,
   onVerifyAnkiImport,
 }: ReviewWorkspaceProps) {
+  const project = preferLearningPointSelection && learningPointResult ? null : projectArtifact
   const [reviewView, setReviewView] = useState<'cards' | 'inventory'>('cards')
   const [showAdvancedReview, setShowAdvancedReview] = useState(false)
   const [showSegmentDetail, setShowSegmentDetail] = useState(false)
@@ -160,6 +174,13 @@ export function ReviewWorkspace({
     lastWorkerError?.command === 'export' &&
     !lastWorkerError.ok &&
     (project || lastWorkerError.error_code === 'RELEASE_APKG_TARGET_INVALID'),
+  )
+  const showManualAnkiImportFallback = Boolean(
+    lastExport &&
+    lastWorkerError &&
+    !lastWorkerError.ok &&
+    !lastWorkerError.cancelled &&
+    isAnkiConnectDisconnectedFailure(lastWorkerError),
   )
   return (
     <section
@@ -230,10 +251,12 @@ export function ReviewWorkspace({
       ) : null}
 
       {project && workerProgress ? (
-        <div className="review-task-progress" aria-live="polite">
+        <div className="review-task-progress">
           <WorkerProgressPanel progress={workerProgress} />
         </div>
       ) : null}
+
+      <WorkerErrorActionsPanel actions={workerErrorActions} onAction={onWorkerErrorAction} />
 
       {showExportFailureNotice && lastWorkerError ? (
         <ExportFailureNotice error={lastWorkerError} workerBusy={workerBusy} onRetryExport={onExport} />
@@ -245,7 +268,6 @@ export function ReviewWorkspace({
           exportableCount={qualityCounts.recommended}
           exportCompleted={Boolean(lastExport)}
           workerBusy={workerBusy}
-          onExport={onExport}
           onRetryMissing={onRetryMissingLearningPoints}
           onReviewInventory={() => setReviewView('inventory')}
         />
@@ -313,6 +335,8 @@ export function ReviewWorkspace({
           onOpenAnkiImport={onOpenAnkiImport}
           onRevealExport={onRevealExport}
           onVerifyAnkiImport={onVerifyAnkiImport}
+          showManualImportFallback={showManualAnkiImportFallback}
+          showPrimaryAction={showExportPrimaryAction}
         />
       ) : null}
 
@@ -343,17 +367,23 @@ export function ReviewWorkspace({
               generationConfirmOpen={generationConfirmOpen}
               generationQueuePoints={generationQueuePoints}
               generationQueueSummary={generationQueueSummary}
-              workflowReadiness={workflowReadiness}
+              primaryAction={primaryAction}
               onCloseGenerationConfirm={onCloseGenerationConfirm}
               onConfirmGenerateCards={onConfirmGenerateCardsFromLearningPoints}
               onExtractWithoutCache={onExtractLearningPointsWithoutCache}
-              onGenerateCards={onGenerateCardsFromLearningPoints}
+              onResolveBlockers={onResolveBlockers}
+              onRunWorkflowAction={onRunWorkflowAction}
               onGenerateSinglePoint={onGenerateSingleLearningPoint}
               onRemoveGenerationQueuePoint={onRemoveGenerationQueueLearningPoint}
               onSetSelectedIds={onSetSelectedLearningPointIds}
             />
           ) : !project ? (
-            <EmptyWorkbench level={level} sourceMode={sourceMode} templateLabel={activeTemplateLabel} workspaceStage={workspaceStage} />
+            <EmptyWorkbench
+              level={level}
+              sourceMode={sourceMode}
+              templateLabel={activeTemplateLabel}
+              workspaceStage={workspaceStage}
+            />
           ) : reviewView === 'inventory' ? (
             <LearningPointInventoryPanel items={diagnosticInventory} />
           ) : (
@@ -395,7 +425,6 @@ function PartialGenerationNotice({
   exportableCount,
   exportCompleted,
   workerBusy,
-  onExport,
   onRetryMissing,
   onReviewInventory,
 }: {
@@ -403,7 +432,6 @@ function PartialGenerationNotice({
   exportableCount: number
   exportCompleted: boolean
   workerBusy: boolean
-  onExport: () => void
   onRetryMissing: () => void
   onReviewInventory: () => void
 }) {
@@ -422,10 +450,10 @@ function PartialGenerationNotice({
             : item.status === 'needs_review'
               ? '需复查草稿'
               : item.status === 'filtered'
-              ? '质量过滤'
-              : item.status === 'skipped'
-                ? '不可制卡跳过'
-                : item.status || '其他'
+                ? '质量过滤'
+                : item.status === 'skipped'
+                  ? '不可制卡跳过'
+                  : item.status || '其他'
     acc[status] = (acc[status] ?? 0) + 1
     return acc
   }, {})
@@ -446,28 +474,14 @@ function PartialGenerationNotice({
         <em>{exportCompleted ? '可用卡片已导出' : '查看原因'}</em>
       </summary>
       <div className="partial-generation-actions">
-        <button
-          className="primary-button"
-          type="button"
-          onClick={onRetryMissing}
-          disabled={workerBusy || missing === 0}
-        >
+        <button className="ghost-button" type="button" onClick={onRetryMissing} disabled={workerBusy || missing === 0}>
           重试未通过项 {missing} 个
         </button>
-        {exportCompleted ? (
-          <span className="partial-generation-exported" role="status">
-            已导出 {exportableCount} 张；待修复项未包含在 APKG 中
-          </span>
-        ) : (
-          <button
-            className="ghost-button"
-            type="button"
-            onClick={onExport}
-            disabled={workerBusy || exportableCount === 0}
-          >
-            继续导出 {exportableCount} 张
-          </button>
-        )}
+        <span className="partial-generation-exported">
+          {exportCompleted
+            ? `已导出 ${exportableCount} 张；待修复项未包含在 APKG 中`
+            : `待修复项已自动排除；主操作会直接导出可用的 ${exportableCount} 张`}
+        </span>{' '}
         <button className="ghost-button" type="button" onClick={onReviewInventory} disabled={workerBusy}>
           返回学习点调整
         </button>
@@ -542,7 +556,7 @@ function ExportFailureNotice({
       </div>
       {isMissingTts ? (
         <div className="export-failure-actions">
-          <button className="primary-button" type="button" onClick={onRetryExport} disabled={workerBusy}>
+          <button className="ghost-button" type="button" onClick={onRetryExport} disabled={workerBusy}>
             重试失败 TTS 并导出
           </button>
           <span>

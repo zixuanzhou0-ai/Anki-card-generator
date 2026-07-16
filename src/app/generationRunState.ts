@@ -1,4 +1,5 @@
 import type { AnkiVerifyResult, ExportResult, WorkerFinishedEvent, WorkerOperation } from '../domain/types'
+import { ankiVerificationPassed } from './ankiVerifyState'
 
 export type GenerationRunState =
   | 'source_not_ready'
@@ -46,7 +47,7 @@ export function buildGenerationRunState({
     return 'export_failed_retryable'
   }
 
-  if (project && lastExport?.apkg_path && ankiVerifyResult?.ok && ankiVerifyResult.failed_checks.length === 0) {
+  if (project && lastExport?.apkg_path && ankiVerificationPassed(ankiVerifyResult)) {
     return 'anki_verified'
   }
 

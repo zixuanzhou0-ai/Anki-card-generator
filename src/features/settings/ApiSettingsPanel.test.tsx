@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ApiConfig, ApiPreset, SavedApiProfile } from '../../domain/types'
+import { GEMINI_VERTEX_DEFAULT_MODEL, GEMINI_VERTEX_GLOBAL_BASE_URL } from '../../domain/options'
 import { ApiSettingsPanel } from './ApiSettingsPanel'
 
 afterEach(() => cleanup())
@@ -130,6 +131,7 @@ describe('ApiSettingsPanel', () => {
 
     expect(screen.getByText('模型目录')).toBeInTheDocument()
     expect(screen.getByLabelText(/Provider/)).toBeInTheDocument()
+    expect(screen.getByLabelText(/Base URL/)).toBeInTheDocument()
     expect(screen.getByLabelText(/Model/)).toBeInTheDocument()
     expect(screen.getByLabelText(/API Key/)).toBeInTheDocument()
     expect(props.onApplyApiPreset).toHaveBeenCalledWith(deepseekPreset)
@@ -305,5 +307,77 @@ describe('ApiSettingsPanel', () => {
 
     expect(onPatchApi).toHaveBeenCalledWith({ capabilities: [] })
     expect(onSaveApiProfile).toHaveBeenCalledOnce()
+  })
+  it('deletes a saved API key without rendering its plaintext value', () => {
+    const onDeleteSavedCredential = vi.fn()
+    renderPanel({
+      apiConfig: {
+        ...apiConfig,
+        base_url: 'https://api.example.com/v1',
+        model: 'example-model',
+        provider: 'openai-compatible',
+      },
+      apiKeySaved: true,
+      onDeleteSavedCredential,
+    })
+
+    const deleteButton = screen.getByRole('button', { name: '删除已保存的 Key' })
+    expect(screen.getByLabelText(/API Key/)).toHaveValue('')
+    fireEvent.click(deleteButton)
+
+    expect(onDeleteSavedCredential).toHaveBeenCalledOnce()
+  })
+
+  it('disables saved API key deletion while an operation is running', () => {
+    renderPanel({
+      apiConfig: {
+        ...apiConfig,
+        base_url: 'https://api.example.com/v1',
+        model: 'example-model',
+        provider: 'openai-compatible',
+      },
+      apiKeySaved: true,
+      apiTesting: true,
+      onDeleteSavedCredential: vi.fn(),
+    })
+
+    expect(screen.getByRole('button', { name: '删除已保存的 Key' })).toBeDisabled()
+  })
+
+  it('does not offer key deletion for OAuth-backed model authorization', () => {
+    renderPanel({
+      apiConfig: {
+        ...apiConfig,
+        base_url: GEMINI_VERTEX_GLOBAL_BASE_URL,
+        model: GEMINI_VERTEX_DEFAULT_MODEL,
+        provider: 'gemini-vertex',
+      },
+      apiKeySaved: true,
+      onDeleteSavedCredential: vi.fn(),
+    })
+
+    expect(screen.queryByRole('button', { name: '删除已保存的 Key' })).not.toBeInTheDocument()
+  })
+  it('keeps simple mode focused on recommended and saved schemes plus required authorization', () => {
+    renderPanel({
+      simpleMode: true,
+      apiConfig: {
+        ...apiConfig,
+        base_url: 'https://api.example.com/v1',
+        model: 'private-model-id',
+        provider: 'openai-compatible',
+      },
+    })
+
+    expect(screen.getByRole('button', { name: /MIMO Token Plan/ })).toBeInTheDocument()
+    expect(screen.getByLabelText(/API Key/)).toBeInTheDocument()
+    expect(screen.queryByPlaceholderText('搜索厂商、模型、Base URL')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/Provider/)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/Base URL/)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/^Model$/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /OpenAI-compatible 模型/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /DeepSeek V4 Flash/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /模型能力标签/ })).not.toBeInTheDocument()
+    expect(screen.queryByText('private-model-id')).not.toBeInTheDocument()
   })
 })

@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest'
-import { cleanup, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ExportResult } from '../../domain/types'
@@ -41,7 +41,7 @@ const exportResult: ExportResult = {
 
 describe('ExportResultPanel', () => {
   it('summarizes cards, media, and Anki verification', () => {
-    render(
+    const { container } = render(
       <ExportResultPanel
         ankiVerifying={false}
         ankiVerifyResult={{
@@ -62,7 +62,6 @@ describe('ExportResultPanel', () => {
           },
         }}
         lastExport={exportResult}
-        onOpenAnkiImport={vi.fn()}
         onRevealExport={vi.fn()}
         onVerifyAnkiImport={vi.fn()}
       />,
@@ -71,27 +70,55 @@ describe('ExportResultPanel', () => {
     expect(screen.getByText('已导出 12 张卡')).toBeInTheDocument()
     expect(screen.getByText('视频 6 段')).toBeInTheDocument()
     expect(screen.getByText('音频取证 12/12')).toBeInTheDocument()
-    expect(screen.getAllByText('媒体一致').length).toBeGreaterThan(0)
-    expect(screen.getByRole('button', { name: /用 Anki 打开 APKG/ })).toBeEnabled()
-    expect(screen.getByRole('button', { name: /导入并核验本次牌组/ })).toBeEnabled()
+    expect(screen.getAllByText('已在 Anki 中核验').length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: /导入 Anki 并核验/ })).toBeEnabled()
+    expect(container.querySelectorAll('[aria-live], [role="status"]')).toHaveLength(0)
 
     const exportDetails = screen.getByText('导出证据').closest('details')
     expect(exportDetails).toBeInstanceOf(HTMLDetailsElement)
     expect(exportDetails).not.toHaveAttribute('open')
     expect(within(exportDetails as HTMLElement).getByText('APKG / audio_audit / 牌组路径')).toBeInTheDocument()
     expect(within(exportDetails as HTMLElement).getByText('本次牌组名')).toBeInTheDocument()
-    expect(within(exportDetails as HTMLElement).getByText('视频语言卡 - 字幕素材 - 20260615-120000')).toBeInTheDocument()
+    expect(
+      within(exportDetails as HTMLElement).getByText('视频语言卡 - 字幕素材 - 20260615-120000'),
+    ).toBeInTheDocument()
     expect(within(exportDetails as HTMLElement).getByText(/导入后请在 Anki 牌组列表打开/)).toBeInTheDocument()
     expect(within(exportDetails as HTMLElement).getByText(exportResult.apkg_path)).toBeInTheDocument()
-    expect(within(exportDetails as HTMLElement).getByText('audio_audit：E:\\ANKI\\out\\audio_audit.json')).toBeInTheDocument()
+    expect(
+      within(exportDetails as HTMLElement).getByText('audio_audit：E:\\ANKI\\out\\audio_audit.json'),
+    ).toBeInTheDocument()
 
     const verifyDetails = screen.getByText('核验证据').closest('details')
     expect(verifyDetails).toBeInstanceOf(HTMLDetailsElement)
     expect(verifyDetails).not.toHaveAttribute('open')
     expect(within(verifyDetails as HTMLElement).getByText('audit 路径 / 缺失 / mismatch 样本')).toBeInTheDocument()
-    expect(within(verifyDetails as HTMLElement).getByText('verify audit：E:\\ANKI\\out\\audio_audit.verify.json')).toBeInTheDocument()
+    expect(
+      within(verifyDetails as HTMLElement).getByText('verify audit：E:\\ANKI\\out\\audio_audit.verify.json'),
+    ).toBeInTheDocument()
   })
 
+  it('offers manual APKG opening as a secondary action without marking verification complete', () => {
+    const onOpenAnkiImport = vi.fn()
+    const onVerifyAnkiImport = vi.fn()
+    const { container } = render(
+      <ExportResultPanel
+        ankiVerifying={false}
+        ankiVerifyResult={null}
+        lastExport={exportResult}
+        onOpenAnkiImport={onOpenAnkiImport}
+        onRevealExport={vi.fn()}
+        onVerifyAnkiImport={onVerifyAnkiImport}
+        showManualImportFallback
+      />,
+    )
+
+    expect(container.querySelectorAll('.primary-button')).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: '使用 Anki 打开 APKG' }))
+
+    expect(onOpenAnkiImport).toHaveBeenCalledOnce()
+    expect(onVerifyAnkiImport).not.toHaveBeenCalled()
+    expect(screen.queryByText('已在 Anki 中核验')).not.toBeInTheDocument()
+  })
   it('explains duplicate previous imports without making media look broken', () => {
     render(
       <ExportResultPanel
@@ -108,13 +135,12 @@ describe('ExportResultPanel', () => {
           media_count_expected: 6,
         }}
         lastExport={{ ...exportResult, cards: 1 }}
-        onOpenAnkiImport={vi.fn()}
         onRevealExport={vi.fn()}
         onVerifyAnkiImport={vi.fn()}
       />,
     )
 
-    expect(screen.getAllByText('媒体一致').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('已在 Anki 中核验').length).toBeGreaterThan(0)
     expect(screen.getByText('同名 deck 中已有旧导入 1 张；本次只按 audio_audit 匹配卡核验。')).toBeInTheDocument()
   })
 
@@ -146,13 +172,12 @@ describe('ExportResultPanel', () => {
           mismatched_media: [{ file: 'sentence-011.mp3', expected_sha256: 'expected', actual_sha256: 'actual' }],
         }}
         lastExport={exportResult}
-        onOpenAnkiImport={vi.fn()}
         onRevealExport={vi.fn()}
         onVerifyAnkiImport={vi.fn()}
       />,
     )
 
-    expect(screen.getByText('需要检查媒体')).toBeInTheDocument()
+    expect(screen.getByText('已导入，但核验未通过')).toBeInTheDocument()
     expect(screen.getByText('missing_media / media_hash_mismatch')).toBeInTheDocument()
 
     const verifyDetails = screen.getByText('核验证据').closest('details')
@@ -160,8 +185,12 @@ describe('ExportResultPanel', () => {
     expect(verifyDetails).not.toHaveAttribute('open')
     expect(within(verifyDetails as HTMLElement).getByText('缺失：clip-009.mp4')).toBeInTheDocument()
     expect(within(verifyDetails as HTMLElement).getByText('音频取证不一致：card-9:sentence_audio')).toBeInTheDocument()
-    expect(within(verifyDetails as HTMLElement).getByText('卡片媒体绑定不一致：card-10:phrase_audio')).toBeInTheDocument()
-    expect(within(verifyDetails as HTMLElement).getByText('TTS 文本台账不一致：card-11:PhraseTtsAudio')).toBeInTheDocument()
+    expect(
+      within(verifyDetails as HTMLElement).getByText('卡片媒体绑定不一致：card-10:phrase_audio'),
+    ).toBeInTheDocument()
+    expect(
+      within(verifyDetails as HTMLElement).getByText('TTS 文本台账不一致：card-11:PhraseTtsAudio'),
+    ).toBeInTheDocument()
     expect(within(verifyDetails as HTMLElement).getByText('哈希不一致：sentence-011.mp3')).toBeInTheDocument()
   })
 })

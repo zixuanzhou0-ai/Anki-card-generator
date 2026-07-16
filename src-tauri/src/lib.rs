@@ -6,12 +6,15 @@ use std::{
     net::TcpStream,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{Emitter, LogicalSize, Manager, Size, State, WebviewUrl, WebviewWindowBuilder};
 
@@ -45,6 +48,13 @@ const GENERATE_WORKER_PAYLOAD_LIMIT_BYTES: usize = 1_500_000;
 const COMPLETED_WORKER_JOB_LIMIT: usize = 20;
 const DIRECTORY_LIST_MAX_FILES: usize = 2000;
 const DIRECTORY_LIST_MAX_DEPTH: usize = 4;
+const WORKFLOW_CHECKPOINT_FILE: &str = "workflow-checkpoint-v1.json";
+const WORKFLOW_CHECKPOINT_BACKUP_FILE: &str = "workflow-checkpoint-v1.json.bak";
+const WORKFLOW_CHECKPOINT_MAX_BYTES: u64 = 4 * 1024 * 1024;
+const WORKFLOW_ARTIFACT_MAX_BYTES: u64 = 128 * 1024 * 1024;
+const WORKER_TASK_SNAPSHOT_SCHEMA_VERSION: u8 = 1;
+const WORKER_TASK_SNAPSHOT_MAX_BYTES: u64 = 256 * 1024;
+static WORKFLOW_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const HERMES_PROXY_HOST: &str = "127.0.0.1";
 const HERMES_PROXY_PORT: u16 = 8645;
 const HERMES_PROXY_BASE_URL: &str = "http://127.0.0.1:8645/v1";
@@ -84,6 +94,11 @@ struct WorkerJobs {
 }
 
 #[derive(Default)]
+struct WindowCloseGuard {
+    allow_next_close: AtomicBool,
+}
+
+#[derive(Default)]
 struct HermesProxyRuntime {
     child: Mutex<Option<Child>>,
 }
@@ -108,8 +123,13 @@ struct HermesProxyStatus {
 #[derive(Clone)]
 struct RunningJob {
     pid: u32,
+    command: String,
     cancel_requested: bool,
     failure_message: Option<String>,
+    started_at_ms: u64,
+    updated_at_ms: u64,
+    progress: WorkerTaskProgressSnapshot,
+    input_fingerprint: String,
 }
 
 #[derive(Clone, Default)]
@@ -121,7 +141,56 @@ struct CompletedWorkerJobs {
 #[derive(Clone)]
 struct CompletedWorkerJob {
     status: WorkerJobStatus,
+    snapshot: WorkerTaskSnapshot,
     result_path: Option<PathBuf>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkerTaskProgressSnapshot {
+    phase: String,
+    phase_label: String,
+    phase_percent: Option<f64>,
+    overall_percent: Option<f64>,
+    completed_items: Option<u64>,
+    total_items: Option<u64>,
+    completed_batches: Option<u64>,
+    total_batches: Option<u64>,
+    message: String,
+    last_progress_at: u64,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkerTaskFailureSnapshot {
+    code: String,
+    message: String,
+    retryable: bool,
+    phase: Option<String>,
+    detail: Option<String>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkerTaskSnapshot {
+    schema_version: u8,
+    id: String,
+    command: String,
+    state: String,
+    started_at: u64,
+    updated_at: u64,
+    progress: WorkerTaskProgressSnapshot,
+    cancellable: bool,
+    input_fingerprint: String,
+    result_ref: Option<String>,
+    error: Option<WorkerTaskFailureSnapshot>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecoverableWorkerTasksResult {
+    tasks: Vec<WorkerTaskSnapshot>,
+    errors: Vec<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -152,6 +221,39 @@ struct WorkerCancelResult {
     cancelled: bool,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkerForceCancelResult {
+    found: bool,
+    cancelled: bool,
+    state: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkerTaskResultAcknowledgement {
+    acknowledged: bool,
+    state: Option<String>,
+}
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecoveryFileInspectionError {
+    code: String,
+    message: String,
+    retryable: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecoveryFileInspection {
+    ok: bool,
+    exists: bool,
+    is_file: bool,
+    size: Option<u64>,
+    modified_at_ms: Option<u64>,
+    sha256: Option<String>,
+    error: Option<RecoveryFileInspectionError>,
+}
 #[derive(Serialize)]
 struct BootstrapRepairAction {
     id: String,
@@ -455,7 +557,9 @@ fn python_candidates(worker: &Path) -> Vec<PathBuf> {
     #[cfg(windows)]
     {
         if let Ok(local_app_data) = env::var("LOCALAPPDATA") {
-            let base = PathBuf::from(local_app_data).join("Programs").join("Python");
+            let base = PathBuf::from(local_app_data)
+                .join("Programs")
+                .join("Python");
             candidates.push(base.join("Python312").join("python.exe"));
             candidates.push(base.join("Python313").join("python.exe"));
         }
@@ -479,7 +583,11 @@ fn command_first_line(mut command: Command) -> Option<String> {
         .filter(|output| output.status.success())
         .and_then(|output| {
             let stdout_text = String::from_utf8_lossy(&output.stdout);
-            if let Some(line) = stdout_text.lines().map(str::trim).find(|value| !value.is_empty()) {
+            if let Some(line) = stdout_text
+                .lines()
+                .map(str::trim)
+                .find(|value| !value.is_empty())
+            {
                 return Some(line.to_string());
             }
             let stderr_text = String::from_utf8_lossy(&output.stderr);
@@ -600,7 +708,8 @@ fn probe_hermes_health() -> HermesHealthProbe {
     let Ok(socket_address) = address.parse() else {
         return HermesHealthProbe::NotListening;
     };
-    let Ok(mut stream) = TcpStream::connect_timeout(&socket_address, Duration::from_millis(350)) else {
+    let Ok(mut stream) = TcpStream::connect_timeout(&socket_address, Duration::from_millis(350))
+    else {
         return HermesHealthProbe::NotListening;
     };
     let _ = stream.set_read_timeout(Some(Duration::from_millis(700)));
@@ -824,7 +933,9 @@ fn hermes_proxy_status(runtime: &HermesProxyRuntime) -> HermesProxyStatus {
     };
 
     match probe_hermes_health() {
-        HermesHealthProbe::Hermes { authenticated: true } => status(
+        HermesHealthProbe::Hermes {
+            authenticated: true,
+        } => status(
             "ready",
             if managed {
                 "Hermes Grok 4.5 本机代理已由应用启动并通过 OAuth 健康检查。"
@@ -833,7 +944,9 @@ fn hermes_proxy_status(runtime: &HermesProxyRuntime) -> HermesProxyStatus {
             },
             true,
         ),
-        HermesHealthProbe::Hermes { authenticated: false } => status(
+        HermesHealthProbe::Hermes {
+            authenticated: false,
+        } => status(
             "oauth_unready",
             "Hermes 代理已运行，但 xAI OAuth 未就绪。请运行 hermes auth add xai-oauth。",
             false,
@@ -867,7 +980,11 @@ fn start_hermes_proxy(
     state: State<'_, HermesProxyRuntime>,
 ) -> Result<HermesProxyStatus, String> {
     let current = hermes_proxy_status(&state);
-    if current.state == "ready" || current.state == "missing" || current.state == "oauth_unready" || current.state == "port_conflict" {
+    if current.state == "ready"
+        || current.state == "missing"
+        || current.state == "oauth_unready"
+        || current.state == "port_conflict"
+    {
         return Ok(current);
     }
 
@@ -884,7 +1001,10 @@ fn start_hermes_proxy(
         &HERMES_PROXY_PORT.to_string(),
     ]);
     configure_hermes_network_compat(&mut command, &app);
-    command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     hide_console_window(&mut command);
     let mut child = command
         .spawn()
@@ -905,7 +1025,9 @@ fn start_hermes_proxy(
         }
         if matches!(
             probe_hermes_health(),
-            HermesHealthProbe::Hermes { authenticated: true }
+            HermesHealthProbe::Hermes {
+                authenticated: true
+            }
         ) {
             let mut guard = state
                 .child
@@ -932,7 +1054,9 @@ fn start_hermes_proxy(
 }
 
 #[tauri::command]
-fn stop_owned_hermes_proxy(state: State<'_, HermesProxyRuntime>) -> Result<HermesProxyStatus, String> {
+fn stop_owned_hermes_proxy(
+    state: State<'_, HermesProxyRuntime>,
+) -> Result<HermesProxyStatus, String> {
     stop_managed_hermes(&state)?;
     Ok(hermes_proxy_status(&state))
 }
@@ -978,11 +1102,12 @@ fn make_job_id(command: &str) -> String {
 
 fn worker_idle_timeout(command: &str) -> Duration {
     match command {
+        "check_env" => Duration::from_secs(60),
+        "repair_env" => Duration::from_secs(15 * 60),
+        "test_api" | "test_tts" | "verify_anki_import" => Duration::from_secs(120),
         "extract_learning_points" => Duration::from_secs(300),
         "generate_cards_from_learning_points" => Duration::from_secs(420),
         "generate" | "export" => Duration::from_secs(600),
-        "test_tts" => Duration::from_secs(75),
-        "test_api" | "verify_anki_import" => Duration::from_secs(120),
         _ => Duration::from_secs(180),
     }
 }
@@ -1083,11 +1208,7 @@ fn write_workspace_diagnostic_file(file_name: &str, payload: &Value) {
 
 fn append_workspace_text_file(file_name: &str, line: &str) {
     let path = workspace_root_for_startup_diagnostics().join(file_name);
-    if let Ok(mut file) = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
+    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(file, "{line}");
     }
 }
@@ -1259,7 +1380,12 @@ fn window_state_to_json(window: &tauri::WebviewWindow) -> Value {
     })
 }
 
-fn write_window_lifecycle_diagnostic(app: &tauri::AppHandle, window: &tauri::WebviewWindow, event_name: &str, event_debug: String) {
+fn write_window_lifecycle_diagnostic(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+    event_name: &str,
+    event_debug: String,
+) {
     write_dual_diagnostic_file(
         app,
         ".tauri-window-current.json",
@@ -1288,6 +1414,425 @@ fn worker_job_result_dir(app: &tauri::AppHandle) -> PathBuf {
         .join("worker-results")
 }
 
+fn worker_input_fingerprint(payload_summary: &Value) -> String {
+    let bytes = serde_json::to_vec(payload_summary).unwrap_or_default();
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("summary-fnv1a64:{hash:016x}")
+}
+
+fn validated_worker_input_fingerprint(provided: Option<&str>, payload_summary: &Value) -> String {
+    let fallback = || worker_input_fingerprint(payload_summary);
+    let Some(candidate) = provided else {
+        return fallback();
+    };
+    if !(8..=128).contains(&candidate.len())
+        || !candidate
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':' | b'.'))
+    {
+        return fallback();
+    }
+    candidate.to_string()
+}
+
+fn worker_task_initial_progress(started_at: u64) -> WorkerTaskProgressSnapshot {
+    WorkerTaskProgressSnapshot {
+        phase: "starting".to_string(),
+        phase_label: "正在准备任务".to_string(),
+        phase_percent: None,
+        overall_percent: None,
+        completed_items: None,
+        total_items: None,
+        completed_batches: None,
+        total_batches: None,
+        message: "任务已开始".to_string(),
+        last_progress_at: started_at,
+    }
+}
+
+fn worker_progress_number(value: &Value, keys: &[&str]) -> Option<f64> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_f64))
+        .filter(|number| number.is_finite())
+}
+
+fn worker_progress_count(value: &Value, keys: &[&str]) -> Option<u64> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_u64))
+}
+
+fn update_worker_task_progress(
+    current: &WorkerTaskProgressSnapshot,
+    value: &Value,
+    updated_at: u64,
+) -> WorkerTaskProgressSnapshot {
+    let phase = payload_string(value, "phase")
+        .or_else(|| payload_string(value, "stage"))
+        .unwrap_or_else(|| current.phase.clone());
+    let phase_label = payload_string(value, "stage_label")
+        .or_else(|| payload_string(value, "phase_label"))
+        .unwrap_or_else(|| current.phase_label.clone());
+    let phase_percent = worker_progress_number(value, &["phase_percent", "percent"])
+        .map(|number| number.clamp(0.0, 100.0))
+        .or(current.phase_percent);
+    let candidate_overall = worker_progress_number(value, &["overall_percent", "percent"])
+        .map(|number| number.clamp(0.0, 99.0));
+    let overall_percent = match (current.overall_percent, candidate_overall) {
+        (Some(previous), Some(candidate)) => Some(previous.max(candidate)),
+        (previous, candidate) => previous.or(candidate),
+    };
+
+    WorkerTaskProgressSnapshot {
+        phase,
+        phase_label,
+        phase_percent,
+        overall_percent,
+        completed_items: worker_progress_count(
+            value,
+            &["completed_items", "processed_count", "completed"],
+        )
+        .or(current.completed_items),
+        total_items: worker_progress_count(value, &["total_items", "total_count", "total"])
+            .or(current.total_items),
+        completed_batches: worker_progress_count(value, &["completed_batches"])
+            .or(current.completed_batches),
+        total_batches: worker_progress_count(value, &["total_batches"]).or(current.total_batches),
+        message: payload_string(value, "message").unwrap_or_else(|| current.message.clone()),
+        last_progress_at: updated_at.max(current.last_progress_at),
+    }
+}
+
+impl RunningJob {
+    fn snapshot(&self, job_id: &str) -> WorkerTaskSnapshot {
+        WorkerTaskSnapshot {
+            schema_version: WORKER_TASK_SNAPSHOT_SCHEMA_VERSION,
+            id: job_id.to_string(),
+            command: self.command.clone(),
+            state: if self.cancel_requested {
+                "cancelling".to_string()
+            } else {
+                "running".to_string()
+            },
+            started_at: self.started_at_ms,
+            updated_at: self.updated_at_ms,
+            progress: self.progress.clone(),
+            cancellable: !self.cancel_requested && self.failure_message.is_none(),
+            input_fingerprint: self.input_fingerprint.clone(),
+            result_ref: None,
+            error: self
+                .failure_message
+                .as_ref()
+                .map(|message| WorkerTaskFailureSnapshot {
+                    code: "WORKER_TIMEOUT".to_string(),
+                    message: message.clone(),
+                    retryable: true,
+                    phase: Some(self.progress.phase.clone()),
+                    detail: None,
+                }),
+        }
+    }
+}
+
+fn completed_worker_task_snapshot(
+    status: &WorkerJobStatus,
+    running: Option<&RunningJob>,
+) -> WorkerTaskSnapshot {
+    let state = if status.cancelled {
+        "cancelled"
+    } else if status.ok {
+        "succeeded"
+    } else {
+        "failed"
+    };
+    let mut progress = running
+        .map(|job| job.progress.clone())
+        .unwrap_or_else(|| worker_task_initial_progress(status.finished_at_ms));
+    progress.phase = state.to_string();
+    progress.phase_label = match state {
+        "succeeded" => "任务已完成",
+        "cancelled" => "任务已取消",
+        _ => "任务失败",
+    }
+    .to_string();
+    progress.message = status
+        .error
+        .clone()
+        .unwrap_or_else(|| progress.phase_label.clone());
+    progress.last_progress_at = status.finished_at_ms;
+    if status.ok {
+        progress.phase_percent = Some(100.0);
+        progress.overall_percent = Some(100.0);
+    }
+
+    WorkerTaskSnapshot {
+        schema_version: WORKER_TASK_SNAPSHOT_SCHEMA_VERSION,
+        id: status.job_id.clone(),
+        command: status.command.clone(),
+        state: state.to_string(),
+        started_at: running
+            .map(|job| job.started_at_ms)
+            .unwrap_or(status.finished_at_ms),
+        updated_at: status.finished_at_ms,
+        progress,
+        cancellable: false,
+        input_fingerprint: running
+            .map(|job| job.input_fingerprint.clone())
+            .unwrap_or_else(|| format!("legacy:{}", status.job_id)),
+        result_ref: status.result_ref.clone(),
+        error: status
+            .error
+            .as_ref()
+            .map(|message| WorkerTaskFailureSnapshot {
+                code: status
+                    .error_code
+                    .clone()
+                    .unwrap_or_else(|| "UNKNOWN_WORKER_ERROR".to_string()),
+                message: message.clone(),
+                retryable: status.retryable.unwrap_or(false),
+                phase: status.stage.clone(),
+                detail: None,
+            }),
+    }
+}
+
+fn worker_task_snapshot_dir(app: &tauri::AppHandle) -> PathBuf {
+    worker_job_result_dir(app).join("task-snapshots")
+}
+
+fn safe_worker_task_id(job_id: &str) -> bool {
+    if job_id.is_empty()
+        || job_id.len() > 160
+        || !job_id
+            .chars()
+            .all(|value| value.is_ascii_alphanumeric() || matches!(value, '-' | '_'))
+    {
+        return false;
+    }
+    let upper = job_id.to_ascii_uppercase();
+    !matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        && !(upper.len() == 4
+            && (upper.starts_with("COM") || upper.starts_with("LPT"))
+            && upper.as_bytes()[3].is_ascii_digit()
+            && upper.as_bytes()[3] != b'0')
+}
+
+fn persisted_worker_result_path(result_dir: &Path, job_id: &str) -> Option<PathBuf> {
+    safe_worker_task_id(job_id).then(|| result_dir.join(format!("{job_id}.json")))
+}
+
+fn resolve_worker_result_path(
+    result_dir: &Path,
+    job_id: &str,
+    indexed_path: Option<PathBuf>,
+) -> Result<PathBuf, String> {
+    if !safe_worker_task_id(job_id) {
+        return Err("无效的 worker 任务标识。".to_string());
+    }
+    if let Some(path) = indexed_path {
+        return Ok(path);
+    }
+    let path = persisted_worker_result_path(result_dir, job_id)
+        .ok_or_else(|| "无效的 worker 任务标识。".to_string())?;
+    if !path.is_file() {
+        return Err("后台任务结果不存在，可能需要重新运行。".to_string());
+    }
+    Ok(path)
+}
+fn worker_task_snapshot_path(app: &tauri::AppHandle, job_id: &str) -> Option<PathBuf> {
+    safe_worker_task_id(job_id)
+        .then(|| worker_task_snapshot_dir(app).join(format!("{job_id}.json")))
+}
+
+fn persist_worker_task_snapshot(
+    app: &tauri::AppHandle,
+    snapshot: &WorkerTaskSnapshot,
+) -> Result<(), String> {
+    let path = worker_task_snapshot_path(app, &snapshot.id)
+        .ok_or_else(|| "Unsafe worker task identifier.".to_string())?;
+    let payload = serde_json::to_value(snapshot)
+        .map_err(|err| format!("Cannot serialize worker task snapshot: {err}"))?;
+    write_json_with_backup(&path, None, &payload, WORKER_TASK_SNAPSHOT_MAX_BYTES)
+}
+
+fn load_persisted_worker_task_from_path(
+    path: &Path,
+    expected_job_id: &str,
+) -> Result<WorkerTaskSnapshot, String> {
+    if !safe_worker_task_id(expected_job_id) {
+        return Err("Invalid persisted worker task identifier.".to_string());
+    }
+    let value = read_json_file_with_limit(path, WORKER_TASK_SNAPSHOT_MAX_BYTES)
+        .map_err(|err| format!("Cannot read persisted worker task {expected_job_id}: {err}"))?;
+    let snapshot: WorkerTaskSnapshot = serde_json::from_value(value)
+        .map_err(|err| format!("Cannot decode persisted worker task {expected_job_id}: {err}"))?;
+    if snapshot.schema_version != WORKER_TASK_SNAPSHOT_SCHEMA_VERSION {
+        return Err(format!(
+            "Persisted worker task {expected_job_id} uses unsupported schema version {}.",
+            snapshot.schema_version
+        ));
+    }
+    if snapshot.id != expected_job_id {
+        return Err(format!(
+            "Persisted worker task identifier mismatch: expected {expected_job_id}, found {}.",
+            snapshot.id
+        ));
+    }
+    Ok(snapshot)
+}
+
+fn load_persisted_worker_task(
+    app: &tauri::AppHandle,
+    job_id: &str,
+) -> Result<Option<WorkerTaskSnapshot>, String> {
+    let path = worker_task_snapshot_path(app, job_id)
+        .ok_or_else(|| "Invalid persisted worker task identifier.".to_string())?;
+    match fs::symlink_metadata(&path) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(format!(
+            "Cannot inspect persisted worker task {job_id}: {err}"
+        )),
+        Ok(_) => load_persisted_worker_task_from_path(&path, job_id).map(Some),
+    }
+}
+
+fn load_persisted_worker_tasks_from_dir(
+    dir: &Path,
+) -> Result<RecoverableWorkerTasksResult, String> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(RecoverableWorkerTasksResult {
+                tasks: Vec::new(),
+                errors: Vec::new(),
+            })
+        }
+        Err(err) => {
+            return Err(format!(
+                "Cannot read persisted worker task directory: {err}"
+            ))
+        }
+    };
+    let mut snapshots = Vec::new();
+    let mut errors = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                errors.push(format!("Cannot enumerate persisted worker task: {err}"));
+                continue;
+            }
+        };
+        let path = entry.path();
+        let file_name = match entry.file_name().into_string() {
+            Ok(file_name) => file_name,
+            Err(_) => {
+                errors.push("Persisted worker task filename is not valid UTF-8.".to_string());
+                continue;
+            }
+        };
+        if file_name.contains(".tmp.") || file_name.contains(".rollback.") {
+            continue;
+        }
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(job_id) = path.file_stem().and_then(|value| value.to_str()) else {
+            errors.push("Persisted worker task filename has no valid identifier.".to_string());
+            continue;
+        };
+        match load_persisted_worker_task_from_path(&path, job_id) {
+            Ok(snapshot) => snapshots.push(snapshot),
+            Err(error) => errors.push(error),
+        }
+    }
+    snapshots.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    snapshots.truncate(COMPLETED_WORKER_JOB_LIMIT);
+    errors.truncate(COMPLETED_WORKER_JOB_LIMIT);
+    Ok(RecoverableWorkerTasksResult {
+        tasks: snapshots,
+        errors,
+    })
+}
+
+fn load_persisted_worker_tasks(
+    app: &tauri::AppHandle,
+) -> Result<RecoverableWorkerTasksResult, String> {
+    load_persisted_worker_tasks_from_dir(&worker_task_snapshot_dir(app))
+}
+
+fn mark_orphaned_worker_task_interrupted(mut snapshot: WorkerTaskSnapshot) -> WorkerTaskSnapshot {
+    if matches!(snapshot.state.as_str(), "running" | "cancelling" | "queued") {
+        snapshot.state = "interrupted".to_string();
+        snapshot.cancellable = false;
+        snapshot.progress.phase = "interrupted".to_string();
+        snapshot.progress.phase_label = "任务已中断".to_string();
+        snapshot.progress.message = "The previous app session ended before this task completed; resume from the last safe checkpoint.".to_string();
+        snapshot.error = Some(WorkerTaskFailureSnapshot {
+            code: "WORKER_INTERRUPTED".to_string(),
+            message: snapshot.progress.message.clone(),
+            retryable: true,
+            phase: Some(snapshot.progress.phase.clone()),
+            detail: None,
+        });
+    }
+    snapshot
+}
+
+fn remove_worker_task_file_if_exists(path: &Path, label: &str) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!("Cannot acknowledge worker task {label}: {err}")),
+    }
+}
+
+fn acknowledge_completed_worker_task(
+    history: &mut CompletedWorkerJobs,
+    job_id: &str,
+    persisted_snapshot: Option<WorkerTaskSnapshot>,
+    task_snapshot_path: &Path,
+    result_path: &Path,
+) -> Result<WorkerTaskResultAcknowledgement, String> {
+    let in_memory = history.entries.get(job_id).cloned();
+    let snapshot = in_memory
+        .as_ref()
+        .map(|entry| entry.snapshot.clone())
+        .or(persisted_snapshot);
+    let Some(snapshot) = snapshot else {
+        return Ok(WorkerTaskResultAcknowledgement {
+            acknowledged: false,
+            state: None,
+        });
+    };
+    let state = snapshot.state.clone();
+    let successful = state == "succeeded"
+        && in_memory
+            .as_ref()
+            .map(|entry| entry.status.ok && !entry.status.cancelled)
+            .unwrap_or(true);
+    if !successful {
+        return Ok(WorkerTaskResultAcknowledgement {
+            acknowledged: false,
+            state: Some(state),
+        });
+    }
+
+    // Delete the durable task index first. A crash after this point may leave an
+    // orphan result file, but can never make the same successful task recoverable
+    // again. The renderer only calls this after its artifact checkpoint is durable.
+    remove_worker_task_file_if_exists(task_snapshot_path, "snapshot")?;
+    remove_worker_task_file_if_exists(result_path, "result")?;
+    history.entries.remove(job_id);
+    history.order.retain(|entry| entry != job_id);
+    Ok(WorkerTaskResultAcknowledgement {
+        acknowledged: true,
+        state: Some(state),
+    })
+}
 fn worker_result_summary(command: &str, result: &Value) -> Option<Value> {
     let mut summary = json!({
         "command": command,
@@ -1313,18 +1858,29 @@ fn worker_result_summary(command: &str, result: &Value) -> Option<Value> {
     has_summary.then_some(summary)
 }
 
+fn store_worker_job_result_in_dir(
+    dir: &Path,
+    job_id: &str,
+    result: &Value,
+) -> Result<(String, PathBuf, u64), String> {
+    fs::create_dir_all(dir).map_err(|err| format!("无法创建 worker 结果目录：{err}"))?;
+    let result_path = persisted_worker_result_path(dir, job_id)
+        .ok_or_else(|| "无效的 worker 任务标识。".to_string())?;
+    let bytes =
+        serde_json::to_vec(result).map_err(|err| format!("无法序列化 worker 结果：{err}"))?;
+    let prepared = workflow_sibling_path(&result_path, "tmp")?;
+    write_new_file(&prepared, &bytes)
+        .and_then(|_| replace_prepared_file(&prepared, &result_path))
+        .map_err(|err| format!("无法原子写入 worker 结果文件：{err}"))?;
+    Ok((job_id.to_string(), result_path, bytes.len() as u64))
+}
+
 fn store_worker_job_result(
     app: &tauri::AppHandle,
     job_id: &str,
     result: &Value,
 ) -> Result<(String, PathBuf, u64), String> {
-    let dir = worker_job_result_dir(app);
-    fs::create_dir_all(&dir).map_err(|err| format!("无法创建 worker 结果目录：{err}"))?;
-    let result_path = dir.join(format!("{job_id}.json"));
-    let bytes =
-        serde_json::to_vec(result).map_err(|err| format!("无法序列化 worker 结果：{err}"))?;
-    fs::write(&result_path, &bytes).map_err(|err| format!("无法写入 worker 结果文件：{err}"))?;
-    Ok((job_id.to_string(), result_path, bytes.len() as u64))
+    store_worker_job_result_in_dir(&worker_job_result_dir(app), job_id, result)
 }
 
 fn payload_string(payload: &Value, key: &str) -> Option<String> {
@@ -1354,16 +1910,19 @@ fn payload_string_list(payload: &Value, key: &str) -> Option<Vec<String>> {
 fn remember_completed_worker_job(
     completed: &Arc<Mutex<CompletedWorkerJobs>>,
     status: WorkerJobStatus,
+    snapshot: WorkerTaskSnapshot,
     result_path: Option<PathBuf>,
-) {
+) -> bool {
     if let Ok(mut history) = completed.lock() {
-        if !history.entries.contains_key(&status.job_id) {
-            history.order.push_back(status.job_id.clone());
+        if history.entries.contains_key(&status.job_id) {
+            return false;
         }
+        history.order.push_back(status.job_id.clone());
         history.entries.insert(
             status.job_id.clone(),
             CompletedWorkerJob {
                 status,
+                snapshot,
                 result_path,
             },
         );
@@ -1372,11 +1931,32 @@ fn remember_completed_worker_job(
                 history.entries.remove(&old_job_id);
             }
         }
+        true
+    } else {
+        false
     }
+}
+
+fn commit_completed_worker_job(
+    running: &Arc<Mutex<HashMap<String, RunningJob>>>,
+    completed: &Arc<Mutex<CompletedWorkerJobs>>,
+    status: WorkerJobStatus,
+    snapshot: WorkerTaskSnapshot,
+    result_path: Option<PathBuf>,
+) -> bool {
+    let job_id = status.job_id.clone();
+    if !remember_completed_worker_job(completed, status, snapshot, result_path) {
+        return false;
+    }
+    if let Ok(mut active) = running.lock() {
+        active.remove(&job_id);
+    }
+    true
 }
 
 fn complete_worker_job_and_emit(
     app: &tauri::AppHandle,
+    running: &Arc<Mutex<HashMap<String, RunningJob>>>,
     completed: &Arc<Mutex<CompletedWorkerJobs>>,
     job_id: &str,
     command: &str,
@@ -1385,6 +1965,7 @@ fn complete_worker_job_and_emit(
     error: Option<String>,
     error_details: Option<Value>,
     cancelled: bool,
+    running_job: Option<&RunningJob>,
 ) {
     let mut payload = json!({
       "job_id": job_id,
@@ -1443,9 +2024,21 @@ fn complete_worker_job_and_emit(
         details: payload.get("details").cloned(),
         finished_at_ms: now_unix_ms(),
     };
-    let status_diagnostic =
-        serde_json::to_value(&status).unwrap_or_else(|err| json!({ "serialize_error": err.to_string() }));
-    remember_completed_worker_job(completed, status, result_path);
+    let status_diagnostic = serde_json::to_value(&status)
+        .unwrap_or_else(|err| json!({ "serialize_error": err.to_string() }));
+    let task_snapshot = completed_worker_task_snapshot(&status, running_job);
+    if !commit_completed_worker_job(
+        running,
+        completed,
+        status.clone(),
+        task_snapshot.clone(),
+        result_path.clone(),
+    ) {
+        return;
+    }
+    if let Err(err) = persist_worker_task_snapshot(app, &task_snapshot) {
+        eprintln!("worker task snapshot store failed for {job_id}: {err}");
+    }
     write_worker_job_breadcrumb(
         app,
         json!({
@@ -1468,19 +2061,205 @@ fn kill_process_tree(pid: u32) -> Result<(), String> {
         let mut command = Command::new("taskkill");
         command.args(["/PID", &pid.to_string(), "/T", "/F"]);
         hide_console_window(&mut command);
-        let _ = command
+        let status = command
             .status()
             .map_err(|err| format!("无法取消任务进程：{err}"))?;
-        Ok(())
+        validate_kill_command_status("taskkill", pid, status.success(), status.code())
     }
 
     #[cfg(not(windows))]
     {
-        let _ = Command::new("kill")
+        let status = Command::new("kill")
             .args(["-TERM", &pid.to_string()])
             .status()
             .map_err(|err| format!("无法取消任务进程：{err}"))?;
+        validate_kill_command_status("kill", pid, status.success(), status.code())
+    }
+}
+
+fn stop_unregistered_worker(child: &mut Child) {
+    let pid = child.id();
+    if kill_process_tree(pid).is_err() {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+}
+
+fn validate_kill_command_status(
+    command: &str,
+    pid: u32,
+    success: bool,
+    exit_code: Option<i32>,
+) -> Result<(), String> {
+    if success {
+        return Ok(());
+    }
+    Err(format!(
+        "无法确认任务进程树已经停止：{command} PID {pid} 退出码 {}。",
+        exit_code
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "unknown".to_string())
+    ))
+}
+
+fn ensure_worker_start_slot(running: &HashMap<String, RunningJob>) -> Result<(), String> {
+    if running.is_empty() {
         Ok(())
+    } else {
+        Err("已有任务正在运行，请等待完成或先取消当前任务。".to_string())
+    }
+}
+
+fn mark_running_worker_force_cancelling(
+    running: &Arc<Mutex<HashMap<String, RunningJob>>>,
+    job_id: &str,
+) -> Result<Option<RunningJob>, String> {
+    let mut running_jobs = running
+        .lock()
+        .map_err(|_| "无法读取当前任务状态。".to_string())?;
+    Ok(running_jobs.get_mut(job_id).map(|job| {
+        let updated_at_ms = now_unix_ms();
+        job.cancel_requested = true;
+        job.updated_at_ms = updated_at_ms.max(job.updated_at_ms);
+        job.progress.phase = "cancelling".to_string();
+        job.progress.phase_label = "正在强制结束任务".to_string();
+        job.progress.message = "正在再次终止任务进程树".to_string();
+        job.progress.last_progress_at = job.updated_at_ms;
+        job.clone()
+    }))
+}
+
+fn forced_worker_status(
+    job_id: &str,
+    command: &str,
+    cancelled: bool,
+    error_code: &str,
+    message: &str,
+    stage: Option<String>,
+    finished_at_ms: u64,
+) -> WorkerJobStatus {
+    WorkerJobStatus {
+        job_id: job_id.to_string(),
+        command: command.to_string(),
+        ok: false,
+        cancelled,
+        result_ref: None,
+        result_size_bytes: None,
+        result_summary: None,
+        error: Some(message.to_string()),
+        error_code: Some(error_code.to_string()),
+        stage,
+        retryable: Some(true),
+        fallbacks: None,
+        details: None,
+        finished_at_ms,
+    }
+}
+
+fn forced_cancelled_worker_completion(
+    job_id: &str,
+    job: &RunningJob,
+    finished_at_ms: u64,
+) -> (WorkerJobStatus, WorkerTaskSnapshot) {
+    let status = forced_worker_status(
+        job_id,
+        &job.command,
+        true,
+        "WORKER_FORCE_CANCELLED",
+        "任务已强制取消，可从最后一个安全检查点继续。",
+        Some(job.progress.phase.clone()),
+        finished_at_ms,
+    );
+    let snapshot = completed_worker_task_snapshot(&status, Some(job));
+    (status, snapshot)
+}
+
+fn forced_interrupted_worker_completion(
+    mut snapshot: WorkerTaskSnapshot,
+    finished_at_ms: u64,
+    message: String,
+) -> (WorkerJobStatus, WorkerTaskSnapshot) {
+    let status = forced_worker_status(
+        &snapshot.id,
+        &snapshot.command,
+        false,
+        "WORKER_FORCE_CANCEL_INTERRUPTED",
+        &message,
+        Some(snapshot.progress.phase.clone()),
+        finished_at_ms,
+    );
+    snapshot.state = "interrupted".to_string();
+    snapshot.updated_at = finished_at_ms.max(snapshot.updated_at);
+    snapshot.cancellable = false;
+    snapshot.result_ref = None;
+    snapshot.progress.phase = "interrupted".to_string();
+    snapshot.progress.phase_label = "任务已中断".to_string();
+    snapshot.progress.message = message.clone();
+    snapshot.progress.last_progress_at = snapshot.updated_at;
+    snapshot.error = Some(WorkerTaskFailureSnapshot {
+        code: "WORKER_FORCE_CANCEL_INTERRUPTED".to_string(),
+        message,
+        retryable: true,
+        phase: Some(snapshot.progress.phase.clone()),
+        detail: None,
+    });
+    (status, snapshot)
+}
+
+fn worker_force_cancel_result(snapshot: Option<&WorkerTaskSnapshot>) -> WorkerForceCancelResult {
+    match snapshot {
+        Some(snapshot) => WorkerForceCancelResult {
+            found: true,
+            cancelled: snapshot.state == "cancelled",
+            state: snapshot.state.clone(),
+        },
+        None => WorkerForceCancelResult {
+            found: false,
+            cancelled: false,
+            state: "not_found".to_string(),
+        },
+    }
+}
+
+fn publish_forced_worker_terminal(
+    app: &tauri::AppHandle,
+    status: &WorkerJobStatus,
+    snapshot: &WorkerTaskSnapshot,
+) {
+    if let Err(err) = persist_worker_task_snapshot(app, snapshot) {
+        eprintln!(
+            "worker force-cancel snapshot store failed for {}: {err}",
+            status.job_id
+        );
+    }
+    let status_diagnostic = serde_json::to_value(status)
+        .unwrap_or_else(|err| json!({ "serialize_error": err.to_string() }));
+    write_worker_job_breadcrumb(
+        app,
+        json!({
+            "schema_version": 1,
+            "phase": "force_cancel_terminal",
+            "job_id": status.job_id,
+            "command": status.command,
+            "recorded_at_ms": status.finished_at_ms,
+            "status": status_diagnostic,
+        }),
+    );
+    let payload = json!({
+        "job_id": status.job_id,
+        "command": status.command,
+        "ok": false,
+        "cancelled": status.cancelled,
+        "error": status.error,
+        "error_code": status.error_code,
+        "stage": status.stage,
+        "retryable": status.retryable,
+    });
+    if let Err(err) = app.emit("worker-finished", payload) {
+        eprintln!(
+            "worker force-cancel finished emit failed for {}: {err}",
+            status.job_id
+        );
     }
 }
 
@@ -1568,25 +2347,32 @@ fn run_worker(
 }
 
 #[tauri::command]
+fn allow_next_window_close(close_guard: State<WindowCloseGuard>) {
+    close_guard.allow_next_close.store(true, Ordering::SeqCst);
+}
+
+#[tauri::command]
+fn disallow_next_window_close(close_guard: State<WindowCloseGuard>) {
+    close_guard.allow_next_close.store(false, Ordering::SeqCst);
+}
+
+#[tauri::command]
 fn start_worker_job(
     app: tauri::AppHandle,
     jobs: State<WorkerJobs>,
     command: String,
     payload: serde_json::Value,
+    input_fingerprint: Option<String>,
 ) -> Result<WorkerJobStart, String> {
     if !worker_command_allowed(&command) {
         return Err(format!("不允许的 worker 命令：{command}"));
     }
 
-    {
-        let jobs = jobs
-            .jobs
-            .lock()
-            .map_err(|_| "无法读取当前任务状态。".to_string())?;
-        if jobs.values().any(|job| !job.cancel_requested) {
-            return Err("已有任务正在运行，请等待完成或先取消当前任务。".to_string());
-        }
-    }
+    let mut running_jobs = jobs
+        .jobs
+        .lock()
+        .map_err(|_| "无法读取当前任务状态。".to_string())?;
+    ensure_worker_start_slot(&running_jobs)?;
 
     let worker = find_worker(&app)?;
     let python = find_python(&worker);
@@ -1598,7 +2384,9 @@ fn start_worker_job(
     reset_dual_text_file(&app, ".worker-progress-current.log");
     reset_dual_text_file(&app, ".worker-stdout-current.log");
 
-    if command == "generate_cards_from_learning_points" && input.len() > GENERATE_WORKER_PAYLOAD_LIMIT_BYTES {
+    if command == "generate_cards_from_learning_points"
+        && input.len() > GENERATE_WORKER_PAYLOAD_LIMIT_BYTES
+    {
         let diagnostic = json!({
             "schema_version": 1,
             "phase": "payload_rejected",
@@ -1646,37 +2434,64 @@ fn start_worker_job(
             "payload_summary": payload_summary.clone(),
         }),
     );
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "无法读取 worker 错误输出。".to_string())?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "无法读取 worker 输出。".to_string())?;
+    let stderr = match child.stderr.take() {
+        Some(stderr) => stderr,
+        None => {
+            stop_unregistered_worker(&mut child);
+            return Err("无法读取 worker 错误输出。".to_string());
+        }
+    };
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            stop_unregistered_worker(&mut child);
+            return Err("无法读取 worker 输出。".to_string());
+        }
+    };
 
-    if let Some(stdin) = child.stdin.as_mut() {
-        stdin
-            .write_all(&input)
-            .map_err(|err| format!("无法写入 worker 输入：{err}"))?;
+    match child.stdin.as_mut() {
+        Some(stdin) => {
+            if let Err(err) = stdin.write_all(&input) {
+                stop_unregistered_worker(&mut child);
+                return Err(format!("无法写入 worker 输入：{err}"));
+            }
+        }
+        None => {
+            stop_unregistered_worker(&mut child);
+            return Err("无法写入 worker 输入：stdin 不可用。".to_string());
+        }
     }
     drop(child.stdin.take());
+    let started_at_ms = now_unix_ms();
 
-    {
-        let mut jobs = jobs
-            .jobs
-            .lock()
-            .map_err(|_| "无法记录当前任务状态。".to_string())?;
-        jobs.insert(
-            job_id.clone(),
-            RunningJob {
-                pid,
-                cancel_requested: false,
-                failure_message: None,
-            },
-        );
+    running_jobs.insert(
+        job_id.clone(),
+        RunningJob {
+            pid,
+            command: command.clone(),
+            cancel_requested: false,
+            failure_message: None,
+            started_at_ms,
+            updated_at_ms: started_at_ms,
+            progress: worker_task_initial_progress(started_at_ms),
+            input_fingerprint: validated_worker_input_fingerprint(
+                input_fingerprint.as_deref(),
+                &payload_summary,
+            ),
+        },
+    );
+    drop(running_jobs);
+
+    let running_snapshot = jobs
+        .jobs
+        .lock()
+        .ok()
+        .and_then(|jobs| jobs.get(&job_id).map(|job| job.snapshot(&job_id)));
+    if let Some(snapshot) = running_snapshot {
+        if let Err(err) = persist_worker_task_snapshot(&app, &snapshot) {
+            eprintln!("worker task snapshot store failed for {job_id}: {err}");
+        }
     }
-
     let stderr_text = Arc::new(Mutex::new(String::new()));
     let stderr_sink = Arc::clone(&stderr_text);
     let stderr_error = Arc::new(Mutex::new(None::<Value>));
@@ -1685,6 +2500,7 @@ fn start_worker_job(
     let last_progress_sink = Arc::clone(&last_progress);
     let app_for_progress = app.clone();
     let progress_job_id = job_id.clone();
+    let progress_jobs = Arc::clone(&jobs.jobs);
     let progress_thread = thread::spawn(move || {
         let reader = BufReader::new(stderr);
         let mut last_emit = Instant::now() - Duration::from_millis(100);
@@ -1695,12 +2511,31 @@ fn start_worker_job(
                 }
                 if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(payload) {
                     value["job_id"] = json!(progress_job_id);
+                    let task_updated_at = now_unix_ms();
+                    let task_snapshot = progress_jobs.lock().ok().and_then(|mut jobs| {
+                        jobs.get_mut(&progress_job_id).map(|job| {
+                            job.updated_at_ms = task_updated_at.max(job.updated_at_ms);
+                            job.progress =
+                                update_worker_task_progress(&job.progress, &value, task_updated_at);
+                            job.snapshot(&progress_job_id)
+                        })
+                    });
                     let percent = value
                         .get("percent")
                         .and_then(|percent| percent.as_u64())
                         .unwrap_or_default();
                     if percent >= 100 || last_emit.elapsed() >= Duration::from_millis(100) {
                         let progress_value = value.clone();
+                        if let Some(snapshot) = task_snapshot.as_ref() {
+                            if let Err(err) =
+                                persist_worker_task_snapshot(&app_for_progress, snapshot)
+                            {
+                                eprintln!(
+                                    "worker task snapshot store failed for {}: {err}",
+                                    progress_job_id
+                                );
+                            }
+                        }
                         let _ = app_for_progress.emit("worker-progress", value);
                         append_dual_text_file(
                             &app_for_progress,
@@ -1773,7 +2608,9 @@ fn start_worker_job(
                         job.failure_message = Some(message);
                     }
                 }
-                let _ = kill_process_tree(pid);
+                if let Err(err) = kill_process_tree(pid) {
+                    eprintln!("worker watchdog could not stop process tree {pid}: {err}");
+                }
                 break;
             }
         }
@@ -1802,12 +2639,14 @@ fn start_worker_job(
         let job_state = jobs_for_finish
             .lock()
             .ok()
-            .and_then(|mut jobs| jobs.remove(&finish_job_id));
+            .and_then(|jobs| jobs.get(&finish_job_id).cloned());
         let cancelled = job_state
             .as_ref()
             .map(|job| job.cancel_requested)
             .unwrap_or(false);
-        let failure_message = job_state.and_then(|job| job.failure_message);
+        let failure_message = job_state
+            .as_ref()
+            .and_then(|job| job.failure_message.clone());
         let exit_summary = match &wait_result {
             Ok(status) => json!({
                 "ok": true,
@@ -1838,6 +2677,7 @@ fn start_worker_job(
         if let Err(err) = read_result {
             complete_worker_job_and_emit(
                 &app_for_finish,
+                &jobs_for_finish,
                 &completed_for_finish,
                 &finish_job_id,
                 &finish_command,
@@ -1846,6 +2686,7 @@ fn start_worker_job(
                 Some(format!("无法读取 worker JSON 输出：{err}")),
                 None,
                 cancelled,
+                job_state.as_ref(),
             );
             return;
         }
@@ -1855,6 +2696,7 @@ fn start_worker_job(
                 match serde_json::from_str::<serde_json::Value>(&stdout_text) {
                     Ok(result) => complete_worker_job_and_emit(
                         &app_for_finish,
+                        &jobs_for_finish,
                         &completed_for_finish,
                         &finish_job_id,
                         &finish_command,
@@ -1863,9 +2705,11 @@ fn start_worker_job(
                         None,
                         None,
                         false,
+                        job_state.as_ref(),
                     ),
                     Err(err) => complete_worker_job_and_emit(
                         &app_for_finish,
+                        &jobs_for_finish,
                         &completed_for_finish,
                         &finish_job_id,
                         &finish_command,
@@ -1874,11 +2718,13 @@ fn start_worker_job(
                         Some(format!("worker 输出不是有效 JSON：{err}")),
                         None,
                         false,
+                        job_state.as_ref(),
                     ),
                 }
             }
             Ok(_) if cancelled => complete_worker_job_and_emit(
                 &app_for_finish,
+                &jobs_for_finish,
                 &completed_for_finish,
                 &finish_job_id,
                 &finish_command,
@@ -1887,9 +2733,11 @@ fn start_worker_job(
                 Some("任务已取消。".to_string()),
                 None,
                 true,
+                job_state.as_ref(),
             ),
             Ok(_) if failure_message.is_some() => complete_worker_job_and_emit(
                 &app_for_finish,
+                &jobs_for_finish,
                 &completed_for_finish,
                 &finish_job_id,
                 &finish_command,
@@ -1898,6 +2746,7 @@ fn start_worker_job(
                 failure_message,
                 None,
                 false,
+                job_state.as_ref(),
             ),
             Ok(_) => {
                 let stderr = stderr_text
@@ -1908,6 +2757,7 @@ fn start_worker_job(
                 let message = worker_failure_message(&stderr, &stdout_text, error_details.as_ref());
                 complete_worker_job_and_emit(
                     &app_for_finish,
+                    &jobs_for_finish,
                     &completed_for_finish,
                     &finish_job_id,
                     &finish_command,
@@ -1916,10 +2766,12 @@ fn start_worker_job(
                     Some(message),
                     error_details,
                     false,
+                    job_state.as_ref(),
                 );
             }
             Err(err) => complete_worker_job_and_emit(
                 &app_for_finish,
+                &jobs_for_finish,
                 &completed_for_finish,
                 &finish_job_id,
                 &finish_command,
@@ -1928,6 +2780,7 @@ fn start_worker_job(
                 Some(format!("worker 执行失败：{err}")),
                 None,
                 cancelled,
+                job_state.as_ref(),
             ),
         }
     });
@@ -1937,21 +2790,33 @@ fn start_worker_job(
 
 #[tauri::command]
 fn cancel_worker_job(
+    app: tauri::AppHandle,
     jobs: State<WorkerJobs>,
     job_id: String,
 ) -> Result<WorkerCancelResult, String> {
-    let pid = {
+    let (pid, snapshot) = {
         let mut jobs = jobs
             .jobs
             .lock()
             .map_err(|_| "无法读取当前任务状态。".to_string())?;
         if let Some(job) = jobs.get_mut(&job_id) {
+            let updated_at = now_unix_ms();
             job.cancel_requested = true;
-            Some(job.pid)
+            job.updated_at_ms = updated_at.max(job.updated_at_ms);
+            job.progress.phase = "cancelling".to_string();
+            job.progress.phase_label = "正在取消任务".to_string();
+            job.progress.message = "正在安全停止当前任务".to_string();
+            job.progress.last_progress_at = job.updated_at_ms;
+            (Some(job.pid), Some(job.snapshot(&job_id)))
         } else {
-            None
+            (None, None)
         }
     };
+    if let Some(snapshot) = snapshot.as_ref() {
+        if let Err(err) = persist_worker_task_snapshot(&app, snapshot) {
+            eprintln!("worker task snapshot store failed for {job_id}: {err}");
+        }
+    }
 
     if let Some(pid) = pid {
         kill_process_tree(pid)?;
@@ -1959,6 +2824,119 @@ fn cancel_worker_job(
     } else {
         Ok(WorkerCancelResult { cancelled: false })
     }
+}
+
+#[tauri::command]
+fn force_cancel_worker_job(
+    app: tauri::AppHandle,
+    jobs: State<WorkerJobs>,
+    job_id: String,
+) -> Result<WorkerForceCancelResult, String> {
+    if !safe_worker_task_id(&job_id) {
+        return Err("无效的 worker 任务标识。".to_string());
+    }
+
+    if let Some(snapshot) = jobs
+        .completed
+        .lock()
+        .map_err(|_| "无法读取后台任务完成状态。".to_string())?
+        .entries
+        .get(&job_id)
+        .map(|entry| entry.snapshot.clone())
+    {
+        return Ok(worker_force_cancel_result(Some(&snapshot)));
+    }
+
+    let active_job = mark_running_worker_force_cancelling(&jobs.jobs, &job_id)?;
+
+    if let Some(job) = active_job {
+        let cancelling_snapshot = job.snapshot(&job_id);
+        if let Err(err) = persist_worker_task_snapshot(&app, &cancelling_snapshot) {
+            eprintln!("worker task snapshot store failed for {job_id}: {err}");
+        }
+        if let Err(err) = kill_process_tree(job.pid) {
+            if let Some(snapshot) = jobs
+                .completed
+                .lock()
+                .map_err(|_| "无法读取后台任务完成状态。".to_string())?
+                .entries
+                .get(&job_id)
+                .map(|entry| entry.snapshot.clone())
+            {
+                return Ok(worker_force_cancel_result(Some(&snapshot)));
+            }
+            return Err(format!(
+                "强制结束任务失败，任务仍保留在取消中状态，尚未标记为终态：{err}"
+            ));
+        }
+
+        let finished_at_ms = now_unix_ms();
+        let (status, snapshot) = forced_cancelled_worker_completion(&job_id, &job, finished_at_ms);
+        let remembered = commit_completed_worker_job(
+            &jobs.jobs,
+            &jobs.completed,
+            status.clone(),
+            snapshot.clone(),
+            None,
+        );
+        if remembered {
+            publish_forced_worker_terminal(&app, &status, &snapshot);
+            return Ok(worker_force_cancel_result(Some(&snapshot)));
+        }
+        let winner = jobs
+            .completed
+            .lock()
+            .map_err(|_| "无法读取后台任务完成状态。".to_string())?
+            .entries
+            .get(&job_id)
+            .map(|entry| entry.snapshot.clone())
+            .ok_or_else(|| "任务进程已停止，但无法写入最终任务状态。".to_string())?;
+        return Ok(worker_force_cancel_result(Some(&winner)));
+    }
+
+    if let Some(snapshot) = jobs
+        .completed
+        .lock()
+        .map_err(|_| "无法读取后台任务完成状态。".to_string())?
+        .entries
+        .get(&job_id)
+        .map(|entry| entry.snapshot.clone())
+    {
+        return Ok(worker_force_cancel_result(Some(&snapshot)));
+    }
+
+    let Some(persisted) = load_persisted_worker_task(&app, &job_id)? else {
+        return Ok(worker_force_cancel_result(None));
+    };
+    if !matches!(
+        persisted.state.as_str(),
+        "running" | "cancelling" | "queued"
+    ) {
+        return Ok(worker_force_cancel_result(Some(&persisted)));
+    }
+
+    let finished_at_ms = now_unix_ms();
+    let (status, snapshot) = forced_interrupted_worker_completion(
+        persisted,
+        finished_at_ms,
+        "任务进程不再受当前应用实例管理，已标记为中断；可以从最后一个安全检查点继续。".to_string(),
+    );
+    let remembered =
+        remember_completed_worker_job(&jobs.completed, status.clone(), snapshot.clone(), None);
+    if remembered {
+        publish_forced_worker_terminal(&app, &status, &snapshot);
+        return Ok(worker_force_cancel_result(Some(&snapshot)));
+    }
+
+    let winner = jobs
+        .completed
+        .lock()
+        .map_err(|_| "无法读取后台任务完成状态。".to_string())?
+        .entries
+        .get(&job_id)
+        .map(|entry| entry.snapshot.clone())
+        .ok_or_else(|| "无法将失去管理的任务收敛到最终状态。".to_string())?;
+    Ok(worker_force_cancel_result(Some(&winner)))
 }
 
 #[tauri::command]
@@ -1977,8 +2955,99 @@ fn get_worker_job_status(
 }
 
 #[tauri::command]
-fn read_worker_job_result(jobs: State<WorkerJobs>, job_id: String) -> Result<Value, String> {
-    let result_path = {
+fn get_worker_task(
+    app: tauri::AppHandle,
+    jobs: State<WorkerJobs>,
+    job_id: String,
+) -> Result<Option<WorkerTaskSnapshot>, String> {
+    if !safe_worker_task_id(&job_id) {
+        return Err("Invalid worker task identifier.".to_string());
+    }
+
+    if let Some(snapshot) = jobs
+        .jobs
+        .lock()
+        .map_err(|_| "Cannot read running worker tasks.".to_string())?
+        .get(&job_id)
+        .map(|job| job.snapshot(&job_id))
+    {
+        return Ok(Some(snapshot));
+    }
+
+    if let Some(snapshot) = jobs
+        .completed
+        .lock()
+        .map_err(|_| "Cannot read completed worker tasks.".to_string())?
+        .entries
+        .get(&job_id)
+        .map(|entry| entry.snapshot.clone())
+    {
+        return Ok(Some(snapshot));
+    }
+
+    let snapshot =
+        load_persisted_worker_task(&app, &job_id)?.map(mark_orphaned_worker_task_interrupted);
+    if let Some(snapshot) = snapshot.as_ref() {
+        if let Err(err) = persist_worker_task_snapshot(&app, snapshot) {
+            eprintln!("worker task recovery snapshot store failed for {job_id}: {err}");
+        }
+    }
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn list_recoverable_worker_tasks(
+    app: tauri::AppHandle,
+    jobs: State<WorkerJobs>,
+) -> Result<RecoverableWorkerTasksResult, String> {
+    let mut snapshots = HashMap::<String, WorkerTaskSnapshot>::new();
+
+    {
+        let running = jobs
+            .jobs
+            .lock()
+            .map_err(|_| "Cannot read running worker tasks.".to_string())?;
+        for (job_id, job) in running.iter() {
+            snapshots.insert(job_id.clone(), job.snapshot(job_id));
+        }
+    }
+
+    {
+        let completed = jobs
+            .completed
+            .lock()
+            .map_err(|_| "Cannot read completed worker tasks.".to_string())?;
+        for (job_id, entry) in completed.entries.iter() {
+            snapshots
+                .entry(job_id.clone())
+                .or_insert_with(|| entry.snapshot.clone());
+        }
+    }
+
+    let persisted_result = load_persisted_worker_tasks(&app)?;
+    for persisted in persisted_result.tasks {
+        let job_id = persisted.id.clone();
+        snapshots
+            .entry(job_id)
+            .or_insert_with(|| mark_orphaned_worker_task_interrupted(persisted));
+    }
+
+    let mut values = snapshots.into_values().collect::<Vec<_>>();
+    values.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    values.truncate(COMPLETED_WORKER_JOB_LIMIT);
+    Ok(RecoverableWorkerTasksResult {
+        tasks: values,
+        errors: persisted_result.errors,
+    })
+}
+
+#[tauri::command]
+fn read_worker_job_result(
+    app: tauri::AppHandle,
+    jobs: State<WorkerJobs>,
+    job_id: String,
+) -> Result<Value, String> {
+    let indexed_path = {
         let history = jobs
             .completed
             .lock()
@@ -1987,11 +3056,457 @@ fn read_worker_job_result(jobs: State<WorkerJobs>, job_id: String) -> Result<Val
             .entries
             .get(&job_id)
             .and_then(|entry| entry.result_path.clone())
-            .ok_or_else(|| "后台任务结果不存在，可能需要重新运行。".to_string())?
     };
+    let result_path =
+        resolve_worker_result_path(&worker_job_result_dir(&app), &job_id, indexed_path)?;
     let text = fs::read_to_string(&result_path)
         .map_err(|err| format!("无法读取后台任务结果文件：{err}"))?;
     serde_json::from_str(&text).map_err(|err| format!("后台任务结果不是有效 JSON：{err}"))
+}
+
+#[tauri::command]
+fn acknowledge_worker_task_result(
+    app: tauri::AppHandle,
+    jobs: State<WorkerJobs>,
+    job_id: String,
+) -> Result<WorkerTaskResultAcknowledgement, String> {
+    if !safe_worker_task_id(&job_id) {
+        return Err("Invalid worker task identifier.".to_string());
+    }
+    if let Some(snapshot) = jobs
+        .jobs
+        .lock()
+        .map_err(|_| "Cannot read running worker tasks.".to_string())?
+        .get(&job_id)
+        .map(|job| job.snapshot(&job_id))
+    {
+        return Ok(WorkerTaskResultAcknowledgement {
+            acknowledged: false,
+            state: Some(snapshot.state),
+        });
+    }
+
+    let persisted_snapshot = load_persisted_worker_task(&app, &job_id)?;
+    let task_path = worker_task_snapshot_path(&app, &job_id)
+        .ok_or_else(|| "Invalid worker task identifier.".to_string())?;
+    let result_path = persisted_worker_result_path(&worker_job_result_dir(&app), &job_id)
+        .ok_or_else(|| "Invalid worker task identifier.".to_string())?;
+    let mut history = jobs
+        .completed
+        .lock()
+        .map_err(|_| "Cannot acknowledge completed worker task.".to_string())?;
+    acknowledge_completed_worker_task(
+        &mut history,
+        &job_id,
+        persisted_snapshot,
+        &task_path,
+        &result_path,
+    )
+}
+fn workflow_storage_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|err| format!("无法定位工作流数据目录：{err}"))?;
+    fs::create_dir_all(&dir).map_err(|err| format!("无法创建工作流数据目录：{err}"))?;
+    Ok(dir)
+}
+
+fn workflow_checkpoint_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(workflow_storage_dir(app)?.join(WORKFLOW_CHECKPOINT_FILE))
+}
+
+fn workflow_checkpoint_backup_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(workflow_storage_dir(app)?.join(WORKFLOW_CHECKPOINT_BACKUP_FILE))
+}
+
+fn workflow_artifact_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let storage_dir = workflow_storage_dir(app)?;
+    let dir = storage_dir.join("workflow-artifacts");
+    fs::create_dir_all(&dir).map_err(|err| format!("无法创建工作流产物目录：{err}"))?;
+
+    let canonical_storage =
+        fs::canonicalize(&storage_dir).map_err(|err| format!("无法校验工作流数据目录：{err}"))?;
+    let canonical_dir =
+        fs::canonicalize(&dir).map_err(|err| format!("无法校验工作流产物目录：{err}"))?;
+    if !canonical_dir.starts_with(&canonical_storage) {
+        return Err("工作流产物目录超出了应用数据目录。".to_string());
+    }
+    Ok(canonical_dir)
+}
+
+fn secret_field_has_value(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Bool(flag) => *flag,
+        Value::Number(_) => true,
+        Value::Array(items) => !items.is_empty(),
+        Value::Object(items) => !items.is_empty(),
+    }
+}
+
+fn is_secret_field_name(key: &str) -> bool {
+    let compact = key
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+
+    let safe_metadata = compact.ends_with("exists")
+        || compact.ends_with("revision")
+        || compact.ends_with("source")
+        || compact.ends_with("reference")
+        || compact.ends_with("ref")
+        || matches!(
+            compact.as_str(),
+            "hasapikey"
+                | "hasmodelapikey"
+                | "hasttsapikey"
+                | "haspassword"
+                | "hastoken"
+                | "hascookie"
+                | "hascredential"
+        );
+    if safe_metadata {
+        return false;
+    }
+
+    compact.contains("apikey")
+        || compact.contains("authorization")
+        || compact.contains("accesstoken")
+        || compact.contains("refreshtoken")
+        || compact.contains("bearertoken")
+        || compact.contains("oauthtoken")
+        || compact.contains("oauthcode")
+        || compact.contains("authorizationcode")
+        || compact.contains("clientsecret")
+        || compact.contains("privatekey")
+        || (compact.starts_with("token")
+            && !compact.ends_with("type")
+            && !compact.ends_with("count")
+            && !compact.ends_with("expiry"))
+        || compact.ends_with("password")
+        || compact.ends_with("passphrase")
+        || compact.ends_with("token")
+        || compact.ends_with("secret")
+        || compact.ends_with("cookie")
+        || compact.ends_with("credential")
+        || compact.ends_with("credentials")
+}
+fn checkpoint_contains_secret(value: &Value) -> bool {
+    let mut pending = vec![value];
+    while let Some(current) = pending.pop() {
+        match current {
+            Value::Object(map) => {
+                for (key, child) in map {
+                    if is_secret_field_name(key) && secret_field_has_value(child) {
+                        return true;
+                    }
+                    pending.push(child);
+                }
+            }
+            Value::Array(items) => pending.extend(items),
+            _ => {}
+        }
+    }
+    false
+}
+
+fn workflow_file_suffix() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let sequence = WORKFLOW_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("{}-{nanos}-{sequence}", std::process::id())
+}
+
+fn workflow_sibling_path(path: &Path, role: &str) -> Result<PathBuf, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "工作流文件缺少父目录。".to_string())?;
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("workflow");
+    Ok(parent.join(format!(".{name}.{role}.{}", workflow_file_suffix())))
+}
+
+fn reject_unsafe_existing_file(path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err("工作流文件不能是符号链接。".to_string())
+        }
+        Ok(metadata) if !metadata.is_file() => Err("工作流路径不是普通文件。".to_string()),
+        Ok(_) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!("无法检查工作流文件：{err}")),
+    }
+}
+
+fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(|err| format!("无法创建工作流临时文件：{err}"))?;
+        file.write_all(bytes)
+            .map_err(|err| format!("无法写入工作流临时文件：{err}"))?;
+        file.sync_all()
+            .map_err(|err| format!("无法同步工作流临时文件：{err}"))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(path);
+    }
+    result
+}
+
+fn replace_prepared_file(prepared: &Path, target: &Path) -> Result<(), String> {
+    let result = (|| {
+        reject_unsafe_existing_file(target)?;
+        if !target.exists() {
+            return fs::rename(prepared, target)
+                .map_err(|err| format!("无法保存工作流文件：{err}"));
+        }
+
+        let rollback = workflow_sibling_path(target, "rollback")?;
+        fs::rename(target, &rollback).map_err(|err| format!("无法保护旧工作流文件：{err}"))?;
+        match fs::rename(prepared, target) {
+            Ok(()) => {
+                let _ = fs::remove_file(rollback);
+                Ok(())
+            }
+            Err(save_error) => match fs::rename(&rollback, target) {
+                Ok(()) => Err(format!("无法保存工作流文件，已恢复旧版本：{save_error}")),
+                Err(restore_error) => Err(format!(
+                    "无法保存工作流文件，旧版本位于同目录回滚文件中：{save_error}；恢复失败：{restore_error}"
+                )),
+            },
+        }
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_file(prepared);
+    }
+    result
+}
+fn read_json_file_with_limit(path: &Path, max_bytes: u64) -> Result<Value, String> {
+    reject_unsafe_existing_file(path)?;
+    let metadata = fs::metadata(path).map_err(|err| format!("无法读取工作流文件信息：{err}"))?;
+    if metadata.len() > max_bytes {
+        return Err("工作流文件超过允许大小。".to_string());
+    }
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| "工作流文件缺少父目录。".to_string())?;
+    let canonical_parent =
+        fs::canonicalize(parent).map_err(|err| format!("无法校验工作流目录：{err}"))?;
+    let canonical_path =
+        fs::canonicalize(path).map_err(|err| format!("无法校验工作流文件：{err}"))?;
+    if canonical_path.parent() != Some(canonical_parent.as_path()) {
+        return Err("工作流文件超出了预期目录。".to_string());
+    }
+
+    let bytes = fs::read(&canonical_path).map_err(|err| format!("无法读取工作流文件：{err}"))?;
+    serde_json::from_slice(&bytes).map_err(|err| format!("工作流文件不是有效 JSON：{err}"))
+}
+
+fn write_json_with_backup(
+    path: &Path,
+    backup_path: Option<&Path>,
+    payload: &Value,
+    max_bytes: u64,
+) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "工作流文件缺少父目录。".to_string())?;
+    fs::create_dir_all(parent).map_err(|err| format!("无法创建工作流文件目录：{err}"))?;
+    reject_unsafe_existing_file(path)?;
+
+    let bytes =
+        serde_json::to_vec_pretty(payload).map_err(|err| format!("无法序列化工作流数据：{err}"))?;
+    if bytes.len() as u64 > max_bytes {
+        return Err("工作流数据超过允许大小。".to_string());
+    }
+
+    let prepared = workflow_sibling_path(path, "tmp")?;
+    write_new_file(&prepared, &bytes)?;
+
+    if let Some(backup_path) = backup_path {
+        reject_unsafe_existing_file(backup_path)?;
+        if path.is_file() {
+            if let Ok(previous) = read_json_file_with_limit(path, max_bytes) {
+                if !checkpoint_contains_secret(&previous) {
+                    let previous_bytes =
+                        fs::read(path).map_err(|err| format!("无法读取旧工作流文件：{err}"))?;
+                    let prepared_backup = workflow_sibling_path(backup_path, "tmp")?;
+                    if let Err(err) = write_new_file(&prepared_backup, &previous_bytes)
+                        .and_then(|_| replace_prepared_file(&prepared_backup, backup_path))
+                    {
+                        let _ = fs::remove_file(&prepared);
+                        return Err(format!("无法更新工作流备份：{err}"));
+                    }
+                }
+            }
+        }
+    }
+
+    replace_prepared_file(&prepared, path)
+}
+
+#[tauri::command]
+fn save_workflow_checkpoint(app: tauri::AppHandle, checkpoint: Value) -> Result<(), String> {
+    if checkpoint_contains_secret(&checkpoint) {
+        return Err("检查点包含凭据或其他秘密，已拒绝保存。".to_string());
+    }
+    let path = workflow_checkpoint_path(&app)?;
+    let backup = workflow_checkpoint_backup_path(&app)?;
+    write_json_with_backup(
+        &path,
+        Some(&backup),
+        &checkpoint,
+        WORKFLOW_CHECKPOINT_MAX_BYTES,
+    )
+}
+
+fn load_workflow_checkpoint_candidate(path: &Path, label: &str) -> Result<Option<Value>, String> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let value = read_json_file_with_limit(path, WORKFLOW_CHECKPOINT_MAX_BYTES)?;
+    if checkpoint_contains_secret(&value) {
+        return Err(format!("{label}包含凭据或其他秘密，已拒绝加载。"));
+    }
+    Ok(Some(value))
+}
+
+#[tauri::command]
+fn load_workflow_checkpoint(app: tauri::AppHandle) -> Result<Option<Value>, String> {
+    let path = workflow_checkpoint_path(&app)?;
+    let backup = workflow_checkpoint_backup_path(&app)?;
+    if path.is_file() {
+        match read_json_file_with_limit(&path, WORKFLOW_CHECKPOINT_MAX_BYTES) {
+            Ok(value) if !checkpoint_contains_secret(&value) => return Ok(Some(value)),
+            Ok(_) => return Err("检查点包含凭据或其他秘密，已拒绝加载。".to_string()),
+            Err(_) if backup.is_file() => {}
+            Err(err) => return Err(err),
+        }
+    }
+    load_workflow_checkpoint_candidate(&backup, "检查点备份")
+}
+
+#[tauri::command]
+fn load_workflow_checkpoint_backup(app: tauri::AppHandle) -> Result<Option<Value>, String> {
+    let backup = workflow_checkpoint_backup_path(&app)?;
+    load_workflow_checkpoint_candidate(&backup, "检查点备份")
+}
+
+#[tauri::command]
+fn clear_workflow_checkpoint(app: tauri::AppHandle) -> Result<(), String> {
+    let path = workflow_checkpoint_path(&app)?;
+    let backup = workflow_checkpoint_backup_path(&app)?;
+    for candidate in [path, backup] {
+        if candidate.exists() {
+            reject_unsafe_existing_file(&candidate)?;
+            fs::remove_file(&candidate).map_err(|err| format!("无法清除工作流检查点：{err}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn is_windows_reserved_file_stem(stem: &str) -> bool {
+    let stem = stem.to_ascii_lowercase();
+    matches!(stem.as_str(), "con" | "prn" | "aux" | "nul" | "clock$")
+        || stem
+            .strip_prefix("com")
+            .or_else(|| stem.strip_prefix("lpt"))
+            .and_then(|suffix| suffix.parse::<u8>().ok())
+            .is_some_and(|number| (1..=9).contains(&number))
+}
+
+fn validate_workflow_artifact_ref(reference: &str) -> Result<(), String> {
+    let path = Path::new(reference);
+    let safe_name = path.file_name().and_then(|value| value.to_str()) == Some(reference);
+    let safe_chars = reference
+        .chars()
+        .all(|value| value.is_ascii_alphanumeric() || matches!(value, '-' | '_' | '.'));
+    let stem = reference.strip_suffix(".json").unwrap_or_default();
+    if safe_name
+        && safe_chars
+        && !stem.is_empty()
+        && !stem.starts_with('.')
+        && !is_windows_reserved_file_stem(stem.split('.').next().unwrap_or_default())
+        && reference.ends_with(".json")
+        && reference.len() <= 160
+    {
+        Ok(())
+    } else {
+        Err("工作流产物引用无效。".to_string())
+    }
+}
+
+fn workflow_artifact_path(
+    app: &tauri::AppHandle,
+    reference: &str,
+    must_exist: bool,
+) -> Result<PathBuf, String> {
+    validate_workflow_artifact_ref(reference)?;
+    let root = workflow_artifact_dir(app)?;
+    let candidate = root.join(reference);
+    reject_unsafe_existing_file(&candidate)?;
+
+    if must_exist {
+        if !candidate.is_file() {
+            return Err("工作流产物不存在。".to_string());
+        }
+        let canonical =
+            fs::canonicalize(&candidate).map_err(|err| format!("无法校验工作流产物路径：{err}"))?;
+        if !canonical.starts_with(&root) || canonical.parent() != Some(root.as_path()) {
+            return Err("工作流产物超出了应用数据目录。".to_string());
+        }
+        Ok(canonical)
+    } else {
+        Ok(candidate)
+    }
+}
+
+#[tauri::command]
+fn write_workflow_artifact(
+    app: tauri::AppHandle,
+    kind: String,
+    payload: Value,
+) -> Result<String, String> {
+    const ALLOWED_KINDS: &[&str] = &[
+        "learning-points",
+        "project",
+        "generation-queue",
+        "export-result",
+        "anki-verification",
+    ];
+    if !ALLOWED_KINDS.contains(&kind.as_str()) {
+        return Err("工作流产物类型不受支持。".to_string());
+    }
+    if checkpoint_contains_secret(&payload) {
+        return Err("工作流产物包含凭据或其他秘密，已拒绝保存。".to_string());
+    }
+
+    let reference = format!("{kind}-{}.json", workflow_file_suffix());
+    let path = workflow_artifact_path(&app, &reference, false)?;
+    write_json_with_backup(&path, None, &payload, WORKFLOW_ARTIFACT_MAX_BYTES)?;
+    Ok(reference)
+}
+
+#[tauri::command]
+fn read_workflow_artifact(app: tauri::AppHandle, reference: String) -> Result<Value, String> {
+    let path = workflow_artifact_path(&app, &reference, true)?;
+    let value = read_json_file_with_limit(&path, WORKFLOW_ARTIFACT_MAX_BYTES)?;
+    if checkpoint_contains_secret(&value) {
+        return Err("工作流产物包含凭据或其他秘密，已拒绝加载。".to_string());
+    }
+    Ok(value)
 }
 
 #[tauri::command]
@@ -2090,7 +3605,10 @@ fn anki_candidates_from_parts(
             PathBuf::from(format!(r"{drive}:\Anki\anki.exe")),
         );
     }
-    push_unique_path(&mut candidates, PathBuf::from(r"C:\Program Files\Anki\anki.exe"));
+    push_unique_path(
+        &mut candidates,
+        PathBuf::from(r"C:\Program Files\Anki\anki.exe"),
+    );
     push_unique_path(
         &mut candidates,
         PathBuf::from(r"C:\Program Files (x86)\Anki\anki.exe"),
@@ -2207,7 +3725,11 @@ fn check_bootstrap_env(app: tauri::AppHandle) -> Result<Value, String> {
         native_status_item(
             "venv",
             "项目私有 venv",
-            if python.is_some() { "action" } else { "blocked" },
+            if python.is_some() {
+                "action"
+            } else {
+                "blocked"
+            },
             if python.is_some() {
                 "Python 可用；点击一键修复后会创建项目 .venv 并安装依赖。".to_string()
             } else {
@@ -2218,7 +3740,11 @@ fn check_bootstrap_env(app: tauri::AppHandle) -> Result<Value, String> {
         native_status_item(
             "ffmpeg",
             "FFmpeg 视频切片",
-            if ffmpeg_path.is_empty() { "blocked" } else { "ok" },
+            if ffmpeg_path.is_empty() {
+                "blocked"
+            } else {
+                "ok"
+            },
             if ffmpeg_path.is_empty() {
                 "未在 PATH 找到 ffmpeg；本地视频导出会失败。".to_string()
             } else {
@@ -2229,21 +3755,33 @@ fn check_bootstrap_env(app: tauri::AppHandle) -> Result<Value, String> {
         native_status_item(
             "genanki",
             "genanki APKG 导出",
-            if python.is_some() { "action" } else { "blocked" },
+            if python.is_some() {
+                "action"
+            } else {
+                "blocked"
+            },
             "需要 Python worker 运行后安装/检查。".to_string(),
             "点击一键修复安装 Python 依赖。",
         ),
         native_status_item(
             "yt_dlp",
             "yt-dlp URL 导入",
-            if python.is_some() { "action" } else { "blocked" },
+            if python.is_some() {
+                "action"
+            } else {
+                "blocked"
+            },
             "需要 Python worker 运行后安装/检查。".to_string(),
             "点击一键修复安装 Python 依赖。",
         ),
         native_status_item(
             "js_runtime",
             "Deno / Node challenge solver",
-            if js_runtime.is_empty() { "action" } else { "ok" },
+            if js_runtime.is_empty() {
+                "action"
+            } else {
+                "ok"
+            },
             if js_runtime.is_empty() {
                 "YouTube n challenge 可能失败。".to_string()
             } else {
@@ -2261,7 +3799,11 @@ fn check_bootstrap_env(app: tauri::AppHandle) -> Result<Value, String> {
         native_status_item(
             "anki_connect",
             "AnkiConnect 导入核验",
-            if anki_path.is_some() { "action" } else { "blocked" },
+            if anki_path.is_some() {
+                "action"
+            } else {
+                "blocked"
+            },
             if anki_path.is_some() {
                 "需要打开 Anki 并安装/启用 AnkiConnect 插件。".to_string()
             } else {
@@ -2310,7 +3852,11 @@ fn summarize_native_output(output: &std::process::Output) -> String {
     .join("\n")
     .replace("\r\n", "\n")
     .replace('\r', "\n");
-    let lines: Vec<&str> = text.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
     if lines.is_empty() {
         return format!("退出码 {}", output.status.code().unwrap_or(-1));
     }
@@ -2345,7 +3891,10 @@ fn native_action(
 }
 
 #[tauri::command]
-fn repair_bootstrap_env(app: tauri::AppHandle, target: String) -> Result<BootstrapRepairResult, String> {
+fn repair_bootstrap_env(
+    app: tauri::AppHandle,
+    target: String,
+) -> Result<BootstrapRepairResult, String> {
     let normalized_target = if ["all", "python_runtime"].contains(&target.as_str()) {
         target
     } else {
@@ -2420,8 +3969,14 @@ fn repair_bootstrap_env(app: tauri::AppHandle, target: String) -> Result<Bootstr
         }
     }
 
-    let failed = actions.iter().filter(|action| action.status == "failed").count();
-    let manual = actions.iter().filter(|action| action.status == "manual").count();
+    let failed = actions
+        .iter()
+        .filter(|action| action.status == "failed")
+        .count();
+    let manual = actions
+        .iter()
+        .filter(|action| action.status == "manual")
+        .count();
     Ok(BootstrapRepairResult {
         ok: failed == 0,
         target: normalized_target,
@@ -2572,6 +4127,455 @@ fn suggest_subtitle_path(video_path: String, language: String) -> Result<Option<
         .map(|(_, _, _, path)| path.display().to_string()))
 }
 
+const SHA256_ROUND_CONSTANTS: [u32; 64] = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+];
+
+struct LocalSha256 {
+    state: [u32; 8],
+    buffer: [u8; 64],
+    buffer_len: usize,
+    total_len: u64,
+}
+
+impl LocalSha256 {
+    fn new() -> Self {
+        Self {
+            state: [
+                0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+                0x5be0cd19,
+            ],
+            buffer: [0; 64],
+            buffer_len: 0,
+            total_len: 0,
+        }
+    }
+
+    fn process_block(&mut self, block: &[u8; 64]) {
+        let mut words = [0_u32; 64];
+        for (index, bytes) in block.chunks_exact(4).take(16).enumerate() {
+            words[index] = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        }
+        for index in 16..64 {
+            let sigma0 = words[index - 15].rotate_right(7)
+                ^ words[index - 15].rotate_right(18)
+                ^ (words[index - 15] >> 3);
+            let sigma1 = words[index - 2].rotate_right(17)
+                ^ words[index - 2].rotate_right(19)
+                ^ (words[index - 2] >> 10);
+            words[index] = words[index - 16]
+                .wrapping_add(sigma0)
+                .wrapping_add(words[index - 7])
+                .wrapping_add(sigma1);
+        }
+
+        let mut a = self.state[0];
+        let mut b = self.state[1];
+        let mut c = self.state[2];
+        let mut d = self.state[3];
+        let mut e = self.state[4];
+        let mut f = self.state[5];
+        let mut g = self.state[6];
+        let mut h = self.state[7];
+
+        for index in 0..64 {
+            let big_sigma1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let choose = (e & f) ^ ((!e) & g);
+            let temporary1 = h
+                .wrapping_add(big_sigma1)
+                .wrapping_add(choose)
+                .wrapping_add(SHA256_ROUND_CONSTANTS[index])
+                .wrapping_add(words[index]);
+            let big_sigma0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let majority = (a & b) ^ (a & c) ^ (b & c);
+            let temporary2 = big_sigma0.wrapping_add(majority);
+
+            h = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(temporary1);
+            d = c;
+            c = b;
+            b = a;
+            a = temporary1.wrapping_add(temporary2);
+        }
+
+        self.state[0] = self.state[0].wrapping_add(a);
+        self.state[1] = self.state[1].wrapping_add(b);
+        self.state[2] = self.state[2].wrapping_add(c);
+        self.state[3] = self.state[3].wrapping_add(d);
+        self.state[4] = self.state[4].wrapping_add(e);
+        self.state[5] = self.state[5].wrapping_add(f);
+        self.state[6] = self.state[6].wrapping_add(g);
+        self.state[7] = self.state[7].wrapping_add(h);
+    }
+
+    fn update(&mut self, bytes: &[u8]) {
+        self.total_len = self.total_len.wrapping_add(bytes.len() as u64);
+        let mut remaining = bytes;
+
+        if self.buffer_len > 0 {
+            let needed = 64 - self.buffer_len;
+            let copied = needed.min(remaining.len());
+            self.buffer[self.buffer_len..self.buffer_len + copied]
+                .copy_from_slice(&remaining[..copied]);
+            self.buffer_len += copied;
+            remaining = &remaining[copied..];
+            if self.buffer_len == 64 {
+                let block = self.buffer;
+                self.process_block(&block);
+                self.buffer_len = 0;
+            }
+        }
+
+        while remaining.len() >= 64 {
+            let block: [u8; 64] = remaining[..64]
+                .try_into()
+                .expect("a 64-byte slice always converts to a SHA-256 block");
+            self.process_block(&block);
+            remaining = &remaining[64..];
+        }
+
+        if !remaining.is_empty() {
+            self.buffer[..remaining.len()].copy_from_slice(remaining);
+            self.buffer_len = remaining.len();
+        }
+    }
+
+    fn finish(mut self) -> String {
+        let bit_len = self.total_len.wrapping_mul(8);
+        self.buffer[self.buffer_len] = 0x80;
+        self.buffer_len += 1;
+
+        if self.buffer_len > 56 {
+            self.buffer[self.buffer_len..].fill(0);
+            let block = self.buffer;
+            self.process_block(&block);
+            self.buffer = [0; 64];
+            self.buffer_len = 0;
+        }
+
+        self.buffer[self.buffer_len..56].fill(0);
+        self.buffer[56..64].copy_from_slice(&bit_len.to_be_bytes());
+        let block = self.buffer;
+        self.process_block(&block);
+
+        self.state
+            .iter()
+            .map(|word| format!("{word:08x}"))
+            .collect::<String>()
+    }
+}
+
+fn sha256_file(path: &Path) -> Result<String, std::io::Error> {
+    let file = fs::File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut hasher = LocalSha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+
+    Ok(hasher.finish())
+}
+
+fn recovery_file_failure(
+    exists: bool,
+    is_file: bool,
+    size: Option<u64>,
+    modified_at_ms: Option<u64>,
+    code: &str,
+    message: &str,
+    retryable: bool,
+) -> RecoveryFileInspection {
+    RecoveryFileInspection {
+        ok: false,
+        exists,
+        is_file,
+        size,
+        modified_at_ms,
+        sha256: None,
+        error: Some(RecoveryFileInspectionError {
+            code: code.to_string(),
+            message: message.to_string(),
+            retryable,
+        }),
+    }
+}
+
+fn recovery_file_modified_at_ms(metadata: &fs::Metadata) -> Option<u64> {
+    metadata
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+}
+
+fn recovery_metadata_is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        return metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+    }
+    #[cfg(not(windows))]
+    false
+}
+
+fn recovery_path_is_unsafe(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let normalized = path
+            .as_os_str()
+            .to_string_lossy()
+            .replace('/', "\\")
+            .to_ascii_lowercase();
+        if normalized.starts_with("\\\\.\\")
+            || normalized.starts_with("\\\\?\\globalroot\\")
+            || normalized.starts_with("\\\\?\\device\\")
+            || normalized.starts_with("\\??\\")
+        {
+            return true;
+        }
+
+        let bytes = normalized.as_bytes();
+        let allowed_colon = if bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && bytes[2] == b'\\'
+        {
+            Some(1)
+        } else if bytes.len() >= 7
+            && &bytes[..4] == b"\\\\?\\"
+            && bytes[4].is_ascii_alphabetic()
+            && bytes[5] == b':'
+            && bytes[6] == b'\\'
+        {
+            Some(5)
+        } else {
+            None
+        };
+        if normalized
+            .char_indices()
+            .any(|(index, value)| value == ':' && Some(index) != allowed_colon)
+        {
+            return true;
+        }
+
+        if let Some(file_name) = path.file_name().and_then(|value| value.to_str()) {
+            let normalized_name = file_name.trim_end_matches(|value| value == '.' || value == ' ');
+            let stem = normalized_name.split('.').next().unwrap_or_default();
+            if is_windows_reserved_file_stem(stem) {
+                return true;
+            }
+        }
+    }
+    false
+}
+fn inspect_recovery_file_path(path: &Path, compute_sha256: bool) -> RecoveryFileInspection {
+    if path.as_os_str().is_empty() || !path.is_absolute() {
+        return recovery_file_failure(
+            false,
+            false,
+            None,
+            None,
+            "INVALID_PATH",
+            "Recovery evidence requires an absolute file path.",
+            false,
+        );
+    }
+    if recovery_path_is_unsafe(path) {
+        return recovery_file_failure(
+            false,
+            false,
+            None,
+            None,
+            "UNSAFE_PATH",
+            "Device paths, alternate data streams, and reserved file names are not accepted.",
+            false,
+        );
+    }
+
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return RecoveryFileInspection {
+                ok: true,
+                exists: false,
+                is_file: false,
+                size: None,
+                modified_at_ms: None,
+                sha256: None,
+                error: None,
+            };
+        }
+        Err(_) => {
+            return recovery_file_failure(
+                false,
+                false,
+                None,
+                None,
+                "METADATA_UNAVAILABLE",
+                "The file metadata could not be read.",
+                true,
+            );
+        }
+    };
+
+    if recovery_metadata_is_link_or_reparse(&metadata) {
+        return recovery_file_failure(
+            true,
+            false,
+            None,
+            None,
+            "UNSAFE_FILE_TYPE",
+            "Symbolic links and reparse links are not accepted as recovery evidence.",
+            false,
+        );
+    }
+    if !metadata.is_file() {
+        return recovery_file_failure(
+            true,
+            false,
+            None,
+            None,
+            "NOT_REGULAR_FILE",
+            "Recovery evidence must be a regular file.",
+            false,
+        );
+    }
+
+    let size = metadata.len();
+    let Some(modified_at_ms) = recovery_file_modified_at_ms(&metadata) else {
+        return recovery_file_failure(
+            true,
+            true,
+            Some(size),
+            None,
+            "MODIFIED_TIME_UNAVAILABLE",
+            "The file modification time could not be read.",
+            true,
+        );
+    };
+
+    let sha256 = if compute_sha256 {
+        match sha256_file(path) {
+            Ok(digest) => Some(digest),
+            Err(_) => {
+                return recovery_file_failure(
+                    true,
+                    true,
+                    Some(size),
+                    Some(modified_at_ms),
+                    "HASH_READ_FAILED",
+                    "The file could not be read while calculating SHA-256.",
+                    true,
+                );
+            }
+        }
+    } else {
+        None
+    };
+
+    if compute_sha256 {
+        let after = match fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                return recovery_file_failure(
+                    false,
+                    false,
+                    None,
+                    None,
+                    "FILE_CHANGED_DURING_INSPECTION",
+                    "The file changed while it was being inspected.",
+                    true,
+                );
+            }
+        };
+        if recovery_metadata_is_link_or_reparse(&after)
+            || !after.is_file()
+            || after.len() != size
+            || recovery_file_modified_at_ms(&after) != Some(modified_at_ms)
+        {
+            return recovery_file_failure(
+                true,
+                after.is_file(),
+                Some(after.len()),
+                recovery_file_modified_at_ms(&after),
+                "FILE_CHANGED_DURING_INSPECTION",
+                "The file changed while it was being inspected.",
+                true,
+            );
+        }
+    }
+
+    RecoveryFileInspection {
+        ok: true,
+        exists: true,
+        is_file: true,
+        size: Some(size),
+        modified_at_ms: Some(modified_at_ms),
+        sha256,
+        error: None,
+    }
+}
+
+#[tauri::command]
+fn inspect_recovery_file(path: String, compute_sha256: bool) -> RecoveryFileInspection {
+    let cleaned = clean_user_path(&path);
+    inspect_recovery_file_path(Path::new(&cleaned), compute_sha256)
+}
+#[tauri::command]
+fn check_output_directory(directory: String) -> Result<String, String> {
+    let root = PathBuf::from(clean_user_path(&directory));
+    if !root.exists() {
+        return Ok("missing".to_string());
+    }
+    if !root.is_dir() {
+        return Ok("not_writable".to_string());
+    }
+
+    let sequence = WORKFLOW_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let probe = root.join(format!(
+        ".anki-card-generator-write-probe-{}-{}.tmp",
+        std::process::id(),
+        sequence
+    ));
+    let write_result = (|| -> Result<(), std::io::Error> {
+        let mut file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&probe)?;
+        file.write_all(b"write-probe")?;
+        file.sync_all()?;
+        drop(file);
+        fs::remove_file(&probe)?;
+        Ok(())
+    })();
+
+    if write_result.is_err() {
+        let _ = fs::remove_file(&probe);
+        return Ok("not_writable".to_string());
+    }
+    Ok("writable".to_string())
+}
+
 #[tauri::command]
 fn list_directory_files(directory: String) -> Result<Vec<String>, String> {
     let root = PathBuf::from(clean_user_path(&directory));
@@ -2582,14 +4586,20 @@ fn list_directory_files(directory: String) -> Result<Vec<String>, String> {
         .canonicalize()
         .map_err(|err| format!("无法解析目录 {}：{err}", root.display()))?;
     if directory_listing_root_blocked(&root) {
-        return Err("出于安全考虑，不能批量枚举系统根目录或敏感系统目录。请选择素材所在的普通文件夹。".to_string());
+        return Err(
+            "出于安全考虑，不能批量枚举系统根目录或敏感系统目录。请选择素材所在的普通文件夹。"
+                .to_string(),
+        );
     }
     let mut files = Vec::new();
     let mut stack = vec![(root.clone(), 0usize)];
     while let Some((current, depth)) = stack.pop() {
-        let entries = fs::read_dir(&current).map_err(|err| format!("无法读取目录 {}：{err}", current.display()))?;
+        let entries = fs::read_dir(&current)
+            .map_err(|err| format!("无法读取目录 {}：{err}", current.display()))?;
         for entry in entries {
-            let path = entry.map_err(|err| format!("无法读取目录项：{err}"))?.path();
+            let path = entry
+                .map_err(|err| format!("无法读取目录项：{err}"))?
+                .path();
             if path.is_dir() {
                 if depth < DIRECTORY_LIST_MAX_DEPTH && !directory_listing_root_blocked(&path) {
                     stack.push((path, depth + 1));
@@ -2821,7 +4831,13 @@ fn open_anki_import(app: tauri::AppHandle, apkg_path: String) -> Result<(), Stri
     if !anki_import_path_allowed(&app, &apkg) {
         return Err("只能导入本应用刚导出或测试目录中的 .apkg 文件。".to_string());
     }
-    if !apkg.is_file() || !apkg.extension().and_then(|value| value.to_str()).map(|value| value.eq_ignore_ascii_case("apkg")).unwrap_or(false) {
+    if !apkg.is_file()
+        || !apkg
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.eq_ignore_ascii_case("apkg"))
+            .unwrap_or(false)
+    {
         return Err("只能导入 .apkg 文件。".to_string());
     }
 
@@ -2908,6 +4924,13 @@ fn load_secret(key: String) -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
+fn secret_exists(key: String) -> Result<bool, String> {
+    Ok(load_secret(key)?
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false))
+}
+
+#[tauri::command]
 fn delete_secret(key: String) -> Result<(), String> {
     validate_secret_key(&key)?;
     let keyring_result = delete_keyring_secret(&key);
@@ -2941,6 +4964,7 @@ pub fn run() {
     }));
     tauri::Builder::default()
         .manage(WorkerJobs::default())
+        .manage(WindowCloseGuard::default())
         .manage(HermesProxyRuntime::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
@@ -2948,10 +4972,24 @@ pub fn run() {
             check_bootstrap_env,
             repair_bootstrap_env,
             start_worker_job,
+            allow_next_window_close,
+            disallow_next_window_close,
             cancel_worker_job,
+            force_cancel_worker_job,
             get_worker_job_status,
+            get_worker_task,
+            list_recoverable_worker_tasks,
             read_worker_job_result,
+            acknowledge_worker_task_result,
+            check_output_directory,
+            inspect_recovery_file,
             record_renderer_error,
+            save_workflow_checkpoint,
+            load_workflow_checkpoint,
+            load_workflow_checkpoint_backup,
+            clear_workflow_checkpoint,
+            write_workflow_artifact,
+            read_workflow_artifact,
             suggest_subtitle_path,
             list_directory_files,
             allow_preview_asset,
@@ -2963,6 +5001,7 @@ pub fn run() {
             stop_owned_hermes_proxy,
             save_secret,
             load_secret,
+            secret_exists,
             delete_secret
         ])
         .setup(|app| {
@@ -2984,9 +5023,24 @@ pub fn run() {
             let lifecycle_app = app.handle().clone();
             let lifecycle_window = window.clone();
             window.on_window_event(move |event| {
-                if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
-                    let runtime = lifecycle_app.state::<HermesProxyRuntime>();
-                    let _ = stop_managed_hermes(runtime.inner());
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    let close_guard = lifecycle_app.state::<WindowCloseGuard>();
+                    if close_guard.allow_next_close.swap(false, Ordering::SeqCst) {
+                        let runtime = lifecycle_app.state::<HermesProxyRuntime>();
+                        let _ = stop_managed_hermes(runtime.inner());
+                    } else {
+                        api.prevent_close();
+                        let worker_active = lifecycle_app
+                            .state::<WorkerJobs>()
+                            .jobs
+                            .lock()
+                            .map(|jobs| !jobs.is_empty())
+                            .unwrap_or(true);
+                        let _ = lifecycle_window.emit(
+                            "app-close-requested",
+                            json!({ "workerActive": worker_active }),
+                        );
+                    }
                 }
                 let event_debug = format!("{event:?}");
                 let event_name = event_debug
@@ -2994,7 +5048,12 @@ pub fn run() {
                     .next()
                     .unwrap_or("unknown")
                     .to_string();
-                write_window_lifecycle_diagnostic(&lifecycle_app, &lifecycle_window, &event_name, event_debug);
+                write_window_lifecycle_diagnostic(
+                    &lifecycle_app,
+                    &lifecycle_window,
+                    &event_name,
+                    event_debug,
+                );
             });
             let min_size_result = window.set_min_size(Some(Size::Logical(LogicalSize {
                 width: MIN_WINDOW_WIDTH,
@@ -3154,11 +5213,21 @@ mod tests {
 
     #[test]
     fn bulk_directory_listing_only_accepts_supported_extensions() {
-        assert!(file_extension_supported_for_bulk_import(Path::new("clip.mp4")));
-        assert!(file_extension_supported_for_bulk_import(Path::new("notes.MD")));
-        assert!(file_extension_supported_for_bulk_import(Path::new("subs.srt")));
-        assert!(!file_extension_supported_for_bulk_import(Path::new("secret.exe")));
-        assert!(!file_extension_supported_for_bulk_import(Path::new("archive.zip")));
+        assert!(file_extension_supported_for_bulk_import(Path::new(
+            "clip.mp4"
+        )));
+        assert!(file_extension_supported_for_bulk_import(Path::new(
+            "notes.MD"
+        )));
+        assert!(file_extension_supported_for_bulk_import(Path::new(
+            "subs.srt"
+        )));
+        assert!(!file_extension_supported_for_bulk_import(Path::new(
+            "secret.exe"
+        )));
+        assert!(!file_extension_supported_for_bulk_import(Path::new(
+            "archive.zip"
+        )));
     }
 
     #[test]
@@ -3200,6 +5269,792 @@ mod tests {
         assert!(generated_apkg_directory(&apkg));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workflow_checkpoint_rejects_non_empty_secrets() {
+        for payload in [
+            json!({"api_key": "should-not-be-here"}),
+            json!({"apiKey": "should-not-be-here"}),
+            json!({"oauth_token": "secret"}),
+            json!({"headers": {"Authorization": "Bearer secret"}}),
+            json!({"client_secret": {"value": "secret"}}),
+            json!({"token_value": "secret"}),
+            json!({"private_key": "secret"}),
+        ] {
+            assert!(checkpoint_contains_secret(&payload));
+        }
+
+        assert!(!checkpoint_contains_secret(&json!({
+            "request": {
+                "api_config": {
+                    "api_key": "",
+                    "auth_mode": "oauth"
+                }
+            },
+            "has_api_key": true,
+            "credential_revision": 3,
+            "client_secret_ref": "keyring:model"
+        })));
+    }
+
+    #[test]
+    fn workflow_artifact_reference_rejects_path_traversal_and_windows_devices() {
+        assert!(validate_workflow_artifact_ref("project-123.json").is_ok());
+        assert!(validate_workflow_artifact_ref("../project.json").is_err());
+        assert!(validate_workflow_artifact_ref(r"C:\temp\project.json").is_err());
+        assert!(validate_workflow_artifact_ref("nested/project.json").is_err());
+        assert!(validate_workflow_artifact_ref("project.exe").is_err());
+        assert!(validate_workflow_artifact_ref("CON.json").is_err());
+        assert!(validate_workflow_artifact_ref("lpt1.json").is_err());
+        assert!(validate_workflow_artifact_ref("CON.backup.json").is_err());
+    }
+
+    #[test]
+    fn workflow_checkpoint_backup_candidate_keeps_size_and_secret_guards() {
+        let root = env::temp_dir().join(format!(
+            "anki_card_checkpoint_backup_candidate_{}",
+            workflow_file_suffix()
+        ));
+        fs::create_dir_all(&root).expect("create checkpoint backup test dir");
+        let backup = root.join("checkpoint.json.bak");
+
+        fs::write(&backup, br#"{"schemaVersion":1}"#).expect("write valid backup");
+        assert_eq!(
+            load_workflow_checkpoint_candidate(&backup, "检查点备份")
+                .expect("load valid backup")
+                .expect("backup exists")["schemaVersion"],
+            1
+        );
+
+        fs::write(&backup, br#"{"api_key":"secret"}"#).expect("write secret backup");
+        assert!(load_workflow_checkpoint_candidate(&backup, "检查点备份").is_err());
+
+        fs::write(
+            &backup,
+            vec![b' '; WORKFLOW_CHECKPOINT_MAX_BYTES as usize + 1],
+        )
+        .expect("write oversized backup");
+        assert!(load_workflow_checkpoint_candidate(&backup, "检查点备份").is_err());
+
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn workflow_checkpoint_write_keeps_previous_backup() {
+        let root = env::temp_dir().join(format!(
+            "anki_card_checkpoint_test_{}",
+            workflow_file_suffix()
+        ));
+        fs::create_dir_all(&root).expect("create checkpoint test dir");
+        let path = root.join("checkpoint.json");
+        let backup = root.join("checkpoint.json.bak");
+
+        write_json_with_backup(
+            &path,
+            Some(&backup),
+            &json!({"version": 1}),
+            WORKFLOW_CHECKPOINT_MAX_BYTES,
+        )
+        .expect("write first checkpoint");
+        write_json_with_backup(
+            &path,
+            Some(&backup),
+            &json!({"version": 2}),
+            WORKFLOW_CHECKPOINT_MAX_BYTES,
+        )
+        .expect("write second checkpoint");
+
+        assert_eq!(
+            read_json_file_with_limit(&path, WORKFLOW_CHECKPOINT_MAX_BYTES)
+                .expect("read checkpoint")["version"],
+            2
+        );
+        assert_eq!(
+            read_json_file_with_limit(&backup, WORKFLOW_CHECKPOINT_MAX_BYTES).expect("read backup")
+                ["version"],
+            1
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workflow_checkpoint_does_not_replace_valid_backup_with_corrupt_primary() {
+        let root = env::temp_dir().join(format!(
+            "anki_card_checkpoint_corrupt_test_{}",
+            workflow_file_suffix()
+        ));
+        fs::create_dir_all(&root).expect("create checkpoint test dir");
+        let path = root.join("checkpoint.json");
+        let backup = root.join("checkpoint.json.bak");
+
+        write_json_with_backup(
+            &path,
+            Some(&backup),
+            &json!({"version": 1}),
+            WORKFLOW_CHECKPOINT_MAX_BYTES,
+        )
+        .expect("write first checkpoint");
+        write_json_with_backup(
+            &path,
+            Some(&backup),
+            &json!({"version": 2}),
+            WORKFLOW_CHECKPOINT_MAX_BYTES,
+        )
+        .expect("write second checkpoint");
+        fs::write(&path, b"corrupt").expect("corrupt current checkpoint");
+        write_json_with_backup(
+            &path,
+            Some(&backup),
+            &json!({"version": 3}),
+            WORKFLOW_CHECKPOINT_MAX_BYTES,
+        )
+        .expect("replace corrupt checkpoint");
+
+        assert_eq!(
+            read_json_file_with_limit(&path, WORKFLOW_CHECKPOINT_MAX_BYTES)
+                .expect("read repaired checkpoint")["version"],
+            3
+        );
+        assert_eq!(
+            read_json_file_with_limit(&backup, WORKFLOW_CHECKPOINT_MAX_BYTES)
+                .expect("read preserved backup")["version"],
+            1
+        );
+        let leftovers = fs::read_dir(&root)
+            .expect("list checkpoint directory")
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+            .filter(|name| name.contains(".tmp.") || name.contains(".rollback."))
+            .collect::<Vec<_>>();
+        assert!(
+            leftovers.is_empty(),
+            "unexpected temporary files: {leftovers:?}"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn worker_task_snapshot_exposes_running_and_cancelling_state() {
+        let mut job = RunningJob {
+            pid: 42,
+            command: "extract_learning_points".to_string(),
+            cancel_requested: false,
+            failure_message: None,
+            started_at_ms: 1_000,
+            updated_at_ms: 1_000,
+            progress: worker_task_initial_progress(1_000),
+            input_fingerprint: "summary:test".to_string(),
+        };
+        job.progress = update_worker_task_progress(
+            &job.progress,
+            &json!({
+                "stage": "extract",
+                "stage_label": "Extracting",
+                "percent": 45,
+                "message": "Reading subtitles",
+                "completed_batches": 1,
+                "total_batches": 4
+            }),
+            2_000,
+        );
+        job.updated_at_ms = 2_000;
+
+        let running = job.snapshot("extract-1");
+        assert_eq!(running.state, "running");
+        assert_eq!(running.progress.overall_percent, Some(45.0));
+        assert_eq!(running.progress.completed_batches, Some(1));
+        assert!(running.cancellable);
+
+        job.cancel_requested = true;
+        job.updated_at_ms = 3_000;
+        let cancelling = job.snapshot("extract-1");
+        assert_eq!(cancelling.state, "cancelling");
+        assert!(!cancelling.cancellable);
+        assert_eq!(cancelling.updated_at, 3_000);
+    }
+
+    #[test]
+    fn persisted_worker_result_is_resolved_after_in_memory_index_is_lost() {
+        let root = env::temp_dir().join(format!(
+            "anki_card_worker_result_recovery_{}",
+            workflow_file_suffix()
+        ));
+        fs::create_dir_all(&root).expect("create result recovery directory");
+        let job_id = "verify_anki_import-123-safe";
+        let result_path = root.join(format!("{job_id}.json"));
+        fs::write(&result_path, br#"{"ok":true,"failed_checks":[]}"#)
+            .expect("write persisted worker result");
+
+        assert_eq!(
+            resolve_worker_result_path(&root, job_id, None).expect("resolve persisted result"),
+            result_path
+        );
+        assert!(resolve_worker_result_path(&root, "../escape", None).is_err());
+        assert!(resolve_worker_result_path(&root, "CON", None).is_err());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn persisted_worker_task_loader_distinguishes_missing_valid_and_corrupt_state() {
+        let root = env::temp_dir().join(format!(
+            "anki_card_worker_task_loader_{}",
+            workflow_file_suffix()
+        ));
+        let missing = load_persisted_worker_tasks_from_dir(&root)
+            .expect("missing task directory should be empty");
+        assert!(missing.tasks.is_empty());
+        assert!(missing.errors.is_empty());
+        fs::create_dir_all(&root).expect("create worker task loader directory");
+
+        let job_id = "recoverable-task-1";
+        let snapshot = WorkerTaskSnapshot {
+            schema_version: WORKER_TASK_SNAPSHOT_SCHEMA_VERSION,
+            id: job_id.to_string(),
+            command: "export".to_string(),
+            state: "interrupted".to_string(),
+            started_at: 1_000,
+            updated_at: 2_000,
+            progress: worker_task_initial_progress(1_000),
+            cancellable: false,
+            input_fingerprint: "request-v1-12ab34cd".to_string(),
+            result_ref: None,
+            error: None,
+        };
+        fs::write(
+            root.join(format!("{job_id}.json")),
+            serde_json::to_vec(&snapshot).expect("serialize worker task snapshot"),
+        )
+        .expect("write valid worker task snapshot");
+        fs::write(root.join(".ignored.json.tmp.1"), b"not json")
+            .expect("write ignored temporary snapshot");
+        fs::write(root.join(".ignored.json.rollback.1"), b"not json")
+            .expect("write ignored rollback snapshot");
+
+        let loaded =
+            load_persisted_worker_tasks_from_dir(&root).expect("load valid persisted worker task");
+        assert_eq!(loaded.tasks.len(), 1);
+        assert_eq!(loaded.tasks[0].id, job_id);
+        assert!(loaded.errors.is_empty());
+
+        fs::write(root.join("corrupt-task.json"), b"{not-json")
+            .expect("write corrupt official task snapshot");
+        let partially_loaded = load_persisted_worker_tasks_from_dir(&root)
+            .expect("a corrupt snapshot must not hide valid recovery evidence");
+        assert_eq!(partially_loaded.tasks.len(), 1);
+        assert_eq!(partially_loaded.tasks[0].id, job_id);
+        assert_eq!(partially_loaded.errors.len(), 1);
+        assert!(partially_loaded.errors[0].contains("corrupt-task"));
+        assert!(partially_loaded.errors[0].contains("Cannot read persisted worker task"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn worker_result_store_atomically_replaces_complete_json_without_leftovers() {
+        let root = env::temp_dir().join(format!(
+            "anki_card_worker_result_atomic_{}",
+            workflow_file_suffix()
+        ));
+        fs::create_dir_all(&root).expect("create worker result directory");
+        let job_id = "atomic-result-1";
+
+        store_worker_job_result_in_dir(&root, job_id, &json!({"version": 1, "ok": true}))
+            .expect("store first result");
+        let (_, result_path, size) =
+            store_worker_job_result_in_dir(&root, job_id, &json!({"version": 2, "ok": true}))
+                .expect("atomically replace result");
+        assert!(size > 0);
+        let stored: Value = serde_json::from_slice(
+            &fs::read(&result_path).expect("read atomically replaced result"),
+        )
+        .expect("result remains complete JSON");
+        assert_eq!(stored["version"], 2);
+        assert!(store_worker_job_result_in_dir(&root, "../escape", &json!({})).is_err());
+
+        let leftovers = fs::read_dir(&root)
+            .expect("list result directory")
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+            .filter(|name| name.contains(".tmp.") || name.contains(".rollback."))
+            .collect::<Vec<_>>();
+        assert!(
+            leftovers.is_empty(),
+            "unexpected temporary files: {leftovers:?}"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn acknowledged_success_is_removed_from_memory_and_durable_recovery() {
+        let root = env::temp_dir().join(format!(
+            "anki_card_worker_ack_success_{}",
+            workflow_file_suffix()
+        ));
+        fs::create_dir_all(&root).expect("create acknowledgement test directory");
+        let job_id = "export-ack-success";
+        let task_path = root.join("task.json");
+        let result_path = root.join("result.json");
+        fs::write(&task_path, b"task").expect("write task snapshot");
+        fs::write(&result_path, br#"{"ok":true}"#).expect("write task result");
+        let status = WorkerJobStatus {
+            job_id: job_id.to_string(),
+            command: "export".to_string(),
+            ok: true,
+            cancelled: false,
+            result_ref: Some(job_id.to_string()),
+            result_size_bytes: Some(11),
+            result_summary: None,
+            error: None,
+            error_code: None,
+            stage: None,
+            retryable: None,
+            fallbacks: None,
+            details: None,
+            finished_at_ms: 2_000,
+        };
+        let snapshot = completed_worker_task_snapshot(&status, None);
+        let mut history = CompletedWorkerJobs::default();
+        history.order.push_back(job_id.to_string());
+        history.entries.insert(
+            job_id.to_string(),
+            CompletedWorkerJob {
+                status,
+                snapshot,
+                result_path: Some(result_path.clone()),
+            },
+        );
+
+        let acknowledged =
+            acknowledge_completed_worker_task(&mut history, job_id, None, &task_path, &result_path)
+                .expect("acknowledge successful result");
+        assert!(acknowledged.acknowledged);
+        assert_eq!(acknowledged.state.as_deref(), Some("succeeded"));
+        assert!(!history.entries.contains_key(job_id));
+        assert!(!history.order.iter().any(|entry| entry == job_id));
+        assert!(!task_path.exists());
+        assert!(!result_path.exists());
+
+        let repeated =
+            acknowledge_completed_worker_task(&mut history, job_id, None, &task_path, &result_path)
+                .expect("idempotent acknowledgement");
+        assert!(!repeated.acknowledged);
+        assert!(repeated.state.is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn acknowledgement_preserves_failed_and_running_task_diagnostics() {
+        let root = env::temp_dir().join(format!(
+            "anki_card_worker_ack_diagnostics_{}",
+            workflow_file_suffix()
+        ));
+        fs::create_dir_all(&root).expect("create acknowledgement diagnostics directory");
+        for state in ["failed", "running"] {
+            let task_path = root.join(format!("{state}-task.json"));
+            let result_path = root.join(format!("{state}-result.json"));
+            fs::write(&task_path, b"task").expect("write diagnostic task snapshot");
+            fs::write(&result_path, b"diagnostic").expect("write diagnostic result");
+            let snapshot = WorkerTaskSnapshot {
+                schema_version: WORKER_TASK_SNAPSHOT_SCHEMA_VERSION,
+                id: format!("{state}-ack-diagnostic"),
+                command: "export".to_string(),
+                state: state.to_string(),
+                started_at: 1_000,
+                updated_at: 2_000,
+                progress: worker_task_initial_progress(1_000),
+                cancellable: state == "running",
+                input_fingerprint: "request-v1-12ab34cd".to_string(),
+                result_ref: None,
+                error: (state == "failed").then(|| WorkerTaskFailureSnapshot {
+                    code: "EXPORT_FAILED".to_string(),
+                    message: "diagnostic must remain".to_string(),
+                    retryable: true,
+                    phase: Some("export".to_string()),
+                    detail: None,
+                }),
+            };
+            let mut history = CompletedWorkerJobs::default();
+            let acknowledgement = acknowledge_completed_worker_task(
+                &mut history,
+                &snapshot.id,
+                Some(snapshot.clone()),
+                &task_path,
+                &result_path,
+            )
+            .expect("reject non-success acknowledgement");
+            assert!(!acknowledgement.acknowledged);
+            assert_eq!(acknowledgement.state.as_deref(), Some(state));
+            assert!(task_path.exists());
+            assert!(result_path.exists());
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn worker_request_fingerprint_is_forwarded_only_when_safely_encoded() {
+        let summary = json!({ "command": "extract_learning_points" });
+        let fallback = worker_input_fingerprint(&summary);
+        let request_fingerprint = "request-v1-12ab34cd";
+
+        assert_eq!(
+            validated_worker_input_fingerprint(Some(request_fingerprint), &summary),
+            request_fingerprint
+        );
+        for invalid in [
+            "short",
+            "request-v1-12ab34cd\nforged",
+            "request/v1/12ab34cd",
+            "request v1 12ab34cd",
+        ] {
+            assert_eq!(
+                validated_worker_input_fingerprint(Some(invalid), &summary),
+                fallback
+            );
+        }
+        assert_eq!(
+            validated_worker_input_fingerprint(Some(&"a".repeat(129)), &summary),
+            fallback
+        );
+        assert_eq!(validated_worker_input_fingerprint(None, &summary), fallback);
+    }
+    #[test]
+    fn worker_task_progress_is_monotonic_and_terminal_success_reaches_one_hundred() {
+        let initial = update_worker_task_progress(
+            &worker_task_initial_progress(1_000),
+            &json!({ "stage": "generate", "percent": 80, "message": "Batch 2" }),
+            2_000,
+        );
+        let regressed = update_worker_task_progress(
+            &initial,
+            &json!({ "stage": "audio", "percent": 10, "message": "Audio" }),
+            3_000,
+        );
+        assert_eq!(regressed.overall_percent, Some(80.0));
+        assert_eq!(regressed.phase_percent, Some(10.0));
+
+        let job = RunningJob {
+            pid: 42,
+            command: "generate_cards_from_learning_points".to_string(),
+            cancel_requested: false,
+            failure_message: None,
+            started_at_ms: 1_000,
+            updated_at_ms: 3_000,
+            progress: regressed,
+            input_fingerprint: "summary:test".to_string(),
+        };
+        let status = WorkerJobStatus {
+            job_id: "generate-1".to_string(),
+            command: job.command.clone(),
+            ok: true,
+            cancelled: false,
+            result_ref: Some("generate-1".to_string()),
+            result_size_bytes: Some(128),
+            result_summary: None,
+            error: None,
+            error_code: None,
+            stage: None,
+            retryable: None,
+            fallbacks: None,
+            details: None,
+            finished_at_ms: 4_000,
+        };
+
+        let completed = completed_worker_task_snapshot(&status, Some(&job));
+        assert_eq!(completed.state, "succeeded");
+        assert_eq!(completed.progress.overall_percent, Some(100.0));
+        assert_eq!(completed.result_ref.as_deref(), Some("generate-1"));
+        assert!(!completed.cancellable);
+    }
+
+    #[test]
+    fn orphaned_running_worker_task_becomes_interrupted() {
+        let job = RunningJob {
+            pid: 42,
+            command: "export".to_string(),
+            cancel_requested: false,
+            failure_message: None,
+            started_at_ms: 1_000,
+            updated_at_ms: 2_000,
+            progress: worker_task_initial_progress(1_000),
+            input_fingerprint: "summary:test".to_string(),
+        };
+
+        let interrupted = mark_orphaned_worker_task_interrupted(job.snapshot("export-1"));
+        assert_eq!(interrupted.state, "interrupted");
+        assert!(!interrupted.cancellable);
+        assert_eq!(
+            interrupted.error.as_ref().map(|error| error.code.as_str()),
+            Some("WORKER_INTERRUPTED")
+        );
+    }
+
+    #[test]
+    fn kill_command_exit_status_is_not_silently_ignored() {
+        assert!(validate_kill_command_status("taskkill", 42, true, Some(0)).is_ok());
+        let error = validate_kill_command_status("taskkill", 42, false, Some(128))
+            .expect_err("non-zero taskkill status must fail");
+        assert!(error.contains("128"));
+        assert!(error.contains("42"));
+    }
+
+    #[test]
+    fn cancelling_job_still_blocks_start_and_kill_failure_keeps_it_running() {
+        let running = Arc::new(Mutex::new(HashMap::<String, RunningJob>::new()));
+        running.lock().expect("running worker jobs").insert(
+            "export-1".to_string(),
+            RunningJob {
+                pid: 42,
+                command: "export".to_string(),
+                cancel_requested: false,
+                failure_message: None,
+                started_at_ms: 1_000,
+                updated_at_ms: 2_000,
+                progress: worker_task_initial_progress(1_000),
+                input_fingerprint: "request-v1-12ab34cd".to_string(),
+            },
+        );
+
+        let cancelling = mark_running_worker_force_cancelling(&running, "export-1")
+            .expect("mark cancelling")
+            .expect("running job");
+        assert!(cancelling.cancel_requested);
+        assert!(validate_kill_command_status("taskkill", cancelling.pid, false, Some(1)).is_err());
+
+        let active = running.lock().expect("running worker jobs");
+        assert!(active.contains_key("export-1"));
+        assert!(active
+            .get("export-1")
+            .is_some_and(|job| job.cancel_requested));
+        assert!(ensure_worker_start_slot(&active).is_err());
+    }
+
+    #[test]
+    fn force_cancel_converges_active_job_and_rejects_late_completion() {
+        let completed = Arc::new(Mutex::new(CompletedWorkerJobs::default()));
+        let running = Arc::new(Mutex::new(HashMap::<String, RunningJob>::new()));
+        let mut job = RunningJob {
+            pid: 42,
+            command: "generate_cards_from_learning_points".to_string(),
+            cancel_requested: true,
+            failure_message: None,
+            started_at_ms: 1_000,
+            updated_at_ms: 2_000,
+            progress: worker_task_initial_progress(1_000),
+            input_fingerprint: "summary:test".to_string(),
+        };
+        job.progress.phase = "cancelling".to_string();
+        running
+            .lock()
+            .expect("running worker jobs")
+            .insert("generate-1".to_string(), job.clone());
+
+        let (forced_status, forced_snapshot) =
+            forced_cancelled_worker_completion("generate-1", &job, 3_000);
+        assert!(commit_completed_worker_job(
+            &running,
+            &completed,
+            forced_status,
+            forced_snapshot,
+            None,
+        ));
+        assert!(!running
+            .lock()
+            .expect("running worker jobs")
+            .contains_key("generate-1"));
+
+        let late_success = WorkerJobStatus {
+            job_id: "generate-1".to_string(),
+            command: job.command.clone(),
+            ok: true,
+            cancelled: false,
+            result_ref: Some("generate-1".to_string()),
+            result_size_bytes: Some(128),
+            result_summary: None,
+            error: None,
+            error_code: None,
+            stage: None,
+            retryable: None,
+            fallbacks: None,
+            details: None,
+            finished_at_ms: 4_000,
+        };
+        let late_snapshot = completed_worker_task_snapshot(&late_success, Some(&job));
+        assert!(!remember_completed_worker_job(
+            &completed,
+            late_success,
+            late_snapshot,
+            Some(PathBuf::from("late-result.json")),
+        ));
+
+        let history = completed.lock().expect("completed worker history");
+        let terminal = history.entries.get("generate-1").expect("forced terminal");
+        assert_eq!(terminal.snapshot.state, "cancelled");
+        assert!(terminal.status.cancelled);
+        assert!(!terminal.status.ok);
+        assert!(terminal.result_path.is_none());
+        assert_eq!(history.order.len(), 1);
+    }
+
+    #[test]
+    fn force_cancel_marks_unmanaged_running_snapshot_interrupted() {
+        let job = RunningJob {
+            pid: 42,
+            command: "export".to_string(),
+            cancel_requested: true,
+            failure_message: None,
+            started_at_ms: 1_000,
+            updated_at_ms: 2_000,
+            progress: worker_task_initial_progress(1_000),
+            input_fingerprint: "summary:test".to_string(),
+        };
+        let (status, snapshot) = forced_interrupted_worker_completion(
+            job.snapshot("export-1"),
+            3_000,
+            "任务进程已经失去管理。".to_string(),
+        );
+
+        assert!(!status.cancelled);
+        assert_eq!(
+            status.error_code.as_deref(),
+            Some("WORKER_FORCE_CANCEL_INTERRUPTED")
+        );
+        assert_eq!(snapshot.state, "interrupted");
+        assert!(!snapshot.cancellable);
+        assert_eq!(snapshot.updated_at, 3_000);
+        assert_eq!(
+            snapshot.error.as_ref().map(|error| error.code.as_str()),
+            Some("WORKER_FORCE_CANCEL_INTERRUPTED")
+        );
+        let result = worker_force_cancel_result(Some(&snapshot));
+        assert!(result.found);
+        assert!(!result.cancelled);
+        assert_eq!(result.state, "interrupted");
+    }
+
+    #[test]
+    fn worker_idle_timeouts_match_the_product_contract() {
+        assert_eq!(worker_idle_timeout("check_env").as_secs(), 60);
+        assert_eq!(worker_idle_timeout("repair_env").as_secs(), 15 * 60);
+        assert_eq!(worker_idle_timeout("test_api").as_secs(), 120);
+        assert_eq!(worker_idle_timeout("test_tts").as_secs(), 120);
+        assert_eq!(
+            worker_idle_timeout("extract_learning_points").as_secs(),
+            5 * 60
+        );
+        assert_eq!(
+            worker_idle_timeout("generate_cards_from_learning_points").as_secs(),
+            7 * 60
+        );
+        assert_eq!(worker_idle_timeout("generate").as_secs(), 10 * 60);
+        assert_eq!(worker_idle_timeout("export").as_secs(), 10 * 60);
+        assert_eq!(worker_idle_timeout("verify_anki_import").as_secs(), 2 * 60);
+    }
+
+    #[test]
+    fn local_sha256_matches_known_vectors_and_fragmented_updates() {
+        assert_eq!(
+            LocalSha256::new().finish(),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+
+        let mut fragmented = LocalSha256::new();
+        fragmented.update(b"a");
+        fragmented.update(b"b");
+        fragmented.update(b"c");
+        assert_eq!(
+            fragmented.finish(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+    #[test]
+    fn recovery_file_inspection_returns_streamed_sha256_and_file_identity() {
+        let root = env::temp_dir().join(format!(
+            "anki_recovery_evidence_test_{}_{}",
+            std::process::id(),
+            now_unix_ms()
+        ));
+        assert!(root.starts_with(env::temp_dir()));
+        fs::create_dir_all(&root).expect("create recovery evidence test directory");
+        let apkg = root.join("cards.apkg");
+        fs::write(&apkg, b"abc").expect("write recovery evidence");
+
+        let evidence = inspect_recovery_file_path(&apkg, true);
+        assert!(evidence.ok);
+        assert!(evidence.exists);
+        assert!(evidence.is_file);
+        assert_eq!(evidence.size, Some(3));
+        assert!(evidence.modified_at_ms.is_some());
+        assert_eq!(
+            evidence.sha256.as_deref(),
+            Some("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        );
+        assert!(evidence.error.is_none());
+        let serialized = serde_json::to_value(&evidence).expect("serialize recovery evidence");
+        assert_eq!(serialized["isFile"], true);
+        assert_eq!(serialized["modifiedAtMs"].as_u64(), evidence.modified_at_ms);
+
+        let identity_only = inspect_recovery_file_path(&apkg, false);
+        assert!(identity_only.ok);
+        assert_eq!(identity_only.size, Some(3));
+        assert!(identity_only.sha256.is_none());
+
+        let missing = inspect_recovery_file_path(&root.join("missing.mp4"), false);
+        assert!(missing.ok);
+        assert!(!missing.exists);
+        assert!(!missing.is_file);
+
+        let directory = inspect_recovery_file_path(&root, false);
+        assert!(!directory.ok);
+        assert_eq!(
+            directory.error.as_ref().map(|error| error.code.as_str()),
+            Some("NOT_REGULAR_FILE")
+        );
+
+        let relative = inspect_recovery_file_path(Path::new("relative.apkg"), true);
+        assert!(!relative.ok);
+        assert_eq!(
+            relative.error.as_ref().map(|error| error.code.as_str()),
+            Some("INVALID_PATH")
+        );
+
+        #[cfg(windows)]
+        {
+            for unsafe_path in [
+                r"\\.\PhysicalDrive0",
+                r"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\cards.apkg",
+                r"C:\safe\cards.apkg:stream",
+                r"C:\safe\NUL.apkg",
+            ] {
+                let unsafe_evidence = inspect_recovery_file_path(Path::new(unsafe_path), true);
+                assert!(
+                    !unsafe_evidence.ok,
+                    "path should be rejected: {unsafe_path}"
+                );
+                assert_eq!(
+                    unsafe_evidence
+                        .error
+                        .as_ref()
+                        .map(|error| error.code.as_str()),
+                    Some("UNSAFE_PATH")
+                );
+            }
+            use std::os::windows::fs::symlink_file;
+            let link = root.join("cards-link.apkg");
+            if symlink_file(&apkg, &link).is_ok() {
+                let linked = inspect_recovery_file_path(&link, true);
+                assert!(!linked.ok);
+                assert_eq!(
+                    linked.error.as_ref().map(|error| error.code.as_str()),
+                    Some("UNSAFE_FILE_TYPE")
+                );
+                let _ = fs::remove_file(link);
+            }
+        }
+
+        fs::remove_dir_all(root).expect("remove recovery evidence test directory");
     }
 
     #[test]

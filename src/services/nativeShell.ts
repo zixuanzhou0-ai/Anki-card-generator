@@ -34,6 +34,57 @@ export async function selectDirectory(options: SelectDirectoryOptions = {}) {
   })
 }
 
+export type OutputDirectoryAvailability = 'writable' | 'missing' | 'not_writable'
+
+export async function checkOutputDirectory(directory: string): Promise<OutputDirectoryAvailability> {
+  if (!isTauriRuntime()) return 'not_writable'
+  return invoke<OutputDirectoryAvailability>('check_output_directory', { directory })
+}
+
+export type RecoveryFileInspectionError = {
+  code:
+    | 'INVALID_PATH'
+    | 'UNSAFE_PATH'
+    | 'METADATA_UNAVAILABLE'
+    | 'UNSAFE_FILE_TYPE'
+    | 'NOT_REGULAR_FILE'
+    | 'MODIFIED_TIME_UNAVAILABLE'
+    | 'HASH_READ_FAILED'
+    | 'FILE_CHANGED_DURING_INSPECTION'
+    | 'NATIVE_RUNTIME_REQUIRED'
+  message: string
+  retryable: boolean
+}
+
+export type RecoveryFileInspection = {
+  ok: boolean
+  exists: boolean
+  isFile: boolean
+  size: number | null
+  modifiedAtMs: number | null
+  sha256: string | null
+  error: RecoveryFileInspectionError | null
+}
+
+export async function inspectRecoveryFile(path: string, computeSha256 = false): Promise<RecoveryFileInspection> {
+  if (!isTauriRuntime()) {
+    return {
+      ok: false,
+      exists: false,
+      isFile: false,
+      size: null,
+      modifiedAtMs: null,
+      sha256: null,
+      error: {
+        code: 'NATIVE_RUNTIME_REQUIRED',
+        message: '文件恢复证据只能在桌面端检查。',
+        retryable: false,
+      },
+    }
+  }
+  return invoke<RecoveryFileInspection>('inspect_recovery_file', { path, computeSha256 })
+}
+
 export async function listDirectoryFiles(directory: string) {
   if (!isTauriRuntime()) return []
   return invoke<string[]>('list_directory_files', { directory })

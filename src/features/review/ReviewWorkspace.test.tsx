@@ -12,6 +12,8 @@ import {
   getSegmentReviewCounts,
 } from '../../domain/projectMetrics'
 import type { Project, SegmentFilter } from '../../domain/types'
+import type { ActionGate } from '../../app/workflowState'
+import type { WorkerErrorAction } from '../../domain/workerErrors'
 import { ReviewWorkspace } from './ReviewWorkspace'
 
 afterEach(() => cleanup())
@@ -34,6 +36,14 @@ function renderWorkspace(project: Project | null, overrides = {}) {
     learningPointResult: null,
     motionDuration: 0,
     prefersReducedMotion: true,
+    workerErrorActions: [],
+    primaryAction: {
+      action: 'generate_cards',
+      state: 'available',
+      primaryLabel: '生成选中的 1 张',
+      blockers: [],
+      warnings: [],
+    } satisfies ActionGate,
     previewPanelRef: { current: null },
     previewRate: 1,
     project,
@@ -79,14 +89,15 @@ function renderWorkspace(project: Project | null, overrides = {}) {
     workerProgress: null,
     workspaceStage: 'source' as const,
     status: '准备生成 Anki 卡片。',
-    onOpenAnkiImport: vi.fn(),
     onRevealExport: vi.fn(),
     onSegmentFilterChange: vi.fn(),
     onCloseGenerationConfirm: vi.fn(),
     onConfirmGenerateCardsFromLearningPoints: vi.fn(),
-    onGenerateCardsFromLearningPoints: vi.fn(),
+    onResolveBlockers: vi.fn(),
+    onRunWorkflowAction: vi.fn(),
     onGenerateSingleLearningPoint: vi.fn(),
     onInvertCardSelection: vi.fn(),
+    onOpenAnkiImport: vi.fn(),
     onRemoveGenerationQueueLearningPoint: vi.fn(),
     onSelectSegment: vi.fn(),
     onSetCardsEnabled: vi.fn(),
@@ -95,6 +106,7 @@ function renderWorkspace(project: Project | null, overrides = {}) {
     onExport: vi.fn(),
     onExtractLearningPointsWithoutCache: vi.fn(),
     onRetryMissingLearningPoints: vi.fn(),
+    onWorkerErrorAction: vi.fn(),
     onVerifyAnkiImport: vi.fn(),
     ...overrides,
   }
@@ -127,6 +139,82 @@ describe('ReviewWorkspace', () => {
     expect(screen.queryByRole('button', { name: /导入并核验本次牌组/ })).not.toBeInTheDocument()
   })
 
+  it('offers manual APKG opening only after an AnkiConnect connection failure', () => {
+    const project = createDemoProject(defaultRequest)
+    const onOpenAnkiImport = vi.fn()
+    const onVerifyAnkiImport = vi.fn()
+    renderWorkspace(project, {
+      lastExport: {
+        apkg_path: 'E:\\ANKI\\out\\deck.apkg',
+        media_dir: 'E:\\ANKI\\out\\media',
+        cards: 1,
+        segments: 1,
+      },
+      lastWorkerError: {
+        job_id: 'anki-connect-offline',
+        command: 'verify_anki_import',
+        ok: false,
+        cancelled: false,
+        error: '无法连接 AnkiConnect：connection refused 10061',
+        error_code: 'ANKI_CONNECT_UNAVAILABLE',
+      },
+      onOpenAnkiImport,
+      onVerifyAnkiImport,
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '使用 Anki 打开 APKG' }))
+
+    expect(onOpenAnkiImport).toHaveBeenCalledOnce()
+    expect(onVerifyAnkiImport).not.toHaveBeenCalled()
+    expect(screen.queryByText('媒体一致')).not.toBeInTheDocument()
+  })
+
+  it('keeps structured worker recovery actions visible in the delivery workflow', () => {
+    const onWorkerErrorAction = vi.fn()
+    const authorizationAction = {
+      id: 'allow-ytdlp-remote-components',
+      label: '允许远程组件后重试',
+      description: '仅当你信任本次视频来源，并接受 yt-dlp 拉取远程组件时使用。',
+    } satisfies WorkerErrorAction
+
+    renderWorkspace(null, {
+      lastWorkerError: {
+        job_id: 'remote-component-authorization',
+        command: 'extract_learning_points',
+        ok: false,
+        error: '需要授权远程组件。',
+        error_code: 'YTDLP_REMOTE_COMPONENTS_CONFIRMATION_REQUIRED',
+      },
+      workerErrorActions: [authorizationAction],
+      onWorkerErrorAction,
+    })
+
+    expect(screen.getByText('需要你的明确授权')).toBeInTheDocument()
+    const authorize = screen.getByRole('button', { name: authorizationAction.label })
+    fireEvent.click(authorize)
+    expect(onWorkerErrorAction).toHaveBeenCalledWith('allow-ytdlp-remote-components')
+  })
+  it('does not offer manual APKG opening for a non-connection verification failure', () => {
+    const project = createDemoProject(defaultRequest)
+    renderWorkspace(project, {
+      lastExport: {
+        apkg_path: 'E:\\ANKI\\out\\deck.apkg',
+        media_dir: 'E:\\ANKI\\out\\media',
+        cards: 1,
+        segments: 1,
+      },
+      lastWorkerError: {
+        job_id: 'anki-media-mismatch',
+        command: 'verify_anki_import',
+        ok: false,
+        cancelled: false,
+        error: '媒体哈希不一致。',
+        error_code: 'ANKI_VERIFY_FAILED',
+      },
+    })
+
+    expect(screen.queryByRole('button', { name: '使用 Anki 打开 APKG' })).not.toBeInTheDocument()
+  })
   it('renders generation progress in the workbench while cards are being created', () => {
     renderWorkspace(null, {
       workerBusy: true,
@@ -142,6 +230,8 @@ describe('ReviewWorkspace', () => {
     expect(screen.getByRole('heading', { name: '生成中' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: '正在生成 APKG' })).toBeInTheDocument()
     expect(screen.getByText('37%')).toBeInTheDocument()
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '37')
+    expect(document.querySelectorAll('[aria-live], [role="status"]')).toHaveLength(0)
     expect(screen.getByText('生成卡片正文')).toBeInTheDocument()
     expect(screen.queryByText('正在生成卡片正文：第 3/8 批。')).not.toBeInTheDocument()
     expect(screen.getByText('设置已锁定')).toBeInTheDocument()
@@ -166,7 +256,7 @@ describe('ReviewWorkspace', () => {
   })
 
   it('renders learning point overview before cards are generated', () => {
-    const onGenerateCardsFromLearningPoints = vi.fn()
+    const onRunWorkflowAction = vi.fn()
     renderWorkspace(null, {
       learningPointResult: {
         id: 'lp-project',
@@ -216,7 +306,7 @@ describe('ReviewWorkspace', () => {
         },
       },
       selectedLearningPointIds: new Set(['lp-1']),
-      onGenerateCardsFromLearningPoints,
+      onRunWorkflowAction,
     })
 
     expect(screen.getByRole('heading', { name: '学习点总览' })).toBeInTheDocument()
@@ -229,7 +319,64 @@ describe('ReviewWorkspace', () => {
     expect(screen.getByText('实时 3')).toBeInTheDocument()
     expect(screen.getByText('in the mood for')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /生成选中的 1 张/ }))
-    expect(onGenerateCardsFromLearningPoints).toHaveBeenCalledOnce()
+    expect(onRunWorkflowAction).toHaveBeenCalledWith('generate_cards')
+  })
+
+  it('keeps the preserved learning point selection visible when returning from a generated project', () => {
+    const project = createDemoProject(defaultRequest)
+    renderWorkspace(project, {
+      preferLearningPointSelection: true,
+      learningPointResult: {
+        id: 'lp-preserved',
+        title: '已生成项目的原学习点',
+        source_mode: 'local',
+        video_path: '',
+        subtitle_path: '',
+        language: 'en',
+        level_mode: 'manual',
+        level: 'B1',
+        source_sentences: [],
+        learning_points: [
+          {
+            id: 'lp-preserved-1',
+            source_segment_id: 'src-1',
+            source_sentence: 'The original learning point remains available.',
+            source_time: '00:00:01.000 - 00:00:03.000',
+            exact_span: 'remains available',
+            answer_core: 'remains available',
+            normalized_answer: 'remains available',
+            type: 'phrase',
+            candidate_kind: 'expression',
+            phrase_type: 'collocation',
+            level: 'B1',
+            learning_action: '训练表达“仍然可用”。',
+            learning_action_key: 'expression:remains available',
+            value_score: 4.2,
+            reason: '用于验证返回选择页。',
+            confidence: 'high',
+            status: 'recommended',
+            status_reason: '高价值、合法、不重复。',
+            source: 'local_rule',
+          },
+        ],
+        learning_point_summary: {
+          total: 1,
+          recommended: 1,
+          candidate_only: 0,
+          hidden_duplicate: 0,
+          hard_blocked: 0,
+          by_type: { phrase: 1 },
+          by_level: { B1: 1 },
+        },
+        quality_funnel: {},
+      },
+      selectedLearningPointIds: new Set(['lp-preserved-1']),
+    })
+
+    expect(screen.getByRole('heading', { name: '学习点总览' })).toBeInTheDocument()
+    expect(screen.getByText('remains available')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '审核导出' })).not.toBeInTheDocument()
+    expect(document.querySelectorAll('button.primary-button')).toHaveLength(1)
   })
 
   it('renders review controls and forwards selection actions', () => {
@@ -294,6 +441,7 @@ describe('ReviewWorkspace', () => {
       qualityCounts: { total: 107, recommended: 74, review: 0, rejected: 33 },
     })
 
+    expect(document.querySelectorAll('[aria-live], [role="status"]')).toHaveLength(0)
     expect(screen.getByText('已处理 107 个学习点，74 张通过可靠性检查；33 个需重试')).toBeInTheDocument()
     expect(screen.getByText(/系统保留了 107 张草稿，但不完整内容不会进入 APKG/)).toBeInTheDocument()
     expect(screen.queryByText(/成功生成 107 张/)).not.toBeInTheDocument()
@@ -302,10 +450,10 @@ describe('ReviewWorkspace', () => {
     expect(screen.getByText(/不可制卡跳过 1/)).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '重试未通过项 33 个' }))
-    fireEvent.click(screen.getByRole('button', { name: '继续导出 74 张' }))
+    expect(screen.getByText('待修复项已自动排除；主操作会直接导出可用的 74 张')).toBeInTheDocument()
 
     expect(onRetryMissingLearningPoints).toHaveBeenCalledOnce()
-    expect(onExport).toHaveBeenCalledOnce()
+    expect(onExport).not.toHaveBeenCalled()
   })
 
   it('collapses the partial notice and removes the duplicate continue action after export succeeds', () => {

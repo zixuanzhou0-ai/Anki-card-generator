@@ -4,6 +4,11 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SavedTtsProfile, TtsConfig, TtsPreset } from '../../domain/types'
+import {
+  GEMINI_VERTEX_TTS_DEFAULT_MODEL,
+  GEMINI_VERTEX_TTS_DEFAULT_VOICE,
+  GEMINI_VERTEX_TTS_GLOBAL_BASE_URL,
+} from '../../domain/ttsProviders'
 import { TtsSettingsPanel } from './TtsSettingsPanel'
 
 afterEach(() => cleanup())
@@ -50,6 +55,17 @@ const qwenPreset: TtsPreset = {
   note: '快速语音',
   provider: 'qwen',
   voice: 'Jennifer',
+}
+
+const disabledPreset: TtsPreset = {
+  base_url: '',
+  id: 'disabled',
+  key_hint: '不需要填写',
+  label: '关闭 TTS',
+  model: '',
+  note: '不额外生成 AI 朗读。',
+  provider: 'disabled',
+  voice: '',
 }
 
 const customSpeechPreset: TtsPreset = {
@@ -200,6 +216,7 @@ describe('TtsSettingsPanel', () => {
     )
     expect(onPatchTts).toHaveBeenCalledWith({ model: 'custom-tts' })
     expect(onPatchTts).toHaveBeenCalledWith({ voice: 'eve' })
+    expect(screen.getByLabelText(/语音 Base URL/)).toBeInTheDocument()
     expect(screen.getByLabelText(/TTS API Key/)).toBeInTheDocument()
   })
 
@@ -260,5 +277,80 @@ describe('TtsSettingsPanel', () => {
     expect(screen.getByText('Vertex TTS 授权')).toBeInTheDocument()
     expect(screen.getByText('使用本机 gcloud OAuth')).toBeInTheDocument()
     expect(screen.queryByLabelText('TTS API Key')).not.toBeInTheDocument()
+  })
+  it('deletes a saved standalone TTS key without rendering its plaintext value', () => {
+    const onDeleteSavedCredential = vi.fn()
+    renderPanel({
+      tts: {
+        ...enabledTts,
+        api_key: '',
+        base_url: 'https://api.x.ai/v1',
+        model: '',
+        provider: 'grok',
+        voice: 'eve',
+      },
+      ttsKeySaved: true,
+      onDeleteSavedCredential,
+    })
+
+    const deleteButton = screen.getByRole('button', { name: '删除已保存的 Key' })
+    expect(screen.getByLabelText(/TTS API Key/)).toHaveValue('')
+    fireEvent.click(deleteButton)
+
+    expect(onDeleteSavedCredential).toHaveBeenCalledOnce()
+  })
+
+  it('disables saved TTS key deletion while an operation is running', () => {
+    renderPanel({
+      appBusy: true,
+      tts: {
+        ...enabledTts,
+        base_url: 'https://api.x.ai/v1',
+        provider: 'grok',
+        voice: 'eve',
+      },
+      ttsKeySaved: true,
+      onDeleteSavedCredential: vi.fn(),
+    })
+
+    expect(screen.getByRole('button', { name: '删除已保存的 Key' })).toBeDisabled()
+  })
+
+  it('does not offer key deletion for OAuth-backed TTS authorization', () => {
+    renderPanel({
+      tts: {
+        ...enabledTts,
+        api_key: '',
+        base_url: GEMINI_VERTEX_TTS_GLOBAL_BASE_URL,
+        model: GEMINI_VERTEX_TTS_DEFAULT_MODEL,
+        provider: 'gemini-vertex',
+        voice: GEMINI_VERTEX_TTS_DEFAULT_VOICE,
+      },
+      ttsKeySaved: true,
+      onDeleteSavedCredential: vi.fn(),
+    })
+
+    expect(screen.queryByRole('button', { name: '删除已保存的 Key' })).not.toBeInTheDocument()
+  })
+  it('keeps simple mode focused on recommended, saved, and disabled schemes', () => {
+    renderPanel({
+      featuredTtsPresets: [disabledPreset, mimoPreset],
+      simpleMode: true,
+      tts: enabledTts,
+    })
+
+    expect(screen.getByRole('button', { name: /关闭 TTS/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /MIMO SGP TTS/ })).toBeInTheDocument()
+    expect(screen.getAllByText('复用当前模型授权')).toHaveLength(2)
+    expect(screen.queryByPlaceholderText('搜索语音厂商、模型、voice')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/语音服务/)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/语音 Base URL/)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/语音模型/)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/声音 \/ voice_id/)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/TTS API Key/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /OpenAI-compatible Speech/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Qwen TTS Flash/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /高级：语言/ })).not.toBeInTheDocument()
+    expect(screen.queryByText('mimo-v2.5-tts')).not.toBeInTheDocument()
   })
 })

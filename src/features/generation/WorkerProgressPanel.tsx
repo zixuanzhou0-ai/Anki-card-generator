@@ -27,7 +27,7 @@ function progressStageLabel(progress: WorkerProgress) {
   const stage = `${progress.command}:${progress.stage}`.toLowerCase()
   const message = (progress.message || '').toLowerCase()
 
-  if (progress.percent >= 100 || stage.endsWith(':done')) return '任务完成'
+  if (!progress.indeterminate && (progress.percent >= 100 || stage.endsWith(':done'))) return '任务完成'
   if (progress.command === 'verify_anki_import') return '核验导入'
   if (progress.command === 'extract_learning_points') {
     if (stage.includes('source') || stage.includes('subtitle') || stage.includes('prepare')) return '读取字幕'
@@ -57,7 +57,22 @@ function progressHelper(progress: WorkerProgress) {
   return ''
 }
 
+function elapsedLabel(elapsedMs: number | undefined): string {
+  if (typeof elapsedMs !== 'number' || !Number.isFinite(elapsedMs) || elapsedMs < 0) return ''
+  const seconds = Math.floor(elapsedMs / 1_000)
+  const minutes = Math.floor(seconds / 60)
+  const remainder = seconds % 60
+  return minutes > 0 ? `已用时 ${minutes} 分 ${remainder} 秒` : `已用时 ${seconds} 秒`
+}
+
+function lastUpdatedLabel(lastProgressAtMs: number | undefined, now: number = Date.now()): string {
+  if (typeof lastProgressAtMs !== 'number' || !Number.isFinite(lastProgressAtMs) || lastProgressAtMs <= 0) return ''
+  const safeNow = Number.isFinite(now) ? now : lastProgressAtMs
+  const seconds = Math.floor(Math.max(0, safeNow - lastProgressAtMs) / 1_000)
+  return seconds <= 1 ? '最后更新于刚刚' : `最后更新于 ${seconds} 秒前`
+}
 export function WorkerProgressPanel({ progress, variant = 'compact' }: WorkerProgressPanelProps) {
+  const indeterminate = progress.indeterminate === true
   const helper = progressHelper(progress)
   const batchLabel =
     progress.completed_batches !== undefined && progress.total_batches
@@ -69,21 +84,35 @@ export function WorkerProgressPanel({ progress, variant = 'compact' }: WorkerPro
       : ''
   const detailLabel = [batchLabel, cacheLabel].filter(Boolean).join(' · ')
   const stageLabel = progressStageLabel(progress)
+  const elapsed = elapsedLabel(progress.elapsed_ms)
+  const lastUpdated = lastUpdatedLabel(progress.last_progress_at_ms)
 
   return (
-    <section className={`progress-panel ${variant === 'wide' ? 'wide' : ''} ${progress.percent >= 100 ? 'done' : ''}`}>
+    <section
+      className={`progress-panel ${variant === 'wide' ? 'wide' : ''} ${!indeterminate && progress.percent >= 100 ? 'done' : ''}`}
+    >
       <div className="progress-head">
         <span>{progressLabel(progress.command)}</span>
-        <strong>{progress.percent}%</strong>
+        <strong>{indeterminate ? '处理中' : `${progress.percent}%`}</strong>
       </div>
-      <div className="progress-bar" aria-label="任务进度">
-        <span style={{ width: `${progress.percent}%` }} />
+      <div
+        className={`progress-bar${indeterminate ? ' indeterminate' : ''}`}
+        role="progressbar"
+        aria-label="任务进度"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={indeterminate ? undefined : Math.max(0, Math.min(100, Math.round(progress.percent)))}
+        aria-valuetext={indeterminate ? '处理中' : undefined}
+      >
+        <span style={indeterminate ? undefined : { width: `${progress.percent}%` }} />
       </div>
       <p>
         <CircleDot size={14} />
         <span title={progress.message}>{stageLabel}</span>
       </p>
       {detailLabel ? <small>{detailLabel}</small> : null}
+      {elapsed ? <small>{elapsed}</small> : null}
+      {lastUpdated ? <small>{lastUpdated}</small> : null}
       {helper ? <small>{helper}</small> : null}
     </section>
   )
