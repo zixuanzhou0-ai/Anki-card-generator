@@ -18,6 +18,7 @@ from workers.acg.secret_scrub import is_runtime_secret_key, is_sensitive_url_que
 
 from .process_isolation import ProcessIsolationError, TaskOwnedProcessGroup
 from .storage import AtomicJsonStore
+from .trusted_surfaces import TrustedSurfaceError, TrustedSurfaceManager
 
 
 SCHEMA_VERSION = 1
@@ -142,6 +143,10 @@ class CardService:
             raise CardServiceError("INVALID_TOOL_PATH", "Managed tool directories must be existing absolute directories")
         self.managed_tool_directories = directories
         self.store = AtomicJsonStore(Path(state_dir))
+        self.trusted_surfaces = TrustedSurfaceManager(
+            state_dir=self.store.root / "trusted-surfaces",
+            python_path=self.python_path,
+        )
         self.method_policies = dict(method_policies or METHOD_POLICIES)
         self.max_stdout_bytes = max(1, int(max_stdout_bytes))
         self.max_stderr_bytes = max(1, int(max_stderr_bytes))
@@ -172,6 +177,7 @@ class CardService:
                 for method, policy in sorted(self.method_policies.items())
             },
             "taskMethods": ["task.get", "task.cancel", "task.list_recoverable", "task.read_result"],
+            "systemMethods": ["system.get_capabilities", "system.open_local_settings", "system.get_trusted_surface"],
             "genericShell": False,
             "genericWorkerCommand": False,
             "secretBearingRequests": False,
@@ -200,6 +206,7 @@ class CardService:
                 "taskOwnedWorkerTransport": False,
                 "complete": False,
             },
+            "trustedSurfaces": self.trusted_surfaces.capabilities(),
         }
 
     @staticmethod
@@ -325,6 +332,20 @@ class CardService:
             return {"tasks": self.list_recoverable_tasks()}
         if method == "task.read_result":
             return self.read_result(str(values.get("taskId") or ""))
+        if method == "system.open_local_settings":
+            try:
+                session = self.trusted_surfaces.create_local_settings_session(
+                    profile_ref=str(values.get("profileRef") or ""),
+                    capability=str(values.get("capability") or ""),
+                )
+                return self.trusted_surfaces.launch(str(session["sessionRef"]))
+            except TrustedSurfaceError as error:
+                raise CardServiceError(error.code, str(error)) from error
+        if method == "system.get_trusted_surface":
+            try:
+                return self.trusted_surfaces.get_session(str(values.get("sessionRef") or ""))
+            except TrustedSurfaceError as error:
+                raise CardServiceError(error.code, str(error)) from error
         return self.start_task(method, values)
 
     def _managed_environment(self) -> dict[str, str]:

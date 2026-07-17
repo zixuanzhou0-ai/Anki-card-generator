@@ -48,6 +48,8 @@ def test_capabilities_expose_only_restricted_high_level_methods(tmp_path: Path) 
     assert capabilities["secretBearingRequests"] is False
     assert capabilities["processIsolation"]["taskOwnedJobObject"] is (sys.platform == "win32")
     assert capabilities["processIsolation"]["complete"] is False
+    assert capabilities["trustedSurfaces"]["localSettings"] is True
+    assert capabilities["trustedSurfaces"]["authorizationLedger"] is False
     assert capabilities["methods"] == ["runtime.check_environment", "runtime.extract_learning_points"]
     assert capabilities["worker"]["resourceId"] == "managed:legacy-worker"
     assert "path" not in capabilities["worker"]
@@ -68,6 +70,12 @@ def test_capabilities_expose_only_restricted_high_level_methods(tmp_path: Path) 
     with pytest.raises(CardServiceError) as broker_error:
         production_service.start_task("runtime.generate_cards", {})
     assert broker_error.value.code == "BROKER_REQUIRED"
+    with pytest.raises(CardServiceError) as settings_error:
+        production_service.dispatch(
+            "system.open_local_settings",
+            {"profileRef": "../escape", "capability": "model"},
+        )
+    assert settings_error.value.code == "INVALID_PROFILE_REF"
 
 
 def test_all_runtime_and_state_paths_must_be_absolute(tmp_path: Path) -> None:
