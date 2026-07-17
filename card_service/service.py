@@ -122,7 +122,6 @@ class CardService:
         cancellation_grace_seconds: float = 2.0,
         task_memory_limit_bytes: int = 2 * 1024 * 1024 * 1024,
         task_active_process_limit: int = 16,
-        broker_available: bool = False,
     ) -> None:
         repository_root = Path(__file__).resolve().parent.parent
         worker_candidate = Path(worker_path) if worker_path is not None else repository_root / "workers" / "anki_worker.py"
@@ -149,7 +148,6 @@ class CardService:
         self.cancellation_grace_seconds = max(0.1, float(cancellation_grace_seconds))
         self.task_memory_limit_bytes = max(64 * 1024 * 1024, int(task_memory_limit_bytes))
         self.task_active_process_limit = max(1, int(task_active_process_limit))
-        self.broker_available = bool(broker_available)
         self.worker_sha256 = self._file_sha256(self.worker_path)
         self.bootstrap_path = (Path(__file__).resolve().parent / "worker_bootstrap.py").resolve()
         self._tasks: dict[str, _RuntimeTask] = {}
@@ -164,10 +162,10 @@ class CardService:
             "methods": sorted(self.method_policies),
             "methodAvailability": {
                 method: {
-                    "available": not policy.requires_broker or self.broker_available,
+                    "available": not policy.requires_broker,
                     "blocker": (
                         None
-                        if not policy.requires_broker or self.broker_available
+                        if not policy.requires_broker
                         else "model_tts_broker_not_ready"
                     ),
                 }
@@ -194,6 +192,12 @@ class CardService:
                 "memoryLimitBytes": self.task_memory_limit_bytes,
                 "appContainerOrRestrictedSidDacl": False,
                 "forcedOutboundBroker": False,
+                "complete": False,
+            },
+            "modelTtsBroker": {
+                "credentialManager": os.name == "nt",
+                "reservationLedger": True,
+                "taskOwnedWorkerTransport": False,
                 "complete": False,
             },
         }
@@ -225,7 +229,7 @@ class CardService:
         policy = self.method_policies.get(method)
         if policy is None:
             raise CardServiceError("METHOD_NOT_ALLOWED", f"Card Service method is not allowed: {method}")
-        if policy.requires_broker and not self.broker_available:
+        if policy.requires_broker:
             raise CardServiceError(
                 "BROKER_REQUIRED",
                 "This operation is blocked until the task-owned model/TTS broker is available",
