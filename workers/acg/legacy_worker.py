@@ -29,6 +29,8 @@ WORKER_DIR = Path(__file__).resolve().parents[1]
 if str(WORKER_DIR) not in sys.path:
     sys.path.insert(0, str(WORKER_DIR))
 
+from acg import anki_model_contracts as anki_model_contracts_module
+from acg import apkg_package_contract as apkg_package_contract_module
 from acg import errors as worker_errors
 from acg.anki_fields import (
     anki_card_deck_name,
@@ -49,8 +51,16 @@ from acg.anki_export import (
     project_media_prefix,
     safe_filename,
     stable_id,
+    windows_basename_key,
+    windows_safe_basename,
 )
 from acg.anki_media import anki_audio_html, anki_video_html
+from acg.anki_model_contracts import (
+    COMPATIBILITY_CONTRACT_VERSION,
+    note_model_field_specs,
+    resolve_export_note_model_contract,
+    validate_generated_note_model,
+)
 from acg.anki_verify import verify_anki_import_failed_checks, verify_anki_import_message
 from acg.audio_audit import (
     audio_audit_failure_details,
@@ -375,6 +385,7 @@ from acg.model_json import (
     strip_reasoning_text as model_json_strip_reasoning_text,
 )
 from acg.protocol import PROGRESS_PREFIX, emit, emit_progress, fail, read_payload
+from acg.secret_scrub import scrub_runtime_secrets
 from acg.source_modes import (
     SUBTITLE_ONLY_IMPORT_MODES,
     normalized_url_import_mode,
@@ -12681,6 +12692,57 @@ def anki_template_version(template_id: str, deck_kind_code: str = "video_languag
     return "V10"
 
 
+_ANKI_NOTE_TAG_RE = re.compile(r"[a-z0-9]+(?:_[a-z0-9]+)*")
+
+
+def anki_note_tag_component(value: Any, fallback: str) -> str:
+    """Return one deterministic, lowercase ASCII component safe for Anki tags."""
+
+    raw = str(value or "").strip()
+    ascii_value = (
+        unicodedata.normalize("NFKD", raw)
+        .encode("ascii", "ignore")
+        .decode("ascii")
+        .lower()
+    )
+    component = re.sub(r"[^a-z0-9]+", "_", ascii_value).strip("_")
+    if not component:
+        component = (
+            f"u_{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:12]}"
+            if raw
+            else fallback
+        )
+    component = component[:64].rstrip("_")
+    return component or fallback
+
+
+def build_anki_note_tags(
+    *,
+    anki_tag: str,
+    language: Any,
+    level: Any,
+    template_id: Any,
+    card_type: Any,
+    layout: Any,
+) -> list[str]:
+    """Build the frozen six-tag identity shared by the note and export ledger."""
+
+    tags = [
+        str(anki_tag),
+        f"lang_{anki_note_tag_component(language, 'unknown')}",
+        f"level_{anki_note_tag_component(level, 'unknown')}",
+        f"template_{anki_note_tag_component(template_id, 'unknown')}",
+        f"type_{anki_note_tag_component(card_type, 'card')}",
+        f"layout_{anki_note_tag_component(layout, 'default')}",
+    ]
+    if (
+        len(set(tags)) != 6
+        or any(_ANKI_NOTE_TAG_RE.fullmatch(tag) is None for tag in tags)
+    ):
+        raise ValueError("Anki note tags must be six unique ASCII tag-safe values")
+    return tags
+
+
 def uses_v11_repetition_front(template_id: str, deck_kind_code: str = "video_language") -> bool:
     template_id = normalize_template_id(template_id)
     if deck_kind_code not in {"video_language", "subtitle_language"}:
@@ -15063,6 +15125,22 @@ def export_media_concurrency(project: dict[str, Any]) -> int:
     return max(1, min(3, value))
 
 
+def publish_file_no_replace(source: Path, destination: Path) -> None:
+    """Atomically publish a same-directory file without replacing an existing one."""
+
+    if os.name == "nt":
+        os.rename(source, destination)
+        return
+    os.link(source, destination)
+    source.unlink()
+
+
+def export_run_timestamp() -> float:
+    """Return the wall-clock timestamp used only to label one export run."""
+
+    return time.time()
+
+
 def export_quality_audit(project: dict[str, Any], export_segments: list[dict[str, Any]]) -> dict[str, Any]:
     empty_required_fields = 0
     blocked_text_values = 0
@@ -15254,15 +15332,22 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         source_fingerprint_value = str(project.get("source_fingerprint") or source_info.get("source_fingerprint") or "")
         if source_fingerprint_value:
             identity["source_fingerprint"] = source_fingerprint_value
-        return {key: value for key, value in identity.items() if value not in (None, "", [])}
+        filtered = {key: value for key, value in identity.items() if value not in (None, "", [])}
+        scrubbed = scrub_runtime_secrets(filtered)
+        return scrubbed if isinstance(scrubbed, dict) else {}
 
     source_identity: dict[str, Any] = {}
 
     emit_progress("export", "template", 10, "正在准备 Anki 模板和导出目录。")
-    export_run_id = int(time.time())
-    export_root = output_dir / f"AnkiCard-{safe_filename(project.get('title', 'deck'))}-{export_run_id}"
+    export_run_id = int(export_run_timestamp())
+    export_root = Path(
+        tempfile.mkdtemp(
+            prefix=f"AnkiCard-{safe_filename(project.get('title', 'deck'))}-{export_run_id}-",
+            dir=str(output_dir),
+        )
+    )
     media_dir = export_root / "media"
-    media_dir.mkdir(parents=True, exist_ok=True)
+    media_dir.mkdir()
 
     if is_document_project:
         deck_kind_code = "document_reading" if project.get("document_study_mode") == "language_reading" else "document_knowledge"
@@ -15286,70 +15371,26 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     template_family = anki_template_family(template_id, deck_kind_code, card_style, review_density)
     template_label, template_css, front_template, back_template = anki_template_assets(template_id, deck_kind_code, card_style, review_density)
     template_version = anki_template_version(template_id, deck_kind_code)
+    anki_tag = f"anki_card_generator_{template_version.lower()}"
     is_ciba_template = normalize_template_id(template_id) == "ciba_tianxia_v1"
     use_v11_repetition_front = uses_v11_repetition_front(template_id, deck_kind_code)
-    presentation_field_specs = (
-        [
-            {"name": "EnglishDisplay"},
-            {"name": "ChineseDisplay"},
-            {"name": "ChineseFeelDisplay"},
-            {"name": "PronunciationNoteDisplay"},
-            {"name": "ContextDisplay"},
-            {"name": "DefinitionDisplay"},
-            {"name": "TeacherNoteDisplay"},
-            {"name": "TransferExamplesDisplay"},
-        ]
-        if use_v11_repetition_front else []
-    )
-    model_field_specs = [
-            {"name": "CardId"},
-            {"name": "CardType"},
-            {"name": "Video"},
-            {"name": "Audio"},
-            {"name": "TtsAudio"},
-            {"name": "PhraseTtsAudio"},
-            {"name": "IsListening"},
-            {"name": "FrontPrompt"},
-            {"name": "FrontContent"},
-            {"name": "Answer"},
-            {"name": "PhoneticIpa"},
-            {"name": "SpokenIpa"},
-            {"name": "SourceSpokenIpa"},
-            {"name": "PronunciationNote"},
-            {"name": "PronunciationConfidence"},
-            {"name": "PronunciationStatus"},
-            {"name": "SourcePronunciationStatus"},
-            {"name": "PronunciationMeta"},
-            {"name": "SpokenPronunciationLabel"},
-            {"name": "StandardPronunciationHint"},
-            {"name": "English"},
-            *presentation_field_specs,
-            {"name": "Chinese"},
-            {"name": "Phrase"},
-            {"name": "Definition"},
-            {"name": "Collocations"},
-            {"name": "Context"},
-            {"name": "Example"},
-            {"name": "ChineseFeel"},
-            {"name": "Why"},
-            {"name": "Difficulty"},
-            {"name": "SourceTime"},
-            {"name": "TeacherNote"},
-            {"name": "LearningAction"},
-            {"name": "ConceptualAction"},
-            {"name": "ChineseLearnerTrap"},
-            {"name": "Cloze"},
-            {"name": "CardLayout"},
-            {"name": "CardVisualRole"},
-            {"name": "FrontKicker"},
-            {"name": "SourceLabel"},
-            {"name": "UnderstandLabel"},
-            {"name": "UseLabel"},
-    ]
+    model_field_specs = note_model_field_specs(use_v11_repetition_front)
     model_field_names = [str(field["name"]) for field in model_field_specs]
+    note_model_contract = resolve_export_note_model_contract(
+        template_family,
+        template_version,
+        template_label,
+    )
+    validate_generated_note_model(
+        note_model_contract,
+        field_names=model_field_names,
+        css=template_css,
+        qfmt=front_template,
+        afmt=back_template,
+    )
     model = genanki.Model(
-        stable_id(f"anki-card-model-{template_version.lower()}-{template_family}", 1000000000),
-        f"Anki Card Generator {template_version} - {template_label}",
+        str(note_model_contract.note_model_id),
+        note_model_contract.model_name,
         fields=model_field_specs,
         templates=[
             {
@@ -15378,6 +15419,17 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             deck_names_for_result = [deck_name]
     fallback_batch_deck = genanki.Deck(stable_id(f"{deck_name}::未分组", 1500000000), f"{deck_name}::未分组") if is_batch_export else default_deck
     fallback_batch_deck_used = False
+    generated_model_deck_ids = [int(deck.deck_id) for deck in decks_for_package]
+    validate_generated_note_model(
+        note_model_contract,
+        field_names=model_field_names,
+        css=template_css,
+        qfmt=front_template,
+        afmt=back_template,
+        model_json=model.to_json(0, generated_model_deck_ids[0]),
+        deck_ids=generated_model_deck_ids,
+    )
+
     exported_batch_item_ids: set[str] = set()
     media_files: list[str] = []
     media_ledger: list[dict[str, Any]] = []
@@ -15405,7 +15457,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     media_cache_hit_count = 0
     media_reused_segment_count = 0
     project_card_prefix = safe_filename(project.get("title") or project.get("id") or "deck")
-    media_prefix = project_media_prefix(project, export_run_id)
+    media_prefix = project_media_prefix(project, time.time_ns())
     export_progress_percent = 10
 
     def emit_export_progress(stage: str, percent: int, message: str) -> None:
@@ -15429,8 +15481,12 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         entry = {
             "file": Path(file_name).name,
             "role": role,
-            "segment_id": str(segment.get("id") or ""),
-            "card_id": str((card or {}).get("id") or ""),
+            "segment_id": safe_filename(str(segment.get("id") or "segment")),
+            "card_id": (
+                f"{project_card_prefix}_{str(card.get('id') or '')}"
+                if isinstance(card, dict) and str(card.get("id") or "")
+                else ""
+            ),
             "learning_point_id": str((card or segment).get("learning_point_id") or ""),
             "field": field,
             "source_time": str(segment.get("source_time") or segment_display_source_time(segment)),
@@ -16149,12 +16205,34 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             sentence_semantic = tts_semantic_by_segment.get(segment_id, {})
             phrase_semantic = phrase_tts_semantic_by_phrase.get(phrase_key, {}) if phrase_tts_name else {}
             subtitle_diagnostic = subtitle_alignment_by_segment.get(str(segment.get("id") or ""), {})
+            target_deck = default_deck
+            if is_batch_export:
+                batch_item_id = str(segment.get("batch_item_id") or card.get("batch_item_id") or "").strip()
+                target_deck = batch_decks_by_item_id.get(batch_item_id) if batch_item_id else None
+                if target_deck is None:
+                    target_deck = fallback_batch_deck
+                    if not fallback_batch_deck_used:
+                        decks_for_package.append(fallback_batch_deck)
+                        deck_names_for_result.append(fallback_batch_deck.name)
+                        fallback_batch_deck_used = True
+                elif batch_item_id:
+                    exported_batch_item_ids.add(batch_item_id)
+            note_tags = build_anki_note_tags(
+                anki_tag=anki_tag,
+                language=project.get("language") or "English",
+                level=project.get("level") or "B1",
+                template_id=template_id,
+                card_type=card.get("type") or "card",
+                layout=template_labels["card_layout"],
+            )
             card_media_ledger.append(
                 {
                     "card_id": export_card_id,
                     "source_card_id": str(card.get("id") or ""),
                     "learning_point_id": str(card.get("learning_point_id") or segment.get("learning_point_id") or ""),
-                    "segment_id": str(segment.get("id") or ""),
+                    "segment_id": segment_id,
+                    "deck_name": str(target_deck.name),
+                    "note_tags": note_tags,
                     "source_time": str(segment.get("source_time") or segment_display_source_time(segment)),
                     "media_start": segment.get("media_start"),
                     "media_end": segment.get("media_end"),
@@ -16296,27 +16374,8 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             note = genanki.Note(
                 model=model,
                 fields=note_fields,
-                tags=[
-                    f"anki_card_generator_{template_version.lower()}",
-                    project.get("language", "English"),
-                    project.get("level", "B1"),
-                    template_id,
-                    card.get("type", "card"),
-                    template_labels["card_layout"],
-                ],
+                tags=note_tags,
             )
-            target_deck = default_deck
-            if is_batch_export:
-                batch_item_id = str(segment.get("batch_item_id") or card.get("batch_item_id") or "").strip()
-                target_deck = batch_decks_by_item_id.get(batch_item_id) if batch_item_id else None
-                if target_deck is None:
-                    target_deck = fallback_batch_deck
-                    if not fallback_batch_deck_used:
-                        decks_for_package.append(fallback_batch_deck)
-                        deck_names_for_result.append(fallback_batch_deck.name)
-                        fallback_batch_deck_used = True
-                elif batch_item_id:
-                    exported_batch_item_ids.add(batch_item_id)
             target_deck.add_note(note)
             exported_cards += 1
 
@@ -16419,7 +16478,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         card_media_ledger,
         exported_media_manifest,
         deck_name=deck_name,
-        model_name=f"Anki Card Generator {template_version} - {template_label}",
+        model_name=note_model_contract.model_name,
         deck_kind=deck_kind_code,
     )
     audio_audit_info = audio_audit_summary(
@@ -16469,20 +16528,24 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     package = genanki.Package(package_decks)
     package.media_files = media_files
     apkg_path = canonical_apkg_path or export_root / f"{safe_filename(project.get('title', 'anki-card'))}.apkg"
-    package.write_to_file(str(apkg_path))
-    apkg_stat = apkg_path.stat()
-    apkg_sha256 = file_sha256(apkg_path)
+    partial_apkg_path = apkg_path.with_name(
+        f".{apkg_path.name}.{os.getpid()}.{time.time_ns()}.partial"
+    )
+    try:
+        package.write_to_file(str(partial_apkg_path))
+    except Exception:
+        partial_apkg_path.unlink(missing_ok=True)
+        raise
+    apkg_stat = partial_apkg_path.stat()
+    apkg_sha256 = file_sha256(partial_apkg_path)
     timing_ms["apkg_packaging"] = int((time.perf_counter() - package_started) * 1000)
-    timing_ms["total"] = int((time.perf_counter() - timing_started) * 1000)
-    add_export_timing_aliases(timing_ms)
 
-    emit_export_progress("done", 100, f"导出完成：{exported_cards} 张卡。")
-    anki_tag = f"anki_card_generator_{template_version.lower()}"
     tts_cache_total = sentence_tts_total + phrase_tts_total
     tts_cache_miss_count = max(0, tts_cache_total - tts_cache_hit_count)
     media_cache_total = media_cache_hit_count + media_cache_miss_count
-    return {
-        "apkg_path": str(apkg_path),
+    export_result = {
+        "schema_version": 2,
+        "apkg_path": str(partial_apkg_path),
         "apkg_sha256": apkg_sha256,
         "apkg_size_bytes": apkg_stat.st_size,
         "apkg_mtime_ms": int(apkg_stat.st_mtime * 1000),
@@ -16492,7 +16555,14 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         "anki_manual_import_hint": f"导入后请在 Anki 牌组列表打开「{deck_name}」。",
         "anki_verify_after_manual_import_supported": True,
         "deck_kind": deck_kind_code,
+        "template_family": template_family,
+        "template_schema": template_version,
         "template_version": template_version,
+        "template_name": template_label,
+        "note_model_id": note_model_contract.note_model_id,
+        "model_name": note_model_contract.model_name,
+        "compatibility_contract_version": COMPATIBILITY_CONTRACT_VERSION,
+        "note_model_contract_digest": note_model_contract.contract_digest,
         "anki_tag": anki_tag,
         "media_prefix": media_prefix,
         "source_identity": source_identity,
@@ -16556,6 +16626,77 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         "quality_audit": quality_audit,
         "warnings": warnings,
     }
+    validation_started = time.perf_counter()
+    try:
+        package_report = apkg_package_contract_module.validate_apkg_package_contract(
+            partial_apkg_path,
+            export_result,
+        )
+    except Exception:
+        partial_apkg_path.unlink(missing_ok=True)
+        fail(
+            "最终 APKG 合同检查器无法完成核验，因此没有交付文件。",
+            error_code="APKG_PACKAGE_CONTRACT_UNREADABLE",
+            stage="package",
+            retryable=True,
+            fallbacks=["retry_export"],
+        )
+    timing_ms["apkg_contract_validation"] = int(
+        (time.perf_counter() - validation_started) * 1000
+    )
+    if not isinstance(package_report, dict) or not package_report.get("ok"):
+        partial_apkg_path.unlink(missing_ok=True)
+        issue_codes = sorted(
+            {
+                str(item.get("code") or "APKG_PACKAGE_CONTRACT_INVALID")
+                for item in (
+                    package_report.get("issues", [])
+                    if isinstance(package_report, dict)
+                    else []
+                )
+                if isinstance(item, dict)
+            }
+        )
+        fail(
+            "最终 APKG 未通过完整合同核验，因此没有交付文件。",
+            error_code="APKG_PACKAGE_CONTRACT_INVALID",
+            stage="package",
+            retryable=True,
+            fallbacks=["retry_export", "review_cards"],
+            details={"issue_codes": issue_codes or ["APKG_PACKAGE_CONTRACT_INVALID"]},
+        )
+    try:
+        publish_file_no_replace(partial_apkg_path, apkg_path)
+        final_stat = apkg_path.stat()
+        final_sha256 = file_sha256(apkg_path)
+    except OSError:
+        partial_apkg_path.unlink(missing_ok=True)
+        if apkg_path.exists():
+            fail(
+                "目标 APKG 在导出期间已被创建；为避免覆盖现有文件，本次没有交付。",
+                error_code="APKG_FINAL_PATH_COLLISION",
+                stage="package",
+                retryable=True,
+                fallbacks=["retry_export", "choose_another_output"],
+            )
+        raise
+    if final_stat.st_size != apkg_stat.st_size or final_sha256 != apkg_sha256:
+        apkg_path.unlink(missing_ok=True)
+        fail(
+            "APKG 在安全交付时发生变化，因此没有交付文件。",
+            error_code="APKG_FINALIZATION_INTEGRITY_MISMATCH",
+            stage="package",
+            retryable=True,
+            fallbacks=["retry_export"],
+        )
+    export_result["apkg_path"] = str(apkg_path)
+    export_result["apkg_sha256"] = final_sha256
+    export_result["apkg_size_bytes"] = final_stat.st_size
+    export_result["apkg_mtime_ms"] = int(final_stat.st_mtime * 1000)
+    timing_ms["total"] = int((time.perf_counter() - timing_started) * 1000)
+    add_export_timing_aliases(timing_ms)
+    emit_export_progress("done", 100, f"导出完成：{exported_cards} 张卡。")
+    return export_result
 
 
 def trusted_anki_media_directory(media_dir: Path) -> bool:
@@ -16588,7 +16729,7 @@ def is_anki_cross_drive_media_error(error: Exception) -> bool:
 
 
 def restore_anki_media_file_direct(
-    source_path: Path,
+    source_bytes: bytes,
     anki_media_dir: Path,
     filename: str,
     expected_hash: str,
@@ -16611,14 +16752,19 @@ def restore_anki_media_file_direct(
         os.close(descriptor)
         temporary_path = Path(temporary_name)
         try:
-            shutil.copyfile(source_path, temporary_path)
+            temporary_path.write_bytes(source_bytes)
             if file_sha256(temporary_path) != expected_hash:
                 return "目标目录临时文件哈希校验失败，已拒绝写入。"
             if destination.exists():
                 if destination.is_file() and file_sha256(destination) == expected_hash:
                     return ""
                 return "恢复期间出现同名媒体冲突，已拒绝覆盖。"
-            os.replace(temporary_path, destination)
+            try:
+                publish_file_no_replace(temporary_path, destination)
+            except FileExistsError:
+                if destination.is_file() and file_sha256(destination) == expected_hash:
+                    return ""
+                return "恢复期间出现同名媒体冲突，已拒绝覆盖。"
             if file_sha256(destination) != expected_hash:
                 return "写入后的 Anki 媒体哈希校验失败。"
             return ""
@@ -16635,14 +16781,17 @@ def restore_missing_anki_media(
     anki_media_dir: Path,
     anki_url: str,
     progress_label: str = "APKG 未带入全部媒体，正在安全补齐",
+    progress_start_percent: int = 30,
+    progress_span_percent: int = 20,
 ) -> dict[str, Any]:
+    max_media_file_bytes = 256 * 1024 * 1024
     restored: list[str] = []
     restored_by: dict[str, str] = {}
     failures: list[dict[str, str]] = []
     total = len(missing_names)
     for index, name in enumerate(sorted(set(missing_names)), start=1):
-        normalized_name = Path(name).name
-        if not normalized_name or normalized_name != name:
+        normalized_name = windows_safe_basename(name)
+        if normalized_name is None:
             failures.append({"file": name, "error": "媒体文件名不安全，已拒绝恢复。"})
             continue
 
@@ -16651,17 +16800,30 @@ def restore_missing_anki_media(
             failures.append({"file": name, "error": "导出媒体源文件不存在。"})
             continue
 
-        expected_hash = str((expected_manifest.get(name) or {}).get("sha256") or "")
+        manifest_entry = expected_manifest.get(name) or {}
+        expected_hash = str(manifest_entry.get("sha256") or "")
+        expected_bytes = _strict_export_int(manifest_entry.get("bytes"))
         try:
-            actual_hash = file_sha256(source_path)
+            source_size = source_path.stat().st_size
+            if source_size > max_media_file_bytes:
+                failures.append({"file": name, "error": "媒体文件超过 256 MiB 的安全预置上限。"})
+                continue
+            source_bytes = source_path.read_bytes()
+            actual_hash = hashlib.sha256(source_bytes).hexdigest()
         except OSError as err:
             failures.append({"file": name, "error": str(err)})
             continue
-        if not expected_hash or actual_hash != expected_hash:
+        if (
+            not expected_hash
+            or actual_hash != expected_hash
+            or expected_bytes is None
+            or expected_bytes != source_size
+            or len(source_bytes) != source_size
+        ):
             failures.append(
                 {
                     "file": name,
-                    "error": "导出媒体源文件哈希与清单不一致，已拒绝恢复。",
+                    "error": "导出媒体源文件大小或哈希与清单不一致，已拒绝恢复。",
                     "expected_sha256": expected_hash,
                     "actual_sha256": actual_hash,
                 }
@@ -16671,22 +16833,47 @@ def restore_missing_anki_media(
         emit_progress(
             "verify_anki_import",
             "restore_media",
-            30 + int((index / max(1, total)) * 20),
+            progress_start_percent
+            + int((index / max(1, total)) * progress_span_percent),
             f"{progress_label} {index}/{total}。",
         )
         try:
+            existing_data = anki_connect(
+                "retrieveMediaFile",
+                {"filename": normalized_name},
+                anki_url,
+            )
+            if existing_data:
+                try:
+                    existing_bytes = base64.b64decode(str(existing_data), validate=True)
+                except (binascii.Error, ValueError) as err:
+                    failures.append({"file": name, "error": f"无法校验刚出现的 Anki 同名媒体：{err}"})
+                    continue
+                if hashlib.sha256(existing_bytes).hexdigest() == expected_hash:
+                    restored.append(name)
+                    restored_by[name] = "anki_connect_existing_race"
+                    continue
+                failures.append(
+                    {
+                        "file": name,
+                        "error": "写入前 Anki 中出现同名但内容不同的媒体，已拒绝覆盖。",
+                    }
+                )
+                continue
+
             stored_name = anki_connect(
                 "storeMediaFile",
                 {
                     "filename": normalized_name,
-                    "data": base64.b64encode(source_path.read_bytes()).decode("ascii"),
+                    "data": base64.b64encode(source_bytes).decode("ascii"),
+                    "deleteExisting": False,
                 },
                 anki_url,
             )
         except Exception as err:
             if is_anki_cross_drive_media_error(err):
                 direct_error = restore_anki_media_file_direct(
-                    source_path,
+                    source_bytes,
                     anki_media_dir,
                     normalized_name,
                     expected_hash,
@@ -16706,11 +16893,34 @@ def restore_missing_anki_media(
                 failures.append({"file": name, "error": str(err)})
             continue
 
-        if Path(str(stored_name or "")).name != normalized_name:
+        stored_basename = windows_safe_basename(str(stored_name or ""))
+        stored_name_matches = (
+            stored_basename is not None
+            and windows_basename_key(stored_basename) == windows_basename_key(normalized_name)
+        )
+        if not stored_name_matches:
             failures.append(
                 {
                     "file": name,
                     "error": f"AnkiConnect 返回了意外的媒体文件名：{stored_name}",
+                }
+            )
+            continue
+        try:
+            persisted_data = anki_connect(
+                "retrieveMediaFile",
+                {"filename": stored_basename},
+                anki_url,
+            )
+            persisted_bytes = base64.b64decode(str(persisted_data or ""), validate=True)
+        except (binascii.Error, ValueError, RuntimeError, OSError) as err:
+            failures.append({"file": name, "error": f"Anki 媒体写后校验失败：{err}"})
+            continue
+        if len(persisted_bytes) != expected_bytes or hashlib.sha256(persisted_bytes).hexdigest() != expected_hash:
+            failures.append(
+                {
+                    "file": name,
+                    "error": "Anki 媒体写入后的大小或哈希与可信清单不一致。",
                 }
             )
             continue
@@ -16735,8 +16945,8 @@ def inspect_anki_media_for_preload(
     failures: list[dict[str, str]] = []
 
     for name in sorted(expected_manifest):
-        normalized_name = Path(name).name
-        if not normalized_name or normalized_name != name:
+        normalized_name = windows_safe_basename(name)
+        if normalized_name is None:
             failures.append({"file": name, "error": "媒体文件名不安全，已拒绝预置。"})
             continue
 
@@ -17026,6 +17236,542 @@ def inspect_existing_anki_import(
     return result
 
 
+def anki_verify_query_progress_percent(import_attempted: bool) -> int:
+    return 62 if import_attempted else 18
+
+
+ANKI_IMPORT_DECK_KINDS = frozenset(
+    {"video_language", "subtitle_language", "document_knowledge", "document_reading"}
+)
+LANGUAGE_IMPORT_TEMPLATE_FAMILIES = frozenset(
+    {
+        "language-immersive-v11",
+        "language-immersive-v11-fast",
+        "language-ciba-tianxia-v1-warm_paper",
+        "language-ciba-tianxia-v1-minimal_white",
+        "language-ciba-tianxia-v1-dark_immersive",
+        "language-immersive",
+        "language-dictionary",
+        "language-minimal",
+    }
+)
+
+
+def _canonical_import_path(value: Any) -> str:
+    if not isinstance(value, str) or not value or value != value.strip():
+        return ""
+    try:
+        path = Path(value)
+        if not path.is_absolute():
+            return ""
+        return os.path.normcase(str(path.resolve(strict=False)))
+    except (OSError, RuntimeError, ValueError):
+        return ""
+
+
+def _strict_export_int(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def validate_export_result_write_contract(export_result: dict[str, Any]) -> dict[str, Any]:
+    cards = _strict_export_int(export_result.get("cards"))
+    if cards is None or cards <= 0:
+        return _import_preflight_failure(
+            "apkg_export_card_count_invalid",
+            "可信导出结果缺少有效卡片数量，已停止写入 Anki。",
+        )
+
+    manifest = export_result.get("media_manifest")
+    media_summary = export_result.get("media_summary")
+    if not isinstance(manifest, dict) or not isinstance(media_summary, dict):
+        return _import_preflight_failure(
+            "apkg_export_media_manifest_missing",
+            "可信导出结果缺少固定媒体清单，不能从目录重新推断，已停止写入 Anki。",
+        )
+    expected_media_files = _strict_export_int(media_summary.get("media_files"))
+    expected_media_bytes = _strict_export_int(media_summary.get("media_bytes"))
+    if expected_media_files is None or expected_media_files < 0 or expected_media_bytes is None or expected_media_bytes < 0:
+        return _import_preflight_failure(
+            "apkg_export_media_summary_invalid",
+            "可信导出结果中的媒体计数无效，已停止写入 Anki。",
+        )
+    if expected_media_files != len(manifest):
+        return _import_preflight_failure(
+            "apkg_export_media_manifest_mismatch",
+            "可信导出结果中的媒体清单数量与摘要不一致，已停止写入 Anki。",
+        )
+
+    total_media_bytes = 0
+    manifest_name_keys: set[str] = set()
+    for name, item in manifest.items():
+        name_key = windows_basename_key(name)
+        if name_key is None or name_key in manifest_name_keys or not isinstance(item, dict):
+            return _import_preflight_failure(
+                "apkg_export_media_manifest_invalid",
+                "可信导出结果包含不安全或在 Windows 上冲突的媒体清单项，已停止写入 Anki。",
+            )
+        manifest_name_keys.add(name_key)
+        digest = item.get("sha256")
+        byte_count = _strict_export_int(item.get("bytes"))
+        if (
+            not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            or byte_count is None
+            or byte_count < 0
+            or byte_count > 256 * 1024 * 1024
+        ):
+            return _import_preflight_failure(
+                "apkg_export_media_manifest_invalid",
+                "可信导出结果包含无效媒体哈希或大小，已停止写入 Anki。",
+                media_file=name,
+            )
+        total_media_bytes += byte_count
+    if total_media_bytes != expected_media_bytes or total_media_bytes > 2 * 1024 * 1024 * 1024:
+        return _import_preflight_failure(
+            "apkg_export_media_manifest_mismatch",
+            "可信导出结果中的媒体总大小与清单不一致或超过安全上限，已停止写入 Anki。",
+        )
+
+    ledger = export_result.get("card_media_ledger")
+    if not isinstance(ledger, list) or len(ledger) != cards:
+        return _import_preflight_failure(
+            "apkg_export_card_ledger_invalid",
+            "可信导出结果中的卡片账本与导出数量不一致，已停止写入 Anki。",
+        )
+    seen_card_ids: set[str] = set()
+    for item in ledger:
+        if not isinstance(item, dict):
+            return _import_preflight_failure(
+                "apkg_export_card_ledger_invalid",
+                "可信导出结果包含无效卡片账本项，已停止写入 Anki。",
+            )
+        card_id = item.get("card_id")
+        content_digest = item.get("note_content_sha256")
+        segment_id = item.get("segment_id")
+        deck_name = item.get("deck_name")
+        if (
+            not isinstance(card_id, str)
+            or not card_id
+            or card_id in seen_card_ids
+            or not isinstance(segment_id, str)
+            or not segment_id
+            or segment_id != segment_id.strip()
+            or not isinstance(deck_name, str)
+            or not deck_name
+            or deck_name != deck_name.strip()
+            or not isinstance(content_digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", content_digest) is None
+        ):
+            return _import_preflight_failure(
+                "apkg_export_card_ledger_invalid",
+                "可信导出结果中的卡片身份或内容摘要无效，已停止写入 Anki。",
+            )
+        seen_card_ids.add(card_id)
+
+    return {
+        "ok": True,
+        "failed_checks": [],
+        "cards": cards,
+        "media_manifest": manifest,
+        "media_files": expected_media_files,
+        "media_bytes": expected_media_bytes,
+    }
+
+
+def _import_preflight_failure(code: str, message: str, **details: Any) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "message": message,
+        "failed_checks": [code],
+        **details,
+    }
+
+
+def _payload_export_override_mismatch(
+    payload: dict[str, Any],
+    export_result: dict[str, Any],
+) -> dict[str, Any] | None:
+    path_fields = ("apkg_path", "media_dir")
+    for field in path_fields:
+        if field not in payload:
+            continue
+        trusted = _canonical_import_path(export_result.get(field))
+        supplied = _canonical_import_path(payload.get(field))
+        if not trusted or supplied != trusted:
+            return _import_preflight_failure(
+                "apkg_export_identity_mismatch",
+                f"导入请求中的 {field} 与本次可信导出结果不一致，已停止写入 Anki。",
+                identity_field=field,
+            )
+
+    exact_fields = (
+        "deck_name",
+        "deck_kind",
+        "anki_tag",
+        "template_family",
+        "template_schema",
+        "template_version",
+        "note_model_id",
+        "model_name",
+        "compatibility_contract_version",
+        "note_model_contract_digest",
+        "apkg_sha256",
+        "apkg_size_bytes",
+        "source_fingerprint",
+        "source_identity",
+    )
+    for field in exact_fields:
+        if field not in payload:
+            continue
+        expected = export_result.get(field)
+        if field == "source_fingerprint" and not expected:
+            source_identity = export_result.get("source_identity")
+            if isinstance(source_identity, dict):
+                expected = source_identity.get("source_fingerprint")
+        if payload.get(field) != expected:
+            return _import_preflight_failure(
+                "apkg_export_identity_mismatch",
+                f"导入请求中的 {field} 与本次可信导出结果不一致，已停止写入 Anki。",
+                identity_field=field,
+            )
+    if "expected_cards" in payload and payload.get("expected_cards") != export_result.get("cards"):
+        return _import_preflight_failure(
+            "apkg_export_identity_mismatch",
+            "导入请求中的卡片数量与本次可信导出结果不一致，已停止写入 Anki。",
+            identity_field="expected_cards",
+        )
+    return None
+
+
+def _allowed_deck_kinds_for_contract_family(template_family: str) -> frozenset[str]:
+    if template_family in LANGUAGE_IMPORT_TEMPLATE_FAMILIES:
+        return frozenset({"video_language", "subtitle_language"})
+    if template_family == "document-knowledge":
+        return frozenset({"document_knowledge"})
+    if template_family == "document-reading":
+        return frozenset({"document_reading"})
+    return frozenset()
+
+
+def preflight_anki_import_apkg(
+    payload: dict[str, Any],
+    export_result: dict[str, Any],
+) -> dict[str, Any]:
+    """Fail closed before media preparation or any AnkiConnect write action."""
+    if not isinstance(export_result, dict) or not export_result:
+        return _import_preflight_failure(
+            "apkg_export_result_missing",
+            "缺少可信导出结果，无法证明这个 APKG 属于当前任务，已停止写入 Anki。",
+        )
+
+    override_failure = _payload_export_override_mismatch(payload, export_result)
+    if override_failure:
+        return override_failure
+
+    if str(payload.get("anki_query") or "").strip():
+        return _import_preflight_failure(
+            "anki_import_query_override_forbidden",
+            "导入与写入前核验不接受自定义 Anki 查询，已停止写入。",
+        )
+
+    trusted_path_text = export_result.get("apkg_path")
+    trusted_canonical_path = _canonical_import_path(trusted_path_text)
+    if not trusted_canonical_path:
+        return _import_preflight_failure(
+            "apkg_export_path_invalid",
+            "可信导出结果缺少有效的 APKG 路径，已停止写入 Anki。",
+        )
+    apkg_path = Path(str(trusted_path_text))
+    try:
+        if not apkg_path.exists() or not apkg_path.is_file():
+            return _import_preflight_failure(
+                "apkg_missing_for_import",
+                f"找不到可信导出结果中的 APKG：{apkg_path}",
+            )
+        if apkg_path.suffix.lower() != ".apkg":
+            return _import_preflight_failure(
+                "apkg_invalid_for_import",
+                f"可信导出路径不是 APKG 文件：{apkg_path}",
+            )
+    except OSError as err:
+        return _import_preflight_failure(
+            "apkg_read_failed",
+            f"无法读取可信导出的 APKG，已停止写入 Anki：{err}",
+        )
+
+    write_contract = validate_export_result_write_contract(export_result)
+    if not write_contract.get("ok"):
+        return write_contract
+
+    deck_name = export_result.get("deck_name")
+    deck_kind = export_result.get("deck_kind")
+    if not isinstance(deck_name, str) or not deck_name or deck_name != deck_name.strip():
+        return _import_preflight_failure(
+            "apkg_export_identity_invalid",
+            "可信导出结果缺少精确牌组名称，已停止写入 Anki。",
+            identity_field="deck_name",
+        )
+    if deck_kind not in ANKI_IMPORT_DECK_KINDS:
+        return _import_preflight_failure(
+            "apkg_deck_kind_unsupported",
+            "可信导出结果包含未知的卡片类型，已停止写入 Anki。",
+            deck_kind=deck_kind,
+        )
+
+    trusted_media_text = export_result.get("media_dir")
+    trusted_media_canonical = _canonical_import_path(trusted_media_text)
+    if not trusted_media_canonical:
+        return _import_preflight_failure(
+            "apkg_export_media_path_invalid",
+            "可信导出结果缺少有效的绝对媒体目录，已停止写入 Anki。",
+        )
+    trusted_media_path = Path(str(trusted_media_text))
+    manifest = write_contract["media_manifest"]
+    media_count = int(write_contract["media_files"])
+    requires_media_dir = media_count > 0
+    try:
+        if trusted_media_path.exists() and not trusted_media_path.is_dir():
+            return _import_preflight_failure(
+                "apkg_export_media_path_invalid",
+                "可信导出结果中的媒体路径不是目录，已停止写入 Anki。",
+            )
+        if requires_media_dir and not trusted_media_path.is_dir():
+            return _import_preflight_failure(
+                "apkg_export_media_path_missing",
+                "可信导出的媒体目录不存在，已停止写入 Anki。",
+            )
+    except OSError as err:
+        return _import_preflight_failure(
+            "apkg_export_media_path_invalid",
+            f"无法核验可信导出的媒体目录，已停止写入 Anki：{err}",
+        )
+
+    try:
+        apkg_stat = apkg_path.stat()
+        actual_sha256 = file_sha256(apkg_path)
+    except OSError as err:
+        return _import_preflight_failure(
+            "apkg_read_failed",
+            f"无法读取可信导出的 APKG，已停止写入 Anki：{err}",
+        )
+
+    expected_sha256 = export_result.get("apkg_sha256")
+    expected_size_bytes = _strict_export_int(export_result.get("apkg_size_bytes"))
+    if not isinstance(expected_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None:
+        return _import_preflight_failure(
+            "apkg_export_digest_invalid",
+            "可信导出结果缺少规范的 APKG SHA-256，已停止写入 Anki。",
+        )
+    if expected_size_bytes is None or expected_size_bytes < 0:
+        return _import_preflight_failure(
+            "apkg_export_size_invalid",
+            "可信导出结果缺少规范的 APKG 文件大小，已停止写入 Anki。",
+        )
+    if actual_sha256 != expected_sha256 or apkg_stat.st_size != expected_size_bytes:
+        return _import_preflight_failure(
+            "apkg_integrity_mismatch",
+            "APKG 在导出后发生变化，文件哈希或大小与可信导出结果不一致，已停止写入 Anki。",
+            expected_apkg_sha256=expected_sha256,
+            actual_apkg_sha256=actual_sha256,
+            expected_apkg_size_bytes=expected_size_bytes,
+            actual_apkg_size_bytes=apkg_stat.st_size,
+        )
+
+    required_text_fields = (
+        "template_family",
+        "template_schema",
+        "template_version",
+        "model_name",
+        "note_model_contract_digest",
+    )
+    for field in required_text_fields:
+        value = export_result.get(field)
+        if not isinstance(value, str) or not value or value != value.strip():
+            return _import_preflight_failure(
+                "apkg_export_contract_identity_invalid",
+                f"可信导出结果中的 {field} 无效，已停止写入 Anki。",
+                identity_field=field,
+            )
+    note_model_id = _strict_export_int(export_result.get("note_model_id"))
+    compatibility_version = _strict_export_int(export_result.get("compatibility_contract_version"))
+    contract_digest = export_result.get("note_model_contract_digest")
+    if note_model_id is None or note_model_id <= 0:
+        return _import_preflight_failure(
+            "apkg_export_contract_identity_invalid",
+            "可信导出结果中的 Note Model ID 无效，已停止写入 Anki。",
+            identity_field="note_model_id",
+        )
+    if compatibility_version is None or compatibility_version <= 0:
+        return _import_preflight_failure(
+            "apkg_export_contract_identity_invalid",
+            "可信导出结果中的合同版本无效，已停止写入 Anki。",
+            identity_field="compatibility_contract_version",
+        )
+    if re.fullmatch(r"[0-9a-f]{64}", str(contract_digest)) is None:
+        return _import_preflight_failure(
+            "apkg_export_contract_identity_invalid",
+            "可信导出结果中的 Note Model 合同摘要无效，已停止写入 Anki。",
+            identity_field="note_model_contract_digest",
+        )
+
+    package_validator = getattr(
+        apkg_package_contract_module,
+        "validate_apkg_package_contract",
+        None,
+    )
+    if not callable(package_validator):
+        return _import_preflight_failure(
+            "apkg_package_contract_validator_unavailable",
+            "本机缺少完整 APKG 合同检查器，已停止写入 Anki。",
+        )
+    try:
+        package_report = package_validator(apkg_path, export_result)
+    except Exception:
+        return _import_preflight_failure(
+            "apkg_package_contract_unreadable",
+            "无法完成 APKG 整包合同核验，已停止写入 Anki。",
+        )
+    package_issues = (
+        package_report.get("issues")
+        if isinstance(package_report, dict)
+        else None
+    )
+    if (
+        not isinstance(package_report, dict)
+        or not package_report.get("ok")
+        or not isinstance(package_issues, list)
+        or package_issues
+    ):
+        issue_codes = sorted(
+            {
+                str(item.get("code") or "APKG_PACKAGE_CONTRACT_INVALID")
+                for item in (package_issues or [])
+                if isinstance(item, dict)
+            }
+        )
+        return _import_preflight_failure(
+            "apkg_package_contract_mismatch",
+            "APKG 的卡片、牌组、模型、字段或媒体整包合同不一致，已停止写入 Anki。",
+            apkg_package_contract_issue_codes=(
+                issue_codes or ["APKG_PACKAGE_CONTRACT_INVALID"]
+            ),
+        )
+
+    inspector = getattr(anki_model_contracts_module, "inspect_apkg_note_model_contract", None)
+    if not callable(inspector):
+        return _import_preflight_failure(
+            "apkg_contract_inspector_unavailable",
+            "本机缺少 APKG Note Model 合同检查器，已停止写入 Anki。",
+        )
+    try:
+        contract_report = inspector(apkg_path)
+    except Exception as err:
+        return _import_preflight_failure(
+            "apkg_note_model_contract_unreadable",
+            f"无法证明 APKG 的 Note Model 合同，已停止写入 Anki：{err}",
+        )
+    if not isinstance(contract_report, dict):
+        return _import_preflight_failure(
+            "apkg_note_model_contract_unreadable",
+            "APKG Note Model 合同检查结果无效，已停止写入 Anki。",
+        )
+    contract_issues = contract_report.get("issues")
+    contracts = contract_report.get("contracts")
+    if not isinstance(contract_issues, list) or contract_issues:
+        return _import_preflight_failure(
+            "apkg_note_model_contract_mismatch",
+            "APKG 的 Note Model 合同不受支持或已被修改，已停止写入 Anki。",
+            note_model_contract_issues=contract_issues if isinstance(contract_issues, list) else [],
+        )
+    if not isinstance(contracts, list) or len(contracts) != 1 or not isinstance(contracts[0], dict):
+        return _import_preflight_failure(
+            "apkg_note_model_contract_ambiguous",
+            "APKG 必须且只能引用一个已验证的 Note Model 合同，已停止写入 Anki。",
+        )
+
+    contract = contracts[0]
+    expected_contract_identity = {
+        "templateFamily": export_result["template_family"],
+        "templateSchema": export_result["template_schema"],
+        "noteModelId": note_model_id,
+        "modelName": export_result["model_name"],
+        "compatibilityContractVersion": compatibility_version,
+        "contractDigest": contract_digest,
+    }
+    mismatched_contract_fields = [
+        field
+        for field, expected in expected_contract_identity.items()
+        if contract.get(field) != expected
+    ]
+    if export_result["template_version"] != export_result["template_schema"]:
+        mismatched_contract_fields.append("templateVersion")
+    if mismatched_contract_fields:
+        return _import_preflight_failure(
+            "apkg_note_model_contract_identity_mismatch",
+            "APKG 的 Note Model 身份与可信导出结果不一致，已停止写入 Anki。",
+            mismatched_contract_fields=sorted(set(mismatched_contract_fields)),
+        )
+
+    allowed_deck_kinds = _allowed_deck_kinds_for_contract_family(str(contract.get("templateFamily") or ""))
+    if deck_kind not in allowed_deck_kinds:
+        return _import_preflight_failure(
+            "apkg_deck_kind_contract_mismatch",
+            "APKG 的 Note Model 合同与可信导出卡片类型不一致，已停止写入 Anki。",
+            deck_kind=deck_kind,
+            template_family=contract.get("templateFamily"),
+        )
+
+    return {
+        "ok": True,
+        "message": "APKG 写入前合同、身份和完整性检查通过。",
+        "failed_checks": [],
+        "apkg_path": str(apkg_path),
+        "apkg_sha256": actual_sha256,
+        "apkg_size_bytes": apkg_stat.st_size,
+        "apkg_mtime_ms": int(apkg_stat.st_mtime * 1000),
+        "deck_name": deck_name,
+        "deck_kind": deck_kind,
+        "media_dir": str(export_result.get("media_dir") or ""),
+        "cards": int(write_contract["cards"]),
+        "media_manifest": dict(manifest),
+        "media_files": media_count,
+        "media_bytes": int(write_contract["media_bytes"]),
+        "note_model_contract": dict(contract),
+        "apkg_package_contract_summary": dict(
+            package_report.get("summary")
+            if isinstance(package_report.get("summary"), dict)
+            else {}
+        ),
+    }
+
+
+def revalidate_apkg_integrity_before_anki_write(
+    apkg_path: Path,
+    expected_sha256: str,
+    expected_size_bytes: int,
+) -> dict[str, Any]:
+    try:
+        stat = apkg_path.stat()
+        actual_sha256 = file_sha256(apkg_path)
+    except OSError as err:
+        return _import_preflight_failure(
+            "apkg_integrity_changed_before_import",
+            f"APKG 在准备导入时已不可读，已停止写入 Anki：{err}",
+        )
+    if stat.st_size != expected_size_bytes or actual_sha256 != expected_sha256:
+        return _import_preflight_failure(
+            "apkg_integrity_changed_before_import",
+            "APKG 在安全检查后、写入 Anki 前发生变化，已停止导入。",
+            expected_apkg_sha256=expected_sha256,
+            actual_apkg_sha256=actual_sha256,
+            expected_apkg_size_bytes=expected_size_bytes,
+            actual_apkg_size_bytes=stat.st_size,
+        )
+    return {"ok": True, "failed_checks": []}
+
+
 def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
     timing_started = time.perf_counter()
     timing_ms: dict[str, int] = {}
@@ -17046,76 +17792,84 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
         return enriched
 
     export_result = payload.get("export_result") or {}
-    deck_name = str(payload.get("deck_name") or export_result.get("deck_name") or "").strip()
-    media_dir = Path(str(payload.get("media_dir") or export_result.get("media_dir") or ""))
+    if not isinstance(export_result, dict):
+        export_result = {}
+    import_attempted = bool(payload.get("import_apkg"))
+    prepare_media_only = bool(payload.get("prepare_media_only"))
     anki_url = str(payload.get("anki_connect_url") or "http://127.0.0.1:8765").strip()
-    deck_kind = str(payload.get("deck_kind") or export_result.get("deck_kind") or "").strip()
+
+    import_preflight: dict[str, Any] | None = None
+    if import_attempted or prepare_media_only:
+        import_preflight = preflight_anki_import_apkg(payload, export_result)
+        if not import_preflight.get("ok"):
+            return with_verify_timing(
+                {
+                    **import_preflight,
+                    "query": "",
+                    "import_attempted": import_attempted,
+                    "import_result": False,
+                }
+            )
+        deck_name = str(import_preflight["deck_name"])
+        deck_kind = str(import_preflight["deck_kind"])
+        media_dir = Path(str(import_preflight["media_dir"]))
+        apkg_path_text = str(import_preflight["apkg_path"])
+        apkg_path = Path(apkg_path_text)
+        apkg_sha256 = str(import_preflight["apkg_sha256"])
+        apkg_size_bytes = int(import_preflight["apkg_size_bytes"])
+        apkg_mtime_ms = int(import_preflight["apkg_mtime_ms"])
+    else:
+        deck_name = str(payload.get("deck_name") or export_result.get("deck_name") or "").strip()
+        deck_kind = str(payload.get("deck_kind") or export_result.get("deck_kind") or "").strip()
+        media_dir = Path(str(payload.get("media_dir") or export_result.get("media_dir") or ""))
+        apkg_path_text = str(payload.get("apkg_path") or export_result.get("apkg_path") or "").strip()
+        apkg_path = Path(apkg_path_text) if apkg_path_text else Path()
+        apkg_sha256 = str(export_result.get("apkg_sha256") or "").strip()
+        apkg_size_bytes = export_result.get("apkg_size_bytes")
+        apkg_mtime_ms = export_result.get("apkg_mtime_ms")
+
     strict_video_import = deck_kind in {"video_language", "subtitle_language"}
     strict_document_import = deck_kind in {"document_knowledge", "document_reading"}
-    apkg_path_text = str(payload.get("apkg_path") or export_result.get("apkg_path") or "").strip()
-    apkg_path = Path(apkg_path_text) if apkg_path_text else Path()
-    apkg_sha256 = str(export_result.get("apkg_sha256") or "").strip()
-    apkg_size_bytes = export_result.get("apkg_size_bytes")
-    apkg_mtime_ms = export_result.get("apkg_mtime_ms")
     source_identity = export_result.get("source_identity") if isinstance(export_result.get("source_identity"), dict) else {}
     source_fingerprint = str(source_identity.get("source_fingerprint") or export_result.get("source_fingerprint") or "").strip()
-    media_summary = export_result.get("media_summary") if isinstance(export_result.get("media_summary"), dict) else {}
-    expected_media_files = media_summary.get("media_files")
-    try:
-        expected_media_files = int(expected_media_files) if expected_media_files is not None else None
-    except (TypeError, ValueError):
-        expected_media_files = None
-    manifest_provided = isinstance(export_result.get("media_manifest"), dict)
-    expected_manifest = export_result.get("media_manifest") if manifest_provided else {}
-    if not expected_manifest and media_dir.exists() and expected_media_files != 0:
-        expected_manifest = media_manifest([str(path) for path in media_dir.iterdir() if path.is_file()])
-
-    if not expected_manifest and expected_media_files != 0:
-        fail("缺少导出媒体清单，无法核验 Anki 媒体。")
+    if import_preflight is not None:
+        expected_media_files = int(import_preflight["media_files"])
+        expected_manifest = dict(import_preflight["media_manifest"])
+        manifest_provided = True
+    else:
+        media_summary = (
+            export_result.get("media_summary")
+            if isinstance(export_result.get("media_summary"), dict)
+            else {}
+        )
+        expected_media_files = media_summary.get("media_files")
+        try:
+            expected_media_files = int(expected_media_files) if expected_media_files is not None else None
+        except (TypeError, ValueError):
+            expected_media_files = None
+        manifest_provided = isinstance(export_result.get("media_manifest"), dict)
+        expected_manifest = export_result.get("media_manifest") if manifest_provided else {}
+        if not expected_manifest and media_dir.exists() and expected_media_files != 0:
+            expected_manifest = media_manifest([str(path) for path in media_dir.iterdir() if path.is_file()])
+        if not expected_manifest and expected_media_files != 0:
+            fail("缺少导出媒体清单，无法核验 Anki 媒体。")
 
     anki_tag = str(payload.get("anki_tag") or export_result.get("anki_tag") or "").strip()
     if not anki_tag:
-        template_version = str(payload.get("template_version") or export_result.get("template_version") or "").strip().lower()
+        template_version = str(export_result.get("template_version") or "").strip().lower()
         anki_tag = f"anki_card_generator_{template_version}" if template_version else "anki_card_generator_v10"
-    explicit_anki_query = str(payload.get("anki_query") or export_result.get("anki_query") or "").strip()
-    query = explicit_anki_query or f"tag:{anki_tag}"
-    if deck_name and not explicit_anki_query:
-        query = f'deck:"{deck_name}" {query}'
-
-    import_attempted = bool(payload.get("import_apkg"))
-    prepare_media_only = bool(payload.get("prepare_media_only"))
+    explicit_anki_query = (
+        ""
+        if import_preflight is not None
+        else str(payload.get("anki_query") or export_result.get("anki_query") or "").strip()
+    )
+    query = explicit_anki_query or anki_import_preflight_query(deck_name, anki_tag)
     import_result: Any = None
     import_error = ""
     prepared_anki_media_dir: Path | None = None
     media_preload = {"missing": [], "already_present": [], "conflicts": [], "failures": []}
     media_recovery: dict[str, Any] = {"attempted": False, "restored": [], "restored_by": {}, "failures": []}
     if import_attempted or prepare_media_only:
-        if not apkg_path.exists() or not apkg_path.is_file():
-            return with_verify_timing(
-                {
-                    "ok": False,
-                    "message": f"找不到要导入的 APKG：{apkg_path}",
-                    "failed_checks": ["apkg_missing_for_import"],
-                    "query": query,
-                    "import_attempted": import_attempted,
-                    "import_result": False,
-                }
-            )
-        if apkg_path.suffix.lower() != ".apkg":
-            return with_verify_timing(
-                {
-                    "ok": False,
-                    "message": f"导入路径不是 APKG 文件：{apkg_path}",
-                    "failed_checks": ["apkg_invalid_for_import"],
-                    "query": query,
-                    "import_attempted": import_attempted,
-                    "import_result": False,
-                }
-            )
-        apkg_stat = apkg_path.stat()
-        apkg_sha256 = file_sha256(apkg_path)
-        apkg_size_bytes = apkg_stat.st_size
-        apkg_mtime_ms = int(apkg_stat.st_mtime * 1000)
         emit_progress(
             "verify_anki_import",
             "prepare_media",
@@ -17253,6 +18007,20 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
                 "当前 APKG 已完整存在，已跳过重复导入，继续执行完整核验。",
             )
         else:
+            integrity_recheck = revalidate_apkg_integrity_before_anki_write(
+                apkg_path,
+                apkg_sha256,
+                int(apkg_size_bytes),
+            )
+            if not integrity_recheck.get("ok"):
+                return with_verify_timing(
+                    {
+                        **integrity_recheck,
+                        "query": query,
+                        "import_attempted": True,
+                        "import_result": False,
+                    }
+                )
             emit_progress(
                 "verify_anki_import",
                 "import",
@@ -17294,7 +18062,7 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
         emit_progress(
             "verify_anki_import",
             "query",
-            18,
+            anki_verify_query_progress_percent(import_attempted),
             "正在读取 Anki 中的卡片、字段和媒体目录。",
         )
         card_ids = anki_connect("findCards", {"query": query}, anki_url)
@@ -17482,6 +18250,8 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
             media_dir,
             anki_media_dir,
             anki_url,
+            progress_start_percent=70,
+            progress_span_percent=10,
         )
         media_recovery = merge_anki_media_recovery(media_recovery, post_import_recovery)
         timing_ms["anki_media_recovery"] = int((time.perf_counter() - recovery_started) * 1000)

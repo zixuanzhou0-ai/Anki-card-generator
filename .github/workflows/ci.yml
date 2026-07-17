@@ -65,11 +65,11 @@ jobs:
 
       - name: Compile worker files
         run: |
-          python -m py_compile workers/anki_worker.py workers/verify_apkg.py tests/test_worker_quality.py
+          python -m py_compile workers/anki_worker.py workers/verify_apkg.py workers/acg/anki_model_contracts.py tests/test_worker_quality.py tests/test_verify_apkg_contract.py
           python -m compileall -q workers/acg
 
       - name: Run worker tests
-        run: python -m unittest discover -s tests -p "test_worker_quality.py"
+        run: python -m unittest discover -s tests -p "test_*.py"
 
       - name: Run release smoke test
         run: powershell -ExecutionPolicy Bypass -File scripts/smoke_release.ps1

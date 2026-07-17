@@ -1,7 +1,7 @@
 # 架构与产品决策记录
 
-> 状态：设计阶段 ADR 汇总  
-> 日期：2026-07-16  
+> 状态：PROPOSED 设计阶段 ADR 汇总
+> 日期：2026-07-17
 > Accepted 表示后续实现默认遵守；不表示已经实现。
 
 ## D-001：Codex Plugin 是未来主入口
@@ -145,10 +145,13 @@
 
 ## D-020：版本轴分离
 
-- 状态：Accepted。
+- 状态：Accepted；CURRENT Worker/APKG M0 子项已实现，插件协议部分仍为 PROPOSED。
 - 分开 plugin、MCP、Study IR、Service、Worker protocol、template family、template schema、Anki Note Model。
-- 理由：当前 immersive_v11 family、V14 schema 与 V1 startswith verifier 的 fail-open 暴露了版本轴混用。
-- 出口：M0 修复并加入合同测试。
+- 理由：历史 immersive_v11 family、V14 schema 与 V1 `startswith` verifier 的 fail-open 暴露了版本轴混用。
+- 当前证据：生产 V14 与明确兼容的 V10 由精确合同注册表驱动；完整 APKG 合同覆盖 10 个生产生成变体，导出只在唯一 `.partial` 校验通过后 no-replace 原子发布。最终回归为 Vitest 830、正式 `pytest` 561、独立 `unittest discover` 551（有重叠，不相加）、Rust 31 项通过与 1 项忽略、UI smoke 3、V14/V10 release smoke、`check:full` 与 Tauri build 通过。20 卡离线媒体包为 20/20/52、每卡 6 引用与 120 个归属；隔离 Anki 数据级验证覆盖 E→C 单卡 1/1/6 和 20 卡 20/20/52 的首次导入、重复跳过及重启哈希。
+- 信任边界：raw `ExportResult` 只作为内部兼容输入，不认证来源，不能抵抗同时篡改 APKG 与结果的同权限本机攻击者；stat/SHA 与 no-replace 发布只缩小 TOCTOU。M2 必须用认证 Artifact 注册表、不透明引用和受控文件句柄替代。
+- 安全边界：非 NFC、`CLOCK$` 等 Windows 保留设备名、大小写/规范化冲突和 APKG archive 资源上限已通过；有界流式读取只覆盖 APKG archive/package/verifier。AnkiConnect 整文件/base64 媒体恢复仍有最多 256 MiB 单文件的峰值内存放大。
+- 剩余出口：Computer Use 当前不可用，真实 GUI 翻面、播放和至少 20 张连续复习尚未完成；M1 以后继续为 plugin/MCP/Service/Study IR 建立各自版本轴。合成视频和静音 TTS 的数据级结果不得写成语义、听感或学习体验通过。
 
 ## D-021：用户编辑是语义操作
 
@@ -173,7 +176,7 @@
 
 - 状态：Accepted。
 - 决策：每个来源/路线必须有 schema、golden corpus、安全门禁和真实 Anki 报告。
-- P0：verifier 改为精确 V14/兼容合同并通过 V1xx 伪版本负例前不发布插件。
+- CURRENT：精确 V14/V10 合同、完整 APKG 合同、10 个生产变体、`.partial` 后 no-replace 原子发布、V1xx 伪版本负例、强制 release verifier、Anki 写入前 preflight、最终自动化、20 卡 20/20/52 离线媒体合同，以及隔离 Anki 单卡与 20 卡数据级导入/重复/重启证据已实现。Computer Use、真实 GUI 播放与连续复习、AnkiConnect base64 内存改造、M1/M2/M3 与宿主证据仍是发布阻断。
 
 ## D-025：能力验证按精确 profile 决策
 
@@ -211,4 +214,3 @@
 6. macOS/Linux 时间表。
 7. Anki 复习历史读取的最小权限和隐私策略。
 8. ReviewDebtEstimate 初始校准参数。
-

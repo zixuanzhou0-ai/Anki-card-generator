@@ -34,6 +34,10 @@ $GenerateJson = Join-Path $OutputDir "generate.json"
 $ExportJson = Join-Path $OutputDir "export.json"
 $VerifyJson = Join-Path $OutputDir "verify_apkg.json"
 $VerifyOut = Join-Path $OutputDir "verify_import"
+$LegacySmokeOut = Join-Path $OutputDir "legacy-out"
+$LegacyExportJson = Join-Path $OutputDir "legacy_v10_export.json"
+$LegacyVerifyJson = Join-Path $OutputDir "legacy_v10_verify_apkg.json"
+$LegacyVerifyOut = Join-Path $OutputDir "legacy_v10_verify_import"
 $Document = Join-Path $SmokeInput "study-notes.md"
 $DocumentGenerateJson = Join-Path $OutputDir "document_generate.json"
 $DocumentExportJson = Join-Path $OutputDir "document_export.json"
@@ -155,7 +159,7 @@ $payload = @{
   level = "B1"
   collection_levels = @("A2", "B1", "B2")
   max_segments = 0
-  template_id = "immersive"
+  template_id = "immersive_v11"
   content_toggles = @{
     daily = $true
     slang = $true
@@ -220,16 +224,62 @@ $export | ConvertTo-Json -Depth 20 | Set-Content -Encoding UTF8 $ExportJson
 if (-not (Test-Path $export.apkg_path)) {
   throw "APKG was not created: $($export.apkg_path)"
 }
-
-$VerifyScript = Join-Path (Split-Path $WorkerPath -Parent) "verify_apkg.py"
-if (Test-Path $VerifyScript) {
-  $verify = & $Python $VerifyScript $export.apkg_path $VerifyOut | ConvertFrom-Json
-  $verify | ConvertTo-Json -Depth 30 | Set-Content -Encoding UTF8 $VerifyJson
-  if (-not $verify.ok) {
-    throw "APKG verification failed. See $VerifyJson"
-  }
+if ($export.template_family -ne "language-immersive-v11") {
+  throw "Release smoke template family drifted: $($export.template_family)"
+}
+if ($export.template_schema -ne "V14" -or $export.template_version -ne "V14") {
+  throw "Release smoke template schema is not V14: $($export.template_schema) / $($export.template_version)"
+}
+if ([int64]$export.note_model_id -ne 3157735470) {
+  throw "Release smoke Note Model ID drifted: $($export.note_model_id)"
+}
+if ([int]$export.compatibility_contract_version -ne 1 -or -not $export.note_model_contract_digest) {
+  throw "Release smoke Note Model contract metadata is missing."
 }
 
+$VerifyScript = Join-Path (Split-Path $WorkerPath -Parent) "verify_apkg.py"
+if (-not (Test-Path -LiteralPath $VerifyScript)) {
+  throw "Required APKG verifier is missing: $VerifyScript"
+}
+$verify = & $Python $VerifyScript $export.apkg_path $VerifyOut | ConvertFrom-Json
+$verify | ConvertTo-Json -Depth 30 | Set-Content -Encoding UTF8 $VerifyJson
+if (-not $verify.ok) {
+  throw "APKG verification failed. See $VerifyJson"
+}
+if ($verify.failed_checks.Count -ne 0 -or $verify.note_model_contract_issues.Count -ne 0) {
+  throw "APKG Note Model contract verification reported failures. See $VerifyJson"
+}
+if ($verify.note_model_contracts.Count -ne 1 -or [int64]$verify.note_model_contracts[0].noteModelId -ne 3157735470) {
+  throw "APKG verifier did not prove the exact V14 Note Model contract. See $VerifyJson"
+}
+
+$legacyProject = $project | ConvertTo-Json -Depth 50 | ConvertFrom-Json
+$legacyProject.title = "Release Smoke V10 Compatibility"
+$legacyProject.template_id = "immersive"
+New-Item -ItemType Directory -Force -Path $LegacySmokeOut | Out-Null
+$legacyExportPayload = @{
+  project = $legacyProject
+  output_dir = $LegacySmokeOut
+} | ConvertTo-Json -Depth 30
+$legacyExport = $legacyExportPayload | & $Python $WorkerPath export | ConvertFrom-Json
+$legacyExport | ConvertTo-Json -Depth 20 | Set-Content -Encoding UTF8 $LegacyExportJson
+if (-not (Test-Path $legacyExport.apkg_path)) {
+  throw "Legacy V10 compatibility APKG was not created: $($legacyExport.apkg_path)"
+}
+if ($legacyExport.template_family -ne "language-immersive" -or $legacyExport.template_schema -ne "V10") {
+  throw "Legacy compatibility contract drifted: $($legacyExport.template_family) / $($legacyExport.template_schema)"
+}
+if ([int64]$legacyExport.note_model_id -ne 3784810093) {
+  throw "Legacy V10 Note Model ID drifted: $($legacyExport.note_model_id)"
+}
+$legacyVerify = & $Python $VerifyScript $legacyExport.apkg_path $LegacyVerifyOut | ConvertFrom-Json
+$legacyVerify | ConvertTo-Json -Depth 30 | Set-Content -Encoding UTF8 $LegacyVerifyJson
+if (-not $legacyVerify.ok -or $legacyVerify.note_model_contract_issues.Count -ne 0) {
+  throw "Legacy V10 compatibility APKG verification failed. See $LegacyVerifyJson"
+}
+if ($legacyVerify.note_model_contracts.Count -ne 1 -or [int64]$legacyVerify.note_model_contracts[0].noteModelId -ne 3784810093) {
+  throw "Legacy V10 compatibility contract was not proven. See $LegacyVerifyJson"
+}
 if ($IncludeDocumentSmoke) {
   $documentPayload = @{
     source_mode = "document"
@@ -289,12 +339,10 @@ if ($IncludeDocumentSmoke) {
     throw "Document APKG deck kind is not source-aware: $($documentExport.deck_kind) / $($documentExport.deck_name)"
   }
 
-  if (Test-Path $VerifyScript) {
-    $documentVerify = & $Python $VerifyScript $documentExport.apkg_path $DocumentVerifyOut | ConvertFrom-Json
-    $documentVerify | ConvertTo-Json -Depth 30 | Set-Content -Encoding UTF8 $DocumentVerifyJson
-    if (-not $documentVerify.ok) {
-      throw "Document APKG verification failed. See $DocumentVerifyJson"
-    }
+  $documentVerify = & $Python $VerifyScript $documentExport.apkg_path $DocumentVerifyOut | ConvertFrom-Json
+  $documentVerify | ConvertTo-Json -Depth 30 | Set-Content -Encoding UTF8 $DocumentVerifyJson
+  if (-not $documentVerify.ok) {
+    throw "Document APKG verification failed. See $DocumentVerifyJson"
   }
 }
 
@@ -302,6 +350,8 @@ Write-Host "Smoke test passed." -ForegroundColor Green
 Write-Host "Segments: $($project.segments.Count)"
 Write-Host "APKG: $($export.apkg_path)"
 Write-Host "Verify report: $VerifyJson"
+Write-Host "Legacy V10 APKG: $($legacyExport.apkg_path)"
+Write-Host "Legacy V10 verify report: $LegacyVerifyJson"
 if ($IncludeDocumentSmoke) {
   Write-Host "Document segments: $($documentProject.segments.Count)"
   Write-Host "Document APKG: $($documentExport.apkg_path)"

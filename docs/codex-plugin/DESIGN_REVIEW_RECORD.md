@@ -1,7 +1,7 @@
 # 设计评审记录
 
-> 状态：CURRENT 文档评审记录；不表示插件已经实现  
-> 日期：2026-07-16  
+> 状态：CURRENT 文档评审记录；不表示插件已经实现
+> 日期：2026-07-17
 > 范围：`docs/codex-plugin/` 的产品、学习、架构、安全、工具、交付与路线图契约
 
 ## 1. 评审目标
@@ -38,7 +38,7 @@ Hermes 本地封装向 Grok 4.5 后端的本次请求实际发送 `xhigh`，服�
 - App UI 必须是 M4 条件适配，不能把 ChatGPT Apps 展示模式外推为所有 Codex 宿主能力。
 - 卡片应是一个可重复、可评分的提取事件；学习点必须先过证据、可评分、冲突与安全门禁。
 - 高影响授权和 Anki 批准不能成为模型可见 bearer。
-- V14 与发布 verifier 的精确兼容合同是必须先处理的 M0 阻断；最终本地审计进一步确认当前 V1 + startswith 判定会同时接受 V14 和 V199，属于 fail-open。
+- V14 与发布 verifier 的精确兼容合同在评审时是必须先处理的 M0 阻断；当时本地审计确认 V1 + `startswith` 判定会同时接受 V14 和 V199，属于 fail-open。
 
 ## 4. 关键分歧与裁决
 
@@ -50,13 +50,23 @@ Hermes 本地封装席的结论是 `needs-contract-hardening`，置信度 0.74�
 
 | 意见 | 文档处理 | 代码状态 |
 |---|---|---|
-| verifier 精确接受 V14、拒绝 V1xx 伪版本 | 已列为 M0 P0 和 release gate | 未修改；本轮禁止改代码 |
+| verifier 精确接受 V14、拒绝 V1xx 伪版本 | 已列为 M0 P0 和 release gate | CURRENT M0 子项已实现；完整里程碑仍在验收 |
 | M3 tools-only 工具合同 | 已冻结 37 个工具、schema、注解、错误、幂等和任务语义（新增版本化 study.update_learning_contract） | 待实现 |
 | 目标 Codex 宿主/stdio 预检 | 已加入 host capability、M3 阻断与 APKG-only 降级 | 待实测 |
 | Anki 确认不可旁路 | 已改为 ImportPlan → 模型外批准 → importIntentId | 待实现 |
 | 学习硬门禁可机器审计 | 已加入 GateEvaluationSet、规则版本、revision 与 stale 语义 | 待实现 |
 | Artifact 防篡改与 stale | 已加入 canonical preimage、认证注册表、EntityRef 与攻击测试 | 待实现 |
 | M3 来源范围冻结 | 已固定本地视频/字幕与安全公开视频 URL；其他来源后移 | 待实现 |
+
+### 4.1 CURRENT M0 实施更新（2026-07-17）
+
+评审时记录的 V1 宽前缀 P0 已在当前工作分支关闭：生产 V14 与明确兼容的 V10 使用精确 Note Model 合同，release smoke 强制调用 verifier，伪版本/篡改合同测试必须失败。完整 APKG 合同现在验证 ZIP/JSON 唯一性与限额、模型/牌组/note/card、CardId/纯内容 SHA、媒体账本和安全 HTML；10 个生产生成变体都以真实导出产物通过。导出只在唯一 `.partial` 通过整包校验后以 no-replace 语义原子发布最终 APKG；目标已存在时拒绝覆盖，失败不产生新最终包或伪 done。
+
+生产 Anki 写路径在媒体预置前执行内部 raw `ExportResult`/payload/路径/APKG 哈希与完整包 preflight，并在媒体准备后、紧贴 `importPackage` 前再次 stat + SHA。raw `ExportResult` 不认证来源，无法抵抗能同时篡改 APKG 与结果的同权限本机攻击者；partial 后的 no-replace 原子发布和重复 rehash 只缩小、不能消除 TOCTOU。M2 必须用认证 Artifact 注册表、不透明引用和受控文件句柄取代该内部兼容信任边界。
+
+最终自动化回归为 Vitest 830、正式 `pytest` 561、独立 `unittest discover` 551、Rust 31 项通过与 1 项按设计忽略、UI smoke 3、V14/V10 release smoke、`check:full` 和 Tauri build 通过；两套 Python 运行有重叠，不能相加。20 卡生产 V14 离线完整合同为 20 notes / 20 cards / 52 个唯一媒体，每卡 6 引用、共 120 个媒体归属。真实隔离 Anki 数据级验证覆盖 E→C 单卡 1/1/6 和 20 卡 20/20/52 的首次导入、逐媒体哈希、重复跳过与重启持久化；此前合同不一致尝试仍作为 fail-closed 0 写入负例保留。
+
+这仍不是 M0 完成声明：20 卡素材是合成视频和静音 TTS，Computer Use 当前不可用，真实 GUI 翻面、播放与连续复习尚未完成。插件安装、目标 Codex 宿主注册、M1 Card Service、stdio MCP 与版本化 runtime verifier 也仍未实现。非 NFC、`CLOCK$` 等保留名、规范化冲突和 APKG archive/package/verifier 的有界流式读取已经通过；AnkiConnect 整文件/base64 媒体恢复仍有最多 256 MiB 单文件的峰值内存放大。
 
 顾问评审后，独立核心契约与安全红队又进行了多轮反向审查。为消除“各实现都看似合理但彼此不兼容”的空间，本目录进一步冻结：
 
@@ -77,12 +87,15 @@ Hermes 本地封装席的结论是 `needs-contract-hardening`，置信度 0.74�
 
 随后三轮独立机器合同复审又发现并关闭 14 个 P1：proof producer 的 domain-separated 身份认证；Service-derived 非空 render expectations；三传感器跨进程写后恢复检测；11 条 final evidence 与 barrier instance/read snapshot 绑定；root-signed revocation sequence/floor；pre-run/source/signed-run 无环 DAG；registry descriptor digest 等价；typed focus from/to/initiator；restart window owner 映射；`(keyId,keyEpoch)` 精确公钥解析；Typed FinalRuntimeEvidenceInputsManifest 的固定 cardinality/排序/JCS preimage；对称 focus predicate、Service main/child/proxy 与 add-on 动作归因；跨 snapshot append-only tombstone 与公钥 hash 全历史唯一；全运行期 process lifecycle ledger 与独立 cutoff-active subset。
 
-最终核心架构席与安全红队分别对当前磁盘做了只读复审，结论均为 **PASS（未发现设计文档层面的 P0/P1）**。这个 PASS 只表示文档合同在已审攻击路径下闭合，不表示 runtime verifier、插件或 Anki 隔离核验已经实现，也不解除下一节的真实代码与设备测试门槛。
+最终核心架构席与安全红队分别对当前磁盘做了只读复审，结论均为 **PASS（未发现设计文档层面的 P0/P1）**。这个 PASS 只表示文档合同在已审攻击路径下闭合，不表示 runtime verifier、插件或完整 Anki GUI/学习体验核验已经实现，也不解除下一节的真实设备测试门槛。
 
-顾问评审后进行的仓库核对也把 V14 问题从“未显式列入允许版本”修正为更准确的“V1 宽前缀 fail-open”：当前 verifier 会同时接受合法 V14 和伪造 V199。外部顾问结论只用于设计反证，代码事实以本地逐行核验与真实测试为准。
+顾问评审后进行的仓库核对也把 V14 问题从“未显式列入允许版本”修正为更准确的“V1 宽前缀 fail-open”：评审当时的 verifier 会同时接受合法 V14 和伪造 V199。该句保留为历史发现；当前实现状态以 4.1 节、本地逐行核验与真实测试为准。
 ## 5. 仍未消除的不确定性
 
-- M0 的 verifier fail-open 仍真实存在；文档不能替代精确版本判定、V14 正例与 V13/V15/V199/近似前缀负例 APKG smoke。
+- M0 的 verifier fail-open 已由精确合同关闭；最终自动化、20 卡 20/20/52 离线媒体合同、E→C 单卡 1/1/6 与隔离 Anki 20/20/52 的数据级导入/重复/重启已有证据。但 Computer Use、真实 GUI 媒体播放和至少 20 张连续复习仍未完成；合成视频和静音 TTS 不能提供语义或听感证据。
+- 当前内部 raw `ExportResult` 的一致性校验不等于来源认证；能同时改写 APKG 与 `ExportResult` 的同权限本机攻击者仍在信任边界内，须由 M2 认证 Artifact 注册表解决。
+- 当前 stat/SHA 重算和同目录 no-replace 原子发布只缩短路径 TOCTOU 窗口，不构成不可变文件句柄证明。
+- 非 NFC、Windows 保留设备名（含 `CLOCK$`）、大小写/规范化冲突和 APKG archive 资源上限已通过。流式结论只覆盖 APKG archive/package/verifier；AnkiConnect 媒体恢复仍整文件读入并 base64 编解码，存在峰值内存放大。
 - 目标 Codex Desktop 版本能否稳定启动/重连本地 stdio Service，必须在 M3 开发前做最小 spike。
 - MCP App resource 与目标 Codex 宿主的连接能力尚未证明；因此 M4 仍是条件里程碑。
 - 版本化、只读隔离的 Anki runtime verifier/add-on 或 GUI protocol 尚未实现；只有 AnkiConnect 时最多能声明数据核验，实际运行时失败/通过状态均不能伪造。
@@ -97,15 +110,15 @@ Hermes 本地封装席的结论是 `needs-contract-hardening`，置信度 0.74�
 1. 本目录内部链接、术语、代码围栏和状态标记通过文档校验。
 2. M3/M5/M6/M7 范围不再混写。
 3. 公共 MCP 不出现通用 Worker、Shell、原始路径、秘密回读、raw AnkiConnect 或授权 bearer。
-4. verifier 的 V1 宽前缀 fail-open 被明确保留为未解决 P0，不能把当前导出链写成 production-ready。
+4. verifier 的 V1 宽前缀 P0 已有精确合同和负例证据；在 M0 全部出口完成前仍不能把插件或真实 Anki 闭环写成 production-ready。
 
 进入 M3 之前还必须完成：
 
-1. verifier 精确版本合同修复、V14 正例与 V1xx 伪版本负例发布 smoke。
+1. [CURRENT 子项完成] verifier 精确版本合同、V14/V10 release smoke、V1xx 伪版本/篡改负例、完整 APKG 合同、10 个生产生成变体、`.partial` 后 no-replace 原子发布、生产导入前 preflight、最终自动化、20 卡 20/20/52 离线媒体合同，以及隔离真实 Anki 单卡与 20 卡数据级导入/重复/重启证据。完整结果见 [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md)。
 2. 目标 Codex 宿主 manifest/stdio/tool registration spike。
 3. Audience/InternalAuthorization/Disclosure/ProfileConfiguration/Egress、Artifact/Task/Gate、逐 profile verification、BrokerRequest/ReservationLedger，以及 AnkiVerificationContract/CardIdentitySet/MediaInventory、TrustRevocationSnapshotHistory、RuntimeVerificationRunBinding/ProofAuthentication、ObservationEvidence/ProfileState、三传感器 WriteAudit、RunOwnedProcessLifecycleLedger/TrustedAddonFocusAction、FinalRuntimeEvidenceInputsManifest/ReadBarrier、Environment/TrustedCopy/RequiredChecks/RuntimeEvidence/ImportPlan/Recovery 合同测试。
 4. Windows 真实 helper 沙箱、普通/敏感 URL 的 MCP 零进入 canary、secret canary 与 model/TTS broker 跨目标/文本替换/预算绕过测试。
-5. tools-only 完成 1 张与 20 张 Anki 数据核验，并由版本化隔离 runtime verifier 证明固定检查集、权威 CardId/媒体文件、每条渲染/交互/播放/重启 Evidence Artifact、canonical 调度/历史快照、write audit、受信 copy lineage 与用户进程/窗口零干扰。
+5. tools-only 单卡 E→C 1/1/6 和 20 卡 20/20/52 的数据级导入、重复跳过与重启哈希已有 CURRENT 证据；仍须在 Computer Use 可用时完成真实 GUI 翻面、媒体实际播放和至少 20 张连续复习，并由版本化隔离 runtime verifier 证明固定检查集、权威 CardId/媒体文件、每条渲染/交互/播放/重启 Evidence Artifact、canonical 调度/历史快照、write audit、受信 copy lineage 与用户进程/窗口零干扰。
 
 ## 7. 评审证据边界
 

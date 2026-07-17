@@ -1,7 +1,7 @@
 # 插件包、安装与分发参考
 
-> 状态：PROPOSED 打包设计，当前仓库还没有 Codex 插件包  
-> 日期：2026-07-16  
+> 状态：PROPOSED 打包设计，当前仓库还没有 Codex 插件包
+> 日期：2026-07-17
 > 实施时必须重新用当时的官方验证器核验清单字段。
 
 ## 1. 0.1 / M3 核心包形态
@@ -16,6 +16,8 @@ plugins/
     skills/
       anki-study-agent/
         SKILL.md
+        agents/
+          openai.yaml
         references/
     server/
       launcher/
@@ -38,7 +40,7 @@ plugins/
     SBOM.spdx.json
 ~~~
 
-这是目标布局，当前不创建这些文件。
+这是目标布局。M0 完成后先创建不声明 MCP/App 的被动插件与 Skill 骨架；只有真实 stdio 服务至少提供 system.get_capabilities、通过宿主注册测试后，才增加 .mcp.json 和 manifest 的 mcpServers。禁止用空 MCP 占位文件伪造可用状态。
 
 职责：
 
@@ -108,7 +110,7 @@ V1 不使用 hooks。当前生成规范与验证器对 hooks 字段存在差异�
 
 ~~~json
 {
-  "mcp_servers": {
+  "mcpServers": {
     "anki-study-agent": {
       "command": "./server/launcher/anki-study-agent.exe",
       "args": ["--stdio"],
@@ -287,15 +289,19 @@ V1 本地 stdio 设计不应为了公开目录而过早引入云服务。先证�
 - CI 进行秘密扫描、依赖审计、launcher+payload+hash 表联合替换、撤销密钥和降级包测试。
 - 不使用 curl-pipe-shell 或 repair_env。
 
-## 13. 已知 P0
+## 13. CURRENT M0 合同状态与打包边界
 
-当前代码的 immersive_v11 family 生成 template schema V14；发布 verifier 包含宽前缀 Anki Card Generator V1 并用 startswith 判定，导致 V14 被意外接受，同时 V199 等非法近似版本也能通过。P0 是版本判断 fail-open，而不是简单“未允许 V14”。
+历史 V1 + `startswith` 宽前缀会同时接受合法 V14 与伪造 V199。当前 M0 工作分支已将其替换为精确 family/schema/Note Model ID、字段/模板/CSS 与 compatibility contract，并将生产 V14、明确兼容的 V10、固定 `genanki==0.13.1` serializer、完整 APKG 包合同、10 个生产生成变体、`.partial` 校验后 no-replace 原子发布、伪版本/篡改负例、强制 release verifier 和 Anki 写入前整包 preflight 纳入门禁。该固定不等于第 12 节要求的全依赖版本+哈希锁定已经完成。
 
-因此，在修复并以真实 V14 APKG 加入 release smoke 前：
+最终自动化为 Vitest 830、正式 `pytest` 561、独立 `unittest discover` 551（有重叠，不相加）、Rust 31 项通过与 1 项忽略、UI smoke 3、V14/V10 release smoke、`check:full` 与 Tauri build 通过。20 卡生产 V14 离线媒体合同为 20/20/52、每卡 6 引用、120 个归属；真实隔离 Anki 数据级核验覆盖 E→C 单卡 1/1/6 和 20 卡 20/20/52 的首次导入、媒体哈希、重复跳过与重启持久化。合成视频与静音 TTS 不是语义、听感或 GUI 复习证据。内部 raw `ExportResult` 仍不认证来源，无法抵抗能同时篡改 APKG 与结果的同权限本机攻击者；no-replace 原子发布和导入前 rehash 只缩小、不能消除 TOCTOU。正式插件包必须等 M2 认证 Artifact 注册表、不透明引用和受控文件句柄建立后，才能把导入工具暴露给 MCP。
 
-- 不得声明插件复用了完整 APKG 发布核验闭环。
-- 不得把当前宽前缀 verifier 通过当作版本、Note Model 或模板兼容性已经可靠核验的事实。
-- 该问题列入 [路线图](ROADMAP.md) M0。
+这个完成项不能外推为插件包已经可用：
+
+- 当前仍没有经过安装与宿主注册验证的正式插件包、stdio MCP 或 App resource。
+- M1 Headless Card Service、Artifact/授权边界和版本化 Anki runtime verifier 仍未实现。
+- 非 NFC、Windows 保留设备名（含 `CLOCK$`）、规范化冲突与 APKG archive 资源上限已通过；有界流式读取仅覆盖 APKG archive/package/verifier。AnkiConnect 整文件/base64 媒体恢复仍存在最多 256 MiB 单文件的峰值内存放大。
+- M0 只有在 Computer Use 真实桌面验收、GUI 翻面/媒体播放和至少 20 张连续复习通过后才能关闭；现有数据级证据不能代替这些出口。完整边界见 [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md)。
+- 在这些出口满足前，不得声明插件复用了完整 APKG → 真实 Anki 发布闭环。
 
 ## 14. 包验收
 

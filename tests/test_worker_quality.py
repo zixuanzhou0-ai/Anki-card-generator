@@ -46,6 +46,74 @@ verify_apkg = load_verify_apkg()
 
 
 class WorkerQualityTests(unittest.TestCase):
+    def setUp(self):
+        # Older behavioral tests use tiny byte strings as APKG stand-ins and
+        # exercise post-import/media logic rather than the production APKG
+        # contract gate. Keep those tests narrow; dedicated preflight tests use
+        # the real helper and cover fail-closed behavior.
+        self._production_import_preflight = worker._legacy_worker.preflight_anki_import_apkg
+
+        def _allow_legacy_fake_apkg_preflight(payload, export_result):
+            path_text = str(export_result.get("apkg_path") or payload.get("apkg_path") or "")
+            path = Path(path_text) if path_text else Path()
+            if not path.exists() or not path.is_file():
+                return {
+                    "ok": False,
+                    "message": f"找不到要导入的 APKG：{path}",
+                    "failed_checks": ["apkg_missing_for_import"],
+                }
+            if path.suffix.lower() != ".apkg":
+                return {
+                    "ok": False,
+                    "message": f"导入路径不是 APKG 文件：{path}",
+                    "failed_checks": ["apkg_invalid_for_import"],
+                }
+            stat = path.stat()
+            manifest = (
+                export_result.get("media_manifest")
+                if isinstance(export_result.get("media_manifest"), dict)
+                else {}
+            )
+            media_summary = (
+                export_result.get("media_summary")
+                if isinstance(export_result.get("media_summary"), dict)
+                else {}
+            )
+            media_files = media_summary.get("media_files")
+            if not isinstance(media_files, int) or isinstance(media_files, bool):
+                media_files = len(manifest)
+            media_bytes = media_summary.get("media_bytes")
+            if not isinstance(media_bytes, int) or isinstance(media_bytes, bool):
+                media_bytes = sum(
+                    int(entry.get("bytes") or 0)
+                    for entry in manifest.values()
+                    if isinstance(entry, dict)
+                )
+            return {
+                "ok": True,
+                "message": "test-only APKG fixture accepted",
+                "failed_checks": [],
+                "apkg_path": str(path),
+                "apkg_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "apkg_size_bytes": stat.st_size,
+                "apkg_mtime_ms": int(stat.st_mtime * 1000),
+                "deck_name": str(export_result.get("deck_name") or payload.get("deck_name") or ""),
+                "deck_kind": str(export_result.get("deck_kind") or payload.get("deck_kind") or ""),
+                "media_dir": str(export_result.get("media_dir") or payload.get("media_dir") or ""),
+                "cards": int(export_result.get("cards") or payload.get("expected_cards") or 0),
+                "media_manifest": manifest,
+                "media_files": media_files,
+                "media_bytes": media_bytes,
+                "note_model_contract": {},
+            }
+
+        worker._legacy_worker.preflight_anki_import_apkg = _allow_legacy_fake_apkg_preflight
+        self.addCleanup(
+            setattr,
+            worker._legacy_worker,
+            "preflight_anki_import_apkg",
+            self._production_import_preflight,
+        )
     def _ai_config(self):
         return {
             "provider": "gemini-vertex",
@@ -8159,6 +8227,10 @@ class WorkerQualityTests(unittest.TestCase):
             self.assertGreaterEqual(max_active, 2)
             self.assertLessEqual(max_active, 2)
             report = verify_apkg.sqlite_fallback_report(Path(result["apkg_path"]))
+            self.assertTrue(report["ok"], report)
+            self.assertEqual(report["failed_checks"], [])
+            self.assertEqual(report["note_model_contract_issues"], [])
+            self.assertEqual(report["note_model_contracts"][0]["noteModelId"], 3157735470)
             self.assertEqual(report["empty_required_text_fields"], [])
             self.assertEqual(report["tts_text_hash_mismatches"], [])
             self.assertEqual(report["phrase_tts_text_hash_mismatches"], [])
@@ -8325,7 +8397,7 @@ class WorkerQualityTests(unittest.TestCase):
             self.assertEqual(payload["details"]["phrase_tts_generated"], 0)
             self.assertFalse(any(output_dir.glob("*.apkg")))
 
-    def test_export_v11_required_fields_use_safe_fallbacks_after_generic_filter(self):
+    def test_export_v14_required_fields_use_safe_fallbacks_after_generic_filter(self):
         try:
             import genanki  # noqa: F401
         except ImportError:
@@ -8378,9 +8450,19 @@ class WorkerQualityTests(unittest.TestCase):
 
             result = worker.handle_export({"project": project, "output_dir": str(output_dir)})
             self.assertEqual(result["quality_audit"]["empty_required_fields"], 0)
+            self.assertEqual(result["template_family"], "language-immersive-v11")
+            self.assertEqual(result["template_schema"], "V14")
             self.assertEqual(result["template_version"], "V14")
+            self.assertEqual(result["note_model_id"], 3157735470)
+            self.assertEqual(result["model_name"], "Anki Card Generator V14 - 沉浸复读 V11")
+            self.assertEqual(result["compatibility_contract_version"], 1)
+            self.assertEqual(len(result["note_model_contract_digest"]), 64)
             self.assertEqual(result["presentation_warnings"], [])
             report = verify_apkg.sqlite_fallback_report(Path(result["apkg_path"]))
+            self.assertTrue(report["ok"], report)
+            self.assertEqual(report["failed_checks"], [])
+            self.assertEqual(report["note_model_contract_issues"], [])
+            self.assertEqual(report["note_model_contracts"][0]["noteModelId"], 3157735470)
             self.assertEqual(report["empty_required_text_fields"], [])
 
             import sqlite3
@@ -9537,14 +9619,31 @@ class WorkerQualityTests(unittest.TestCase):
             [
                 "Anki Card Generator V12 - 沉浸复读 V11 · 快速复读",
                 "Anki Card Generator V10 - 文档知识 V10",
-                "词霸天下实验 V1",
+                "Anki Card Generator V12 - 词霸天下实验 V1",
             ],
             strict_video_import=True,
         )
-        self.assertEqual(video_template_check["ciba_model_names"], ["词霸天下实验 V1"])
+        self.assertEqual(video_template_check["ciba_model_names"], ["Anki Card Generator V12 - 词霸天下实验 V1"])
         self.assertEqual(
             video_template_check["video_template_mismatches"],
-            ["Anki Card Generator V10 - 文档知识 V10", "词霸天下实验 V1"],
+            ["Anki Card Generator V10 - 文档知识 V10", "Anki Card Generator V12 - 词霸天下实验 V1"],
+        )
+        exact_name_check = imported_model_template_mismatches(
+            [
+                "Anki Card Generator V14 - 沉浸复读 V11",
+                "Anki Card Generator V12 - 沉浸复读 V11 · 快速复读",
+                "Anki Card Generator V14 - 沉浸复读 V11 copy",
+                "Anki Card Generator V12 - 词霸天下实验 V1 copy",
+            ],
+            strict_video_import=True,
+        )
+        self.assertEqual(exact_name_check["ciba_model_names"], [])
+        self.assertEqual(
+            exact_name_check["video_template_mismatches"],
+            [
+                "Anki Card Generator V12 - 词霸天下实验 V1 copy",
+                "Anki Card Generator V14 - 沉浸复读 V11 copy",
+            ],
         )
         document_template_check = imported_model_template_mismatches(
             [
@@ -10274,6 +10373,14 @@ class WorkerQualityTests(unittest.TestCase):
                                     "card_id": card_id,
                                     "sentence_tts_text": "sentence",
                                     "phrase_tts_text": "phrase",
+                                    "note_tags": [
+                                        "anki_card_generator_v12",
+                                        "lang_english",
+                                        "level_b1",
+                                        "template_immersive_v11",
+                                        "type_expression",
+                                        "layout_phrase",
+                                    ],
                                     "note_content_sha256": worker._legacy_worker.note_content_sha256(
                                         field_names, values
                                     ),
@@ -10355,6 +10462,14 @@ class WorkerQualityTests(unittest.TestCase):
                                     "card_id": "export-card-1",
                                     "sentence_tts_text": "updated sentence",
                                     "phrase_tts_text": "updated phrase",
+                                    "note_tags": [
+                                        "anki_card_generator_v12",
+                                        "lang_english",
+                                        "level_b1",
+                                        "template_immersive_v11",
+                                        "type_expression",
+                                        "layout_phrase",
+                                    ],
                                     "note_content_sha256": worker._legacy_worker.note_content_sha256(
                                         field_names, expected_values
                                     ),
@@ -10632,6 +10747,13 @@ class WorkerQualityTests(unittest.TestCase):
                 calls.append((action, params or {}))
                 if action == "getMediaDirPath":
                     return str(anki_dir)
+                if action == "retrieveMediaFile":
+                    stored_path = anki_dir / params["filename"]
+                    return (
+                        base64.b64encode(stored_path.read_bytes()).decode("ascii")
+                        if stored_path.is_file()
+                        else None
+                    )
                 if action == "storeMediaFile":
                     stored_bytes = base64.b64decode(params["data"])
                     (anki_dir / params["filename"]).write_bytes(stored_bytes)
@@ -10719,6 +10841,13 @@ class WorkerQualityTests(unittest.TestCase):
                     ]
                 if action == "getMediaDirPath":
                     return str(anki_dir)
+                if action == "retrieveMediaFile":
+                    stored_path = anki_dir / params["filename"]
+                    return (
+                        base64.b64encode(stored_path.read_bytes()).decode("ascii")
+                        if stored_path.is_file()
+                        else None
+                    )
                 if action == "storeMediaFile":
                     stored_bytes = base64.b64decode(params["data"])
                     (anki_dir / params["filename"]).write_bytes(stored_bytes)
@@ -10786,6 +10915,8 @@ class WorkerQualityTests(unittest.TestCase):
                     ]
                 if action == "getMediaDirPath":
                     return str(anki_dir)
+                if action == "retrieveMediaFile":
+                    return None
                 if action == "storeMediaFile":
                     raise RuntimeError("The system cannot move the file to a different disk drive. (os error 17)")
                 raise AssertionError(action)
@@ -10836,6 +10967,8 @@ class WorkerQualityTests(unittest.TestCase):
             original_app_data = os.environ.get("APPDATA")
 
             def fake_anki_connect(action, params=None, url=""):
+                if action == "retrieveMediaFile":
+                    return None
                 if action == "storeMediaFile":
                     raise RuntimeError("cross-device link (os error 17)")
                 raise AssertionError(action)
@@ -10860,6 +10993,81 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(result["restored"], [])
         self.assertEqual(len(result["failures"]), 1)
         self.assertIn("受信任", result["failures"][0]["error"])
+
+    def test_direct_media_restore_accepts_identical_file_created_during_publish(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app_data = Path(temp_dir) / "appdata"
+            anki_media_dir = app_data / "Anki2" / "Profile" / "collection.media"
+            anki_media_dir.mkdir(parents=True)
+            filename = "race-identical.mp3"
+            destination = anki_media_dir / filename
+            source_bytes = b"trusted media bytes"
+            expected_hash = hashlib.sha256(source_bytes).hexdigest()
+            original_app_data = os.environ.get("APPDATA")
+            original_publish = worker._legacy_worker.publish_file_no_replace
+
+            def publish_after_identical_race(source, target):
+                self.assertFalse(target.exists())
+                target.write_bytes(source_bytes)
+                raise FileExistsError("simulated concurrent identical publish")
+
+            try:
+                os.environ["APPDATA"] = str(app_data)
+                worker._legacy_worker.publish_file_no_replace = publish_after_identical_race
+                error = worker.restore_anki_media_file_direct(
+                    source_bytes,
+                    anki_media_dir,
+                    filename,
+                    expected_hash,
+                )
+            finally:
+                worker._legacy_worker.publish_file_no_replace = original_publish
+                if original_app_data is None:
+                    os.environ.pop("APPDATA", None)
+                else:
+                    os.environ["APPDATA"] = original_app_data
+
+            self.assertEqual(error, "")
+            self.assertEqual(destination.read_bytes(), source_bytes)
+            self.assertEqual(list(anki_media_dir.glob(".anki-card-generator-media-*.tmp")), [])
+
+    def test_direct_media_restore_refuses_conflicting_file_created_during_publish(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app_data = Path(temp_dir) / "appdata"
+            anki_media_dir = app_data / "Anki2" / "Profile" / "collection.media"
+            anki_media_dir.mkdir(parents=True)
+            filename = "race-conflict.mp3"
+            destination = anki_media_dir / filename
+            source_bytes = b"trusted media bytes"
+            conflicting_bytes = b"concurrent conflicting bytes"
+            expected_hash = hashlib.sha256(source_bytes).hexdigest()
+            original_app_data = os.environ.get("APPDATA")
+            original_publish = worker._legacy_worker.publish_file_no_replace
+
+            def publish_after_conflicting_race(source, target):
+                self.assertFalse(target.exists())
+                target.write_bytes(conflicting_bytes)
+                raise FileExistsError("simulated concurrent conflicting publish")
+
+            try:
+                os.environ["APPDATA"] = str(app_data)
+                worker._legacy_worker.publish_file_no_replace = publish_after_conflicting_race
+                error = worker.restore_anki_media_file_direct(
+                    source_bytes,
+                    anki_media_dir,
+                    filename,
+                    expected_hash,
+                )
+            finally:
+                worker._legacy_worker.publish_file_no_replace = original_publish
+                if original_app_data is None:
+                    os.environ.pop("APPDATA", None)
+                else:
+                    os.environ["APPDATA"] = original_app_data
+
+            self.assertIn("同名媒体冲突", error)
+            self.assertEqual(destination.read_bytes(), conflicting_bytes)
+            self.assertEqual(list(anki_media_dir.glob(".anki-card-generator-media-*.tmp")), [])
 
     def test_verify_anki_import_refuses_media_recovery_when_export_hash_changed(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -10988,7 +11196,7 @@ class WorkerQualityTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         find_query = next(params["query"] for action, params in calls if action == "findCards")
-        self.assertIn("tag:anki_card_generator_v11", find_query)
+        self.assertIn('tag:"anki_card_generator_v11"', find_query)
         self.assertNotIn("tag:anki_card_generator_v10", find_query)
 
     def test_verify_anki_import_accepts_explicit_anki_query(self):

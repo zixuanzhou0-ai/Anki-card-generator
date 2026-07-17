@@ -5,6 +5,12 @@ import json
 import re
 from typing import Any, Callable
 
+from acg.anki_model_contracts import (
+    CIBA_IMPORT_MODEL_NAMES,
+    DOCUMENT_IMPORT_MODEL_NAMES,
+    VIDEO_IMPORT_MODEL_NAMES,
+)
+
 
 def anki_field_value(fields: dict[str, Any], name: str) -> str:
     field = fields.get(name)
@@ -60,13 +66,15 @@ def anki_card_model_name(info: dict[str, Any]) -> str:
     for key in ("modelName", "model"):
         value = info.get(key)
         if isinstance(value, str) and value.strip():
-            return value.strip()
+            # Preserve the exact Anki value. Whitespace normalization here can
+            # turn a wrapped/spoofed model name into a trusted allow-list hit.
+            return value
     note = info.get("note")
     if isinstance(note, dict):
         for key in ("modelName", "model"):
             value = note.get(key)
             if isinstance(value, str) and value.strip():
-                return value.strip()
+                return value
     return ""
 
 
@@ -85,26 +93,14 @@ def imported_model_template_mismatches(
     strict_document_import: bool = False,
 ) -> dict[str, list[str]]:
     sorted_model_names = sorted(model_names)
-    ciba_model_names = [
-        name
-        for name in sorted_model_names
-        if "词霸天下" in name or "ciba" in name.lower()
-    ]
+    ciba_model_names = [name for name in sorted_model_names if name in CIBA_IMPORT_MODEL_NAMES]
     video_template_mismatches = (
-        [
-            name
-            for name in sorted_model_names
-            if "沉浸复读 v11" not in name.lower()
-        ]
+        [name for name in sorted_model_names if name not in VIDEO_IMPORT_MODEL_NAMES]
         if strict_video_import
         else []
     )
     document_template_mismatches = (
-        [
-            name
-            for name in sorted_model_names
-            if "文档" not in name or "沉浸复读 v11" in name.lower() or "词霸天下" in name or "ciba" in name.lower()
-        ]
+        [name for name in sorted_model_names if name not in DOCUMENT_IMPORT_MODEL_NAMES]
         if strict_document_import
         else []
     )

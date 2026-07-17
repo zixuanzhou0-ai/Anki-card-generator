@@ -133,11 +133,18 @@ class GenerationTimingBoundaryTests(unittest.TestCase):
         self.assertEqual(timing["anki_query"], 34)
 
     def test_verify_anki_import_missing_apkg_reports_timing_aliases(self):
+        missing_apkg = ROOT / "missing-release-timing.apkg"
         result = worker.handle_verify_anki_import(
             {
                 "import_apkg": True,
-                "apkg_path": str(ROOT / "missing-release-timing.apkg"),
-                "export_result": {"media_summary": {"media_files": 0}},
+                "apkg_path": str(missing_apkg),
+                "export_result": {
+                    "apkg_path": str(missing_apkg),
+                    "media_dir": str(ROOT / ".tmp" / "missing-release-media"),
+                    "media_summary": {"media_files": 0},
+                    "deck_name": "Missing release timing",
+                    "deck_kind": "video_language",
+                },
             }
         )
 

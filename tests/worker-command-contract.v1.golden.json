@@ -1,0 +1,905 @@
+[
+    {
+        "command":  "check_env",
+        "request":  {
+
+                    },
+        "result":  {
+                       "schema_version":  2,
+                       "python":  "3.11.9",
+                       "python_executable":  "C:\\fixture\\venv\\python.exe",
+                       "venv":  true,
+                       "ffmpeg":  true,
+                       "ffmpeg_path":  "C:\\fixture\\bin\\ffmpeg.exe",
+                       "ffmpeg_version":  "ffmpeg fixture 1.0",
+                       "genanki":  true,
+                       "yt_dlp":  true,
+                       "yt_dlp_version":  "fixture-2026.01.01",
+                       "yt_dlp_js_runtime":  "node",
+                       "anki_installed":  true,
+                       "anki_path":  "C:\\fixture\\Anki\\anki.exe",
+                       "anki_running":  true,
+                       "anki_connect":  true,
+                       "anki_connect_detail":  "AnkiConnect 6",
+                       "packages":  {
+                                        "genanki":  "0.13.1",
+                                        "yt-dlp":  "fixture-2026.01.01"
+                                    },
+                       "status_items":  [
+                                            {
+                                                "id":  "python",
+                                                "label":  "Python worker",
+                                                "status":  "ok",
+                                                "detail":  "Fixture runtime is ready."
+                                            }
+                                        ],
+                       "worker":  "E:\\fixture\\workers\\anki_worker.py"
+                   },
+        "progress":  [
+
+                     ],
+        "error":  {
+                      "schema_version":  2,
+                      "message":  "Environment inspection failed.",
+                      "error_code":  "UNKNOWN_WORKER_ERROR",
+                      "stage":  "check_env",
+                      "retryable":  true,
+                      "fallbacks":  [
+
+                                    ]
+                  }
+    },
+    {
+        "command":  "repair_env",
+        "request":  {
+                        "target":  "python_packages"
+                    },
+        "result":  {
+                       "schema_version":  2,
+                       "ok":  true,
+                       "target":  "python_packages",
+                       "summary":  "One repair step completed.",
+                       "actions":  [
+                                       {
+                                           "id":  "python_packages",
+                                           "label":  "Install worker dependencies",
+                                           "status":  "success",
+                                           "detail":  "Fixture installation completed.",
+                                           "command":  "python -m pip install -r workers/requirements.txt",
+                                           "next_step":  ""
+                                       }
+                                   ]
+                   },
+        "progress":  [
+                         {
+                             "command":  "repair_env",
+                             "stage":  "start",
+                             "percent":  5,
+                             "message":  "Preparing environment repair.",
+                             "schema_version":  2
+                         },
+                         {
+                             "command":  "repair_env",
+                             "stage":  "python_packages",
+                             "percent":  20,
+                             "message":  "Repairing worker dependencies.",
+                             "schema_version":  2
+                         },
+                         {
+                             "command":  "repair_env",
+                             "stage":  "done",
+                             "percent":  100,
+                             "message":  "Environment repair steps completed.",
+                             "schema_version":  2
+                         }
+                     ],
+        "error":  {
+                      "schema_version":  2,
+                      "message":  "Python worker dependencies could not be repaired.",
+                      "error_code":  "ENV_PYTHON_MISSING",
+                      "stage":  "python_packages",
+                      "retryable":  true,
+                      "fallbacks":  [
+                                        "manual_runtime_setup"
+                                    ]
+                  }
+    },
+    {
+        "command":  "test_api",
+        "request":  {
+                        "api_config":  {
+                                           "provider":  "local",
+                                           "model":  ""
+                                       }
+                    },
+        "result":  {
+                       "schema_version":  2,
+                       "ok":  true,
+                       "provider":  "local",
+                       "model":  "local-fallback",
+                       "message":  "Preview mode is available.",
+                       "latency_ms":  0
+                   },
+        "progress":  [
+
+                     ],
+        "error":  {
+                      "schema_version":  2,
+                      "message":  "Model service did not respond.",
+                      "error_code":  "MODEL_CONNECTION_FAILED",
+                      "stage":  "model_api",
+                      "retryable":  true,
+                      "fallbacks":  [
+
+                                    ]
+                  }
+    },
+    {
+        "command":  "test_tts",
+        "request":  {
+                        "tts_config":  {
+                                           "enabled":  false,
+                                           "provider":  "disabled",
+                                           "model":  "",
+                                           "voice":  ""
+                                       },
+                        "language":  "en"
+                    },
+        "result":  {
+                       "schema_version":  2,
+                       "ok":  false,
+                       "provider":  "disabled",
+                       "model":  "",
+                       "voice":  "",
+                       "message":  "TTS is disabled.",
+                       "error_code":  "TTS_NOT_FOUND",
+                       "stage":  "tts",
+                       "retryable":  false
+                   },
+        "progress":  [
+
+                     ],
+        "error":  {
+                      "schema_version":  2,
+                      "message":  "TTS service timed out.",
+                      "error_code":  "TTS_TIMEOUT",
+                      "stage":  "tts",
+                      "retryable":  true,
+                      "fallbacks":  [
+
+                                    ]
+                  }
+    },
+    {
+        "command":  "extract_learning_points",
+        "request":  {
+                        "source_mode":  "local",
+                        "video_path":  "E:\\fixture\\lesson.mp4",
+                        "subtitle_path":  "E:\\fixture\\lesson.srt",
+                        "language":  "en",
+                        "level_mode":  "auto",
+                        "level":  "B1",
+                        "api_config":  {
+                                           "provider":  "openai-compatible",
+                                           "base_url":  "https://fixture.invalid/v1",
+                                           "model":  "fixture-model"
+                                       }
+                    },
+        "result":  {
+                       "schema_version":  2,
+                       "id":  "lp_project_fixture",
+                       "title":  "Fixture lesson",
+                       "source_mode":  "local",
+                       "video_path":  "E:\\fixture\\lesson.mp4",
+                       "subtitle_path":  "E:\\fixture\\lesson.srt",
+                       "language":  "en",
+                       "level_mode":  "auto",
+                       "level":  "B1",
+                       "review_basis":  "ai_reviewed",
+                       "ai_model_provider":  "openai-compatible",
+                       "ai_model_name":  "fixture-model",
+                       "local_candidate_count":  1,
+                       "ai_reviewed_source_count":  1,
+                       "ai_reviewed_candidate_count":  1,
+                       "ai_recommended_count":  1,
+                       "ai_candidate_count":  0,
+                       "ai_rejected_count":  0,
+                       "source_info":  null,
+                       "source_sentences":  [
+                                                {
+                                                    "id":  "source_1",
+                                                    "text":  "Keeping the system in good shape takes care.",
+                                                    "start":  1.0,
+                                                    "end":  4.0
+                                                }
+                                            ],
+                       "learning_points":  [
+                                               {
+                                                   "id":  "lp_1",
+                                                   "status":  "recommended",
+                                                   "answer_core":  "in good shape",
+                                                   "exact_span":  "in good shape",
+                                                   "source_sentence":  "Keeping the system in good shape takes care.",
+                                                   "start":  1.0,
+                                                   "end":  4.0
+                                               }
+                                           ],
+                       "learning_point_summary":  {
+                                                      "total":  1,
+                                                      "recommended":  1,
+                                                      "candidate_only":  0,
+                                                      "hidden_duplicate":  0,
+                                                      "hard_blocked":  0
+                                                  },
+                       "timing_ms":  {
+                                         "source_prepare":  10,
+                                         "learning_point_extract":  20,
+                                         "ai_review":  30,
+                                         "postprocess":  5,
+                                         "total":  65
+                                     },
+                       "quality_funnel":  {
+                                              "subtitle_cues":  1,
+                                              "source_sentence_count":  1,
+                                              "learning_point_count":  1,
+                                              "recommended_learning_point_count":  1
+                                          },
+                       "ai_model_errors":  [
+
+                                           ],
+                       "warnings":  [
+
+                                    ]
+                   },
+        "progress":  [
+                         {
+                             "command":  "extract_learning_points",
+                             "stage":  "source",
+                             "percent":  5,
+                             "message":  "Preparing subtitle extraction.",
+                             "schema_version":  2
+                         },
+                         {
+                             "command":  "extract_learning_points",
+                             "stage":  "ai_review",
+                             "percent":  50,
+                             "message":  "Reviewing learning points.",
+                             "schema_version":  2
+                         },
+                         {
+                             "command":  "extract_learning_points",
+                             "stage":  "done",
+                             "percent":  100,
+                             "message":  "Learning-point extraction completed.",
+                             "schema_version":  2
+                         }
+                     ],
+        "error":  {
+                      "schema_version":  2,
+                      "message":  "Subtitle file is missing.",
+                      "error_code":  "LOCAL_SUBTITLE_MISSING",
+                      "stage":  "subtitle",
+                      "retryable":  true,
+                      "fallbacks":  [
+
+                                    ]
+                  }
+    },
+    {
+        "command":  "generate_cards_from_learning_points",
+        "request":  {
+                        "project_id":  "project_fixture",
+                        "title":  "Fixture lesson",
+                        "source_mode":  "local",
+                        "video_path":  "E:\\fixture\\lesson.mp4",
+                        "subtitle_path":  "E:\\fixture\\lesson.srt",
+                        "language":  "en",
+                        "level":  "B1",
+                        "learning_points":  [
+                                                {
+                                                    "id":  "lp_1",
+                                                    "status":  "recommended",
+                                                    "answer_core":  "in good shape",
+                                                    "exact_span":  "in good shape",
+                                                    "source_sentence":  "Keeping the system in good shape takes care.",
+                                                    "start":  1.0,
+                                                    "end":  4.0
+                                                }
+                                            ],
+                        "selected_learning_point_ids":  [
+                                                            "lp_1"
+                                                        ],
+                        "api_config":  {
+                                           "provider":  "openai-compatible",
+                                           "base_url":  "https://fixture.invalid/v1",
+                                           "model":  "fixture-model"
+                                       }
+                    },
+        "result":  {
+                       "schema_version":  2,
+                       "id":  "project_fixture",
+                       "title":  "Fixture lesson",
+                       "source_mode":  "local",
+                       "language":  "en",
+                       "level":  "B1",
+                       "template_id":  "immersive_v12",
+                       "quality_funnel":  {
+                                              "selected_learning_point_count":  1,
+                                              "successful_learning_point_count":  1,
+                                              "exportable_card_count":  1
+                                          },
+                       "card_generation_diagnostics":  {
+                                                           "processed_learning_point_count":  1,
+                                                           "successful_learning_point_count":  1,
+                                                           "missing_learning_point_count":  0
+                                                       },
+                       "reliability_manifest":  {
+                                                    "schema_version":  1,
+                                                    "verification_profile":  "structural_v1",
+                                                    "decision":  "pass",
+                                                    "accounting_complete":  true,
+                                                    "selected_point_count":  1,
+                                                    "verified_count":  1,
+                                                    "needs_review_count":  0,
+                                                    "hard_failed_count":  0,
+                                                    "selected_point_outcomes":  [
+                                                                                    {
+                                                                                        "learning_point_id":  "lp_1",
+                                                                                        "status":  "verified",
+                                                                                        "card_id":  "card_1",
+                                                                                        "blocker_codes":  [
+
+                                                                                                          ]
+                                                                                    }
+                                                                                ],
+                                                    "blocker_codes":  [
+
+                                                                      ],
+                                                    "source_fingerprint":  "fixture-source-fingerprint",
+                                                    "model_provider":  "openai-compatible",
+                                                    "model_name":  "fixture-model",
+                                                    "created_at":  1784246400000
+                                                },
+                       "generated_learning_point_ids":  [
+                                                            "lp_1"
+                                                        ],
+                       "source_fingerprint":  "fixture-source-fingerprint",
+                       "segments":  [
+                                        {
+                                            "id":  "seg_lp_0001",
+                                            "start":  1.0,
+                                            "end":  4.0,
+                                            "text":  "Keeping the system in good shape takes care.",
+                                            "cards":  [
+                                                          {
+                                                              "id":  "card_1",
+                                                              "type":  "phrase",
+                                                              "enabled":  true
+                                                          }
+                                                      ]
+                                        }
+                                    ],
+                       "created_at":  1784246400000
+                   },
+        "progress":  [
+                         {
+                             "command":  "generate_cards_from_learning_points",
+                             "stage":  "ai",
+                             "percent":  20,
+                             "message":  "Generating complete cards.",
+                             "schema_version":  2
+                         },
+                         {
+                             "command":  "generate_cards_from_learning_points",
+                             "stage":  "cards",
+                             "percent":  84,
+                             "message":  "Normalizing card fields.",
+                             "schema_version":  2
+                         },
+                         {
+                             "command":  "generate_cards_from_learning_points",
+                             "stage":  "done",
+                             "percent":  100,
+                             "message":  "Card generation completed.",
+                             "schema_version":  2
+                         }
+                     ],
+        "error":  {
+                      "schema_version":  2,
+                      "message":  "No learning point was selected.",
+                      "error_code":  "NO_SELECTED_LEARNING_POINTS",
+                      "stage":  "cards",
+                      "retryable":  false,
+                      "fallbacks":  [
+
+                                    ]
+                  }
+    },
+    {
+        "command":  "generate",
+        "request":  {
+                        "title":  "Fixture lesson",
+                        "source_mode":  "local",
+                        "video_path":  "E:\\fixture\\lesson.mp4",
+                        "subtitle_path":  "E:\\fixture\\lesson.srt",
+                        "language":  "en",
+                        "level":  "B1",
+                        "local_path_access_confirmed":  true,
+                        "api_config":  {
+                                           "provider":  "local",
+                                           "model":  ""
+                                       }
+                    },
+        "result":  {
+                       "schema_version":  2,
+                       "id":  "project_fixture_legacy",
+                       "title":  "Fixture lesson",
+                       "source_mode":  "local",
+                       "language":  "en",
+                       "level":  "B1",
+                       "template_id":  "immersive_v11",
+                       "quality_funnel":  {
+                                              "card_count":  1,
+                                              "usable_card_count":  1
+                                          },
+                       "segments":  [
+                                        {
+                                            "id":  "seg_0001",
+                                            "start":  1.0,
+                                            "end":  4.0,
+                                            "text":  "Keeping the system in good shape takes care.",
+                                            "cards":  [
+                                                          {
+                                                              "id":  "card_legacy_1",
+                                                              "type":  "phrase",
+                                                              "enabled":  false
+                                                          }
+                                                      ]
+                                        }
+                                    ],
+                       "warning":  "Preview draft only.",
+                       "created_at":  1784246400
+                   },
+        "progress":  [
+                         {
+                             "command":  "generate",
+                             "stage":  "source",
+                             "percent":  5,
+                             "message":  "Preparing source.",
+                             "schema_version":  2
+                         },
+                         {
+                             "command":  "generate",
+                             "stage":  "cards",
+                             "percent":  84,
+                             "message":  "Normalizing card drafts.",
+                             "schema_version":  2
+                         },
+                         {
+                             "command":  "generate",
+                             "stage":  "done",
+                             "percent":  100,
+                             "message":  "Generation completed.",
+                             "schema_version":  2
+                         }
+                     ],
+        "error":  {
+                      "schema_version":  2,
+                      "message":  "FFmpeg could not slice the source media.",
+                      "error_code":  "FFMPEG_SLICE_FAILED",
+                      "stage":  "media",
+                      "retryable":  true,
+                      "fallbacks":  [
+                                        "skip_video_slicing"
+                                    ]
+                  }
+    },
+    {
+        "command":  "export",
+        "request":  {
+                        "project":  {
+                                        "id":  "project_fixture",
+                                        "title":  "Fixture lesson",
+                                        "source_mode":  "local",
+                                        "reliability_manifest":  {
+                                                                     "decision":  "pass",
+                                                                     "accounting_complete":  true
+                                                                 },
+                                        "segments":  [
+
+                                                     ]
+                                    },
+                        "output_dir":  "E:\\fixture\\output"
+                    },
+        "result":  {
+                       "schema_version":  2,
+                       "apkg_path":  "E:\\fixture\\output\\Fixture.apkg",
+                       "apkg_sha256":  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                       "apkg_size_bytes":  4096,
+                       "apkg_mtime_ms":  1784246400000,
+                       "media_dir":  "E:\\fixture\\output\\AnkiCard-Fixture\\media",
+                       "deck_name":  "Fixture lesson",
+                       "deck_names":  [
+                                          "Fixture lesson"
+                                      ],
+                       "deck_kind":  "video_language",
+                       "template_family":  "language-immersive-v11",
+                       "template_schema":  "V14",
+                       "template_version":  "V14",
+                       "template_name":  "沉浸复读 V11",
+                       "note_model_id":  3157735470,
+                       "model_name":  "Anki Card Generator V14 - 沉浸复读 V11",
+                       "compatibility_contract_version":  1,
+                       "note_model_contract_digest":  "cbf770412b097c10a647d52c0bb044b1bff93a1c13135ca8ec368c30530c1ca4",
+                       "anki_tag":  "anki_card_generator_v14",
+                       "media_manifest":  {
+                                              "fixture_audio.mp3":  {
+                                                                        "sha256":  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                                                                        "bytes":  1024,
+                                                                         "role":  "original_audio",
+                                                                         "segment_id":  "seg_lp_0001",
+                                                                         "card_id":  "",
+                                                                         "field":  "Audio"
+                                                                    }
+                                          },
+                       "media_ledger":  [
+                                            {
+                                                "file":  "fixture_audio.mp3",
+                                                 "role":  "original_audio",
+                                                 "segment_id":  "seg_lp_0001",
+                                                 "card_id":  "",
+                                                 "field":  "Audio"
+                                            }
+                                        ],
+                       "card_media_ledger":  [
+                                                 {
+                                                     "card_id":  "card_1",
+                                                     "segment_id":  "seg_lp_0001",
+                                                     "deck_name":  "Fixture lesson",
+                                                     "note_tags":  [
+                                                                       "anki_card_generator_v14",
+                                                                       "lang_en",
+                                                                       "level_b1",
+                                                                       "template_immersive_v11",
+                                                                       "type_phrase",
+                                                                       "layout_language_immersive_v11"
+                                                                   ],
+                                                     "note_content_sha256":  "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                                                 }
+                                             ],
+                       "note_content_fingerprint":  {
+                                                        "schema_version":  1,
+                                                        "algorithm":  "sha256",
+                                                        "serialization":  "json-field-pairs-v1",
+                                                        "field_names":  [
+                                                                            "CardId",
+                                                                            "CardType",
+                                                                            "Video",
+                                                                            "Audio",
+                                                                            "TtsAudio",
+                                                                            "PhraseTtsAudio",
+                                                                            "IsListening",
+                                                                            "FrontPrompt",
+                                                                            "FrontContent",
+                                                                            "Answer",
+                                                                            "PhoneticIpa",
+                                                                            "SpokenIpa",
+                                                                            "SourceSpokenIpa",
+                                                                            "PronunciationNote",
+                                                                            "PronunciationConfidence",
+                                                                            "PronunciationStatus",
+                                                                            "SourcePronunciationStatus",
+                                                                            "PronunciationMeta",
+                                                                            "SpokenPronunciationLabel",
+                                                                            "StandardPronunciationHint",
+                                                                            "English",
+                                                                            "EnglishDisplay",
+                                                                            "ChineseDisplay",
+                                                                            "ChineseFeelDisplay",
+                                                                            "PronunciationNoteDisplay",
+                                                                            "ContextDisplay",
+                                                                            "DefinitionDisplay",
+                                                                            "TeacherNoteDisplay",
+                                                                            "TransferExamplesDisplay",
+                                                                            "Chinese",
+                                                                            "Phrase",
+                                                                            "Definition",
+                                                                            "Collocations",
+                                                                            "Context",
+                                                                            "Example",
+                                                                            "ChineseFeel",
+                                                                            "Why",
+                                                                            "Difficulty",
+                                                                            "SourceTime",
+                                                                            "TeacherNote",
+                                                                            "LearningAction",
+                                                                            "ConceptualAction",
+                                                                            "ChineseLearnerTrap",
+                                                                            "Cloze",
+                                                                            "CardLayout",
+                                                                            "CardVisualRole",
+                                                                            "FrontKicker",
+                                                                            "SourceLabel",
+                                                                            "UnderstandLabel",
+                                                                            "UseLabel"
+                                                                        ],
+                                                        "card_count":  1
+                                                    },
+                       "cards":  1,
+                       "segments":  1,
+                       "media_summary":  {
+                                             "video_segments":  0,
+                                             "video_files":  0,
+                                             "original_audio_files":  1,
+                                             "sentence_tts_files":  0,
+                                             "phrase_tts_files":  0,
+                                             "media_files":  1,
+                                             "media_bytes":  1024,
+                                             "media_mb":  0.0,
+                                             "card_media_ledger_items":  1
+                                         },
+                       "timing_ms":  {
+                                         "source_prepare":  5,
+                                         "tts":  10,
+                                         "media":  20,
+                                         "apkg_packaging":  15,
+                                         "total":  50
+                                     },
+                       "warnings":  [
+
+                                    ]
+                   },
+        "progress":  [
+                         {
+                             "command":  "export",
+                             "stage":  "prepare",
+                             "percent":  4,
+                             "message":  "Preparing Anki package.",
+                             "schema_version":  2
+                         },
+                         {
+                             "command":  "export",
+                             "stage":  "tts",
+                             "percent":  20,
+                             "message":  "Generating TTS media.",
+                             "schema_version":  2
+                         },
+                         {
+                             "command":  "export",
+                             "stage":  "media",
+                             "percent":  60,
+                             "message":  "Slicing source media.",
+                             "schema_version":  2
+                         },
+                         {
+                             "command":  "export",
+                             "stage":  "package",
+                             "percent":  92,
+                             "message":  "Writing APKG.",
+                             "schema_version":  2
+                         },
+                         {
+                             "command":  "export",
+                             "stage":  "done",
+                             "percent":  100,
+                             "message":  "Export completed.",
+                             "schema_version":  2
+                         }
+                     ],
+        "error":  {
+                      "schema_version":  2,
+                      "message":  "Reliability gate blocked APKG export.",
+                      "error_code":  "EXPORT_QUALITY_GATE_FAILED",
+                      "stage":  "export",
+                      "retryable":  false,
+                      "fallbacks":  [
+
+                                    ],
+                      "details":  {
+                                      "reliability_blocker_codes":  [
+                                                                        "unverified_card"
+                                                                    ]
+                                  }
+                  }
+    },
+    {
+        "command":  "verify_anki_import",
+        "request":  {
+                        "export_result":  {
+                                              "schema_version":  2,
+                                              "apkg_path":  "E:\\fixture\\output\\Fixture.apkg",
+                                              "apkg_sha256":  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                                              "apkg_size_bytes":  4096,
+                                              "apkg_mtime_ms":  1784246400000,
+                                              "media_dir":  "E:\\fixture\\output\\AnkiCard-Fixture\\media",
+                                              "deck_name":  "Fixture lesson",
+                                              "deck_names":  [
+                                                                 "Fixture lesson"
+                                                             ],
+                                              "deck_kind":  "video_language",
+                                              "template_family":  "language-immersive-v11",
+                                              "template_schema":  "V14",
+                                              "template_version":  "V14",
+                                              "template_name":  "沉浸复读 V11",
+                                              "note_model_id":  3157735470,
+                                              "model_name":  "Anki Card Generator V14 - 沉浸复读 V11",
+                                              "compatibility_contract_version":  1,
+                                              "note_model_contract_digest":  "cbf770412b097c10a647d52c0bb044b1bff93a1c13135ca8ec368c30530c1ca4",
+                                              "anki_tag":  "anki_card_generator_v14",
+                                              "media_manifest":  {
+                                                                     "fixture_audio.mp3":  {
+                                                                                               "sha256":  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                                                                                               "bytes":  1024,
+                                                                                                "role":  "original_audio",
+                                                                                                "segment_id":  "seg_lp_0001",
+                                                                                                "card_id":  "",
+                                                                                                "field":  "Audio"
+                                                                                           }
+                                                                 },
+                                              "media_ledger":  [
+                                                                   {
+                                                                       "file":  "fixture_audio.mp3",
+                                                                        "role":  "original_audio",
+                                                                        "segment_id":  "seg_lp_0001",
+                                                                        "card_id":  "",
+                                                                        "field":  "Audio"
+                                                                   }
+                                                               ],
+                                              "card_media_ledger":  [
+                                                                           {
+                                                                               "card_id":  "card_1",
+                                                                               "segment_id":  "seg_lp_0001",
+                                                                               "deck_name":  "Fixture lesson",
+                                                                               "note_tags":  [
+                                                                                                 "anki_card_generator_v14",
+                                                                                                 "lang_en",
+                                                                                                 "level_b1",
+                                                                                                 "template_immersive_v11",
+                                                                                                 "type_phrase",
+                                                                                                 "layout_language_immersive_v11"
+                                                                                             ],
+                                                                               "note_content_sha256":  "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                                                                           }
+                                                                    ],
+                                              "note_content_fingerprint":  {
+                                                                                 "schema_version":  1,
+                                                                                 "algorithm":  "sha256",
+                                                                                 "serialization":  "json-field-pairs-v1",
+                                                                                 "field_names":  [
+                                                                                                     "CardId",
+                                                                                                     "CardType",
+                                                                                                     "Video",
+                                                                                                     "Audio",
+                                                                                                     "TtsAudio",
+                                                                                                     "PhraseTtsAudio",
+                                                                                                     "IsListening",
+                                                                                                     "FrontPrompt",
+                                                                                                     "FrontContent",
+                                                                                                     "Answer",
+                                                                                                     "PhoneticIpa",
+                                                                                                     "SpokenIpa",
+                                                                                                     "SourceSpokenIpa",
+                                                                                                     "PronunciationNote",
+                                                                                                     "PronunciationConfidence",
+                                                                                                     "PronunciationStatus",
+                                                                                                     "SourcePronunciationStatus",
+                                                                                                     "PronunciationMeta",
+                                                                                                     "SpokenPronunciationLabel",
+                                                                                                     "StandardPronunciationHint",
+                                                                                                     "English",
+                                                                                                     "EnglishDisplay",
+                                                                                                     "ChineseDisplay",
+                                                                                                     "ChineseFeelDisplay",
+                                                                                                     "PronunciationNoteDisplay",
+                                                                                                     "ContextDisplay",
+                                                                                                     "DefinitionDisplay",
+                                                                                                     "TeacherNoteDisplay",
+                                                                                                     "TransferExamplesDisplay",
+                                                                                                     "Chinese",
+                                                                                                     "Phrase",
+                                                                                                     "Definition",
+                                                                                                     "Collocations",
+                                                                                                     "Context",
+                                                                                                     "Example",
+                                                                                                     "ChineseFeel",
+                                                                                                     "Why",
+                                                                                                     "Difficulty",
+                                                                                                     "SourceTime",
+                                                                                                     "TeacherNote",
+                                                                                                     "LearningAction",
+                                                                                                     "ConceptualAction",
+                                                                                                     "ChineseLearnerTrap",
+                                                                                                     "Cloze",
+                                                                                                     "CardLayout",
+                                                                                                     "CardVisualRole",
+                                                                                                     "FrontKicker",
+                                                                                                     "SourceLabel",
+                                                                                                     "UnderstandLabel",
+                                                                                                     "UseLabel"
+                                                                                                 ],
+                                                                                 "card_count":  1
+                                                                             },
+                                              "cards":  1,
+                                              "segments":  1,
+                                              "media_summary":  {
+                                                                    "video_segments":  0,
+                                                                    "video_files":  0,
+                                                                    "original_audio_files":  1,
+                                                                    "sentence_tts_files":  0,
+                                                                    "phrase_tts_files":  0,
+                                                                    "media_files":  1,
+                                                                    "media_bytes":  1024,
+                                                                    "media_mb":  0.0,
+                                                                    "card_media_ledger_items":  1
+                                                                },
+                                              "timing_ms":  {
+                                                                "source_prepare":  5,
+                                                                "tts":  10,
+                                                                "media":  20,
+                                                                "apkg_packaging":  15,
+                                                                "total":  50
+                                                            },
+                                              "warnings":  [
+
+                                                           ]
+                                          },
+                        "import_apkg":  true
+                    },
+        "result":  {
+                       "schema_version":  2,
+                       "ok":  true,
+                       "message":  "Anki import verification passed.",
+                       "failed_checks":  [
+
+                                         ],
+                       "query":  "deck:\"Fixture lesson\" tag:anki_card_generator_v14",
+                       "import_attempted":  true,
+                       "import_result":  [
+                                             1784246400001
+                                         ],
+                       "import_skipped_existing":  false,
+                       "card_count":  1,
+                       "expected_cards":  1,
+                       "timing_ms":  {
+                                         "anki_media_prepare":  5,
+                                         "anki_import":  10,
+                                         "anki_query":  5,
+                                         "anki_verify":  25,
+                                         "total":  25
+                                     }
+                   },
+        "progress":  [
+                         {
+                             "command":  "verify_anki_import",
+                             "stage":  "prepare_media",
+                             "percent":  5,
+                             "message":  "Preparing Anki media.",
+                             "schema_version":  2
+                         },
+                         {
+                             "command":  "verify_anki_import",
+                             "stage":  "import",
+                             "percent":  55,
+                             "message":  "Importing APKG through AnkiConnect.",
+                             "schema_version":  2
+                         },
+                         {
+                             "command":  "verify_anki_import",
+                             "stage":  "query",
+                             "percent":  62,
+                             "message":  "Reading cards and media from Anki.",
+                             "schema_version":  2
+                         }
+                     ],
+        "error":  {
+                      "schema_version":  2,
+                      "message":  "Anki import verification failed.",
+                      "error_code":  "ANKI_VERIFY_FAILED",
+                      "stage":  "anki_verify",
+                      "retryable":  true,
+                      "fallbacks":  [
+                                        "open_anki_and_retry"
+                                    ]
+                  }
+    }
+]

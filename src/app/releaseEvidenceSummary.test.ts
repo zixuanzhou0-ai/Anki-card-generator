@@ -40,6 +40,7 @@ describe('releaseEvidenceSummary', () => {
           media_files: 12,
           media_bytes: 1200,
           media_mb: 1.2,
+          card_media_ledger_items: 3,
           tts_cache_hits: 0,
           tts_cache_misses: 6,
           tts_cache_total: 6,
@@ -126,6 +127,7 @@ describe('releaseEvidenceSummary', () => {
       },
       exportResult: {
         cards: 4,
+        timing_ms: {},
         media_summary: {
           video_segments: 4,
           video_files: 4,
@@ -135,6 +137,7 @@ describe('releaseEvidenceSummary', () => {
           media_files: 16,
           media_bytes: 1600,
           media_mb: 1.6,
+          card_media_ledger_items: 4,
           tts_cache_hits: 4,
           tts_cache_misses: 0,
           tts_cache_total: 4,
@@ -210,6 +213,7 @@ describe('releaseEvidenceSummary', () => {
       project: null,
       exportResult: {
         cards: 1,
+        timing_ms: {},
         media_summary: {
           video_segments: 1,
           video_files: 1,
@@ -219,6 +223,7 @@ describe('releaseEvidenceSummary', () => {
           media_files: 4,
           media_bytes: 400,
           media_mb: 0.4,
+          card_media_ledger_items: 1,
           tts_cache_hits: 1,
           media_cache_hits: 1,
         },

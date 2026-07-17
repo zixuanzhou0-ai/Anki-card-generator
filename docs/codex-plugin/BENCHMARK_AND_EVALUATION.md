@@ -1,7 +1,7 @@
 # 基准、测试与评估
 
-> 状态：PROPOSED 发布门槛  
-> 日期：2026-07-16  
+> 状态：PROPOSED 发布门槛
+> 日期：2026-07-17
 > 本文区分工程可靠性、内容质量和真实学习效果；三者不能互相替代。
 
 ## 1. 目标
@@ -423,15 +423,23 @@ M3 先做宿主工具基线：发布目标 Codex 版本必须加载 manifest、�
 
 ## 15. 模板版本合同
 
-M0 必须添加：
+CURRENT M0 工作分支已经添加：
 
-- immersive_v11 + template schema V14 + 精确 Note Model identity positive fixture。
-- V13、V15、V199、V1 前缀碰撞、近似 Note Model 与篡改模板 negative fixture。
-- V12/V11 只按明确 compatibility contract 接受的 fixture。
-- template family 与 schema 不一致测试。
-- release smoke 调用与生产打包相同 verifier。
+- immersive_v11 + template schema V14 + 精确 Note Model identity 的真实生成正例，并以 `genanki==0.13.1` 固定 serializer 基线。
+- 明确支持的 V10 兼容模型真实生成正例；不再以宽前缀隐式接纳旧包。
+- 10 个生产生成变体都通过真实 `handle_export` + 完整 APKG 包合同，覆盖 V14、V12 与明确支持的 V10 语言/文档路径。
+- 完整包合同覆盖 ZIP/JSON 唯一性与限额、collection/media map、model/deck/note/card、CardId/纯内容 SHA、manifest/ledger/card-media ledger 与安全展示 HTML。
+- 候选包先写同目录唯一 `.partial`，整包验证通过后才以 no-replace 语义原子发布最终 APKG；目标已存在时拒绝覆盖，故障注入要求失败时不出现新最终 APKG、残留 partial 或 done 事件。
+- V13、V15、V199、V1 前缀碰撞、近似 Note Model、非规范 ID/整数、完整字段/模板/model extras/CSS、registry 偏差、双 collection/重复关键条目与解压限额负例。
+- template family/schema/ID/兼容合同不一致测试。
+- release smoke 强制调用生产 `verify_apkg.py` 核验 V14 与 V10；验证器缺失即失败，CLI 合同失败必须返回 `ok=false` 和退出码 1。
+- 生产 Anki 导入路径在任何媒体预置前执行内部 raw `ExportResult`/payload/路径/完整包合同/APKG hash+size preflight，并在媒体准备后、紧贴 `importPackage` 前重复 stat+SHA；合同失败、真实篡改和 TOCTOU 换包测试都要求媒体准备或导入写动作的相应调用数为 0。raw `ExportResult` 不认证来源，无法抵抗同时篡改包与结果的同权限本机攻击者；这些检查只缩小、不能消除 TOCTOU，M2 必须加入认证 Artifact 注册表。
+- 最终自动化回归为 Vitest 830、正式 `pytest` 561、独立 `unittest discover` 551、Rust 31 项通过与 1 项按设计忽略、UI smoke 3、V14/V10 release smoke、`npm run check:full` 和 `npm run tauri:build` 通过。两套 Python 运行有重叠，不得相加为独立测试总数。
+- 20 卡生产 V14 离线包通过完整合同：20 notes / 20 cards / 52 个唯一媒体，每卡 6 个引用，共 120 个媒体归属；manifest=ledger=52，20/20 字幕对齐，包问题为 0。合成视频与静音 TTS fixture 不覆盖真人语义、听感或 GUI 体验。
+- 真实隔离 Anki 数据级核验通过：E→C 单卡为 1 note / 1 card / 6 media；20 卡首次导入为 20/20/52，52 个媒体哈希和 120 个归属一致。两者重复导入均跳过，重启后数据与哈希不变。此前合同不一致路径仍作为 fail-closed 0 写入负例保留。
+- 非 NFC、Windows 保留设备名（含 `CLOCK$`）、大小写/规范化冲突与 APKG archive 资源上限回归通过；有界流式读取只适用于 APKG archive/package/verifier。AnkiConnect 媒体恢复仍以最多 256 MiB 的整文件和 base64 工作，存在内存放大边界。
 
-在此测试通过前，插件 release gate 必须失败。
+这些门禁只关闭已经列出的自动化、包合同和 Anki 数据级缺口。插件 release gate 在 Computer Use 桌面验收、真实 GUI 翻面/播放、至少 20 张连续复习，以及 M1/M2/M3 安全与宿主证据完成前仍须失败；M0 继续为进行中。完整证据与边界见 [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md)。
 
 ## 16. 学习效果实验
 
@@ -521,4 +529,3 @@ C：阅读/摘要或现有常用方法。
 3. 篡改 APKG/重复导入。
 
 这不替代更完整的内部安全矩阵。
-

@@ -1,16 +1,71 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 import zlib
 from typing import Any
+
+
+WINDOWS_MAX_BASENAME_UTF16_UNITS = 255
+_WINDOWS_INVALID_BASENAME_CHARS = frozenset('<>:"/\\|?*')
+_WINDOWS_RESERVED_BASENAMES = frozenset(
+    {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        "CLOCK$",
+        *(f"COM{suffix}" for suffix in (*range(1, 10), "\u00b9", "\u00b2", "\u00b3")),
+        *(f"LPT{suffix}" for suffix in (*range(1, 10), "\u00b9", "\u00b2", "\u00b3")),
+    }
+)
 
 
 def stable_id(value: str, offset: int = 0) -> int:
     return int(zlib.crc32(value.encode("utf-8")) + offset)
 
 
+def windows_safe_basename(value: Any) -> str | None:
+    """Validate a portable Windows basename and return its canonical NFC form."""
+
+    if not isinstance(value, str) or not value or value in {".", ".."}:
+        return None
+    if not value.isascii():
+        return None
+    if value != value.strip() or value.endswith((" ", ".")):
+        return None
+    normalized = unicodedata.normalize("NFC", value)
+    if normalized != value:
+        return None
+    if any(ord(character) < 32 or character in _WINDOWS_INVALID_BASENAME_CHARS for character in value):
+        return None
+    try:
+        utf16_units = len(value.encode("utf-16-le")) // 2
+    except UnicodeError:
+        return None
+    if utf16_units > WINDOWS_MAX_BASENAME_UTF16_UNITS:
+        return None
+    stem = value.split(".", 1)[0].upper()
+    if stem in _WINDOWS_RESERVED_BASENAMES:
+        return None
+    return normalized
+
+
+def windows_basename_key(value: Any) -> str | None:
+    """Return the Windows-equivalence key for a safe, canonical basename."""
+
+    safe = windows_safe_basename(value)
+    return safe.casefold() if safe is not None else None
+
+
 def safe_filename(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_") or "media"
+    """Create a conservative basename safe for later generated suffixes."""
+
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value)).strip("_.") or "media"
+    cleaned = cleaned[:120].rstrip(" .") or "media"
+    if windows_safe_basename(cleaned) is None:
+        cleaned = f"_{cleaned}"[:120].rstrip(" .") or "media"
+    return cleaned
 
 
 def anki_deck_part(value: Any, fallback: str = "未命名") -> str:

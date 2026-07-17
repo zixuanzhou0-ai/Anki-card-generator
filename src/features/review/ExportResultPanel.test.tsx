@@ -9,8 +9,26 @@ afterEach(() => {
   cleanup()
 })
 
+const REVIEW_MEDIA_FIXTURES = Array.from({ length: 12 }, (_, index) => {
+  const role = index < 6 ? 'video' : index < 9 ? 'sentence_tts' : 'phrase_tts'
+  const field = role === 'video' ? 'Video' : role === 'sentence_tts' ? 'TtsAudio' : 'PhraseTtsAudio'
+  return {
+    file: 'media-' + index + '.mp3',
+    role,
+    segment_id: 'segment-' + (index % 6),
+    card_id: role === 'phrase_tts' ? 'card-' + index : '',
+    field,
+    sha256: String(index).padStart(64, '0'),
+    bytes: index === 11 ? 89 : 85,
+  }
+})
+
 const exportResult: ExportResult = {
+  schema_version: 2,
   apkg_path: 'E:\\ANKI\\out\\deck.apkg',
+  apkg_sha256: 'a'.repeat(64),
+  apkg_size_bytes: 4096,
+  apkg_mtime_ms: 1,
   cards: 12,
   media_dir: 'E:\\ANKI\\out\\media',
   audio_audit_path: 'E:\\ANKI\\out\\audio_audit.json',
@@ -25,18 +43,58 @@ const exportResult: ExportResult = {
   },
   segments: 6,
   deck_name: '视频语言卡 - 字幕素材 - 20260615-120000',
+  deck_names: ['视频语言卡 - 字幕素材 - 20260615-120000'],
+  deck_kind: 'video_language',
+  model_name: 'Anki Card Generator V14 - 沉浸复读 V11',
+  note_model_id: 3157735470,
+  template_name: '沉浸复读 V11',
+  template_family: 'language-immersive-v11',
+  template_schema: 'V14',
+  template_version: 'V14',
+  compatibility_contract_version: 1,
+  note_model_contract_digest: 'b'.repeat(64),
+  anki_tag: 'anki_card_generator_v14',
+  media_manifest: Object.fromEntries(
+    REVIEW_MEDIA_FIXTURES.map(({ file, ...entry }) => [file, entry]),
+  ),
+  media_ledger: REVIEW_MEDIA_FIXTURES,
+  card_media_ledger: Array.from({ length: 12 }, (_, index) => {
+    const media = REVIEW_MEDIA_FIXTURES[index]
+    return {
+      card_id: 'card-' + index,
+      segment_id: media.segment_id,
+      deck_name: '视频语言卡 - 字幕素材 - 20260615-120000',
+      note_tags: ['anki_card_generator_v14', 'English', 'B1', 'immersive_v11', 'phrase', 'repetition'],
+      note_content_sha256: String(index + 20).padStart(64, '0'),
+      ...(media.role === 'video'
+        ? { video_mp4: media.file }
+        : media.role === 'sentence_tts'
+          ? { sentence_tts_audio: media.file }
+          : { phrase_tts_audio: media.file }),
+    }
+  }),
+  note_content_fingerprint: {
+    schema_version: 1,
+    algorithm: 'sha256',
+    serialization: 'json-field-pairs-v1',
+    field_names: ['CardId', 'Answer'],
+    card_count: 12,
+  },
   anki_manual_import_hint: '导入后请在 Anki 牌组列表打开「视频语言卡 - 字幕素材 - 20260615-120000」。',
   anki_verify_after_manual_import_supported: true,
   media_summary: {
     media_bytes: 1024,
     media_files: 12,
     media_mb: 1,
-    original_audio_files: 6,
+    original_audio_files: 0,
     phrase_tts_files: 3,
     sentence_tts_files: 3,
     video_files: 6,
     video_segments: 6,
+    card_media_ledger_items: 12,
   },
+  timing_ms: {},
+  warnings: [],
 }
 
 describe('ExportResultPanel', () => {

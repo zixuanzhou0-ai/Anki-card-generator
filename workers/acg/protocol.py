@@ -29,14 +29,17 @@ def emit(payload: Any) -> None:
     print(json.dumps(payload, ensure_ascii=False))
 
 
-def emit_progress(command: str, stage: str, percent: int, message: str, **extra: Any) -> None:
+def emit_progress(command: str, stage: str, percent: int, message: str, /, **extra: Any) -> None:
+    # The envelope is protocol-owned. Keep it last so a caller cannot use an
+    # ``extra`` field to forge another command/stage or schema version.
     payload = {
+        **extra,
+        "schema_version": SCHEMA_VERSION,
         "command": command,
         "stage": stage,
         "percent": max(0, min(100, int(percent))),
         "message": message,
     }
-    payload.update(extra)
     print(f"{PROGRESS_PREFIX}{json.dumps(payload, ensure_ascii=False)}", file=sys.stderr, flush=True)
 
 

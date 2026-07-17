@@ -36,6 +36,10 @@ from acg.media_alignment import (
     learning_point_media_alignment_fields,
 )
 from acg.protocol import emit_progress, fail
+from acg.secret_scrub import (
+    is_runtime_secret_key as _is_runtime_secret_key,
+    scrub_runtime_secrets as _without_runtime_secrets,
+)
 from acg.subtitles.provenance import point_with_source_sentence_provenance, source_sentence_indexes
 
 MEDIA_ALIGNMENT_REVIEW_ISSUE = "媒体对齐未在原句中定位到目标表达，需复查。"
@@ -204,6 +208,10 @@ STALE_ASR_HARD_GATE_KEYS = {
 
 def _without_stale_asr_hard_gate_fields(project: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in project.items() if key not in STALE_ASR_HARD_GATE_KEYS}
+
+
+def _finalize_project_result(project: dict[str, Any]) -> dict[str, Any]:
+    return _without_runtime_secrets(project)
 
 
 def _cached_or_generated_card_payload(
@@ -611,7 +619,7 @@ def _ensure_user_selected_learning_point_cards(
     return ensured_segments, fallback_count, repaired_count
 
 
-def handle_generate_cards_from_learning_points(payload: dict[str, Any]) -> dict[str, Any]:
+def _handle_generate_cards_from_learning_points(payload: dict[str, Any]) -> dict[str, Any]:
     timing_started = time.perf_counter()
     source_started = timing_started
     timing_ms: dict[str, int] = {}
@@ -794,8 +802,8 @@ def handle_generate_cards_from_learning_points(payload: dict[str, Any]) -> dict[
             )
             return {
                 **returned_project,
-                "api_config": existing_project.get("api_config") or payload.get("api_config") or {},
-                "tts_config": existing_project.get("tts_config") or payload.get("tts_config") or {},
+                "api_config": _without_runtime_secrets(existing_project.get("api_config") or payload.get("api_config") or {}),
+                "tts_config": _without_runtime_secrets(existing_project.get("tts_config") or payload.get("tts_config") or {}),
                 "tts_semantic_verification": explicit_tts_semantic,
                 "quality_funnel": quality_funnel,
                 "card_generation_diagnostics": card_generation_diagnostics,
@@ -846,8 +854,8 @@ def handle_generate_cards_from_learning_points(payload: dict[str, Any]) -> dict[
                 "template_id": payload.get("template_id") or "immersive_v11",
                 "content_toggles": payload.get("content_toggles") or {},
                 "card_types": requested_card_types,
-                "api_config": payload.get("api_config") or {},
-                "tts_config": payload.get("tts_config") or {},
+                "api_config": _without_runtime_secrets(payload.get("api_config") or {}),
+                "tts_config": _without_runtime_secrets(payload.get("tts_config") or {}),
                 "quality_funnel": {
                     "selected_learning_point_count": requested_selected_count,
                     "eligible_learning_point_count": 0,
@@ -1242,8 +1250,8 @@ def handle_generate_cards_from_learning_points(payload: dict[str, Any]) -> dict[
         "content_toggles": payload.get("content_toggles") or {},
         "language_focus": payload.get("language_focus") or ["phrases", "vocabulary", "grammar", "listening"],
         "study_depth": payload.get("study_depth") or "standard",
-        "api_config": payload.get("api_config") or {},
-        "tts_config": payload.get("tts_config") or {},
+        "api_config": _without_runtime_secrets(payload.get("api_config") or {}),
+        "tts_config": _without_runtime_secrets(payload.get("tts_config") or {}),
         "tts_semantic_verification": payload.get("tts_semantic_verification") or {},
         "selection_strategy": "catch_all",
         "card_types": requested_card_types,
@@ -1281,4 +1289,8 @@ def handle_generate_cards_from_learning_points(payload: dict[str, Any]) -> dict[
     }
 
 
-__all__ = ["handle_generate_cards_from_learning_points"]
+def handle_generate_cards_from_learning_points(payload: dict[str, Any]) -> dict[str, Any]:
+    return _finalize_project_result(_handle_generate_cards_from_learning_points(payload))
+
+
+__all__ = ['handle_generate_cards_from_learning_points']

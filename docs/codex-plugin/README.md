@@ -1,9 +1,9 @@
 # Codex 学习制卡插件：设计文档总览
 
-> 文档状态：设计基线（PROPOSED）  
-> 基线日期：2026-07-16  
-> 适用对象：项目作者、插件实现者、安全与学习质量评审者  
-> 重要说明：本目录描述后续插件，不代表当前桌面端或插件已经实现。
+> 文档状态：PROPOSED 插件设计基线 + CURRENT M0 实施跟踪
+> 基线日期：2026-07-17
+> 适用对象：项目作者、插件实现者、安全与学习质量评审者
+> 重要说明：本目录的大部分内容仍描述后续插件；只有明确标为 CURRENT 的 M0 基线能力已经进入当前工作分支，不能据此宣称插件、MCP 或控制台已经可安装。
 
 ## 1. 这套文档解决什么问题
 
@@ -77,6 +77,38 @@
 
 若同一能力同时有当前实现和拟议接口，文档会分别陈述，不把旧接口直接等同于新插件协议。
 
+### 4.1 CURRENT：M0 实施快照（2026-07-17）
+
+当前工作分支已经实现并纳入自动化门禁的基础能力：
+
+- 九个现有 Python Worker 命令有版本化 schema 与 golden exchanges；结果和进度帧的 schema 版本、核心错误码与秘密剥离边界被机器检查。
+- APKG 生成与核验不再使用 Note Model 名称前缀猜版本，而是按精确的 family、template schema、Note Model ID、字段/模板/CSS 哈希和兼容合同匹配；Note Model 序列化基线固定为 `genanki==0.13.1`，但这不表示所有依赖都已完成哈希锁定。
+- 完整 APKG 包合同已覆盖 ZIP 条目唯一性与限额、collection/media 映射、模型/牌组/note/card 关系、CardId、纯内容摘要、媒体 manifest/ledger、卡片媒体账本及安全展示 HTML；10 个生产生成变体均以真实 `handle_export` 产物通过同一整包验证器。
+- 导出先在最终目录写入唯一 `.partial`，整包校验通过后才以 **no-replace** 语义原子发布最终 APKG；目标路径已经存在时拒绝覆盖。校验或发布失败会清理/隔离 partial，不能发出“已完成”状态。
+- 生产 V14 与明确保留的 V10 兼容模型使用同一合同注册表；release smoke 会分别生成并核验两者，缺少 `verify_apkg.py` 会直接失败。V13、V15、V199、近似名称、非规范 ID/整数、字段/模板/model extras/CSS 篡改、未引用/额外模型、双 collection、重复关键条目和解压限额超限进入负向合同测试。
+- 现有 Anki 导入命令只把应用内部生成、证据完整的 raw `ExportResult` 当作兼容输入，并核对 payload 覆盖一致性、绝对 APKG/media 路径、实际哈希/大小、整包内容与精确 Note Model 合同；该阶段失败时媒体准备和 `importPackage` 都不能发生。这个接口不认证 `ExportResult` 的来源，无法抵抗能同时篡改 APKG 与 `ExportResult` 的同权限本机攻击者。媒体准备后、紧贴 `importPackage` 前再次 stat + SHA，只能显著缩窄而不能从原理上消除路径换包 TOCTOU。M2 必须用认证 Artifact 注册表、不透明句柄和受控文件句柄建立真正的信任根；在此之前 raw `ExportResult` 命令不得直接暴露为公共 MCP 写工具。
+- 桌面导入入口不会仅凭一个残留状态继续：full 与 compact 两份导出证据必须同时完整，并对同一 APKG 的规范化路径、哈希、大小、mtime、牌组、模型、模板、合同、标签、来源/内容指纹与核心媒体摘要严格配对。受信跨盘媒体 fallback 同样使用 no-replace 发布，并在并发同内容/冲突内容两种竞态下分别保持幂等与拒绝覆盖。
+- 最终自动化回归已通过：前端 Vitest 830 项；Python 正式 `pytest` 561 项；独立 `unittest discover` 551 项；Rust 31 项通过、1 项按设计忽略；UI smoke 3 项；V14/V10 release smoke、`npm run check:full` 与 `npm run tauri:build` 均通过。`pytest` 与 `unittest` 有重叠，不能相加成独立测试总数。
+- 20 卡生产 V14 离线媒体包通过完整 APKG 合同：20 notes / 20 cards / 52 个唯一媒体，20/20 卡各有 6 个媒体引用，共 120 个 card-media ownership bindings；manifest 与 ledger 都为 52，20/20 字幕对齐，缺失、无效、未引用、兼容冲突、包问题和 verifier 失败均为 0。素材为 release-smoke 合成视频与 SRT，TTS/原声为静音 fixture，因此只证明包和媒体链，不证明真人语义、听感或复习体验。
+- 真实隔离 Anki 数据级核验已经完成：单卡 E→C 跨盘导入为 1 note / 1 card / 6 media，逐文件大小与 SHA-256 一致，重复导入跳过且 duplicate 为 0，重启后再次核验通过。20 卡包首次导入为 20 notes / 20 cards / 52 media，52 个文件哈希与 120 个媒体归属全部闭合，重复导入跳过，重启后仍为 20/20/52。它们是 AnkiConnect、collection 与文件系统的数据级证据，不是 GUI 翻面、实际播放或连续复习证据。
+- 非 NFC 名称、Windows 保留设备名（含 `CLOCK$`）、大小写/规范化冲突及 APKG archive 资源上限已经完成 fail-closed 回归；APKG archive/package/verifier 的包内媒体哈希与提取采用有界流式读取。该结论不覆盖 AnkiConnect 缺失媒体恢复：它仍会把单个最多 256 MiB 的源文件整体读入内存并构造 base64，存在峰值内存放大。
+- 在合同尚未对齐的先前尝试中，生产 preflight 与最终包门禁按设计 fail closed；隔离目标保持 0 note / 0 card / 0 media。该负例证明失败没有产生半写入，不能被改写成成功测试。
+
+这不表示 M0 或插件已经全部交付：Computer Use 在当前执行环境不可用，真实 Anki GUI 的翻面、滚动、焦点、媒体播放和至少 20 张连续复习仍未执行；合成视频与静音 TTS 不能替代语义和听感验收。插件包安装、目标 Codex 宿主注册、stdio MCP、版本化 Anki runtime verifier 与 M1 Headless Card Service 均尚未完成，raw `ExportResult` 的来源认证、M2 Artifact 注册表/不透明引用/受控文件句柄、剩余 TOCTOU 和全供应链哈希固定也仍是明确边界。详见 [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md)。
+
+### 4.2 遗留文档冲突清单（只登记，不回写历史快照）
+
+下列文件仍是有用的历史资料，但不能作为 CURRENT M0 或插件行为的权威来源：
+
+| 位置 | 已发现的冲突或过期内容 | 本轮处理 |
+|---|---|---|
+| 仓库根 `README.md` | 快速开始仍是十二步桌面流程，并保留“继续导出 N 张”；还包含历史批量发布数字，不能替代当前 M0 合同与隔离 Anki 证据 | 不修改；后续桌面文档专项刷新。CURRENT M0 以本目录和本轮测试证据为准 |
+| `docs/USER_GUIDE.md` | 文案称“主界面分为三段”却列出四段，仍有独立“学习设置/确认抽取/审核导出”、顶部抽取/导出入口和旧截图 | 不修改；标记为桌面旧流程指南，待三步流程稳定后统一重写 |
+| `docs/ARCHITECTURE.md` | 仍以“素材配置 → 学习设置 → 确认抽取 → 审核导出”和 `source/generate/review` 解释当前桌面层，未反映新的三步体验与插件/Card Service 目标边界 | 不修改；后续把 CURRENT desktop、M0 内核与 PROPOSED plugin 架构分章 |
+| `docs/reports/**` | 2026-06-24 至 2026-06-27 的发布、E2E、PPT/DOCX/Markdown 是带日期的归档；其中既有旧“继续导出/学习设置”流程，也有“测试时 AnkiConnect 不可用”等当时事实 | 保持不可变历史证据，不追写新结论；引用时必须同时写明报告日期、版本和适用范围 |
+
+优先级规则：当前代码与本轮机器/真实设备证据 > `docs/codex-plugin/` 明确标为 CURRENT 的段落 > 根 README/用户指南/旧架构 > 历史 reports。这个优先级不删除历史，也不把 PROPOSED 设计伪装成 CURRENT。
+
 ## 5. 文档地图
 
 ### 先理解产品
@@ -99,13 +131,14 @@
 ### 最后证明它可靠
 
 12. [安全与隐私](SECURITY_AND_PRIVACY.md)：内部授权记录、提示注入、路径、网络、秘密和 Anki 写入。
-13. [可靠性与核验](RELIABILITY_AND_VERIFICATION.md)：从素材到真实 Anki 的逐级证据链。
-14. [基准与评估](BENCHMARK_AND_EVALUATION.md)：功能、对抗、学习效果和发布阈值。
-15. [路线图](ROADMAP.md)：阶段、出口条件、迁移和发布策略。
-16. [决策记录](DECISIONS.md)：已选方案、理由、替代方案和复议触发器。
-17. [可追溯矩阵](TRACEABILITY_MATRIX.md)：目标到接口、测试与里程碑的映射。
-18. [术语表](GLOSSARY.md)：跨文档统一语义。
-19. [设计评审记录](DESIGN_REVIEW_RECORD.md)：内部委员会、Gemini 与 Hermes/Grok 的终审结论、分歧和裁决。
+13. [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md)：最终自动化、20 卡媒体包、隔离 Anki 数据级证据和仍未完成的 GUI 边界。
+14. [可靠性与核验](RELIABILITY_AND_VERIFICATION.md)：从素材到真实 Anki 的逐级证据链。
+15. [基准与评估](BENCHMARK_AND_EVALUATION.md)：功能、对抗、学习效果和发布阈值。
+16. [路线图](ROADMAP.md)：阶段、出口条件、迁移和发布策略。
+17. [决策记录](DECISIONS.md)：已选方案、理由、替代方案和复议触发器。
+18. [可追溯矩阵](TRACEABILITY_MATRIX.md)：目标到接口、测试与里程碑的映射。
+19. [术语表](GLOSSARY.md)：跨文档统一语义。
+20. [设计评审记录](DESIGN_REVIEW_RECORD.md)：内部委员会、Gemini 与 Hermes/Grok 的终审结论、分歧和裁决。
 
 ## 6. 当前可复用资产
 
@@ -116,7 +149,7 @@ CURRENT，经本轮仓库检查确认：
 - 已有任务快照、单调进度、取消、结果引用和中断恢复基础。
 - 已有安全检查点、输入指纹、APKG 哈希和备份恢复。
 - 已有路径授权、私网 URL 阻断、AnkiConnect 回环限制、秘密存储和跨磁盘 Anki 导入修复。
-- 已有 APKG、媒体、TTS、卡片字段、AnkiConnect 数据核验与人工真实 Anki 验收基础；插件所需版本化 runtime verifier 仍是 PROPOSED。
+- 已有 APKG、媒体、TTS、卡片字段、AnkiConnect 数据核验与人工真实 Anki 验收基础；当前 M0 分支另已加入完整 APKG 包合同、精确 V14/V10 Note Model 合同、partial 校验后 no-replace 原子发布、导入前整包 preflight，以及隔离真实 Anki 单卡与重复导入证据；插件所需版本化 runtime verifier 仍是 PROPOSED。
 
 需要重构而不是直接暴露：
 
@@ -146,4 +179,3 @@ CURRENT，经本轮仓库检查确认：
 插件不是在能够“生成一段卡片 JSON”时完成，而是在下列闭环成立时完成：
 
 > 授权输入可追溯 → 学习目标明确 → 候选选择可解释 → 卡片可作答 → 内容有证据 → 媒体语义一致 → APKG 完整 → 用户授权导入 → 真实 Anki 可复习 → 失败可恢复且不伪造成功。
-

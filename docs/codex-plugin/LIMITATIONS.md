@@ -1,7 +1,7 @@
 # 限制与已知风险
 
-> 状态：设计基线的诚实边界  
-> 日期：2026-07-16  
+> 状态：CURRENT 与 PROPOSED 的诚实边界
+> 日期：2026-07-17
 > 这里的“计划”不能在产品页面写成“当前支持”。
 
 ## 1. 当前仓库状态
@@ -12,15 +12,22 @@
 - 当前文档/知识卡能力是局部基础，不是通用 Study IR。
 - 当前真实强项是语言视频、媒体、APKG 和 Anki 数据一致性核验；完整运行时渲染/播放/重启复习仍需独立版本化 verifier 证明。
 
-## 2. 已知 P0
+## 2. CURRENT：已关闭的 APKG P0 与尚未关闭的 M0
 
-当前 immersive_v11 卡片 family 实际生成 template schema V14；发布版 workers/verify_apkg.py 使用 startswith 且包含宽前缀 Anki Card Generator V1，所以 V14 与 V199 等非法近似名称都会命中。当前问题是 verifier 版本边界 fail-open。
+历史问题是：immersive_v11 family 实际生成 template schema V14，而旧 verifier 用 `startswith("Anki Card Generator V1")` 判定，导致合法 V14 与伪造 V199 都会命中。当前 M0 工作分支已经移除该宽前缀路径，并完成：
 
-后果：
+- 生产 V14 与明确保留的 V10 兼容模型使用精确 family/schema/Note Model ID、字段/模板/CSS 哈希和 compatibility contract；Note Model serializer 固定为 `genanki==0.13.1`。
+- 生成、独立 `verify_apkg.py` 与生产 Anki 导入 preflight 复用同一合同注册表；完整 APKG 包合同还验证 ZIP/JSON 唯一性与限额、模型/牌组/note/card 关系、CardId/纯内容 SHA、媒体 manifest/ledger/card-media ledger 和安全展示 HTML。
+- 10 个生产生成变体均以真实导出产物通过整包合同；导出采用“同目录唯一 `.partial` → 完整校验 → no-replace 原子发布最终 APKG”，目标已存在时拒绝覆盖，失败时不留下新可交付包或伪 done 状态。
+- V13、V15、V199、近似名称、非规范 ID/整数、完整字段/模板/model extras/CSS 篡改、registry 偏差、双 collection/重复关键条目与解压限额超限必须失败。
+- release smoke 强制生成并核验 V14 与 V10；`verify_apkg.py` 缺失不再被跳过。
+- Anki 写入路径先核对应用内部、证据完整的 raw `ExportResult`、payload 覆盖、绝对路径、实际 APKG 哈希/大小与完整包合同；失败不能进入媒体预置或 `importPackage`。这个兼容入口不认证 `ExportResult` 来源，无法抵抗能同时篡改 APKG 与 `ExportResult` 的同权限本机攻击者。媒体准备后还会在 `importPackage` 前再次 stat + SHA；这与原子发布都只缩小而不能消除 TOCTOU。M2 的认证 Artifact 注册表、不透明句柄和受控文件句柄才是公共插件写路径的信任根。
+- 最终自动化回归已通过：Vitest 830、正式 `pytest` 561、独立 `unittest discover` 551、Rust 31 项通过与 1 项按设计忽略、UI smoke 3、V14/V10 release smoke、`npm run check:full` 和 `npm run tauri:build`。`pytest` 与 `unittest` 有重叠，不能相加。
+- 20 卡生产 V14 离线完整合同为 20 notes / 20 cards / 52 个唯一媒体，每卡 6 个引用、共 120 个媒体归属，manifest/ledger/字幕对齐闭合。它使用合成视频和静音 TTS，不是语义、听感或连续复习证据。
+- 真实隔离 Anki 数据级验证覆盖 E→C 单卡 1/1/6，以及 20 卡首次导入 20/20/52；逐文件大小/SHA 和 120 个归属一致，重复导入跳过，重启后保持原计数与哈希。它不证明 GUI 翻面或实际播放。此前合同不一致尝试仍作为 fail-closed 0 写入负例保留。
+- 非 NFC、Windows 保留设备名（含 `CLOCK$`）、大小写/规范化冲突与 APKG archive 资源上限已经通过；有界流式读取只适用于 APKG archive/package/verifier。
 
-- verifier 不能证明正在核验精确的 family/schema/Note Model 兼容关系。
-- 在修复前不能宣称完整复用最新 APKG verifier。
-- 插件 M0 必须先统一版本轴、移除宽前缀匹配，并增加真实 V14 正例及 V13/V15/V199/近似前缀负例。
+这些证据不等于 M0 或插件发布已经完成：Computer Use 桌面验收当前不可用，至少 20 张真实 GUI 连续复习、翻面、焦点、滚动和媒体播放仍未完成。AnkiConnect 缺失媒体恢复仍把单个最多 256 MiB 的媒体整体读入内存、构造 base64 并整文件取回解码，峰值内存可能显著高于源文件；可信跨盘 fallback 也接收整块字节，因此不能概括为全部媒体路径已流式化。当前只固定关键 `genanki` serializer，不代表 Python/Node/Rust/外部二进制已全部按哈希锁定。插件 manifest/Skill/MCP/App UI 尚未安装，M1 Headless Card Service、M2 认证 Artifact 边界与版本化 runtime verifier 也尚未实现；M0 仍为进行中。详见 [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md)。
 
 ## 3. Codex 宿主
 

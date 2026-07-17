@@ -1,7 +1,7 @@
 # 目标架构
 
-> 状态：CURRENT 与 PROPOSED 对照  
-> 日期：2026-07-16  
+> 状态：CURRENT 与 PROPOSED 对照
+> 日期：2026-07-17
 > 本文不表示插件服务或 App UI 已经实现。
 
 ## 1. 架构目标
@@ -489,7 +489,12 @@ app-data/
 - MCP tool 名称稳定；破坏性变化发布新工具版本或协议主版本。
 - ArtifactEnvelope 与 Study IR 各自带 schemaVersion。
 - Card Service 对当前 WorkerCommand 建适配器，允许内部演进。
-- CURRENT 卡片 family 为 immersive_v11，生产 template schema 为 V14；当前 verifier 因 V1 + startswith 宽前缀会同时接受 V14 和 V199，属于 fail-open。Note Model ID 与兼容范围由 M0 fixture 冻结；插件不得根据 family 名或前缀推断 schema。V14 精确正例、V13/V15/V199/近似前缀负例、旧版本兼容和生产同一 verifier smoke 通过前，导出不得标记 production-ready。
+- CURRENT 卡片 family 为 immersive_v11，生产 template schema 为 V14。M0 工作分支已移除 V1 + `startswith` 宽前缀，冻结精确 family/schema/Note Model ID、完整字段/模板/model extras/CSS 与 compatibility contract。完整 APKG 合同进一步闭合 ZIP/JSON、模型/牌组/note/card、CardId/纯内容 SHA、媒体账本和安全 HTML；10 个生产生成变体均通过真实导出验证。
+- CURRENT 导出使用同目录唯一 `.partial` → 整包校验 → no-replace 原子发布，目标路径已存在时拒绝覆盖，失败不发布新最终包或 done。Anki 写入前会重验内部 raw `ExportResult` 与整包；但 raw `ExportResult` 不认证来源，不能防止同权限攻击者同时篡改包和结果，重复 stat/SHA 与 no-replace 发布也只缩小、不消除 TOCTOU。M2 的认证 Artifact 注册表、不透明引用与受控文件句柄是公共插件边界。
+- CURRENT 最终自动化证据为 Vitest 830、正式 `pytest` 561、独立 `unittest discover` 551（两套 Python 运行有重叠，不相加）、Rust 31 项通过与 1 项按设计忽略、UI smoke 3、V14/V10 release smoke、`npm run check:full` 和 `npm run tauri:build` 通过。
+- CURRENT 20 卡生产 V14 离线包为 20 notes / 20 cards / 52 个唯一媒体，每卡 6 个引用、120 个媒体归属，manifest/ledger/字幕对齐均闭合。真实隔离 Anki 数据级证据包括 E→C 单卡 1/1/6 与 20 卡首次导入 20/20/52；两者重复导入均跳过，重启后卡片数和逐媒体哈希保持一致。素材为合成视频与静音 TTS，不构成语义、听感、GUI 播放或连续复习证据。
+- 非 NFC、Windows 保留设备名（含 `CLOCK$`）、大小写/规范化冲突和 APKG archive 资源上限已 fail closed；有界流式读取仅覆盖 APKG archive/package/verifier。AnkiConnect 缺失媒体恢复仍整文件读入并构造 base64，单文件上限 256 MiB，存在峰值内存放大。
+- M0 仍未完成 Computer Use 真实 GUI 翻面/焦点/滚动/媒体播放和至少 20 张连续复习；M1 Card Service、stdio MCP、目标宿主注册与版本化 runtime verifier 也未完成。
 - 旧桌面项目可通过显式迁移器导入，不直接假设字段等价。
 
 ## 11. 进程与部署

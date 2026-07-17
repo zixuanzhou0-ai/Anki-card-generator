@@ -90,6 +90,7 @@ function completeFixture() {
   } as unknown as Project
 
   const exportResult: ExportResult = {
+    schema_version: 2,
     apkg_path:
       'E:\\ANKI\\test_runs\\video_release_hardening_20260619_044542\\cases\\youtube_a_full1_cold\\apkg\\youtube_a_full1_cold.apkg',
     apkg_sha256: 'd'.repeat(64),
@@ -101,11 +102,55 @@ function completeFixture() {
     cards: 1,
     segments: 1,
     deck_name: 'Video Release Smoke',
+    deck_names: ['Video Release Smoke'],
+    deck_kind: 'video_language',
+    model_name: 'Anki Card Generator V14 - 沉浸复读 V11',
+    note_model_id: 3157735470,
+    template_name: '沉浸复读 V11',
+    template_family: 'language-immersive-v11',
+    template_schema: 'V14',
+    template_version: 'V14',
+    compatibility_contract_version: 1,
+    note_model_contract_digest: 'cbf770412b097c10a647d52c0bb044b1bff93a1c13135ca8ec368c30530c1ca4',
+    anki_tag: 'anki_card_generator_v14',
     media_manifest: {
-      'clip.mp4': { sha256: 'a'.repeat(64), bytes: 100, role: 'video' },
+      'clip.mp4': {
+        sha256: 'a'.repeat(64),
+        bytes: 100,
+        role: 'video',
+        segment_id: 'segment-1',
+        card_id: '',
+        field: 'Video',
+      },
     },
-    media_ledger: [{ file: 'clip.mp4', sha256: 'a'.repeat(64), bytes: 100, role: 'video' }],
-    card_media_ledger: [{ card_id: 'card-1', video_mp4: 'clip.mp4' }],
+    media_ledger: [
+      {
+        file: 'clip.mp4',
+        sha256: 'a'.repeat(64),
+        bytes: 100,
+        role: 'video',
+        segment_id: 'segment-1',
+        card_id: '',
+        field: 'Video',
+      },
+    ],
+    card_media_ledger: [
+      {
+        card_id: 'card-1',
+        segment_id: 'segment-1',
+        deck_name: 'Video Release Smoke',
+        note_tags: ['anki_card_generator_v14', 'English', 'B1', 'immersive_v11', 'phrase', 'repetition'],
+        note_content_sha256: 'b'.repeat(64),
+        video_mp4: 'clip.mp4',
+      },
+    ],
+    note_content_fingerprint: {
+      schema_version: 1,
+      algorithm: 'sha256',
+      serialization: 'json-field-pairs-v1',
+      field_names: ['CardId', 'Answer'],
+      card_count: 1,
+    },
     audio_audit_items: [{ card_id: 'card-1' }],
     timing_ms: {
       tts_ms: 5,
@@ -115,12 +160,13 @@ function completeFixture() {
     media_summary: {
       video_segments: 1,
       video_files: 1,
-      original_audio_files: 1,
-      sentence_tts_files: 1,
-      phrase_tts_files: 1,
-      media_files: 4,
-      media_bytes: 400,
-      media_mb: 0.4,
+      original_audio_files: 0,
+      sentence_tts_files: 0,
+      phrase_tts_files: 0,
+      media_files: 1,
+      media_bytes: 100,
+      media_mb: 0,
+      card_media_ledger_items: 1,
       tts_cache_hits: 0,
       tts_cache_misses: 2,
       tts_cache_total: 2,
@@ -128,6 +174,7 @@ function completeFixture() {
       media_cache_misses: 1,
       media_cache_total: 1,
     },
+    warnings: [],
   }
 
   const ankiVerifyResult: AnkiVerifyResult = {
@@ -238,15 +285,11 @@ describe('releaseEvidenceObservedCapture', () => {
     })
 
     expect(snapshot.ok).toBe(false)
-    expect(snapshot.failedChecks).toEqual(
-      expect.arrayContaining([
-        'app_snapshot_full_export_result_missing',
-        'observed_export_full_media_manifest_missing',
-        'observed_export_full_media_ledger_missing',
-        'observed_export_full_card_media_ledger_missing',
-        'observed_export_full_audio_audit_items_missing',
-      ]),
-    )
+    expect(snapshot.failedChecks).toEqual([
+      'app_snapshot_full_export_result_missing',
+      'observed_export_full_audio_audit_items_missing',
+      'observed_verified_export_apkg_path_missing',
+    ])
     expect(snapshot.observedInput).toBeNull()
     expect(snapshot.rawObservedJson).toBeNull()
   })

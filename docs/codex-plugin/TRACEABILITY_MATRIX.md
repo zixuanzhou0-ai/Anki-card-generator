@@ -1,7 +1,7 @@
 # 可追溯矩阵
 
-> 状态：PROPOSED；实现时持续更新  
-> 日期：2026-07-16  
+> 状态：CURRENT M0 追踪 + PROPOSED 后续要求
+> 日期：2026-07-17
 > 目标：每个重要承诺都能追到领域契约、工具、测试和里程碑。
 
 ## 1. 产品要求
@@ -29,7 +29,7 @@
 | PR-301 | 产物状态严格区分 | ArtifactStage | WorkRail | state matrix | M3/M4 |
 | PR-302 | 可靠性阻塞 | ReliabilityManifest | validate/export | fail-closed | M0/M3 |
 | PR-303 | 部分成功自动排除 | SelectedPointOutcome | delivery UI | 10→9 scenario | M3/M4 |
-| PR-304 | APKG 哈希/清单 | PackageArtifact | export | package verify | M0/M3 |
+| PR-304 | APKG 哈希/清单与原子发布 | PackageArtifact | export | 10 production variants + full package contract + partial/no-replace atomic publish | M0/M3 |
 | PR-305 | Anki 明确授权 | ImportPlan + internal approval ledger | prepare/confirm/import_and_verify | no-confirm/session-replay negative | M3 |
 | PR-306 | Anki 数据与运行时核验不混淆 | authoritative identity/media + exact-key anti-rollback trust +无环 signed run + signed typed proofs/actors/focus actions + typed final-runtime manifest + barrier-bound final checks | import_and_verify/delivery UI | empty expectation + key-substitution/revoked-key/cross-run replay + actor/focus spoof + manifest omission + cross-process write/TOCTOU + 1/20/full | M0/M3 |
 | PR-401 | 500ms 反馈 | StudyTaskSnapshot | 对话/tools + 条件 PiP/Inline | latency/UI tests | M3/M4 |
@@ -72,7 +72,7 @@
 | SR-004 | 文档资源隔离 | parser sandbox | adapter only | bomb/timeout/memory | M5 |
 | SR-005 | 供应链固定 | hashes/SBOM/signature | no repair_env | PATH/package tamper | M1/M3 |
 | SR-006 | 秘密不回读 | SecretRef | no load_secret | secret canary | M2 |
-| SR-007 | APKG 可信注册 | PackageArtifact | import by ref | external/replaced APKG | M3 |
+| SR-007 | APKG 认证注册；raw ExportResult 不作为公共信任根 | authenticated Artifact registry + PackageArtifact | import by opaque ref | forged APKG+ExportResult/replaced APKG/TOCTOU | M2/M3 |
 | SR-008 | Anki 幂等 | importIntentId | import_and_verify | replay/concurrency | M3 |
 | SR-009 | 媒体不越界 | manifest/hash/basename | no media_dir | conflict/traversal | M0/M3 |
 | SR-010 | 日志脱敏 | field allowlist | diagnosticRef | log injection/canary | M2 |
@@ -91,19 +91,27 @@
 
 | ID | 阶段 | 证明 | 产物 | 测试 |
 |---|---|---|---|---|
-| RR-000 | P0 | verifier 精确区分 V14 与 V1xx 伪版本 | release evidence | V14 positive + V13/V15/V199/近似前缀 negative |
+| RR-000 | P0 | CURRENT：verifier 精确区分 V14/V10 与 V1xx 伪版本；10 个生产变体通过完整 APKG 合同并在 Anki 写入前复核 | release evidence + complete package report + import preflight | V14/V10 positive + 10 variants + spoof/canonical/registry/template/archive-limit negative + CLI exit 1 + media/import zero-call |
 | RR-001 | R0 | 授权有效 | authorization ledger audit | scope/replay |
 | RR-101 | R1 | 来源身份/完整性 | SourceArtifact | hash/partial |
 | RR-201 | R2 | 证据对齐 | SemanticArtifact | replay/span |
 | RR-301 | R3 | 候选门禁 | DiscoveryArtifact | expert benchmark |
 | RR-401 | R4 | CardPlan 可作答 | PlanArtifact | leakage/scoreability |
 | RR-501 | R5 | 卡片/媒体一致 | ProjectArtifact | card/media ledger |
-| RR-601 | R6 | APKG 完整 | PackageArtifact | note/card/media |
+| RR-601 | R6 | CURRENT：`.partial` 经完整包合同后 no-replace 原子发布；目标已存在时拒绝覆盖，失败不产生新最终 APKG/伪 done | internal ExportResult + package report；M2 后迁移到认证 PackageArtifact | ZIP/JSON/model/deck/note/card/content/media/safe-HTML + no-replace atomic publish |
+| RR-602 | R6 | CURRENT：受信跨盘媒体恢复竞态不覆盖并发创建的同名文件 | trusted Anki media fallback | identical-race idempotent + conflicting-race refuse-overwrite |
+| RR-603 | R6 | CURRENT：导入只接受身份一致的 full + compact 导出证据，不回退到陈旧结果 | UI import gate | missing pair + path/hash/deck/model/contract/fingerprint mismatch |
 | RR-701 | R7 | 真实导入授权 | ImportPlan + approval audit | session/plan binding，无 bearer |
 | RR-801 | R8a | Anki 数据完整性 | VerificationArtifact status=data_verified | required data checks exactly once |
 | RR-802 | R8b | Anki 真实渲染/播放/复习 | runtime_failed 或 fully_verified + exact-key current trust/signed proof/actor-focus provenance/typed final manifest/final barrier aggregate | fixed checks + nonempty render + 1/20/full + cross-process zero-write + real Anki restart + atomic commit |
 | RR-901 | 恢复 | 失败不伪造成功、旧授权不转移 | Task/Checkpoint/SuccessorTaskRebase/AnkiRecoveryDecision | forced exits + re-auth + write-boundary matrix |
 | RR-902 | 长导出/Anki | 终态前不伪造成功 | Task + Package/VerificationArtifact | cancel/crash/retry |
+
+CURRENT M0 证据边界：最终自动化为 Vitest 830、正式 `pytest` 561、独立 `unittest discover` 551（有重叠，不相加）、Rust 31 项通过与 1 项按设计忽略、UI smoke 3、V14/V10 release smoke、`check:full` 与 Tauri build 通过。20 卡离线生产 V14 包为 20 notes / 20 cards / 52 media、每卡 6 引用、120 个归属；隔离真实 Anki 数据级验证覆盖 E→C 单卡 1/1/6 和 20 卡 20/20/52 的首次导入、媒体哈希、重复跳过及重启持久化。素材为合成视频和静音 TTS，不证明语义、听感、GUI 播放或连续复习。
+
+非 NFC、Windows 保留设备名（含 `CLOCK$`）、大小写/规范化冲突和 APKG archive 资源上限已通过；流式读取结论仅覆盖 APKG archive/package/verifier。AnkiConnect 整文件/base64 媒体恢复仍存在最多 256 MiB 单文件的峰值内存放大。raw `ExportResult` 仍只是内部兼容输入，不认证来源；partial 后的 no-replace 原子发布及导入前 stat/SHA 只缩小、不能消除 TOCTOU。SR-007 的 M2 认证 Artifact 注册表、不透明引用和受控文件句柄完成前，不能把当前入口公开为 MCP 写工具。
+
+M0 尚缺：Computer Use 桌面验收当前不可用；真实 GUI 翻面、媒体播放和至少 20 张连续复习尚未执行；AnkiConnect base64 峰值内存边界尚未消除；插件/MCP/M1+ 仍未实现。因此 RR-000/RR-601/RR-801 的 CURRENT 子项不构成完整 M0 或 RR-802 运行时完成。
 
 ## 5. UX 要求
 
@@ -126,7 +134,7 @@
 
 | 里程碑 | 主要契约 | 主要工具 | 必须证据 |
 |---|---|---|---|
-| M0 | Worker/模板/Export/Anki frozen | 内部 | V14、1/20、跨磁盘 |
+| M0（实施中） | Worker/模板/Export/Anki frozen | 内部 | 最终自动化、20/20/52 离线媒体合同、E→C 单卡 1/1/6 与隔离 Anki 20/20/52 数据级导入/重复/重启已完成；真实 GUI 播放与连续复习、Computer Use、AnkiConnect base64 内存改造待验收 |
 | M1 | Headless runtime | 内部 service | 桌面等价、process safety |
 | M2 | Artifact/Task/Authorization/Secret/Profile verification/Anki check contract | task/artifact/capability | tamper/recovery/canary/profile isolation/check completeness |
 | M3 | Language Objective/CardPlan compat | MVP MCP | Codex→Anki 端到端 |
@@ -146,4 +154,3 @@
 3. 添加或更新对应测试。
 4. 改变设计时更新 [决策记录](DECISIONS.md)。
 5. 通过后把该项实现状态从 PROPOSED 更新为 CURRENT，并附代码/测试证据。
-

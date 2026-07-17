@@ -269,9 +269,12 @@ export type TtsSemanticItem = {
 
 export type CardMediaLedgerItem = {
   card_id: string
+  segment_id: string
+  deck_name: string
+  note_tags: string[]
+  note_content_sha256: string
   source_card_id?: string
   learning_point_id?: string
-  segment_id?: string
   source_time?: string
   media_start?: number
   media_end?: number
@@ -367,27 +370,42 @@ export type AudioAuditSummary = {
   verify_path?: string
 }
 
+export type NoteContentFingerprint = {
+  schema_version: 1
+  algorithm: 'sha256'
+  serialization: 'json-field-pairs-v1'
+  field_names: [string, ...string[]]
+  card_count: number
+}
+
 export type ExportResult = {
+  schema_version: 2
   apkg_path: string
   apkg_relative_path?: string
-  apkg_sha256?: string
-  apkg_size_bytes?: number
-  apkg_mtime_ms?: number
+  apkg_sha256: string
+  apkg_size_bytes: number
+  apkg_mtime_ms: number
   source_identity?: Record<string, unknown>
   source_fingerprint?: string
   media_dir: string
-  deck_name?: string
-  deck_names?: string[]
-  model_name?: string
-  template_name?: string
-  template_version?: string
-  anki_tag?: string
+  deck_name: string
+  deck_names: string[]
+  model_name: string
+  note_model_id: number
+  template_name: string
+  template_family: string
+  template_schema: 'V10' | 'V12' | 'V14'
+  template_version: 'V10' | 'V12' | 'V14'
+  compatibility_contract_version: 1
+  note_model_contract_digest: string
+  anki_tag: string
   anki_manual_import_hint?: string
   anki_verify_after_manual_import_supported?: boolean
   media_prefix?: string
-  media_manifest?: Record<string, MediaManifestEntry>
-  media_ledger?: MediaLedgerItem[]
-  card_media_ledger?: CardMediaLedgerItem[]
+  media_manifest: Record<string, MediaManifestEntry>
+  media_ledger: MediaLedgerItem[]
+  card_media_ledger: CardMediaLedgerItem[]
+  note_content_fingerprint: NoteContentFingerprint
   tts_manual_review_items?: TtsSemanticItem[]
   tts_semantic_failures?: TtsSemanticItem[]
   tts_semantic_verification?: TtsSemanticSummary
@@ -397,7 +415,7 @@ export type ExportResult = {
   audio_audit_items?: AudioAuditItem[]
   cards: number
   segments: number
-  media_summary?: {
+  media_summary: {
     video_segments: number
     video_files: number
     original_audio_files: number
@@ -406,7 +424,7 @@ export type ExportResult = {
     media_files: number
     media_bytes: number
     media_mb: number
-    card_media_ledger_items?: number
+    card_media_ledger_items: number
     tts_cache_hits?: number
     tts_cache_misses?: number
     tts_cache_total?: number
@@ -429,12 +447,12 @@ export type ExportResult = {
       unknown?: number
     }
   }
-  timing_ms?: Record<string, number>
+  timing_ms: Record<string, number>
   cache_summary?: Record<string, unknown>
   generation_reconciliation?: Record<string, unknown>
   retryable_failures?: Array<Record<string, unknown>>
-  warnings?: string[]
-  deck_kind?: 'video_language' | 'subtitle_language' | 'document_knowledge' | 'document_reading' | string
+  warnings: string[]
+  deck_kind: 'video_language' | 'subtitle_language' | 'document_knowledge' | 'document_reading'
 }
 
 export type AnkiVerifyResult = {
@@ -1155,6 +1173,10 @@ export type MediaManifestEntry = {
 
 export type MediaLedgerItem = MediaManifestEntry & {
   file: string
+  role: string
+  segment_id: string
+  card_id: string
+  field: string
 }
 
 export type EnvStatus = {

@@ -12,22 +12,49 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+from acg.anki_model_contracts import (
+    MAX_ARCHIVE_MEDIA_BYTES,
+    MAX_ARCHIVE_MEDIA_ENTRIES,
+    MAX_ARCHIVE_MEDIA_MAP_BYTES,
+    MAX_ARCHIVE_TOTAL_BYTES,
+    inspect_apkg_note_model_contract,
+    inspect_referenced_note_models,
+    validate_apkg_archive_limits,
+    validate_apkg_archive_structure,
+)
+
+MAX_ARCHIVE_ENTRY_BYTES = MAX_ARCHIVE_MEDIA_BYTES
+ZIP_STREAM_CHUNK_BYTES = 1024 * 1024
+
 
 for stream in (sys.stdout, sys.stderr):
     if hasattr(stream, "reconfigure"):
         stream.reconfigure(encoding="utf-8")
 
 
-MODEL_PREFIXES = (
-    "Anki Card Generator V12",
-    "Anki Card Generator V11",
-    "Anki Card Generator V10",
-    "Anki Card Generator V9",
-    "Anki Card Generator V8",
-    "Anki Card Generator V1",
-    "Drama Anki V1",
-)
 FIELD_SEPARATOR = "\x1f"
+
+
+def copy_zip_entry_limited(
+    archive: zipfile.ZipFile,
+    member: str | zipfile.ZipInfo,
+    target,
+    *,
+    max_bytes: int = MAX_ARCHIVE_MEDIA_BYTES,
+) -> int:
+    """Stream one ZIP member into a target without whole-entry reads."""
+
+    copied = 0
+    with archive.open(member) as source:
+        while True:
+            remaining_with_guard = max_bytes - copied + 1
+            chunk = source.read(min(ZIP_STREAM_CHUNK_BYTES, remaining_with_guard))
+            if not chunk:
+                return copied
+            copied += len(chunk)
+            if copied > max_bytes:
+                raise ValueError("UNSAFE_APKG_ARCHIVE: media entry exceeds the extraction limit")
+            target.write(chunk)
 
 
 def hidden_subprocess_flags() -> dict[str, int]:
@@ -65,9 +92,6 @@ MEDIA_MIN_BYTES = {
     ".webm": 4096,
 }
 VERIFY_WORKSPACE_MARKER = ".anki_apkg_verify_workspace"
-MAX_ARCHIVE_MEDIA_ENTRIES = 2000
-MAX_ARCHIVE_ENTRY_BYTES = 512 * 1024 * 1024
-MAX_ARCHIVE_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
 LEGACY_VERIFY_ARTIFACT_NAMES = {
     "collection.anki2",
     "collection.anki21",
@@ -79,26 +103,6 @@ LEGACY_VERIFY_ARTIFACT_NAMES = {
     "collection.anki21-wal",
     "media",
 }
-
-
-def archive_limit_error(message: str) -> RuntimeError:
-    return RuntimeError(f"UNSAFE_APKG_ARCHIVE: {message}")
-
-
-def validate_apkg_archive_limits(archive: zipfile.ZipFile) -> None:
-    media_entries = 0
-    total_size = 0
-    for info in archive.infolist():
-        if info.file_size > MAX_ARCHIVE_ENTRY_BYTES:
-            raise archive_limit_error(f"{info.filename} 超过单文件上限。")
-        total_size += int(info.file_size)
-        if total_size > MAX_ARCHIVE_TOTAL_BYTES:
-            raise archive_limit_error("解压后总大小超过上限。")
-        if info.filename not in {"collection.anki2", "collection.anki21", "media"}:
-            media_entries += 1
-    if media_entries > MAX_ARCHIVE_MEDIA_ENTRIES:
-        raise archive_limit_error("媒体文件数量超过上限。")
-
 
 def is_dangerous_output_root(path: Path) -> bool:
     resolved = path.resolve()
@@ -263,8 +267,13 @@ def plain_field_text(value: str) -> str:
 
 def field_dicts_from_note_rows(rows: list[tuple], models: dict) -> list[dict]:
     model_fields = {
-        str(model_id): [field.get("name", "") for field in model.get("flds", [])]
+        str(model_id): [
+            field.get("name", "")
+            for field in model.get("flds", [])
+            if isinstance(field, dict)
+        ]
         for model_id, model in models.items()
+        if isinstance(model, dict)
     }
     notes: list[dict] = []
     for mid, fields_raw in rows:
@@ -383,11 +392,35 @@ def offline_field_report(notes: list[dict], media_names: set[str]) -> dict:
     }
 
 
+def _contract_failure_report(apkg: Path, contract_report: dict) -> dict:
+    return {
+        "ok": False,
+        "mode": "sqlite_fallback",
+        "apkg": str(apkg),
+        "added": None,
+        "note_count": 0,
+        "card_count": 0,
+        "failed_checks": ["note_model_contract_mismatch"],
+        "models": [],
+        "template_names": [],
+        "note_model_contracts": [],
+        "note_model_contract_issues": contract_report["issues"],
+        "media_files": [],
+        "media_dir": "",
+    }
+
+
 def sqlite_fallback_report(apkg: Path) -> dict:
+    source_model_contract_report = inspect_apkg_note_model_contract(apkg)
+    if any(
+        str(issue.get("code") or "").startswith("APKG_")
+        or issue.get("code") == "UNSAFE_APKG_ARCHIVE"
+        for issue in source_model_contract_report["issues"]
+    ):
+        return _contract_failure_report(apkg, source_model_contract_report)
     with zipfile.ZipFile(apkg) as archive:
-        validate_apkg_archive_limits(archive)
+        collection_name = validate_apkg_archive_structure(archive)
         names = archive.namelist()
-        collection_name = "collection.anki2" if "collection.anki2" in names else "collection.anki21"
         media_map = json.loads(archive.read("media").decode("utf-8"))
         media_names = {Path(str(name)).name for name in media_map.values()}
         missing_archive_media = [
@@ -412,7 +445,7 @@ def sqlite_fallback_report(apkg: Path) -> dict:
             if Path(str(file_name)).suffix.lower() in {".mp4", ".webm"}:
                 with tempfile.NamedTemporaryFile(suffix=Path(str(file_name)).suffix, delete=False) as tmp_media:
                     tmp_path = Path(tmp_media.name)
-                    tmp_media.write(archive.read(archive_entry))
+                    copy_zip_entry_limited(archive, archive_entry, tmp_media)
                 try:
                     video_media_compatibility_issues.extend(
                         video_compatibility_issues(str(file_name), ffprobe_video(tmp_path))
@@ -425,17 +458,17 @@ def sqlite_fallback_report(apkg: Path) -> dict:
         con = sqlite3.connect(db_path)
         try:
             models = json.loads(con.execute("select models from col").fetchone()[0])
-            model_values = list(models.values())
-            matched_models = [
-                model
-                for model in model_values
-                if str(model.get("name", "")).startswith(MODEL_PREFIXES)
-            ]
-            notes = [row[0] for row in con.execute("select flds from notes").fetchall()]
-            field_notes = note_field_dicts(con, models)
+            field_rows = con.execute("select mid, flds from notes").fetchall()
+            model_contract_report = source_model_contract_report
+
+            matched_model_contracts = model_contract_report["contracts"]
+            notes = [row[1] for row in field_rows]
+            field_notes = field_dicts_from_note_rows(field_rows, models)
             field_report = offline_field_report(field_notes, media_names)
             note_fields = "\n".join(notes)
             failed_checks = []
+            if model_contract_report["issues"]:
+                failed_checks.append("note_model_contract_mismatch")
             if missing_archive_media:
                 failed_checks.append("missing_archive_media")
             if invalid_archive_media:
@@ -463,12 +496,10 @@ def sqlite_fallback_report(apkg: Path) -> dict:
                 "note_count": len(notes),
                 "card_count": con.execute("select count() from cards").fetchone()[0],
                 "failed_checks": failed_checks,
-                "models": [model.get("name") for model in matched_models],
-                "template_names": [
-                    template.get("name")
-                    for model in matched_models
-                    for template in model.get("tmpls", [])
-                ],
+                "models": [contract["modelName"] for contract in matched_model_contracts],
+                "template_names": [contract["templateName"] for contract in matched_model_contracts],
+                "note_model_contracts": matched_model_contracts,
+                "note_model_contract_issues": model_contract_report["issues"],
                 "has_video_html_field": "<video" in note_fields,
                 "has_mp4_video_source": ".mp4" in note_fields,
                 "has_webm_video_source": ".webm" in note_fields,
@@ -488,6 +519,11 @@ def sqlite_fallback_report(apkg: Path) -> dict:
             Path(f"{db_path}-wal").unlink(missing_ok=True)
 
 
+def emit_report(report: dict) -> None:
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    if not report.get("ok"):
+        raise SystemExit(1)
+
 def main() -> None:
     if len(sys.argv) < 2:
         raise SystemExit("Usage: python workers/verify_apkg.py <deck.apkg> [out_dir]")
@@ -503,21 +539,19 @@ def main() -> None:
         from anki.collection import Collection
         from anki.importing.apkg import AnkiPackageImporter
     except ModuleNotFoundError:
-        print(json.dumps(sqlite_fallback_report(apkg), ensure_ascii=False, indent=2))
+        emit_report(sqlite_fallback_report(apkg))
         return
 
     anki.lang.set_lang("en_US")
-    with zipfile.ZipFile(apkg) as archive:
-        validate_apkg_archive_limits(archive)
+    source_model_contract_report = inspect_apkg_note_model_contract(apkg)
+    if source_model_contract_report["issues"]:
+        # Fail closed before Anki imports an unsupported or tampered note model.
+        emit_report(sqlite_fallback_report(apkg))
+        return
     col = Collection(str(out_dir / "collection.anki2"))
     try:
         importer = AnkiPackageImporter(col, str(apkg))
         importer.run()
-        models = [
-            model
-            for model in col.models.all()
-            if str(model.get("name", "")).startswith(MODEL_PREFIXES)
-        ]
         notes = col.db.list("select flds from notes")
         media_dir = Path(col.media.dir())
         media_files = sorted(path.name for path in media_dir.iterdir()) if media_dir.exists() else []
@@ -537,10 +571,17 @@ def main() -> None:
             field_rows = col.db.all("select mid, flds from notes")
         except Exception:
             field_rows = []
+        model_contract_report = inspect_referenced_note_models(
+            models_by_id,
+            (row[0] for row in field_rows),
+        )
+        matched_model_contracts = model_contract_report["contracts"]
         field_notes = field_dicts_from_note_rows(field_rows, models_by_id)
         field_report = offline_field_report(field_notes, set(media_files))
         note_fields = "\n".join(notes)
         failed_checks = []
+        if model_contract_report["issues"]:
+            failed_checks.append("note_model_contract_mismatch")
         for key in (
             "missing_required_fields",
             "missing_referenced_media",
@@ -565,8 +606,10 @@ def main() -> None:
             "note_count": len(notes),
             "card_count": col.db.scalar("select count() from cards"),
             "failed_checks": failed_checks,
-            "models": [model.get("name") for model in models],
-            "template_names": [template.get("name") for model in models for template in model.get("tmpls", [])],
+            "models": [contract["modelName"] for contract in matched_model_contracts],
+            "template_names": [contract["templateName"] for contract in matched_model_contracts],
+            "note_model_contracts": matched_model_contracts,
+            "note_model_contract_issues": model_contract_report["issues"],
             "has_video_html_field": "<video" in note_fields,
             "has_mp4_video_source": ".mp4" in note_fields,
             "has_webm_video_source": ".webm" in note_fields,
@@ -578,7 +621,7 @@ def main() -> None:
             **field_report,
             "media_dir": str(media_dir),
         }
-        print(json.dumps(report, ensure_ascii=False, indent=2))
+        emit_report(report)
     finally:
         col.close(downgrade=False)
 
