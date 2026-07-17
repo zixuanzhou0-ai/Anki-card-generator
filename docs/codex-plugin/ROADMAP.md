@@ -118,8 +118,10 @@ M0 出口已经关闭：
 - Python 直接依赖已改为精确版本；最终发布仍需生成带哈希的完整传递依赖锁、真实离线签名密钥流程和外层 Authenticode/等价安装包签名。
 - 已把 FFmpeg、ffprobe 和 yt-dlp 绑定到签名运行包中的精确资源。托管 FFmpeg/ffprobe 只接受绝对本地普通文件，固定 `file` protocol 与显式 demuxer allowlist，拒绝 playlist、concat/subfile、网络协议、策略覆盖、reparse 输入、Shell/stdin 覆盖，并施加 300 秒上限；托管 yt-dlp 忽略外部配置和插件，禁止 exec、playlist 与 remote components，并锁定受信 FFmpeg 目录。
 - 真实畸形 MP4 已在 Windows AppContainer + task-owned Job + 专用 DACL 中 fail closed；正常 WAV→MP3 和 H.264/AAC 切片仍通过。当前证明覆盖协议/playlist/策略覆盖、reparse、畸形容器和边界文件不变，不等同于已经覆盖解码炸弹、磁盘填充、极端分辨率/帧数等完整恶意 corpus。
-- 本里程碑仍未完成：真实 model/TTS broker 出站执行、受控 URL acquisition broker、扩展恶意媒体/资源耗尽 corpus、桌面/Headless 语义等价证据和正式可安装插件包仍在后续切片。
-- 当前回归证据包括媒体策略 7 项、Worker 质量 399 项、Windows 受限启动 4 项、运行包与 Headless Service 30 项；这些集合有重叠且不是 M1 完成判定。
+- 已实现 Service-owned Provider Egress 和任务授权闭包：Worker 只能提交 `{workUnitId, request}`，不能提交 URL、Header、profile、credential revision、operation intent 或预算；Service 重建 endpoint、模型/voice 和认证头。当前固定 OpenAI、xAI、Anthropic、Gemini、已知项目 gateway host，以及字面 loopback Hermes；任意自定义 OpenAI-compatible origin 在 M2 受信 origin 授权与连接时地址约束完成前拒绝。
+- 受限 fake Worker 已通过认证 stdio 调用真实 task handler；默认传输已对临时 Hermes-style loopback 完成真实 POST 并拒绝 redirect。provider secret canary 只在 Service 传输闭包内出现，未进入任务、Broker ledger 或其他 JSON。未知真实费用按预留上限结算；发送后异常立即进入 `possible_incurred`。
+- 本里程碑仍未完成：Legacy Worker 的生产 model/TTS 调用尚未全部迁移到该 handler，正式 stdio 启动器尚未装配受信 profile/intent resolver；公网 provider 也未做真实凭据调用。受控 URL acquisition broker、扩展恶意媒体/资源耗尽 corpus、桌面/Headless 语义等价证据和正式可安装插件包仍在后续切片。
+- 当前回归证据包括媒体策略 7 项、Worker 质量 399 项、Windows 受限启动 4 项、运行包与 Headless Service 30 项，以及 Provider Egress/Broker/IPC/Headless 联合 82 项；这些集合有重叠且不是 M1 完成判定。
 
 ### 出口
 

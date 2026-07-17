@@ -554,6 +554,8 @@ M3 的本地/URL 视频链把 FFmpeg、ffprobe、yt-dlp 及任何辅助运行时
 
 当前 M1 本地媒体切片还把 FFmpeg/ffprobe/yt-dlp 固定为签名 manifest 中的精确绝对资源：FFmpeg/ffprobe 只接收绝对本地普通文件和固定 `file` protocol/demuxer allowlist，拒绝 playlist、concat/subfile、网络协议、reparse 输入和调用方策略覆盖；所有调用均无 Shell、stdin 关闭且超时有界。托管 yt-dlp 强制忽略外部配置、禁用插件/exec/playlist，并无条件拒绝 remote components。真实畸形容器已在 AppContainer + Job + DACL 内失败且未改动旁侧文件；解码炸弹、极端媒体和磁盘填充等完整 corpus、以及受控 URL acquisition broker 仍是未完成边界。
 
+当前 M1 Provider Egress 切片把 Worker 请求缩到固定 operation 的 `{workUnitId, request}`；所有 profile、origin、endpoint、model/voice、credential revision、operation intent、预算和预留成本由 Service 闭包绑定，认证头只在 Service 传输前构造。远程 origin 必须 HTTPS 且固定到官方/项目已知 host；Hermes 仅允许字面 loopback，任意 custom compatible origin 暂不开放。默认传输禁用 ambient proxy、拒绝 redirect、限制请求 schema/长度、超时和响应字节。该证明尚未覆盖生产 Legacy Worker call site、正式 profile/intent resolver 或真实公网凭据调用，所以不能声明 Worker 已完全失去旧直连能力。
+
 ## 12. Anki 持久写入
 
 风险：APKG 可包含模板 JavaScript、媒体并影响已有 Note Model。因此导入是高影响持久写入。

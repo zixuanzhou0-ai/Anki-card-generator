@@ -151,6 +151,13 @@ M1 媒体运行时在该签名包内进一步要求：
 - yt-dlp 强制 `--ignore-config`、禁用插件目录、exec、playlist 和 playlist 元数据，并固定受信 FFmpeg 目录；正式托管模式即使请求显式要求也拒绝 remote components。
 - 这只完成本地媒体解析边界。URL 下载仍需要后续受控 acquisition broker、DNS/redirect/字节预算与可验证出站策略；在此之前不能把插件 URL 来源描述为已交付。
 
+M1 Provider Egress 的当前内层边界为：
+
+- Worker 的认证 task-owned IPC 只接受固定 operation 与 `{workUnitId, request}`；profile、origin、endpoint、model/voice、credential revision、operation intent、预算和每调用预留成本全部来自 Service 内部授权闭包。
+- Service 对 OpenAI/xAI/Anthropic/Gemini、项目已知 gateways 和 Hermes 分别重建固定请求；禁止 tools、任意 Header、任意 endpoint、流式响应和重定向，禁用 ambient proxy，并对请求字段、prompt/TTS 长度、超时和响应字节设上限。
+- Hermes 只允许字面 `127.0.0.1`/`::1` 的显式 HTTP origin，使用 credential revision 0；远程服务必须 HTTPS。任意自定义 OpenAI-compatible origin 在 M2 的受信 origin authorization 和连接时 IP 约束完成前 fail closed。
+- 当前默认传输只对临时 Hermes-style loopback 做过真实 POST；公网 provider 未使用真实用户凭据验证。Legacy Worker 生产 model/TTS call site 和正式 stdio profile/intent resolver 尚未接线，因此 `modelTtsBroker.complete` 仍为 false。
+
 ## 3.1 受信本地设置与确认表面
 
 server/local-settings 是最小本地凭据配置窗口；server/consent-ui 是文件/目录、网络、输出、模型/TTS 数据出域、成本/批量 OperationIntent 和 Anki 写入的受信确认窗口。它们不是完整桌面制卡应用，但必须：

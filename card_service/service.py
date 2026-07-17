@@ -350,10 +350,10 @@ class CardService:
             "methods": sorted(self.method_policies),
             "methodAvailability": {
                 method: {
-                    "available": not policy.requires_broker,
+                    "available": not policy.requires_broker or self.broker_handler_factory is not None,
                     "blocker": (
                         None
-                        if not policy.requires_broker
+                        if not policy.requires_broker or self.broker_handler_factory is not None
                         else "model_tts_broker_not_ready"
                     ),
                 }
@@ -442,7 +442,7 @@ class CardService:
         policy = self.method_policies.get(method)
         if policy is None:
             raise CardServiceError("METHOD_NOT_ALLOWED", f"Card Service method is not allowed: {method}")
-        if policy.requires_broker:
+        if policy.requires_broker and self.broker_handler_factory is None:
             raise CardServiceError(
                 "BROKER_REQUIRED",
                 "This operation is blocked until the task-owned model/TTS broker is available",

@@ -195,6 +195,7 @@ def test_crash_after_send_is_possible_incurred_and_never_auto_replayed(tmp_path:
     bound_call = make_call(payload, credential_revision=metadata["credentialRevision"])
     with pytest.raises(RuntimeError):
         broker.execute(call=bound_call, budget=make_budget(), provider_payload=payload, sender=crashes)
+    assert broker.ledger.list_records()[0]["state"] == "possible_incurred"
     recovered_ledger = BrokerReservationLedger(ledger_path)
     assert recovered_ledger.list_records()[0]["state"] == "possible_incurred"
     recovered_broker = ModelTtsBroker(credential_store=store, ledger=recovered_ledger)
@@ -257,3 +258,13 @@ def test_negative_provider_usage_is_invalid_and_preserved_as_possible_cost(tmp_p
         ledger.settle(record["reservationId"], actual_response_bytes=-1, actual_cost_minor_units=1)
     assert caught.value.code == "INVALID_PROVIDER_USAGE"
     assert ledger.list_records()[0]["state"] == "possible_incurred"
+
+
+def test_unknown_actual_cost_is_settled_at_the_reserved_maximum(tmp_path: Path) -> None:
+    ledger = BrokerReservationLedger((tmp_path / "ledger.json").resolve())
+    record = ledger.reserve(make_call({"messages": ["hello"]}, reserved_cost_minor_units=17), make_budget())
+    ledger.mark_sent(record["reservationId"])
+    settled = ledger.settle(record["reservationId"], actual_response_bytes=12, actual_cost_minor_units=None)
+    assert settled["state"] == "settled"
+    assert settled["actualCostMinorUnits"] == 17
+    assert settled["actualCostWasEstimated"] is True

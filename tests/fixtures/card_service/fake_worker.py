@@ -44,6 +44,25 @@ def main() -> None:
         brokered = client.request("model.openai_chat", {"workUnitRef": "unit-1", "value": 7})
         print(json.dumps({"ok": True, "command": command, "brokered": brokered}, ensure_ascii=False))
         return
+    if mode == "broker_typed":
+        from acg.broker_client import configured_broker_client
+
+        client = configured_broker_client()
+        if client is None:
+            raise RuntimeError("broker was not configured")
+        brokered = client.request(
+            "model.openai_chat",
+            {
+                "workUnitId": "batch-1",
+                "request": {
+                    "model": "worker-spoofed-model",
+                    "messages": [{"role": "user", "content": "hello from restricted worker"}],
+                    "max_tokens": 50,
+                },
+            },
+        )
+        print(json.dumps({"ok": True, "command": command, "brokered": brokered}, ensure_ascii=False))
+        return
     print(
         PROGRESS_PREFIX + json.dumps({"stage": "half", "percent": 50, "message": "halfway"}),
         file=sys.stderr,

@@ -28,6 +28,16 @@ class BrokerBudget:
     max_response_bytes: int
     max_cost_minor_units: int | None
 
+    def __post_init__(self) -> None:
+        if min(
+            int(self.max_remote_calls),
+            int(self.max_request_bytes),
+            int(self.max_response_bytes),
+        ) < 0:
+            raise BrokerError("INVALID_BUDGET", "Broker budget values must not be negative")
+        if self.max_cost_minor_units is not None and int(self.max_cost_minor_units) < 0:
+            raise BrokerError("INVALID_BUDGET", "Broker cost budget must not be negative")
+
 
 @dataclass(frozen=True)
 class BrokerCall:
@@ -42,6 +52,7 @@ class BrokerCall:
     request_bytes: int
     maximum_response_bytes: int
     reserved_cost_minor_units: int | None
+    credential_required: bool = True
 
 
 def canonical_digest(value: Any) -> str:
@@ -113,6 +124,7 @@ class BrokerReservationLedger:
                     "capability": call.capability, "profileRef": call.profile_ref,
                     "credentialRevision": call.credential_revision,
                     "operationIntentRef": call.operation_intent_ref,
+                    "credentialRequired": call.credential_required,
                 }
                 if any(existing.get(key) != expected for key, expected in expected_scope.items()):
                     raise BrokerError("IDEMPOTENCY_SCOPE_CONFLICT", "Broker idempotency key crossed its task scope")
@@ -152,6 +164,7 @@ class BrokerReservationLedger:
                 "requestBytes": call.request_bytes,
                 "maximumResponseBytes": call.maximum_response_bytes,
                 "reservedCostMinorUnits": call.reserved_cost_minor_units,
+                "credentialRequired": call.credential_required,
                 "state": "reserved",
                 "createdAt": now,
                 "updatedAt": now,
@@ -194,13 +207,15 @@ class BrokerReservationLedger:
             if record is None or record.get("state") != "sent":
                 raise BrokerError("INVALID_RESERVATION_STATE", "Only a sent reservation can settle")
             reserved_cost = record.get("reservedCostMinorUnits")
-            invalid = actual_response_bytes < 0 or (actual_cost_minor_units is not None and actual_cost_minor_units < 0)
+            settled_cost = reserved_cost if actual_cost_minor_units is None else actual_cost_minor_units
+            invalid = actual_response_bytes < 0 or (settled_cost is not None and int(settled_cost) < 0)
             over = invalid or actual_response_bytes > int(record.get("maximumResponseBytes") or 0)
-            over = over or (reserved_cost is not None and actual_cost_minor_units is not None and actual_cost_minor_units > int(reserved_cost))
+            over = over or (reserved_cost is not None and settled_cost is not None and int(settled_cost) > int(reserved_cost))
             record.update(
                 state="possible_incurred" if over else "settled",
                 actualResponseBytes=max(0, int(actual_response_bytes)),
-                actualCostMinorUnits=actual_cost_minor_units,
+                actualCostMinorUnits=settled_cost,
+                actualCostWasEstimated=actual_cost_minor_units is None and reserved_cost is not None,
                 updatedAt=int(time.time() * 1000),
             )
             self._save(value)
@@ -239,13 +254,24 @@ class ModelTtsBroker:
         with self._send_lock:
             secret = ""
             try:
-                secret = self.credential_store.resolve_secret(call.profile_ref, expected_revision=call.credential_revision)
+                if call.credential_required:
+                    secret = self.credential_store.resolve_secret(
+                        call.profile_ref,
+                        expected_revision=call.credential_revision,
+                    )
+                elif call.credential_revision != 0:
+                    raise BrokerError(
+                        "CREDENTIAL_BINDING_INVALID",
+                        "Credential-free broker calls must use revision zero",
+                    )
                 sent = self.ledger.mark_sent(reservation["reservationId"])
                 result, response_bytes, actual_cost = sender(provider_payload, secret)
             except Exception:
                 current = next(record for record in self.ledger.list_records() if record["reservationId"] == reservation["reservationId"])
                 if current["state"] == "reserved":
                     self.ledger.release_before_send(reservation["reservationId"])
+                elif current["state"] == "sent":
+                    self.ledger.transition(reservation["reservationId"], {"sent"}, "possible_incurred")
                 raise
             finally:
                 secret = ""

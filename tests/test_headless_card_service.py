@@ -11,6 +11,10 @@ from pathlib import Path
 
 import pytest
 
+from card_service.broker import BrokerBudget, BrokerReservationLedger, ModelTtsBroker
+from card_service.broker_runtime import AuthorizedProviderCall, TaskBrokerAuthorization, make_task_broker_handler
+from card_service.credentials import CredentialStore, InMemoryCredentialBackend
+from card_service.provider_egress import ProviderProfile, ProviderTransportResponse
 from card_service.service import CardService, CardServiceError, MethodPolicy, _verify_sandbox_attestation
 
 
@@ -453,3 +457,67 @@ def test_task_owned_authenticated_stdio_broker_reaches_worker_without_persisting
     )
     assert "channelProof" not in persisted
     assert "__ANKI_CARD_BROKER" not in persisted
+
+
+def test_restricted_worker_reaches_service_owned_provider_egress_over_authenticated_stdio(tmp_path: Path) -> None:
+    backend = InMemoryCredentialBackend()
+    credentials = CredentialStore(state_dir=(tmp_path / "credentials").resolve(), backend=backend)
+    metadata = credentials.set_secret("model.primary", "provider-secret-canary")
+    ledger = BrokerReservationLedger((tmp_path / "broker-ledger.json").resolve())
+    broker = ModelTtsBroker(credential_store=credentials, ledger=ledger)
+    observed = []
+
+    def transport(request):
+        observed.append(request)
+        assert request.headers["Authorization"] == "Bearer provider-secret-canary"
+        body = json.loads(request.body)
+        assert body["model"] == "gpt-service-owned"
+        return ProviderTransportResponse(200, request.url, {}, b'{"text":"brokered"}')
+
+    binding = AuthorizedProviderCall(
+        profile=ProviderProfile(
+            profile_ref="model.primary",
+            capability="model",
+            provider="openai",
+            base_url="https://api.openai.com/v1",
+            model="gpt-service-owned",
+            maximum_response_bytes=4096,
+        ),
+        credential_revision=int(metadata["credentialRevision"]),
+        reserved_cost_minor_units=3,
+        transport=transport,
+    )
+    authorization = TaskBrokerAuthorization(
+        operation_intent_ref="intent-approved-1",
+        budget=BrokerBudget(4, 100_000, 100_000, 100),
+        operations={"model.openai_chat": binding},
+    )
+
+    def factory(task_id: str, method: str, request: dict[str, object]):
+        assert method == "runtime.extract_learning_points"
+        assert request == {"mode": "broker_typed"}
+        return make_task_broker_handler(task_id=task_id, authorization=authorization, broker=broker)
+
+    card_service = service(
+        tmp_path,
+        method_policies={
+            "runtime.extract_learning_points": MethodPolicy(
+                "extract_learning_points",
+                5.0,
+                requires_broker=True,
+            )
+        },
+        broker_handler_factory=factory,
+    )
+    assert card_service.capabilities()["methodAvailability"]["runtime.extract_learning_points"] == {
+        "available": True,
+        "blocker": None,
+    }
+    started = card_service.start_task("runtime.extract_learning_points", {"mode": "broker_typed"})
+    finished = wait_terminal(card_service, started["id"], timeout=10)
+    assert finished["state"] == "succeeded", finished.get("error")
+    assert card_service.read_result(started["id"])["brokered"] == {"text": "brokered"}
+    assert len(observed) == 1
+    assert ledger.list_records()[0]["state"] == "settled"
+    persisted = "\n".join(path.read_text(encoding="utf-8") for path in tmp_path.rglob("*.json"))
+    assert "provider-secret-canary" not in persisted
