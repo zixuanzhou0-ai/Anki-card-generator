@@ -109,7 +109,8 @@ BASE_NOTE_FIELD_NAMES = (
 )
 
 BASE_NOTE_FIELDS_SHA256 = "aab8dad5dfd6bb010ffddfcb56dc9b04bad0a803adf6fac6df8a35f233e8f6de"
-V14_NOTE_FIELDS_SHA256 = "5f55885a8307c2d7320ea1184d79425cffea66ccd53d29694bca88c8fdc1e44b"
+PRESENTATION_NOTE_FIELDS_SHA256 = "5f55885a8307c2d7320ea1184d79425cffea66ccd53d29694bca88c8fdc1e44b"
+V14_NOTE_FIELDS_SHA256 = PRESENTATION_NOTE_FIELDS_SHA256
 
 
 def text_sha256(value: str) -> str:
@@ -175,12 +176,12 @@ class NoteModelContract:
         if not self.field_specs_sha256:
             field_digest = (
                 V14_FIELD_SPECS_SHA256
-                if self.ordered_fields_sha256 == V14_NOTE_FIELDS_SHA256
+                if self.ordered_fields_sha256 == PRESENTATION_NOTE_FIELDS_SHA256
                 else BASE_FIELD_SPECS_SHA256
             )
             object.__setattr__(self, "field_specs_sha256", field_digest)
         if not self.model_extras_sha256:
-            if self.template_schema == "V14":
+            if self.ordered_fields_sha256 == PRESENTATION_NOTE_FIELDS_SHA256:
                 model_digest = V14_MODEL_EXTRAS_SHA256
             elif self.template_schema == "V12":
                 model_digest = V12_CIBA_MODEL_EXTRAS_SHA256
@@ -238,6 +239,28 @@ class NoteModelContract:
 
 
 NOTE_MODEL_CONTRACTS = (
+    NoteModelContract(
+        template_family="language-immersive-v11",
+        template_schema="V15",
+        note_model_id=1028904201,
+        model_name="Anki Card Generator V15 - 沉浸复读 V11",
+        template_name="沉浸复读 V11",
+        ordered_fields_sha256=PRESENTATION_NOTE_FIELDS_SHA256,
+        css_sha256="ce67ba0760df2996366989d25196ccaf0d6f05d3da87e44a7b692676e795f8a4",
+        qfmt_sha256="03fa14f4b922ef350a358d77c10548eb1b5b8206b22d61b62ce6db8c83f29b35",
+        afmt_sha256="7037ae6a3a8b0f2a5237b65010ffdafabf0fb6c6cb2c45dcc7514c50f81fb0a5",
+    ),
+    NoteModelContract(
+        template_family="language-immersive-v11-fast",
+        template_schema="V15",
+        note_model_id=5074019806,
+        model_name="Anki Card Generator V15 - 沉浸复读 V11 · 快速复读",
+        template_name="沉浸复读 V11 · 快速复读",
+        ordered_fields_sha256=PRESENTATION_NOTE_FIELDS_SHA256,
+        css_sha256="3023d916bf3ad30182ffdacccec6d5d76c987478fbe667a9cca9451d63b177df",
+        qfmt_sha256="0c977481c6fa3aa5aa97c0c9d81d925e32f00dea135244ddae844206abbeedd9",
+        afmt_sha256="9395ce09a444716a78ce363c8ebe88cd03409014f42f3ae62a56039eb5bf6bb7",
+    ),
     NoteModelContract(
         template_family="language-immersive-v11",
         template_schema="V14",
@@ -355,6 +378,10 @@ CONTRACTS_BY_EXPORT_KEY = {
     (contract.template_family, contract.template_schema, contract.template_name): contract
     for contract in NOTE_MODEL_CONTRACTS
 }
+if len(CONTRACTS_BY_MODEL_ID) != len(NOTE_MODEL_CONTRACTS):
+    raise RuntimeError("Duplicate Note Model IDs in the frozen contract registry.")
+if len(CONTRACTS_BY_EXPORT_KEY) != len(NOTE_MODEL_CONTRACTS):
+    raise RuntimeError("Duplicate family/schema/template keys in the frozen contract registry.")
 
 CURRENT_VIDEO_MODEL_NAMES = frozenset(
     contract.model_name
@@ -528,7 +555,7 @@ def _inspect_model_payload(
         )
 
     expected_field_names = note_model_field_names(
-        contract.ordered_fields_sha256 == V14_NOTE_FIELDS_SHA256
+        contract.ordered_fields_sha256 == PRESENTATION_NOTE_FIELDS_SHA256
     )
     raw_fields = model.get("flds")
     if (

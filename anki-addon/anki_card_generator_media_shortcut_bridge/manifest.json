@@ -1,0 +1,8 @@
+{
+  "package": "anki_card_generator_media_shortcut_bridge",
+  "name": "Anki Card Generator Media Shortcut Bridge",
+  "min_point_version": 260500,
+  "max_point_version": 260500,
+  "human_version": "1.0.0-m0",
+  "homepage": "https://github.com/zixuanzhou0-ai/Anki-card-generator"
+}

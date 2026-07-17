@@ -64,9 +64,9 @@ Hermes 本地封装席的结论是 `needs-contract-hardening`，置信度 0.74�
 
 生产 Anki 写路径在媒体预置前执行内部 raw `ExportResult`/payload/路径/APKG 哈希与完整包 preflight，并在媒体准备后、紧贴 `importPackage` 前再次 stat + SHA。raw `ExportResult` 不认证来源，无法抵抗能同时篡改 APKG 与结果的同权限本机攻击者；partial 后的 no-replace 原子发布和重复 rehash 只缩小、不能消除 TOCTOU。M2 必须用认证 Artifact 注册表、不透明引用和受控文件句柄取代该内部兼容信任边界。
 
-最终自动化回归为 Vitest 830、正式 `pytest` 581、独立 `unittest discover` 571、Rust 31 项通过与 1 项按设计忽略、UI smoke 3、V14/V10 release smoke、`check:full` 和 Tauri build 通过；两套 Python 运行有重叠，不能相加。20 卡生产 V14 离线完整合同为 20 notes / 20 cards / 52 个唯一媒体，每卡 6 引用、共 120 个媒体归属。真实隔离 Anki 数据级验证覆盖 E→C 单卡 1/1/6 和 20 卡 20/20/52：6/6 与 52/52 媒体均走 `direct-first / trusted_atomic_copy`，逐媒体大小/SHA 与 120 个归属闭合，`retrieveMediaFile`/`storeMediaFile` 均为 0 次，重复跳过且 `duplicates=0`，真实重启后仍完整；正式 profile/牌组未触碰，隔离进程已关闭。此前合同不一致尝试仍作为 fail-closed 0 写入负例保留。
+最终自动化回归为 Vitest 830、正式 `pytest` 603、独立 `unittest discover` 576、Rust 31 项通过与 1 项按设计忽略、UI smoke 3、V15/V10 release smoke、`check:full` 和 Tauri build 通过；两套 Python 运行有重叠，不能相加。20 卡生产 V15 离线完整合同为 20 notes / 20 cards / 52 个唯一媒体，manifest、逐媒体哈希、字幕对齐与模型作用域 GUID 闭合。真实隔离 Anki 验证覆盖 E→C 单卡、V15 20 卡重复/重启和 V14/V15 同字段并存；正式 profile/牌组未触碰。此前合同不一致尝试仍作为 fail-closed 0 写入负例保留。
 
-这仍不是 M0 完成声明：20 卡素材是合成视频和静音 TTS，Computer Use 当前不可用，真实 GUI 翻面、播放与连续复习尚未完成。插件安装、目标 Codex 宿主注册、M1 Card Service、stdio MCP 与版本化 runtime verifier 也仍未实现。非 NFC、`CLOCK$` 等保留名、规范化冲突和 APKG archive/package/verifier 与标准 Windows Anki direct-first 路径的有界流式读取已经通过；非标准 AnkiConnect inline 兼容仍有不超过 8 MiB 原始媒体的整文件/Base64 放大，且 8 MiB 不是进程峰值。
+M0 已完成：Computer Use 已在真实 Anki 26.05 中完成翻面、焦点、滚动、四类媒体、Space/Enter 路由和 20 张连续复习；版本化快捷键 add-on 只在精确 runtime contract 下工作。插件安装、目标 Codex 宿主注册、M1 Card Service、stdio MCP 与通用 runtime verifier 仍未实现。20 卡素材是合成视频和静音 TTS，不能证明真人语义、听感或长期学习效果；非标准 AnkiConnect inline 兼容仍有不超过 8 MiB 原始媒体的整文件/Base64 放大，且 8 MiB 不是进程峰值。
 
 顾问评审后，独立核心契约与安全红队又进行了多轮反向审查。为消除“各实现都看似合理但彼此不兼容”的空间，本目录进一步冻结：
 
@@ -92,7 +92,7 @@ Hermes 本地封装席的结论是 `needs-contract-hardening`，置信度 0.74�
 顾问评审后进行的仓库核对也把 V14 问题从“未显式列入允许版本”修正为更准确的“V1 宽前缀 fail-open”：评审当时的 verifier 会同时接受合法 V14 和伪造 V199。该句保留为历史发现；当前实现状态以 4.1 节、本地逐行核验与真实测试为准。
 ## 5. 仍未消除的不确定性
 
-- M0 的 verifier fail-open 已由精确合同关闭；最终自动化、20 卡 20/20/52 离线媒体合同、E→C 单卡 1/1/6 与隔离 Anki 20/20/52 的数据级导入/重复/重启已有证据。但 Computer Use、真实 GUI 媒体播放和至少 20 张连续复习仍未完成；合成视频和静音 TTS 不能提供语义或听感证据。
+- M0 的 verifier fail-open 已由精确 V15/V14/V10 合同关闭；最终自动化、V15 20/20/52 离线媒体合同、E→C 单卡、V15 重复/重启、V14/V15 并存与 Computer Use 真实 GUI 20 张连续复习已有证据。合成视频和静音 TTS 仍不能提供真人语义、听感或长期学习效果证据。
 - 当前内部 raw `ExportResult` 的一致性校验不等于来源认证；能同时改写 APKG 与 `ExportResult` 的同权限本机攻击者仍在信任边界内，须由 M2 认证 Artifact 注册表解决。
 - 当前 stat/SHA 重算和同目录 no-replace 原子发布只缩短路径 TOCTOU 窗口，不构成不可变文件句柄证明。
 - 非 NFC、Windows 保留设备名（含 `CLOCK$`）、大小写/规范化冲突和 APKG archive 资源上限已通过。流式结论只覆盖 APKG archive/package/verifier；AnkiConnect 媒体恢复仍整文件读入并 base64 编解码，存在峰值内存放大。
@@ -114,7 +114,7 @@ Hermes 本地封装席的结论是 `needs-contract-hardening`，置信度 0.74�
 
 进入 M3 之前还必须完成：
 
-1. [CURRENT 子项完成] verifier 精确版本合同、V14/V10 release smoke、V1xx 伪版本/篡改负例、完整 APKG 合同、10 个生产生成变体、`.partial` 后 no-replace 原子发布、生产导入前 preflight、最终自动化、20 卡 20/20/52 离线媒体合同，以及隔离真实 Anki 单卡与 20 卡数据级导入/重复/重启证据。完整结果见 [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md)。
+1. [M0 已完成] verifier 精确 V15/V14/V10 合同、V15/V10 release smoke、V1xx 伪版本/篡改负例、完整 APKG 合同、10 个生产生成变体、`.partial` 后 no-replace 原子发布、生产导入前 preflight、最终自动化、V15 20/20/52 离线媒体合同、隔离真实 Anki 重复/重启/V14-V15 并存，以及 Computer Use 20 张连续复习证据。完整结果见 [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md)。
 2. 目标 Codex 宿主 manifest/stdio/tool registration spike。
 3. Audience/InternalAuthorization/Disclosure/ProfileConfiguration/Egress、Artifact/Task/Gate、逐 profile verification、BrokerRequest/ReservationLedger，以及 AnkiVerificationContract/CardIdentitySet/MediaInventory、TrustRevocationSnapshotHistory、RuntimeVerificationRunBinding/ProofAuthentication、ObservationEvidence/ProfileState、三传感器 WriteAudit、RunOwnedProcessLifecycleLedger/TrustedAddonFocusAction、FinalRuntimeEvidenceInputsManifest/ReadBarrier、Environment/TrustedCopy/RequiredChecks/RuntimeEvidence/ImportPlan/Recovery 合同测试。
 4. Windows 真实 helper 沙箱、普通/敏感 URL 的 MCP 零进入 canary、secret canary 与 model/TTS broker 跨目标/文本替换/预算绕过测试。

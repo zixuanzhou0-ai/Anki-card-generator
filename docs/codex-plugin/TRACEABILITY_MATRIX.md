@@ -91,7 +91,7 @@
 
 | ID | 阶段 | 证明 | 产物 | 测试 |
 |---|---|---|---|---|
-| RR-000 | P0 | CURRENT：verifier 精确区分 V14/V10 与 V1xx 伪版本；10 个生产变体通过完整 APKG 合同并在 Anki 写入前复核 | release evidence + complete package report + import preflight | V14/V10 positive + 10 variants + spoof/canonical/registry/template/archive-limit negative + CLI exit 1 + media/import zero-call |
+| RR-000 | P0 | CURRENT：verifier 精确区分 V15/V14/V10 与 V1xx 伪版本；10 个生产变体通过完整 APKG 合同并在 Anki 写入前复核 | release evidence + complete package report + import preflight | V15/V14/V10 positive + 10 variants + spoof/canonical/registry/template/archive-limit negative + CLI exit 1 + media/import zero-call |
 | RR-001 | R0 | 授权有效 | authorization ledger audit | scope/replay |
 | RR-101 | R1 | 来源身份/完整性 | SourceArtifact | hash/partial |
 | RR-201 | R2 | 证据对齐 | SemanticArtifact | replay/span |
@@ -107,11 +107,11 @@
 | RR-901 | 恢复 | 失败不伪造成功、旧授权不转移 | Task/Checkpoint/SuccessorTaskRebase/AnkiRecoveryDecision | forced exits + re-auth + write-boundary matrix |
 | RR-902 | 长导出/Anki | 终态前不伪造成功 | Task + Package/VerificationArtifact | cancel/crash/retry |
 
-CURRENT M0 证据边界：最终自动化为 Vitest 830、正式 `pytest` 581、独立 `unittest discover` 571（有重叠，不相加）、Rust 31 项通过与 1 项按设计忽略、UI smoke 3、V14/V10 release smoke、`check:full` 与 Tauri build 通过。20 卡离线生产 V14 包为 20 notes / 20 cards / 52 media、每卡 6 引用、120 个归属；隔离真实 Anki 数据级验证覆盖 E→C 单卡 1/1/6 和 20 卡 20/20/52，6/6 与 52/52 均走 `direct-first / trusted_atomic_copy`，媒体大小/SHA 与 120 个归属闭合，`retrieveMediaFile`/`storeMediaFile` 均为 0 次，重复导入跳过且 `duplicates=0`，真实重启后仍完整。正式 profile/牌组未触碰，隔离进程已关闭。素材为合成视频和静音 TTS，不证明语义、听感、GUI 播放或连续复习。
+CURRENT M0 证据边界：最终自动化为 Vitest 830、正式 `pytest` 603、独立 `unittest discover` 576（有重叠，不相加）、Rust 31 项通过与 1 项按设计忽略、UI smoke 3、V15/V10 release smoke、`check:full` 与 Tauri build 通过。20 卡离线生产 V15 包为 20 notes / 20 cards / 52 media，manifest、逐媒体哈希、字幕对齐和模型作用域 GUID 闭合；隔离真实 Anki 覆盖 E→C 单卡、V15 20 卡重复/重启及 V14/V15 同字段并存。Computer Use 已在 Anki 26.05 完成 20 张连续复习、翻面、滚动、焦点、四类媒体、Space/Enter 路由与状态互斥。正式 profile/牌组未触碰。合成视频和静音 TTS 不证明真人语义、听感或长期学习效果。
 
 非 NFC、Windows 保留设备名（含 `CLOCK$`）、大小写/规范化冲突和 APKG archive 资源上限已通过；流式读取覆盖 APKG archive/package/verifier 与标准 Windows Anki direct-first 媒体路径。64 MiB direct 样本在禁止整文件读取、Base64 与 AnkiConnect 媒体动作时通过，Python `tracemalloc` 峰值增量低于 32 MiB。非标准/portable profile 的 AnkiConnect inline 路径仍整文件/Base64，但原始媒体硬限制为 8 MiB，且部分写入账本与最终媒体 barrier 已冻结。raw `ExportResult` 仍只是内部兼容输入，不认证来源；partial 后的 no-replace 原子发布及导入前 stat/SHA 只缩小、不能消除 TOCTOU。SR-007 的 M2 认证 Artifact 注册表、不透明引用和受控文件句柄完成前，不能把当前入口公开为 MCP 写工具。
 
-M0 尚缺：Computer Use 桌面验收当前不可用；真实 GUI 翻面、媒体播放和至少 20 张连续复习尚未执行；插件/MCP/M1+ 仍未实现。非标准 inline 兼容路径与双进程 RSS 仍是明确限制，但 8 MiB fail-closed 已满足 M0 的“消除或进一步收紧”出口。因此 RR-000/RR-601/RR-801 的 CURRENT 子项不构成完整 M0 或 RR-802 运行时完成。
+M0 已完成；插件/MCP/M1+ 仍未实现。非标准 inline 兼容路径与双进程 RSS、Anki add-on 仅声明支持 26.05、合成媒体不证明真人学习效果仍是明确限制。RR-000/RR-601/RR-801 的 M0 子项已有自动化、数据级与 GUI 证据，但不能外推为 RR-802 的通用 runtime 或 Codex 插件已经完成。
 
 ## 5. UX 要求
 

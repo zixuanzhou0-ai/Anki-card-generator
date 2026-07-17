@@ -330,7 +330,7 @@ export function hasCompleteAnkiWriteEvidence(
         Number(candidate.note_model_id) > 0 &&
         isNonEmptyString(candidate.template_name) &&
         isNonEmptyString(candidate.template_family) &&
-        ['V10', 'V12', 'V14'].includes(String(candidate.template_schema)) &&
+        ['V10', 'V12', 'V14', 'V15'].includes(String(candidate.template_schema)) &&
         candidate.template_version === candidate.template_schema &&
         candidate.compatibility_contract_version === 1 &&
         SHA256_PATTERN.test(String(candidate.note_model_contract_digest ?? '')) &&

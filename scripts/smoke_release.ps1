@@ -227,10 +227,10 @@ if (-not (Test-Path $export.apkg_path)) {
 if ($export.template_family -ne "language-immersive-v11") {
   throw "Release smoke template family drifted: $($export.template_family)"
 }
-if ($export.template_schema -ne "V14" -or $export.template_version -ne "V14") {
-  throw "Release smoke template schema is not V14: $($export.template_schema) / $($export.template_version)"
+if ($export.template_schema -ne "V15" -or $export.template_version -ne "V15") {
+  throw "Release smoke template schema is not V15: $($export.template_schema) / $($export.template_version)"
 }
-if ([int64]$export.note_model_id -ne 3157735470) {
+if ([int64]$export.note_model_id -ne 1028904201) {
   throw "Release smoke Note Model ID drifted: $($export.note_model_id)"
 }
 if ([int]$export.compatibility_contract_version -ne 1 -or -not $export.note_model_contract_digest) {
@@ -249,8 +249,8 @@ if (-not $verify.ok) {
 if ($verify.failed_checks.Count -ne 0 -or $verify.note_model_contract_issues.Count -ne 0) {
   throw "APKG Note Model contract verification reported failures. See $VerifyJson"
 }
-if ($verify.note_model_contracts.Count -ne 1 -or [int64]$verify.note_model_contracts[0].noteModelId -ne 3157735470) {
-  throw "APKG verifier did not prove the exact V14 Note Model contract. See $VerifyJson"
+if ($verify.note_model_contracts.Count -ne 1 -or [int64]$verify.note_model_contracts[0].noteModelId -ne 1028904201) {
+  throw "APKG verifier did not prove the exact V15 Note Model contract. See $VerifyJson"
 }
 
 $legacyProject = $project | ConvertTo-Json -Depth 50 | ConvertFrom-Json

@@ -394,8 +394,8 @@ export type ExportResult = {
   note_model_id: number
   template_name: string
   template_family: string
-  template_schema: 'V10' | 'V12' | 'V14'
-  template_version: 'V10' | 'V12' | 'V14'
+  template_schema: 'V10' | 'V12' | 'V14' | 'V15'
+  template_version: 'V10' | 'V12' | 'V14' | 'V15'
   compatibility_contract_version: 1
   note_model_contract_digest: string
   anki_tag: string

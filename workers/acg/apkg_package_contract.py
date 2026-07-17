@@ -6,7 +6,6 @@ import re
 import sqlite3
 import tempfile
 import zipfile
-import genanki
 from collections import Counter
 from html.parser import HTMLParser
 from pathlib import Path
@@ -16,11 +15,13 @@ from acg.anki_export import windows_basename_key, windows_safe_basename
 from acg.anki_model_contracts import (
     COMPATIBILITY_CONTRACT_VERSION,
     CONTRACTS_BY_MODEL_ID,
+    PRESENTATION_NOTE_FIELDS_SHA256,
     ApkgContractError,
     inspect_referenced_note_models,
     note_model_field_names,
     validate_apkg_archive_structure,
 )
+from acg.anki_note_identity import note_guid_for_model
 from acg.media_refs import extract_media_references
 
 
@@ -31,6 +32,7 @@ NOTE_CONTENT_FINGERPRINT_SERIALIZATION = "json-field-pairs-v1"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _MODEL_ID_RE = re.compile(r"[1-9][0-9]*\Z")
 _MEDIA_INDEX_RE = re.compile(r"(?:0|[1-9][0-9]*)\Z")
+_ANKI_VERSION_TAG_RE = re.compile(r"anki_card_generator_v[0-9]+\Z")
 _DANGEROUS_TAG_RE = re.compile(
     r"<\s*/?\s*(?:script|iframe|object|embed|svg|math|form|input|button|link|meta|style)\b",
     re.IGNORECASE,
@@ -1090,7 +1092,9 @@ def _validate_collection(
                 _add(issues, "NOTE_MODEL_CONTRACT_UNAVAILABLE", "Resolved Note Model contract is unavailable.")
             else:
                 expected_field_names = list(
-                    note_model_field_names(contract_object.template_schema == "V14")
+                    note_model_field_names(
+                        contract_object.ordered_fields_sha256 == PRESENTATION_NOTE_FIELDS_SHA256
+                    )
                 )
                 if state["field_names"] != expected_field_names:
                     _add(issues, "EXPORT_NOTE_FIELDS_MISMATCH", "ExportResult fingerprint fields differ from Note Model.")
@@ -1106,6 +1110,33 @@ def _validate_collection(
                 }
                 if any(export_result.get(key) != expected for key, expected in identity_checks.items()):
                     _add(issues, "EXPORT_NOTE_MODEL_IDENTITY_MISMATCH", "ExportResult Note Model identity differs from APKG.")
+                expected_anki_tag = (
+                    f"anki_card_generator_{contract_object.template_schema.lower()}"
+                )
+                if export_result.get("anki_tag") != expected_anki_tag:
+                    _add(
+                        issues,
+                        "EXPORT_ANKI_TAG_SCHEMA_MISMATCH",
+                        "ExportResult Anki tag differs from the frozen template schema.",
+                    )
+                for ledger_item in state["card_ledger"]:
+                    ledger_tags = ledger_item.get("note_tags")
+                    version_tags = (
+                        [
+                            tag
+                            for tag in ledger_tags
+                            if isinstance(tag, str) and _ANKI_VERSION_TAG_RE.fullmatch(tag)
+                        ]
+                        if isinstance(ledger_tags, list)
+                        else []
+                    )
+                    if version_tags != [expected_anki_tag]:
+                        _add(
+                            issues,
+                            "EXPORT_NOTE_VERSION_TAG_MISMATCH",
+                            "Card ledger must contain exactly the template schema Anki tag.",
+                        )
+                        break
                 if models is not None:
                     model = models.get(str(contract_object.note_model_id))
                     model_did = _native_int(model.get("did")) if isinstance(model, Mapping) else None
@@ -1138,6 +1169,19 @@ def _validate_collection(
                         and note_tag_text.endswith(" ")
                         else []
                     )
+                    version_tags = [
+                        tag
+                        for tag in note_tag_items
+                        if _ANKI_VERSION_TAG_RE.fullmatch(tag)
+                    ]
+                    if version_tags != [
+                        f"anki_card_generator_{contract_object.template_schema.lower()}"
+                    ]:
+                        _add(
+                            issues,
+                            "APKG_NOTE_VERSION_TAG_MISMATCH",
+                            "Anki note must contain exactly the template schema version tag.",
+                        )
                     values = flds.split("\x1f")
                     if len(values) != len(expected_field_names):
                         _add(issues, "APKG_NOTE_FIELD_COUNT_MISMATCH", "Anki note field count differs from Note Model.")
@@ -1156,8 +1200,15 @@ def _validate_collection(
                             _add(issues, "APKG_NOTE_CONTENT_SHA256_MISMATCH", "Anki note fields differ from the card ledger fingerprint.")
                         if note_tag_items != ledger_item.get("note_tags"):
                             _add(issues, "APKG_NOTE_TAGS_MISMATCH", "Anki note tags differ from the card ledger.")
-                        if note_row[1] != genanki.guid_for(*values):
-                            _add(issues, "APKG_NOTE_GUID_MISMATCH", "Anki note GUID differs from genanki 0.13.1.")
+                        if note_row[1] != note_guid_for_model(
+                            contract_object.note_model_id,
+                            values,
+                        ):
+                            _add(
+                                issues,
+                                "APKG_NOTE_GUID_MISMATCH",
+                                "Anki note GUID differs from the frozen Note Model identity contract.",
+                            )
                         note_card = card_by_note_id.get(note_id)
                         card_deck_name = parsed_decks.get(note_card[2]) if note_card is not None else None
                         if card_deck_name != ledger_item.get("deck_name"):

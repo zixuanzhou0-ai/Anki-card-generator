@@ -524,14 +524,14 @@
                                       ],
                        "deck_kind":  "video_language",
                        "template_family":  "language-immersive-v11",
-                       "template_schema":  "V14",
-                       "template_version":  "V14",
+                       "template_schema":  "V15",
+                       "template_version":  "V15",
                        "template_name":  "沉浸复读 V11",
-                       "note_model_id":  3157735470,
-                       "model_name":  "Anki Card Generator V14 - 沉浸复读 V11",
+                       "note_model_id":  1028904201,
+                       "model_name":  "Anki Card Generator V15 - 沉浸复读 V11",
                        "compatibility_contract_version":  1,
-                       "note_model_contract_digest":  "cbf770412b097c10a647d52c0bb044b1bff93a1c13135ca8ec368c30530c1ca4",
-                       "anki_tag":  "anki_card_generator_v14",
+                       "note_model_contract_digest":  "966edeadbcbe64511e93343d854007f23ad851c17d81e79a672dbad4b4d74e4c",
+                       "anki_tag":  "anki_card_generator_v15",
                        "media_manifest":  {
                                               "fixture_audio.mp3":  {
                                                                         "sha256":  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -557,7 +557,7 @@
                                                      "segment_id":  "seg_lp_0001",
                                                      "deck_name":  "Fixture lesson",
                                                      "note_tags":  [
-                                                                       "anki_card_generator_v14",
+                                                                       "anki_card_generator_v15",
                                                                        "lang_en",
                                                                        "level_b1",
                                                                        "template_immersive_v11",
@@ -718,14 +718,14 @@
                                                              ],
                                               "deck_kind":  "video_language",
                                               "template_family":  "language-immersive-v11",
-                                              "template_schema":  "V14",
-                                              "template_version":  "V14",
+                                              "template_schema":  "V15",
+                                              "template_version":  "V15",
                                               "template_name":  "沉浸复读 V11",
-                                              "note_model_id":  3157735470,
-                                              "model_name":  "Anki Card Generator V14 - 沉浸复读 V11",
+                                              "note_model_id":  1028904201,
+                                              "model_name":  "Anki Card Generator V15 - 沉浸复读 V11",
                                               "compatibility_contract_version":  1,
-                                              "note_model_contract_digest":  "cbf770412b097c10a647d52c0bb044b1bff93a1c13135ca8ec368c30530c1ca4",
-                                              "anki_tag":  "anki_card_generator_v14",
+                                              "note_model_contract_digest":  "966edeadbcbe64511e93343d854007f23ad851c17d81e79a672dbad4b4d74e4c",
+                                              "anki_tag":  "anki_card_generator_v15",
                                               "media_manifest":  {
                                                                      "fixture_audio.mp3":  {
                                                                                                "sha256":  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -751,7 +751,7 @@
                                                                                "segment_id":  "seg_lp_0001",
                                                                                "deck_name":  "Fixture lesson",
                                                                                "note_tags":  [
-                                                                                                 "anki_card_generator_v14",
+                                                                                      "anki_card_generator_v15",
                                                                                                  "lang_en",
                                                                                                  "level_b1",
                                                                                                  "template_immersive_v11",
@@ -852,7 +852,7 @@
                        "failed_checks":  [
 
                                          ],
-                       "query":  "deck:\"Fixture lesson\" tag:anki_card_generator_v14",
+                       "query":  "deck:\"Fixture lesson\" tag:anki_card_generator_v15",
                        "import_attempted":  true,
                        "import_result":  [
                                              1784246400001

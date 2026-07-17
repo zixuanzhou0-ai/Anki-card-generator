@@ -148,10 +148,10 @@
 - 状态：Accepted；CURRENT Worker/APKG M0 子项已实现，插件协议部分仍为 PROPOSED。
 - 分开 plugin、MCP、Study IR、Service、Worker protocol、template family、template schema、Anki Note Model。
 - 理由：历史 immersive_v11 family、V14 schema 与 V1 `startswith` verifier 的 fail-open 暴露了版本轴混用。
-- 当前证据：生产 V14 与明确兼容的 V10 由精确合同注册表驱动；完整 APKG 合同覆盖 10 个生产生成变体，导出只在唯一 `.partial` 校验通过后 no-replace 原子发布。最终回归为 Vitest 830、正式 `pytest` 581、独立 `unittest discover` 571（有重叠，不相加）、Rust 31 项通过与 1 项忽略、UI smoke 3、V14/V10 release smoke、`check:full` 与 Tauri build 通过。20 卡离线媒体包为 20/20/52、每卡 6 引用与 120 个归属；隔离 Anki 数据级验证覆盖 E→C 单卡 1/1/6 和 20 卡 20/20/52 的首次导入、重复跳过及重启哈希。
+- 当前证据：生产 V15、V14 与明确兼容的 V10 由精确合同注册表驱动；V15 使用模型作用域 GUID，历史模型 GUID 不变。最终回归为 Vitest 830、正式 `pytest` 603、独立 `unittest discover` 576（有重叠，不相加）、Rust 31 项通过与 1 项忽略、UI smoke 3、V15/V10 release smoke、`check:full` 与 Tauri build 通过。V15 20 卡离线媒体包为 20/20/52；隔离 Anki 覆盖单卡、20 卡重复/重启和 V14/V15 同字段并存，Computer Use 覆盖真实 GUI 20 张连续复习与媒体交互。
 - 信任边界：raw `ExportResult` 只作为内部兼容输入，不认证来源，不能抵抗同时篡改 APKG 与结果的同权限本机攻击者；stat/SHA 与 no-replace 发布只缩小 TOCTOU。M2 必须用认证 Artifact 注册表、不透明引用和受控文件句柄替代。
 - 安全边界：非 NFC、`CLOCK$` 等 Windows 保留设备名、大小写/规范化冲突和 APKG archive 资源上限已通过；有界流式读取覆盖 APKG archive/package/verifier 与标准 Windows Anki direct-first 媒体路径。非标准/portable profile 的 AnkiConnect inline 兼容路径仍整文件/Base64，但原始单文件硬限制为 8 MiB；8 MiB 不是进程峰值。
-- 剩余出口：Computer Use 当前不可用，真实 GUI 翻面、播放和至少 20 张连续复习尚未完成；M1 以后继续为 plugin/MCP/Service/Study IR 建立各自版本轴。合成视频和静音 TTS 的数据级结果不得写成语义、听感或学习体验通过。
+- 剩余出口：M0 已完成；M1 以后继续为 plugin/MCP/Service/Study IR 建立各自版本轴。合成视频和静音 TTS 的结果不得写成真人语义、听感或长期学习效果通过。
 
 ## D-021：用户编辑是语义操作
 
@@ -176,7 +176,7 @@
 
 - 状态：Accepted。
 - 决策：每个来源/路线必须有 schema、golden corpus、安全门禁和真实 Anki 报告。
-- CURRENT：精确 V14/V10 合同、完整 APKG 合同、10 个生产变体、`.partial` 后 no-replace 原子发布、V1xx 伪版本负例、强制 release verifier、Anki 写入前 preflight、标准 profile direct-first 流式媒体预置、8 MiB inline 上限、部分写入账本、最终媒体 barrier、最终自动化、20 卡 20/20/52 离线媒体合同，以及隔离 Anki 单卡与 20 卡数据级导入/重复/重启证据已实现。Computer Use、真实 GUI 播放与连续复习、M1/M2/M3 与宿主证据仍是发布阻断。
+- CURRENT：精确 V15/V14/V10 合同、V15 模型作用域 GUID、完整 APKG 合同、原子发布、强制 verifier、导入前 preflight、媒体 barrier、最终自动化、V15 20/20/52 包、隔离 Anki 重复/重启/V14-V15 并存，以及 Computer Use 真实 GUI 20 张连续复习均已实现。M1/M2/M3 与 Codex 宿主证据仍是插件发布阻断。
 
 ## D-025：能力验证按精确 profile 决策
 
@@ -210,6 +210,15 @@
 - 完整性：direct path 使用同一源/临时文件句柄、分块 hash/count、flush/fsync、identity 复核和 no-replace；inline path 使用有界请求/响应、写后大小/SHA 复核。两条路径都进入 ownership ledger 与最终导入 barrier。
 - 兼容后果：标准 NTFS profile 支持最大 256 MiB/文件、2 GiB/批、2000 项的流式预置；非标准 profile 的更大媒体 fail closed，并提示改用标准 profile 或手动导入 APKG。
 - 残余：完整 Win32 目录句柄固定、私有 ACL staging、同权限攻击者与 `importPackage(path)` 的最终路径 TOCTOU 留到 M2；兼容 inline 路径仍有小文件 Base64 放大。
+
+## D-030：V15 以模型作用域 GUID 与最小 Anki add-on 冻结运行时行为
+
+- 状态：Accepted；CURRENT M0 已实现并验证。
+- 决策：新卡使用 V15 Note Model 和 `Note Model ID + 50 个原始字段` 计算的模型作用域 GUID；V10/V12/V14 的历史 GUID 算法与既有卡片保持不变。
+- 决策：Space/Enter 媒体路由由最小 Anki add-on 提供，不把全局快捷键抢占逻辑塞入卡片 HTML；add-on 必须精确匹配 Anki point version、Note Model ID、模板摘要、角色、键位与 DOM token runtime contract，否则 fail closed。
+- 理由：相同字段的 V14/V15 note 必须并存，且 Anki 26.05 的 review shortcut hook 只能由宿主扩展安全协调；仅靠卡片 JavaScript 无法可靠阻止 Anki 全局 Space 翻面竞争。
+- 证据：V14/V15 同字段并存与重启 JSON 无差异；V15 重复导入不增卡；Computer Use 连续复习 20 张，表达/原声/慢读/视频的 Space/Return 暂停与继续、媒体互斥和背景 Space 翻面全部通过。
+- 边界：当前 runtime contract 只声明支持 Anki 26.05；其他版本必须新增精确合同和真实 GUI 证据，不能以范围匹配静默放宽。
 
 ## 待决事项
 

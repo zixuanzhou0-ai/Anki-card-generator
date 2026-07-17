@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "contract_id": "reviewer-media-shortcut-bridge-v1",
+  "package": "anki_card_generator_media_shortcut_bridge",
+  "add_on_version": "1.0.0-m0",
+  "supported_anki_point_versions": [260500],
+  "implementation_sha256": {
+    "__init__.py": "d8a333813c6fccac96b8557d53ecb86918ee42e426fb7588a803bc2a4bca93c2",
+    "bridge.py": "b818ce39b121ede3d5cbab098289d29136e875a0e7549492d866c49c9a35ff5c",
+    "manifest.json": "30656bbe0e15bdc98c77ec3f7e084b4ec820abb83883c9bfed10dc5cb7f32c5b"
+  },
+  "supported_note_models": [
+    {
+      "note_model_id": 1028904201,
+      "model_name": "Anki Card Generator V15 - 沉浸复读 V11",
+      "template_name": "沉浸复读 V11",
+      "template_family": "language-immersive-v11",
+      "template_schema": "V15",
+      "note_model_contract_digest": "966edeadbcbe64511e93343d854007f23ad851c17d81e79a672dbad4b4d74e4c",
+      "qfmt_sha256": "03fa14f4b922ef350a358d77c10548eb1b5b8206b22d61b62ce6db8c83f29b35",
+      "afmt_sha256": "7037ae6a3a8b0f2a5237b65010ffdafabf0fb6c6cb2c45dcc7514c50f81fb0a5",
+      "css_sha256": "ce67ba0760df2996366989d25196ccaf0d6f05d3da87e44a7b692676e795f8a4"
+    },
+    {
+      "note_model_id": 5074019806,
+      "model_name": "Anki Card Generator V15 - 沉浸复读 V11 · 快速复读",
+      "template_name": "沉浸复读 V11 · 快速复读",
+      "template_family": "language-immersive-v11-fast",
+      "template_schema": "V15",
+      "note_model_contract_digest": "79bebf769f73d97e55f34c36c8a028f9e77bb12079b11102bce0f6d4544c8578",
+      "qfmt_sha256": "0c977481c6fa3aa5aa97c0c9d81d925e32f00dea135244ddae844206abbeedd9",
+      "afmt_sha256": "9395ce09a444716a78ce363c8ebe88cd03409014f42f3ae62a56039eb5bf6bb7",
+      "css_sha256": "3023d916bf3ad30182ffdacccec6d5d76c987478fbe667a9cca9451d63b177df"
+    }
+  ],
+  "review_state": "review",
+  "review_sides": ["question", "answer"],
+  "routed_keys": ["Space", "Return", "Enter"],
+  "media_roles": ["original", "slow", "phrase", "video"],
+  "routing": {
+    "single_flight": true,
+    "two_phase_dom_activation": true,
+    "stale_card_and_side_rejected": true,
+    "timeout_ms": 1500,
+    "failure_policy": "fail_closed_without_flip_or_grade"
+  },
+  "permissions": {
+    "network": false,
+    "collection_read": false,
+    "collection_write": false,
+    "media_write": false
+  }
+}

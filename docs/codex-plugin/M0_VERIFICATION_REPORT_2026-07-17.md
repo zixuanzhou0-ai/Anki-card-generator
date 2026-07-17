@@ -1,117 +1,179 @@
 # M0 验证报告：2026-07-17
 
-> 状态：CURRENT 验证快照；M0 仍为进行中
+> 状态：CURRENT；M0 已完成
 > 日期：2026-07-17
-> 范围：当前桌面仓库的 Worker、APKG、Anki 数据级验证与发布构建
-> 不包含：Codex 插件、MCP、Headless Card Service 或完整 Anki GUI/学习体验验收
+> 范围：桌面仓库可靠性内核、V15 Note Model、Anki 媒体快捷键桥、APKG、真实 Anki GUI 与发布门禁
+> 不包含：Codex 插件清单、stdio MCP、M1 Headless Card Service 或真人 TTS 学习效果实验
 
 ## 1. 结论
 
-当前可靠性内核已经通过最终自动化回归、生产 V14/V10 发布 smoke、20 卡媒体包合同，以及隔离真实 Anki 的单卡和 20 卡数据级导入验证。结果证明包结构、卡片与媒体归属、跨盘媒体持久化、重复导入幂等和重启后的数据完整性达到本轮冻结要求。
+M0 的出口已经全部通过。当前可靠性内核不仅通过自动化、APKG 包合同和 AnkiConnect 数据核验，还在真实 Windows Anki 26.05 中完成了 V14/V15 并存、20 张连续复习、正反面布局、四类媒体播放、Space/Enter 键盘路由、媒体互斥、重复导入和重启持久性验证。
 
-这些证据不证明真实 Anki GUI 中的卡面视觉、翻面、滚动、键盘焦点、媒体实际播放、真人语音语义与听感或连续复习体验。当前执行环境没有 Computer Use，因此 M0 仍为进行中。
+本轮新增 V15，而不是修改既有 V14 卡片。V15 使用模型作用域 GUID，避免字段完全相同的 V14 与 V15 note 在 Anki 中错误合并；V10/V12/V14 的历史 GUID 规则保持不变。媒体快捷键能力由一个最小 Anki add-on 提供，并以版本化 runtime contract 将 Anki 版本、Note Model ID、模板摘要、路由键和权限边界绑定在一起。
+
+M0 完成只表示可靠性基线已经冻结，可以进入 M1。它不表示 Codex 插件、MCP 控制台或 Headless Card Service 已经交付。
 
 ## 2. 证据等级
 
-| 等级 | 本轮状态 | 能证明什么 | 不能证明什么 |
-|---|---|---|---|
-| 自动化合同 | 通过 | schema、状态、Worker、Rust、包合同和发布构建没有已知回归 | 真实 GUI 和真人听感 |
-| 离线 APKG 包 | 通过 | note/card/deck、媒体清单、账本、归属、哈希和字幕对齐闭合 | 实际导入、播放和复习 |
-| 真实 Anki 数据级 | 通过 | AnkiConnect 导入、collection 数据、媒体文件、重复导入和重启持久化 | 卡面渲染、交互、媒体播放和连续复习 |
-| 真实 Anki GUI/学习体验 | 未执行 | 无 | Computer Use 当前不可用，不能用静态截图或数据库检查替代 |
+| 等级 | 结果 | 主要证据 |
+|---|---|---|
+| 自动化合同 | 通过 | 前端、Worker、Rust、包合同、快捷键桥和发布 smoke |
+| 离线 APKG | 通过 | V15 20 notes / 20 cards / 52 media、模型作用域 GUID、完整媒体哈希 |
+| 真实 Anki 数据级 | 通过 | note/card/model/deck/media 计数、重复导入、重启、V14/V15 并存 |
+| 真实 Anki GUI/学习体验 | 通过 | Computer Use 操作真实 Anki，连续复习 20 张并逐项操作媒体 |
+| 真人语义与学习效果 | 未声称 | 本轮媒体为合成 smoke fixture，不能证明真人听感或长期记忆增益 |
 
 ## 3. 最终自动化结果
 
 | 门禁 | 结果 |
 |---|---|
-| 前端 Vitest | 830 项通过 |
-| Python 正式 `pytest` | 581 项通过 |
-| 独立 `unittest discover` | 571 项通过 |
+| 前端 Vitest | 90 个文件、830 项通过 |
+| Python 正式 `pytest` | 603 项通过；2 个预期 ZIP 重复条目警告 |
+| 独立 `unittest discover` | 576 项通过 |
+| 包合同与快捷键定向集 | 58 项通过 |
 | Rust | 31 项通过，1 项按设计忽略 |
 | UI smoke | 3 项通过 |
-| V14/V10 release smoke | 通过；使用生产 verifier |
+| V15 20 卡包 | 20 notes / 20 cards / 52 media，通过完整包合同 |
+| V15/V10 release smoke | 通过；使用生产 verifier |
+| `npm run check` | 通过 |
 | `npm run check:full` | 通过 |
-| `npm run tauri:build` | 通过 |
+| `npm run tauri:build` | 通过；MSI 与 NSIS 安装包均生成 |
+| `cargo test --locked` | 通过 |
 
-`pytest` 与 `unittest discover` 会覆盖部分相同测试，不能把 581 和 571 相加后宣称为独立测试总数。
+`pytest` 与 `unittest discover` 覆盖大量相同测试，不能把 603 和 576 相加后宣称为独立测试总数。
 
-## 4. 已关闭的 M0 安全与包合同问题
+## 4. V15 Note Model 与包合同
 
-- Note Model 使用精确 family、template schema、ID、字段、模板、CSS 与兼容合同，不再依赖 V1 名称前缀。
-- V14 与明确支持的 V10 由 release smoke 真实生成；V13、V15、V199、近似名称和篡改合同必须失败。
-- APKG 候选先写同目录唯一 `.partial`，完整验证后再以 no-replace 语义原子发布；目标已存在时拒绝覆盖。
-- 标准 Windows Anki profile 的媒体恢复现在直接使用同一打开的源句柄和目标 `mkstemp` 句柄，以 1 MiB 固定块复制、计数和计算 SHA-256，执行 flush/fsync、目录/文件 identity 复核与同目录 no-replace 发布；发布瞬间若并发出现同内容文件则按幂等成功处理，若内容不同则拒绝覆盖并保留对方文件。
-- source、标准 `collection.media` 及其受信路径组件若为 symlink/junction/reparse，恢复会 fail closed。多文件部分成功、AnkiConnect timeout 的未知结果、意外后缀孤儿和已拥有文件清理失败都会如实进入 ownership ledger；导入前两道媒体 barrier 中任一道未闭合都禁止 `importPackage`。
-- 完整媒体清单在 APKG inspection 和任何 Anki 写动作前执行 2000 项、256 MiB/项、2 GiB/批及非零大小限制；即使全部媒体已经存在，也不能绕过目录 reparse/稳定身份检查。若发布后目录 identity 改变，结果会无条件标记 `possible_partial_write=true` 与 `cleanup_unproven=true`，不把当前路径消失误报为已经清理。
-- 前端只有在 full 与 compact 两份导出结果都具备完整写入证据，且规范化 APKG/media 路径、哈希、大小、mtime、牌组、模型、模板、合同、标签、来源、内容指纹和核心媒体摘要一致时才允许导入；任一缺失或错配均 fail closed，不再回退到可能陈旧的结果。
-- 非 NFC 文件名、Windows 保留设备名（含 `CLOCK$`）、大小写与规范化碰撞均按 fail-closed 处理。
-- APKG archive/package/verifier 路径对包内媒体哈希与提取使用有界流式读取，并执行单条目、条目数和解压后总量上限。
+### 4.1 当前合同
 
-流式结论现在适用于 APKG archive/package/verifier，以及标准 Windows Anki profile 的 direct-first 媒体预置。64 MiB 自动化样本在把 `Path.read_bytes`、Base64 与 AnkiConnect 媒体动作全部设为“调用即失败”时仍通过，Python `tracemalloc` 峰值增量低于 32 MiB。非标准/portable profile 与非 Windows 仍使用 AnkiConnect inline 兼容路径，但原始单文件被硬限制为 8 MiB，8 MiB+1 会在任何媒体 API 调用前停止；retrieve/store/普通 action 与健康检查的 HTTP 响应也各自有上限。8 MiB 是原始媒体协议上限，不等于 Worker 或 Anki 进程峰值，兼容路径仍是整文件 Base64，因此仍不能宣称所有媒体路径都已流式化。
+| 模板 | Note Model ID | schema | contract digest |
+|---|---:|---|---|
+| 沉浸复读 V11 | 1028904201 | V15 | `966edeadbcbe64511e93343d854007f23ad851c17d81e79a672dbad4b4d74e4c` |
+| 沉浸复读 V11 Fast | 5074019806 | V15 | `79bebf769f73d97e55f34c36c8a028f9e77bb12079b11102bce0f6d4544c8578` |
 
-## 5. 20 卡生产 V14 离线包
+V15 验证必须同时满足：
+
+- 精确 template family、schema、Note Model ID、字段顺序、模板、CSS 和合同摘要。
+- 唯一 `anki_card_generator_v15` 标签，不能混入其他版本标签。
+- note GUID 必须由 Note Model ID 与 50 个原始字段共同计算。
+- 展示 HTML、媒体 manifest、card-media ledger、ZIP 条目和资源上限继续使用完整 APKG verifier。
+
+### 4.2 V14/V15 同字段兼容性
+
+| 项目 | V14 | V15 |
+|---|---|---|
+| APKG SHA-256 | `5fcc2ad7c1e1875460f0330d1a1b4db03982dcdd13674631b1968f0f083f5997` | `7f309e457e8bd56d342aa24050046aef71357b3dd331a466a481bfb34415b7e3` |
+| Note Model ID | 3157735470 | 1028904201 |
+| GUID | `D6E19B4SSJ` | `emn>>\`s@fj` |
+| 字段数 | 50 | 50 |
+| 字段值摘要 | `df4262a51d9d7965aa0a6506046171937646c2dc28e654ad3c3db1b740d4901c` | 相同 |
+
+真实 Anki 中两张 note 同时存在，字段名和值完全相同，但 note ID、model name 与 GUID 均不同。V15 重复导入时显示 1 条已经在集合中；重启前后结构化 JSON 完全一致。
+
+## 5. 最终 V15 20 卡 APKG
 
 | 项目 | 结果 |
 |---|---|
-| APKG SHA-256 | `35fc97d4889a8a4a4ba55a47da05c1e84cac706c5c2a52c113a9c9569fabae01` |
+| APKG SHA-256 | `54da28686dbc35b04175ba06ad3a0ea090c2d6eb793f806fd05dcf5dfd3cae2b` |
+| Note Model | `Anki Card Generator V15 - 沉浸复读 V11` |
 | notes / cards | 20 / 20 |
-| 业务牌组 | 1；collection 另含默认牌组，合同摘要 `decks=2` |
 | 唯一媒体 | 52 |
 | 媒体角色 | sentence TTS 20、phrase TTS 20、video 6、original audio 3、poster 3 |
-| 逐卡媒体引用 | 20/20 卡各 6 个引用，共 120 个 card-media ownership bindings |
-| manifest / ledger | 52 / 52，完全闭合 |
-| 字幕对齐 | 20/20 匹配 |
-| 失败项 | missing、invalid、unreferenced、compatibility conflict、package issue、verifier failed check、display warning 均为 0 |
+| 字幕对齐 | 20/20 matched |
+| GUID 合同错误 | 0 |
+| 包合同错误 | 0 |
 
-该包使用 release-smoke 合成视频与 SRT。TTS 和原声音频为静音 smoke fixture，TTS semantic 状态为 `not_applicable`。它证明生产媒体链和数据合同，不证明真人语音语义、听感或播放体验。
+导入并重启真实 Anki 后，结构化取证仍为 20 notes、20 cards、52 media；52 个实际媒体 SHA-256 与导出 manifest 全部一致，missing、unexpected 和 hash mismatch 均为 0。同一 APKG 再导入时，Anki 明确显示 20 条笔记已经存在，没有新增重复卡片。
 
-## 6. 隔离真实 Anki 数据级验证
+## 6. Anki 媒体快捷键桥
 
-### 6.1 单卡跨盘
+### 6.1 交付物
 
-单卡生产 V14 APKG 的大小为 212,361 bytes，SHA-256 为 `1115ac480f7dfac12d84c465e37e0e2cc122f999991ece4d1ec7a6d04b28dd7a`。APKG 与媒体源位于一个磁盘卷，隔离 Anki profile 和 `collection.media` 位于另一个磁盘卷。
+- 源码目录：`anki-addon/anki_card_generator_media_shortcut_bridge/`
+- 版本：`1.0.0-m0`
+- 构建包：`anki_card_generator_media_shortcut_bridge-1.0.0-m0.ankiaddon`
+- 最终构建包 SHA-256：`e022a2ebb8793c28e96133569497bd4ad7a346670b1d5a2c93a9983de0f5f674`
+- 当前支持的 Anki point version：260500（Anki 26.05）
 
-| 检查 | 结果 |
-|---|---|
-| 首次导入 | 1 note / 1 card；目标 deck、model、tag、CardId 匹配 |
-| 媒体 | 6/6：sentence TTS、phrase TTS、WebM、MP4、original audio、poster |
-| 媒体预置路径 | 6/6 均为 `direct-first / trusted_atomic_copy`；`retrieveMediaFile=0`、`storeMediaFile=0` |
-| 跨盘一致性 | 源与目标逐文件 bytes 和 SHA-256 相同 |
-| 缺失/不匹配/不可访问 | 0 / 0 / 0 |
-| 重复导入 | 以 CardId + content SHA-256 命中并跳过；`duplicates=0` |
-| 重启后 | 仍为 1 note / 1 card，6/6 媒体再次通过 bytes + SHA-256 |
+### 6.2 安全边界
 
-隐藏 Anki 的正常退出请求没有在等待窗口内完成，测试最终终止了该隔离进程；重新启动后数据仍完整。这个结果不能写成正常 GUI 退出体验已通过。
+runtime contract 明确声明：
 
-### 6.2 20 卡批量
+- 只处理 review 状态的 question/answer 两面。
+- 只路由 Space、Return、Enter。
+- 只允许 original、slow、phrase、video 四个角色。
+- 两阶段 DOM token 激活、单飞、拒绝旧卡/旧面、1500ms 超时并 fail closed。
+- 不请求网络、collection read/write 或 media write 权限。
 
-同一 20 卡生产 V14 媒体包随后进入全新隔离 Anki profile：
+### 6.3 真实测试发现并关闭的问题
 
-| 检查 | 结果 |
-|---|---|
-| 首次导入 | 20 notes / 20 cards |
-| 唯一媒体 | 52/52 均存在，逐文件 bytes 与 SHA-256 一致 |
-| 媒体预置路径 | 52/52 均为 `direct-first / trusted_atomic_copy`；`retrieveMediaFile=0`、`storeMediaFile=0` |
-| 媒体归属 | 120 个 card-media ownership bindings 全部闭合 |
-| 重复导入 | 完整命中并跳过；`duplicates=0`，没有新增重复卡片 |
-| 重启后 | 仍为 20 notes / 20 cards / 52 media，哈希复核通过 |
+1. Anki 26.05 的 `state_shortcuts_will_change` hook 不可迭代，原先的“包含判断”会在启动时抛错；改为模块级幂等安装哨兵。
+2. token 直接拼入 CSS attribute selector 会产生无效或不可靠选择器；改为枚举白名单属性节点并做精确字符串比较。
+3. 媒体刚调用 `play()` 后立刻按空格，迟到的 Promise 回调可能把暂停态覆盖成失败或播放态；改为同步乐观状态和仅在当前仍为 playing 时处理失败。
+4. 初版运行时只检查 Note Model ID，弱于文档声明的精确模板合同；现已同时验证精确 model name、template name、qfmt、afmt 与 CSS 摘要。同 ID 但模板被改写时 fail closed，不翻面、不评分。
 
-两轮均使用专用隔离 profile；用户的正式 Anki profile、牌组与媒体目录未被导入或改写。验证结束后隔离 Anki 进程已经关闭。这里的“重启后”表示真实关闭并重新启动隔离 Anki 后，再次读取 collection 与媒体文件所得的数据级结果；它不表示正常 GUI 退出体验已通过。
+四个问题均增加回归断言；最终 add-on 又在真实 Anki 中复测背景 Space 翻面和表达按钮 Space 暂停。
 
-这是“真实 Anki 进程 + AnkiConnect + collection/filesystem”的数据级证据。由于素材仍是合成视频和静音音频，且没有通过 GUI 翻面、播放或连续复习，它不是完整运行时或学习体验证据。
+## 7. Computer Use 真实 Anki 验收
 
-## 7. 仍未完成的出口
+测试使用全新隔离 Anki 数据目录，不触碰正式 profile。
 
-- Computer Use 当前不可用，尚未验证真实 Windows Anki/Tauri 的布局、翻面、滚动、焦点、键盘和媒体交互。
-- 尚未在真实 GUI 中逐卡播放原声、慢读、表达 TTS、WebM/MP4，也未完成至少 20 张连续复习。
-- 合成视频与静音 TTS 不提供真人语义、音质、口型、时间感或学习有效性证据。
-- 当前 raw `ExportResult` 只做内部一致性检查，不认证来源；M2 仍需认证 Artifact 注册表、不透明引用和受控文件句柄解决同权限篡改与剩余 TOCTOU。
-- 非标准/portable profile 的 AnkiConnect 兼容路径仍会对不超过 8 MiB 的原始媒体做整文件 Base64；尚未完成 Worker 与 Anki 双进程 RSS 的真实压力曲线，8 MiB 不能被误读为进程峰值。
-- 插件 manifest、Skill、stdio MCP、目标 Codex 宿主注册、M1 Headless Card Service 和版本化 Anki runtime verifier 尚未实现。
-- 当前只固定关键 `genanki` serializer；Python、Node、Rust 和外部二进制尚未全部完成版本加哈希的供应链固定。
+### 7.1 卡面与学习顺序
 
-## 8. 发布判定
+- 正面不泄露答案。
+- 背面第一屏先看到 Answer、中文含义和高亮原句，视频位于音频之后。
+- 目标表达在原句、怎么用、别误用和例句迁移中使用主题蓝、加粗和放大；没有蓝色下划线。
+- 表达发音按钮紧跟 Answer，不掉到下一行独立区域。
+- 长内容可自然滚动，没有固定高度截断。
 
-M0 保持“进行中”。允许声明自动化、APKG 包合同、标准 Windows Anki direct-first 流式媒体预置和隔离 Anki 数据级验证通过，不允许声明插件已交付、真实 Anki GUI/播放/连续复习已通过或全部媒体处理均已流式化。
+### 7.2 媒体交互
 
-后续只有在 Computer Use 可用的真实桌面环境完成 GUI 与媒体交互验收，并由版本化 runtime verifier 形成固定检查集证据后，才能把数据级状态提升为完整运行时验证状态。
+- 表达发音：点击后 100ms 立即按 Space，卡 1 与卡 20 均进入“继续表达发音”，没有播放失败。
+- 原声：Space 可暂停为“继续原声”，同时停止视频和其他音频。
+- 慢读：Return 可暂停为“继续慢读”。
+- 视频：Space 可暂停为“视频已暂停”，Return 可继续为“视频播放中”。
+- 点击新媒体会把旧媒体恢复到初始状态。
+- 媒体按键不会误触发翻面或评分；卡片背景上的 Space 仍按 Anki 默认行为翻面。
+
+### 7.3 20 张连续复习
+
+检查点依次为：
+
+- 15 + 5 + 0
+- 10 + 10 + 0
+- 5 + 15 + 0
+- 1 + 19 + 0
+- 0 + 20 + 0
+
+每次进入下一张卡，原声、慢读和视频均回到初始文案，没有上一张的 playing/paused/error 状态串入。第 20 张再次执行快速表达发音暂停仍通过。
+
+### 7.4 重启与并存
+
+- 20 卡牌组重启后仍显示 20 张学习中卡片。
+- V14/V15 同字段隔离集合重启后仍各 1 note / 1 card。
+- 重启前后并存证据 JSON 无差异。
+
+## 8. 仍然存在的边界
+
+- 合成视频与静音/fixture TTS 只能证明协议、渲染、可播放性和状态机，不能证明真人语义、音质或长期学习效果。
+- add-on 当前只声明支持 Anki 26.05；其他版本必须先扩展并验证 runtime contract，不能静默放宽。
+- 非标准/portable profile 仍使用受 8 MiB 原始媒体上限约束的 AnkiConnect inline 兼容路径；它仍会整文件 Base64，不能宣称全部媒体路径都流式化。
+- raw `ExportResult` 仍是内部一致性证据，不是认证来源。M2 仍需 Artifact 注册表、不透明引用和受控文件句柄。
+- Codex 插件 manifest、Skill、stdio MCP、目标宿主注册和 M1 Headless Card Service 尚未实现。
+
+## 9. 发布判定
+
+M0 判定为完成。允许声明：
+
+- V15 Note Model、模型作用域 GUID、完整 APKG 合同和媒体快捷键桥已经实现并验证。
+- 真实 Anki 26.05 的 20 张连续复习、四类媒体交互、重复导入、重启和 V14/V15 并存已经通过。
+- 当前桌面与发布自动化没有已知回归。
+
+不允许声明：
+
+- Codex 插件或 MCP 已经可安装使用。
+- 其他 Anki 版本已经兼容。
+- 真人 TTS 语义、听感或学习效果已经验证。
+- M1/M2 的权限、Artifact 和 Headless Runtime 已经完成。
+
+下一实施阶段是 M1：Headless Legacy Runtime。

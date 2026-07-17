@@ -8230,7 +8230,7 @@ class WorkerQualityTests(unittest.TestCase):
             self.assertTrue(report["ok"], report)
             self.assertEqual(report["failed_checks"], [])
             self.assertEqual(report["note_model_contract_issues"], [])
-            self.assertEqual(report["note_model_contracts"][0]["noteModelId"], 3157735470)
+            self.assertEqual(report["note_model_contracts"][0]["noteModelId"], 1028904201)
             self.assertEqual(report["empty_required_text_fields"], [])
             self.assertEqual(report["tts_text_hash_mismatches"], [])
             self.assertEqual(report["phrase_tts_text_hash_mismatches"], [])
@@ -8397,7 +8397,7 @@ class WorkerQualityTests(unittest.TestCase):
             self.assertEqual(payload["details"]["phrase_tts_generated"], 0)
             self.assertFalse(any(output_dir.glob("*.apkg")))
 
-    def test_export_v14_required_fields_use_safe_fallbacks_after_generic_filter(self):
+    def test_export_v15_required_fields_use_safe_fallbacks_after_generic_filter(self):
         try:
             import genanki  # noqa: F401
         except ImportError:
@@ -8451,10 +8451,10 @@ class WorkerQualityTests(unittest.TestCase):
             result = worker.handle_export({"project": project, "output_dir": str(output_dir)})
             self.assertEqual(result["quality_audit"]["empty_required_fields"], 0)
             self.assertEqual(result["template_family"], "language-immersive-v11")
-            self.assertEqual(result["template_schema"], "V14")
-            self.assertEqual(result["template_version"], "V14")
-            self.assertEqual(result["note_model_id"], 3157735470)
-            self.assertEqual(result["model_name"], "Anki Card Generator V14 - 沉浸复读 V11")
+            self.assertEqual(result["template_schema"], "V15")
+            self.assertEqual(result["template_version"], "V15")
+            self.assertEqual(result["note_model_id"], 1028904201)
+            self.assertEqual(result["model_name"], "Anki Card Generator V15 - 沉浸复读 V11")
             self.assertEqual(result["compatibility_contract_version"], 1)
             self.assertEqual(len(result["note_model_contract_digest"]), 64)
             self.assertEqual(result["presentation_warnings"], [])
@@ -8462,7 +8462,7 @@ class WorkerQualityTests(unittest.TestCase):
             self.assertTrue(report["ok"], report)
             self.assertEqual(report["failed_checks"], [])
             self.assertEqual(report["note_model_contract_issues"], [])
-            self.assertEqual(report["note_model_contracts"][0]["noteModelId"], 3157735470)
+            self.assertEqual(report["note_model_contracts"][0]["noteModelId"], 1028904201)
             self.assertEqual(report["empty_required_text_fields"], [])
 
             import sqlite3
@@ -15594,7 +15594,7 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertNotIn("自己造句", ciba[3])
         self.assertIn("v11-video-stage", v11[2])
         self.assertEqual(v11_fast[0], "沉浸复读 V11 · 快速复读")
-        self.assertEqual(worker.anki_template_version("immersive_v11", "video_language"), "V14")
+        self.assertEqual(worker.anki_template_version("immersive_v11", "video_language"), "V15")
         self.assertIn("fast-review-card", v11_fast[1] + v11_fast[2] + v11_fast[3])
         self.assertNotEqual(v11_fast[2], v11[2])
         self.assertIn("语境义", v11_fast[3])
@@ -15622,7 +15622,13 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn(".v11-back .v11-answer-layout", v11[1])
         self.assertIn("flex-direction: column", v11[1])
         self.assertIn('aria-label="点击播放视频"', v11[2] + v11[3])
-        self.assertIn('stage.addEventListener("keydown"', v11[2] + v11[3])
+        self.assertIn('control.addEventListener("keydown"', v11[2] + v11[3])
+        self.assertIn('["keypress", "keyup"]', v11[2] + v11[3])
+        self.assertIn("event.stopPropagation()", v11[2] + v11[3])
+        self.assertIn("event.stopImmediatePropagation()", v11[2] + v11[3])
+        self.assertIn("focus({ preventScroll: true })", v11[2] + v11[3])
+        self.assertIn("bindV11MediaKeyboard(button", v11[2] + v11[3])
+        self.assertIn("bindV11MediaKeyboard(stage", v11[2] + v11[3])
         self.assertIn("▮ 复读卡", v11[2] + v11[3])
         self.assertIn("playV11Audio", v11[2] + v11[3])
         self.assertIn("toggleV11Video", v11[2] + v11[3])
@@ -15631,6 +15637,10 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn('data-media-state="idle"', v11[2] + v11[3])
         self.assertIn('aria-live="polite"', v11[2] + v11[3])
         self.assertIn("setV11AudioState", v11[2] + v11[3])
+        self.assertIn('setV11AudioState(button, "playing", true);', v11[2] + v11[3])
+        self.assertIn('button.getAttribute("data-media-state") === "playing"', v11[2] + v11[3])
+        self.assertIn('setV11VideoState(stage, "playing", true);', v11[2] + v11[3])
+        self.assertIn('stage.getAttribute("data-media-state") === "playing"', v11[2] + v11[3])
         self.assertIn('<div class="v11-label">{{CardType}}</div>', v11[3])
         self.assertIn("{{ContextDisplay}}", v11[3])
         self.assertIn("怎么用", v11[3])

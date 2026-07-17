@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "fixture": "v14-immersive-one-card.apkg",
+  "purpose": "Frozen compatibility proof for the pre-V15 immersive Note Model.",
+  "synthetic_content": true,
+  "contains_media": false,
+  "contains_secrets": false,
+  "size_bytes": 102618,
+  "sha256": "5fcc2ad7c1e1875460f0330d1a1b4db03982dcdd13674631b1968f0f083f5997",
+  "note_count": 1,
+  "card_count": 1,
+  "template_family": "language-immersive-v11",
+  "template_schema": "V14",
+  "note_model_id": 3157735470,
+  "model_name": "Anki Card Generator V14 - 沉浸复读 V11",
+  "note_model_contract_digest": "cbf770412b097c10a647d52c0bb044b1bff93a1c13135ca8ec368c30530c1ca4"
+}

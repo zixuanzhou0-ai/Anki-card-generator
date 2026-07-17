@@ -520,7 +520,7 @@ class AnkiImportPreflightTests(unittest.TestCase):
             result = legacy.preflight_anki_import_apkg({}, missing_media)
             self.assertEqual(result["failed_checks"], ["apkg_export_media_path_missing"])
 
-    def _export_real_v14_package(self, root: Path) -> dict:
+    def _export_real_v15_package(self, root: Path) -> dict:
         phrase = "contract phrase"
         sentence = f"Please remember {phrase} in this example."
         output_dir = root / "export"
@@ -606,7 +606,7 @@ class AnkiImportPreflightTests(unittest.TestCase):
             self.skipTest("shared APKG contract inspector is not available yet")
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            export_result = self._export_real_v14_package(root)
+            export_result = self._export_real_v15_package(root)
             tampered = root / "tampered.apkg"
             self._tamper_real_package_model_name(Path(export_result["apkg_path"]), tampered)
             tampered_stat = tampered.stat()
@@ -642,9 +642,9 @@ class AnkiImportPreflightTests(unittest.TestCase):
         self.assertEqual(wait_calls, [])
         self.assertEqual(actions, [])
 
-    def test_real_v14_export_passes_complete_production_preflight(self):
+    def test_real_v15_export_passes_complete_production_preflight(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            export_result = self._export_real_v14_package(Path(temp_dir))
+            export_result = self._export_real_v15_package(Path(temp_dir))
             result = legacy.preflight_anki_import_apkg({}, export_result)
 
         self.assertTrue(result["ok"], result)

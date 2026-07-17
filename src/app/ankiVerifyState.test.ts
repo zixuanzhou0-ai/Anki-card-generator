@@ -15,7 +15,7 @@ import {
   prepareAnkiVerifyStart,
 } from './ankiVerifyState'
 
-const NOTE_TAGS = ['anki_card_generator_v14', 'English', 'B1', 'immersive_v11', 'phrase', 'repetition']
+const NOTE_TAGS = ['anki_card_generator_v15', 'English', 'B1', 'immersive_v11', 'phrase', 'repetition']
 
 function exportResult(overrides: Partial<ExportResult> = {}): ExportResult {
   const result: ExportResult = {
@@ -30,15 +30,15 @@ function exportResult(overrides: Partial<ExportResult> = {}): ExportResult {
     deck_name: '视频语言卡 - smoke',
     deck_names: ['视频语言卡 - smoke'],
     deck_kind: 'video_language',
-    model_name: 'Anki Card Generator V14 - 沉浸复读 V11',
-    note_model_id: 3157735470,
+    model_name: 'Anki Card Generator V15 - 沉浸复读 V11',
+    note_model_id: 1028904201,
     template_name: '沉浸复读 V11',
     template_family: 'language-immersive-v11',
-    template_schema: 'V14',
-    template_version: 'V14',
+    template_schema: 'V15',
+    template_version: 'V15',
     compatibility_contract_version: 1,
     note_model_contract_digest: 'b'.repeat(64),
-    anki_tag: 'anki_card_generator_v14',
+    anki_tag: 'anki_card_generator_v15',
     media_manifest: {},
     media_ledger: [],
     card_media_ledger: [
@@ -146,10 +146,10 @@ describe('exportResultForAnkiVerify', () => {
 
   it('rejects stale or mismatched full and compact export identities', () => {
     const full = exportResult()
-    const differentAnkiTag = exportResult({ anki_tag: 'anki_card_generator_v14_other' })
+    const differentAnkiTag = exportResult({ anki_tag: 'anki_card_generator_v15_other' })
     differentAnkiTag.card_media_ledger = differentAnkiTag.card_media_ledger.map((item) => ({
       ...item,
-      note_tags: ['anki_card_generator_v14_other', ...item.note_tags.slice(1)],
+      note_tags: ['anki_card_generator_v15_other', ...item.note_tags.slice(1)],
     }))
     const mismatchedCompacts = [
       exportResult({ apkg_path: 'E:\\ANKI\\out\\other.apkg' }),

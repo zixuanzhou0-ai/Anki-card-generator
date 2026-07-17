@@ -291,9 +291,9 @@ V1 本地 stdio 设计不应为了公开目录而过早引入云服务。先证�
 
 ## 13. CURRENT M0 合同状态与打包边界
 
-历史 V1 + `startswith` 宽前缀会同时接受合法 V14 与伪造 V199。当前 M0 工作分支已将其替换为精确 family/schema/Note Model ID、字段/模板/CSS 与 compatibility contract，并将生产 V14、明确兼容的 V10、固定 `genanki==0.13.1` serializer、完整 APKG 包合同、10 个生产生成变体、`.partial` 校验后 no-replace 原子发布、伪版本/篡改负例、强制 release verifier 和 Anki 写入前整包 preflight 纳入门禁。该固定不等于第 12 节要求的全依赖版本+哈希锁定已经完成。
+历史 V1 + `startswith` 宽前缀会同时接受合法版本与伪造 V199。M0 已将其替换为精确 family/schema/Note Model ID、字段/模板/CSS 与 compatibility contract，并将生产 V15/V14、明确兼容的 V10、V15 模型作用域 GUID、固定 `genanki==0.13.1` serializer、完整 APKG 包合同、10 个生产生成变体、原子发布、伪版本/篡改负例、强制 release verifier 和 Anki 写入前整包 preflight 纳入门禁。该固定不等于第 12 节要求的全依赖版本+哈希锁定已经完成。
 
-最终自动化为 Vitest 830、正式 `pytest` 581、独立 `unittest discover` 571（有重叠，不相加）、Rust 31 项通过与 1 项忽略、UI smoke 3、V14/V10 release smoke、`check:full` 与 Tauri build 通过。20 卡生产 V14 离线媒体合同为 20/20/52、每卡 6 引用、120 个归属；真实隔离 Anki 数据级核验覆盖 E→C 单卡 1/1/6 和 20 卡 20/20/52 的首次导入、媒体哈希、重复跳过与重启持久化。合成视频与静音 TTS 不是语义、听感或 GUI 复习证据。内部 raw `ExportResult` 仍不认证来源，无法抵抗能同时篡改 APKG 与结果的同权限本机攻击者；no-replace 原子发布和导入前 rehash 只缩小、不能消除 TOCTOU。正式插件包必须等 M2 认证 Artifact 注册表、不透明引用和受控文件句柄建立后，才能把导入工具暴露给 MCP。
+最终自动化为 Vitest 830、正式 `pytest` 603、独立 `unittest discover` 576（有重叠，不相加）、Rust 31 项通过与 1 项忽略、UI smoke 3、V15/V10 release smoke、`check:full` 与 Tauri build 通过。V15 20 卡包为 20/20/52；真实隔离 Anki 核验覆盖单卡、V15 20 卡重复/重启、V14/V15 同字段并存，Computer Use 覆盖 Anki 26.05 的 20 张连续复习和四类媒体。合成视频与静音 TTS 不是真人语义、听感或长期学习效果证据。内部 raw `ExportResult` 仍不认证来源；正式插件包必须等 M2 认证 Artifact 注册表、不透明引用和受控文件句柄建立后，才能把导入工具暴露给 MCP。
 
 这个完成项不能外推为插件包已经可用：
 

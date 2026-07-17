@@ -85,17 +85,17 @@
 - APKG 生成与核验不再使用 Note Model 名称前缀猜版本，而是按精确的 family、template schema、Note Model ID、字段/模板/CSS 哈希和兼容合同匹配；Note Model 序列化基线固定为 `genanki==0.13.1`，但这不表示所有依赖都已完成哈希锁定。
 - 完整 APKG 包合同已覆盖 ZIP 条目唯一性与限额、collection/media 映射、模型/牌组/note/card 关系、CardId、纯内容摘要、媒体 manifest/ledger、卡片媒体账本及安全展示 HTML；10 个生产生成变体均以真实 `handle_export` 产物通过同一整包验证器。
 - 导出先在最终目录写入唯一 `.partial`，整包校验通过后才以 **no-replace** 语义原子发布最终 APKG；目标路径已经存在时拒绝覆盖。校验或发布失败会清理/隔离 partial，不能发出“已完成”状态。
-- 生产 V14 与明确保留的 V10 兼容模型使用同一合同注册表；release smoke 会分别生成并核验两者，缺少 `verify_apkg.py` 会直接失败。V13、V15、V199、近似名称、非规范 ID/整数、字段/模板/model extras/CSS 篡改、未引用/额外模型、双 collection、重复关键条目和解压限额超限进入负向合同测试。
+- 生产 V15、V14 与明确保留的 V10 兼容模型使用同一合同注册表；release smoke 继续生成并核验 V14/V10，V15 另由 20 卡生产包、模型作用域 GUID 和完整包合同覆盖。V13、V199、近似名称、非规范 ID/整数、字段/模板/model extras/CSS 篡改、未引用/额外模型、双 collection、重复关键条目和解压限额超限进入负向合同测试。
 - 现有 Anki 导入命令只把应用内部生成、证据完整的 raw `ExportResult` 当作兼容输入，并核对 payload 覆盖一致性、绝对 APKG/media 路径、实际哈希/大小、整包内容与精确 Note Model 合同；该阶段失败时媒体准备和 `importPackage` 都不能发生。这个接口不认证 `ExportResult` 的来源，无法抵抗能同时篡改 APKG 与 `ExportResult` 的同权限本机攻击者。媒体准备后、紧贴 `importPackage` 前再次 stat + SHA，只能显著缩窄而不能从原理上消除路径换包 TOCTOU。M2 必须用认证 Artifact 注册表、不透明句柄和受控文件句柄建立真正的信任根；在此之前 raw `ExportResult` 命令不得直接暴露为公共 MCP 写工具。
 - 桌面导入入口不会仅凭一个残留状态继续：full 与 compact 两份导出证据必须同时完整，并对同一 APKG 的规范化路径、哈希、大小、mtime、牌组、模型、模板、合同、标签、来源/内容指纹与核心媒体摘要严格配对。标准 Windows Anki profile 的媒体预置 direct-first，以同一源/临时文件句柄、1 MiB 固定块、flush/fsync、identity 复核和 same-dir no-replace 发布；并发同内容幂等，冲突内容绝不覆盖。
 - 非标准/portable profile 与非 Windows 只保留原始媒体不超过 8 MiB 的 AnkiConnect inline 兼容路径；8 MiB+1 在任何媒体 API 前停止。8 MiB 是原始媒体协议上限，不是进程峰值；兼容路径仍是整文件 Base64。部分成功、超时未知结果、可能孤儿与清理失败进入 ownership ledger，最终媒体 barrier 未闭合时禁止导入。
-- 最终自动化回归已通过：前端 Vitest 830 项；Python 正式 `pytest` 581 项；独立 `unittest discover` 571 项；Rust 31 项通过、1 项按设计忽略；UI smoke 3 项；V14/V10 release smoke、`npm run check:full` 与 `npm run tauri:build` 均通过。`pytest` 与 `unittest` 有重叠，不能相加成独立测试总数。
-- 20 卡生产 V14 离线媒体包通过完整 APKG 合同：20 notes / 20 cards / 52 个唯一媒体，20/20 卡各有 6 个媒体引用，共 120 个 card-media ownership bindings；manifest 与 ledger 都为 52，20/20 字幕对齐，缺失、无效、未引用、兼容冲突、包问题和 verifier 失败均为 0。素材为 release-smoke 合成视频与 SRT，TTS/原声为静音 fixture，因此只证明包和媒体链，不证明真人语义、听感或复习体验。
-- 真实隔离 Anki 数据级核验已经完成：单卡 E→C 跨盘导入为 1 note / 1 card / 6 media，20 卡包为 20 notes / 20 cards / 52 media；6/6 与 52/52 媒体均经 `direct-first / trusted_atomic_copy` 预置，`retrieveMediaFile` 与 `storeMediaFile` 均为 0 次，逐文件大小与 SHA-256 全部闭合，20 卡的 120 个媒体归属全部闭合。两组重复导入均跳过且 `duplicates=0`，真实重启隔离 Anki 后计数与哈希仍完整；正式 profile/牌组未被触碰，隔离进程已关闭。它们是 AnkiConnect、collection 与文件系统的数据级证据，不是 GUI 翻面、实际播放或连续复习证据。
+- 最终自动化回归已通过：前端 Vitest 830 项；Python 正式 `pytest` 603 项；独立 `unittest discover` 576 项；Rust 31 项通过、1 项按设计忽略；UI smoke 3 项；V15/V10 release smoke、`npm run check:full` 与 `npm run tauri:build` 均通过。`pytest` 与 `unittest` 有重叠，不能相加成独立测试总数。
+- 20 卡生产 V15 离线媒体包通过完整 APKG 合同：20 notes / 20 cards / 52 个唯一媒体，manifest、逐媒体哈希、模型作用域 GUID 与字幕对齐全部闭合。素材为 release-smoke 合成视频与 SRT，TTS/原声为静音 fixture，因此只证明包、渲染和媒体状态机，不证明真人语义、听感或长期学习效果。
+- 真实隔离 Anki 数据级核验已经完成：单卡 E→C 跨盘导入为 1 note / 1 card / 6 media，最终 V15 20 卡包为 20 notes / 20 cards / 52 media；逐文件大小与 SHA-256 全部闭合，重复导入均跳过，真实重启后计数与哈希仍完整。V14/V15 字段完全相同的 note 在同一集合中保持不同 model、GUID 和 note/card ID，重启前后无差异；正式 profile/牌组未被触碰。
 - 非 NFC 名称、Windows 保留设备名（含 `CLOCK$`）、大小写/规范化冲突及 APKG archive 资源上限已经完成 fail-closed 回归；APKG archive/package/verifier 与标准 Windows Anki direct path 均采用有界流式读取。64 MiB direct 样本在整文件读取、Base64 和 AnkiConnect 媒体动作被禁止时通过，Python `tracemalloc` 峰值增量低于 32 MiB；这不等于非标准兼容路径或双进程 RSS 已全部流式化/量化。
 - 在合同尚未对齐的先前尝试中，生产 preflight 与最终包门禁按设计 fail closed；隔离目标保持 0 note / 0 card / 0 media。该负例证明失败没有产生半写入，不能被改写成成功测试。
 
-这不表示 M0 或插件已经全部交付：Computer Use 在当前执行环境不可用，真实 Anki GUI 的翻面、滚动、焦点、媒体播放和至少 20 张连续复习仍未执行；合成视频与静音 TTS 不能替代语义和听感验收。插件包安装、目标 Codex 宿主注册、stdio MCP、版本化 Anki runtime verifier 与 M1 Headless Card Service 均尚未完成，raw `ExportResult` 的来源认证、M2 Artifact 注册表/不透明引用/受控文件句柄、剩余 TOCTOU 和全供应链哈希固定也仍是明确边界。详见 [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md)。
+M0 已经完成，但 Codex 插件尚未交付：Computer Use 已在真实 Windows Anki 26.05 中完成翻面、滚动、焦点、四类媒体播放、Space/Enter 路由、20 张连续复习、重复导入、重启及 V14/V15 并存验收；合成视频与静音 TTS 仍不能替代真人语义、听感和长期学习效果验收。插件 manifest、目标 Codex 宿主注册、stdio MCP、M1 Headless Card Service，以及 M2 Artifact 注册表/不透明引用/受控文件句柄仍未完成。详见 [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md)。
 
 ### 4.2 遗留文档冲突清单（只登记，不回写历史快照）
 
@@ -150,7 +150,7 @@ CURRENT，经本轮仓库检查确认：
 - 已有任务快照、单调进度、取消、结果引用和中断恢复基础。
 - 已有安全检查点、输入指纹、APKG 哈希和备份恢复。
 - 已有路径授权、私网 URL 阻断、AnkiConnect 回环限制、秘密存储和跨磁盘 Anki 导入修复。
-- 已有 APKG、媒体、TTS、卡片字段、AnkiConnect 数据核验与人工真实 Anki 验收基础；当前 M0 分支另已加入完整 APKG 包合同、精确 V14/V10 Note Model 合同、partial 校验后 no-replace 原子发布、导入前整包 preflight，以及隔离真实 Anki 单卡与重复导入证据；插件所需版本化 runtime verifier 仍是 PROPOSED。
+- 已有 APKG、媒体、TTS、卡片字段、AnkiConnect 数据核验与真实 Anki GUI 验收基础；M0 已加入精确 V15/V14/V10 Note Model 合同、V15 模型作用域 GUID、完整 APKG 包合同、partial 校验后 no-replace 原子发布、导入前整包 preflight、隔离真实 Anki 重复/重启/V14-V15 并存证据，以及受版本化 runtime contract 约束的最小媒体快捷键 add-on。Codex 插件侧的通用 runtime verifier 仍是 PROPOSED。
 
 需要重构而不是直接暴露：
 

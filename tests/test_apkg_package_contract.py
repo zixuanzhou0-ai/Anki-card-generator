@@ -46,6 +46,12 @@ from acg.anki_model_contracts import (  # noqa: E402
     resolve_export_note_model_contract,
     validate_apkg_archive_limits,
 )
+from acg.anki_note_identity import (  # noqa: E402
+    LEGACY_NOTE_GUID_ALGORITHM,
+    MODEL_SCOPED_NOTE_GUID_ALGORITHM,
+    NOTE_GUID_ALGORITHM_BY_MODEL_ID,
+    note_guid_for_model,
+)
 from acg.apkg_package_contract import (  # noqa: E402
     note_content_sha256,
     validate_apkg_package_contract,
@@ -93,7 +99,7 @@ class ApkgPackageContractTests(unittest.TestCase):
         deck_name = "Contract Fixture"
         deck = genanki.Deck(deck_id, deck_name)
         note_tags = [
-            "anki_card_generator_v14",
+            f"anki_card_generator_{contract.template_schema.lower()}",
             "lang_en",
             "level_b1",
             "template_immersive_v11",
@@ -138,6 +144,7 @@ class ApkgPackageContractTests(unittest.TestCase):
                     model=model,
                     fields=values,
                     tags=note_tags,
+                    guid=note_guid_for_model(contract.note_model_id, values),
                 )
             )
             ledgers.append(
@@ -196,7 +203,7 @@ class ApkgPackageContractTests(unittest.TestCase):
             "model_name": contract.model_name,
             "compatibility_contract_version": COMPATIBILITY_CONTRACT_VERSION,
             "note_model_contract_digest": contract.contract_digest,
-            "anki_tag": "anki_card_generator_v14",
+            "anki_tag": f"anki_card_generator_{contract.template_schema.lower()}",
             "media_manifest": media_manifest,
             "media_ledger": (
                 [
@@ -324,7 +331,7 @@ class ApkgPackageContractTests(unittest.TestCase):
             ],
         }
 
-    def test_exact_v14_fixture_with_media_and_safe_display_markup_passes(self):
+    def test_exact_v15_fixture_with_media_and_safe_display_markup_passes(self):
         with self._temp_root() as temp_dir:
             result = self._fixture(Path(temp_dir), card_count=2, with_media=True)
             report = validate_apkg_package_contract(result["apkg_path"], result)
@@ -364,12 +371,59 @@ class ApkgPackageContractTests(unittest.TestCase):
             )
         )
 
-    def test_real_handle_export_v14_result_passes_the_complete_package_contract(self):
+    def test_note_guid_contract_preserves_legacy_and_scopes_v15_models(self):
+        import genanki
+
+        values = ["same answer", "同一内容", "[sound:same.mp3]"]
+        legacy_id = 3157735470
+        v15_full_id = 1028904201
+        v15_fast_id = 5074019806
+
+        legacy_guid = note_guid_for_model(legacy_id, values)
+        full_guid = note_guid_for_model(v15_full_id, values)
+        fast_guid = note_guid_for_model(v15_fast_id, values)
+
+        self.assertEqual(legacy_guid, genanki.guid_for(*values))
+        self.assertEqual(
+            NOTE_GUID_ALGORITHM_BY_MODEL_ID[legacy_id],
+            LEGACY_NOTE_GUID_ALGORITHM,
+        )
+        self.assertEqual(
+            NOTE_GUID_ALGORITHM_BY_MODEL_ID[v15_full_id],
+            MODEL_SCOPED_NOTE_GUID_ALGORITHM,
+        )
+        self.assertEqual(len({legacy_guid, full_guid, fast_guid}), 3)
+        with self.assertRaisesRegex(ValueError, "Unregistered Note Model ID"):
+            note_guid_for_model(9999999999, values)
+
+    def test_frozen_v14_fixture_keeps_the_genanki_field_only_guid(self):
+        fixture = ROOT / "tests" / "fixtures" / "apkg" / "v14-immersive-one-card.apkg"
+        with self._temp_root() as temp_dir, zipfile.ZipFile(fixture) as archive:
+            collection_name = (
+                "collection.anki2"
+                if "collection.anki2" in archive.namelist()
+                else "collection.anki21"
+            )
+            database = Path(temp_dir) / collection_name
+            database.write_bytes(archive.read(collection_name))
+            con = sqlite3.connect(database)
+            try:
+                guid, model_id, field_text = con.execute(
+                    "select guid, mid, flds from notes"
+                ).fetchone()
+            finally:
+                con.close()
+
+        values = field_text.split("\x1f")
+        self.assertEqual(model_id, 3157735470)
+        self.assertEqual(guid, note_guid_for_model(model_id, values))
+
+    def test_real_handle_export_v15_result_passes_the_complete_package_contract(self):
         sentence = "Please remember contract phrase in this example."
         phrase = "contract phrase"
         project = {
-            "id": "real-v14-package-contract",
-            "title": "Real V14 package contract",
+            "id": "real-v15-package-contract",
+            "title": "Real V15 package contract",
             "source_mode": "local",
             "video_path": "",
             "subtitle_path": "",
@@ -387,7 +441,7 @@ class ApkgPackageContractTests(unittest.TestCase):
                     "text": sentence,
                     "cards": [
                         {
-                            "id": "real-v14-card-1",
+                            "id": "real-v15-card-1",
                             "type": "expression",
                             "type_label": "表达卡",
                             "enabled": True,
@@ -423,7 +477,7 @@ class ApkgPackageContractTests(unittest.TestCase):
         self.assertEqual(
             result["card_media_ledger"][0]["note_tags"],
             [
-                "anki_card_generator_v14",
+                "anki_card_generator_v15",
                 "lang_english",
                 "level_b1",
                 "template_immersive_v11",
@@ -684,7 +738,7 @@ class ApkgPackageContractTests(unittest.TestCase):
         mutations: dict[str, tuple[Callable[[sqlite3.Connection], None], str]] = {
             "tags": (
                 lambda con: con.execute(
-                    "update notes set tags=' anki_card_generator_v14 lang_wrong level_wrong template_wrong type_wrong layout_wrong '"
+                    "update notes set tags=' anki_card_generator_v15 lang_wrong level_wrong template_wrong type_wrong layout_wrong '"
                 ),
                 "APKG_NOTE_TAGS_MISMATCH",
             ),
@@ -703,6 +757,20 @@ class ApkgPackageContractTests(unittest.TestCase):
                     self._rewrite_database(source, target, mutation)
                     report = validate_apkg_package_contract(target, self._retarget(result, target))
                     self.assertIn(expected_code, self._codes(report), report)
+
+    def test_v15_export_and_ledger_cannot_claim_the_v14_version_tag(self):
+        with self._temp_root() as temp_dir:
+            root = Path(temp_dir)
+            result = self._fixture(root, with_media=False)
+            wrong = copy.deepcopy(result)
+            wrong["anki_tag"] = "anki_card_generator_v14"
+            for item in wrong["card_media_ledger"]:
+                item["note_tags"][0] = "anki_card_generator_v14"
+            report = validate_apkg_package_contract(wrong["apkg_path"], wrong)
+
+        codes = self._codes(report)
+        self.assertIn("EXPORT_ANKI_TAG_SCHEMA_MISMATCH", codes)
+        self.assertIn("EXPORT_NOTE_VERSION_TAG_MISMATCH", codes)
 
     def test_card_id_and_complete_note_content_fingerprint_must_match_ledger(self):
         with self._temp_root() as temp_dir:

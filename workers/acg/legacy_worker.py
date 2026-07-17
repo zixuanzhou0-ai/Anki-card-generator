@@ -62,6 +62,7 @@ from acg.anki_model_contracts import (
     resolve_export_note_model_contract,
     validate_generated_note_model,
 )
+from acg.anki_note_identity import note_guid_for_model
 from acg.anki_verify import verify_anki_import_failed_checks, verify_anki_import_message
 from acg.audio_audit import (
     audio_audit_failure_details,
@@ -11666,6 +11667,43 @@ V11_CARD_SCRIPT = """
     return copy[state] || copy.idle;
   }
 
+  function isV11ActivationKey(event) {
+    return event && (event.key === "Enter" || event.key === " " || event.key === "Spacebar");
+  }
+
+  function consumeV11ActivationKey(event) {
+    if (!isV11ActivationKey(event)) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    if (typeof event.stopImmediatePropagation === "function") {
+      event.stopImmediatePropagation();
+    }
+    return true;
+  }
+
+  function focusV11MediaControl(control) {
+    if (!control || typeof control.focus !== "function") return;
+    try {
+      control.focus({ preventScroll: true });
+    } catch (error) {
+      control.focus();
+    }
+  }
+
+  function bindV11MediaKeyboard(control, activate) {
+    if (!control || control.getAttribute("data-v11-keyboard-bound")) return;
+    control.addEventListener("keydown", function(event) {
+      if (!consumeV11ActivationKey(event) || event.repeat) return;
+      activate();
+    }, true);
+    ["keypress", "keyup"].forEach(function(eventName) {
+      control.addEventListener(eventName, function(event) {
+        consumeV11ActivationKey(event);
+      }, true);
+    });
+    control.setAttribute("data-v11-keyboard-bound", "1");
+  }
+
   function setV11AudioState(button, state, shouldAnnounce) {
     if (!button) return;
     button.setAttribute("data-media-state", state);
@@ -11697,6 +11735,7 @@ V11_CARD_SCRIPT = """
   }
 
   window.playV11Audio = function(button, selector) {
+    focusV11MediaControl(button);
     var root = rootFor(button);
     var audio = root.querySelector(selector + " audio");
     if (!audio) {
@@ -11714,15 +11753,22 @@ V11_CARD_SCRIPT = """
       try { audio.currentTime = 0; } catch (error) {}
     }
     audio.playbackRate = 1;
-    var playResult = audio.play();
-    if (playResult && playResult.then) {
-      playResult.then(function() {
-        setV11AudioState(button, "playing", true);
-      }).catch(function() {
+    setV11AudioState(button, "playing", true);
+    var playResult;
+    try {
+      playResult = audio.play();
+    } catch (error) {
+      if (button.getAttribute("data-media-state") === "playing") {
         setV11AudioState(button, "error", true);
+      }
+      return;
+    }
+    if (playResult && playResult.then) {
+      playResult.catch(function() {
+        if (button.getAttribute("data-media-state") === "playing") {
+          setV11AudioState(button, "error", true);
+        }
       });
-    } else {
-      setV11AudioState(button, "playing", true);
     }
   };
 
@@ -11761,12 +11807,14 @@ V11_CARD_SCRIPT = """
 
   window.toggleV11Video = function(stage) {
     if (!stage) return;
+    focusV11MediaControl(stage);
     var video = stage.querySelector("video");
     if (!video) {
       setV11VideoState(stage, "error", true);
       return;
     }
-    if (!video.paused) {
+    var state = stage.getAttribute("data-media-state") || "idle";
+    if (state === "playing" || !video.paused) {
       video.pause();
       setV11VideoState(stage, "paused", true);
       return;
@@ -11778,15 +11826,22 @@ V11_CARD_SCRIPT = """
     video.loop = true;
     video.muted = false;
     video.volume = 1;
-    var playResult = video.play();
-    if (playResult && playResult.then) {
-      playResult.then(function() {
-        setV11VideoState(stage, "playing", true);
-      }).catch(function() {
+    setV11VideoState(stage, "playing", true);
+    var playResult;
+    try {
+      playResult = video.play();
+    } catch (error) {
+      if (stage.getAttribute("data-media-state") === "playing") {
         setV11VideoState(stage, "error", true);
+      }
+      return;
+    }
+    if (playResult && playResult.then) {
+      playResult.catch(function() {
+        if (stage.getAttribute("data-media-state") === "playing") {
+          setV11VideoState(stage, "error", true);
+        }
       });
-    } else {
-      setV11VideoState(stage, "playing", true);
     }
   };
   function setupV11AudioButtons() {
@@ -11795,6 +11850,9 @@ V11_CARD_SCRIPT = """
       var selector = button.getAttribute("data-media-selector");
       var audio = selector ? root.querySelector(selector + " audio") : null;
       setV11AudioState(button, audio ? "idle" : "error", false);
+      bindV11MediaKeyboard(button, function() {
+        window.playV11Audio(button, selector);
+      });
       if (!audio || audio.getAttribute("data-v11-state-bound")) return;
       audio.addEventListener("play", function() {
         setV11AudioState(button, "playing", false);
@@ -11817,15 +11875,9 @@ V11_CARD_SCRIPT = """
       if (!stage.getAttribute("role")) stage.setAttribute("role", "button");
       if (!stage.getAttribute("tabindex")) stage.setAttribute("tabindex", "0");
       if (!stage.getAttribute("aria-label")) stage.setAttribute("aria-label", "播放视频复读");
-      if (!stage.getAttribute("data-v11-keyboard-bound")) {
-        stage.addEventListener("keydown", function(event) {
-          if (event.key === "Enter" || event.key === " " || event.key === "Spacebar") {
-            event.preventDefault();
-            window.toggleV11Video(stage);
-          }
-        });
-        stage.setAttribute("data-v11-keyboard-bound", "1");
-      }
+      bindV11MediaKeyboard(stage, function() {
+        window.toggleV11Video(stage);
+      });
       video.loop = true;
       video.muted = false;
       video.playsInline = true;
@@ -12761,7 +12813,7 @@ def anki_template_version(template_id: str, deck_kind_code: str = "video_languag
     if deck_kind_code not in {"video_language", "subtitle_language"}:
         return "V10"
     if template_id == "immersive_v11":
-        return "V14"
+        return "V15"
     if template_id == "ciba_tianxia_v1":
         return "V12"
     return "V10"
@@ -16450,6 +16502,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
                 model=model,
                 fields=note_fields,
                 tags=note_tags,
+                guid=note_guid_for_model(note_model_contract.note_model_id, note_fields),
             )
             target_deck.add_note(note)
             exported_cards += 1

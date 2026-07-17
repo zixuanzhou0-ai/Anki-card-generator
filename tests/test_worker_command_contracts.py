@@ -414,7 +414,7 @@ class WorkerCommandContractTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ContractValidationError):
                 _validate(invalid, export_schema, schema, "$.export.result")
 
-    def test_golden_v14_export_result_is_the_complete_verify_input(self) -> None:
+    def test_golden_current_export_result_is_the_complete_verify_input(self) -> None:
         from acg.anki_model_contracts import NOTE_MODEL_CONTRACTS, note_model_field_names
 
         schema, golden = _load_contract()
@@ -429,18 +429,18 @@ class WorkerCommandContractTests(unittest.TestCase):
             "$.verify.request",
         )
 
-        current_v14 = next(
+        current_contract = next(
             contract
             for contract in NOTE_MODEL_CONTRACTS
             if contract.template_family == "language-immersive-v11"
-            and contract.template_schema == "V14"
+            and contract.template_schema == "V15"
         )
-        self.assertEqual(export_result["template_family"], current_v14.template_family)
-        self.assertEqual(export_result["template_schema"], current_v14.template_schema)
-        self.assertEqual(export_result["template_version"], current_v14.template_schema)
-        self.assertEqual(export_result["note_model_id"], current_v14.note_model_id)
-        self.assertEqual(export_result["model_name"], current_v14.model_name)
-        self.assertEqual(export_result["note_model_contract_digest"], current_v14.contract_digest)
+        self.assertEqual(export_result["template_family"], current_contract.template_family)
+        self.assertEqual(export_result["template_schema"], current_contract.template_schema)
+        self.assertEqual(export_result["template_version"], current_contract.template_schema)
+        self.assertEqual(export_result["note_model_id"], current_contract.note_model_id)
+        self.assertEqual(export_result["model_name"], current_contract.model_name)
+        self.assertEqual(export_result["note_model_contract_digest"], current_contract.contract_digest)
         fingerprint = export_result["note_content_fingerprint"]
         self.assertEqual(fingerprint["field_names"], list(note_model_field_names(True)))
         self.assertEqual(fingerprint["card_count"], export_result["cards"])

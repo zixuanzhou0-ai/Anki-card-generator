@@ -24,7 +24,7 @@ class CodexPluginDocumentationTests(unittest.TestCase):
         validator = load_validator()
         self.assertEqual(validator.validate_docs(), [])
 
-    def test_m0_status_is_current_without_claiming_milestone_completion(self) -> None:
+    def test_m0_is_completed_without_claiming_plugin_completion(self) -> None:
         docs_dir = ROOT / "docs" / "codex-plugin"
         readme = (docs_dir / "README.md").read_text(encoding="utf-8")
         roadmap = (docs_dir / "ROADMAP.md").read_text(encoding="utf-8")
@@ -32,12 +32,14 @@ class CodexPluginDocumentationTests(unittest.TestCase):
         reliability = (docs_dir / "RELIABILITY_AND_VERIFICATION.md").read_text(encoding="utf-8")
 
         for text in (readme, roadmap, limitations, reliability):
+            self.assertIn("V15", text)
             self.assertIn("V14", text)
             self.assertIn("V10", text)
             self.assertIn("preflight", text)
             self.assertIn("真实 Anki", text)
 
-        self.assertIn("M0 仍为进行中", roadmap)
+        self.assertIn("M0 已完成", roadmap)
+        self.assertIn("下一阶段为 M1", roadmap)
         self.assertIn("M1 Headless Card Service", readme)
         self.assertIn("genanki==0.13.1", readme)
         self.assertIn("不表示所有依赖都已完成哈希锁定", readme)
@@ -46,6 +48,7 @@ class CodexPluginDocumentationTests(unittest.TestCase):
         self.assertIn("退出码为 1", reliability)
         self.assertNotIn("M0 的 verifier fail-open 仍真实存在", readme + roadmap + limitations + reliability)
         self.assertNotIn("当前 verifier 因 V1 + startswith", readme + roadmap + limitations + reliability)
+        self.assertNotIn("Computer Use 当前不可用", readme + roadmap + limitations + reliability)
 
     def test_release_smoke_cannot_skip_apkg_verifier(self) -> None:
         smoke = (ROOT / "scripts" / "smoke_release.ps1").read_text(encoding="utf-8")
@@ -59,11 +62,13 @@ class CodexPluginDocumentationTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("20 notes / 20 cards / 52", report)
-        self.assertIn("120 个 card-media ownership bindings", report)
-        self.assertIn("Computer Use 当前不可用", report)
-        self.assertIn("不是完整运行时或学习体验证据", report)
-        self.assertIn("不能宣称所有媒体路径都已流式化", report)
-        self.assertIn("不能把 581 和 571 相加", report)
+        self.assertIn("52 个实际媒体 SHA-256", report)
+        self.assertIn("20 张连续复习", report)
+        self.assertIn("不能证明真人语义", report)
+        self.assertIn("不能宣称全部媒体路径都流式化", report)
+        self.assertIn("不能把 603 和 576 相加", report)
+        self.assertIn("Codex 插件 manifest", report)
+        self.assertNotIn("Computer Use 当前不可用", report)
         self.assertNotIn(".tmp", report)
         self.assertNotIn(chr(92).join(("C:", "Users", "")), report)
 

@@ -753,14 +753,21 @@
           "enum": ["video_language", "subtitle_language", "document_knowledge", "document_reading"]
         },
         "template_family": { "$ref": "#/$defs/NonEmptyString" },
-        "template_schema": { "enum": ["V10", "V12", "V14"] },
-        "template_version": { "enum": ["V10", "V12", "V14"] },
+        "template_schema": { "enum": ["V10", "V12", "V14", "V15"] },
+        "template_version": { "enum": ["V10", "V12", "V14", "V15"] },
         "template_name": { "$ref": "#/$defs/NonEmptyString" },
         "note_model_id": { "type": "integer", "minimum": 1 },
         "model_name": { "$ref": "#/$defs/NonEmptyString" },
         "compatibility_contract_version": { "const": 1 },
         "note_model_contract_digest": { "$ref": "#/$defs/Sha256" },
-        "anki_tag": { "type": "string" },
+        "anki_tag": {
+          "enum": [
+            "anki_card_generator_v10",
+            "anki_card_generator_v12",
+            "anki_card_generator_v14",
+            "anki_card_generator_v15"
+          ]
+        },
         "media_manifest": { "type": "object", "additionalProperties": { "$ref": "#/$defs/ExportMediaManifestEntry" } },
         "media_ledger": { "type": "array", "items": { "$ref": "#/$defs/ExportMediaLedgerItem" } },
         "card_media_ledger": { "type": "array", "items": { "$ref": "#/$defs/ExportCardMediaLedgerItem" } },

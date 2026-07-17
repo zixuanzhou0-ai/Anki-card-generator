@@ -640,7 +640,7 @@ overwritePolicy：
 - manifest refs。
 - 未导出项和原因。
 
-CURRENT 基础：M0 工作分支已用精确 family/schema/Note Model ID/字段/模板/CSS/compatibility contract 替换 V1 + `startswith` 宽前缀；完整 APKG 合同覆盖 10 个生产变体，导出只在唯一 `.partial` 校验通过后以 no-replace 语义原子发布。最终自动化为 Vitest 830、正式 `pytest` 581、独立 `unittest discover` 571（有重叠，不相加）、Rust 31 项通过与 1 项忽略、UI smoke 3、V14/V10 release smoke、`check:full` 与 Tauri build 通过。20 卡离线 V14 媒体包为 20/20/52、每卡 6 引用、120 个媒体归属；真实隔离 Anki 数据级核验覆盖 E→C 单卡 1/1/6 和 20 卡 20/20/52 的首次导入、逐媒体哈希、重复跳过与重启持久化。合成视频与静音 TTS 不证明语义、听感、GUI 播放或连续复习。
+CURRENT 基础：M0 已用精确 V15/V14/V10 family/schema/Note Model ID/字段/模板/CSS/compatibility contract 替换 V1 + `startswith` 宽前缀；V15 使用模型作用域 GUID，完整 APKG 合同覆盖 10 个生产变体，导出只在唯一 `.partial` 校验通过后以 no-replace 语义原子发布。最终自动化为 Vitest 830、正式 `pytest` 603、独立 `unittest discover` 576（有重叠，不相加）、Rust 31 项通过与 1 项忽略、UI smoke 3、V15/V10 release smoke、`check:full` 与 Tauri build 通过。V15 20 卡包为 20/20/52；真实隔离 Anki 覆盖单卡、V15 重复/重启、V14/V15 同字段并存，Computer Use 覆盖 Anki 26.05 的 20 张连续复习、四类媒体与 Space/Enter 路由。合成视频与静音 TTS 不证明真人语义、听感或长期学习效果。
 
 非 NFC、Windows 保留设备名（含 `CLOCK$`）、规范化冲突与 APKG archive 资源上限已经通过；有界流式读取覆盖 APKG archive/package/verifier 与标准 Windows Anki direct-first 媒体路径。非标准/portable profile 的 AnkiConnect inline 兼容路径仍整文件/Base64，但原始单文件上限为 8 MiB；8 MiB 不是进程峰值。
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import shutil
 import subprocess
@@ -36,6 +37,7 @@ verify_apkg = load_module("verify_apkg_for_contract_tests", WORKERS / "verify_ap
 from acg.anki_model_contracts import (  # noqa: E402
     COMPATIBILITY_CONTRACT_VERSION,
     NOTE_MODEL_CONTRACTS,
+    PRESENTATION_NOTE_FIELDS_SHA256,
     inspect_referenced_note_models,
     note_model_field_names,
     resolve_export_note_model_contract,
@@ -211,7 +213,7 @@ class VerifyApkgContractTests(unittest.TestCase):
             ("immersive", "document_knowledge", "warm_paper", "full"),
             ("immersive", "document_reading", "warm_paper", "full"),
         ]
-        self.assertEqual(len(NOTE_MODEL_CONTRACTS), len(variants))
+        self.assertEqual(len(NOTE_MODEL_CONTRACTS), len(variants) + 2)
         for template_id, deck_kind, card_style, review_density in variants:
             with self.subTest(template_id=template_id, deck_kind=deck_kind, card_style=card_style):
                 label, css, qfmt, afmt = worker._legacy_worker.anki_template_assets(
@@ -230,24 +232,80 @@ class VerifyApkgContractTests(unittest.TestCase):
                 contract = resolve_export_note_model_contract(family, schema, label)
                 validate_generated_note_model(
                     contract,
-                    field_names=note_model_field_names(schema == "V14"),
+                    field_names=note_model_field_names(
+                        contract.ordered_fields_sha256 == PRESENTATION_NOTE_FIELDS_SHA256
+                    ),
                     css=css,
                     qfmt=qfmt,
                     afmt=afmt,
                 )
 
-    def test_real_v14_full_and_fast_packages_pass_exact_contract(self):
+    def test_v14_contract_identity_remains_frozen_beside_v15(self):
+        expected_v14 = {
+            3157735470: (
+                "Anki Card Generator V14 - 沉浸复读 V11",
+                "532ce91006678d1241e2bc198c6ed9cfded60a81ef6a41d466fc8d7dcdffb800",
+                "2c6104616c72026d5f83f7a11ba4c4af6f802c110ab5c360454ebd8ad47ff421",
+                "cbf770412b097c10a647d52c0bb044b1bff93a1c13135ca8ec368c30530c1ca4",
+            ),
+            3446541562: (
+                "Anki Card Generator V14 - 沉浸复读 V11 · 快速复读",
+                "5b629c8f163f93e0a8785e41a27fcccbb6fe3df5db329f747185168e8af3f3e3",
+                "5df6319768cfd1465fed37f22100bb951c2b09b8c17b395f5ab6a10a733fafd9",
+                "d682bf9c66b9ceb0c1fb2acfd12935f538bb1b5bd056fa22027eb8d703507ff7",
+            ),
+        }
+        contracts_by_id = {contract.note_model_id: contract for contract in NOTE_MODEL_CONTRACTS}
+        self.assertEqual(len(contracts_by_id), len(NOTE_MODEL_CONTRACTS))
+        for model_id, (name, qfmt, afmt, digest) in expected_v14.items():
+            contract = contracts_by_id[model_id]
+            self.assertEqual(contract.template_schema, "V14")
+            self.assertEqual(contract.model_name, name)
+            self.assertEqual(contract.qfmt_sha256, qfmt)
+            self.assertEqual(contract.afmt_sha256, afmt)
+            self.assertEqual(contract.contract_digest, digest)
+
+        self.assertEqual(
+            worker._legacy_worker.anki_template_version("immersive_v11", "video_language"),
+            "V15",
+        )
+
+    def test_frozen_v14_apkg_remains_accepted_by_the_current_verifier(self):
+        fixture_dir = ROOT / "tests" / "fixtures" / "apkg"
+        apkg_path = fixture_dir / "v14-immersive-one-card.apkg"
+        manifest = json.loads(
+            (fixture_dir / "v14-immersive-one-card.manifest.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(apkg_path.stat().st_size, manifest["size_bytes"])
+        self.assertEqual(hashlib.sha256(apkg_path.read_bytes()).hexdigest(), manifest["sha256"])
+
+        report = verify_apkg.sqlite_fallback_report(apkg_path)
+        self.assertTrue(report["ok"], report)
+        self.assertEqual(report["failed_checks"], [])
+        self.assertEqual(report["note_count"], manifest["note_count"])
+        self.assertEqual(report["card_count"], manifest["card_count"])
+        self.assertEqual(report["note_model_contracts"][0]["templateSchema"], "V14")
+        self.assertEqual(
+            report["note_model_contracts"][0]["noteModelId"],
+            manifest["note_model_id"],
+        )
+        self.assertEqual(
+            report["note_model_contracts"][0]["contractDigest"],
+            manifest["note_model_contract_digest"],
+        )
+
+    def test_real_v15_full_and_fast_packages_pass_exact_contract(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             for density, card_count, expected_id in (
-                ("full", 1, 3157735470),
-                ("fast", 20, 3446541562),
+                ("full", 1, 1028904201),
+                ("fast", 20, 5074019806),
             ):
                 with self.subTest(density=density, card_count=card_count):
                     result = self.export_project(root, card_count, density)
                     self.assertEqual(result["template_family"], f"language-immersive-v11{'-fast' if density == 'fast' else ''}")
-                    self.assertEqual(result["template_schema"], "V14")
-                    self.assertEqual(result["template_version"], "V14")
+                    self.assertEqual(result["template_schema"], "V15")
+                    self.assertEqual(result["template_version"], "V15")
                     self.assertEqual(result["note_model_id"], expected_id)
                     self.assertEqual(result["compatibility_contract_version"], COMPATIBILITY_CONTRACT_VERSION)
                     self.assertEqual(len(result["note_model_contract_digest"]), 64)
@@ -258,7 +316,7 @@ class VerifyApkgContractTests(unittest.TestCase):
                     self.assertEqual(report["note_count"], card_count)
                     self.assertEqual(report["note_model_contracts"][0]["noteModelId"], expected_id)
 
-    def test_production_cli_accepts_exact_v14_and_rejects_tampered_name(self):
+    def test_production_cli_accepts_exact_v15_and_rejects_tampered_name(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             result = self.export_project(root)
@@ -283,14 +341,14 @@ class VerifyApkgContractTests(unittest.TestCase):
     def test_version_aliases_and_near_prefixes_fail_closed(self):
         invalid_names = (
             "Anki Card Generator V13 - 沉浸复读 V11",
-            "Anki Card Generator V15 - 沉浸复读 V11",
+            "Anki Card Generator V16 - 沉浸复读 V11",
             "Anki Card Generator V199 - 沉浸复读 V11",
-            "Anki Card Generator V14evil - 沉浸复读 V11",
-            "Anki Card Generator V14.0 - 沉浸复读 V11",
-            "Anki Card Generator V014 - 沉浸复读 V11",
-            " Anki Card Generator V14 - 沉浸复读 V11",
-            "Anki Card Generator V14 - 沉浸复读 V11 ",
-            "Anki Card Generator V14 - 沉浸复读 V11 copy",
+            "Anki Card Generator V15evil - 沉浸复读 V11",
+            "Anki Card Generator V15.0 - 沉浸复读 V11",
+            "Anki Card Generator V015 - 沉浸复读 V11",
+            " Anki Card Generator V15 - 沉浸复读 V11",
+            "Anki Card Generator V15 - 沉浸复读 V11 ",
+            "Anki Card Generator V15 - 沉浸复读 V11 copy",
         )
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

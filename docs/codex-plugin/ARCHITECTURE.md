@@ -489,12 +489,12 @@ app-data/
 - MCP tool 名称稳定；破坏性变化发布新工具版本或协议主版本。
 - ArtifactEnvelope 与 Study IR 各自带 schemaVersion。
 - Card Service 对当前 WorkerCommand 建适配器，允许内部演进。
-- CURRENT 卡片 family 为 immersive_v11，生产 template schema 为 V14。M0 工作分支已移除 V1 + `startswith` 宽前缀，冻结精确 family/schema/Note Model ID、完整字段/模板/model extras/CSS 与 compatibility contract。完整 APKG 合同进一步闭合 ZIP/JSON、模型/牌组/note/card、CardId/纯内容 SHA、媒体账本和安全 HTML；10 个生产生成变体均通过真实导出验证。
+- CURRENT 卡片 family 为 immersive_v11，生产 template schema 为 V15。M0 已移除 V1 + `startswith` 宽前缀，冻结 V15/V14/V10 的精确 family/schema/Note Model ID、完整字段/模板/model extras/CSS 与 compatibility contract；V15 使用模型作用域 GUID，历史 V10/V12/V14 GUID 不变。完整 APKG 合同进一步闭合 ZIP/JSON、模型/牌组/note/card、CardId/纯内容 SHA、媒体账本和安全 HTML；10 个生产生成变体均通过真实导出验证。
 - CURRENT 导出使用同目录唯一 `.partial` → 整包校验 → no-replace 原子发布，目标路径已存在时拒绝覆盖，失败不发布新最终包或 done。Anki 写入前会重验内部 raw `ExportResult` 与整包；但 raw `ExportResult` 不认证来源，不能防止同权限攻击者同时篡改包和结果，重复 stat/SHA 与 no-replace 发布也只缩小、不消除 TOCTOU。M2 的认证 Artifact 注册表、不透明引用与受控文件句柄是公共插件边界。
-- CURRENT 最终自动化证据为 Vitest 830、正式 `pytest` 581、独立 `unittest discover` 571（两套 Python 运行有重叠，不相加）、Rust 31 项通过与 1 项按设计忽略、UI smoke 3、V14/V10 release smoke、`npm run check:full` 和 `npm run tauri:build` 通过。
-- CURRENT 20 卡生产 V14 离线包为 20 notes / 20 cards / 52 个唯一媒体，每卡 6 个引用、120 个媒体归属，manifest/ledger/字幕对齐均闭合。真实隔离 Anki 数据级证据包括 E→C 单卡 1/1/6 与 20 卡首次导入 20/20/52；两者重复导入均跳过，重启后卡片数和逐媒体哈希保持一致。素材为合成视频与静音 TTS，不构成语义、听感、GUI 播放或连续复习证据。
+- CURRENT 最终自动化证据为 Vitest 830、正式 `pytest` 603、独立 `unittest discover` 576（两套 Python 运行有重叠，不相加）、Rust 31 项通过与 1 项按设计忽略、UI smoke 3、V15/V10 release smoke、`npm run check:full` 和 `npm run tauri:build` 通过。
+- CURRENT 20 卡生产 V15 离线包为 20 notes / 20 cards / 52 个唯一媒体，manifest、逐媒体哈希、字幕对齐和模型作用域 GUID 闭合。真实隔离 Anki 证据包括 E→C 单卡、V15 20 卡重复/重启及 V14/V15 同字段并存；Computer Use 在 Anki 26.05 完成了 20 张连续复习、翻面、滚动、焦点和四类媒体交互。素材为合成视频与静音 TTS，不构成真人语义、听感或长期学习效果证据。
 - 非 NFC、Windows 保留设备名（含 `CLOCK$`）、大小写/规范化冲突和 APKG archive 资源上限已 fail closed；有界流式读取覆盖 APKG archive/package/verifier 与标准 Windows Anki direct-first 媒体路径。非标准/portable profile 的 AnkiConnect inline 兼容仍整文件/Base64，原始单文件上限为 8 MiB；8 MiB 不是进程峰值。
-- M0 仍未完成 Computer Use 真实 GUI 翻面/焦点/滚动/媒体播放和至少 20 张连续复习；M1 Card Service、stdio MCP、目标宿主注册与版本化 runtime verifier 也未完成。
+- M0 已完成。M1 Card Service、stdio MCP、目标 Codex 宿主注册与插件侧通用 runtime verifier 仍未完成；Anki 媒体快捷键 add-on 当前只声明支持 26.05。
 - 旧桌面项目可通过显式迁移器导入，不直接假设字段等价。
 
 ## 11. 进程与部署

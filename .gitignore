@@ -30,6 +30,7 @@ dist-ssr
 # Generated media, card decks, caches, and verification output
 projects/
 *.apkg
+!tests/fixtures/apkg/v14-immersive-one-card.apkg
 *.mp4
 *.webm
 *.mp3
