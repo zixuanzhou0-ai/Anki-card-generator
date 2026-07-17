@@ -44,6 +44,7 @@ def main() -> None:
     runtime_mode = parser.add_mutually_exclusive_group(required=True)
     runtime_mode.add_argument("--runtime-package", type=Path)
     runtime_mode.add_argument("--development-unpackaged-runtime", action="store_true")
+    parser.add_argument("--runtime-trust-policy", type=Path)
     parser.add_argument("--worker", type=Path)
     parser.add_argument("--python", type=Path)
     parser.add_argument("--tool-dir", action="append", type=Path, default=[])
@@ -52,11 +53,16 @@ def main() -> None:
         arguments.worker is not None or arguments.python is not None or arguments.tool_dir
     ):
         parser.error("--worker, --python, and --tool-dir require --development-unpackaged-runtime")
+    if arguments.runtime_package is not None and arguments.runtime_trust_policy is None:
+        parser.error("--runtime-package requires --runtime-trust-policy")
+    if arguments.development_unpackaged_runtime and arguments.runtime_trust_policy is not None:
+        parser.error("--runtime-trust-policy is only valid with --runtime-package")
     service = CardService(
         state_dir=arguments.state_dir,
         worker_path=arguments.worker,
         python_path=arguments.python,
         runtime_package=arguments.runtime_package,
+        runtime_trust_policy=arguments.runtime_trust_policy,
         managed_tool_directories=arguments.tool_dir,
     )
     serve(service)

@@ -109,6 +109,16 @@ M0 出口已经关闭：
 - 将 FFmpeg/ffprobe、yt-dlp 和解析 helper 迁入每任务受限子进程：Windows task-owned Job Object + AppContainer/专用 restricted SID 与 staging DACL + broker/代理端点强制出站策略，固定 protocol/demuxer allowlist、无 Shell和资源配额；仅有 low-priv token 不算完成。
 - 禁止 Legacy Worker 持有 provider secret 或直连公网；增加 Card Service model/TTS broker 与 task-owned IPC，结构化构造请求并逐调用原子 reserve/settle token、字节、TTS、调用数和成本。
 
+### 当前实施进度（2026-07-17）
+
+- 已完成受限 Card Service API、任务快照/恢复、进度/取消/超时、无通用 Shell、Worker 运行时清单、受信本地设置与授权入口、Broker 账本与 task-owned HMAC IPC。
+- 已完成 Windows task-owned Job、restricted primary token、AppContainer、每任务 capability SID、runtime/task workspace 精确 DACL 和无网络 capability 的真实负面测试。
+- 已完成托管运行包内层供应链边界：canonical `runtime-package-v1.json`、detached Ed25519 签名、由受信 launcher 单独提供的发布者策略、签名有效期/密钥撤销/最低版本、同 sequence 分叉与本机版本回退拒绝，以及覆盖全部运行资源的 canonical SPDX 2.3 SBOM。
+- 正式 packaged mode 现在必须同时提供运行包和受信策略；运行包不能通过自带公钥建立信任。测试私钥只存在于测试代码内，仓库和运行包均不包含发布私钥。
+- Python 直接依赖已改为精确版本；最终发布仍需生成带哈希的完整传递依赖锁、真实离线签名密钥流程和外层 Authenticode/等价安装包签名。
+- 本里程碑仍未完成：固定媒体 protocol/demuxer allowlist 与恶意媒体语料、真实 model/TTS broker 出站执行、桌面/Headless 语义等价证据和正式可安装插件包仍在后续切片。
+- 本切片联合回归：Card Service、Broker、受信表面、签名供应链、Windows restricted token、AppContainer 与 DACL 共 74 项通过；该数字不是 M1 完成判定。
+
 ### 出口
 
 - 同一输入在桌面端和 Headless Runtime 得到语义等价 Project、media ledger 和验证结果。

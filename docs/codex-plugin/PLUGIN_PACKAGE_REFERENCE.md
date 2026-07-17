@@ -135,6 +135,15 @@ V1 不使用 hooks。当前生成规范与验证器对 hooks 字段存在差异�
 - 退出前保存任务安全状态。
 - 不监听 LAN。
 
+M1 托管运行包的内层合同已经固定为：
+
+- `runtime-package-v1.json` 是 canonical JSON，绑定 package identity/version、Card Service 最低兼容版本、目标平台、SPDX 2.3 SBOM 声明和全部运行资源的 size/SHA-256。
+- `runtime-package-v1.sig.json` 是 detached Ed25519 签名；签名覆盖 authority、keyId/keyEpoch、签发/过期时间和 manifest digest，并使用 `study.runtime-package-manifest.v1` 域隔离。
+- 发布者 trust policy 不得放进运行包自证；它必须由已经受信的 launcher/外层发布物单独提供。正式 `--runtime-package` 模式缺少 `--runtime-trust-policy` 时 fail closed。
+- trust policy 固定 authority、单调 sequence、精确 32-byte 公钥及其 SHA-256、active/revoked 状态、最低运行包版本和撤销版本。相同 sequence 不同 digest、较低 sequence、低版本和同版本不同内容均被拒绝。
+- `metadata/SBOM.spdx.json` 必须是 canonical SPDX 2.3，并逐文件覆盖 manifest 中除 SBOM 自身外的全部资源；SBOM 与 manifest 任一不一致都拒绝启动。
+- 运行包签名只完成内层资源认证；在外层插件安装包签名、真实发布密钥保管、完整传递依赖哈希锁和可复现构建完成前，能力摘要继续报告 `complete: false`。
+
 ## 3.1 受信本地设置与确认表面
 
 server/local-settings 是最小本地凭据配置窗口；server/consent-ui 是文件/目录、网络、输出、模型/TTS 数据出域、成本/批量 OperationIntent 和 Anki 写入的受信确认窗口。它们不是完整桌面制卡应用，但必须：

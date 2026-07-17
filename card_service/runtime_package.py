@@ -3,17 +3,30 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import re
 import stat
+import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .runtime_manifest import canonical_bytes, file_sha256
+from .runtime_trust import (
+    SIGNATURE_FILE_NAME,
+    RuntimePackageTrustPolicy,
+    RuntimeTrustError,
+    VerifiedRuntimeSignature,
+    compare_semver,
+    verify_runtime_signature,
+)
 
 
 MAX_PACKAGE_MANIFEST_BYTES = 4 * 1024 * 1024
 PACKAGE_MANIFEST_NAME = "runtime-package-v1.json"
+CARD_SERVICE_VERSION = "0.1.0"
+SBOM_RESOURCE_ID = "metadata:sbom-spdx"
 REQUIRED_RUNTIME_RESOURCES = frozenset(
     {
         "managed-python:executable",
@@ -22,6 +35,7 @@ REQUIRED_RUNTIME_RESOURCES = frozenset(
         "card-service:windows-restricted-launcher",
         "card-service:windows-sandbox-acl",
         "legacy-worker:entry",
+        SBOM_RESOURCE_ID,
     }
 )
 _VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
@@ -37,6 +51,13 @@ class RuntimePackageError(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+def current_runtime_platform() -> str:
+    system = "windows" if os.name == "nt" else sys.platform.lower()
+    machine = platform.machine().lower()
+    architecture = "x86_64" if machine in {"amd64", "x86_64"} else machine
+    return f"{system}-{architecture}"
 
 
 def _has_reparse_attribute(path: Path) -> bool:
@@ -81,14 +102,81 @@ class RuntimePackageResource:
     sha256: str
 
 
+def _verify_spdx_sbom(
+    resource: RuntimePackageResource,
+    *,
+    package_version: str,
+    entries: dict[str, RuntimePackageResource],
+) -> None:
+    try:
+        source = resource.path.read_bytes()
+        value = json.loads(source)
+    except (OSError, ValueError) as error:
+        raise RuntimePackageError("RUNTIME_PACKAGE_SBOM_INVALID", "Runtime package SBOM is invalid") from error
+    if not isinstance(value, dict) or canonical_bytes(value) != source:
+        raise RuntimePackageError("RUNTIME_PACKAGE_SBOM_INVALID", "Runtime package SBOM must use canonical JSON")
+    if (
+        value.get("spdxVersion") != "SPDX-2.3"
+        or value.get("dataLicense") != "CC0-1.0"
+        or value.get("SPDXID") != "SPDXRef-DOCUMENT"
+        or value.get("name") != f"anki-study-managed-runtime-{package_version}"
+        or not isinstance(value.get("documentNamespace"), str)
+        or not str(value.get("documentNamespace")).startswith("urn:uuid:")
+        or not isinstance(value.get("creationInfo"), dict)
+        or not isinstance(value.get("files"), list)
+    ):
+        raise RuntimePackageError("RUNTIME_PACKAGE_SBOM_INVALID", "Runtime package SBOM metadata is invalid")
+    expected = {
+        f"./{entry.relative_path}": entry.sha256
+        for resource_id, entry in entries.items()
+        if resource_id != SBOM_RESOURCE_ID
+    }
+    observed: dict[str, str] = {}
+    ordered_names: list[str] = []
+    for raw in value["files"]:
+        if not isinstance(raw, dict):
+            raise RuntimePackageError("RUNTIME_PACKAGE_SBOM_INVALID", "Runtime package SBOM file entry is invalid")
+        file_name = raw.get("fileName")
+        checksums = raw.get("checksums")
+        if not isinstance(file_name, str) or not isinstance(checksums, list):
+            raise RuntimePackageError("RUNTIME_PACKAGE_SBOM_INVALID", "Runtime package SBOM file entry is invalid")
+        sha256_values = [
+            checksum.get("checksumValue")
+            for checksum in checksums
+            if isinstance(checksum, dict) and checksum.get("algorithm") == "SHA256"
+        ]
+        if (
+            len(sha256_values) != 1
+            or not isinstance(sha256_values[0], str)
+            or _SHA256_RE.fullmatch(sha256_values[0]) is None
+            or file_name in observed
+        ):
+            raise RuntimePackageError("RUNTIME_PACKAGE_SBOM_INVALID", "Runtime package SBOM checksum is invalid")
+        observed[file_name] = sha256_values[0]
+        ordered_names.append(file_name)
+    if ordered_names != sorted(ordered_names, key=lambda item: item.encode("utf-8")) or observed != expected:
+        raise RuntimePackageError("RUNTIME_PACKAGE_SBOM_MISMATCH", "Runtime package SBOM does not cover exact resources")
+
+
 class ManagedRuntimePackage:
-    """Verifies an immutable, root-contained runtime package.
+    """Verifies an immutable runtime package and its detached publisher signature."""
 
-    Signature and publisher trust are deliberately a later release-manifest
-    boundary. This class never reports a package as release-complete.
-    """
-
-    def __init__(self, root: str | Path) -> None:
+    def __init__(
+        self,
+        root: str | Path,
+        *,
+        trust_policy: RuntimePackageTrustPolicy | None = None,
+        require_signature: bool = False,
+        now: datetime | None = None,
+    ) -> None:
+        if require_signature and trust_policy is None:
+            raise RuntimePackageError(
+                "RUNTIME_TRUST_POLICY_REQUIRED",
+                "A trusted publisher policy is required for packaged runtime mode",
+            )
+        self._trust_policy = trust_policy
+        self._require_signature = require_signature
+        self._now = now
         self.root = _assert_stable_directory(Path(root))
         manifest_candidate = self.root / PACKAGE_MANIFEST_NAME
         if manifest_candidate.is_symlink() or (
@@ -108,15 +196,67 @@ class ManagedRuntimePackage:
             value = json.loads(source)
         except ValueError as error:
             raise RuntimePackageError("RUNTIME_PACKAGE_MANIFEST_INVALID", "Runtime package manifest is invalid JSON") from error
-        if not isinstance(value, dict) or set(value) != {"schemaVersion", "packageId", "version", "resources"}:
+        if not isinstance(value, dict) or set(value) != {
+            "schemaVersion",
+            "packageId",
+            "version",
+            "compatibility",
+            "sbom",
+            "resources",
+        }:
             raise RuntimePackageError("RUNTIME_PACKAGE_MANIFEST_INVALID", "Runtime package manifest shape is invalid")
         if canonical_bytes(value) != source:
             raise RuntimePackageError("RUNTIME_PACKAGE_MANIFEST_NONCANONICAL", "Runtime package manifest must use canonical JSON")
+        if value.get("schemaVersion") != 1:
+            raise RuntimePackageError("RUNTIME_PACKAGE_MANIFEST_INVALID", "Runtime package schema version is invalid")
         package_id = value.get("packageId")
         version = value.get("version")
+        compatibility = value.get("compatibility")
+        sbom = value.get("sbom")
         resources = value.get("resources")
         if package_id != "anki-study-managed-runtime" or not isinstance(version, str) or not _VERSION_RE.fullmatch(version):
             raise RuntimePackageError("RUNTIME_PACKAGE_IDENTITY_INVALID", "Runtime package identity or version is invalid")
+        if not isinstance(compatibility, dict) or set(compatibility) != {
+            "cardServiceApiVersion",
+            "minimumCardServiceVersion",
+            "platform",
+        }:
+            raise RuntimePackageError("RUNTIME_PACKAGE_COMPATIBILITY_INVALID", "Runtime package compatibility is invalid")
+        minimum_service_version = compatibility.get("minimumCardServiceVersion")
+        if (
+            compatibility.get("cardServiceApiVersion") != 1
+            or not isinstance(minimum_service_version, str)
+            or compatibility.get("platform") != current_runtime_platform()
+        ):
+            raise RuntimePackageError("RUNTIME_PACKAGE_INCOMPATIBLE", "Runtime package is incompatible with this host")
+        try:
+            if compare_semver(CARD_SERVICE_VERSION, minimum_service_version) < 0:
+                raise RuntimePackageError(
+                    "RUNTIME_PACKAGE_INCOMPATIBLE",
+                    "Runtime package requires a newer Card Service",
+                )
+        except RuntimeTrustError as error:
+            raise RuntimePackageError(error.code, str(error)) from error
+        if sbom != {"format": "SPDX-2.3", "resourceId": SBOM_RESOURCE_ID}:
+            raise RuntimePackageError("RUNTIME_PACKAGE_SBOM_INVALID", "Runtime package SBOM declaration is invalid")
+        self.signature: VerifiedRuntimeSignature | None = None
+        signature_path = self.root / SIGNATURE_FILE_NAME
+        if trust_policy is not None:
+            try:
+                self.signature = verify_runtime_signature(
+                    signature_path,
+                    manifest_sha256=hashlib.sha256(source).hexdigest(),
+                    package_version=version,
+                    trust_policy=trust_policy,
+                    now=now,
+                )
+            except RuntimeTrustError as error:
+                raise RuntimePackageError(error.code, str(error)) from error
+        elif require_signature or signature_path.exists():
+            raise RuntimePackageError(
+                "RUNTIME_TRUST_POLICY_REQUIRED",
+                "Runtime package signature cannot be verified without a trusted publisher policy",
+            )
         if not isinstance(resources, list) or not resources:
             raise RuntimePackageError("RUNTIME_PACKAGE_MANIFEST_INVALID", "Runtime package resources are missing")
         resource_ids = [raw.get("resourceId") if isinstance(raw, dict) else None for raw in resources]
@@ -181,6 +321,7 @@ class ManagedRuntimePackage:
         missing = REQUIRED_RUNTIME_RESOURCES - entries.keys()
         if missing:
             raise RuntimePackageError("RUNTIME_PACKAGE_RESOURCE_MISSING", "Runtime package is missing required resources")
+        _verify_spdx_sbom(entries[SBOM_RESOURCE_ID], package_version=version, entries=entries)
         actual_path_keys: set[str] = set()
         for path in self.root.rglob("*"):
             if path.is_symlink() or _has_reparse_attribute(path):
@@ -188,7 +329,7 @@ class ManagedRuntimePackage:
                     "RUNTIME_PACKAGE_REPARSE_BLOCKED",
                     "Runtime package contains a reparse point",
                 )
-            if path.is_file() and path != self.manifest_path:
+            if path.is_file() and path not in {self.manifest_path, signature_path.resolve()}:
                 actual_path_keys.add(path.relative_to(self.root).as_posix().casefold())
         if actual_path_keys != path_keys:
             raise RuntimePackageError(
@@ -211,18 +352,35 @@ class ManagedRuntimePackage:
         return [(resource.resource_id, resource.path) for resource in self.resources.values()]
 
     def verify(self) -> None:
-        current = ManagedRuntimePackage(self.root)
+        current = ManagedRuntimePackage(
+            self.root,
+            trust_policy=self._trust_policy,
+            require_signature=self._require_signature,
+            now=self._now,
+        )
         if current.digest != self.digest:
             raise RuntimePackageError("RUNTIME_PACKAGE_CHANGED", "Runtime package manifest changed after service startup")
 
     def public_summary(self) -> dict[str, object]:
-        return {
+        summary: dict[str, object] = {
             "schemaVersion": 1,
             "packageId": self.package_id,
             "version": self.version,
             "digest": f"sha256:{self.digest}",
             "resourceCount": len(self.resources),
             "pathDisclosure": False,
-            "signatureVerified": False,
+            "signatureVerified": self.signature is not None,
+            "sbomVerified": True,
             "complete": False,
         }
+        if self.signature is not None:
+            summary.update(
+                {
+                    "publisherAuthority": self.signature.authority,
+                    "trustSequence": self.signature.trust_sequence,
+                    "signedAt": self.signature.signed_at,
+                    "expiresAt": self.signature.expires_at,
+                    "trustPolicyDigest": f"sha256:{self.signature.trust_policy_digest}",
+                }
+            )
+        return summary

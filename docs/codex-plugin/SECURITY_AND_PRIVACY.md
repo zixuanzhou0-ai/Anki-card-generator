@@ -550,6 +550,8 @@ M3 的本地/URL 视频链把 FFmpeg、ffprobe、yt-dlp 及任何辅助运行时
 - 回退只能到仍在允许清单中的已签名版本，拒绝已撤销或低于最低版本的降级包。
 - V1 禁止动态安装组件、下载可执行 remote component、curl-pipe-shell 和运行未经签名仓库脚本。
 
+当前 M1 实现已把内层托管运行包从“自报哈希”升级为 detached Ed25519 验签：正式模式不接受运行包自带的任意公钥，必须由受信 launcher 提供独立 canonical trust policy；同时验证签名期限、密钥撤销、最低版本、trust sequence、防同版本换内容和 SPDX 文件级覆盖。该边界不替代外层 Authenticode/等价签名，因此在 M4 发布链完成前仍 fail closed 地标记为未完成发布态。
+
 ## 12. Anki 持久写入
 
 风险：APKG 可包含模板 JavaScript、媒体并影响已有 Note Model。因此导入是高影响持久写入。
@@ -665,4 +667,3 @@ M3 的本地/URL 视频链把 FFmpeg、ffprobe、yt-dlp 及任何辅助运行时
 5. 提醒用户轮换可能泄露凭据。
 6. 禁止自动上传诊断。
 7. 修复后运行全部安全门禁与真实 Anki 回归。
-

@@ -27,6 +27,11 @@ from .runtime_manifest import (
     worker_runtime_entries,
 )
 from .runtime_package import ManagedRuntimePackage, RuntimePackageError
+from .runtime_trust import (
+    RuntimePackageTrustPolicy,
+    RuntimeTrustError,
+    enforce_runtime_rollback_floor,
+)
 from .storage import AtomicJsonStore
 from .trusted_surfaces import TrustedSurfaceError, TrustedSurfaceManager
 from .windows_sandbox_acl import (
@@ -202,6 +207,7 @@ class CardService:
         worker_path: str | Path | None = None,
         python_path: str | Path | None = None,
         runtime_package: str | Path | None = None,
+        runtime_trust_policy: RuntimePackageTrustPolicy | str | Path | None = None,
         managed_tool_directories: list[str | Path] | None = None,
         method_policies: dict[str, MethodPolicy] | None = None,
         max_stdout_bytes: int = 64 * 1024 * 1024,
@@ -214,8 +220,14 @@ class CardService:
     ) -> None:
         repository_root = Path(__file__).resolve().parent.parent
         self.runtime_package: ManagedRuntimePackage | None = None
+        self.runtime_trust_policy: RuntimePackageTrustPolicy | None = None
         self.runtime_sandbox_sid: str | None = None
         self.runtime_package_dacl = False
+        if runtime_package is None and runtime_trust_policy is not None:
+            raise CardServiceError(
+                "RUNTIME_TRUST_POLICY_CONFLICT",
+                "Runtime trust policy is only valid with a packaged runtime",
+            )
         if runtime_package is not None:
             if worker_path is not None or python_path is not None or managed_tool_directories:
                 raise CardServiceError(
@@ -223,10 +235,24 @@ class CardService:
                     "Packaged runtime cannot be combined with unpackaged runtime paths",
                 )
             try:
-                self.runtime_package = ManagedRuntimePackage(runtime_package)
+                if runtime_trust_policy is None:
+                    raise RuntimePackageError(
+                        "RUNTIME_TRUST_POLICY_REQUIRED",
+                        "A trusted publisher policy is required for packaged runtime mode",
+                    )
+                self.runtime_trust_policy = (
+                    runtime_trust_policy
+                    if isinstance(runtime_trust_policy, RuntimePackageTrustPolicy)
+                    else RuntimePackageTrustPolicy.load(runtime_trust_policy)
+                )
+                self.runtime_package = ManagedRuntimePackage(
+                    runtime_package,
+                    trust_policy=self.runtime_trust_policy,
+                    require_signature=True,
+                )
                 worker_candidate = self.runtime_package.resource_path("legacy-worker:entry")
                 python_candidate = self.runtime_package.resource_path("managed-python:executable")
-            except RuntimePackageError as error:
+            except (RuntimePackageError, RuntimeTrustError) as error:
                 raise CardServiceError(error.code, str(error)) from error
             if os.name == "nt":
                 try:
@@ -254,6 +280,16 @@ class CardService:
             raise CardServiceError("INVALID_TOOL_PATH", "Managed tool directories must be existing absolute directories")
         self.managed_tool_directories = directories
         self.store = AtomicJsonStore(Path(state_dir))
+        if self.runtime_package is not None and self.runtime_package.signature is not None:
+            try:
+                enforce_runtime_rollback_floor(
+                    self.store.root,
+                    package_version=self.runtime_package.version,
+                    manifest_sha256=self.runtime_package.digest,
+                    signature=self.runtime_package.signature,
+                )
+            except RuntimeTrustError as error:
+                raise CardServiceError(error.code, str(error)) from error
         self.trusted_surfaces = TrustedSurfaceManager(
             state_dir=self.store.root / "trusted-surfaces",
             python_path=self.python_path,

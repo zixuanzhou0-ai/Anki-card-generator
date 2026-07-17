@@ -580,7 +580,10 @@ class WorkerCommandContractTests(unittest.TestCase):
     def test_genanki_note_model_serializer_is_exactly_pinned(self) -> None:
         requirements = (WORKERS / "requirements.txt").read_text(encoding="utf-8").splitlines()
         self.assertIn("genanki==0.13.1", requirements)
-        self.assertFalse(any(line.startswith("genanki>=") for line in requirements))
+        self.assertIn("yt-dlp[default,curl-cffi]==2026.7.4", requirements)
+        self.assertIn("pypdf==6.14.2", requirements)
+        self.assertIn("cryptography==49.0.0", requirements)
+        self.assertFalse(any(">=" in line or "~=" in line for line in requirements))
     def test_golden_fixtures_do_not_contain_secrets(self) -> None:
         _, golden = _load_contract()
         self.assertEqual(_secret_key_paths(golden), [])
