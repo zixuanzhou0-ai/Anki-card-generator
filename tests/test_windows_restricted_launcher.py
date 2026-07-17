@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -13,7 +14,12 @@ import pytest
 
 from card_service.process_isolation import TaskOwnedProcessGroup
 from card_service.windows_restricted_launcher import SANDBOX_ATTESTATION_PREFIX
-from card_service.windows_sandbox_acl import create_task_workspace, runtime_sandbox_sid
+from card_service.windows_sandbox_acl import create_task_workspace, harden_runtime_tree, runtime_sandbox_sid
+from workers.acg.media_tool_policy import (
+    FFMPEG_FORMAT_WHITELIST,
+    FFMPEG_PROTOCOL_BLACKLIST,
+    FFMPEG_PROTOCOL_WHITELIST,
+)
 
 
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows restricted token contract")
@@ -196,3 +202,80 @@ def test_appcontainer_without_network_capability_cannot_reach_loopback(tmp_path:
     attestation = json.loads(attestation_lines[0][len(SANDBOX_ATTESTATION_PREFIX) :])
     assert attestation["appContainerToken"] is True
     assert attestation["networkRestricted"] is True
+
+
+def test_malformed_media_probe_is_contained_inside_appcontainer_and_job(tmp_path: Path) -> None:
+    source_ffprobe = shutil.which("ffprobe")
+    if not source_ffprobe:
+        pytest.skip("FFprobe is unavailable")
+    task_id = str(uuid.uuid4())
+    workspace, task_sid = create_task_workspace((tmp_path / "tasks").resolve(), task_id)
+    malformed = workspace / "malformed.mp4"
+    malformed.write_bytes(b"not-a-media-container")
+    sibling = workspace.parent / "sibling-state.txt"
+    sibling.write_text("unchanged", encoding="utf-8")
+    runtime_root = (tmp_path / "runtime").resolve()
+    runtime_root.mkdir(parents=True)
+    ffprobe = runtime_root / "ffprobe.exe"
+    shutil.copy2(source_ffprobe, ffprobe)
+    runtime_sid = runtime_sandbox_sid()
+    harden_runtime_tree(runtime_root, runtime_sid)
+    launcher = Path(__file__).resolve().parents[1] / "card_service" / "windows_restricted_launcher.py"
+    command = [
+        sys.executable,
+        str(launcher),
+        "--task-id",
+        task_id,
+        "--cwd",
+        str(workspace),
+        "--runtime-sid",
+        runtime_sid,
+        "--task-sid",
+        task_sid,
+        "--",
+        str(ffprobe),
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-protocol_whitelist",
+        FFMPEG_PROTOCOL_WHITELIST,
+        "-protocol_blacklist",
+        FFMPEG_PROTOCOL_BLACKLIST,
+        "-format_whitelist",
+        FFMPEG_FORMAT_WHITELIST,
+        "-max_alloc",
+        "268435456",
+        "-show_format",
+        "-of",
+        "json",
+        str(malformed),
+    ]
+    process = subprocess.Popen(
+        command,
+        cwd=str(launcher.parent),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    group = TaskOwnedProcessGroup(memory_limit_bytes=512 * 1024 * 1024, active_process_limit=3)
+    try:
+        group.assign(process)
+        key_text = base64.urlsafe_b64encode(b"d" * 32).decode("ascii").rstrip("=")
+        stdout, stderr = process.communicate(f"START {key_text}\n", timeout=15)
+    finally:
+        group.close()
+    assert process.returncode != 0
+    assert len(stdout.encode("utf-8")) < 4096
+    assert sibling.read_text(encoding="utf-8") == "unchanged"
+    attestation_lines = [
+        line for line in stderr.splitlines() if line.startswith(SANDBOX_ATTESTATION_PREFIX)
+    ]
+    assert len(attestation_lines) == 1
+    attestation = json.loads(attestation_lines[0][len(SANDBOX_ATTESTATION_PREFIX) :])
+    assert attestation["appContainerToken"] is True
+    assert attestation["networkRestricted"] is True
+    assert attestation["filesystemRestrictedByDedicatedSidDacl"] is True

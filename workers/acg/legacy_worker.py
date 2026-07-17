@@ -372,6 +372,13 @@ from acg.media_alignment import (
     sentence_window_media_bounds,
     video_media_subtitle_mismatch_items,
 )
+from acg.media_tool_policy import (
+    MediaToolPolicyError,
+    managed_tool_path as media_managed_tool_path,
+    run_ffmpeg as media_policy_run_ffmpeg,
+    run_ffprobe as media_policy_run_ffprobe,
+    tool_version as media_tool_version,
+)
 from acg.media_manifest import (
     bytes_sha256,
     compare_media_manifest as compare_media_manifest_core,
@@ -2879,6 +2886,14 @@ def yt_dlp_needs_remote_components(detail: str) -> bool:
 
 
 def fail_if_remote_components_confirmation_required(payload: dict[str, Any], detail: str) -> None:
+    if yt_dlp_needs_remote_components(detail) and os.environ.get("ACG_MANAGED_RUNTIME") == "1":
+        fail(
+            "托管插件运行时禁止下载或执行 yt-dlp 远程组件。请改用仅字幕模式或上传本地字幕。",
+            error_code="YTDLP_REMOTE_COMPONENTS_DISABLED",
+            stage="download_video",
+            retryable=False,
+            fallbacks=["subtitle_only", "local_srt"],
+        )
     if yt_dlp_needs_remote_components(detail) and not bool(payload.get("allow_ytdlp_remote_components")):
         fail(
             format_yt_dlp_failure(detail),
@@ -6041,6 +6056,11 @@ def enforce_reviewable_cards_per_source(
 
 
 def yt_dlp_base_command() -> list[str] | None:
+    if os.environ.get("ACG_MANAGED_RUNTIME") == "1":
+        try:
+            return [str(media_managed_tool_path("yt-dlp"))]
+        except MediaToolPolicyError:
+            return None
     executable = shutil.which("yt-dlp")
     if executable:
         return [executable]
@@ -6093,15 +6113,41 @@ def run_yt_dlp(
     command = yt_dlp_base_command()
     if not command:
         fail("找不到 yt-dlp。请运行：pip install yt-dlp，或把 yt-dlp 加入 PATH。")
-
+    if os.environ.get("ACG_MANAGED_RUNTIME") == "1" and allow_remote_components:
+        fail(
+            "托管插件运行时禁止下载或执行 yt-dlp 远程组件。请改用仅字幕模式或上传本地字幕。",
+            error_code="YTDLP_REMOTE_COMPONENTS_DISABLED",
+            stage="download_video",
+            retryable=False,
+            fallbacks=["subtitle_only", "local_srt"],
+        )
+    safety_args = [
+        "--ignore-config",
+        "--no-plugin-dirs",
+        "--no-exec",
+        "--no-playlist",
+        "--no-write-playlist-metafiles",
+    ]
+    if os.environ.get("ACG_MANAGED_RUNTIME") == "1":
+        try:
+            safety_args.extend(["--ffmpeg-location", str(media_managed_tool_path("ffmpeg").parent)])
+        except MediaToolPolicyError as error:
+            fail(f"托管 yt-dlp 缺少受信 FFmpeg：{error}", error_code=error.code, stage="download")
     completed = subprocess.run(
-        [*command, *yt_dlp_js_runtime_args(allow_remote_components), *yt_dlp_network_args(), *args],
+        [
+            *command,
+            *safety_args,
+            *yt_dlp_js_runtime_args(allow_remote_components),
+            *yt_dlp_network_args(),
+            *args,
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=timeout,
+        timeout=max(1, min(int(timeout), 900)),
+        shell=False,
         **hidden_subprocess_flags(),
     )
     if check and completed.returncode != 0:
@@ -6143,25 +6189,20 @@ def subtitle_language_aliases(language: str) -> set[str]:
 
 
 def run_ffprobe_json(video_path: Path) -> dict[str, Any] | None:
-    if not shutil.which("ffprobe"):
+    try:
+        completed = media_policy_run_ffprobe(
+            ["-print_format", "json", "-show_streams"],
+            video_path,
+            timeout=30,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            **hidden_subprocess_flags(),
+        )
+    except (MediaToolPolicyError, subprocess.TimeoutExpired):
         return None
-    completed = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-print_format",
-            "json",
-            "-show_streams",
-            str(video_path),
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        **hidden_subprocess_flags(),
-    )
     if completed.returncode != 0:
         return None
     try:
@@ -6176,7 +6217,7 @@ def select_embedded_subtitle_stream(probe: dict[str, Any] | None, language: str)
 
 def extract_embedded_subtitle(video_path: str, language: str = "English") -> Path | None:
     video = Path(clean_input_path(video_path))
-    if not video.exists() or not shutil.which("ffmpeg"):
+    if not video.exists():
         return None
 
     probe = run_ffprobe_json(video)
@@ -6196,25 +6237,19 @@ def extract_embedded_subtitle(video_path: str, language: str = "English") -> Pat
     if output_path.exists() and output_path.stat().st_size > 0:
         return output_path
 
-    completed = subprocess.run(
-        [
-            "ffmpeg",
-            "-y",
-            "-i",
-            str(video),
-            "-map",
-            f"0:{stream_index}",
-            "-c:s",
-            "srt",
-            str(output_path),
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        **hidden_subprocess_flags(),
-    )
+    try:
+        completed = media_policy_run_ffmpeg(
+            ["-i", str(video), "-map", f"0:{stream_index}", "-c:s", "srt", str(output_path)],
+            timeout=120,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            **hidden_subprocess_flags(),
+        )
+    except (MediaToolPolicyError, subprocess.TimeoutExpired):
+        return None
     if completed.returncode != 0 or not output_path.exists() or output_path.stat().st_size == 0:
         output_path.unlink(missing_ok=True)
         return None
@@ -7769,23 +7804,32 @@ def handle_generate(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_ffmpeg(args: list[str]) -> None:
-    if not shutil.which("ffmpeg"):
+    try:
+        completed = media_policy_run_ffmpeg(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            **hidden_subprocess_flags(),
+        )
+    except MediaToolPolicyError as error:
         fail(
-            "找不到 ffmpeg。请先安装 ffmpeg 并加入 PATH。",
-            error_code="ENV_FFMPEG_MISSING",
+            f"FFmpeg 安全策略阻止了媒体处理：{error}",
+            error_code=error.code,
+            stage="media",
+            retryable=error.code == "MANAGED_MEDIA_TOOL_MISSING",
+            fallbacks=["skip_video_slicing"],
+        )
+    except subprocess.TimeoutExpired:
+        fail(
+            "FFmpeg 处理超过安全时限。",
+            error_code="FFMPEG_TIMEOUT",
             stage="media",
             retryable=True,
             fallbacks=["skip_video_slicing"],
         )
-    completed = subprocess.run(
-        ["ffmpeg", "-y", *args],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        **hidden_subprocess_flags(),
-    )
     if completed.returncode != 0:
         fail(
             f"ffmpeg 处理失败：{completed.stderr[-1200:]}",
@@ -7797,17 +7841,20 @@ def run_ffmpeg(args: list[str]) -> None:
 
 
 def try_run_ffmpeg(args: list[str]) -> str:
-    if not shutil.which("ffmpeg"):
-        return "找不到 ffmpeg。请先安装 ffmpeg 并加入 PATH。"
-    completed = subprocess.run(
-        ["ffmpeg", "-y", *args],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        **hidden_subprocess_flags(),
-    )
+    try:
+        completed = media_policy_run_ffmpeg(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            **hidden_subprocess_flags(),
+        )
+    except MediaToolPolicyError as error:
+        return f"FFmpeg 安全策略阻止了媒体处理（{error.code}）：{error}"
+    except subprocess.TimeoutExpired:
+        return "FFmpeg 处理超过安全时限。"
     if completed.returncode != 0:
         return completed.stderr[-900:] or f"ffmpeg 退出码 {completed.returncode}"
     return ""
@@ -12913,41 +12960,25 @@ def tts_provider_scope(tts: dict[str, Any]) -> dict[str, str]:
 
 @functools.lru_cache(maxsize=1)
 def ffmpeg_cache_signature() -> str:
-    executable = shutil.which("ffmpeg") or ""
-    if not executable:
-        return "missing"
     try:
-        completed = subprocess.run(
-            [executable, "-version"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-            **hidden_subprocess_flags(),
-        )
+        executable = media_managed_tool_path("ffmpeg")
+        completed = media_tool_version("ffmpeg", timeout=10)
         version = (completed.stdout.splitlines() or [""])[0].strip()
     except Exception:
-        version = ""
+        return "missing"
     return f"{executable}|{version}"
 
 
 def audio_duration_seconds(path: Path) -> float | None:
-    if not shutil.which("ffprobe"):
-        return None
     try:
-        completed = subprocess.run(
+        completed = media_policy_run_ffprobe(
             [
-                "ffprobe",
-                "-v",
-                "error",
                 "-show_entries",
                 "format=duration",
                 "-of",
                 "default=noprint_wrappers=1:nokey=1",
-                str(path),
             ],
+            path,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -12956,7 +12987,7 @@ def audio_duration_seconds(path: Path) -> float | None:
             timeout=10,
             **hidden_subprocess_flags(),
         )
-    except Exception:
+    except (MediaToolPolicyError, subprocess.TimeoutExpired):
         return None
     if completed.returncode != 0:
         return None
@@ -14984,29 +15015,30 @@ def apply_tts_output_volume(output_path: Path, output_volume: Any, label: str) -
     volume_args = tts_volume_filter_args(output_volume)
     if not volume_args:
         return
-    if not shutil.which("ffmpeg"):
-        raise RuntimeError(f"找不到 ffmpeg，无法调整 {label} 的导出音量。")
     volume_path = output_path.with_name(f"{output_path.stem}.volume{output_path.suffix}")
-    completed = subprocess.run(
-        [
-            "ffmpeg",
-            "-y",
-            "-i",
-            str(output_path),
-            *volume_args,
-            "-acodec",
-            "libmp3lame",
-            "-q:a",
-            "5",
-            str(volume_path),
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        **hidden_subprocess_flags(),
-    )
+    try:
+        completed = media_policy_run_ffmpeg(
+            [
+                "-i",
+                str(output_path),
+                *volume_args,
+                "-acodec",
+                "libmp3lame",
+                "-q:a",
+                "5",
+                str(volume_path),
+            ],
+            timeout=120,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            **hidden_subprocess_flags(),
+        )
+    except (MediaToolPolicyError, subprocess.TimeoutExpired) as error:
+        volume_path.unlink(missing_ok=True)
+        raise RuntimeError(f"{label} 音量处理被安全策略阻止：{error}") from error
     if completed.returncode != 0:
         volume_path.unlink(missing_ok=True)
         raise RuntimeError(f"{label} 音量处理失败：{completed.stderr[-800:]}")
@@ -15014,29 +15046,29 @@ def apply_tts_output_volume(output_path: Path, output_volume: Any, label: str) -
 
 
 def transcode_wav_file_to_mp3(wav_path: Path, output_path: Path, label: str, output_volume: Any = 0.65) -> None:
-    if not shutil.which("ffmpeg"):
+    try:
+        completed = media_policy_run_ffmpeg(
+            [
+                "-i",
+                str(wav_path),
+                *tts_volume_filter_args(output_volume),
+                "-acodec",
+                "libmp3lame",
+                "-q:a",
+                "5",
+                str(output_path),
+            ],
+            timeout=120,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            **hidden_subprocess_flags(),
+        )
+    except (MediaToolPolicyError, subprocess.TimeoutExpired) as error:
         wav_path.unlink(missing_ok=True)
-        raise RuntimeError(f"找不到 ffmpeg，无法把 {label} 返回的音频转成 Anki 用的 mp3。")
-    completed = subprocess.run(
-        [
-            "ffmpeg",
-            "-y",
-            "-i",
-            str(wav_path),
-            *tts_volume_filter_args(output_volume),
-            "-acodec",
-            "libmp3lame",
-            "-q:a",
-            "5",
-            str(output_path),
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        **hidden_subprocess_flags(),
-    )
+        raise RuntimeError(f"{label} 音频转码被安全策略阻止：{error}") from error
     wav_path.unlink(missing_ok=True)
     if completed.returncode != 0:
         raise RuntimeError(f"{label} 音频转码失败：{completed.stderr[-800:]}")
@@ -19473,20 +19505,15 @@ def handle_check_env(_: dict[str, Any]) -> dict[str, Any]:
         if completed.returncode == 0:
             yt_dlp_version = completed.stdout.strip()
 
-    ffmpeg_path = shutil.which("ffmpeg") or ""
+    ffmpeg_path = ""
     ffmpeg_version = ""
-    if ffmpeg_path:
-        completed = subprocess.run(
-            ["ffmpeg", "-version"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            **hidden_subprocess_flags(),
-        )
+    try:
+        ffmpeg_path = str(media_managed_tool_path("ffmpeg"))
+        completed = media_tool_version("ffmpeg", timeout=10)
         if completed.returncode == 0:
             ffmpeg_version = (completed.stdout.splitlines() or [""])[0]
+    except (MediaToolPolicyError, subprocess.TimeoutExpired):
+        ffmpeg_path = ""
     js_runtime = "deno" if shutil.which("deno") else ("node" if shutil.which("node") else "")
     anki_status = check_anki_desktop()
     anki_connect_ready, anki_connect_detail = check_anki_connect()
@@ -19495,6 +19522,7 @@ def handle_check_env(_: dict[str, Any]) -> dict[str, Any]:
         "genanki": package_version("genanki"),
         "yt-dlp": package_version("yt-dlp"),
         "pypdf": package_version("pypdf"),
+        "cryptography": package_version("cryptography"),
         "curl-cffi": package_version("curl_cffi") or package_version("curl-cffi"),
     }
     status_items = [
@@ -19580,8 +19608,8 @@ def handle_check_env(_: dict[str, Any]) -> dict[str, Any]:
         "python": sys.version.split()[0],
         "python_executable": sys.executable,
         "venv": venv_ready,
-        "ffmpeg": bool(shutil.which("ffmpeg")),
-        "ffmpeg_path": ffmpeg_path,
+        "ffmpeg": bool(ffmpeg_path),
+        "ffmpeg_path": "managed:ffmpeg" if ffmpeg_path and os.environ.get("ACG_MANAGED_RUNTIME") == "1" else ffmpeg_path,
         "ffmpeg_version": ffmpeg_version,
         "genanki": genanki_ready,
         "yt_dlp": bool(yt_dlp_command),

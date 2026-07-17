@@ -4577,8 +4577,7 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(tts["voice"], "Kore")
 
     def test_tts_transcode_applies_output_volume_filter(self):
-        original_which = worker._legacy_worker.shutil.which
-        original_run = worker._legacy_worker.subprocess.run
+        original_run = worker._legacy_worker.media_policy_run_ffmpeg
         calls = {}
 
         class Completed:
@@ -4596,12 +4595,10 @@ class WorkerQualityTests(unittest.TestCase):
             wav_path.write_bytes(b"RIFF")
 
             try:
-                worker._legacy_worker.shutil.which = lambda name: "ffmpeg" if name == "ffmpeg" else None
-                worker._legacy_worker.subprocess.run = fake_run
+                worker._legacy_worker.media_policy_run_ffmpeg = fake_run
                 worker._legacy_worker.transcode_wav_file_to_mp3(wav_path, mp3_path, "Unit TTS", 0.65)
             finally:
-                worker._legacy_worker.shutil.which = original_which
-                worker._legacy_worker.subprocess.run = original_run
+                worker._legacy_worker.media_policy_run_ffmpeg = original_run
 
             self.assertFalse(wav_path.exists())
             self.assertIn("-af", calls["args"])
@@ -4950,6 +4947,82 @@ class WorkerQualityTests(unittest.TestCase):
             )
         finally:
             legacy.shutil.which = original_which
+
+    def test_managed_yt_dlp_ignores_configs_plugins_and_exec_hooks(self):
+        legacy = worker._legacy_worker
+        original_runtime = os.environ.get("ACG_MANAGED_RUNTIME")
+        original_base_command = legacy.yt_dlp_base_command
+        original_managed_tool_path = legacy.media_managed_tool_path
+        original_js_runtime_args = legacy.yt_dlp_js_runtime_args
+        original_network_args = legacy.yt_dlp_network_args
+        original_run = legacy.subprocess.run
+        calls = {}
+
+        class FakeCompleted:
+            returncode = 0
+            stdout = "ok"
+            stderr = ""
+
+        def fake_run(args, **kwargs):
+            calls["args"] = list(args)
+            calls["kwargs"] = dict(kwargs)
+            return FakeCompleted()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            managed_root = Path(temp_dir).resolve()
+            managed_ytdlp = managed_root / "yt-dlp.exe"
+            managed_ffmpeg = managed_root / "ffmpeg.exe"
+            managed_ytdlp.write_bytes(b"fixture")
+            managed_ffmpeg.write_bytes(b"fixture")
+            try:
+                os.environ["ACG_MANAGED_RUNTIME"] = "1"
+                legacy.yt_dlp_base_command = lambda: [str(managed_ytdlp)]
+                legacy.media_managed_tool_path = lambda name: managed_ffmpeg if name == "ffmpeg" else managed_ytdlp
+                legacy.yt_dlp_js_runtime_args = lambda allow_remote_components=False: []
+                legacy.yt_dlp_network_args = lambda: ["--impersonate", "chrome"]
+                legacy.subprocess.run = fake_run
+
+                with self.assertRaises(SystemExit):
+                    legacy.run_yt_dlp(
+                        ["https://www.youtube.com/watch?v=fixture"],
+                        check=False,
+                        allow_remote_components=True,
+                    )
+                self.assertNotIn("args", calls)
+
+                completed = legacy.run_yt_dlp(
+                    ["https://www.youtube.com/watch?v=fixture"],
+                    timeout=9999,
+                    check=False,
+                )
+            finally:
+                if original_runtime is None:
+                    os.environ.pop("ACG_MANAGED_RUNTIME", None)
+                else:
+                    os.environ["ACG_MANAGED_RUNTIME"] = original_runtime
+                legacy.yt_dlp_base_command = original_base_command
+                legacy.media_managed_tool_path = original_managed_tool_path
+                legacy.yt_dlp_js_runtime_args = original_js_runtime_args
+                legacy.yt_dlp_network_args = original_network_args
+                legacy.subprocess.run = original_run
+
+        self.assertEqual(completed.returncode, 0)
+        command = calls["args"]
+        self.assertEqual(command[0], str(managed_ytdlp))
+        for required_arg in (
+            "--ignore-config",
+            "--no-plugin-dirs",
+            "--no-exec",
+            "--no-playlist",
+            "--no-write-playlist-metafiles",
+        ):
+            self.assertIn(required_arg, command)
+        ffmpeg_index = command.index("--ffmpeg-location")
+        self.assertEqual(command[ffmpeg_index + 1], str(managed_ffmpeg.parent))
+        self.assertNotIn("--remote-components", command)
+        self.assertEqual(calls["kwargs"]["timeout"], 900)
+        self.assertIs(calls["kwargs"]["shell"], False)
+
 
     def test_synthesize_tts_rejects_overlong_phrase_audio_and_does_not_cache(self):
         original_call_tts_audio = worker._legacy_worker.call_tts_audio
@@ -5958,15 +6031,18 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertIn("字段像模板废话", card["quality"]["issues"])
 
     def test_try_run_ffmpeg_returns_error_instead_of_exiting(self):
-        original_which = worker.shutil.which
+        original_run = worker._legacy_worker.media_policy_run_ffmpeg
+
+        def blocked(*args, **kwargs):
+            raise worker._legacy_worker.MediaToolPolicyError("MANAGED_MEDIA_TOOL_MISSING", "找不到 ffmpeg")
+
         try:
-            worker.shutil.which = lambda name: None if name == "ffmpeg" else original_which(name)
-
-            message = worker.try_run_ffmpeg(["-version"])
+            worker._legacy_worker.media_policy_run_ffmpeg = blocked
+            message = worker.try_run_ffmpeg(["-i", "C:/missing.mp4", "C:/output.mp4"])
         finally:
-            worker.shutil.which = original_which
+            worker._legacy_worker.media_policy_run_ffmpeg = original_run
 
-        self.assertIn("找不到 ffmpeg", message)
+        self.assertIn("MANAGED_MEDIA_TOOL_MISSING", message)
 
     def test_export_blocks_video_cards_when_local_media_slicing_fails(self):
         try:

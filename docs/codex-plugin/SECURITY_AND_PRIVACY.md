@@ -500,7 +500,7 @@ M3 的本地/URL 视频链把 FFmpeg、ffprobe、yt-dlp 及任何辅助运行时
 - Windows 上 yt-dlp 的进程出站必须被 AppContainer capability/防火墙-WFP 等可验证策略限制为 broker/受控代理端点，不能只靠 `--proxy` 参数约定；FFmpeg/ffprobe 和其他本地解析 helper 为零网络。若当前机器无法建立文件 ACL 隔离或强制出站边界，相关 URL adapter 必须 fail closed，本地 adapter 也不得在宽权限 helper 下继续。
 - 代理/broker 对每个请求重新解析 networkResourceRef 的 canonical policy、DNS/redirect 和剩余字节/时间预算；helper 不能自报 Authorization/Cookie/header 或替换 origin/path/query。若目标必须使用 signed query，它只存在于授权账本、broker 和受限 helper 短期内存，不落盘、不回显。
 - yt-dlp 的下载与 FFmpeg 解码分阶段。FFmpeg/ffprobe 不接收远程 URL，只读取 Service 提供的只读本地资源句柄或受控 staging 副本，并写入单次任务专用输出目录；进程网络默认禁用。
-- protocol 与 demuxer allowlist 按 adapter/version 冻结。M3 FFmpeg 协议默认只允许必要的本地 `file`/`pipe`，明确拒绝 concat、subfile、crypto、data、http/https、ftp、tcp/udp、rtmp 及未列入协议；playlist、response file、外部字幕/附件和嵌套资源不得隐式打开。若未来来源需要新增协议，必须提升适配器版本并单独安全评审。
+- protocol 与 demuxer allowlist 按 adapter/version 冻结。当前 M1 本地媒体实现只允许 `file`，明确拒绝 pipe、concat、subfile、crypto、data、http/https、ftp、tcp/udp、rtmp 及未列入协议；playlist、response file、外部字幕/附件和嵌套资源不得隐式打开。若未来来源确实需要 pipe 或新增协议，必须提升适配器版本并单独安全评审。
 - 每个任务冻结输入总字节、流数量、元数据大小、时长、帧数、分辨率、像素总量、采样率、声道数、码率、解码输出字节和临时磁盘上限；超限、未知持续增长、畸形时间戳或流探测不一致一律 fail closed。
 - 输出重新探测并校验允许的媒体类型、哈希、大小、时长、流布局和目标目录；只有通过校验的 basename/Artifact 才能进入媒体账本。helper 崩溃、超时或沙箱违规只使对应工作单元失败，不得影响 Service 或发布半成品 Artifact。
 - 恶意 corpus 至少包含 playlist/manifest 注入、concat/subfile/协议走私、畸形容器、超大元数据/附件、极端帧数/分辨率/采样率、无限或循环流、解码炸弹、磁盘填充、外部配置发现、同名输出与路径穿越。
@@ -551,6 +551,8 @@ M3 的本地/URL 视频链把 FFmpeg、ffprobe、yt-dlp 及任何辅助运行时
 - V1 禁止动态安装组件、下载可执行 remote component、curl-pipe-shell 和运行未经签名仓库脚本。
 
 当前 M1 实现已把内层托管运行包从“自报哈希”升级为 detached Ed25519 验签：正式模式不接受运行包自带的任意公钥，必须由受信 launcher 提供独立 canonical trust policy；同时验证签名期限、密钥撤销、最低版本、trust sequence、防同版本换内容和 SPDX 文件级覆盖。该边界不替代外层 Authenticode/等价签名，因此在 M4 发布链完成前仍 fail closed 地标记为未完成发布态。
+
+当前 M1 本地媒体切片还把 FFmpeg/ffprobe/yt-dlp 固定为签名 manifest 中的精确绝对资源：FFmpeg/ffprobe 只接收绝对本地普通文件和固定 `file` protocol/demuxer allowlist，拒绝 playlist、concat/subfile、网络协议、reparse 输入和调用方策略覆盖；所有调用均无 Shell、stdin 关闭且超时有界。托管 yt-dlp 强制忽略外部配置、禁用插件/exec/playlist，并无条件拒绝 remote components。真实畸形容器已在 AppContainer + Job + DACL 内失败且未改动旁侧文件；解码炸弹、极端媒体和磁盘填充等完整 corpus、以及受控 URL acquisition broker 仍是未完成边界。
 
 ## 12. Anki 持久写入
 

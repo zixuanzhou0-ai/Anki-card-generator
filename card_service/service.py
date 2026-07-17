@@ -221,6 +221,7 @@ class CardService:
         repository_root = Path(__file__).resolve().parent.parent
         self.runtime_package: ManagedRuntimePackage | None = None
         self.runtime_trust_policy: RuntimePackageTrustPolicy | None = None
+        self.managed_media_tools: dict[str, Path] = {}
         self.runtime_sandbox_sid: str | None = None
         self.runtime_package_dacl = False
         if runtime_package is None and runtime_trust_policy is not None:
@@ -252,6 +253,11 @@ class CardService:
                 )
                 worker_candidate = self.runtime_package.resource_path("legacy-worker:entry")
                 python_candidate = self.runtime_package.resource_path("managed-python:executable")
+                self.managed_media_tools = {
+                    "ACG_MANAGED_FFMPEG": self.runtime_package.resource_path("managed-tool:ffmpeg"),
+                    "ACG_MANAGED_FFPROBE": self.runtime_package.resource_path("managed-tool:ffprobe"),
+                    "ACG_MANAGED_YTDLP": self.runtime_package.resource_path("managed-tool:yt-dlp"),
+                }
             except (RuntimePackageError, RuntimeTrustError) as error:
                 raise CardServiceError(error.code, str(error)) from error
             if os.name == "nt":
@@ -397,6 +403,14 @@ class CardService:
                 "reservationLedger": True,
                 "taskOwnedWorkerTransport": self.broker_handler_factory is not None,
                 "complete": False,
+            },
+            "mediaToolPolicy": {
+                "managedAbsoluteTools": self.runtime_package is not None,
+                "fixedProtocolAllowlist": self.runtime_package is not None,
+                "fixedDemuxerAllowlist": self.runtime_package is not None,
+                "externalConfigDisabled": self.runtime_package is not None,
+                "subprocessTimeoutSeconds": 300,
+                "complete": self.runtime_package is not None and self.runtime_package_dacl,
             },
             "trustedSurfaces": self.trusted_surfaces.capabilities(),
         }
@@ -569,8 +583,15 @@ class CardService:
             "LANG",
         )
         environment = {key: os.environ[key] for key in safe_keys if key in os.environ}
-        path_entries = [str(self.python_path.parent), *(str(value) for value in self.managed_tool_directories)]
+        path_entries = [
+            str(self.python_path.parent),
+            *(str(value.parent) for value in self.managed_media_tools.values()),
+            *(str(value) for value in self.managed_tool_directories),
+        ]
         environment["PATH"] = os.pathsep.join(dict.fromkeys(path_entries))
+        if self.runtime_package is not None:
+            environment["ACG_MANAGED_RUNTIME"] = "1"
+            environment.update({name: str(path) for name, path in self.managed_media_tools.items()})
         environment["PYTHONIOENCODING"] = "utf-8"
         environment["PYTHONUTF8"] = "1"
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -722,6 +743,7 @@ class CardService:
                     "runtimePackageDacl": self.runtime_package_dacl,
                     "taskWorkspaceDacl": runtime.task_sandbox_sid is not None,
                     "networkRestricted": None if self.use_restricted_launcher else False,
+                    "fixedMediaToolPolicy": self.runtime_package is not None,
                 }
                 self._persist_runtime(runtime)
             assert process.stdin is not None and process.stdout is not None and process.stderr is not None

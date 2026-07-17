@@ -144,6 +144,13 @@ M1 托管运行包的内层合同已经固定为：
 - `metadata/SBOM.spdx.json` 必须是 canonical SPDX 2.3，并逐文件覆盖 manifest 中除 SBOM 自身外的全部资源；SBOM 与 manifest 任一不一致都拒绝启动。
 - 运行包签名只完成内层资源认证；在外层插件安装包签名、真实发布密钥保管、完整传递依赖哈希锁和可复现构建完成前，能力摘要继续报告 `complete: false`。
 
+M1 媒体运行时在该签名包内进一步要求：
+
+- manifest 必须包含 Worker 的 `acg/media_tool_policy.py` 以及精确 `managed-tool:ffmpeg`、`managed-tool:ffprobe`、`managed-tool:yt-dlp` 资源；Card Service 只把这三条已验证绝对路径交给受限 Worker，正式模式不回退到 PATH。
+- FFmpeg/ffprobe 命令由 Worker 内部策略构造：只允许本地普通文件输入、固定 `file` protocol、固定 demuxer allowlist、禁止 playlist/concat/subfile/网络协议与策略覆盖，且无 Shell、无交互 stdin、超时有界。
+- yt-dlp 强制 `--ignore-config`、禁用插件目录、exec、playlist 和 playlist 元数据，并固定受信 FFmpeg 目录；正式托管模式即使请求显式要求也拒绝 remote components。
+- 这只完成本地媒体解析边界。URL 下载仍需要后续受控 acquisition broker、DNS/redirect/字节预算与可验证出站策略；在此之前不能把插件 URL 来源描述为已交付。
+
 ## 3.1 受信本地设置与确认表面
 
 server/local-settings 是最小本地凭据配置窗口；server/consent-ui 是文件/目录、网络、输出、模型/TTS 数据出域、成本/批量 OperationIntent 和 Anki 写入的受信确认窗口。它们不是完整桌面制卡应用，但必须：
@@ -307,7 +314,7 @@ V1 本地 stdio 设计不应为了公开目录而过早引入云服务。先证�
 这个完成项不能外推为插件包已经可用：
 
 - 当前仍没有经过安装与宿主注册验证的正式插件包、stdio MCP 或 App resource。
-- M1 Headless Card Service、M2 Artifact/授权边界，以及插件侧的通用 Anki runtime evidence 适配器仍未实现；M0 只交付了受精确合同约束的 Anki 26.05 媒体快捷键桥。
+- M1 Headless Card Service 已完成受限任务、AppContainer/DACL、认证 broker IPC、签名运行包及本地媒体策略的若干切片，但完整 M1 出口尚未满足；M2 Artifact/授权边界和插件侧通用 Anki runtime evidence 适配器仍未实现。M0 交付的仍只是受精确合同约束的 Anki 26.05 媒体快捷键桥。
 - 非 NFC、Windows 保留设备名（含 `CLOCK$`）、规范化冲突与 APKG archive 资源上限已通过；有界流式读取覆盖 APKG archive/package/verifier 与标准 Windows Anki direct-first 媒体路径。非标准/portable profile 的 AnkiConnect inline 兼容路径仍整文件/Base64，但原始单文件上限为 8 MiB；8 MiB 不是进程峰值。
 - M0 的 Computer Use、GUI 翻面/媒体播放和 20 张连续复习出口已经通过；完整边界见 [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md)。
 - M1–M3 的 Headless Service、认证 Artifact/授权边界、stdio MCP、Skill、宿主注册和可安装包出口满足前，不得声明 Codex 插件已经复用完整 APKG → 真实 Anki 发布闭环。

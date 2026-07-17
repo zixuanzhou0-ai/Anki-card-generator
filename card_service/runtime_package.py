@@ -35,6 +35,10 @@ REQUIRED_RUNTIME_RESOURCES = frozenset(
         "card-service:windows-restricted-launcher",
         "card-service:windows-sandbox-acl",
         "legacy-worker:entry",
+        "legacy-worker:module:acg/media_tool_policy.py",
+        "managed-tool:ffmpeg",
+        "managed-tool:ffprobe",
+        "managed-tool:yt-dlp",
         SBOM_RESOURCE_ID,
     }
 )

@@ -40,6 +40,10 @@ RESOURCE_FILES = {
     "card-service:windows-restricted-launcher": "service/windows_restricted_launcher.py",
     "card-service:windows-sandbox-acl": "service/windows_sandbox_acl.py",
     "legacy-worker:entry": "worker/anki_worker.py",
+    "legacy-worker:module:acg/media_tool_policy.py": "worker/acg/media_tool_policy.py",
+    "managed-tool:ffmpeg": "tools/ffmpeg.exe",
+    "managed-tool:ffprobe": "tools/ffprobe.exe",
+    "managed-tool:yt-dlp": "tools/yt-dlp.exe",
 }
 TEST_NOW = datetime(2026, 7, 17, 12, 0, 0, tzinfo=timezone.utc)
 TEST_KEY = Ed25519PrivateKey.from_private_bytes(hashlib.sha256(b"runtime-package-test-key-v1").digest())
@@ -210,7 +214,7 @@ def test_runtime_package_requires_canonical_root_contained_hashed_resources(tmp_
         "packageId": "anki-study-managed-runtime",
         "version": "0.1.0-dev",
         "digest": f"sha256:{package.digest}",
-        "resourceCount": 7,
+        "resourceCount": 11,
         "pathDisclosure": False,
         "signatureVerified": True,
         "sbomVerified": True,
@@ -429,10 +433,21 @@ def test_card_service_package_mode_rejects_path_overrides_and_detects_runtime_mu
     assert summary["signatureVerified"] is True
     assert summary["sbomVerified"] is True
     assert summary["complete"] is False
+    assert card_service.capabilities()["mediaToolPolicy"]["managedAbsoluteTools"] is True
+    assert card_service.capabilities()["mediaToolPolicy"]["fixedProtocolAllowlist"] is True
+    assert card_service.capabilities()["mediaToolPolicy"]["fixedDemuxerAllowlist"] is True
+    assert card_service.capabilities()["mediaToolPolicy"]["externalConfigDisabled"] is True
+    assert card_service.capabilities()["mediaToolPolicy"]["complete"] is (os.name == "nt")
     assert card_service.capabilities()["processIsolation"]["runtimePackageDacl"] is (os.name == "nt")
     assert card_service.capabilities()["processIsolation"]["taskWorkspaceDacl"] is (os.name == "nt")
     assert card_service.capabilities()["processIsolation"]["appContainerOrRestrictedSidDacl"] is (os.name == "nt")
     assert card_service.capabilities()["processIsolation"]["forcedOutboundBroker"] is (os.name == "nt")
+    managed_environment = card_service._managed_environment()
+    assert managed_environment["ACG_MANAGED_RUNTIME"] == "1"
+    assert managed_environment["ACG_MANAGED_FFMPEG"] == str(root / "tools" / "ffmpeg.exe")
+    assert managed_environment["ACG_MANAGED_FFPROBE"] == str(root / "tools" / "ffprobe.exe")
+    assert managed_environment["ACG_MANAGED_YTDLP"] == str(root / "tools" / "yt-dlp.exe")
+    assert str(root / "tools") in managed_environment["PATH"].split(os.pathsep)
 
     card_service.worker_path.write_text("mutated", encoding="utf-8")
     started = card_service.start_task("runtime.check_environment", {})

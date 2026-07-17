@@ -22,6 +22,7 @@ from acg.anki_model_contracts import (
     validate_apkg_archive_limits,
     validate_apkg_archive_structure,
 )
+from acg.media_tool_policy import MediaToolPolicyError, run_ffprobe as media_policy_run_ffprobe
 
 MAX_ARCHIVE_ENTRY_BYTES = MAX_ARCHIVE_MEDIA_BYTES
 ZIP_STREAM_CHUNK_BYTES = 1024 * 1024
@@ -175,30 +176,27 @@ def media_file_valid(path: Path) -> bool:
 
 
 def ffprobe_video(path: Path) -> dict:
-    executable = shutil.which("ffprobe")
-    if not executable:
-        return {"ok": False, "error": "ffprobe not found"}
-    completed = subprocess.run(
-        [
-            executable,
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=codec_name,profile,width,height",
-            "-of",
-            "json",
-            str(path),
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=20,
-        **hidden_subprocess_flags(),
-    )
+    try:
+        completed = media_policy_run_ffprobe(
+            [
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=codec_name,profile,width,height",
+                "-of",
+                "json",
+            ],
+            path,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+            **hidden_subprocess_flags(),
+        )
+    except (MediaToolPolicyError, subprocess.TimeoutExpired) as error:
+        return {"ok": False, "error": str(error)[:300]}
     if completed.returncode:
         return {"ok": False, "error": completed.stderr.strip()[:300]}
     stream = (json.loads(completed.stdout or "{}").get("streams") or [{}])[0]

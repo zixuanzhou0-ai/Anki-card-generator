@@ -54,6 +54,8 @@ def test_capabilities_expose_only_restricted_high_level_methods(tmp_path: Path) 
     assert capabilities["processIsolation"]["appContainerOrRestrictedSidDacl"] is False
     assert capabilities["processIsolation"]["forcedOutboundBroker"] is False
     assert capabilities["processIsolation"]["complete"] is False
+    assert capabilities["mediaToolPolicy"]["managedAbsoluteTools"] is False
+    assert capabilities["mediaToolPolicy"]["complete"] is False
     assert capabilities["trustedSurfaces"]["localSettings"] is True
     assert capabilities["trustedSurfaces"]["authorizationLedger"] is False
     assert capabilities["methods"] == ["runtime.check_environment", "runtime.extract_learning_points"]
