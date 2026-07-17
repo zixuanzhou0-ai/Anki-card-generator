@@ -16,12 +16,20 @@ from .broker_runtime import (
 from .credentials import CredentialBackend, CredentialStore, CredentialStoreError
 from .provider_egress import ProviderProfile, ProviderTransport
 from .runtime_manifest import assert_stable_path, canonical_bytes
+from .source_acquisition import (
+    SOURCE_OPERATION,
+    SOURCE_PROFILE_REF,
+    SourceAcquisitionError,
+    SourceFetchTransport,
+    authorized_youtube_sources,
+    make_source_acquisition_handler,
+)
 
 
 AUTHORIZATION_SCHEMA = "study.card-service.broker-authorization"
 MAX_AUTHORIZATION_MANIFEST_BYTES = 256 * 1024
 MAX_AUTHORIZATION_LIFETIME_MS = 24 * 60 * 60 * 1000
-METHOD_CAPABILITIES = {
+METHOD_REQUIRED_CAPABILITIES = {
     "runtime.test_model": frozenset({"model"}),
     "runtime.test_tts": frozenset({"tts"}),
     "runtime.extract_learning_points": frozenset({"model"}),
@@ -29,6 +37,13 @@ METHOD_CAPABILITIES = {
     "runtime.generate_legacy_project": frozenset({"model"}),
     "runtime.export_apkg": frozenset({"tts"}),
 }
+SOURCE_CAPABLE_METHODS = frozenset(
+    {
+        "runtime.extract_learning_points",
+        "runtime.generate_cards",
+        "runtime.generate_legacy_project",
+    }
+)
 
 
 class BrokerConfigurationError(RuntimeError):
@@ -99,6 +114,8 @@ class BrokerAuthorizationConfiguration:
     budget: BrokerBudget
     profiles: Mapping[str, ConfiguredProviderBinding]
     method_bindings: Mapping[str, Mapping[str, str]]
+    youtube_subtitles_enabled: bool
+    source_timeout_seconds: int
 
     @classmethod
     def load(cls, path: str | Path, *, now_unix_ms: int | None = None) -> "BrokerAuthorizationConfiguration":
@@ -118,19 +135,18 @@ class BrokerAuthorizationConfiguration:
             raise BrokerConfigurationError("BROKER_MANIFEST_INVALID", "Broker manifest is invalid JSON") from error
         if not isinstance(value, dict) or canonical_bytes(value) != source:
             raise BrokerConfigurationError("BROKER_MANIFEST_NONCANONICAL", "Broker manifest must use canonical JSON")
-        _exact_keys(
-            value,
-            {
-                "schema",
-                "schemaVersion",
-                "operationIntentRef",
-                "expiresAtUnixMs",
-                "budget",
-                "profiles",
-                "methodBindings",
-            },
-            code="BROKER_MANIFEST_INVALID",
-        )
+        legacy_keys = {
+            "schema",
+            "schemaVersion",
+            "operationIntentRef",
+            "expiresAtUnixMs",
+            "budget",
+            "profiles",
+            "methodBindings",
+        }
+        manifest_keys = frozenset(value)
+        if manifest_keys not in {frozenset(legacy_keys), frozenset(legacy_keys | {"sourceAcquisition"})}:
+            raise BrokerConfigurationError("BROKER_MANIFEST_INVALID", "Broker authorization manifest shape is invalid")
         if value["schema"] != AUTHORIZATION_SCHEMA or value["schemaVersion"] != 1:
             raise BrokerConfigurationError("BROKER_MANIFEST_VERSION", "Broker manifest version is unsupported")
         now = int(time.time() * 1000) if now_unix_ms is None else int(now_unix_ms)
@@ -167,6 +183,28 @@ class BrokerAuthorizationConfiguration:
             ),
             _bounded_int(budget_value["maxCostMinorUnits"], minimum=0, maximum=1_000_000_000, code="BROKER_BUDGET_INVALID"),
         )
+        youtube_subtitles_enabled = False
+        source_timeout_seconds = 30
+        if "sourceAcquisition" in value:
+            source_value = _exact_keys(
+                value["sourceAcquisition"],
+                {"youtubeSubtitles"},
+                code="BROKER_SOURCE_POLICY_INVALID",
+            )
+            youtube_value = _exact_keys(
+                source_value["youtubeSubtitles"],
+                {"enabled", "timeoutSeconds"},
+                code="BROKER_SOURCE_POLICY_INVALID",
+            )
+            if not isinstance(youtube_value["enabled"], bool):
+                raise BrokerConfigurationError("BROKER_SOURCE_POLICY_INVALID", "Source acquisition enabled flag is invalid")
+            youtube_subtitles_enabled = youtube_value["enabled"]
+            source_timeout_seconds = _bounded_int(
+                youtube_value["timeoutSeconds"],
+                minimum=1,
+                maximum=60,
+                code="BROKER_SOURCE_POLICY_INVALID",
+            )
         profile_values = value["profiles"]
         if not isinstance(profile_values, list) or not 1 <= len(profile_values) <= 16:
             raise BrokerConfigurationError("BROKER_PROFILE_INVALID", "Broker profiles are invalid")
@@ -228,17 +266,33 @@ class BrokerAuthorizationConfiguration:
             raise BrokerConfigurationError("BROKER_METHOD_BINDING_INVALID", "Broker method bindings are invalid")
         method_bindings: dict[str, Mapping[str, str]] = {}
         for method, raw_bindings in method_values.items():
-            allowed = METHOD_CAPABILITIES.get(str(method))
-            if allowed is None or not isinstance(raw_bindings, dict) or set(raw_bindings) != set(allowed):
+            method_name = str(method)
+            required = METHOD_REQUIRED_CAPABILITIES.get(method_name)
+            allowed = set(required or ())
+            if method_name in SOURCE_CAPABLE_METHODS and youtube_subtitles_enabled:
+                allowed.add("source")
+            if (
+                required is None
+                or not isinstance(raw_bindings, dict)
+                or not set(required) <= set(raw_bindings) <= allowed
+            ):
                 raise BrokerConfigurationError("BROKER_METHOD_BINDING_INVALID", "Broker method binding is invalid")
             resolved_bindings: dict[str, str] = {}
             for capability, raw_profile_ref in raw_bindings.items():
                 profile_ref = str(raw_profile_ref)
+                if capability == "source":
+                    if profile_ref != SOURCE_PROFILE_REF:
+                        raise BrokerConfigurationError(
+                            "BROKER_METHOD_BINDING_INVALID",
+                            "Broker source acquisition binding is invalid",
+                        )
+                    resolved_bindings[capability] = profile_ref
+                    continue
                 binding = profiles.get(profile_ref)
                 if binding is None or binding.profile.capability != capability:
                     raise BrokerConfigurationError("BROKER_METHOD_BINDING_INVALID", "Broker method profile is invalid")
                 resolved_bindings[capability] = profile_ref
-            method_bindings[str(method)] = resolved_bindings
+            method_bindings[method_name] = resolved_bindings
         return cls(
             manifest_digest="sha256:" + hashlib.sha256(source).hexdigest(),
             operation_intent_ref=operation_intent_ref,
@@ -246,6 +300,8 @@ class BrokerAuthorizationConfiguration:
             budget=budget,
             profiles=profiles,
             method_bindings=method_bindings,
+            youtube_subtitles_enabled=youtube_subtitles_enabled,
+            source_timeout_seconds=source_timeout_seconds,
         )
 
 
@@ -257,6 +313,7 @@ class ServiceBrokerRuntime:
         credential_store: CredentialStore,
         ledger: BrokerReservationLedger,
         transport_overrides: Mapping[str, ProviderTransport] | None = None,
+        source_transport: SourceFetchTransport | None = None,
     ) -> None:
         overrides = dict(transport_overrides or {})
         if set(overrides) - set(configuration.profiles):
@@ -266,6 +323,7 @@ class ServiceBrokerRuntime:
         self.ledger = ledger
         self.broker = ModelTtsBroker(credential_store=credential_store, ledger=ledger)
         self.transport_overrides = overrides
+        self.source_transport = source_transport
 
     @classmethod
     def from_manifest(
@@ -275,6 +333,7 @@ class ServiceBrokerRuntime:
         state_dir: str | Path,
         credential_backend: CredentialBackend | None = None,
         transport_overrides: Mapping[str, ProviderTransport] | None = None,
+        source_transport: SourceFetchTransport | None = None,
         now_unix_ms: int | None = None,
     ) -> "ServiceBrokerRuntime":
         root = Path(state_dir)
@@ -305,6 +364,7 @@ class ServiceBrokerRuntime:
             credential_store=credentials,
             ledger=ledger,
             transport_overrides=transport_overrides,
+            source_transport=source_transport,
         )
 
     def method_blocker(self, method: str) -> str | None:
@@ -313,7 +373,11 @@ class ServiceBrokerRuntime:
         bindings = self.configuration.method_bindings.get(method)
         if bindings is None:
             return "broker_authorization_missing"
-        for profile_ref in bindings.values():
+        for capability, profile_ref in bindings.items():
+            if capability == "source":
+                if not self.configuration.youtube_subtitles_enabled or profile_ref != SOURCE_PROFILE_REF:
+                    return "broker_source_acquisition_unavailable"
+                continue
             binding = self.configuration.profiles[profile_ref]
             if binding.profile.provider == "hermes":
                 continue
@@ -334,7 +398,9 @@ class ServiceBrokerRuntime:
             raise BrokerConfigurationError("BROKER_AUTHORIZATION_UNAVAILABLE", blocker)
         method_profiles = self.configuration.method_bindings[method]
         operations: dict[str, AuthorizedProviderCall] = {}
-        for profile_ref in method_profiles.values():
+        for capability, profile_ref in method_profiles.items():
+            if capability == "source":
+                continue
             binding = self.configuration.profiles[profile_ref]
             operations[binding.operation] = AuthorizedProviderCall(
                 profile=binding.profile,
@@ -348,7 +414,45 @@ class ServiceBrokerRuntime:
             operations=operations,
             expires_at_unix_ms=self.configuration.expires_at_unix_ms,
         )
-        return make_task_broker_handler(task_id=task_id, authorization=authorization, broker=self.broker)
+        provider_handler = make_task_broker_handler(task_id=task_id, authorization=authorization, broker=self.broker)
+        try:
+            requested_sources = authorized_youtube_sources(_request)
+        except SourceAcquisitionError as error:
+            raise BrokerConfigurationError("BROKER_SOURCE_AUTHORIZATION_INVALID", str(error)) from error
+        source_handler = None
+        if requested_sources:
+            if (
+                not self.configuration.youtube_subtitles_enabled
+                or method_profiles.get("source") != SOURCE_PROFILE_REF
+            ):
+                raise BrokerConfigurationError(
+                    "BROKER_SOURCE_AUTHORIZATION_UNAVAILABLE",
+                    "YouTube subtitle acquisition is not authorized for this task",
+                )
+            source_handler = make_source_acquisition_handler(
+                task_id=task_id,
+                task_request=_request,
+                operation_intent_ref=self.configuration.operation_intent_ref,
+                budget=self.configuration.budget,
+                broker=self.broker,
+                expires_at_unix_ms=self.configuration.expires_at_unix_ms,
+                transport=self.source_transport,
+                timeout_seconds=self.configuration.source_timeout_seconds,
+            )
+
+        def handle(operation: str, payload: dict[str, Any]):
+            if operation == SOURCE_OPERATION:
+                if source_handler is None:
+                    from .broker_ipc import BrokerIpcError
+
+                    raise BrokerIpcError(
+                        "SOURCE_NOT_AUTHORIZED",
+                        "Source acquisition is not authorized for this task",
+                    )
+                return source_handler(payload)
+            return provider_handler(operation, payload)
+
+        return handle
 
     def capabilities(self) -> dict[str, Any]:
         return {
@@ -357,6 +461,7 @@ class ServiceBrokerRuntime:
             "authorizationExpiresAtUnixMs": self.configuration.expires_at_unix_ms,
             "configuredProfileCount": len(self.configuration.profiles),
             "configuredMethodCount": len(self.configuration.method_bindings),
+            "youtubeSubtitleAcquisition": self.configuration.youtube_subtitles_enabled,
             "pathDisclosure": False,
             "complete": False,
         }

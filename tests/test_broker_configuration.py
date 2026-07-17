@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 import time
@@ -17,13 +18,16 @@ from card_service.broker_configuration import (
     profile_configuration_fingerprint,
 )
 from card_service.credentials import CredentialStore, InMemoryCredentialBackend
+from card_service.broker_ipc import BrokerIpcError
 from card_service.provider_egress import ProviderProfile, ProviderTransportResponse
 from card_service.runtime_manifest import canonical_bytes
 from card_service.service import CardService, CardServiceError, MethodPolicy
+from card_service.source_acquisition import SourceFetchResponse
 
 
 ROOT = Path(__file__).resolve().parents[1]
 FAKE_WORKER = ROOT / "tests" / "fixtures" / "card_service" / "fake_worker.py"
+REAL_WORKERS = ROOT / "workers"
 
 
 def _profile(*, hermes: bool = False) -> ProviderProfile:
@@ -42,7 +46,12 @@ def _manifest_value(
     *,
     credential_revision: int,
     expires_at: int | None = None,
+    source_enabled: bool = False,
+    source_binding: bool = False,
 ) -> dict[str, object]:
+    extraction_binding = {"model": profile.profile_ref}
+    if source_binding:
+        extraction_binding["source"] = "source.youtube_subtitles"
     return {
         "schema": AUTHORIZATION_SCHEMA,
         "schemaVersion": 1,
@@ -51,7 +60,7 @@ def _manifest_value(
         "budget": {
             "maxRemoteCalls": 8,
             "maxRequestBytes": 500_000,
-            "maxResponseBytes": 500_000,
+            "maxResponseBytes": 8 * 1024 * 1024,
             "maxCostMinorUnits": 100,
         },
         "profiles": [
@@ -70,7 +79,13 @@ def _manifest_value(
             }
         ],
         "methodBindings": {
-            "runtime.extract_learning_points": {"model": profile.profile_ref},
+            "runtime.extract_learning_points": extraction_binding,
+        },
+        "sourceAcquisition": {
+            "youtubeSubtitles": {
+                "enabled": source_enabled,
+                "timeoutSeconds": 30,
+            }
         },
     }
 
@@ -213,6 +228,111 @@ def test_stale_credential_revision_blocks_method_before_task_creation(tmp_path: 
     assert runtime.method_blocker("runtime.extract_learning_points") == "broker_profile_unavailable"
 
 
+def test_formal_runtime_authorizes_only_task_bound_youtube_subtitle_acquisition(tmp_path: Path) -> None:
+    state_dir = (tmp_path / "state").resolve()
+    backend = InMemoryCredentialBackend()
+    credentials = CredentialStore(
+        state_dir=(state_dir / "trusted-surfaces" / "credentials").resolve(),
+        backend=backend,
+    )
+    metadata = credentials.set_secret("model.primary", "provider-secret")
+    profile = _profile()
+    authorization_dir = state_dir / "trusted-surfaces" / "authorizations"
+    authorization_dir.mkdir(parents=True, exist_ok=True)
+    manifest = _write_manifest(
+        authorization_dir / "source-authorization.json",
+        _manifest_value(
+            profile,
+            credential_revision=int(metadata["credentialRevision"]),
+            source_enabled=True,
+            source_binding=True,
+        ),
+    )
+    caption_url = "https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en&sig=secret-canary"
+    player = {
+        "captions": {
+            "playerCaptionsTracklistRenderer": {
+                "captionTracks": [{"baseUrl": caption_url, "languageCode": "en"}]
+            }
+        },
+        "videoDetails": {"title": "Task-bound video"},
+    }
+    watch = ("<script>ytInitialPlayerResponse = " + json.dumps(player) + ";</script>").encode("utf-8")
+    vtt = b"WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHello\n"
+    source_sends: list[str] = []
+
+    def source_transport(url: str, _maximum_bytes: int, _timeout_seconds: float) -> SourceFetchResponse:
+        source_sends.append(url)
+        body = watch if "/watch?" in url else vtt
+        return SourceFetchResponse(200, url, {}, body, "142.250.1.1")
+
+    runtime = ServiceBrokerRuntime.from_manifest(
+        manifest,
+        state_dir=state_dir,
+        credential_backend=backend,
+        source_transport=source_transport,
+    )
+    task_request = {
+        "source_mode": "url",
+        "source_url": "https://youtu.be/dQw4w9WgXcQ",
+        "language": "English",
+    }
+    handler = runtime.handler_factory("task-source", "runtime.extract_learning_points", task_request)
+    result = handler(
+        "source.youtube_subtitles",
+        {
+            "workUnitId": "source:subtitle:1",
+            "request": {"videoId": "dQw4w9WgXcQ", "language": "en", "format": "vtt"},
+        },
+    )
+    assert result["title"] == "Task-bound video"
+    assert len(source_sends) == 2
+    record = runtime.ledger.list_records()[0]
+    assert record["capability"] == "source"
+    assert record["profileRef"] == "source.youtube_subtitles"
+    assert "secret-canary" not in (state_dir / "broker" / "reservation-ledger-v1.json").read_text(encoding="utf-8")
+
+    blocked = runtime.handler_factory(
+        "task-local",
+        "runtime.extract_learning_points",
+        {"source_mode": "local", "language": "English"},
+    )
+    with pytest.raises(BrokerIpcError) as caught:
+        blocked(
+            "source.youtube_subtitles",
+            {
+                "workUnitId": "source:subtitle:1",
+                "request": {"videoId": "dQw4w9WgXcQ", "language": "en", "format": "vtt"},
+            },
+        )
+    assert getattr(caught.value, "code", "") == "SOURCE_NOT_AUTHORIZED"
+
+
+def test_existing_v1_manifest_without_source_policy_remains_compatible(tmp_path: Path) -> None:
+    state_dir = (tmp_path / "state").resolve()
+    backend = InMemoryCredentialBackend()
+    credentials = CredentialStore(
+        state_dir=(state_dir / "trusted-surfaces" / "credentials").resolve(),
+        backend=backend,
+    )
+    metadata = credentials.set_secret("model.primary", "provider-secret")
+    profile = _profile()
+    value = _manifest_value(profile, credential_revision=int(metadata["credentialRevision"]))
+    value.pop("sourceAcquisition")
+    authorization_dir = state_dir / "trusted-surfaces" / "authorizations"
+    authorization_dir.mkdir(parents=True, exist_ok=True)
+    manifest = _write_manifest(authorization_dir / "legacy-v1-authorization.json", value)
+
+    runtime = ServiceBrokerRuntime.from_manifest(
+        manifest,
+        state_dir=state_dir,
+        credential_backend=backend,
+    )
+    assert runtime.method_blocker("runtime.extract_learning_points") is None
+    assert runtime.capabilities()["youtubeSubtitleAcquisition"] is False
+
+
+
 def test_broker_factory_failure_happens_before_worker_process_launch(tmp_path: Path) -> None:
     def fail_factory(_task_id: str, _method: str, _request: dict[str, object]):
         raise RuntimeError("authorization race")
@@ -349,3 +469,147 @@ def test_stdio_launcher_composes_service_owned_runtime_without_disclosing_manife
     assert broker["taskOwnedWorkerTransport"] is True
     assert broker["pathDisclosure"] is False
     assert str(manifest) not in completed.stdout
+
+
+def test_real_restricted_worker_extracts_learning_points_through_source_and_model_brokers(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "managed-runtime"
+    shutil.copytree(REAL_WORKERS, runtime_root)
+    real_worker = (runtime_root / "anki_worker.py").resolve()
+    state_dir = (tmp_path / "service-state").resolve()
+    backend = InMemoryCredentialBackend()
+    credentials = CredentialStore(
+        state_dir=(state_dir / "trusted-surfaces" / "credentials").resolve(),
+        backend=backend,
+    )
+    metadata = credentials.set_secret("model.primary", "model-secret-canary")
+    profile = _profile()
+    authorization_dir = state_dir / "trusted-surfaces" / "authorizations"
+    authorization_dir.mkdir(parents=True, exist_ok=True)
+    manifest = _write_manifest(
+        authorization_dir / "real-worker-source-authorization.json",
+        _manifest_value(
+            profile,
+            credential_revision=int(metadata["credentialRevision"]),
+            source_enabled=True,
+            source_binding=True,
+        ),
+    )
+
+    caption_url = (
+        "https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en&sig=caption-secret-canary"
+    )
+    player = {
+        "captions": {
+            "playerCaptionsTracklistRenderer": {
+                "captionTracks": [{"baseUrl": caption_url, "languageCode": "en"}]
+            }
+        },
+        "videoDetails": {"title": "Brokered learning source"},
+    }
+    watch = ("<script>ytInitialPlayerResponse = " + json.dumps(player) + ";</script>").encode("utf-8")
+    vtt = (
+        b"WEBVTT\n\n00:00:01.000 --> 00:00:04.000\n"
+        b"I'm not really in the mood for this right now.\n"
+    )
+    source_sends: list[str] = []
+    model_sends: list[object] = []
+
+    def source_transport(url: str, _maximum_bytes: int, _timeout_seconds: float) -> SourceFetchResponse:
+        source_sends.append(url)
+        return SourceFetchResponse(200, url, {}, watch if "/watch?" in url else vtt, "142.250.1.1")
+
+    def model_transport(request):
+        model_sends.append(request)
+        body = json.loads(request.body)
+        assert body["model"] == "gpt-service-owned"
+        prompt = str(body["messages"][-1]["content"])
+        marker = "字幕和候选_JSON_START"
+        assert marker in prompt
+        compact = json.loads(prompt.split(marker, 1)[1].strip())
+        sources = []
+        for source in compact:
+            reviews = []
+            for candidate in source.get("local_candidates") or []:
+                answer = candidate.get("answer_core") or candidate.get("exact_span")
+                reviews.append(
+                    {
+                        "id": candidate["id"],
+                        "decision": "recommend",
+                        "value_score": 5,
+                        "estimated_level": candidate.get("local_level") or "B1",
+                        "exact_span": candidate.get("exact_span"),
+                        "answer_core": answer,
+                        "normalized_answer": candidate.get("normalized_answer") or answer,
+                        "candidate_kind": candidate.get("candidate_kind"),
+                        "phrase_type": candidate.get("phrase_type"),
+                        "learning_action": candidate.get("learning_action") or f"Practice {answer}.",
+                        "reason": "Service-owned model review.",
+                        "status_reason": "Recommended by bounded review.",
+                    }
+                )
+            sources.append(
+                {
+                    "source_segment_id": source["source_segment_id"],
+                    "reviews": reviews,
+                    "new_learning_points": [],
+                }
+            )
+        response = {"choices": [{"message": {"content": json.dumps({"sources": sources})}}]}
+        return ProviderTransportResponse(
+            200,
+            request.url,
+            {"content-type": "application/json"},
+            json.dumps(response).encode("utf-8"),
+        )
+
+    broker_runtime = ServiceBrokerRuntime.from_manifest(
+        manifest,
+        state_dir=state_dir,
+        credential_backend=backend,
+        transport_overrides={"model.primary": model_transport},
+        source_transport=source_transport,
+    )
+    service = CardService(
+        state_dir=state_dir,
+        worker_path=real_worker,
+        python_path=Path(sys.executable).resolve(),
+        method_policies={
+            "runtime.extract_learning_points": MethodPolicy(
+                "extract_learning_points",
+                60.0,
+                requires_broker=True,
+            )
+        },
+        broker_handler_factory=broker_runtime.handler_factory,
+        broker_method_blocker=broker_runtime.method_blocker,
+        broker_runtime_capabilities=broker_runtime.capabilities(),
+    )
+    request = {
+        "source_mode": "url",
+        "source_url": "https://youtu.be/dQw4w9WgXcQ",
+        "url_import_mode": "subtitles",
+        "skip_video_slicing": True,
+        "title": "Brokered source proof",
+        "language": "English",
+        "level": "B1",
+        "language_focus": ["phrases", "vocabulary", "grammar", "listening"],
+        "api_config": {"provider": "openai-compatible", "model": "worker-model-hint"},
+    }
+    started = service.start_task("runtime.extract_learning_points", request)
+    deadline = time.monotonic() + 60
+    snapshot = service.get_task(str(started["id"]))
+    while snapshot is not None and snapshot["state"] not in {"succeeded", "failed", "cancelled", "interrupted"}:
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+        snapshot = service.get_task(str(started["id"]))
+    assert snapshot is not None and snapshot["state"] == "succeeded", snapshot.get("error") if snapshot else None
+    result = service.read_result(str(started["id"]))
+    assert result["learning_points"]
+    assert result["source_info"]["source_acquisition"] == "card_service_broker"
+    assert len(source_sends) == 2
+    assert model_sends
+    records = broker_runtime.ledger.list_records()
+    assert {record["capability"] for record in records} == {"source", "model"}
+    persisted = "\n".join(path.read_text(encoding="utf-8") for path in state_dir.rglob("*.json"))
+    assert "model-secret-canary" not in persisted
+    assert "caption-secret-canary" not in persisted

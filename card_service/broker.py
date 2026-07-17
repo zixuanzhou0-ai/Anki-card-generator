@@ -108,8 +108,8 @@ class BrokerReservationLedger:
             self._save(value)
 
     def reserve(self, call: BrokerCall, budget: BrokerBudget) -> dict[str, Any]:
-        if call.capability not in {"model", "tts"}:
-            raise BrokerError("INVALID_CAPABILITY", "Broker capability must be model or tts")
+        if call.capability not in {"model", "tts", "source"}:
+            raise BrokerError("INVALID_CAPABILITY", "Broker capability must be model, tts, or source")
         if min(call.request_bytes, call.maximum_response_bytes) < 0:
             raise BrokerError("INVALID_USAGE", "Broker byte reservations must be non-negative")
         with self._lock:

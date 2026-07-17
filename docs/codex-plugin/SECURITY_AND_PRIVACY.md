@@ -478,6 +478,8 @@ type ImportApprovalLedgerState = {
 - AnkiConnect 固定明确回环端点、配置的 API key 和版本范围，不跟随重定向。
 - yt-dlp 走等价网络约束，不能成为代理绕过。
 
+当前 M1 只实现上述目标的一条窄路径：`source.youtube_subtitles` 由 Service 从任务授权中重建固定 YouTube video identity，Worker 只能提交 video ID、语言和 `vtt`。Service 只访问 `youtube.com`/`www.youtube.com` 的 watch 与 `/api/timedtext`，解析全部 DNS 结果且任一非公网地址即拒绝，连接时固定已验证公网 IP并保留 TLS SNI/hostname 校验；重定向、userinfo、非 443 端口、fragment、非固定 host/path、超时和超限响应均 fail closed。caption signed query 不返回 Worker、不写 ledger。该切片尚未实现 M2 的 opaque `networkResourceRef`、逐请求批准/撤销账本或完整视频下载；托管 Worker 的直接联网 yt-dlp 因此一律在启动前拒绝。
+
 ## 9. 文档与媒体解析及资源隔离
 
 ### 9.1 文档解析
@@ -552,7 +554,7 @@ M3 的本地/URL 视频链把 FFmpeg、ffprobe、yt-dlp 及任何辅助运行时
 
 当前 M1 实现已把内层托管运行包从“自报哈希”升级为 detached Ed25519 验签：正式模式不接受运行包自带的任意公钥，必须由受信 launcher 提供独立 canonical trust policy；同时验证签名期限、密钥撤销、最低版本、trust sequence、防同版本换内容和 SPDX 文件级覆盖。该边界不替代外层 Authenticode/等价签名，因此在 M4 发布链完成前仍 fail closed 地标记为未完成发布态。
 
-当前 M1 本地媒体切片还把 FFmpeg/ffprobe/yt-dlp 固定为签名 manifest 中的精确绝对资源：FFmpeg/ffprobe 只接收绝对本地普通文件和固定 `file` protocol/demuxer allowlist，拒绝 playlist、concat/subfile、网络协议、reparse 输入和调用方策略覆盖；所有调用均无 Shell、stdin 关闭且超时有界。托管 yt-dlp 强制忽略外部配置、禁用插件/exec/playlist，并无条件拒绝 remote components。真实畸形容器已在 AppContainer + Job + DACL 内失败且未改动旁侧文件；解码炸弹、极端媒体和磁盘填充等完整 corpus、以及受控 URL acquisition broker 仍是未完成边界。
+当前 M1 本地媒体切片还把 FFmpeg/ffprobe/yt-dlp 固定为签名 manifest 中的精确绝对资源：FFmpeg/ffprobe 只接收绝对本地普通文件和固定 `file` protocol/demuxer allowlist，拒绝 playlist、concat/subfile、网络协议、reparse 输入和调用方策略覆盖；所有调用均无 Shell、stdin 关闭且超时有界。托管 yt-dlp 强制忽略外部配置、禁用插件/exec/playlist，并无条件拒绝 remote components；在托管 Worker 内直接调用联网 yt-dlp 现在会在创建子进程前 fail closed。受控来源 Broker 已覆盖 YouTube 字幕-only 获取、固定端点、DNS/IP pinning、TLS hostname 校验、无重定向、任务绑定和有界 VTT 证据；完整视频/音频下载仍未开放。真实畸形容器已在 AppContainer + Job + DACL 内失败且未改动旁侧文件；解码炸弹、极端媒体和磁盘填充等完整 corpus仍是未完成边界。
 
 当前 M1 Provider Egress 切片把 Worker 请求缩到固定 operation 的 `{workUnitId, request}`；所有 profile、origin、endpoint、model/voice、credential revision、operation intent、预算和预留成本由 Service 闭包绑定，认证头只在 Service 传输前构造。远程 origin 必须 HTTPS 且固定到官方/项目已知 host；Hermes 仅允许字面 loopback，任意 custom compatible origin 暂不开放。默认传输禁用 ambient proxy、拒绝 redirect、限制请求 schema/长度、超时和响应字节。Legacy Worker 的 OpenAI-compatible、Anthropic、Gemini 模型入口和生产 TTS/TTS 测试均已走 task-owned broker；TTS Worker 请求不包含 provider、origin、model、voice 或 credential，Service 固定 OpenAI/xAI/MIMO/Qwen/Gemini 适配器并校验返回音频的 Base64、长度、SHA-256、MIME 与 PCM 采样率。Qwen 二次 URL 被拒绝，受管 Vertex 模型/TTS 在 Service OAuth egress 完成前 fail closed。真实受限 Worker已分别完成无 Worker secret/origin 的卡片生成和 TTS 测试。
 

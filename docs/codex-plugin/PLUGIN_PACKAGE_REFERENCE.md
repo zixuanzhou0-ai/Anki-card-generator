@@ -149,7 +149,8 @@ M1 媒体运行时在该签名包内进一步要求：
 - manifest 必须包含 Worker 的 `acg/media_tool_policy.py` 以及精确 `managed-tool:ffmpeg`、`managed-tool:ffprobe`、`managed-tool:yt-dlp` 资源；Card Service 只把这三条已验证绝对路径交给受限 Worker，正式模式不回退到 PATH。
 - FFmpeg/ffprobe 命令由 Worker 内部策略构造：只允许本地普通文件输入、固定 `file` protocol、固定 demuxer allowlist、禁止 playlist/concat/subfile/网络协议与策略覆盖，且无 Shell、无交互 stdin、超时有界。
 - yt-dlp 强制 `--ignore-config`、禁用插件目录、exec、playlist 和 playlist 元数据，并固定受信 FFmpeg 目录；正式托管模式即使请求显式要求也拒绝 remote components。
-- 这只完成本地媒体解析边界。URL 下载仍需要后续受控 acquisition broker、DNS/redirect/字节预算与可验证出站策略；在此之前不能把插件 URL 来源描述为已交付。
+- Service 已增加窄范围 `source.youtube_subtitles`：正式启动授权按方法绑定该能力，Worker 只提交任务已授权的 YouTube video ID、字幕语言和 VTT 格式；Service 固定 watch/timedtext host/path，解析全部 DNS 地址并拒绝非公网答案，连接固定公网 IP并保留 TLS hostname 校验，不跟随重定向，限制响应字节/超时，且不把 signed caption query 交给 Worker 或持久化账本。
+- 托管 Worker 直接运行联网 yt-dlp 会在子进程启动前 fail closed。当前只交付无视频/原声音频的字幕-only 学习点抽取；完整 URL 视频/音频 acquisition、M2 opaque networkResourceRef 和逐操作批准账本仍未交付，不能把插件视频 URL 制卡描述为已完成。
 
 M1 Provider Egress 的当前内层边界为：
 

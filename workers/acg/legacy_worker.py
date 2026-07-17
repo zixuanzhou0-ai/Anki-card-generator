@@ -304,6 +304,12 @@ from acg.managed_tts_broker import (
     operation_available as managed_tts_operation_available,
     request_tts as managed_tts_request,
 )
+from acg.managed_source_broker import (
+    ManagedSourceBrokerError,
+    is_configured as managed_source_broker_is_configured,
+    operation_available as managed_source_operation_available,
+    request_youtube_subtitles as managed_source_request_youtube_subtitles,
+)
 from acg.service_errors import (
     classify_service_error as service_errors_classify_service_error,
     classify_worker_exception as service_errors_classify_worker_exception,
@@ -6269,6 +6275,14 @@ def run_yt_dlp(
     *,
     allow_remote_components: bool = False,
 ) -> subprocess.CompletedProcess[str]:
+    if os.environ.get("ACG_MANAGED_RUNTIME") == "1":
+        fail(
+            "托管插件运行时禁止 Worker 直接运行联网 yt-dlp；URL 必须通过 Card Service 受控获取通道。",
+            error_code="MANAGED_DIRECT_URL_FETCH_BLOCKED",
+            stage="download_video",
+            retryable=False,
+            fallbacks=["managed_youtube_subtitles", "local_video", "local_srt"],
+        )
     command = yt_dlp_base_command()
     if not command:
         fail("找不到 yt-dlp。请运行：pip install yt-dlp，或把 yt-dlp 加入 PATH。")
@@ -6464,6 +6478,46 @@ def find_cached_url_source(cache_root: Path, url_hash: str, payload: dict[str, A
 
 def download_url_subtitles_only(payload: dict[str, Any], download_dir: Path, output_template: str, sub_langs: str) -> dict[str, Any]:
     url = validate_source_url_for_import(payload)
+    if managed_source_broker_is_configured():
+        if not managed_source_operation_available():
+            fail(
+                "当前任务没有获得受控 YouTube 字幕获取能力。",
+                error_code="MANAGED_SOURCE_ACQUISITION_UNAVAILABLE",
+                stage="download_subtitles",
+                retryable=False,
+            )
+        try:
+            acquired = managed_source_request_youtube_subtitles(
+                url,
+                language=str(payload.get("language") or "English"),
+            )
+        except ManagedSourceBrokerError as error:
+            fail(
+                f"受控 YouTube 字幕获取失败：{error}",
+                error_code="MANAGED_SOURCE_ACQUISITION_FAILED",
+                stage="download_subtitles",
+                retryable=True,
+                fallbacks=["local_srt"],
+            )
+        vtt_path = download_dir / f"source.{safe_filename(acquired.language_code)}.vtt"
+        temporary = vtt_path.with_suffix(vtt_path.suffix + ".partial")
+        temporary.write_bytes(acquired.vtt)
+        os.replace(temporary, vtt_path)
+        subtitle_path = convert_vtt_to_srt(vtt_path)
+        return {
+            "video_path": "",
+            "subtitle_path": str(subtitle_path),
+            "download_dir": str(download_dir),
+            "url": url,
+            "title": acquired.title,
+            "transcript_only": True,
+            "skip_video_slicing": True,
+            "download_mode": "subtitles",
+            "subtitle_language": acquired.language_code,
+            "subtitle_kind": acquired.caption_kind,
+            "source_acquisition": "card_service_broker",
+            "warning": "本次只使用受控获取的字幕生成卡片，导出的 APKG 不包含视频片段和原声音频。",
+        }
     args = [
         "--no-playlist",
         "--windows-filenames",
@@ -6530,6 +6584,15 @@ def download_url_source(payload: dict[str, Any]) -> dict[str, Any]:
     sub_langs = subtitle_language_args(payload.get("language", "English"))
     if wants_subtitle_only(payload):
         return download_url_subtitles_only(payload, download_dir, output_template, sub_langs)
+
+    if os.environ.get("ACG_MANAGED_RUNTIME") == "1":
+        fail(
+            "托管插件当前只开放受控 YouTube 字幕获取；视频下载通道尚未完成，不能让 Worker 直接联网降级。",
+            error_code="MANAGED_VIDEO_ACQUISITION_UNAVAILABLE",
+            stage="download_video",
+            retryable=False,
+            fallbacks=["subtitle_only", "local_video"],
+        )
 
     common_args = [
         "--no-playlist",

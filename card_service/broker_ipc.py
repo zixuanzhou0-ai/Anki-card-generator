@@ -20,7 +20,13 @@ BROKER_REQUEST_PREFIX = "__ANKI_CARD_BROKER_REQUEST__"
 BROKER_RESPONSE_PREFIX = "__ANKI_CARD_BROKER_RESPONSE__"
 BROKER_TRANSPORTS = frozenset({"authenticated_loopback_json", "authenticated_stdio_json"})
 ALLOWED_BROKER_OPERATIONS = frozenset(
-    {"model.openai_chat", "model.anthropic_messages", "model.gemini_content", "tts.synthesize"}
+    {
+        "model.openai_chat",
+        "model.anthropic_messages",
+        "model.gemini_content",
+        "tts.synthesize",
+        "source.youtube_subtitles",
+    }
 )
 
 
