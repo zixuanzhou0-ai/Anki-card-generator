@@ -20,6 +20,7 @@ REQUIRED_RUNTIME_RESOURCES = frozenset(
         "card-service:worker-bootstrap",
         "card-service:broker-client",
         "card-service:windows-restricted-launcher",
+        "card-service:windows-sandbox-acl",
         "legacy-worker:entry",
     }
 )

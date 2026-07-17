@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import time
@@ -12,6 +13,7 @@ import pytest
 from card_service.runtime_manifest import canonical_bytes
 from card_service.runtime_package import ManagedRuntimePackage, RuntimePackageError
 from card_service.service import CardService, CardServiceError, MethodPolicy
+from card_service.windows_sandbox_acl import harden_runtime_tree, runtime_sandbox_sid
 
 
 RESOURCE_FILES = {
@@ -19,6 +21,7 @@ RESOURCE_FILES = {
     "card-service:worker-bootstrap": "service/worker_bootstrap.py",
     "card-service:broker-client": "worker/acg/broker_client.py",
     "card-service:windows-restricted-launcher": "service/windows_restricted_launcher.py",
+    "card-service:windows-sandbox-acl": "service/windows_sandbox_acl.py",
     "legacy-worker:entry": "worker/anki_worker.py",
 }
 
@@ -71,7 +74,7 @@ def test_runtime_package_requires_canonical_root_contained_hashed_resources(tmp_
         "packageId": "anki-study-managed-runtime",
         "version": "0.1.0-dev",
         "digest": f"sha256:{package.digest}",
-        "resourceCount": 5,
+        "resourceCount": 6,
         "pathDisclosure": False,
         "signatureVerified": False,
         "complete": False,
@@ -136,6 +139,14 @@ def test_card_service_package_mode_rejects_path_overrides_and_detects_runtime_mu
         )
     assert conflict.value.code == "RUNTIME_PACKAGE_CONFLICT"
 
+    if os.name == "nt":
+        with pytest.raises(CardServiceError) as unhardened:
+            CardService(
+                state_dir=(tmp_path / "unhardened-state").resolve(),
+                runtime_package=root,
+            )
+        assert unhardened.value.code == "WINDOWS_RUNTIME_DACL_MISMATCH"
+        harden_runtime_tree(root, runtime_sandbox_sid())
     card_service = CardService(
         state_dir=(tmp_path / "state").resolve(),
         runtime_package=root,
@@ -145,6 +156,10 @@ def test_card_service_package_mode_rejects_path_overrides_and_detects_runtime_mu
     assert summary["version"] == "0.1.0-dev"
     assert summary["signatureVerified"] is False
     assert summary["complete"] is False
+    assert card_service.capabilities()["processIsolation"]["runtimePackageDacl"] is (os.name == "nt")
+    assert card_service.capabilities()["processIsolation"]["taskWorkspaceDacl"] is (os.name == "nt")
+    assert card_service.capabilities()["processIsolation"]["appContainerOrRestrictedSidDacl"] is (os.name == "nt")
+    assert card_service.capabilities()["processIsolation"]["forcedOutboundBroker"] is (os.name == "nt")
 
     card_service.worker_path.write_text("mutated", encoding="utf-8")
     started = card_service.start_task("runtime.check_environment", {})

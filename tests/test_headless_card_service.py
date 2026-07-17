@@ -87,6 +87,22 @@ def test_capabilities_expose_only_restricted_high_level_methods(tmp_path: Path) 
 def test_sandbox_attestation_rejects_forgery_wrong_task_and_missing_claims() -> None:
     key = b"k" * 32
     task_id = "task-boundary"
+
+    def sign(payload: dict[str, object]) -> dict[str, object]:
+        signed = dict(payload)
+        canonical_payload = json.dumps(
+            signed,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        signed["mac"] = (
+            base64.urlsafe_b64encode(hmac.new(key, canonical_payload, hashlib.sha256).digest())
+            .decode("ascii")
+            .rstrip("=")
+        )
+        return signed
+
     value: dict[str, object] = {
         "schemaVersion": 1,
         "taskId": task_id,
@@ -98,8 +114,7 @@ def test_sandbox_attestation_rejects_forgery_wrong_task_and_missing_claims() -> 
         "filesystemRestrictedByDedicatedSidDacl": False,
         "networkRestricted": False,
     }
-    canonical = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    value["mac"] = base64.urlsafe_b64encode(hmac.new(key, canonical, hashlib.sha256).digest()).decode("ascii").rstrip("=")
+    value = sign(value)
     verified = _verify_sandbox_attestation(value, key=key, task_id=task_id)
     assert verified["restrictedPrimaryToken"] is True
     assert verified["filesystemRestrictedByDedicatedSidDacl"] is False
@@ -113,6 +128,51 @@ def test_sandbox_attestation_rejects_forgery_wrong_task_and_missing_claims() -> 
     missing_claim.pop("maxPrivilegesDisabled")
     with pytest.raises(ValueError, match="binding"):
         _verify_sandbox_attestation(missing_claim, key=key, task_id=task_id)
+
+    runtime_sid = "S-1-15-2-1-2-3-4"
+    task_sid = "S-1-15-3-1024-5-6-7-8"
+    runtime_digest = hashlib.sha256(
+        b"study.runtime-appcontainer-sid.v1\x00" + runtime_sid.encode("ascii")
+    ).hexdigest()
+    task_digest = hashlib.sha256(
+        b"study.task-capability-sid.v1\x00" + task_sid.encode("ascii")
+    ).hexdigest()
+    dacl_bound = dict(value)
+    dacl_bound.pop("mac")
+    dacl_bound.update(
+        {
+            "filesystemRestrictedByDedicatedSidDacl": True,
+            "networkRestricted": True,
+            "runtimeAppContainerSidDigest": runtime_digest,
+            "taskCapabilitySidDigest": task_digest,
+            "appContainerToken": True,
+            "taskCapabilityPresent": True,
+        }
+    )
+    dacl_bound = sign(dacl_bound)
+    verified_dacl = _verify_sandbox_attestation(
+        dacl_bound,
+        key=key,
+        task_id=task_id,
+        expected_filesystem_restricted=True,
+        expected_network_restricted=True,
+        expected_runtime_sid_digest=runtime_digest,
+        expected_task_sid_digest=task_digest,
+    )
+    assert verified_dacl["filesystemRestrictedByDedicatedSidDacl"] is True
+    wrong_binding = dict(dacl_bound)
+    wrong_binding.pop("mac")
+    wrong_binding["taskCapabilitySidDigest"] = "0" * 64
+    with pytest.raises(ValueError, match="SID binding"):
+        _verify_sandbox_attestation(
+            sign(wrong_binding),
+            key=key,
+            task_id=task_id,
+            expected_filesystem_restricted=True,
+            expected_network_restricted=True,
+            expected_runtime_sid_digest=runtime_digest,
+            expected_task_sid_digest=task_digest,
+        )
 
 
 def test_all_runtime_and_state_paths_must_be_absolute(tmp_path: Path) -> None:

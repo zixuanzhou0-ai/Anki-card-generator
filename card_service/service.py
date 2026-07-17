@@ -29,6 +29,12 @@ from .runtime_manifest import (
 from .runtime_package import ManagedRuntimePackage, RuntimePackageError
 from .storage import AtomicJsonStore
 from .trusted_surfaces import TrustedSurfaceError, TrustedSurfaceManager
+from .windows_sandbox_acl import (
+    WindowsSandboxAclError,
+    create_task_workspace,
+    runtime_sandbox_sid,
+    verify_runtime_tree_dacl,
+)
 
 
 SCHEMA_VERSION = 1
@@ -111,7 +117,20 @@ def _safe_error(message: str, limit: int = 2_000) -> str:
     return value[:limit] or "Card Service task failed"
 
 
-def _verify_sandbox_attestation(value: Any, *, key: bytes, task_id: str) -> dict[str, Any]:
+def _sid_binding_digest(domain: str, sid: str) -> str:
+    return hashlib.sha256(domain.encode("ascii") + b"\x00" + sid.encode("ascii")).hexdigest()
+
+
+def _verify_sandbox_attestation(
+    value: Any,
+    *,
+    key: bytes,
+    task_id: str,
+    expected_filesystem_restricted: bool = False,
+    expected_network_restricted: bool = False,
+    expected_runtime_sid_digest: str | None = None,
+    expected_task_sid_digest: str | None = None,
+) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("sandbox attestation is not an object")
     supplied_mac = str(value.get("mac") or "")
@@ -135,14 +154,28 @@ def _verify_sandbox_attestation(value: Any, *, key: bytes, task_id: str) -> dict
         or value.get("schemaVersion") != 1
         or value.get("taskId") != task_id
         or any(value.get(name) is not True for name in required_true)
-        or not isinstance(value.get("filesystemRestrictedByDedicatedSidDacl"), bool)
-        or not isinstance(value.get("networkRestricted"), bool)
+        or value.get("filesystemRestrictedByDedicatedSidDacl") is not expected_filesystem_restricted
+        or value.get("networkRestricted") is not expected_network_restricted
     ):
         raise ValueError("sandbox attestation binding mismatch")
+    if expected_filesystem_restricted and (
+        value.get("runtimeAppContainerSidDigest") != expected_runtime_sid_digest
+        or value.get("taskCapabilitySidDigest") != expected_task_sid_digest
+        or value.get("appContainerToken") is not True
+        or value.get("taskCapabilityPresent") is not True
+    ):
+        raise ValueError("sandbox attestation SID binding mismatch")
     public_fields = required_true + (
         "filesystemRestrictedByDedicatedSidDacl",
         "networkRestricted",
     )
+    if expected_filesystem_restricted:
+        public_fields += (
+            "runtimeAppContainerSidDigest",
+            "taskCapabilitySidDigest",
+            "appContainerToken",
+            "taskCapabilityPresent",
+        )
     return {name: unsigned[name] for name in public_fields}
 
 
@@ -154,6 +187,8 @@ class _RuntimeTask:
     process: subprocess.Popen[str] | None = None
     process_group: TaskOwnedProcessGroup | None = None
     broker_session: TaskBrokerChannel | None = None
+    sandbox_workspace: Path | None = None
+    task_sandbox_sid: str | None = None
     lock: threading.RLock = field(default_factory=threading.RLock)
 
 
@@ -179,6 +214,8 @@ class CardService:
     ) -> None:
         repository_root = Path(__file__).resolve().parent.parent
         self.runtime_package: ManagedRuntimePackage | None = None
+        self.runtime_sandbox_sid: str | None = None
+        self.runtime_package_dacl = False
         if runtime_package is not None:
             if worker_path is not None or python_path is not None or managed_tool_directories:
                 raise CardServiceError(
@@ -191,6 +228,13 @@ class CardService:
                 python_candidate = self.runtime_package.resource_path("managed-python:executable")
             except RuntimePackageError as error:
                 raise CardServiceError(error.code, str(error)) from error
+            if os.name == "nt":
+                try:
+                    self.runtime_sandbox_sid = runtime_sandbox_sid(self.runtime_package.package_id)
+                    verify_runtime_tree_dacl(self.runtime_package.root, self.runtime_sandbox_sid)
+                    self.runtime_package_dacl = True
+                except WindowsSandboxAclError as error:
+                    raise CardServiceError(error.code, str(error)) from error
         else:
             worker_candidate = Path(worker_path) if worker_path is not None else repository_root / "workers" / "anki_worker.py"
             python_candidate = Path(python_path) if python_path is not None else Path(sys.executable)
@@ -306,8 +350,10 @@ class CardService:
                 "restrictedPrimaryToken": self.use_restricted_launcher,
                 "activeProcessLimit": self.task_active_process_limit,
                 "memoryLimitBytes": self.task_memory_limit_bytes,
-                "appContainerOrRestrictedSidDacl": False,
-                "forcedOutboundBroker": False,
+                "runtimePackageDacl": self.runtime_package_dacl,
+                "taskWorkspaceDacl": self.runtime_package_dacl,
+                "appContainerOrRestrictedSidDacl": self.runtime_package_dacl,
+                "forcedOutboundBroker": self.runtime_package_dacl,
                 "complete": False,
             },
             "modelTtsBroker": {
@@ -359,6 +405,16 @@ class CardService:
                 f"Secret-bearing requests are not accepted by the legacy Worker boundary ({secret_path})",
             )
         task_id = str(uuid.uuid4())
+        sandbox_workspace: Path | None = None
+        task_sid: str | None = None
+        if self.runtime_package_dacl:
+            try:
+                sandbox_workspace, task_sid = create_task_workspace(
+                    (self.store.root / "sandboxes").resolve(),
+                    task_id,
+                )
+            except WindowsSandboxAclError as error:
+                raise CardServiceError(error.code, str(error)) from error
         now = _now_ms()
         snapshot: dict[str, Any] = {
             "schemaVersion": SCHEMA_VERSION,
@@ -381,7 +437,12 @@ class CardService:
             "resultRef": None,
             "error": None,
         }
-        runtime = _RuntimeTask(snapshot=snapshot, request=request)
+        runtime = _RuntimeTask(
+            snapshot=snapshot,
+            request=request,
+            sandbox_workspace=sandbox_workspace,
+            task_sandbox_sid=task_sid,
+        )
         with self._tasks_lock:
             self._tasks[task_id] = runtime
         self.store.write_task(task_id, snapshot)
@@ -565,9 +626,17 @@ class CardService:
                     task_id,
                     "--cwd",
                     str(self.worker_path.parent),
-                    "--",
-                    *worker_command,
                 ]
+                if self.runtime_sandbox_sid is not None and runtime.task_sandbox_sid is not None:
+                    process_command.extend(
+                        [
+                            "--runtime-sid",
+                            self.runtime_sandbox_sid,
+                            "--task-sid",
+                            runtime.task_sandbox_sid,
+                        ]
+                    )
+                process_command.extend(["--", *worker_command])
                 process_cwd = str(self.restricted_launcher_path.parent)
             else:
                 process_command = worker_command
@@ -614,7 +683,9 @@ class CardService:
                     "createdSuspended": None if self.use_restricted_launcher else False,
                     "jobInheritedBeforeResume": None if self.use_restricted_launcher else False,
                     "filesystemRestrictedByDedicatedSidDacl": False,
-                    "networkRestricted": False,
+                    "runtimePackageDacl": self.runtime_package_dacl,
+                    "taskWorkspaceDacl": runtime.task_sandbox_sid is not None,
+                    "networkRestricted": None if self.use_restricted_launcher else False,
                 }
                 self._persist_runtime(runtime)
             assert process.stdin is not None and process.stdout is not None and process.stderr is not None
@@ -661,6 +732,24 @@ class CardService:
                                 attestation,
                                 key=sandbox_attestation_key,
                                 task_id=task_id,
+                                expected_filesystem_restricted=self.runtime_package_dacl,
+                                expected_network_restricted=self.runtime_package_dacl,
+                                expected_runtime_sid_digest=(
+                                    _sid_binding_digest(
+                                        "study.runtime-appcontainer-sid.v1",
+                                        self.runtime_sandbox_sid,
+                                    )
+                                    if self.runtime_sandbox_sid is not None
+                                    else None
+                                ),
+                                expected_task_sid_digest=(
+                                    _sid_binding_digest(
+                                        "study.task-capability-sid.v1",
+                                        runtime.task_sandbox_sid,
+                                    )
+                                    if runtime.task_sandbox_sid is not None
+                                    else None
+                                ),
                             )
                             with runtime.lock:
                                 runtime.snapshot["isolation"].update(verified_attestation)
