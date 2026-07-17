@@ -427,7 +427,7 @@ TaskInputManifestV1 经 JCS 后的 SHA-256，描述一次具体执行实例，�
 
 ### template schema
 
-某卡片家族的当前字段/模板实现版本，例如 V14。
+某卡片家族的当前字段/模板实现版本，例如 V15。
 
 ### Tier A/B/C
 

@@ -60,7 +60,7 @@ Hermes 本地封装席的结论是 `needs-contract-hardening`，置信度 0.74�
 
 ### 4.1 CURRENT M0 实施更新（2026-07-17）
 
-评审时记录的 V1 宽前缀 P0 已在当前工作分支关闭：生产 V14 与明确兼容的 V10 使用精确 Note Model 合同，release smoke 强制调用 verifier，伪版本/篡改合同测试必须失败。完整 APKG 合同现在验证 ZIP/JSON 唯一性与限额、模型/牌组/note/card、CardId/纯内容 SHA、媒体账本和安全 HTML；10 个生产生成变体都以真实导出产物通过。导出只在唯一 `.partial` 通过整包校验后以 no-replace 语义原子发布最终 APKG；目标已存在时拒绝覆盖，失败不产生新最终包或伪 done。
+评审时记录的 V1 宽前缀 P0 已关闭：生产 V15、冻结 V14 与明确兼容的 V10 使用精确 Note Model 合同，release smoke 强制调用 verifier，伪版本/篡改合同测试必须失败。完整 APKG 合同现在验证 ZIP/JSON 唯一性与限额、模型/牌组/note/card、CardId/纯内容 SHA、媒体账本和安全 HTML；10 个生产生成变体都以真实导出产物通过。导出只在唯一 `.partial` 通过整包校验后以 no-replace 语义原子发布最终 APKG；目标已存在时拒绝覆盖，失败不产生新最终包或伪 done。
 
 生产 Anki 写路径在媒体预置前执行内部 raw `ExportResult`/payload/路径/APKG 哈希与完整包 preflight，并在媒体准备后、紧贴 `importPackage` 前再次 stat + SHA。raw `ExportResult` 不认证来源，无法抵抗能同时篡改 APKG 与结果的同权限本机攻击者；partial 后的 no-replace 原子发布和重复 rehash 只缩小、不能消除 TOCTOU。M2 必须用认证 Artifact 注册表、不透明引用和受控文件句柄取代该内部兼容信任边界。
 

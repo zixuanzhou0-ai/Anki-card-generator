@@ -425,7 +425,7 @@ M3 先做宿主工具基线：发布目标 Codex 版本必须加载 manifest、�
 
 CURRENT M0 工作分支已经添加：
 
-- immersive_v11 + template schema V14 + 精确 Note Model identity 的真实生成正例，并以 `genanki==0.13.1` 固定 serializer 基线。
+- immersive_v11 + 当前 template schema V15 + 精确 Note Model identity 的真实生成正例，并以冻结 V14 fixture 证明历史兼容、以 `genanki==0.13.1` 固定 serializer 基线。
 - 明确支持的 V10 兼容模型真实生成正例；不再以宽前缀隐式接纳旧包。
 - 10 个生产生成变体都通过真实 `handle_export` + 完整 APKG 包合同，覆盖当前 V15、历史 V14/V12 与明确支持的 V10 语言/文档路径。
 - 完整包合同覆盖 ZIP/JSON 唯一性与限额、collection/media map、model/deck/note/card、CardId/纯内容 SHA、manifest/ledger/card-media ledger 与安全展示 HTML。

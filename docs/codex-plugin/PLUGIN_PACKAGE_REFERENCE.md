@@ -195,7 +195,7 @@ UI bundle 由 MCP App resource 提供，.app.json 仅承担经官方 schema 验�
 | Card Service | 本地运行时实现 |
 | Worker protocol | 现有 Python 子进程协议 |
 | card template family | 产品卡片家族，如 immersive_v11 |
-| template schema | 当前模板实现版本，如 V14 |
+| template schema | 当前模板实现版本，如 V15 |
 | Anki Note Model ID | Anki 中稳定模型身份 |
 
 不能再用“卡片 V11”同时指代 family、schema 和 Note Model。
@@ -298,10 +298,10 @@ V1 本地 stdio 设计不应为了公开目录而过早引入云服务。先证�
 这个完成项不能外推为插件包已经可用：
 
 - 当前仍没有经过安装与宿主注册验证的正式插件包、stdio MCP 或 App resource。
-- M1 Headless Card Service、Artifact/授权边界和版本化 Anki runtime verifier 仍未实现。
+- M1 Headless Card Service、M2 Artifact/授权边界，以及插件侧的通用 Anki runtime evidence 适配器仍未实现；M0 只交付了受精确合同约束的 Anki 26.05 媒体快捷键桥。
 - 非 NFC、Windows 保留设备名（含 `CLOCK$`）、规范化冲突与 APKG archive 资源上限已通过；有界流式读取覆盖 APKG archive/package/verifier 与标准 Windows Anki direct-first 媒体路径。非标准/portable profile 的 AnkiConnect inline 兼容路径仍整文件/Base64，但原始单文件上限为 8 MiB；8 MiB 不是进程峰值。
-- M0 只有在 Computer Use 真实桌面验收、GUI 翻面/媒体播放和至少 20 张连续复习通过后才能关闭；现有数据级证据不能代替这些出口。完整边界见 [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md)。
-- 在这些出口满足前，不得声明插件复用了完整 APKG → 真实 Anki 发布闭环。
+- M0 的 Computer Use、GUI 翻面/媒体播放和 20 张连续复习出口已经通过；完整边界见 [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md)。
+- M1–M3 的 Headless Service、认证 Artifact/授权边界、stdio MCP、Skill、宿主注册和可安装包出口满足前，不得声明 Codex 插件已经复用完整 APKG → 真实 Anki 发布闭环。
 
 ## 14. 包验收
 

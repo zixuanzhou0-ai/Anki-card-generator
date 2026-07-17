@@ -132,7 +132,7 @@ M0 已经完成，但 Codex 插件尚未交付：Computer Use 已在真实 Windo
 ### 最后证明它可靠
 
 12. [安全与隐私](SECURITY_AND_PRIVACY.md)：内部授权记录、提示注入、路径、网络、秘密和 Anki 写入。
-13. [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md)：最终自动化、20 卡媒体包、隔离 Anki 数据级证据和仍未完成的 GUI 边界。
+13. [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md)：最终自动化、V15 20 卡媒体包、隔离 Anki 数据证据、真实 GUI/20 张连续复习和剩余学习效果边界。
 14. [可靠性与核验](RELIABILITY_AND_VERIFICATION.md)：从素材到真实 Anki 的逐级证据链。
 15. [基准与评估](BENCHMARK_AND_EVALUATION.md)：功能、对抗、学习效果和发布阈值。
 16. [路线图](ROADMAP.md)：阶段、出口条件、迁移和发布策略。
