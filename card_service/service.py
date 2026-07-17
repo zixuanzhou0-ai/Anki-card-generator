@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -31,6 +33,8 @@ from .trusted_surfaces import TrustedSurfaceError, TrustedSurfaceManager
 SCHEMA_VERSION = 1
 PROGRESS_PREFIX = "__ANKI_CARD_PROGRESS__"
 ERROR_PREFIX = "__ANKI_CARD_ERROR__"
+SANDBOX_ATTESTATION_PREFIX = "__ANKI_CARD_SANDBOX_ATTESTATION__"
+RESTRICTED_CHILD_EXIT_PREFIX = "__ANKI_CARD_RESTRICTED_CHILD_EXIT__"
 TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled", "interrupted"})
 ACTIVE_STATES = frozenset({"queued", "running", "cancelling"})
 BrokerOperationHandler = Callable[[str, dict[str, Any]], Any]
@@ -106,6 +110,41 @@ def _safe_error(message: str, limit: int = 2_000) -> str:
     return value[:limit] or "Card Service task failed"
 
 
+def _verify_sandbox_attestation(value: Any, *, key: bytes, task_id: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("sandbox attestation is not an object")
+    supplied_mac = str(value.get("mac") or "")
+    unsigned = {name: child for name, child in value.items() if name != "mac"}
+    expected_mac = base64.urlsafe_b64encode(
+        hmac.new(
+            key,
+            json.dumps(unsigned, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+    ).decode("ascii").rstrip("=")
+    required_true = (
+        "restrictedPrimaryToken",
+        "maxPrivilegesDisabled",
+        "authenticatedUsersSidDisabled",
+        "createdSuspended",
+        "jobInheritedBeforeResume",
+    )
+    if (
+        not hmac.compare_digest(supplied_mac, expected_mac)
+        or value.get("schemaVersion") != 1
+        or value.get("taskId") != task_id
+        or any(value.get(name) is not True for name in required_true)
+        or not isinstance(value.get("filesystemRestrictedByDedicatedSidDacl"), bool)
+        or not isinstance(value.get("networkRestricted"), bool)
+    ):
+        raise ValueError("sandbox attestation binding mismatch")
+    public_fields = required_true + (
+        "filesystemRestrictedByDedicatedSidDacl",
+        "networkRestricted",
+    )
+    return {name: unsigned[name] for name in public_fields}
+
+
 @dataclass
 class _RuntimeTask:
     snapshot: dict[str, Any]
@@ -134,6 +173,7 @@ class CardService:
         task_memory_limit_bytes: int = 2 * 1024 * 1024 * 1024,
         task_active_process_limit: int = 16,
         broker_handler_factory: BrokerHandlerFactory | None = None,
+        use_restricted_launcher: bool | None = None,
     ) -> None:
         repository_root = Path(__file__).resolve().parent.parent
         worker_candidate = Path(worker_path) if worker_path is not None else repository_root / "workers" / "anki_worker.py"
@@ -165,8 +205,12 @@ class CardService:
         self.task_memory_limit_bytes = max(64 * 1024 * 1024, int(task_memory_limit_bytes))
         self.task_active_process_limit = max(1, int(task_active_process_limit))
         self.broker_handler_factory = broker_handler_factory
+        self.use_restricted_launcher = os.name == "nt" if use_restricted_launcher is None else bool(use_restricted_launcher)
+        if self.use_restricted_launcher and os.name != "nt":
+            raise CardServiceError("RESTRICTED_LAUNCHER_UNAVAILABLE", "Restricted launcher is only available on Windows")
         self.worker_sha256 = self._file_sha256(self.worker_path)
         self.bootstrap_path = (Path(__file__).resolve().parent / "worker_bootstrap.py").resolve()
+        self.restricted_launcher_path = (Path(__file__).resolve().parent / "windows_restricted_launcher.py").resolve()
         self.broker_client_path = (repository_root / "workers" / "acg" / "broker_client.py").resolve()
         try:
             runtime_entries = worker_runtime_entries(
@@ -174,6 +218,7 @@ class CardService:
                 self.bootstrap_path,
                 self.broker_client_path,
                 self.python_path,
+                self.restricted_launcher_path if self.use_restricted_launcher else None,
             )
             runtime_entries.extend(managed_tool_runtime_entries(self.managed_tool_directories))
             self.runtime_manifest = ManagedRuntimeManifest(runtime_entries)
@@ -221,6 +266,7 @@ class CardService:
                 "taskOwnedJobObject": os.name == "nt",
                 "killOnClose": os.name == "nt",
                 "noBreakawayRequested": os.name == "nt",
+                "restrictedPrimaryToken": self.use_restricted_launcher,
                 "activeProcessLimit": self.task_active_process_limit,
                 "memoryLimitBytes": self.task_memory_limit_bytes,
                 "appContainerOrRestrictedSidDacl": False,
@@ -393,6 +439,7 @@ class CardService:
         environment["PATH"] = os.pathsep.join(dict.fromkeys(path_entries))
         environment["PYTHONIOENCODING"] = "utf-8"
         environment["PYTHONUTF8"] = "1"
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
         return environment
 
     def _persist_runtime(self, runtime: _RuntimeTask) -> None:
@@ -438,6 +485,7 @@ class CardService:
         stderr_bytes = 0
         stream_limit_error: list[str] = []
         worker_error: list[dict[str, Any]] = []
+        restricted_child_exit: list[dict[str, Any]] = []
         try:
             with runtime.lock:
                 if runtime.cancel_event.is_set():
@@ -455,19 +503,39 @@ class CardService:
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
             try:
                 self.runtime_manifest.verify()
+                self.runtime_manifest.verify_serialized(self.runtime_manifest_path)
             except RuntimeManifestError as error:
                 raise CardServiceError(error.code, str(error)) from error
-            process = subprocess.Popen(
-                [
+            worker_command = [
+                str(self.python_path),
+                str(self.bootstrap_path),
+                str(self.worker_path),
+                policy.worker_command,
+                self.worker_sha256,
+                "@stdin" if self.use_restricted_launcher else str(self.runtime_manifest_path),
+                self.runtime_manifest.digest,
+            ]
+            sandbox_attestation_key = os.urandom(32) if self.use_restricted_launcher else b""
+            sandbox_attestation_seen = threading.Event()
+            sandbox_attestation_errors: list[str] = []
+            if self.use_restricted_launcher:
+                process_command = [
                     str(self.python_path),
-                    str(self.bootstrap_path),
-                    str(self.worker_path),
-                    policy.worker_command,
-                    self.worker_sha256,
-                    str(self.runtime_manifest_path),
-                    self.runtime_manifest.digest,
-                ],
-                cwd=str(self.worker_path.parent),
+                    str(self.restricted_launcher_path),
+                    "--task-id",
+                    task_id,
+                    "--cwd",
+                    str(self.worker_path.parent),
+                    "--",
+                    *worker_command,
+                ]
+                process_cwd = str(self.restricted_launcher_path.parent)
+            else:
+                process_command = worker_command
+                process_cwd = str(self.worker_path.parent)
+            process = subprocess.Popen(
+                process_command,
+                cwd=process_cwd,
                 env=self._managed_environment(),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -503,18 +571,25 @@ class CardService:
                     "activeProcessLimit": self.task_active_process_limit,
                     "memoryLimitBytes": self.task_memory_limit_bytes,
                     "authenticatedBrokerStdio": runtime.broker_session is not None,
+                    "restrictedPrimaryToken": None if self.use_restricted_launcher else False,
+                    "createdSuspended": None if self.use_restricted_launcher else False,
+                    "jobInheritedBeforeResume": None if self.use_restricted_launcher else False,
+                    "filesystemRestrictedByDedicatedSidDacl": False,
+                    "networkRestricted": False,
                 }
                 self._persist_runtime(runtime)
             assert process.stdin is not None and process.stdout is not None and process.stderr is not None
+            stdin_lock = threading.RLock()
+            if self.use_restricted_launcher:
+                start_key = base64.urlsafe_b64encode(sandbox_attestation_key).decode("ascii").rstrip("=")
+                process.stdin.write(f"START {start_key}\n")
+                process.stdin.flush()
             launch_envelope: dict[str, Any] = {
                 "schemaVersion": 1,
                 "request": runtime.request,
             }
             if runtime.broker_session is not None:
                 launch_envelope["brokerDescriptor"] = runtime.broker_session.descriptor()
-            process.stdin.write(json.dumps(launch_envelope, ensure_ascii=False, separators=(",", ":")) + "\n")
-            process.stdin.flush()
-            stdin_lock = threading.RLock()
 
             def read_stdout() -> None:
                 nonlocal stdout_bytes
@@ -538,6 +613,25 @@ class CardService:
                         self._terminate(process)
                         return
                     stripped = line.rstrip("\r\n")
+                    if stripped.startswith(SANDBOX_ATTESTATION_PREFIX):
+                        try:
+                            attestation = json.loads(stripped[len(SANDBOX_ATTESTATION_PREFIX) :])
+                            if sandbox_attestation_seen.is_set():
+                                raise ValueError("duplicate attestation")
+                            verified_attestation = _verify_sandbox_attestation(
+                                attestation,
+                                key=sandbox_attestation_key,
+                                task_id=task_id,
+                            )
+                            with runtime.lock:
+                                runtime.snapshot["isolation"].update(verified_attestation)
+                                self._persist_runtime(runtime)
+                            sandbox_attestation_seen.set()
+                        except (TypeError, ValueError):
+                            sandbox_attestation_errors.append("Restricted launcher attestation was invalid")
+                            self._terminate(process)
+                            return
+                        continue
                     if stripped.startswith(BROKER_REQUEST_PREFIX):
                         if runtime.broker_session is None:
                             stream_limit_error.append("Worker requested an unavailable Card Service broker")
@@ -572,6 +666,17 @@ class CardService:
                         if isinstance(payload, dict):
                             self._set_progress(runtime, payload)
                         continue
+                    if stripped.startswith(RESTRICTED_CHILD_EXIT_PREFIX):
+                        try:
+                            payload = json.loads(stripped[len(RESTRICTED_CHILD_EXIT_PREFIX) :])
+                        except ValueError:
+                            payload = {
+                                "error_code": "RESTRICTED_CHILD_FAILED",
+                                "message": "Restricted worker failed before returning a structured error",
+                            }
+                        if isinstance(payload, dict):
+                            restricted_child_exit.append(payload)
+                        continue
                     if stripped.startswith(ERROR_PREFIX):
                         try:
                             payload = json.loads(stripped[len(ERROR_PREFIX) :])
@@ -589,6 +694,50 @@ class CardService:
             for reader in readers:
                 reader.start()
             deadline = time.monotonic() + policy.timeout_seconds
+            if self.use_restricted_launcher:
+                handshake_deadline = min(deadline, time.monotonic() + 5.0)
+                while (
+                    not sandbox_attestation_seen.is_set()
+                    and process.poll() is None
+                    and not sandbox_attestation_errors
+                    and not stream_limit_error
+                    and not runtime.cancel_event.is_set()
+                    and time.monotonic() < handshake_deadline
+                ):
+                    time.sleep(0.01)
+                if process.poll() is None and not sandbox_attestation_seen.is_set():
+                    self._terminate(process)
+                    if runtime.cancel_event.is_set():
+                        raise CardServiceError("TASK_CANCELLED", "Task cancelled")
+                    if time.monotonic() >= deadline:
+                        raise CardServiceError(
+                            "TASK_TIMEOUT",
+                            f"Task exceeded its {policy.timeout_seconds:g} second timeout",
+                        )
+                    raise CardServiceError(
+                        "SANDBOX_ATTESTATION_FAILED",
+                        sandbox_attestation_errors[-1]
+                        if sandbox_attestation_errors
+                        else "Restricted launcher did not complete its pre-resume handshake",
+                    )
+                if sandbox_attestation_seen.is_set():
+                    with stdin_lock:
+                        process.stdin.write(
+                            json.dumps(
+                                self.runtime_manifest.value,
+                                ensure_ascii=False,
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            )
+                            + "\n"
+                        )
+                        process.stdin.flush()
+            if process.poll() is None:
+                with stdin_lock:
+                    process.stdin.write(
+                        json.dumps(launch_envelope, ensure_ascii=False, separators=(",", ":")) + "\n"
+                    )
+                    process.stdin.flush()
             while process.poll() is None:
                 if runtime.cancel_event.is_set():
                     self._terminate(process)
@@ -605,8 +754,20 @@ class CardService:
                 raise CardServiceError("WORKER_OUTPUT_LIMIT", stream_limit_error[0])
             if process.returncode != 0:
                 payload = worker_error[-1] if worker_error else {}
-                message = payload.get("message") or next((line for line in reversed(stderr_parts) if line), "Legacy worker failed")
+                stderr_message = next((line for line in reversed(stderr_parts) if line), "")
+                if not payload and not stderr_message and restricted_child_exit:
+                    payload = restricted_child_exit[-1]
+                message = payload.get("message") or stderr_message or "Legacy worker failed"
                 raise CardServiceError(str(payload.get("error_code") or "WORKER_FAILED"), _safe_error(str(message)))
+            if self.use_restricted_launcher and (
+                sandbox_attestation_errors or not sandbox_attestation_seen.is_set()
+            ):
+                raise CardServiceError(
+                    "SANDBOX_ATTESTATION_FAILED",
+                    sandbox_attestation_errors[-1]
+                    if sandbox_attestation_errors
+                    else "Restricted launcher did not prove its pre-resume Job binding",
+                )
             raw_result = "".join(stdout_parts).strip().lstrip("\ufeff")
             if not raw_result:
                 raise CardServiceError("WORKER_EMPTY_RESULT", "Legacy worker returned no JSON result")

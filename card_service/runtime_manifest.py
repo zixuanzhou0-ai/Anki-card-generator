@@ -105,6 +105,14 @@ class ManagedRuntimeManifest:
             if size != entry.size or digest != entry.sha256:
                 raise RuntimeManifestError("MANAGED_RUNTIME_CHANGED", "Managed runtime entry changed after service startup")
 
+    def verify_serialized(self, path: Path) -> None:
+        try:
+            source = path.read_bytes()
+        except OSError as error:
+            raise RuntimeManifestError("MANAGED_RUNTIME_CHANGED", "Managed runtime manifest is unavailable") from error
+        if hashlib.sha256(source).hexdigest() != self.digest:
+            raise RuntimeManifestError("MANAGED_RUNTIME_CHANGED", "Managed runtime manifest digest changed")
+
     def write(self, path: Path) -> None:
         if not path.is_absolute():
             raise RuntimeManifestError("RUNTIME_MANIFEST_PATH_RELATIVE", "Runtime manifest path must be absolute")
@@ -133,6 +141,7 @@ def worker_runtime_entries(
     bootstrap_path: Path,
     broker_client_path: Path,
     python_path: Path,
+    restricted_launcher_path: Path | None = None,
 ) -> list[tuple[str, Path]]:
     entries: list[tuple[str, Path]] = [
         ("managed-python:executable", python_path),
@@ -140,6 +149,8 @@ def worker_runtime_entries(
         ("card-service:broker-client", broker_client_path),
         ("legacy-worker:entry", worker_path),
     ]
+    if restricted_launcher_path is not None:
+        entries.append(("card-service:windows-restricted-launcher", restricted_launcher_path))
     module_root = worker_path.parent / "acg"
     if module_root.is_dir():
         for path in sorted(module_root.rglob("*.py"), key=lambda value: value.as_posix().encode("utf-8")):

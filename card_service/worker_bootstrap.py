@@ -19,6 +19,8 @@ ALLOWED_COMMANDS = frozenset(
     }
 )
 MAX_BOOTSTRAP_ENVELOPE_BYTES = 64 * 1024 * 1024
+MAX_RUNTIME_MANIFEST_BYTES = 8 * 1024 * 1024
+STDIN_RUNTIME_MANIFEST = "@stdin"
 
 
 def _file_sha256(path: Path) -> str:
@@ -35,7 +37,7 @@ def main() -> None:
     worker_path = Path(sys.argv[1]).resolve(strict=True)
     command = sys.argv[2]
     expected_sha256 = sys.argv[3].lower()
-    runtime_manifest_path = Path(sys.argv[4]).resolve(strict=True)
+    runtime_manifest_reference = sys.argv[4]
     expected_manifest_sha256 = sys.argv[5].lower()
     if command not in ALLOWED_COMMANDS:
         raise SystemExit("managed worker command is not allowed")
@@ -43,7 +45,14 @@ def main() -> None:
     actual_sha256 = hashlib.sha256(source).hexdigest()
     if not hmac.compare_digest(actual_sha256, expected_sha256):
         raise SystemExit("managed worker digest changed")
-    manifest_source = runtime_manifest_path.read_bytes()
+    if runtime_manifest_reference == STDIN_RUNTIME_MANIFEST:
+        manifest_line = sys.stdin.buffer.readline(MAX_RUNTIME_MANIFEST_BYTES + 1)
+        if not manifest_line or len(manifest_line) > MAX_RUNTIME_MANIFEST_BYTES:
+            raise SystemExit("managed runtime manifest is missing or too large")
+        manifest_source = manifest_line.rstrip(b"\r\n")
+    else:
+        runtime_manifest_path = Path(runtime_manifest_reference).resolve(strict=True)
+        manifest_source = runtime_manifest_path.read_bytes()
     manifest_sha256 = hashlib.sha256(manifest_source).hexdigest()
     if not hmac.compare_digest(manifest_sha256, expected_manifest_sha256):
         raise SystemExit("managed runtime manifest digest changed")

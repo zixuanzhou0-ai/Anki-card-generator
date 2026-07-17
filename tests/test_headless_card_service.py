@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import subprocess
 import sys
@@ -8,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from card_service.service import CardService, CardServiceError, MethodPolicy
+from card_service.service import CardService, CardServiceError, MethodPolicy, _verify_sandbox_attestation
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,6 +50,9 @@ def test_capabilities_expose_only_restricted_high_level_methods(tmp_path: Path) 
     assert capabilities["genericWorkerCommand"] is False
     assert capabilities["secretBearingRequests"] is False
     assert capabilities["processIsolation"]["taskOwnedJobObject"] is (sys.platform == "win32")
+    assert capabilities["processIsolation"]["restrictedPrimaryToken"] is (sys.platform == "win32")
+    assert capabilities["processIsolation"]["appContainerOrRestrictedSidDacl"] is False
+    assert capabilities["processIsolation"]["forcedOutboundBroker"] is False
     assert capabilities["processIsolation"]["complete"] is False
     assert capabilities["trustedSurfaces"]["localSettings"] is True
     assert capabilities["trustedSurfaces"]["authorizationLedger"] is False
@@ -76,6 +82,37 @@ def test_capabilities_expose_only_restricted_high_level_methods(tmp_path: Path) 
             {"profileRef": "../escape", "capability": "model"},
         )
     assert settings_error.value.code == "INVALID_PROFILE_REF"
+
+
+def test_sandbox_attestation_rejects_forgery_wrong_task_and_missing_claims() -> None:
+    key = b"k" * 32
+    task_id = "task-boundary"
+    value: dict[str, object] = {
+        "schemaVersion": 1,
+        "taskId": task_id,
+        "restrictedPrimaryToken": True,
+        "maxPrivilegesDisabled": True,
+        "authenticatedUsersSidDisabled": True,
+        "createdSuspended": True,
+        "jobInheritedBeforeResume": True,
+        "filesystemRestrictedByDedicatedSidDacl": False,
+        "networkRestricted": False,
+    }
+    canonical = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    value["mac"] = base64.urlsafe_b64encode(hmac.new(key, canonical, hashlib.sha256).digest()).decode("ascii").rstrip("=")
+    verified = _verify_sandbox_attestation(value, key=key, task_id=task_id)
+    assert verified["restrictedPrimaryToken"] is True
+    assert verified["filesystemRestrictedByDedicatedSidDacl"] is False
+
+    forged = dict(value, mac="forged")
+    with pytest.raises(ValueError, match="binding"):
+        _verify_sandbox_attestation(forged, key=key, task_id=task_id)
+    with pytest.raises(ValueError, match="binding"):
+        _verify_sandbox_attestation(value, key=key, task_id="different-task")
+    missing_claim = dict(value)
+    missing_claim.pop("maxPrivilegesDisabled")
+    with pytest.raises(ValueError, match="binding"):
+        _verify_sandbox_attestation(missing_claim, key=key, task_id=task_id)
 
 
 def test_all_runtime_and_state_paths_must_be_absolute(tmp_path: Path) -> None:
@@ -115,6 +152,13 @@ def test_successful_task_persists_snapshot_without_raw_request_and_reads_result(
     assert finished["state"] == "succeeded"
     assert finished["progress"]["overallPercent"] == 100
     assert finished["isolation"]["taskOwnedJobObject"] is (sys.platform == "win32")
+    assert finished["isolation"]["restrictedPrimaryToken"] is (sys.platform == "win32")
+    assert finished["isolation"]["createdSuspended"] is (sys.platform == "win32")
+    assert finished["isolation"]["jobInheritedBeforeResume"] is (sys.platform == "win32")
+    assert finished["isolation"]["filesystemRestrictedByDedicatedSidDacl"] is False
+    assert finished["isolation"]["networkRestricted"] is False
+    if sys.platform == "win32":
+        assert finished["isolation"]["authenticatedUsersSidDisabled"] is True
     assert card_service.read_result(started["id"]) == {
         "ok": True,
         "command": "check_env",
@@ -175,7 +219,7 @@ def test_runtime_manifest_is_internal_and_bootstrap_rejects_manifest_tampering(t
     started = card_service.start_task("runtime.check_environment", {})
     finished = wait_terminal(card_service, started["id"])
     assert finished["state"] == "failed"
-    assert finished["error"]["code"] == "WORKER_FAILED"
+    assert finished["error"]["code"] == "MANAGED_RUNTIME_CHANGED"
     assert "manifest digest changed" in finished["error"]["message"]
 
 

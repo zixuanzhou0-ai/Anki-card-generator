@@ -11,6 +11,8 @@ JOB_OBJECT_LIMIT_JOB_MEMORY = 0x00000200
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION = 0x00000400
 JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+JOB_OBJECT_BASIC_UI_RESTRICTIONS = 4
+JOB_OBJECT_UILIMIT_SAFE_HEADLESS = 0x000000FF
 
 
 class ProcessIsolationError(RuntimeError):
@@ -53,6 +55,10 @@ class _ExtendedLimitInformation(ctypes.Structure):
     ]
 
 
+class _BasicUiRestrictions(ctypes.Structure):
+    _fields_ = [("UIRestrictionsClass", wintypes.DWORD)]
+
+
 class TaskOwnedProcessGroup:
     """Owns a Windows Job Object; closing it terminates all task descendants."""
 
@@ -93,6 +99,16 @@ class TaskOwnedProcessGroup:
             error = ctypes.get_last_error()
             kernel32.CloseHandle(handle)
             raise ProcessIsolationError(f"SetInformationJobObject failed: {error}")
+        ui_restrictions = _BasicUiRestrictions(JOB_OBJECT_UILIMIT_SAFE_HEADLESS)
+        if not kernel32.SetInformationJobObject(
+            handle,
+            JOB_OBJECT_BASIC_UI_RESTRICTIONS,
+            ctypes.byref(ui_restrictions),
+            ctypes.sizeof(ui_restrictions),
+        ):
+            error = ctypes.get_last_error()
+            kernel32.CloseHandle(handle)
+            raise ProcessIsolationError(f"SetInformationJobObject UI restrictions failed: {error}")
         self._handle = int(handle)
 
     @property
