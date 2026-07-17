@@ -126,8 +126,9 @@ M0 出口已经关闭：
 - 正式 stdio 启动器现已装配 Service-owned profile/intent resolver。启动清单必须是 canonical JSON、短期有效、位于固定 state dir 的 `trusted-surfaces/authorizations` 受信目录；它绑定方法→能力→profile、固定 provider/origin/model/voice、configuration fingerprint、credential revision、调用/请求/响应/成本预算与 intent ref。Card Service 在任务创建和每次 Broker 调用前复核过期及凭据版本，且拒绝任务自报 profile、revision、intent、budget、预留成本或 broker descriptor。能力摘要只暴露清单 digest/期限/计数，不暴露路径或秘密。
 - 已交付首个受控来源切片：正式授权清单可按方法绑定 `source.youtube_subtitles`；旧 V1 清单不含来源策略时保持兼容并默认关闭该能力。Service 只接受任务已授权的 YouTube video ID、字幕语言和 VTT 格式，固定访问 YouTube watch/timedtext 端点，解析全部 DNS 地址并拒绝任一非公网答案，连接固定公网 IP 且保留 TLS hostname 校验，不跟随重定向，并限制 watch/subtitle 响应字节和超时。signed caption query 只存在于 Service 短期内存，不进入 Worker、结果或 ledger；Worker 仅接收含有效时间 cue、长度和 SHA-256 的规范化 VTT。托管 Worker 直接运行联网 yt-dlp 会在创建子进程前 fail closed。
 - 真实受限 Legacy Worker 已完成“受控 YouTube 字幕 → 本地候选 → Service 模型 Broker → 学习点结果”认证 stdio 闭环；source/model 两类 reservation 均结算，持久 JSON 不含 provider secret 或 signed caption query canary。该证明使用确定性 fake transport，不是一次真实 YouTube 公网可用性测试。
+- 已增加首条桌面/Headless 语义等价合同：同一个冻结的单学习点请求分别由桌面 Legacy Worker 直调与 Headless Card Service 执行，核心 Project/segments/生成学习点一致；两边随后独立导出，Note Model 合同、media manifest、card-media ledger 和 audio audit 一致，任务终态均为 100%。同一“未选择学习点”请求的 code/message/retryable/stage 也一致；Card Service 现在保留经过 allowlist/限长的 Worker stage/fallbacks，但不持久化任意 details。该样本关闭 TTS 且不含视频，Headless 导出为隔离调度等价测试而显式关闭 restricted launcher；它不能替代受限视频/TTS、真实 Anki verify 和完整取消矩阵。
 - 本里程碑仍未完成：该启动清单还缺正式 launcher/受信设置表面的生产签发流程与 M2 的逐 OperationIntent approval ledger；公网 provider 也未做真实用户凭据调用，Vertex TTS OAuth egress 仍 fail closed。完整 YouTube 视频/音频获取仍未开放，托管模式不会静默退回直接 yt-dlp；扩展恶意媒体/资源耗尽 corpus、桌面/Headless 语义等价证据和正式可安装插件包仍在后续切片。
-- 当前回归证据包括正式 Python 全集 821 项、正式 Worker `unittest discover` 584 项，以及真实受限 Legacy Worker 的模型、TTS、字幕→模型三条认证 stdio 闭环；这些集合有重叠且不是 M1 完成判定。
+- 当前回归证据包括正式 Python 全集 822 项、正式 Worker `unittest discover` 584 项，以及真实受限 Legacy Worker 的模型、TTS、字幕→模型三条认证 stdio 闭环和一条桌面/Headless 单卡语义等价合同；这些集合有重叠且不是 M1 完成判定。
 
 ### 出口
 

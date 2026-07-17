@@ -242,6 +242,10 @@ def test_worker_error_is_structured_and_safe(tmp_path: Path) -> None:
     assert finished["state"] == "failed"
     assert finished["error"]["code"] == "FAKE_FAILURE"
     assert finished["error"]["message"] == "safe fake failure"
+    assert finished["error"]["retryable"] is True
+    assert finished["error"]["stage"] == "fixture"
+    assert finished["error"]["fallbacks"] == ["retry_fixture"]
+    assert "details" not in finished["error"]
 
 
 def test_worker_digest_change_after_service_start_fails_closed(tmp_path: Path) -> None:

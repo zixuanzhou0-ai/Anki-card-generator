@@ -24,7 +24,16 @@ def main() -> None:
     if mode == "fail":
         print(
             ERROR_PREFIX
-            + json.dumps({"error_code": "FAKE_FAILURE", "message": "safe fake failure"}),
+            + json.dumps(
+                {
+                    "error_code": "FAKE_FAILURE",
+                    "message": "safe fake failure",
+                    "retryable": True,
+                    "stage": "fixture",
+                    "fallbacks": ["retry_fixture"],
+                    "details": {"untrusted": "must not cross the service boundary"},
+                }
+            ),
             file=sys.stderr,
             flush=True,
         )

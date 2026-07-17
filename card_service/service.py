@@ -70,9 +70,20 @@ SERVICE_OWNED_BROKER_REQUEST_KEYS = frozenset(
 
 
 class CardServiceError(RuntimeError):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        retryable: bool | None = None,
+        stage: str | None = None,
+        fallbacks: tuple[str, ...] = (),
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.retryable = retryable
+        self.stage = stage
+        self.fallbacks = fallbacks
 
 
 @dataclass(frozen=True)
@@ -157,6 +168,28 @@ def _safe_error(message: str, limit: int = 2_000) -> str:
     value = str(message).replace("\x00", "").strip()
     value = re.sub(r"(?i)(?:[a-z]:\\|\\\\)[^\r\n\t\"<>|]+", "<local-path>", value)
     return value[:limit] or "Card Service task failed"
+
+
+def _worker_failure(payload: dict[str, Any], fallback_message: str) -> CardServiceError:
+    raw_code = str(payload.get("error_code") or "WORKER_FAILED")
+    code = raw_code if re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", raw_code) else "WORKER_FAILED"
+    raw_stage = str(payload.get("stage") or "")
+    stage = raw_stage if re.fullmatch(r"[a-z][a-z0-9._-]{0,79}", raw_stage) else None
+    raw_fallbacks = payload.get("fallbacks")
+    fallbacks: list[str] = []
+    if isinstance(raw_fallbacks, list):
+        for item in raw_fallbacks[:16]:
+            value = str(item)
+            if re.fullmatch(r"[a-z][a-z0-9._-]{0,79}", value) and value not in fallbacks:
+                fallbacks.append(value)
+    raw_retryable = payload.get("retryable")
+    return CardServiceError(
+        code,
+        _safe_error(str(payload.get("message") or fallback_message)),
+        retryable=(raw_retryable if isinstance(raw_retryable, bool) else code == "WORKER_FAILED"),
+        stage=stage,
+        fallbacks=tuple(fallbacks),
+    )
 
 
 def _sid_binding_digest(domain: str, sid: str) -> str:
@@ -1014,8 +1047,7 @@ class CardService:
                 stderr_message = next((line for line in reversed(stderr_parts) if line), "")
                 if not payload and not stderr_message and restricted_child_exit:
                     payload = restricted_child_exit[-1]
-                message = payload.get("message") or stderr_message or "Legacy worker failed"
-                raise CardServiceError(str(payload.get("error_code") or "WORKER_FAILED"), _safe_error(str(message)))
+                raise _worker_failure(payload, stderr_message or "Legacy worker failed")
             if self.use_restricted_launcher and (
                 sandbox_attestation_errors or not sandbox_attestation_seen.is_set()
             ):
@@ -1053,11 +1085,20 @@ class CardService:
             state = "cancelled" if error.code == "TASK_CANCELLED" else "failed"
             with runtime.lock:
                 runtime.snapshot["state"] = state
-                runtime.snapshot["error"] = {
+                failure: dict[str, Any] = {
                     "code": error.code,
                     "message": _safe_error(str(error)),
-                    "retryable": error.code in {"TASK_CANCELLED", "TASK_TIMEOUT", "WORKER_FAILED"},
+                    "retryable": (
+                        error.retryable
+                        if error.retryable is not None
+                        else error.code in {"TASK_CANCELLED", "TASK_TIMEOUT", "WORKER_FAILED"}
+                    ),
                 }
+                if error.stage is not None:
+                    failure["stage"] = error.stage
+                if error.fallbacks:
+                    failure["fallbacks"] = list(error.fallbacks)
+                runtime.snapshot["error"] = failure
                 runtime.snapshot["progress"]["message"] = _safe_error(str(error), 500)
                 self._persist_runtime(runtime)
         except Exception as error:  # defensive service boundary
