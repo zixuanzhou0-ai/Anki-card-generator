@@ -667,3 +667,87 @@ def test_real_legacy_card_generation_uses_service_broker_without_worker_secret_o
     assert ledger.list_records()[0]["state"] == "settled"
     persisted = "\n".join(path.read_text(encoding="utf-8") for path in tmp_path.rglob("*.json"))
     assert "provider-secret-canary" not in persisted
+
+
+def test_real_legacy_tts_test_uses_service_broker_without_worker_secret_or_origin(tmp_path: Path) -> None:
+    credentials = CredentialStore(
+        state_dir=(tmp_path / "tts-credentials").resolve(),
+        backend=InMemoryCredentialBackend(),
+    )
+    metadata = credentials.set_secret("tts.primary", "tts-provider-secret-canary")
+    ledger = BrokerReservationLedger((tmp_path / "tts-broker-ledger.json").resolve())
+    broker = ModelTtsBroker(credential_store=credentials, ledger=ledger)
+    observed = []
+    audio = b"ID3" + b"\x00" * 128
+
+    def transport(request):
+        observed.append(request)
+        assert request.headers["Authorization"] == "Bearer tts-provider-secret-canary"
+        body = json.loads(request.body)
+        assert request.url == "https://api.x.ai/v1/tts"
+        assert body["voice_id"] == "eve"
+        assert body["text"] == "This is a TTS test for your Anki cards."
+        assert "model" not in body
+        return ProviderTransportResponse(200, request.url, {"content-type": "audio/mpeg"}, audio)
+
+    authorization = TaskBrokerAuthorization(
+        operation_intent_ref="intent-test-tts-1",
+        budget=BrokerBudget(2, 100_000, 100_000, 100),
+        operations={
+            "tts.synthesize": AuthorizedProviderCall(
+                profile=ProviderProfile(
+                    profile_ref="tts.primary",
+                    capability="tts",
+                    provider="xai",
+                    base_url="https://api.x.ai/v1",
+                    model="service-owned-tts-model",
+                    voice="eve",
+                    maximum_response_bytes=10_000,
+                ),
+                credential_revision=int(metadata["credentialRevision"]),
+                reserved_cost_minor_units=3,
+                transport=transport,
+            )
+        },
+    )
+
+    def factory(task_id: str, method: str, request: dict[str, object]):
+        assert method == "runtime.test_tts"
+        serialized = json.dumps(request).casefold()
+        assert "api_key" not in serialized
+        assert "base_url" not in serialized
+        assert "voice" not in serialized
+        assert "model" not in serialized
+        return make_task_broker_handler(task_id=task_id, authorization=authorization, broker=broker)
+
+    card_service = CardService(
+        state_dir=(tmp_path / "real-tts-broker-state").resolve(),
+        worker_path=(ROOT / "workers" / "anki_worker.py").resolve(),
+        python_path=Path(sys.executable).resolve(),
+        method_policies={
+            "runtime.test_tts": MethodPolicy("test_tts", 60.0, requires_broker=True)
+        },
+        broker_handler_factory=factory,
+    )
+    request = {
+        "language": "English",
+        "api_config": {
+            "tts_config": {
+                "enabled": True,
+                "provider": "xai",
+                "language": "auto",
+                "sample_rate": 24000,
+                "bit_rate": 128000,
+            }
+        },
+    }
+    started = card_service.start_task("runtime.test_tts", request)
+    finished = wait_terminal(card_service, started["id"], timeout=60)
+    assert finished["state"] == "succeeded", finished.get("error")
+    result = card_service.read_result(started["id"])
+    assert result["ok"] is True
+    assert result["bytes"] == len(audio)
+    assert len(observed) == 1
+    assert ledger.list_records()[0]["state"] == "settled"
+    persisted = "\n".join(path.read_text(encoding="utf-8") for path in tmp_path.rglob("*.json"))
+    assert "tts-provider-secret-canary" not in persisted

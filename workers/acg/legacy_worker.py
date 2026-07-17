@@ -297,6 +297,13 @@ from acg.managed_model_broker import (
     operation_available as managed_model_operation_available,
     request_model as managed_model_request,
 )
+from acg.managed_tts_broker import (
+    ManagedTtsAudio,
+    ManagedTtsBrokerError,
+    is_configured as managed_tts_broker_is_configured,
+    operation_available as managed_tts_operation_available,
+    request_tts as managed_tts_request,
+)
 from acg.service_errors import (
     classify_service_error as service_errors_classify_service_error,
     classify_worker_exception as service_errors_classify_worker_exception,
@@ -5383,11 +5390,25 @@ def gemini_vertex_tts_audio(tts: dict[str, Any], text: str, language: str) -> by
     raise RuntimeError(f"Gemini Vertex TTS 没有返回 inlineData 音频{detail}。请检查 Vertex AI 权限、模型、区域和 voice。")
 
 
-def call_tts_audio(tts: dict[str, Any], text: str, language: str) -> bytes:
+def call_tts_audio(
+    tts: dict[str, Any],
+    text: str,
+    language: str,
+    *,
+    work_unit_base: str = "tts",
+) -> bytes:
     provider = tts["provider"]
     api_key = tts["api_key"]
     text = clean_tts_input_text(text)
     resolved_language = resolve_tts_language_code(tts, language)
+    if managed_tts_broker_is_configured():
+        return managed_tts_request(
+            text,
+            language=resolved_language,
+            sample_rate=int(tts.get("sample_rate") or 24000),
+            bit_rate=int(tts.get("bit_rate") or 128000),
+            work_unit_base=work_unit_base,
+        ).data
     if provider in {"grok", "xai"}:
         return http_binary(
             grok_tts_endpoint(tts["base_url"]),
@@ -5432,6 +5453,7 @@ def handle_test_tts(payload: dict[str, Any]) -> dict[str, Any]:
     tts = normalized_tts_config(payload)
     language = normalize_learning_language(payload.get("language") or "en")
     started = time.time()
+    brokered = managed_tts_broker_is_configured()
 
     if not tts["enabled"] or tts["provider"] == "disabled":
         return {
@@ -5444,7 +5466,18 @@ def handle_test_tts(payload: dict[str, Any]) -> dict[str, Any]:
             "stage": "tts",
             "retryable": False,
         }
-    if not tts["api_key"] and not is_gemini_vertex_tts_config(tts):
+    if brokered and not managed_tts_operation_available():
+        return {
+            "ok": False,
+            "provider": tts["provider"],
+            "model": tts["model"],
+            "voice": tts["voice"],
+            "message": "当前任务没有获得 TTS Service broker 授权。",
+            "error_code": worker_errors.TTS_AUTH_FAILED,
+            "stage": "tts",
+            "retryable": False,
+        }
+    if not brokered and not tts["api_key"] and not is_gemini_vertex_tts_config(tts):
         return {
             "ok": False,
             "provider": tts["provider"],
@@ -5458,7 +5491,17 @@ def handle_test_tts(payload: dict[str, Any]) -> dict[str, Any]:
 
     try:
         text = "This is a TTS test for your Anki cards."
-        if tts["provider"] == "gemini":
+        if brokered:
+            resolved_language = resolve_tts_language_code(tts, language)
+            audio = managed_tts_request(
+                clean_tts_input_text(text),
+                language=resolved_language,
+                sample_rate=int(tts.get("sample_rate") or 24000),
+                bit_rate=int(tts.get("bit_rate") or 128000),
+                work_unit_base="tts-test",
+            )
+            audio_size = len(audio.data)
+        elif tts["provider"] == "gemini":
             if not tts["model"]:
                 return {
                     "ok": False,
@@ -15190,6 +15233,53 @@ def transcode_wav_file_to_mp3(wav_path: Path, output_path: Path, label: str, out
         raise RuntimeError(f"{label} 音频转码失败：{completed.stderr[-800:]}")
 
 
+def write_managed_tts_audio(
+    audio: ManagedTtsAudio,
+    output_path: Path,
+    *,
+    output_volume: Any = 0.65,
+) -> None:
+    mime_type = audio.mime_type.split(";", 1)[0].strip().casefold()
+    if mime_type in {"audio/mpeg", "audio/mp3"}:
+        output_path.write_bytes(audio.data)
+        apply_tts_output_volume(output_path, output_volume, "Managed TTS")
+        return
+    if mime_type in {"audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave"}:
+        wav_path = output_path.with_suffix(".managed.wav")
+        wav_path.write_bytes(audio.data)
+        transcode_wav_file_to_mp3(wav_path, output_path, "Managed TTS", output_volume)
+        return
+    if mime_type in {"audio/pcm", "audio/l16", "audio/raw"}:
+        sample_rate = int(audio.sample_rate or 0)
+        if not 8000 <= sample_rate <= 48000:
+            raise RuntimeError("Managed TTS PCM 音频缺少有效采样率。")
+        pcm_path = output_path.with_suffix(".managed.pcm")
+        pcm_path.write_bytes(audio.data)
+        try:
+            run_ffmpeg(
+                [
+                    "-f",
+                    "s16le",
+                    "-ar",
+                    str(sample_rate),
+                    "-ac",
+                    "1",
+                    "-i",
+                    str(pcm_path),
+                    *tts_volume_filter_args(output_volume),
+                    "-acodec",
+                    "libmp3lame",
+                    "-q:a",
+                    "5",
+                    str(output_path),
+                ]
+            )
+        finally:
+            pcm_path.unlink(missing_ok=True)
+        return
+    raise RuntimeError(f"Managed TTS 返回了不支持的音频格式：{mime_type or 'unknown'}")
+
+
 def synthesize_tts(
     project: dict[str, Any],
     segment: dict[str, Any],
@@ -15198,6 +15288,7 @@ def synthesize_tts(
     tts_kind: str = "sentence",
 ) -> dict[str, Any] | bool:
     tts = normalized_tts_config(project)
+    brokered = managed_tts_broker_is_configured()
     if not tts["enabled"] or tts["provider"] == "disabled":
         return False
 
@@ -15243,7 +15334,7 @@ def synthesize_tts(
                 discard_cached_file(cache_path)
                 discard_cached_file(tts_cache_meta_path(cache_path))
 
-    if not tts["api_key"] and not is_gemini_vertex_tts_config(tts):
+    if not brokered and not tts["api_key"] and not is_gemini_vertex_tts_config(tts):
         return False
 
     if not provider or not text:
@@ -15281,6 +15372,21 @@ def synthesize_tts(
             store_cached_file(output_path, cache_path)
             store_tts_cache_semantic_meta(cache_path, text, semantic)
         return {"ok": True, "cache_hit": False, "cache_key": cache_key, "semantic": semantic}
+
+    if brokered:
+        if not managed_tts_operation_available():
+            raise ManagedTtsBrokerError("Managed TTS operation is not authorized for this task")
+        segment_id = str(segment.get("id") or segment.get("segment_id") or "segment")
+        resolved_language = resolve_tts_language_code(tts, project.get("language", "en"))
+        audio = managed_tts_request(
+            text,
+            language=resolved_language,
+            sample_rate=int(tts.get("sample_rate") or 24000),
+            bit_rate=int(tts.get("bit_rate") or 128000),
+            work_unit_base=f"{tts_kind}:{segment_id}",
+        )
+        write_managed_tts_audio(audio, output_path, output_volume=tts.get("output_volume"))
+        return done()
 
     if provider in {"grok", "xai"}:
         audio = call_tts_audio(tts, text, project.get("language", "en"))
@@ -15935,20 +16041,25 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     phrase_tts_total = 0
     phrase_tts_done = 0
     if not is_document_project:
+        managed_tts_configured = managed_tts_broker_is_configured()
         if skip_video_media:
             warnings.append("本次导出没有视频媒体，APKG 不包含视频片段和原声音频。")
         if not tts_requested:
             warnings.append("TTS 当前未启用，本次导出不会生成整句 AI 朗读和表达小喇叭。")
-        elif not tts_config["api_key"] and not is_gemini_vertex_tts_config(tts_config):
+        elif managed_tts_configured and not managed_tts_operation_available():
+            warnings.append("TTS 已启用，但当前任务没有获得 TTS Service broker 授权。")
+        elif not managed_tts_configured and not tts_config["api_key"] and not is_gemini_vertex_tts_config(tts_config):
             warnings.append("TTS 已启用但缺少 API Key，本次导出不会生成 MIMO / AI 朗读音频。")
-        elif (
+        elif not managed_tts_configured and (
             tts_config["provider"] in OPENAI_COMPATIBLE_PROVIDERS
             or tts_config["provider"] in QWEN_TTS_PROVIDERS
             or is_gemini_vertex_tts_config(tts_config)
         ) and (not compatible_base_url(tts_config) or not tts_config["model"]):
             warnings.append("TTS 已启用但缺少 Base URL 或模型名，本次导出不会生成 AI 朗读音频。")
         else:
-            tts_generation_enabled = tts_requested
+            tts_generation_enabled = tts_requested and (
+                not managed_tts_configured or managed_tts_operation_available()
+            )
     if tts_generation_enabled:
         sentence_tts_total = len(export_segments)
         phrase_tts_total = len(phrase_tts_text_keys)

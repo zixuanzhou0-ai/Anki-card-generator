@@ -4,6 +4,7 @@ import base64
 import hashlib
 import ipaddress
 import json
+import re
 import ssl
 import urllib.error
 import urllib.parse
@@ -16,6 +17,7 @@ from .credentials import PROFILE_REF_PATTERN
 
 MAX_MODEL_RESPONSE_BYTES = 900 * 1024
 MAX_TTS_RESPONSE_BYTES = 700 * 1024
+MAX_TTS_WIRE_RESPONSE_BYTES = 1024 * 1024
 MAX_PROMPT_CHARS = 400_000
 MAX_TTS_CHARS = 20_000
 
@@ -25,7 +27,7 @@ PROVIDER_OPERATIONS = {
     "xai": frozenset({"model.openai_chat", "tts.synthesize"}),
     "hermes": frozenset({"model.openai_chat"}),
     "anthropic": frozenset({"model.anthropic_messages"}),
-    "gemini": frozenset({"model.gemini_content"}),
+    "gemini": frozenset({"model.gemini_content", "tts.synthesize"}),
 }
 FIXED_PROVIDER_HOSTS = {
     "openai": "api.openai.com",
@@ -89,6 +91,11 @@ class ProviderProfile:
         object.__setattr__(self, "model", model)
         object.__setattr__(self, "voice", voice)
         object.__setattr__(self, "base_url", _normalized_base_url(provider, self.base_url))
+        if self.capability == "tts" and _tts_adapter(self) is None:
+            raise ProviderEgressError(
+                "BROKER_OPERATION_BLOCKED",
+                "The provider profile does not have an approved TTS adapter",
+            )
         object.__setattr__(self, "timeout_seconds", timeout)
         object.__setattr__(self, "maximum_response_bytes", response_limit)
 
@@ -101,7 +108,7 @@ class PreparedProviderRequest:
     headers: Mapping[str, str] = field(repr=False)
     timeout_seconds: float
     maximum_response_bytes: int
-    expects_json: bool
+    response_adapter: str
 
 
 @dataclass(frozen=True)
@@ -170,7 +177,21 @@ def _endpoint(profile: ProviderProfile, operation: str) -> str:
     if operation == "model.openai_chat":
         suffix = "chat/completions"
     elif operation == "tts.synthesize":
-        suffix = "audio/speech"
+        adapter = _tts_adapter(profile)
+        if adapter == "openai_binary":
+            suffix = "audio/speech"
+        elif adapter == "xai_binary":
+            suffix = "tts"
+        elif adapter == "mimo_json":
+            suffix = "chat/completions"
+        elif adapter == "qwen_json":
+            suffix = "services/aigc/multimodal-generation/generation"
+        elif adapter == "gemini_json":
+            versioned = profile.base_url if profile.base_url.endswith(("/v1", "/v1beta")) else f"{profile.base_url}/v1beta"
+            model = urllib.parse.quote(profile.model, safe="")
+            return f"{versioned}/models/{model}:generateContent"
+        else:
+            raise ProviderEgressError("BROKER_OPERATION_BLOCKED", "TTS provider adapter is not allowed")
     elif operation == "model.anthropic_messages":
         suffix = "messages" if profile.base_url.endswith("/v1") else "v1/messages"
     elif operation == "model.gemini_content":
@@ -195,6 +216,70 @@ def _number(value: Any, *, name: str, minimum: float, maximum: float) -> float:
     if not minimum <= result <= maximum:
         raise ProviderEgressError("PROVIDER_PAYLOAD_INVALID", f"Provider {name} is invalid")
     return result
+
+
+def _provider_host(profile: ProviderProfile) -> str:
+    return (urllib.parse.urlsplit(profile.base_url).hostname or "").casefold().rstrip(".")
+
+
+def _tts_adapter(profile: ProviderProfile) -> str | None:
+    if profile.provider == "openai":
+        return "openai_binary"
+    if profile.provider == "xai":
+        return "xai_binary"
+    if profile.provider == "gemini":
+        return "gemini_json"
+    if profile.provider != "openai-compatible":
+        return None
+    host = _provider_host(profile)
+    if host in {
+        "api.xiaomimimo.com",
+        "token-plan-cn.xiaomimimo.com",
+        "token-plan-sgp.xiaomimimo.com",
+    }:
+        return "mimo_json"
+    if host in {"dashscope-intl.aliyuncs.com", "dashscope.aliyuncs.com"}:
+        return "qwen_json"
+    return None
+
+
+def _tts_language(value: Any) -> str:
+    language = _bounded_text(value, name="TTS language", maximum=32)
+    if re.fullmatch(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*", language) is None:
+        raise ProviderEgressError("PROVIDER_PAYLOAD_INVALID", "Provider TTS language is invalid")
+    return language
+
+
+def _qwen_language_type(language: str) -> str:
+    lower = language.casefold()
+    if lower.startswith("zh") or lower.startswith("cmn"):
+        return "Chinese"
+    if lower.startswith("en"):
+        return "English"
+    if lower.startswith("ja"):
+        return "Japanese"
+    if lower.startswith("ko"):
+        return "Korean"
+    if lower.startswith("fr"):
+        return "French"
+    if lower.startswith("de"):
+        return "German"
+    if lower.startswith("es"):
+        return "Spanish"
+    if lower.startswith("pt"):
+        return "Portuguese"
+    if lower.startswith("it"):
+        return "Italian"
+    if lower.startswith("ru"):
+        return "Russian"
+    return "Auto"
+
+
+def _exact_tts_prompt(text: str) -> str:
+    return (
+        "Read the following text aloud exactly once. Do not explain, translate, expand, "
+        "add words, or add a preface. Text:\n" + text
+    )
 
 
 def _messages(value: Any) -> list[dict[str, str]]:
@@ -325,22 +410,109 @@ def _gemini_body(profile: ProviderProfile, payload: dict[str, Any]) -> dict[str,
 
 
 def _tts_body(profile: ProviderProfile, payload: dict[str, Any]) -> dict[str, Any]:
-    if profile.provider not in {"openai", "openai-compatible", "xai"}:
-        raise ProviderEgressError("BROKER_OPERATION_BLOCKED", "TTS provider is not supported by this broker version")
-    if set(payload) - {"model", "voice", "input", "response_format", "speed"}:
+    if set(payload) - {"input", "language", "response_format", "sample_rate", "bit_rate"}:
         raise ProviderEgressError("PROVIDER_PAYLOAD_FIELD_BLOCKED", "TTS payload contains blocked fields")
-    body: dict[str, Any] = {
-        "model": profile.model,
-        "voice": profile.voice,
-        "input": _bounded_text(payload.get("input"), name="TTS text", maximum=MAX_TTS_CHARS),
-    }
+    text = _bounded_text(payload.get("input"), name="TTS text", maximum=MAX_TTS_CHARS)
+    language = _tts_language(payload.get("language") or "en-US")
     response_format = str(payload.get("response_format") or "mp3")
-    if response_format not in {"mp3", "opus", "wav", "pcm"}:
+    if response_format != "mp3":
         raise ProviderEgressError("PROVIDER_PAYLOAD_INVALID", "TTS response format is invalid")
-    body["response_format"] = response_format
-    if "speed" in payload:
-        body["speed"] = _number(payload["speed"], name="TTS speed", minimum=0.25, maximum=4)
-    return body
+    sample_rate = int(_number(payload.get("sample_rate", 24000), name="sample_rate", minimum=8000, maximum=48000))
+    bit_rate = int(_number(payload.get("bit_rate", 128000), name="bit_rate", minimum=16000, maximum=320000))
+    adapter = _tts_adapter(profile)
+    if adapter == "openai_binary":
+        return {"model": profile.model, "voice": profile.voice, "input": text, "response_format": "mp3"}
+    if adapter == "xai_binary":
+        return {
+            "text": text,
+            "voice_id": profile.voice,
+            "language": language,
+            "output_format": {"codec": "mp3", "sample_rate": sample_rate, "bit_rate": bit_rate},
+        }
+    if adapter == "mimo_json":
+        model_lower = profile.model.casefold()
+        if "voicedesign" in model_lower:
+            user_content = profile.voice
+            audio: dict[str, str] = {"format": "wav"}
+        elif "voiceclone" in model_lower:
+            user_content = ""
+            audio = {"format": "wav", "voice": profile.voice}
+        else:
+            user_content = (
+                f"Read the assistant message aloud exactly for a {language} language-learning Anki card. "
+                "Do not explain, translate, expand, add words, or add a preface."
+            )
+            audio = {"format": "wav", "voice": profile.voice}
+        return {
+            "model": profile.model,
+            "messages": [
+                {"role": "user", "content": user_content},
+                {"role": "assistant", "content": text},
+            ],
+            "audio": audio,
+            "stream": False,
+        }
+    if adapter == "qwen_json":
+        input_value: dict[str, Any] = {
+            "text": text,
+            "voice": profile.voice,
+            "language_type": _qwen_language_type(language),
+        }
+        if "instruct" in profile.model.casefold():
+            input_value["instructions"] = (
+                "Read the input text aloud exactly for a language-learning Anki card. "
+                "Do not explain, translate, expand, add words, or add a preface. "
+                "Use steady pacing and accurate pronunciation."
+            )
+            input_value["optimize_instructions"] = True
+        return {"model": profile.model, "input": input_value}
+    if adapter == "gemini_json":
+        return {
+            "contents": [{"role": "user", "parts": [{"text": _exact_tts_prompt(text)}]}],
+            "generationConfig": {
+                "responseModalities": ["AUDIO"],
+                "speechConfig": {
+                    "languageCode": language,
+                    "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": profile.voice}},
+                },
+            },
+        }
+    raise ProviderEgressError("BROKER_OPERATION_BLOCKED", "TTS provider adapter is not allowed")
+
+
+def _decode_audio_base64(value: Any, *, maximum: int) -> bytes:
+    if not isinstance(value, str) or not value:
+        raise ProviderEgressError("PROVIDER_RESPONSE_INVALID", "Provider returned no inline audio")
+    try:
+        audio = base64.b64decode(value, validate=True)
+    except (ValueError, TypeError) as error:
+        raise ProviderEgressError("PROVIDER_RESPONSE_INVALID", "Provider returned invalid inline audio") from error
+    if not audio or len(audio) > maximum:
+        code = "PROVIDER_RESPONSE_LIMIT" if len(audio) > maximum else "PROVIDER_RESPONSE_INVALID"
+        raise ProviderEgressError(code, "Provider inline audio is empty or exceeded its byte limit")
+    return audio
+
+
+def _json_object(response: ProviderTransportResponse) -> dict[str, Any]:
+    try:
+        result = json.loads(response.body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as error:
+        raise ProviderEgressError("PROVIDER_RESPONSE_INVALID", "Provider response is not valid JSON") from error
+    if not isinstance(result, dict):
+        raise ProviderEgressError("PROVIDER_RESPONSE_INVALID", "Provider JSON response must be an object")
+    return result
+
+
+def _audio_result(audio: bytes, mime_type: str, *, sample_rate: int | None = None) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "audioBase64": base64.b64encode(audio).decode("ascii"),
+        "byteLength": len(audio),
+        "sha256": hashlib.sha256(audio).hexdigest(),
+        "mimeType": mime_type,
+    }
+    if sample_rate is not None:
+        result["sampleRate"] = sample_rate
+    return result
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -411,6 +583,7 @@ class ProviderEgress:
             body = _gemini_body(self.profile, payload)
         else:
             body = _tts_body(self.profile, payload)
+        adapter = _tts_adapter(self.profile) if operation == "tts.synthesize" else None
         if self.profile.provider == "hermes":
             headers = {"Content-Type": "application/json"}
         else:
@@ -424,17 +597,26 @@ class ProviderEgress:
                 }
             elif self.profile.provider == "gemini":
                 headers = {"Content-Type": "application/json", "x-goog-api-key": secret}
+            elif adapter == "mimo_json":
+                headers = {"Content-Type": "application/json", "api-key": secret}
             else:
                 headers = {"Content-Type": "application/json", "Authorization": f"Bearer {secret}"}
         serialized = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        response_adapter = adapter or "json"
+        wire_limit = self.profile.maximum_response_bytes
+        if response_adapter in {"mimo_json", "qwen_json", "gemini_json"}:
+            wire_limit = min(
+                MAX_TTS_WIRE_RESPONSE_BYTES,
+                int(self.profile.maximum_response_bytes * 4 / 3) + 64 * 1024,
+            )
         return PreparedProviderRequest(
             operation=operation,
             url=_endpoint(self.profile, operation),
             body=serialized,
             headers=headers,
             timeout_seconds=self.profile.timeout_seconds,
-            maximum_response_bytes=self.profile.maximum_response_bytes,
-            expects_json=operation != "tts.synthesize",
+            maximum_response_bytes=wire_limit,
+            response_adapter=response_adapter,
         )
 
     def execute(self, operation: str, payload: dict[str, Any], secret: str) -> tuple[Any, int, int | None]:
@@ -446,20 +628,54 @@ class ProviderEgress:
             raise ProviderEgressError("PROVIDER_HTTP_ERROR", f"Provider returned HTTP {response.status}")
         if len(response.body) > prepared.maximum_response_bytes:
             raise ProviderEgressError("PROVIDER_RESPONSE_LIMIT", "Provider response exceeded its byte limit")
-        if prepared.expects_json:
-            try:
-                result = json.loads(response.body.decode("utf-8"))
-            except (UnicodeDecodeError, ValueError) as error:
-                raise ProviderEgressError("PROVIDER_RESPONSE_INVALID", "Provider response is not valid JSON") from error
-            if not isinstance(result, dict):
-                raise ProviderEgressError("PROVIDER_RESPONSE_INVALID", "Provider JSON response must be an object")
+        if prepared.response_adapter == "json":
+            result = _json_object(response)
             return result, len(response.body), None
-        if not response.body:
-            raise ProviderEgressError("PROVIDER_RESPONSE_INVALID", "Provider returned empty audio")
-        mime_type = str(response.headers.get("content-type") or "application/octet-stream").split(";", 1)[0].strip()
-        return {
-            "audioBase64": base64.b64encode(response.body).decode("ascii"),
-            "byteLength": len(response.body),
-            "sha256": hashlib.sha256(response.body).hexdigest(),
-            "mimeType": mime_type,
-        }, len(response.body), None
+        if prepared.response_adapter in {"openai_binary", "xai_binary"}:
+            if not response.body or len(response.body) > self.profile.maximum_response_bytes:
+                raise ProviderEgressError("PROVIDER_RESPONSE_INVALID", "Provider returned invalid audio")
+            mime_type = str(response.headers.get("content-type") or "").split(";", 1)[0].strip().casefold()
+            if mime_type not in {"audio/mpeg", "audio/mp3"}:
+                raise ProviderEgressError("PROVIDER_RESPONSE_INVALID", "Provider returned an unexpected audio MIME type")
+            return _audio_result(response.body, mime_type), len(response.body), None
+        result = _json_object(response)
+        if prepared.response_adapter == "mimo_json":
+            try:
+                data = result["choices"][0]["message"]["audio"]["data"]
+            except (KeyError, IndexError, TypeError) as error:
+                raise ProviderEgressError("PROVIDER_RESPONSE_INVALID", "MIMO returned no inline audio") from error
+            audio = _decode_audio_base64(data, maximum=self.profile.maximum_response_bytes)
+            return _audio_result(audio, "audio/wav"), len(audio), None
+        if prepared.response_adapter == "qwen_json":
+            try:
+                audio_value = result["output"]["audio"]
+            except (KeyError, TypeError) as error:
+                raise ProviderEgressError("PROVIDER_RESPONSE_INVALID", "Qwen returned no audio object") from error
+            if not isinstance(audio_value, dict):
+                raise ProviderEgressError("PROVIDER_RESPONSE_INVALID", "Qwen returned an invalid audio object")
+            if audio_value.get("url") and not audio_value.get("data"):
+                raise ProviderEgressError(
+                    "TTS_SECONDARY_URL_BLOCKED",
+                    "Qwen returned a secondary media URL instead of task-bound inline audio",
+                )
+            audio = _decode_audio_base64(audio_value.get("data"), maximum=self.profile.maximum_response_bytes)
+            return _audio_result(audio, "audio/wav"), len(audio), None
+        if prepared.response_adapter == "gemini_json":
+            inline: dict[str, Any] | None = None
+            for candidate in result.get("candidates") or []:
+                for part in ((candidate.get("content") or {}).get("parts") or []):
+                    value = part.get("inlineData") or part.get("inline_data")
+                    if isinstance(value, dict) and value.get("data"):
+                        inline = value
+                        break
+                if inline is not None:
+                    break
+            if inline is None:
+                raise ProviderEgressError("PROVIDER_RESPONSE_INVALID", "Gemini returned no inline audio")
+            mime_type = str(inline.get("mimeType") or inline.get("mime_type") or "audio/pcm").split(";", 1)[0].casefold()
+            if mime_type not in {"audio/pcm", "audio/l16", "audio/raw"}:
+                raise ProviderEgressError("PROVIDER_RESPONSE_INVALID", "Gemini returned an unsupported audio MIME type")
+            audio = _decode_audio_base64(inline.get("data"), maximum=self.profile.maximum_response_bytes)
+            sample_rate = int(payload.get("sample_rate") or 24000)
+            return _audio_result(audio, "audio/pcm", sample_rate=sample_rate), len(audio), None
+        raise ProviderEgressError("PROVIDER_RESPONSE_INVALID", "Provider response adapter is invalid")

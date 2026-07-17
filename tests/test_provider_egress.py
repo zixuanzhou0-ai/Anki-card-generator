@@ -271,17 +271,24 @@ def test_tts_response_is_returned_as_bounded_authenticated_audio_evidence() -> N
     def transport(request):
         body = json.loads(request.body)
         assert body == {
-            "input": "hello",
-            "model": "tts-test",
-            "response_format": "mp3",
-            "voice": "eve",
+            "text": "hello",
+            "voice_id": "eve",
+            "language": "en-US",
+            "output_format": {"codec": "mp3", "sample_rate": 24000, "bit_rate": 128000},
         }
+        assert request.url == "https://api.x.ai/v1/tts"
         assert request.headers["Authorization"] == "Bearer tts-secret"
         return ProviderTransportResponse(200, request.url, {"content-type": "audio/mpeg"}, audio)
 
     result, response_bytes, cost = ProviderEgress(profile, transport=transport).execute(
         "tts.synthesize",
-        {"input": "hello", "model": "spoofed", "voice": "spoofed", "response_format": "mp3"},
+        {
+            "input": "hello",
+            "language": "en-US",
+            "response_format": "mp3",
+            "sample_rate": 24000,
+            "bit_rate": 128000,
+        },
         "tts-secret",
     )
     assert result["audioBase64"] == base64.b64encode(audio).decode("ascii")
@@ -290,6 +297,160 @@ def test_tts_response_is_returned_as_bounded_authenticated_audio_evidence() -> N
     assert result["mimeType"] == "audio/mpeg"
     assert response_bytes == len(audio)
     assert cost is None
+
+
+def test_worker_cannot_select_tts_model_voice_or_origin() -> None:
+    profile = ProviderProfile(
+        profile_ref="tts.openai",
+        capability="tts",
+        provider="openai",
+        base_url="https://api.openai.com/v1",
+        model="gpt-4o-mini-tts",
+        voice="alloy",
+        maximum_response_bytes=4096,
+    )
+    for blocked in ({"model": "spoofed"}, {"voice": "spoofed"}, {"base_url": "https://evil.invalid"}):
+        with pytest.raises(ProviderEgressError) as caught:
+            ProviderEgress(profile).prepare(
+                "tts.synthesize",
+                {"input": "hello", "language": "en-US", **blocked},
+                "secret",
+            )
+        assert caught.value.code == "PROVIDER_PAYLOAD_FIELD_BLOCKED"
+
+
+def test_binary_tts_rejects_non_mp3_mime_even_when_body_is_nonempty() -> None:
+    profile = ProviderProfile(
+        profile_ref="tts.openai",
+        capability="tts",
+        provider="openai",
+        base_url="https://api.openai.com/v1",
+        model="gpt-4o-mini-tts",
+        voice="alloy",
+        maximum_response_bytes=4096,
+    )
+
+    def transport(request):
+        return ProviderTransportResponse(200, request.url, {"content-type": "text/html"}, b"not audio")
+
+    with pytest.raises(ProviderEgressError) as caught:
+        ProviderEgress(profile, transport=transport).execute(
+            "tts.synthesize",
+            {"input": "hello", "language": "en-US"},
+            "secret",
+        )
+    assert caught.value.code == "PROVIDER_RESPONSE_INVALID"
+
+
+def test_mimo_tts_uses_service_profile_api_key_header_and_inline_wav() -> None:
+    profile = ProviderProfile(
+        profile_ref="tts.mimo",
+        capability="tts",
+        provider="openai-compatible",
+        base_url="https://token-plan-sgp.xiaomimimo.com/v1",
+        model="mimo-v2.5-tts",
+        voice="mimo_default",
+        maximum_response_bytes=4096,
+    )
+    audio = b"RIFF" + b"\x00" * 64
+
+    def transport(request):
+        body = json.loads(request.body)
+        assert request.url == "https://token-plan-sgp.xiaomimimo.com/v1/chat/completions"
+        assert request.headers["api-key"] == "mimo-secret"
+        assert "Authorization" not in request.headers
+        assert body["model"] == "mimo-v2.5-tts"
+        assert body["audio"] == {"format": "wav", "voice": "mimo_default"}
+        assert body["messages"][1] == {"role": "assistant", "content": "hello"}
+        response = {"choices": [{"message": {"audio": {"data": base64.b64encode(audio).decode("ascii")}}}]}
+        return ProviderTransportResponse(200, request.url, {"content-type": "application/json"}, json.dumps(response).encode())
+
+    result, response_bytes, _ = ProviderEgress(profile, transport=transport).execute(
+        "tts.synthesize",
+        {"input": "hello", "language": "en-US", "response_format": "mp3"},
+        "mimo-secret",
+    )
+    assert base64.b64decode(result["audioBase64"]) == audio
+    assert result["mimeType"] == "audio/wav"
+    assert response_bytes == len(audio)
+
+
+def test_qwen_secondary_audio_url_is_blocked_instead_of_fetched_by_worker() -> None:
+    profile = ProviderProfile(
+        profile_ref="tts.qwen",
+        capability="tts",
+        provider="openai-compatible",
+        base_url="https://dashscope.aliyuncs.com/api/v1",
+        model="qwen3-tts-flash",
+        voice="Cherry",
+        maximum_response_bytes=4096,
+    )
+
+    def transport(request):
+        assert request.url.endswith("/api/v1/services/aigc/multimodal-generation/generation")
+        return ProviderTransportResponse(
+            200,
+            request.url,
+            {"content-type": "application/json"},
+            b'{"output":{"audio":{"url":"https://secondary.example/audio.wav"}}}',
+        )
+
+    with pytest.raises(ProviderEgressError) as caught:
+        ProviderEgress(profile, transport=transport).execute(
+            "tts.synthesize",
+            {"input": "hello", "language": "en-US"},
+            "qwen-secret",
+        )
+    assert caught.value.code == "TTS_SECONDARY_URL_BLOCKED"
+
+
+def test_gemini_tts_returns_validated_pcm_with_sample_rate() -> None:
+    profile = ProviderProfile(
+        profile_ref="tts.gemini",
+        capability="tts",
+        provider="gemini",
+        base_url="https://generativelanguage.googleapis.com/v1beta",
+        model="gemini-2.5-flash-preview-tts",
+        voice="Kore",
+        maximum_response_bytes=4096,
+    )
+    audio = b"\x01\x02" * 32
+
+    def transport(request):
+        body = json.loads(request.body)
+        assert request.url.endswith("/models/gemini-2.5-flash-preview-tts:generateContent")
+        assert request.headers["x-goog-api-key"] == "gemini-secret"
+        assert body["generationConfig"]["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"] == "Kore"
+        response = {
+            "candidates": [{"content": {"parts": [{"inlineData": {
+                "mimeType": "audio/pcm;rate=24000",
+                "data": base64.b64encode(audio).decode("ascii"),
+            }}]}}]
+        }
+        return ProviderTransportResponse(200, request.url, {}, json.dumps(response).encode())
+
+    result, response_bytes, _ = ProviderEgress(profile, transport=transport).execute(
+        "tts.synthesize",
+        {"input": "hello", "language": "en-US", "sample_rate": 24000},
+        "gemini-secret",
+    )
+    assert base64.b64decode(result["audioBase64"]) == audio
+    assert result["mimeType"] == "audio/pcm"
+    assert result["sampleRate"] == 24000
+    assert response_bytes == len(audio)
+
+
+def test_tts_profiles_without_approved_adapter_fail_closed() -> None:
+    with pytest.raises(ProviderEgressError) as caught:
+        ProviderProfile(
+            profile_ref="tts.deepseek",
+            capability="tts",
+            provider="openai-compatible",
+            base_url="https://api.deepseek.com/v1",
+            model="not-a-tts-model",
+            voice="alloy",
+        )
+    assert caught.value.code == "BROKER_OPERATION_BLOCKED"
 
 
 def test_default_transport_reaches_fixed_hermes_loopback_and_blocks_redirects() -> None:

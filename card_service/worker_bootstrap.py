@@ -11,6 +11,8 @@ from pathlib import Path
 ALLOWED_COMMANDS = frozenset(
     {
         "check_env",
+        "test_api",
+        "test_tts",
         "extract_learning_points",
         "generate_cards_from_learning_points",
         "generate",

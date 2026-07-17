@@ -69,6 +69,8 @@ class MethodPolicy:
 
 METHOD_POLICIES: dict[str, MethodPolicy] = {
     "runtime.check_environment": MethodPolicy("check_env", 60.0),
+    "runtime.test_model": MethodPolicy("test_api", 120.0, requires_broker=True),
+    "runtime.test_tts": MethodPolicy("test_tts", 120.0, requires_broker=True),
     "runtime.extract_learning_points": MethodPolicy("extract_learning_points", 300.0, requires_broker=True),
     "runtime.generate_cards": MethodPolicy("generate_cards_from_learning_points", 420.0, requires_broker=True),
     "runtime.generate_legacy_project": MethodPolicy("generate", 420.0, requires_broker=True),
