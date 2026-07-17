@@ -159,7 +159,8 @@ M1 Provider Egress 的当前内层边界为：
 - Qwen 只有内联音频可进入任务结果；provider 返回二次 URL 时以 `TTS_SECONDARY_URL_BLOCKED` 失败，Worker 不再自行下载。受管 Vertex TTS 在 Service OAuth egress 完成前继续 fail closed。
 - Hermes 只允许字面 `127.0.0.1`/`::1` 的显式 HTTP origin，使用 credential revision 0；远程服务必须 HTTPS。任意自定义 OpenAI-compatible origin 在 M2 的受信 origin authorization 和连接时 IP 约束完成前 fail closed。
 - Legacy Worker 的 OpenAI-compatible、Anthropic 和 Gemini 模型入口已接入该通道；受管请求递归拒绝 URL/Header/secret/profile/credential/intent/budget，批次和内部重试使用确定性的独立 work unit。Gemini Vertex 在 Service-owned OAuth egress 完成前 fail closed。
-- 真实受限 Legacy Worker 已通过认证 stdio 完成无 Worker API Key/Base URL 的卡片生成，以及无 Worker API Key/Base URL/model/voice 的 TTS 测试；Service 重建模型或声音请求、注入认证、验证音频证据并结算 ledger。当前默认传输仍只对临时 Hermes-style loopback 做过真实 POST；公网 provider 未使用真实用户凭据验证，正式 stdio profile/intent resolver 仍未接线，因此 `modelTtsBroker.complete` 仍为 false。
+- 正式 stdio 支持 `--broker-authorization-manifest`，但只接受固定 Card Service state dir 下 `trusted-surfaces/authorizations` 的稳定普通文件，不接受工作区或调用方任意路径。清单必须是 canonical `study.card-service.broker-authorization` V1，短期有效并绑定方法、能力、profile configuration fingerprint、credential revision、intent ref 和硬预算；任何未知字段、过期/超长期限、能力错配、陈旧凭据或任务自报授权字段都 fail closed。Service 能力摘要只公开清单 digest/期限/计数。
+- 真实受限 Legacy Worker 已通过认证 stdio 完成无 Worker API Key/Base URL 的卡片生成，以及无 Worker API Key/Base URL/model/voice 的 TTS 测试；Service 重建模型或声音请求、注入认证、验证音频证据并结算 ledger。当前默认传输仍只对临时 Hermes-style loopback 做过真实 POST；公网 provider 未使用真实用户凭据验证，受信表面签发该启动清单和 M2 逐操作批准账本尚未完成，因此 `modelTtsBroker.complete` 仍为 false。
 
 ## 3.1 受信本地设置与确认表面
 

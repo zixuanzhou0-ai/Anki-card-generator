@@ -51,6 +51,22 @@ TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled", "interrupted"})
 ACTIVE_STATES = frozenset({"queued", "running", "cancelling"})
 BrokerOperationHandler = Callable[[str, dict[str, Any]], Any]
 BrokerHandlerFactory = Callable[[str, str, dict[str, Any]], BrokerOperationHandler]
+BrokerMethodBlocker = Callable[[str], str | None]
+
+SERVICE_OWNED_BROKER_REQUEST_KEYS = frozenset(
+    {
+        "profileref",
+        "credentialrevision",
+        "operationintentref",
+        "budget",
+        "reservedcostminorunits",
+        "servicebindings",
+        "brokerdescriptor",
+        "brokerauthorization",
+        "configurationfingerprint",
+        "egressmanifestdigest",
+    }
+)
 
 
 class CardServiceError(RuntimeError):
@@ -115,6 +131,25 @@ def _find_secret_path(value: Any, path: str = "$") -> str | None:
             for key, _ in parse_qsl(parsed.query, keep_blank_values=True):
                 if is_sensitive_url_query_key(key):
                     return path
+    return None
+
+
+def _find_service_owned_broker_path(value: Any, path: str = "$") -> str | None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = f"{path}.{key}"
+            normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
+            if normalized in SERVICE_OWNED_BROKER_REQUEST_KEYS:
+                return child_path
+            found = _find_service_owned_broker_path(child, child_path)
+            if found:
+                return found
+        return None
+    if isinstance(value, (list, tuple)):
+        for index, child in enumerate(value):
+            found = _find_service_owned_broker_path(child, f"{path}[{index}]")
+            if found:
+                return found
     return None
 
 
@@ -218,6 +253,8 @@ class CardService:
         task_memory_limit_bytes: int = 2 * 1024 * 1024 * 1024,
         task_active_process_limit: int = 16,
         broker_handler_factory: BrokerHandlerFactory | None = None,
+        broker_method_blocker: BrokerMethodBlocker | None = None,
+        broker_runtime_capabilities: dict[str, Any] | None = None,
         use_restricted_launcher: bool | None = None,
     ) -> None:
         repository_root = Path(__file__).resolve().parent.parent
@@ -309,6 +346,8 @@ class CardService:
         self.task_memory_limit_bytes = max(64 * 1024 * 1024, int(task_memory_limit_bytes))
         self.task_active_process_limit = max(1, int(task_active_process_limit))
         self.broker_handler_factory = broker_handler_factory
+        self.broker_method_blocker = broker_method_blocker
+        self.broker_runtime_capabilities = dict(broker_runtime_capabilities or {})
         self.use_restricted_launcher = os.name == "nt" if use_restricted_launcher is None else bool(use_restricted_launcher)
         if self.use_restricted_launcher and os.name != "nt":
             raise CardServiceError("RESTRICTED_LAUNCHER_UNAVAILABLE", "Restricted launcher is only available on Windows")
@@ -344,6 +383,19 @@ class CardService:
         self._tasks_lock = threading.RLock()
         self._recover_orphaned_tasks()
 
+    def _broker_blocker(self, method: str, policy: MethodPolicy) -> str | None:
+        if not policy.requires_broker:
+            return None
+        if self.broker_handler_factory is None:
+            return "model_tts_broker_not_ready"
+        if self.broker_method_blocker is None:
+            return None
+        return self.broker_method_blocker(method)
+
+    def _method_availability(self, method: str, policy: MethodPolicy) -> dict[str, Any]:
+        blocker = self._broker_blocker(method, policy)
+        return {"available": blocker is None, "blocker": blocker}
+
     def capabilities(self) -> dict[str, Any]:
         return {
             "schemaVersion": SCHEMA_VERSION,
@@ -351,14 +403,7 @@ class CardService:
             "transport": "local-stdio",
             "methods": sorted(self.method_policies),
             "methodAvailability": {
-                method: {
-                    "available": not policy.requires_broker or self.broker_handler_factory is not None,
-                    "blocker": (
-                        None
-                        if not policy.requires_broker or self.broker_handler_factory is not None
-                        else "model_tts_broker_not_ready"
-                    ),
-                }
+                method: self._method_availability(method, policy)
                 for method, policy in sorted(self.method_policies.items())
             },
             "taskMethods": ["task.get", "task.cancel", "task.list_recoverable", "task.read_result"],
@@ -405,6 +450,7 @@ class CardService:
                 "reservationLedger": True,
                 "taskOwnedWorkerTransport": self.broker_handler_factory is not None,
                 "complete": False,
+                **self.broker_runtime_capabilities,
             },
             "mediaToolPolicy": {
                 "managedAbsoluteTools": self.runtime_package is not None,
@@ -444,10 +490,11 @@ class CardService:
         policy = self.method_policies.get(method)
         if policy is None:
             raise CardServiceError("METHOD_NOT_ALLOWED", f"Card Service method is not allowed: {method}")
-        if policy.requires_broker and self.broker_handler_factory is None:
+        blocker = self._broker_blocker(method, policy)
+        if blocker is not None:
             raise CardServiceError(
-                "BROKER_REQUIRED",
-                "This operation is blocked until the task-owned model/TTS broker is available",
+                "BROKER_REQUIRED" if blocker == "model_tts_broker_not_ready" else "BROKER_AUTHORIZATION_UNAVAILABLE",
+                f"This operation is blocked by the Service-owned broker authorization ({blocker})",
             )
         request = dict(params or {})
         secret_path = _find_secret_path(request)
@@ -456,6 +503,13 @@ class CardService:
                 "SECRET_IN_REQUEST",
                 f"Secret-bearing requests are not accepted by the legacy Worker boundary ({secret_path})",
             )
+        if policy.requires_broker:
+            service_owned_path = _find_service_owned_broker_path(request)
+            if service_owned_path:
+                raise CardServiceError(
+                    "SERVICE_OWNED_AUTHORIZATION_IN_REQUEST",
+                    f"Broker authorization is owned by Card Service and cannot be supplied by a task ({service_owned_path})",
+                )
         task_id = str(uuid.uuid4())
         sandbox_workspace: Path | None = None
         task_sid: str | None = None
@@ -665,6 +719,28 @@ class CardService:
                 self.runtime_manifest.verify_serialized(self.runtime_manifest_path)
             except (RuntimeManifestError, RuntimePackageError) as error:
                 raise CardServiceError(error.code, str(error)) from error
+            attach_broker = self.broker_handler_factory is not None and (
+                policy.requires_broker or self.broker_method_blocker is None
+            )
+            if attach_broker:
+                if self.broker_handler_factory is None:
+                    raise CardServiceError("BROKER_REQUIRED", "Task-owned model/TTS broker is unavailable")
+                try:
+                    handler = self.broker_handler_factory(
+                        task_id,
+                        str(runtime.snapshot["method"]),
+                        dict(runtime.request),
+                    )
+                except Exception as error:
+                    raise CardServiceError(
+                        "BROKER_AUTHORIZATION_UNAVAILABLE",
+                        "Task broker authorization became unavailable before Worker launch",
+                    ) from error
+                runtime.broker_session = TaskBrokerChannel(
+                    task_id=task_id,
+                    handler=handler,
+                    transport="authenticated_stdio_json",
+                )
             worker_command = [
                 str(self.python_path),
                 str(self.bootstrap_path),
@@ -714,13 +790,6 @@ class CardService:
                 creationflags=creationflags,
             )
             runtime.process = process
-            if self.broker_handler_factory is not None:
-                handler = self.broker_handler_factory(task_id, str(runtime.snapshot["method"]), dict(runtime.request))
-                runtime.broker_session = TaskBrokerChannel(
-                    task_id=task_id,
-                    handler=handler,
-                    transport="authenticated_stdio_json",
-                )
             process_group = TaskOwnedProcessGroup(
                 memory_limit_bytes=self.task_memory_limit_bytes,
                 active_process_limit=self.task_active_process_limit,

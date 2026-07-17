@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .broker_configuration import BrokerConfigurationError, ServiceBrokerRuntime
 from .service import CardService, CardServiceError
 
 
@@ -45,6 +46,7 @@ def main() -> None:
     runtime_mode.add_argument("--runtime-package", type=Path)
     runtime_mode.add_argument("--development-unpackaged-runtime", action="store_true")
     parser.add_argument("--runtime-trust-policy", type=Path)
+    parser.add_argument("--broker-authorization-manifest", type=Path)
     parser.add_argument("--worker", type=Path)
     parser.add_argument("--python", type=Path)
     parser.add_argument("--tool-dir", action="append", type=Path, default=[])
@@ -57,6 +59,15 @@ def main() -> None:
         parser.error("--runtime-package requires --runtime-trust-policy")
     if arguments.development_unpackaged_runtime and arguments.runtime_trust_policy is not None:
         parser.error("--runtime-trust-policy is only valid with --runtime-package")
+    broker_runtime = None
+    if arguments.broker_authorization_manifest is not None:
+        try:
+            broker_runtime = ServiceBrokerRuntime.from_manifest(
+                arguments.broker_authorization_manifest,
+                state_dir=arguments.state_dir,
+            )
+        except BrokerConfigurationError as error:
+            parser.error(f"{error.code}: {error}")
     service = CardService(
         state_dir=arguments.state_dir,
         worker_path=arguments.worker,
@@ -64,6 +75,9 @@ def main() -> None:
         runtime_package=arguments.runtime_package,
         runtime_trust_policy=arguments.runtime_trust_policy,
         managed_tool_directories=arguments.tool_dir,
+        broker_handler_factory=(broker_runtime.handler_factory if broker_runtime is not None else None),
+        broker_method_blocker=(broker_runtime.method_blocker if broker_runtime is not None else None),
+        broker_runtime_capabilities=(broker_runtime.capabilities() if broker_runtime is not None else None),
     )
     serve(service)
 

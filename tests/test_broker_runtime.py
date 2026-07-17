@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -206,6 +207,33 @@ def test_budget_is_service_owned_and_blocks_before_transport(tmp_path: Path) -> 
             {"workUnitId": "batch-1", "request": {"messages": [{"role": "user", "content": "hello"}]}},
         )
     assert caught.value.code == "COST_BUDGET_EXCEEDED"
+    assert sends == []
+    assert ledger.list_records() == []
+
+
+def test_expired_task_authorization_blocks_before_transport_or_reservation(tmp_path: Path) -> None:
+    credentials, _, ledger, broker = runtime(tmp_path)
+    metadata = credentials.set_secret("model.primary", "secret")
+    sends = []
+    binding = AuthorizedProviderCall(
+        profile=openai_profile(),
+        credential_revision=int(metadata["credentialRevision"]),
+        reserved_cost_minor_units=1,
+        transport=lambda request: sends.append(request) or ProviderTransportResponse(200, request.url, {}, b"{}"),
+    )
+    expired = TaskBrokerAuthorization(
+        operation_intent_ref="intent-approved-1",
+        budget=BrokerBudget(4, 100_000, 100_000, 100),
+        operations={"model.openai_chat": binding},
+        expires_at_unix_ms=int(time.time() * 1000) - 1,
+    )
+    handler = make_task_broker_handler(task_id="task-1", authorization=expired, broker=broker)
+    with pytest.raises(BrokerIpcError) as caught:
+        handler(
+            "model.openai_chat",
+            {"workUnitId": "batch-1", "request": {"messages": [{"role": "user", "content": "hello"}]}},
+        )
+    assert caught.value.code == "BROKER_AUTHORIZATION_EXPIRED"
     assert sends == []
     assert ledger.list_records() == []
 

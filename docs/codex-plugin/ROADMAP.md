@@ -123,8 +123,9 @@ M0 出口已经关闭：
 - Legacy Worker 的 OpenAI-compatible、Anthropic 和 Gemini 生产模型入口已迁到受管 broker；受管模式不再因为缺少 Worker 内 API Key 而误判模型不可用。内部重试和批次重试使用确定性的独立 work unit，Worker 请求会递归拒绝 URL、Header、secret、profile、credential revision、intent 和 budget 等 Service-owned 字段。Gemini Vertex 在 Service-owned OAuth egress 完成前明确 fail closed，不允许退回 Worker 调用 `gcloud`。
 - 真实受限 Legacy Worker 已通过认证 stdio 完成一次“选中学习点 → Service Provider Egress → 完整卡片项目”闭环：Worker 请求不含 API Key/Base URL，Service 覆盖 Worker model hint、注入 Service-owned credential，Broker ledger 正常 settle 且持久 JSON 无 secret canary。
 - 生产 TTS 与 TTS 测试现已迁入同一 task-owned broker：Worker 只提交文本/语言/音频格式意图，Service 固定 provider、origin、model、voice、认证和预算；MIMO/Qwen/Gemini JSON 音频与 OpenAI/xAI binary 音频均返回统一的长度、SHA-256、MIME 证据，Qwen 二次媒体 URL fail closed。真实受限 Legacy Worker 已通过认证 stdio 完成一次无 Worker secret/origin/model/voice 的 TTS 测试并结算 ledger。
-- 本里程碑仍未完成：正式 stdio 启动器尚未装配受信 profile/intent resolver；公网 provider 也未做真实凭据调用，Vertex TTS OAuth egress 仍 fail closed。受控 URL acquisition broker、扩展恶意媒体/资源耗尽 corpus、桌面/Headless 语义等价证据和正式可安装插件包仍在后续切片。
-- 当前回归证据包括正式 Python 全集 763 项、`test_worker_quality` 399 项、TTS/Provider/Headless/文档聚焦 71 项，以及真实受限 Legacy Worker 的模型与 TTS 两条认证 stdio 闭环；这些集合有重叠且不是 M1 完成判定。
+- 正式 stdio 启动器现已装配 Service-owned profile/intent resolver。启动清单必须是 canonical JSON、短期有效、位于固定 state dir 的 `trusted-surfaces/authorizations` 受信目录；它绑定方法→能力→profile、固定 provider/origin/model/voice、configuration fingerprint、credential revision、调用/请求/响应/成本预算与 intent ref。Card Service 在任务创建和每次 Broker 调用前复核过期及凭据版本，且拒绝任务自报 profile、revision、intent、budget、预留成本或 broker descriptor。能力摘要只暴露清单 digest/期限/计数，不暴露路径或秘密。
+- 本里程碑仍未完成：该启动清单还缺正式 launcher/受信设置表面的生产签发流程与 M2 的逐 OperationIntent approval ledger；公网 provider 也未做真实用户凭据调用，Vertex TTS OAuth egress 仍 fail closed。受控 URL acquisition broker、扩展恶意媒体/资源耗尽 corpus、桌面/Headless 语义等价证据和正式可安装插件包仍在后续切片。
+- 当前回归证据包括正式 Python 全集 774 项、Service-owned resolver/Broker/Headless 聚焦 45 项、正式 Worker `unittest discover` 584 项、`test_worker_quality` 399 项，以及真实受限 Legacy Worker 的模型与 TTS 两条认证 stdio 闭环；这些集合有重叠且不是 M1 完成判定。
 
 ### 出口
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
@@ -42,10 +43,15 @@ class TaskBrokerAuthorization:
     operation_intent_ref: str
     budget: BrokerBudget
     operations: Mapping[str, AuthorizedProviderCall]
+    expires_at_unix_ms: int | None = None
 
     def __post_init__(self) -> None:
         if not INTENT_REF_PATTERN.fullmatch(self.operation_intent_ref):
             raise BrokerError("OPERATION_INTENT_INVALID", "Operation intent reference is invalid")
+        if self.expires_at_unix_ms is not None:
+            expires = self.expires_at_unix_ms
+            if isinstance(expires, bool) or not isinstance(expires, int) or expires <= 0:
+                raise BrokerError("BROKER_AUTHORIZATION_INVALID", "Broker authorization expiry is invalid")
         if not self.operations:
             raise BrokerError("BROKER_OPERATION_BLOCKED", "Task broker authorization has no operations")
         operations = dict(self.operations)
@@ -83,6 +89,11 @@ def make_task_broker_handler(
 
     def handle(operation: str, payload: dict[str, Any]) -> Any:
         try:
+            if (
+                authorization.expires_at_unix_ms is not None
+                and int(time.time() * 1000) >= authorization.expires_at_unix_ms
+            ):
+                raise BrokerError("BROKER_AUTHORIZATION_EXPIRED", "Broker authorization has expired")
             binding = authorization.operations.get(operation)
             if binding is None:
                 raise BrokerError("BROKER_OPERATION_BLOCKED", "Broker operation is not authorized for this task")
