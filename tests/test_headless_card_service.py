@@ -277,3 +277,39 @@ def test_real_legacy_worker_check_environment_runs_headlessly(tmp_path: Path) ->
     assert result["schema_version"] == 2
     assert isinstance(result["status_items"], list)
     assert {item["id"] for item in result["status_items"]} >= {"python", "ffmpeg", "genanki", "yt_dlp"}
+
+
+def test_task_owned_authenticated_stdio_broker_reaches_worker_without_persisting_channel_proof(tmp_path: Path) -> None:
+    observed: list[tuple[str, str, str, dict[str, object]]] = []
+
+    def factory(task_id: str, method: str, request: dict[str, object]):
+        assert request == {"mode": "broker"}
+
+        def handler(operation: str, payload: dict[str, object]) -> dict[str, object]:
+            observed.append((task_id, method, operation, payload))
+            return {"accepted": True, "workUnitRef": payload["workUnitRef"]}
+
+        return handler
+
+    card_service = service(tmp_path, broker_handler_factory=factory)
+    assert card_service.capabilities()["modelTtsBroker"]["taskOwnedWorkerTransport"] is True
+    started = card_service.start_task("runtime.check_environment", {"mode": "broker"})
+    finished = wait_terminal(card_service, started["id"])
+    assert finished["state"] == "succeeded", finished.get("error")
+    assert finished["isolation"]["authenticatedBrokerStdio"] is True
+    result = card_service.read_result(started["id"])
+    assert result["brokered"] == {"accepted": True, "workUnitRef": "unit-1"}
+    assert observed == [
+        (
+            started["id"],
+            "runtime.check_environment",
+            "model.openai_chat",
+            {"workUnitRef": "unit-1", "value": 7},
+        )
+    ]
+    persisted = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (tmp_path / "state").rglob("*.json")
+    )
+    assert "channelProof" not in persisted
+    assert "__ANKI_CARD_BROKER" not in persisted

@@ -35,6 +35,15 @@ def main() -> None:
     if mode == "overflow":
         print(json.dumps({"data": "x" * 200_000}))
         return
+    if mode == "broker":
+        from acg.broker_client import configured_broker_client
+
+        client = configured_broker_client()
+        if client is None:
+            raise RuntimeError("broker was not configured")
+        brokered = client.request("model.openai_chat", {"workUnitRef": "unit-1", "value": 7})
+        print(json.dumps({"ok": True, "command": command, "brokered": brokered}, ensure_ascii=False))
+        return
     print(
         PROGRESS_PREFIX + json.dumps({"stage": "half", "percent": 50, "message": "halfway"}),
         file=sys.stderr,

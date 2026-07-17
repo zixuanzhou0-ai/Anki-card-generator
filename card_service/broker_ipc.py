@@ -16,6 +16,9 @@ from typing import Any, Callable
 
 MAX_BROKER_MESSAGE_BYTES = 1024 * 1024
 MAX_BROKER_REQUESTS = 4096
+BROKER_REQUEST_PREFIX = "__ANKI_CARD_BROKER_REQUEST__"
+BROKER_RESPONSE_PREFIX = "__ANKI_CARD_BROKER_RESPONSE__"
+BROKER_TRANSPORTS = frozenset({"authenticated_loopback_json", "authenticated_stdio_json"})
 ALLOWED_BROKER_OPERATIONS = frozenset(
     {"model.openai_chat", "model.anthropic_messages", "model.gemini_content", "tts.synthesize"}
 )
@@ -90,32 +93,36 @@ class TaskBrokerChannel:
         max_message_bytes: int = MAX_BROKER_MESSAGE_BYTES,
         max_requests: int = MAX_BROKER_REQUESTS,
         lifetime_seconds: float = 15 * 60,
+        transport: str = "authenticated_loopback_json",
     ) -> None:
+        if transport not in BROKER_TRANSPORTS:
+            raise BrokerIpcError("IPC_TRANSPORT_INVALID", "Broker IPC transport is not allowed")
         self.task_id = task_id
         self.handler = handler
+        self.transport = transport
         self.max_message_bytes = max(1024, int(max_message_bytes))
         self.max_requests = max(1, int(max_requests))
         self.expires_at = time.time() + max(1.0, float(lifetime_seconds))
         self.key = os.urandom(32)
         self._request_cache: dict[str, tuple[str, dict[str, Any]]] = {}
         self._lock = threading.RLock()
-        channel = self
+        self.server: _ThreadingLoopbackServer | None = None
+        self.thread: threading.Thread | None = None
+        if self.transport == "authenticated_loopback_json":
+            channel = self
 
-        class Handler(socketserver.BaseRequestHandler):
-            def handle(self) -> None:
-                channel._handle_connection(self.request)
+            class Handler(socketserver.BaseRequestHandler):
+                def handle(self) -> None:
+                    channel._handle_connection(self.request)
 
-        self.server = _ThreadingLoopbackServer(("127.0.0.1", 0), Handler)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True, name=f"broker-ipc-{task_id}")
-        self.thread.start()
+            self.server = _ThreadingLoopbackServer(("127.0.0.1", 0), Handler)
+            self.thread = threading.Thread(target=self.server.serve_forever, daemon=True, name=f"broker-ipc-{task_id}")
+            self.thread.start()
 
     def descriptor(self) -> dict[str, Any]:
-        host, port = self.server.server_address
-        return {
+        descriptor = {
             "schemaVersion": 1,
-            "transport": "authenticated_loopback_json",
-            "host": host,
-            "port": port,
+            "transport": self.transport,
             "taskId": self.task_id,
             "channelProof": base64.urlsafe_b64encode(self.key).decode("ascii").rstrip("="),
             "maximumMessageBytes": self.max_message_bytes,
@@ -123,6 +130,10 @@ class TaskBrokerChannel:
             "expiresAtUnixMs": int(self.expires_at * 1000),
             "allowedOperations": sorted(ALLOWED_BROKER_OPERATIONS),
         }
+        if self.server is not None:
+            host, port = self.server.server_address
+            descriptor.update(host=host, port=port)
+        return descriptor
 
     def _response(self, request_id: str, *, result: Any = None, error: BrokerIpcError | None = None) -> dict[str, Any]:
         response: dict[str, Any] = {"schemaVersion": 1, "taskId": self.task_id, "requestId": request_id}
@@ -135,11 +146,9 @@ class TaskBrokerChannel:
         response["mac"] = _sign(self.key, response)
         return response
 
-    def _handle_connection(self, connection: socket.socket) -> None:
-        connection.settimeout(30)
+    def process_message(self, request: dict[str, Any]) -> dict[str, Any]:
         request_id = "unknown"
         try:
-            request = _read_message(connection, self.max_message_bytes)
             request_id = str(request.get("requestId") or "")
             if not _verify(self.key, request):
                 raise BrokerIpcError("IPC_AUTH_FAILED", "Broker IPC authentication failed")
@@ -187,15 +196,23 @@ class TaskBrokerChannel:
                     self._request_cache[request_id] = (request_digest, response)
         except BrokerIpcError as error:
             response = self._response(request_id, error=error)
+        return response
+
+    def _handle_connection(self, connection: socket.socket) -> None:
+        connection.settimeout(30)
         try:
+            request = _read_message(connection, self.max_message_bytes)
+            response = self.process_message(request)
             _write_message(connection, response, self.max_message_bytes)
         except (BrokerIpcError, OSError):
             return
 
     def close(self) -> None:
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join(timeout=2)
+        if self.server is not None:
+            self.server.shutdown()
+            self.server.server_close()
+        if self.thread is not None:
+            self.thread.join(timeout=2)
 
     def __enter__(self) -> "TaskBrokerChannel":
         return self

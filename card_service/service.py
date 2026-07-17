@@ -11,11 +11,12 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qsl, urlsplit
 
 from workers.acg.secret_scrub import is_runtime_secret_key, is_sensitive_url_query_key
 
+from .broker_ipc import BROKER_REQUEST_PREFIX, BROKER_RESPONSE_PREFIX, TaskBrokerChannel
 from .process_isolation import ProcessIsolationError, TaskOwnedProcessGroup
 from .storage import AtomicJsonStore
 from .trusted_surfaces import TrustedSurfaceError, TrustedSurfaceManager
@@ -26,6 +27,8 @@ PROGRESS_PREFIX = "__ANKI_CARD_PROGRESS__"
 ERROR_PREFIX = "__ANKI_CARD_ERROR__"
 TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled", "interrupted"})
 ACTIVE_STATES = frozenset({"queued", "running", "cancelling"})
+BrokerOperationHandler = Callable[[str, dict[str, Any]], Any]
+BrokerHandlerFactory = Callable[[str, str, dict[str, Any]], BrokerOperationHandler]
 
 
 class CardServiceError(RuntimeError):
@@ -104,6 +107,7 @@ class _RuntimeTask:
     cancel_event: threading.Event = field(default_factory=threading.Event)
     process: subprocess.Popen[str] | None = None
     process_group: TaskOwnedProcessGroup | None = None
+    broker_session: TaskBrokerChannel | None = None
     lock: threading.RLock = field(default_factory=threading.RLock)
 
 
@@ -123,6 +127,7 @@ class CardService:
         cancellation_grace_seconds: float = 2.0,
         task_memory_limit_bytes: int = 2 * 1024 * 1024 * 1024,
         task_active_process_limit: int = 16,
+        broker_handler_factory: BrokerHandlerFactory | None = None,
     ) -> None:
         repository_root = Path(__file__).resolve().parent.parent
         worker_candidate = Path(worker_path) if worker_path is not None else repository_root / "workers" / "anki_worker.py"
@@ -153,6 +158,7 @@ class CardService:
         self.cancellation_grace_seconds = max(0.1, float(cancellation_grace_seconds))
         self.task_memory_limit_bytes = max(64 * 1024 * 1024, int(task_memory_limit_bytes))
         self.task_active_process_limit = max(1, int(task_active_process_limit))
+        self.broker_handler_factory = broker_handler_factory
         self.worker_sha256 = self._file_sha256(self.worker_path)
         self.bootstrap_path = (Path(__file__).resolve().parent / "worker_bootstrap.py").resolve()
         self._tasks: dict[str, _RuntimeTask] = {}
@@ -203,7 +209,7 @@ class CardService:
             "modelTtsBroker": {
                 "credentialManager": os.name == "nt",
                 "reservationLedger": True,
-                "taskOwnedWorkerTransport": False,
+                "taskOwnedWorkerTransport": self.broker_handler_factory is not None,
                 "complete": False,
             },
             "trustedSurfaces": self.trusted_surfaces.capabilities(),
@@ -446,6 +452,13 @@ class CardService:
                 creationflags=creationflags,
             )
             runtime.process = process
+            if self.broker_handler_factory is not None:
+                handler = self.broker_handler_factory(task_id, str(runtime.snapshot["method"]), dict(runtime.request))
+                runtime.broker_session = TaskBrokerChannel(
+                    task_id=task_id,
+                    handler=handler,
+                    transport="authenticated_stdio_json",
+                )
             process_group = TaskOwnedProcessGroup(
                 memory_limit_bytes=self.task_memory_limit_bytes,
                 active_process_limit=self.task_active_process_limit,
@@ -462,11 +475,19 @@ class CardService:
                     "killOnClose": process_group.enabled,
                     "activeProcessLimit": self.task_active_process_limit,
                     "memoryLimitBytes": self.task_memory_limit_bytes,
+                    "authenticatedBrokerStdio": runtime.broker_session is not None,
                 }
                 self._persist_runtime(runtime)
             assert process.stdin is not None and process.stdout is not None and process.stderr is not None
-            process.stdin.write(json.dumps(runtime.request, ensure_ascii=False, separators=(",", ":")))
-            process.stdin.close()
+            launch_envelope: dict[str, Any] = {
+                "schemaVersion": 1,
+                "request": runtime.request,
+            }
+            if runtime.broker_session is not None:
+                launch_envelope["brokerDescriptor"] = runtime.broker_session.descriptor()
+            process.stdin.write(json.dumps(launch_envelope, ensure_ascii=False, separators=(",", ":")) + "\n")
+            process.stdin.flush()
+            stdin_lock = threading.RLock()
 
             def read_stdout() -> None:
                 nonlocal stdout_bytes
@@ -490,6 +511,32 @@ class CardService:
                         self._terminate(process)
                         return
                     stripped = line.rstrip("\r\n")
+                    if stripped.startswith(BROKER_REQUEST_PREFIX):
+                        if runtime.broker_session is None:
+                            stream_limit_error.append("Worker requested an unavailable Card Service broker")
+                            self._terminate(process)
+                            return
+                        try:
+                            broker_request = json.loads(stripped[len(BROKER_REQUEST_PREFIX) :])
+                            if not isinstance(broker_request, dict):
+                                raise ValueError("not an object")
+                            broker_response = runtime.broker_session.process_message(broker_request)
+                            encoded_response = json.dumps(
+                                broker_response,
+                                ensure_ascii=False,
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            )
+                            if len(encoded_response.encode("utf-8")) > runtime.broker_session.max_message_bytes:
+                                raise ValueError("response too large")
+                            with stdin_lock:
+                                process.stdin.write(BROKER_RESPONSE_PREFIX + encoded_response + "\n")
+                                process.stdin.flush()
+                        except (OSError, ValueError) as error:
+                            stream_limit_error.append(f"Worker broker transport failed: {error}")
+                            self._terminate(process)
+                            return
+                        continue
                     if stripped.startswith(PROGRESS_PREFIX):
                         try:
                             payload = json.loads(stripped[len(PROGRESS_PREFIX) :])
@@ -579,7 +626,15 @@ class CardService:
                 self._persist_runtime(runtime)
         finally:
             runtime.request.clear()
+            if runtime.process is not None and runtime.process.stdin is not None:
+                try:
+                    runtime.process.stdin.close()
+                except OSError:
+                    pass
             runtime.process = None
+            if runtime.broker_session is not None:
+                runtime.broker_session.close()
+                runtime.broker_session = None
             if runtime.process_group is not None:
                 try:
                     runtime.process_group.close()
