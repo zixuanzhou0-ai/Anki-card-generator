@@ -521,3 +521,149 @@ def test_restricted_worker_reaches_service_owned_provider_egress_over_authentica
     assert ledger.list_records()[0]["state"] == "settled"
     persisted = "\n".join(path.read_text(encoding="utf-8") for path in tmp_path.rglob("*.json"))
     assert "provider-secret-canary" not in persisted
+
+
+def test_real_legacy_card_generation_uses_service_broker_without_worker_secret_or_origin(tmp_path: Path) -> None:
+    credentials = CredentialStore(
+        state_dir=(tmp_path / "credentials").resolve(),
+        backend=InMemoryCredentialBackend(),
+    )
+    metadata = credentials.set_secret("model.primary", "provider-secret-canary")
+    ledger = BrokerReservationLedger((tmp_path / "broker-ledger.json").resolve())
+    broker = ModelTtsBroker(credential_store=credentials, ledger=ledger)
+    observed = []
+    model_cards = {
+        "segments": [
+            {
+                "id": "seg_lp_0001",
+                "cards": [
+                    {
+                        "id": "card_0001",
+                        "type": "phrase",
+                        "learning_point_id": "lp-common-sense",
+                        "phrase": "common sense",
+                        "answer_core": "common sense",
+                        "normalized_answer": "common sense",
+                        "exact_span": "common sense",
+                        "english": "Use common sense here.",
+                        "chinese": "这里要用常识判断。",
+                        "definition": "ordinary practical judgment",
+                        "collocations": "use common sense",
+                        "context": "Use common sense here.",
+                        "example": "Use common sense when deciding.",
+                        "chinese_feel": "常识判断",
+                        "why": "高频且可迁移",
+                        "difficulty": "B1",
+                        "estimated_level": "B1",
+                        "teacher_note": "用于提醒对方作基本判断。",
+                        "cloze": "Use ____ here.",
+                        "quality": {"score": 90, "status": "recommended", "issues": []},
+                    }
+                ],
+            }
+        ]
+    }
+
+    def transport(request):
+        observed.append(request)
+        assert request.headers["Authorization"] == "Bearer provider-secret-canary"
+        provider_body = json.loads(request.body)
+        assert provider_body["model"] == "gpt-service-owned"
+        assert "api_key" not in json.dumps(provider_body).casefold()
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(model_cards, ensure_ascii=False),
+                    }
+                }
+            ]
+        }
+        return ProviderTransportResponse(
+            200,
+            request.url,
+            {"content-type": "application/json"},
+            json.dumps(response, ensure_ascii=False).encode("utf-8"),
+        )
+
+    authorization = TaskBrokerAuthorization(
+        operation_intent_ref="intent-generate-cards-1",
+        budget=BrokerBudget(4, 500_000, 500_000, 100),
+        operations={
+            "model.openai_chat": AuthorizedProviderCall(
+                profile=ProviderProfile(
+                    profile_ref="model.primary",
+                    capability="model",
+                    provider="openai",
+                    base_url="https://api.openai.com/v1",
+                    model="gpt-service-owned",
+                    maximum_response_bytes=100_000,
+                ),
+                credential_revision=int(metadata["credentialRevision"]),
+                reserved_cost_minor_units=3,
+                transport=transport,
+            )
+        },
+    )
+
+    def factory(task_id: str, method: str, request: dict[str, object]):
+        assert method == "runtime.generate_cards"
+        serialized = json.dumps(request).casefold()
+        assert "api_key" not in serialized
+        assert "base_url" not in serialized
+        return make_task_broker_handler(task_id=task_id, authorization=authorization, broker=broker)
+
+    real_worker = ROOT / "workers" / "anki_worker.py"
+    card_service = CardService(
+        state_dir=(tmp_path / "real-broker-state").resolve(),
+        worker_path=real_worker.resolve(),
+        python_path=Path(sys.executable).resolve(),
+        method_policies={
+            "runtime.generate_cards": MethodPolicy(
+                "generate_cards_from_learning_points",
+                60.0,
+                requires_broker=True,
+            )
+        },
+        broker_handler_factory=factory,
+    )
+    request = {
+        "title": "Managed broker proof",
+        "language": "en",
+        "level": "B1",
+        "card_types": ["phrase"],
+        "api_config": {
+            "provider": "openai-compatible",
+            "model": "worker-model-hint",
+        },
+        "learning_points": [
+            {
+                "id": "lp-common-sense",
+                "status": "recommended",
+                "candidate_kind": "expression",
+                "phrase_type": "spoken_phrase",
+                "source_sentence": "Use common sense here.",
+                "exact_span": "common sense",
+                "answer_core": "common sense",
+                "normalized_answer": "common sense",
+                "reason": "高频且可迁移",
+                "learning_action": "理解并会使用 common sense。",
+                "value_score": 5,
+                "start": 0,
+                "end": 2,
+            }
+        ],
+        "selected_learning_point_ids": ["lp-common-sense"],
+        "disable_card_generation_cache_read": True,
+        "disable_card_generation_cache_write": True,
+    }
+    started = card_service.start_task("runtime.generate_cards", request)
+    finished = wait_terminal(card_service, started["id"], timeout=60)
+    assert finished["state"] == "succeeded", finished.get("error")
+    result = card_service.read_result(started["id"])
+    assert result["generated_learning_point_ids"] == ["lp-common-sense"]
+    assert result["segments"][0]["cards"][0]["phrase"] == "common sense"
+    assert len(observed) == 1
+    assert ledger.list_records()[0]["state"] == "settled"
+    persisted = "\n".join(path.read_text(encoding="utf-8") for path in tmp_path.rglob("*.json"))
+    assert "provider-secret-canary" not in persisted

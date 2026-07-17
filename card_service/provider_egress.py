@@ -219,7 +219,8 @@ def _messages(value: Any) -> list[dict[str, str]]:
 def _openai_body(profile: ProviderProfile, payload: dict[str, Any]) -> dict[str, Any]:
     allowed = {
         "model", "messages", "temperature", "max_tokens", "max_completion_tokens",
-        "response_format", "reasoning_effort", "stream",
+        "response_format", "reasoning_effort", "thinking", "enable_thinking",
+        "thinking_budget", "preserve_thinking", "stream",
     }
     if set(payload) - allowed:
         raise ProviderEgressError("PROVIDER_PAYLOAD_FIELD_BLOCKED", "Provider payload contains blocked fields")
@@ -238,6 +239,22 @@ def _openai_body(profile: ProviderProfile, payload: dict[str, Any]) -> dict[str,
         if effort not in {"low", "medium", "high"}:
             raise ProviderEgressError("PROVIDER_PAYLOAD_INVALID", "Provider reasoning effort is invalid")
         body["reasoning_effort"] = effort
+    if "thinking" in payload:
+        if payload["thinking"] != {"type": "enabled"}:
+            raise ProviderEgressError("PROVIDER_PAYLOAD_INVALID", "Provider thinking mode is invalid")
+        body["thinking"] = {"type": "enabled"}
+    if "enable_thinking" in payload:
+        if not isinstance(payload["enable_thinking"], bool):
+            raise ProviderEgressError("PROVIDER_PAYLOAD_INVALID", "Provider thinking flag is invalid")
+        body["enable_thinking"] = payload["enable_thinking"]
+    if "thinking_budget" in payload:
+        body["thinking_budget"] = int(
+            _number(payload["thinking_budget"], name="thinking_budget", minimum=1, maximum=4000)
+        )
+    if "preserve_thinking" in payload:
+        if payload["preserve_thinking"] is not False:
+            raise ProviderEgressError("PROVIDER_PAYLOAD_INVALID", "Provider thinking preservation is invalid")
+        body["preserve_thinking"] = False
     stream = payload.get("stream")
     if stream is not None and stream is not False:
         raise ProviderEgressError("PROVIDER_STREAMING_BLOCKED", "Provider streaming is not enabled in this broker version")

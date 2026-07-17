@@ -156,7 +156,8 @@ M1 Provider Egress 的当前内层边界为：
 - Worker 的认证 task-owned IPC 只接受固定 operation 与 `{workUnitId, request}`；profile、origin、endpoint、model/voice、credential revision、operation intent、预算和每调用预留成本全部来自 Service 内部授权闭包。
 - Service 对 OpenAI/xAI/Anthropic/Gemini、项目已知 gateways 和 Hermes 分别重建固定请求；禁止 tools、任意 Header、任意 endpoint、流式响应和重定向，禁用 ambient proxy，并对请求字段、prompt/TTS 长度、超时和响应字节设上限。
 - Hermes 只允许字面 `127.0.0.1`/`::1` 的显式 HTTP origin，使用 credential revision 0；远程服务必须 HTTPS。任意自定义 OpenAI-compatible origin 在 M2 的受信 origin authorization 和连接时 IP 约束完成前 fail closed。
-- 当前默认传输只对临时 Hermes-style loopback 做过真实 POST；公网 provider 未使用真实用户凭据验证。Legacy Worker 生产 model/TTS call site 和正式 stdio profile/intent resolver 尚未接线，因此 `modelTtsBroker.complete` 仍为 false。
+- Legacy Worker 的 OpenAI-compatible、Anthropic 和 Gemini 模型入口已接入该通道；受管请求递归拒绝 URL/Header/secret/profile/credential/intent/budget，批次和内部重试使用确定性的独立 work unit。Gemini Vertex 在 Service-owned OAuth egress 完成前 fail closed。
+- 真实受限 Legacy Worker 已通过认证 stdio 完成一次无 Worker API Key/Base URL 的卡片生成，Service 重建模型/认证并结算 ledger。当前默认传输仍只对临时 Hermes-style loopback 做过真实 POST；公网 provider 未使用真实用户凭据验证，生产 TTS 和正式 stdio profile/intent resolver 尚未接线，因此 `modelTtsBroker.complete` 仍为 false。
 
 ## 3.1 受信本地设置与确认表面
 

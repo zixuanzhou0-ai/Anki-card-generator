@@ -291,6 +291,12 @@ from acg.provider_config import (
     should_stream_reasoning as provider_should_stream_reasoning,
     thinking_budget as provider_thinking_budget,
 )
+from acg.managed_model_broker import (
+    ManagedModelBrokerError,
+    is_configured as managed_model_broker_is_configured,
+    operation_available as managed_model_operation_available,
+    request_model as managed_model_request,
+)
 from acg.service_errors import (
     classify_service_error as service_errors_classify_service_error,
     classify_worker_exception as service_errors_classify_worker_exception,
@@ -2521,7 +2527,6 @@ def call_material_context(project: dict[str, Any], segments: list[dict[str, Any]
 
     api = project.get("api_config") or {}
     provider = api.get("provider", "local")
-    api_key = api.get("api_key", "").strip()
     model = api.get("model", "").strip()
     prompt = build_material_context_prompt(project, segments)
     try:
@@ -2542,12 +2547,12 @@ def call_material_context(project: dict[str, Any], segments: list[dict[str, Any]
                     "percent": 54,
                     "message": "模型正在理解整段素材，thinking 已保留。",
                 },
+                work_unit_id="material-context",
             )
             payload = extract_json_object(chat_completion_content(response))
         elif provider == "claude":
-            response = http_json(
-                anthropic_messages_url(api),
-                anthropic_headers(api, api_key),
+            response = model_anthropic_messages(
+                api,
                 {
                     "model": model,
                     "max_tokens": 2200,
@@ -2556,17 +2561,18 @@ def call_material_context(project: dict[str, Any], segments: list[dict[str, Any]
                     "messages": [{"role": "user", "content": prompt}],
                 },
                 timeout=90,
+                work_unit_id="material-context",
             )
             payload = extract_json_object("".join(part.get("text", "") for part in response.get("content", [])))
         elif provider == "gemini":
-            response = http_json(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                {"x-goog-api-key": api_key},
+            response = model_gemini_content(
+                api,
                 {
                     "contents": [{"parts": [{"text": prompt}]}],
                     "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
                 },
                 timeout=90,
+                work_unit_id="material-context",
             )
             payload = extract_json_object(response["candidates"][0]["content"]["parts"][0]["text"])
         elif is_gemini_vertex_config(api):
@@ -2956,8 +2962,40 @@ def api_key_header(config: dict[str, Any]) -> dict[str, str]:
     return provider_api_key_header(config)
 
 
+def managed_model_operation(config: dict[str, Any]) -> str | None:
+    provider = str(config.get("provider") or "local").strip().lower()
+    if provider in OPENAI_COMPATIBLE_PROVIDERS:
+        return "model.openai_chat"
+    if provider == "claude":
+        return "model.anthropic_messages"
+    if provider == "gemini":
+        return "model.gemini_content"
+    return None
+
+
 def model_api_available(api: dict[str, Any]) -> bool:
+    if managed_model_broker_is_configured():
+        operation = managed_model_operation(api)
+        return bool(
+            str(api.get("model") or "").strip()
+            and operation
+            and managed_model_operation_available(operation)
+        )
     return provider_model_api_available(api)
+
+
+def managed_model_response(
+    operation: str,
+    request: dict[str, Any],
+    *,
+    work_unit_id: str | None,
+    attempt: str,
+) -> dict[str, Any]:
+    return managed_model_request(
+        operation,
+        request,
+        work_unit_base=f"{work_unit_id or 'model'}:{attempt}",
+    )
 
 
 def hidden_subprocess_flags() -> dict[str, Any]:
@@ -3070,6 +3108,10 @@ def gemini_vertex_generate_content(
     max_output_tokens: int = 12000,
     response_mime_type: str = "application/json",
 ) -> str:
+    if managed_model_broker_is_configured():
+        raise ManagedModelBrokerError(
+            "Gemini Vertex is blocked in the managed Worker until Service-owned OAuth egress is available"
+        )
     model = normalize_gemini_vertex_model(config.get("model"))
     project = gemini_vertex_project(config)
     location = gemini_vertex_location(config)
@@ -3125,6 +3167,53 @@ def anthropic_headers(config: dict[str, Any], api_key: str) -> dict[str, str]:
     }
 
 
+def model_anthropic_messages(
+    api: dict[str, Any],
+    body: dict[str, Any],
+    *,
+    timeout: int = 60,
+    work_unit_id: str | None = None,
+) -> dict[str, Any]:
+    if managed_model_broker_is_configured():
+        return managed_model_response(
+            "model.anthropic_messages",
+            body,
+            work_unit_id=work_unit_id,
+            attempt="initial",
+        )
+    api_key = str(api.get("api_key") or "").strip()
+    return http_json(
+        anthropic_messages_url(api),
+        anthropic_headers(api, api_key),
+        body,
+        timeout=timeout,
+    )
+
+
+def model_gemini_content(
+    api: dict[str, Any],
+    body: dict[str, Any],
+    *,
+    timeout: int = 60,
+    work_unit_id: str | None = None,
+) -> dict[str, Any]:
+    if managed_model_broker_is_configured():
+        return managed_model_response(
+            "model.gemini_content",
+            body,
+            work_unit_id=work_unit_id,
+            attempt="initial",
+        )
+    api_key = str(api.get("api_key") or "").strip()
+    model = str(api.get("model") or "").strip()
+    return http_json(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+        {"x-goog-api-key": api_key},
+        body,
+        timeout=timeout,
+    )
+
+
 def compatible_chat_completion(
     api: dict[str, Any],
     messages: list[dict[str, str]],
@@ -3132,9 +3221,11 @@ def compatible_chat_completion(
     timeout: int = 60,
     max_tokens: int | None = None,
     progress: dict[str, Any] | None = None,
+    work_unit_id: str | None = None,
 ) -> dict[str, Any]:
+    brokered = managed_model_broker_is_configured()
     base_url = compatible_base_url(api)
-    if not base_url:
+    if not brokered and not base_url:
         raise RuntimeError("MIMO / OpenAI-compatible 需要 Base URL。")
     is_mimo = is_mimo_config(api)
     is_qwen = is_qwen_config(api)
@@ -3144,7 +3235,7 @@ def compatible_chat_completion(
         "messages": messages,
         "temperature": temperature,
     }
-    stream_reasoning = should_stream_reasoning(api)
+    stream_reasoning = should_stream_reasoning(api) and not brokered
     if not is_mimo:
         body["response_format"] = {"type": "json_object"}
     else:
@@ -3163,9 +3254,16 @@ def compatible_chat_completion(
     if max_tokens is not None:
         body["max_completion_tokens" if is_mimo else "max_tokens"] = max_tokens
     supports_response_retry = "response_format" in body
-    endpoint = f"{base_url}/chat/completions"
+    endpoint = f"{base_url}/chat/completions" if base_url else ""
 
-    def send(request_body: dict[str, Any]) -> dict[str, Any]:
+    def send(request_body: dict[str, Any], attempt: str) -> dict[str, Any]:
+        if brokered:
+            return managed_model_response(
+                "model.openai_chat",
+                request_body,
+                work_unit_id=work_unit_id,
+                attempt=attempt,
+            )
         if request_body.get("stream"):
             return stream_chat_completion(
                 endpoint,
@@ -3182,7 +3280,7 @@ def compatible_chat_completion(
         )
 
     try:
-        return send(body)
+        return send(body, "initial")
     except Exception as err:
         if is_mimo:
             retry_body = dict(body)
@@ -3190,13 +3288,13 @@ def compatible_chat_completion(
                 retry_body["stream"] = False
                 retry_body.pop("stream_options", None)
             try:
-                return send(retry_body)
+                return send(retry_body, "mimo-nonstream")
             except Exception as retry_err:
                 if "max_completion_tokens" in retry_body:
                     fallback_body = dict(retry_body)
                     fallback_body["max_tokens"] = fallback_body.pop("max_completion_tokens")
                     try:
-                        return send(fallback_body)
+                        return send(fallback_body, "mimo-max-tokens")
                     except Exception as token_retry_err:
                         raise RuntimeError(
                             f"{err}; 保留 MIMO thinking 重试失败：{retry_err}; 改用 max_tokens 重试仍失败：{token_retry_err}"
@@ -3207,12 +3305,12 @@ def compatible_chat_completion(
             retry_body["stream"] = False
             retry_body.pop("stream_options", None)
             try:
-                return send(retry_body)
+                return send(retry_body, "nonstream")
             except Exception as stream_retry_err:
                 if supports_response_retry:
                     retry_body.pop("response_format", None)
                     try:
-                        return send(retry_body)
+                        return send(retry_body, "nonstream-no-response-format")
                     except Exception as response_retry_err:
                         raise RuntimeError(
                             f"{err}; 去掉流式 thinking 重试失败：{stream_retry_err}; "
@@ -3225,7 +3323,7 @@ def compatible_chat_completion(
             raise
         body.pop("response_format", None)
         try:
-            return send(body)
+            return send(body, "no-response-format")
         except Exception as retry_err:
             raise RuntimeError(f"{err}; 去掉 response_format 重试仍失败：{retry_err}") from retry_err
 
@@ -3238,12 +3336,16 @@ def chat_completion_content(response: dict[str, Any]) -> str:
     return str(content or "")
 
 
-def call_model(project: dict[str, Any], segments: list[dict[str, Any]]) -> dict[str, Any] | None:
+def call_model(
+    project: dict[str, Any],
+    segments: list[dict[str, Any]],
+    *,
+    work_unit_id: str | None = None,
+) -> dict[str, Any] | None:
     api = project.get("api_config") or {}
     provider = api.get("provider", "local")
-    api_key = api.get("api_key", "").strip()
     model = api.get("model", "").strip()
-    if provider == "local" or not model or (not api_key and not is_gemini_vertex_config(api)):
+    if provider == "local" or not model or not model_api_available(api):
         return None
 
     prompt = build_prompt(project, segments)
@@ -3266,14 +3368,14 @@ def call_model(project: dict[str, Any], segments: list[dict[str, Any]]) -> dict[
                     "percent": 70,
                     "message": "模型保留 thinking 生成卡片字段",
                 },
+                work_unit_id=work_unit_id,
             )
             content = chat_completion_content(response)
             return extract_json_object(content)
 
         if provider == "claude":
-            response = http_json(
-                anthropic_messages_url(api),
-                anthropic_headers(api, api_key),
+            response = model_anthropic_messages(
+                api,
                 {
                     "model": model,
                     "max_tokens": 6000,
@@ -3281,14 +3383,14 @@ def call_model(project: dict[str, Any], segments: list[dict[str, Any]]) -> dict[
                     "system": "Return only valid JSON.",
                     "messages": [{"role": "user", "content": prompt}],
                 },
+                work_unit_id=work_unit_id,
             )
             content = "".join(part.get("text", "") for part in response.get("content", []))
             return extract_json_object(content)
 
         if provider == "gemini":
-            response = http_json(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                {"x-goog-api-key": api_key},
+            response = model_gemini_content(
+                api,
                 {
                     "contents": [{"parts": [{"text": prompt}]}],
                     "generationConfig": {
@@ -3296,6 +3398,7 @@ def call_model(project: dict[str, Any], segments: list[dict[str, Any]]) -> dict[
                         "responseMimeType": "application/json",
                     },
                 },
+                work_unit_id=work_unit_id,
             )
             content = response["candidates"][0]["content"]["parts"][0]["text"]
             return extract_json_object(content)
@@ -3480,7 +3583,11 @@ def call_model_batch_with_retry(
     total_batches: int,
     retry_count: int = 0,
 ) -> tuple[list[dict[str, Any]], list[str], list[dict[str, Any]]]:
-    payload = call_model(project, batch)
+    payload = call_model(
+        project,
+        batch,
+        work_unit_id=f"cards:{batch_index}:try{retry_count}",
+    )
     if payload is None:
         return [], [f"{batch[0]['id']}..{batch[-1]['id']}: 模型不可用，已保留为候选。"], [
             {"error_code": "MODEL_UNAVAILABLE", "stage": "ai", "retryable": False}
@@ -3620,11 +3727,7 @@ def call_model_batches(project: dict[str, Any], segments: list[dict[str, Any]], 
     if not segments:
         return None
     api = project.get("api_config") or {}
-    if (
-        api.get("provider", "local") == "local"
-        or (not str(api.get("api_key", "")).strip() and not is_gemini_vertex_config(api))
-        or not str(api.get("model", "")).strip()
-    ):
+    if api.get("provider", "local") == "local" or not model_api_available(api):
         return None
     batch_size = final_card_batch_size(api, batch_size)
     merged: list[dict[str, Any]] = []
@@ -3967,6 +4070,7 @@ def call_source_learning_point_expansion(
                         "percent": percent,
                         "message": "AI 逐句补漏学习点",
                     },
+                    work_unit_id=f"learning-point-expansion:{batch_index}",
                 )
                 content = chat_completion_content(response)
             payload = extract_json_object(content or "")
@@ -4705,6 +4809,7 @@ def review_phrase_candidates_with_mimo(
                         "percent": percent,
                         "message": "AI 保留 thinking 评审学习候选",
                     },
+                    work_unit_id=f"phrase-review:{batch_index}",
                 )
                 content = chat_completion_content(response)
             payload = extract_json_object(content or "")
@@ -4779,16 +4884,6 @@ def handle_test_api(payload: dict[str, Any]) -> dict[str, Any]:
             "latency_ms": 0,
         }
 
-    if not api_key and not is_gemini_vertex_config(api):
-        return {
-            "ok": False,
-            "provider": provider,
-            "model": model,
-            "message": "缺少 API Key。",
-            "error_code": worker_errors.MODEL_AUTH_FAILED,
-            "stage": "model_api",
-            "retryable": False,
-        }
     if not model:
         return {
             "ok": False,
@@ -4796,6 +4891,26 @@ def handle_test_api(payload: dict[str, Any]) -> dict[str, Any]:
             "model": model,
             "message": "缺少模型名。",
             "error_code": worker_errors.MODEL_NOT_FOUND,
+            "stage": "model_api",
+            "retryable": False,
+        }
+    if managed_model_broker_is_configured() and not model_api_available(api):
+        return {
+            "ok": False,
+            "provider": provider,
+            "model": model,
+            "message": "当前任务没有获得这个模型 Provider 的 Service broker 授权。",
+            "error_code": worker_errors.MODEL_AUTH_FAILED,
+            "stage": "model_api",
+            "retryable": False,
+        }
+    if not managed_model_broker_is_configured() and not api_key and not is_gemini_vertex_config(api):
+        return {
+            "ok": False,
+            "provider": provider,
+            "model": model,
+            "message": "缺少 API Key。",
+            "error_code": worker_errors.MODEL_AUTH_FAILED,
             "stage": "model_api",
             "retryable": False,
         }
@@ -4812,15 +4927,15 @@ def handle_test_api(payload: dict[str, Any]) -> dict[str, Any]:
                 temperature=0,
                 timeout=90 if is_thinking_model_config(api) else 30,
                 max_tokens=2000 if (is_mimo_config(api) or is_deepseek_thinking_config(api)) else 800,
+                work_unit_id="api-test",
             )
             content = chat_completion_content(response)
             if content is None:
                 content = ""
 
         elif provider == "claude":
-            response = http_json(
-                anthropic_messages_url(api),
-                anthropic_headers(api, api_key),
+            response = model_anthropic_messages(
+                api,
                 {
                     "model": model,
                     "max_tokens": 800,
@@ -4829,13 +4944,13 @@ def handle_test_api(payload: dict[str, Any]) -> dict[str, Any]:
                     "messages": [{"role": "user", "content": prompt}],
                 },
                 timeout=30,
+                work_unit_id="api-test",
             )
             content = "".join(part.get("text", "") for part in response.get("content", []))
 
         elif provider == "gemini":
-            response = http_json(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                {"x-goog-api-key": api_key},
+            response = model_gemini_content(
+                api,
                 {
                     "contents": [{"parts": [{"text": prompt}]}],
                     "generationConfig": {
@@ -4845,6 +4960,7 @@ def handle_test_api(payload: dict[str, Any]) -> dict[str, Any]:
                     },
                 },
                 timeout=30,
+                work_unit_id="api-test",
             )
             content = response.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
 
@@ -6725,9 +6841,8 @@ def cached_or_generated_document_payload(
 def call_document_model(project: dict[str, Any], segments: list[dict[str, Any]]) -> dict[str, Any] | None:
     api = project.get("api_config") or {}
     provider = api.get("provider", "local")
-    api_key = api.get("api_key", "").strip()
     model = api.get("model", "").strip()
-    if provider == "local" or not model or (not api_key and not is_gemini_vertex_config(api)):
+    if provider == "local" or not model or not model_api_available(api):
         return None
 
     prompt = build_document_prompt(project, segments)
@@ -6749,14 +6864,14 @@ def call_document_model(project: dict[str, Any], segments: list[dict[str, Any]])
                     "percent": 70,
                     "message": "模型保留 thinking 生成文档卡字段",
                 },
+                work_unit_id="document-cards",
             )
             content = chat_completion_content(response)
             return extract_json_object(content)
 
         if provider == "claude":
-            response = http_json(
-                anthropic_messages_url(api),
-                anthropic_headers(api, api_key),
+            response = model_anthropic_messages(
+                api,
                 {
                     "model": model,
                     "max_tokens": 5000,
@@ -6764,14 +6879,14 @@ def call_document_model(project: dict[str, Any], segments: list[dict[str, Any]])
                     "system": "Return only valid JSON.",
                     "messages": [{"role": "user", "content": prompt}],
                 },
+                work_unit_id="document-cards",
             )
             content = "".join(part.get("text", "") for part in response.get("content", []))
             return extract_json_object(content)
 
         if provider == "gemini":
-            response = http_json(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                {"x-goog-api-key": api_key},
+            response = model_gemini_content(
+                api,
                 {
                     "contents": [{"parts": [{"text": prompt}]}],
                     "generationConfig": {
@@ -6779,6 +6894,7 @@ def call_document_model(project: dict[str, Any], segments: list[dict[str, Any]])
                         "responseMimeType": "application/json",
                     },
                 },
+                work_unit_id="document-cards",
             )
             content = response["candidates"][0]["content"]["parts"][0]["text"]
             return extract_json_object(content)

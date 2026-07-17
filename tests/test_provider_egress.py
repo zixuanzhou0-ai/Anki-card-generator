@@ -75,6 +75,46 @@ def test_openai_request_rebuilds_model_headers_and_endpoint() -> None:
     assert "hello" not in repr(prepared)
 
 
+def test_openai_style_thinking_controls_are_bounded_and_rebuilt() -> None:
+    prepared = ProviderEgress(model_profile()).prepare(
+        "model.openai_chat",
+        {
+            "messages": [{"role": "user", "content": "hello"}],
+            "thinking": {"type": "enabled"},
+            "reasoning_effort": "high",
+            "enable_thinking": True,
+            "thinking_budget": 4000,
+            "preserve_thinking": False,
+        },
+        "secret",
+    )
+    body = json.loads(prepared.body)
+    assert body["thinking"] == {"type": "enabled"}
+    assert body["reasoning_effort"] == "high"
+    assert body["enable_thinking"] is True
+    assert body["thinking_budget"] == 4000
+    assert body["preserve_thinking"] is False
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("thinking", {"type": "disabled"}),
+        ("enable_thinking", "true"),
+        ("thinking_budget", 4001),
+        ("preserve_thinking", True),
+    ],
+)
+def test_openai_style_thinking_controls_reject_unbounded_values(field: str, value: object) -> None:
+    with pytest.raises(ProviderEgressError) as caught:
+        ProviderEgress(model_profile()).prepare(
+            "model.openai_chat",
+            {"messages": [{"role": "user", "content": "hello"}], field: value},
+            "secret",
+        )
+    assert caught.value.code == "PROVIDER_PAYLOAD_INVALID"
+
+
 def test_known_openai_compatible_gateway_is_explicitly_allowlisted() -> None:
     profile = model_profile(
         profile_ref="model.deepseek",

@@ -377,6 +377,7 @@ def _call_ai_learning_point_review_batch(
                 "percent": percent,
                 "message": "AI 正在精筛学习点",
             },
+            work_unit_id=f"learning-point-review:{batch_label}",
         )
         content = legacy_worker.chat_completion_content(response)
     else:
