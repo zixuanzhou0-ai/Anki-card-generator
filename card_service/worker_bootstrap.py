@@ -21,18 +21,53 @@ ALLOWED_COMMANDS = frozenset(
 MAX_BOOTSTRAP_ENVELOPE_BYTES = 64 * 1024 * 1024
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def main() -> None:
-    if len(sys.argv) != 4:
+    if len(sys.argv) != 6:
         raise SystemExit("invalid managed worker bootstrap arguments")
     worker_path = Path(sys.argv[1]).resolve(strict=True)
     command = sys.argv[2]
     expected_sha256 = sys.argv[3].lower()
+    runtime_manifest_path = Path(sys.argv[4]).resolve(strict=True)
+    expected_manifest_sha256 = sys.argv[5].lower()
     if command not in ALLOWED_COMMANDS:
         raise SystemExit("managed worker command is not allowed")
     source = worker_path.read_bytes()
     actual_sha256 = hashlib.sha256(source).hexdigest()
     if not hmac.compare_digest(actual_sha256, expected_sha256):
         raise SystemExit("managed worker digest changed")
+    manifest_source = runtime_manifest_path.read_bytes()
+    manifest_sha256 = hashlib.sha256(manifest_source).hexdigest()
+    if not hmac.compare_digest(manifest_sha256, expected_manifest_sha256):
+        raise SystemExit("managed runtime manifest digest changed")
+    try:
+        manifest = json.loads(manifest_source)
+    except ValueError as error:
+        raise SystemExit("managed runtime manifest is invalid") from error
+    entries = manifest.get("entries") if isinstance(manifest, dict) and manifest.get("schemaVersion") == 1 else None
+    if not isinstance(entries, list) or not entries:
+        raise SystemExit("managed runtime manifest is invalid")
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise SystemExit("managed runtime manifest entry is invalid")
+        path = Path(str(entry.get("path") or ""))
+        if not path.is_absolute():
+            raise SystemExit("managed runtime manifest path is invalid")
+        try:
+            resolved = path.resolve(strict=True)
+            size = resolved.stat().st_size
+            digest = _file_sha256(resolved)
+        except OSError as error:
+            raise SystemExit("managed runtime entry is unavailable") from error
+        if size != entry.get("size") or not hmac.compare_digest(digest, str(entry.get("sha256") or "")):
+            raise SystemExit("managed runtime entry changed")
     managed_workers_root = (Path(__file__).resolve().parent.parent / "workers").resolve(strict=True)
     sys.path.insert(0, str(worker_path.parent))
     sys.path.insert(0, str(managed_workers_root))

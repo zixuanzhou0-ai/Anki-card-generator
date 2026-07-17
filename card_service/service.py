@@ -18,6 +18,12 @@ from workers.acg.secret_scrub import is_runtime_secret_key, is_sensitive_url_que
 
 from .broker_ipc import BROKER_REQUEST_PREFIX, BROKER_RESPONSE_PREFIX, TaskBrokerChannel
 from .process_isolation import ProcessIsolationError, TaskOwnedProcessGroup
+from .runtime_manifest import (
+    ManagedRuntimeManifest,
+    RuntimeManifestError,
+    managed_tool_runtime_entries,
+    worker_runtime_entries,
+)
 from .storage import AtomicJsonStore
 from .trusted_surfaces import TrustedSurfaceError, TrustedSurfaceManager
 
@@ -161,6 +167,20 @@ class CardService:
         self.broker_handler_factory = broker_handler_factory
         self.worker_sha256 = self._file_sha256(self.worker_path)
         self.bootstrap_path = (Path(__file__).resolve().parent / "worker_bootstrap.py").resolve()
+        self.broker_client_path = (repository_root / "workers" / "acg" / "broker_client.py").resolve()
+        try:
+            runtime_entries = worker_runtime_entries(
+                self.worker_path,
+                self.bootstrap_path,
+                self.broker_client_path,
+                self.python_path,
+            )
+            runtime_entries.extend(managed_tool_runtime_entries(self.managed_tool_directories))
+            self.runtime_manifest = ManagedRuntimeManifest(runtime_entries)
+            self.runtime_manifest_path = (self.store.root / "runtime" / "manifest-v1.json").resolve()
+            self.runtime_manifest.write(self.runtime_manifest_path)
+        except RuntimeManifestError as error:
+            raise CardServiceError(error.code, str(error)) from error
         self._tasks: dict[str, _RuntimeTask] = {}
         self._tasks_lock = threading.RLock()
         self._recover_orphaned_tasks()
@@ -196,6 +216,7 @@ class CardService:
                 "version": sys.version.split()[0],
             },
             "managedToolDirectoryCount": len(self.managed_tool_directories),
+            "runtimeSupplyChain": self.runtime_manifest.public_summary(),
             "processIsolation": {
                 "taskOwnedJobObject": os.name == "nt",
                 "killOnClose": os.name == "nt",
@@ -432,6 +453,10 @@ class CardService:
                 }
                 self._persist_runtime(runtime)
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+            try:
+                self.runtime_manifest.verify()
+            except RuntimeManifestError as error:
+                raise CardServiceError(error.code, str(error)) from error
             process = subprocess.Popen(
                 [
                     str(self.python_path),
@@ -439,6 +464,8 @@ class CardService:
                     str(self.worker_path),
                     policy.worker_command,
                     self.worker_sha256,
+                    str(self.runtime_manifest_path),
+                    self.runtime_manifest.digest,
                 ],
                 cwd=str(self.worker_path.parent),
                 env=self._managed_environment(),

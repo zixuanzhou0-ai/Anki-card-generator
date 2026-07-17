@@ -142,8 +142,41 @@ def test_worker_digest_change_after_service_start_fails_closed(tmp_path: Path) -
     started = card_service.start_task("runtime.check_environment", {})
     finished = wait_terminal(card_service, started["id"])
     assert finished["state"] == "failed"
+    assert finished["error"]["code"] == "MANAGED_RUNTIME_CHANGED"
+    assert "changed" in finished["error"]["message"]
+
+
+def test_importable_worker_module_change_after_start_is_detected_before_launch(tmp_path: Path) -> None:
+    worker_root = tmp_path / "worker-runtime"
+    module_root = worker_root / "acg"
+    module_root.mkdir(parents=True)
+    mutable_worker = worker_root / "fake_worker.py"
+    mutable_worker.write_bytes(FAKE_WORKER.read_bytes())
+    module = module_root / "managed_dependency.py"
+    module.write_text("VALUE = 1\n", encoding="utf-8")
+    card_service = service(tmp_path, worker_path=mutable_worker.resolve())
+    module.write_text("VALUE = 2\n", encoding="utf-8")
+    started = card_service.start_task("runtime.check_environment", {})
+    finished = wait_terminal(card_service, started["id"])
+    assert finished["state"] == "failed"
+    assert finished["error"]["code"] == "MANAGED_RUNTIME_CHANGED"
+
+
+def test_runtime_manifest_is_internal_and_bootstrap_rejects_manifest_tampering(tmp_path: Path) -> None:
+    card_service = service(tmp_path)
+    capabilities = card_service.capabilities()
+    summary = capabilities["runtimeSupplyChain"]
+    assert summary["entryCount"] >= 4
+    assert summary["pathDisclosure"] is False
+    assert summary["signedReleaseManifest"] is False
+    assert summary["complete"] is False
+    assert str(tmp_path) not in json.dumps(capabilities)
+    card_service.runtime_manifest_path.write_text("{}", encoding="utf-8")
+    started = card_service.start_task("runtime.check_environment", {})
+    finished = wait_terminal(card_service, started["id"])
+    assert finished["state"] == "failed"
     assert finished["error"]["code"] == "WORKER_FAILED"
-    assert "digest changed" in finished["error"]["message"]
+    assert "manifest digest changed" in finished["error"]["message"]
 
 
 def test_secret_bearing_worker_result_is_rejected_and_not_persisted(tmp_path: Path) -> None:
