@@ -58,6 +58,7 @@ def _request() -> dict[str, object]:
     return {
         "project_id": "semantic-equivalence-project",
         "title": "Semantic equivalence proof",
+        "deck_name": "字幕语言卡::Semantic Equivalence Proof",
         "language": "en",
         "level": "B1",
         "source_mode": "local",
@@ -117,14 +118,25 @@ def _project_semantics(project: dict[str, object]) -> dict[str, object]:
 def _export_semantics(result: dict[str, object]) -> dict[str, object]:
     stable_keys = (
         "cards",
-        "deck_name",
         "deck_kind",
         "note_model_contract",
         "media_manifest",
         "card_media_ledger",
         "audio_audit_items",
     )
-    return {key: result.get(key) for key in stable_keys}
+
+    def without_run_identity(value: object) -> object:
+        if isinstance(value, dict):
+            return {
+                key: without_run_identity(child)
+                for key, child in value.items()
+                if key not in {"deck", "deck_name", "deck_names"}
+            }
+        if isinstance(value, list):
+            return [without_run_identity(child) for child in value]
+        return value
+
+    return {key: without_run_identity(result.get(key)) for key in stable_keys}
 
 
 def _wait_terminal(service: CardService, task_id: str, timeout: float = 60.0) -> dict[str, object]:

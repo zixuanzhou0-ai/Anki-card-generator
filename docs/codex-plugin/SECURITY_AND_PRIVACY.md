@@ -560,6 +560,8 @@ M3 的本地/URL 视频链把 FFmpeg、ffprobe、yt-dlp 及任何辅助运行时
 
 正式 stdio 现由 `ServiceBrokerRuntime` 解析 Service-owned 启动授权：清单只能来自固定 state dir 的 `trusted-surfaces/authorizations`，必须是 canonical V1、最长 24 小时并精确绑定方法→能力→profile、configuration fingerprint、credential revision、intent ref 和硬预算。清单在启动时严格拒绝未知字段、profile/能力错配与不受信路径；任务创建前复核清单期限和凭据版本，每次出站前再次复核期限；任务请求递归拒绝 profileRef、credentialRevision、operationIntentRef、budget、reservedCost、serviceBindings、brokerDescriptor 和 configurationFingerprint 等 Service-owned 字段。能力查询只返回 digest、期限和数量，不返回路径、配置明文或 secret。该边界证明 Agent/Worker 不能通过请求选择授权，但清单的正式受信 UI/launcher 签发以及 M2 每次 OperationIntent 的批准、撤销与消费账本仍未交付；真实公网凭据调用也未验证，因此还不能声明全部模型/TTS 出站边界完成。
 
+受信 UI 的用户手势响应现使用每会话 256-bit HMAC 密钥和 `study.trusted-surface-response.v1` 域隔离；密钥只在 digest-pinned 子进程启动后经 stdin 传递，session/response 文件和公开结果均不含密钥。Service 必须先校验 MAC，再校验 session/nonce，并在首次成功后从内存删除密钥；无 MAC、错误 MAC、改 nonce 或重复启动均 fail closed。这只认证“哪个受信窗口产生了该响应”，尚不等同于 M2 的 OperationApproval/ImportApproval 持久账本、撤销和原子消费。
+
 ## 12. Anki 持久写入
 
 风险：APKG 可包含模板 JavaScript、媒体并影响已有 Note Model。因此导入是高影响持久写入。

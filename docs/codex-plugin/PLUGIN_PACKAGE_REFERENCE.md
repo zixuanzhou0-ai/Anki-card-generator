@@ -174,6 +174,8 @@ server/local-settings 是最小本地凭据配置窗口；server/consent-ui 是�
 - consent-ui 同时提供受信授权管理器：直接从 Service 读取脱敏的资源授权、OperationApproval 和 ImportApproval，允许用户在消费前逐项撤销；撤销/消费原子互斥，MCP 只收到结果摘要，不接触内部 authorization/ledger ID。
 - 能从 tools-only 宿主启动；若宿主/系统阻止启动，对应高影响操作 fail closed。
 
+当前 M1 受信窗口启动器已经固定 Python/UI 绝对路径和 UI SHA-256，并把响应改为每会话一次性 HMAC：响应密钥只经私有 stdin 交付 digest-pinned 子进程，不落盘、不进入调用结果；Service 在接受 user gesture 前验证域隔离 MAC 与 session/nonce，并拒绝重复启动。正式 profile 配置注册、短期 broker authorization 清单签发以及 M2 approval ledger 仍是后续边界。
+
 M1 实现窗口与启动器，M2 实现授权账本、过期/撤销/重放保护；M3 首次使用旅程以此为前提。
 ## 4. Skill 包
 

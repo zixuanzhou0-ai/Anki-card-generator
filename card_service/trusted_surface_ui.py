@@ -10,6 +10,7 @@ from typing import Any
 
 from card_service.credentials import CredentialStore, CredentialStoreError
 from card_service.storage import AtomicJsonStore
+from card_service.trusted_surface_auth import decode_response_key, sign_response
 
 
 def read_request(path: Path) -> dict[str, Any]:
@@ -26,6 +27,7 @@ def read_request(path: Path) -> dict[str, Any]:
         expected_credentials = (path.parent.parent / "credentials").resolve()
         if Path(str(value.get("credentialStateDir") or "")) != expected_credentials:
             raise ValueError("Trusted credential state path mismatch")
+    decode_response_key(str(value.get("responseAuthKey") or ""))
     return value
 
 
@@ -33,15 +35,19 @@ def write_response(request: dict[str, Any], state: str, **extra: Any) -> None:
     response_path = Path(str(request["responsePath"]))
     if not response_path.is_absolute():
         raise ValueError("Trusted surface response path must be absolute")
+    response_key = decode_response_key(str(request.get("responseAuthKey") or ""))
     AtomicJsonStore._write_atomic(
         response_path,
-        {
+        sign_response(
+            {
             "schemaVersion": 1,
             "sessionRef": request["sessionRef"],
             "requestNonce": request["requestNonce"],
             "state": state,
             **extra,
-        },
+            },
+            response_key,
+        ),
     )
 
 

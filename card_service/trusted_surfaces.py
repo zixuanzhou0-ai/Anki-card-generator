@@ -15,6 +15,7 @@ from typing import Any
 from .credentials import PROFILE_REF_PATTERN
 from .process_isolation import ProcessIsolationError, TaskOwnedProcessGroup
 from .storage import AtomicJsonStore
+from .trusted_surface_auth import encode_response_key, new_response_key, verify_response
 
 
 class TrustedSurfaceError(RuntimeError):
@@ -59,6 +60,8 @@ class TrustedSurfaceManager:
         self.surface_sha256 = self._sha256(self.surface_path)
         self._processes: dict[str, _SurfaceProcess] = {}
         self._session_digests: dict[str, str] = {}
+        self._response_keys: dict[str, bytes] = {}
+        self._verified_responses: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
 
     @staticmethod
@@ -70,6 +73,7 @@ class TrustedSurfaceManager:
             "localSettings": True,
             "consentWindow": True,
             "digestPinned": True,
+            "authenticatedResponse": True,
             "secretViaModel": False,
             "authorizationLedger": False,
             "complete": False,
@@ -145,6 +149,13 @@ class TrustedSurfaceManager:
 
     def launch(self, session_ref: str) -> dict[str, Any]:
         request_path, request = self._load_request(session_ref)
+        with self._lock:
+            if (
+                session_ref in self._processes
+                or session_ref in self._response_keys
+                or session_ref in self._verified_responses
+            ):
+                raise TrustedSurfaceError("SESSION_ALREADY_LAUNCHED", "Trusted surface session was already launched")
         if self._sha256(self.surface_path) != self.surface_sha256:
             raise TrustedSurfaceError("SURFACE_DIGEST_CHANGED", "Trusted surface code changed after service start")
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
@@ -168,11 +179,18 @@ class TrustedSurfaceManager:
             process_group.close()
             raise TrustedSurfaceError("SURFACE_ISOLATION_FAILED", str(error)) from error
         assert process.stdin is not None
-        frozen_request = json.dumps(request, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        response_key = new_response_key()
+        frozen_request = json.dumps(
+            {**request, "responseAuthKey": encode_response_key(response_key)},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
         process.stdin.write(b"START\n" + frozen_request)
         process.stdin.close()
         with self._lock:
             self._processes[session_ref] = _SurfaceProcess(process=process, process_group=process_group)
+            self._response_keys[session_ref] = response_key
         threading.Thread(target=self._monitor, args=(session_ref,), daemon=True).start()
         return {"sessionRef": session_ref, "surface": request["surface"], "state": "open"}
 
@@ -190,13 +208,19 @@ class TrustedSurfaceManager:
             self._processes.pop(session_ref, None)
         response_path = self.responses_dir / f"{session_ref}.json"
         if exit_code != 0 and not response_path.exists():
-            AtomicJsonStore._write_atomic(
-                response_path,
-                {"schemaVersion": 1, "sessionRef": session_ref, "state": "failed", "errorCode": "SURFACE_EXITED"},
-            )
+            failure = {"schemaVersion": 1, "sessionRef": session_ref, "state": "failed", "errorCode": "SURFACE_EXITED"}
+            AtomicJsonStore._write_atomic(response_path, failure)
+            with self._lock:
+                self._verified_responses[session_ref] = failure
+                self._response_keys.pop(session_ref, None)
 
     def get_session(self, session_ref: str) -> dict[str, Any]:
         _, request = self._load_request(session_ref)
+        with self._lock:
+            verified = self._verified_responses.get(session_ref)
+        if verified is not None:
+            allowed = {"schemaVersion", "sessionRef", "state", "credential", "userGestureRecorded", "errorCode"}
+            return {key: value for key, value in verified.items() if key in allowed}
         response_path = self.responses_dir / f"{session_ref}.json"
         if not response_path.is_file():
             with self._lock:
@@ -204,9 +228,20 @@ class TrustedSurfaceManager:
             return {"sessionRef": session_ref, "surface": request["surface"], "state": "open" if running else "created"}
         with response_path.open("r", encoding="utf-8") as handle:
             response = json.load(handle)
+        with self._lock:
+            response_key = self._response_keys.get(session_ref)
+        if response_key is None:
+            raise TrustedSurfaceError("SESSION_RESPONSE_INVALID", "Trusted surface response key is unavailable")
+        try:
+            response = verify_response(response, response_key)
+        except (TypeError, ValueError) as error:
+            raise TrustedSurfaceError("SESSION_RESPONSE_INVALID", "Trusted surface response authentication failed") from error
         if response.get("sessionRef") != session_ref:
             raise TrustedSurfaceError("SESSION_RESPONSE_INVALID", "Trusted surface response session mismatch")
-        if response.get("requestNonce") != request.get("requestNonce") and response.get("state") != "failed":
+        if response.get("requestNonce") != request.get("requestNonce"):
             raise TrustedSurfaceError("SESSION_RESPONSE_INVALID", "Trusted surface response nonce mismatch")
+        with self._lock:
+            self._verified_responses[session_ref] = dict(response)
+            self._response_keys.pop(session_ref, None)
         allowed = {"schemaVersion", "sessionRef", "state", "credential", "userGestureRecorded", "errorCode"}
         return {key: value for key, value in response.items() if key in allowed}

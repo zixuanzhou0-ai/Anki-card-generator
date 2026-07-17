@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from card_service.storage import AtomicJsonStore
+from card_service.trusted_surface_auth import encode_response_key, new_response_key, verify_response
+from card_service.trusted_surface_ui import write_response
 from card_service.trusted_surfaces import TrustedSurfaceError, TrustedSurfaceManager
 
 
@@ -43,6 +45,23 @@ def test_settings_session_contains_no_secret_and_returns_no_path(tmp_path: Path)
     assert "api_key" not in json.dumps(request).lower()
 
 
+def test_real_trusted_surface_writer_authenticates_response_without_persisting_key(tmp_path: Path) -> None:
+    key = new_response_key()
+    response_path = (tmp_path / "response.json").resolve()
+    request = {
+        "sessionRef": "session-auth-proof",
+        "requestNonce": "n" * 64,
+        "responsePath": str(response_path),
+        "responseAuthKey": encode_response_key(key),
+    }
+    write_response(request, "approved", userGestureRecorded=True)
+    stored = json.loads(response_path.read_text(encoding="utf-8"))
+    verified = verify_response(stored, key)
+    assert verified["state"] == "approved"
+    assert verified["userGestureRecorded"] is True
+    assert "responseAuthKey" not in response_path.read_text(encoding="utf-8")
+
+
 def test_digest_pinned_launcher_completes_over_private_response_file(tmp_path: Path) -> None:
     surfaces = manager(tmp_path)
     session = surfaces.create_consent_session(
@@ -55,6 +74,20 @@ def test_digest_pinned_launcher_completes_over_private_response_file(tmp_path: P
         "state": "approved",
         "userGestureRecorded": True,
     }
+    request_text = (surfaces.sessions_dir / f"{session['sessionRef']}.json").read_text(encoding="utf-8")
+    response_text = (surfaces.responses_dir / f"{session['sessionRef']}.json").read_text(encoding="utf-8")
+    assert "responseAuthKey" not in request_text
+    assert "responseAuthKey" not in response_text
+    assert "responseMac" in response_text
+
+
+def test_one_trusted_surface_session_cannot_be_launched_twice(tmp_path: Path) -> None:
+    surfaces = manager(tmp_path)
+    session = surfaces.create_consent_session(title="确认", summary="执行本地测试。", purpose="operation")
+    surfaces.launch(session["sessionRef"])
+    with pytest.raises(TrustedSurfaceError) as caught:
+        surfaces.launch(session["sessionRef"])
+    assert caught.value.code == "SESSION_ALREADY_LAUNCHED"
 
 
 def test_tampered_surface_code_fails_before_launch(tmp_path: Path) -> None:
@@ -89,6 +122,38 @@ def test_tampered_request_or_response_nonce_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(TrustedSurfaceError) as nonce:
         surfaces.get_session(session["sessionRef"])
     assert nonce.value.code == "SESSION_RESPONSE_INVALID"
+
+
+def test_same_user_forged_approval_with_readable_nonce_but_no_private_mac_is_rejected(tmp_path: Path) -> None:
+    surfaces = manager(tmp_path)
+    session = surfaces.create_consent_session(title="确认", summary="执行本地测试。", purpose="operation")
+    surfaces.launch(session["sessionRef"])
+    deadline = time.monotonic() + 4
+    response_path = surfaces.responses_dir / f"{session['sessionRef']}.json"
+    running = True
+    while time.monotonic() < deadline:
+        with surfaces._lock:
+            running = session["sessionRef"] in surfaces._processes
+        if response_path.is_file() and not running:
+            break
+        time.sleep(0.02)
+    assert response_path.is_file() and not running
+    request = json.loads(
+        (surfaces.sessions_dir / f"{session['sessionRef']}.json").read_text(encoding="utf-8")
+    )
+    AtomicJsonStore._write_atomic(
+        response_path,
+        {
+            "schemaVersion": 1,
+            "sessionRef": session["sessionRef"],
+            "requestNonce": request["requestNonce"],
+            "state": "approved",
+            "userGestureRecorded": True,
+        },
+    )
+    with pytest.raises(TrustedSurfaceError) as caught:
+        surfaces.get_session(session["sessionRef"])
+    assert caught.value.code == "SESSION_RESPONSE_INVALID"
 
 
 @pytest.mark.parametrize("profile_ref", ["", "../escape", "model primary", "x" * 129])
