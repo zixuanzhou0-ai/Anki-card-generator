@@ -295,6 +295,7 @@ def test_stdio_transport_stays_local_and_supports_task_polling(tmp_path: Path) -
             "card_service",
             "--state-dir",
             str(state_dir),
+            "--development-unpackaged-runtime",
             "--worker",
             str(FAKE_WORKER.resolve()),
             "--python",

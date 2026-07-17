@@ -41,14 +41,22 @@ def serve(service: CardService) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Codex Study local Card Service")
     parser.add_argument("--state-dir", type=Path, required=True)
+    runtime_mode = parser.add_mutually_exclusive_group(required=True)
+    runtime_mode.add_argument("--runtime-package", type=Path)
+    runtime_mode.add_argument("--development-unpackaged-runtime", action="store_true")
     parser.add_argument("--worker", type=Path)
     parser.add_argument("--python", type=Path)
     parser.add_argument("--tool-dir", action="append", type=Path, default=[])
     arguments = parser.parse_args()
+    if not arguments.development_unpackaged_runtime and (
+        arguments.worker is not None or arguments.python is not None or arguments.tool_dir
+    ):
+        parser.error("--worker, --python, and --tool-dir require --development-unpackaged-runtime")
     service = CardService(
         state_dir=arguments.state_dir,
         worker_path=arguments.worker,
         python_path=arguments.python,
+        runtime_package=arguments.runtime_package,
         managed_tool_directories=arguments.tool_dir,
     )
     serve(service)

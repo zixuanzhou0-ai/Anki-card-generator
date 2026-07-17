@@ -26,6 +26,7 @@ from .runtime_manifest import (
     managed_tool_runtime_entries,
     worker_runtime_entries,
 )
+from .runtime_package import ManagedRuntimePackage, RuntimePackageError
 from .storage import AtomicJsonStore
 from .trusted_surfaces import TrustedSurfaceError, TrustedSurfaceManager
 
@@ -165,6 +166,7 @@ class CardService:
         state_dir: str | Path,
         worker_path: str | Path | None = None,
         python_path: str | Path | None = None,
+        runtime_package: str | Path | None = None,
         managed_tool_directories: list[str | Path] | None = None,
         method_policies: dict[str, MethodPolicy] | None = None,
         max_stdout_bytes: int = 64 * 1024 * 1024,
@@ -176,8 +178,22 @@ class CardService:
         use_restricted_launcher: bool | None = None,
     ) -> None:
         repository_root = Path(__file__).resolve().parent.parent
-        worker_candidate = Path(worker_path) if worker_path is not None else repository_root / "workers" / "anki_worker.py"
-        python_candidate = Path(python_path) if python_path is not None else Path(sys.executable)
+        self.runtime_package: ManagedRuntimePackage | None = None
+        if runtime_package is not None:
+            if worker_path is not None or python_path is not None or managed_tool_directories:
+                raise CardServiceError(
+                    "RUNTIME_PACKAGE_CONFLICT",
+                    "Packaged runtime cannot be combined with unpackaged runtime paths",
+                )
+            try:
+                self.runtime_package = ManagedRuntimePackage(runtime_package)
+                worker_candidate = self.runtime_package.resource_path("legacy-worker:entry")
+                python_candidate = self.runtime_package.resource_path("managed-python:executable")
+            except RuntimePackageError as error:
+                raise CardServiceError(error.code, str(error)) from error
+        else:
+            worker_candidate = Path(worker_path) if worker_path is not None else repository_root / "workers" / "anki_worker.py"
+            python_candidate = Path(python_path) if python_path is not None else Path(sys.executable)
         if not worker_candidate.is_absolute() or not python_candidate.is_absolute():
             raise CardServiceError("RELATIVE_RUNTIME_PATH", "Managed runtime paths must be absolute")
         self.worker_path = worker_candidate.resolve()
@@ -209,18 +225,28 @@ class CardService:
         if self.use_restricted_launcher and os.name != "nt":
             raise CardServiceError("RESTRICTED_LAUNCHER_UNAVAILABLE", "Restricted launcher is only available on Windows")
         self.worker_sha256 = self._file_sha256(self.worker_path)
-        self.bootstrap_path = (Path(__file__).resolve().parent / "worker_bootstrap.py").resolve()
-        self.restricted_launcher_path = (Path(__file__).resolve().parent / "windows_restricted_launcher.py").resolve()
-        self.broker_client_path = (repository_root / "workers" / "acg" / "broker_client.py").resolve()
-        try:
-            runtime_entries = worker_runtime_entries(
-                self.worker_path,
-                self.bootstrap_path,
-                self.broker_client_path,
-                self.python_path,
-                self.restricted_launcher_path if self.use_restricted_launcher else None,
+        if self.runtime_package is not None:
+            self.bootstrap_path = self.runtime_package.resource_path("card-service:worker-bootstrap")
+            self.restricted_launcher_path = self.runtime_package.resource_path(
+                "card-service:windows-restricted-launcher"
             )
-            runtime_entries.extend(managed_tool_runtime_entries(self.managed_tool_directories))
+            self.broker_client_path = self.runtime_package.resource_path("card-service:broker-client")
+        else:
+            self.bootstrap_path = (Path(__file__).resolve().parent / "worker_bootstrap.py").resolve()
+            self.restricted_launcher_path = (Path(__file__).resolve().parent / "windows_restricted_launcher.py").resolve()
+            self.broker_client_path = (repository_root / "workers" / "acg" / "broker_client.py").resolve()
+        try:
+            if self.runtime_package is not None:
+                runtime_entries = self.runtime_package.runtime_entries()
+            else:
+                runtime_entries = worker_runtime_entries(
+                    self.worker_path,
+                    self.bootstrap_path,
+                    self.broker_client_path,
+                    self.python_path,
+                    self.restricted_launcher_path if self.use_restricted_launcher else None,
+                )
+                runtime_entries.extend(managed_tool_runtime_entries(self.managed_tool_directories))
             self.runtime_manifest = ManagedRuntimeManifest(runtime_entries)
             self.runtime_manifest_path = (self.store.root / "runtime" / "manifest-v1.json").resolve()
             self.runtime_manifest.write(self.runtime_manifest_path)
@@ -262,6 +288,17 @@ class CardService:
             },
             "managedToolDirectoryCount": len(self.managed_tool_directories),
             "runtimeSupplyChain": self.runtime_manifest.public_summary(),
+            "runtimePackage": (
+                self.runtime_package.public_summary()
+                if self.runtime_package is not None
+                else {
+                    "schemaVersion": 1,
+                    "mode": "development-unpackaged",
+                    "pathDisclosure": False,
+                    "signatureVerified": False,
+                    "complete": False,
+                }
+            ),
             "processIsolation": {
                 "taskOwnedJobObject": os.name == "nt",
                 "killOnClose": os.name == "nt",
@@ -502,9 +539,11 @@ class CardService:
                 self._persist_runtime(runtime)
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
             try:
+                if self.runtime_package is not None:
+                    self.runtime_package.verify()
                 self.runtime_manifest.verify()
                 self.runtime_manifest.verify_serialized(self.runtime_manifest_path)
-            except RuntimeManifestError as error:
+            except (RuntimeManifestError, RuntimePackageError) as error:
                 raise CardServiceError(error.code, str(error)) from error
             worker_command = [
                 str(self.python_path),
