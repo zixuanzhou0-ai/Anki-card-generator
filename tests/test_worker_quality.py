@@ -10884,6 +10884,7 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(base64.b64decode(store_call["data"]), media_bytes)
 
     def test_verify_anki_import_uses_trusted_atomic_copy_for_cross_drive_anki_error(self):
+        calls = []
         with tempfile.TemporaryDirectory() as temp_dir:
             app_data = Path(temp_dir) / "appdata"
             anki_dir = app_data / "Anki2" / "Profile" / "collection.media"
@@ -10900,6 +10901,7 @@ class WorkerQualityTests(unittest.TestCase):
             original_app_data = os.environ.get("APPDATA")
 
             def fake_anki_connect(action, params=None, url=""):
+                calls.append(action)
                 if action == "importPackage":
                     return True
                 if action == "findCards":
@@ -10950,6 +10952,8 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(result["media_recovery_methods"], {media_name: "trusted_atomic_copy"})
         self.assertEqual(result["media_recovery_failures"], [])
         self.assertEqual(restored_bytes, media_bytes)
+        self.assertNotIn("retrieveMediaFile", calls)
+        self.assertNotIn("storeMediaFile", calls)
 
     def test_media_recovery_refuses_cross_drive_fallback_outside_anki_profile(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -10992,7 +10996,8 @@ class WorkerQualityTests(unittest.TestCase):
 
         self.assertEqual(result["restored"], [])
         self.assertEqual(len(result["failures"]), 1)
-        self.assertIn("受信任", result["failures"][0]["error"])
+        self.assertEqual(result["failures"][0]["code"], "anki_connect_store_failed")
+        self.assertIn("标准 Anki profile", result["failures"][0]["error"])
 
     def test_direct_media_restore_accepts_identical_file_created_during_publish(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -11002,6 +11007,8 @@ class WorkerQualityTests(unittest.TestCase):
             filename = "race-identical.mp3"
             destination = anki_media_dir / filename
             source_bytes = b"trusted media bytes"
+            source_path = Path(temp_dir) / "source-identical.mp3"
+            source_path.write_bytes(source_bytes)
             expected_hash = hashlib.sha256(source_bytes).hexdigest()
             original_app_data = os.environ.get("APPDATA")
             original_publish = worker._legacy_worker.publish_file_no_replace
@@ -11015,10 +11022,11 @@ class WorkerQualityTests(unittest.TestCase):
                 os.environ["APPDATA"] = str(app_data)
                 worker._legacy_worker.publish_file_no_replace = publish_after_identical_race
                 error = worker.restore_anki_media_file_direct(
-                    source_bytes,
+                    source_path,
                     anki_media_dir,
                     filename,
                     expected_hash,
+                    len(source_bytes),
                 )
             finally:
                 worker._legacy_worker.publish_file_no_replace = original_publish
@@ -11039,6 +11047,8 @@ class WorkerQualityTests(unittest.TestCase):
             filename = "race-conflict.mp3"
             destination = anki_media_dir / filename
             source_bytes = b"trusted media bytes"
+            source_path = Path(temp_dir) / "source-conflict.mp3"
+            source_path.write_bytes(source_bytes)
             conflicting_bytes = b"concurrent conflicting bytes"
             expected_hash = hashlib.sha256(source_bytes).hexdigest()
             original_app_data = os.environ.get("APPDATA")
@@ -11053,10 +11063,11 @@ class WorkerQualityTests(unittest.TestCase):
                 os.environ["APPDATA"] = str(app_data)
                 worker._legacy_worker.publish_file_no_replace = publish_after_conflicting_race
                 error = worker.restore_anki_media_file_direct(
-                    source_bytes,
+                    source_path,
                     anki_media_dir,
                     filename,
                     expected_hash,
+                    len(source_bytes),
                 )
             finally:
                 worker._legacy_worker.publish_file_no_replace = original_publish
@@ -11068,6 +11079,933 @@ class WorkerQualityTests(unittest.TestCase):
             self.assertIn("同名媒体冲突", error)
             self.assertEqual(destination.read_bytes(), conflicting_bytes)
             self.assertEqual(list(anki_media_dir.glob(".anki-card-generator-media-*.tmp")), [])
+
+    def test_trusted_media_restore_streams_64_mib_without_base64_or_anki_media_api(self):
+        import tracemalloc
+
+        chunk = b"x" * (1024 * 1024)
+        chunk_count = 64
+        expected_bytes = len(chunk) * chunk_count
+        digest = hashlib.sha256()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app_data = Path(temp_dir) / "appdata"
+            anki_dir = app_data / "Anki2" / "Profile" / "collection.media"
+            anki_dir.mkdir(parents=True)
+            export_dir = Path(temp_dir) / "export_media"
+            export_dir.mkdir()
+            media_name = "large-original.mp3"
+            source_path = export_dir / media_name
+            with source_path.open("wb") as handle:
+                for _ in range(chunk_count):
+                    handle.write(chunk)
+                    digest.update(chunk)
+            manifest = {
+                media_name: {
+                    "sha256": digest.hexdigest(),
+                    "bytes": expected_bytes,
+                }
+            }
+            original_app_data = os.environ.get("APPDATA")
+            original_anki_connect = worker._legacy_worker.anki_connect
+            original_read_bytes = Path.read_bytes
+            original_b64encode = worker._legacy_worker.base64.b64encode
+            original_b64decode = worker._legacy_worker.base64.b64decode
+
+            def forbidden(*_args, **_kwargs):
+                raise AssertionError("trusted streaming path must not whole-read or use Base64/Anki media APIs")
+
+            try:
+                os.environ["APPDATA"] = str(app_data)
+                worker._legacy_worker.anki_connect = forbidden
+                Path.read_bytes = forbidden
+                worker._legacy_worker.base64.b64encode = forbidden
+                worker._legacy_worker.base64.b64decode = forbidden
+                tracemalloc.start()
+                result = worker.restore_missing_anki_media(
+                    [media_name],
+                    manifest,
+                    export_dir,
+                    anki_dir,
+                    "http://127.0.0.1:8765",
+                )
+                _, peak_bytes = tracemalloc.get_traced_memory()
+                tracemalloc.stop()
+            finally:
+                if tracemalloc.is_tracing():
+                    tracemalloc.stop()
+                worker._legacy_worker.anki_connect = original_anki_connect
+                Path.read_bytes = original_read_bytes
+                worker._legacy_worker.base64.b64encode = original_b64encode
+                worker._legacy_worker.base64.b64decode = original_b64decode
+                if original_app_data is None:
+                    os.environ.pop("APPDATA", None)
+                else:
+                    os.environ["APPDATA"] = original_app_data
+
+            destination = anki_dir / media_name
+            self.assertEqual(result["restored"], [media_name])
+            self.assertEqual(result["restored_by"][media_name], "trusted_atomic_copy")
+            self.assertEqual(result["created"], [media_name])
+            self.assertEqual(destination.stat().st_size, expected_bytes)
+            self.assertEqual(worker._legacy_worker.file_sha256(destination), digest.hexdigest())
+            self.assertLess(peak_bytes, 32 * 1024 * 1024)
+
+    def test_nonstandard_media_dir_rejects_anki_connect_file_over_8_mib_without_api_call(self):
+        source_bytes = b"x" * (worker._legacy_worker.ANKI_CONNECT_MEDIA_MAX_RAW_BYTES + 1)
+        calls = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            export_dir = Path(temp_dir) / "export_media"
+            export_dir.mkdir()
+            media_name = "too-large.mp3"
+            source_path = export_dir / media_name
+            source_path.write_bytes(source_bytes)
+            manifest = {
+                media_name: {
+                    "sha256": hashlib.sha256(source_bytes).hexdigest(),
+                    "bytes": len(source_bytes),
+                }
+            }
+            anki_dir = Path(temp_dir) / "portable" / "collection.media"
+            anki_dir.mkdir(parents=True)
+            original_anki_connect = worker._legacy_worker.anki_connect
+
+            def forbidden_anki_connect(action, params=None, url=""):
+                calls.append(action)
+                raise AssertionError("over-limit fallback must fail before AnkiConnect")
+
+            try:
+                worker._legacy_worker.anki_connect = forbidden_anki_connect
+                result = worker.restore_missing_anki_media(
+                    [media_name],
+                    manifest,
+                    export_dir,
+                    anki_dir,
+                    "http://127.0.0.1:8765",
+                )
+            finally:
+                worker._legacy_worker.anki_connect = original_anki_connect
+
+        self.assertEqual(calls, [])
+        self.assertEqual(result["restored"], [])
+        self.assertEqual(result["failures"][0]["code"], "anki_connect_media_limit_exceeded")
+
+    def test_nonstandard_media_dir_accepts_exact_8_mib_bounded_anki_connect_fallback(self):
+        source_bytes = b"z" * worker._legacy_worker.ANKI_CONNECT_MEDIA_MAX_RAW_BYTES
+        stored = {}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            export_dir = Path(temp_dir) / "export_media"
+            export_dir.mkdir()
+            media_name = "inline-limit.mp3"
+            source_path = export_dir / media_name
+            source_path.write_bytes(source_bytes)
+            manifest = {
+                media_name: {
+                    "sha256": hashlib.sha256(source_bytes).hexdigest(),
+                    "bytes": len(source_bytes),
+                }
+            }
+            anki_dir = Path(temp_dir) / "portable" / "collection.media"
+            anki_dir.mkdir(parents=True)
+            original_anki_connect = worker._legacy_worker.anki_connect
+
+            def fake_anki_connect(action, params=None, url=""):
+                params = params or {}
+                if action == "retrieveMediaFile":
+                    data = stored.get(params["filename"])
+                    return base64.b64encode(data).decode("ascii") if data is not None else None
+                if action == "storeMediaFile":
+                    stored[params["filename"]] = base64.b64decode(params["data"], validate=True)
+                    return params["filename"]
+                raise AssertionError(action)
+
+            try:
+                worker._legacy_worker.anki_connect = fake_anki_connect
+                result = worker.restore_missing_anki_media(
+                    [media_name],
+                    manifest,
+                    export_dir,
+                    anki_dir,
+                    "http://127.0.0.1:8765",
+                )
+            finally:
+                worker._legacy_worker.anki_connect = original_anki_connect
+
+        self.assertEqual(result["restored"], [media_name])
+        self.assertEqual(result["restored_by"][media_name], "anki_connect")
+        self.assertEqual(stored[media_name], source_bytes)
+
+    def test_anki_connect_media_decode_and_http_reader_enforce_hard_limits(self):
+        class FakeResponse:
+            def __init__(self, data, content_length=None):
+                self.data = data
+                self.headers = {}
+                if content_length is not None:
+                    self.headers["Content-Length"] = str(content_length)
+
+            def read(self, amount=None):
+                return self.data if amount is None else self.data[:amount]
+
+        self.assertEqual(
+            worker._legacy_worker._read_http_response_bytes(FakeResponse(b"1234"), 4),
+            b"1234",
+        )
+        with self.assertRaisesRegex(RuntimeError, "ANKI_CONNECT_RESPONSE_TOO_LARGE"):
+            worker._legacy_worker._read_http_response_bytes(FakeResponse(b"12345"), 4)
+        with self.assertRaisesRegex(RuntimeError, "ANKI_CONNECT_RESPONSE_TOO_LARGE"):
+            worker._legacy_worker._read_http_response_bytes(
+                FakeResponse(b"", content_length=5),
+                4,
+            )
+        with self.assertRaises(ValueError):
+            worker._legacy_worker.decode_anki_media_base64("not base64!")
+        with self.assertRaisesRegex(RuntimeError, "ANKI_CONNECT_RESPONSE_TOO_LARGE"):
+            worker._legacy_worker.decode_anki_media_base64("A" * 9, max_raw_bytes=3)
+
+    def test_anki_connect_health_check_uses_bounded_response(self):
+        captured = {}
+        original_http_json = worker._legacy_worker.http_json
+
+        def fake_http_json(url, headers, body, timeout=60, max_response_bytes=None):
+            captured["url"] = url
+            captured["body"] = body
+            captured["timeout"] = timeout
+            captured["max_response_bytes"] = max_response_bytes
+            return {"result": 6, "error": None}
+
+        try:
+            worker._legacy_worker.http_json = fake_http_json
+            ok, detail = worker._legacy_worker.check_anki_connect()
+        finally:
+            worker._legacy_worker.http_json = original_http_json
+
+        self.assertTrue(ok)
+        self.assertEqual(detail, "AnkiConnect 6")
+        self.assertEqual(captured["body"]["action"], "version")
+        self.assertEqual(
+            captured["max_response_bytes"],
+            worker._legacy_worker.ANKI_CONNECT_SMALL_RESPONSE_MAX_BYTES,
+        )
+
+    def test_anki_connect_routes_every_action_through_expected_response_cap(self):
+        captured = []
+        original_http_json = worker._legacy_worker.http_json
+
+        def fake_http_json(url, headers, body, timeout=60, max_response_bytes=None):
+            captured.append((body["action"], max_response_bytes))
+            return {"result": None, "error": None}
+
+        try:
+            worker._legacy_worker.http_json = fake_http_json
+            for action in ("retrieveMediaFile", "storeMediaFile", "cardsInfo"):
+                worker._legacy_worker.anki_connect(action)
+        finally:
+            worker._legacy_worker.http_json = original_http_json
+
+        self.assertEqual(
+            captured,
+            [
+                (
+                    "retrieveMediaFile",
+                    worker._legacy_worker.ANKI_CONNECT_RETRIEVE_MAX_JSON_BYTES,
+                ),
+                (
+                    "storeMediaFile",
+                    worker._legacy_worker.ANKI_CONNECT_SMALL_RESPONSE_MAX_BYTES,
+                ),
+                (
+                    "cardsInfo",
+                    worker._legacy_worker.ANKI_CONNECT_DEFAULT_RESPONSE_MAX_BYTES,
+                ),
+            ],
+        )
+
+    def test_direct_media_restore_rejects_source_symlink_without_writing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app_data = Path(temp_dir) / "appdata"
+            anki_dir = app_data / "Anki2" / "Profile" / "collection.media"
+            anki_dir.mkdir(parents=True)
+            source_target = Path(temp_dir) / "source-target.mp3"
+            source_target.write_bytes(b"trusted media")
+            source_link = Path(temp_dir) / "source-link.mp3"
+            try:
+                os.symlink(source_target, source_link)
+            except OSError as err:
+                self.skipTest(f"symlink creation is unavailable: {err}")
+            original_app_data = os.environ.get("APPDATA")
+            try:
+                os.environ["APPDATA"] = str(app_data)
+                result = worker._legacy_worker._restore_anki_media_file_direct_result(
+                    source_link,
+                    anki_dir,
+                    "target.mp3",
+                    hashlib.sha256(b"trusted media").hexdigest(),
+                    len(b"trusted media"),
+                )
+            finally:
+                if original_app_data is None:
+                    os.environ.pop("APPDATA", None)
+                else:
+                    os.environ["APPDATA"] = original_app_data
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "unsafe_source_or_name")
+        self.assertFalse((anki_dir / "target.mp3").exists())
+
+    def test_trusted_media_directory_rejects_reparse_component(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app_data = Path(temp_dir) / "appdata"
+            anki_dir = app_data / "Anki2" / "Profile" / "collection.media"
+            anki_dir.mkdir(parents=True)
+            export_dir = Path(temp_dir) / "export_media"
+            export_dir.mkdir()
+            media_name = "reparse.mp3"
+            source_bytes = b"trusted media"
+            source_path = export_dir / media_name
+            source_path.write_bytes(source_bytes)
+            manifest = {
+                media_name: {
+                    "sha256": hashlib.sha256(source_bytes).hexdigest(),
+                    "bytes": len(source_bytes),
+                }
+            }
+            original_app_data = os.environ.get("APPDATA")
+            original_reparse_check = worker._legacy_worker._path_is_reparse
+            original_anki_connect = worker._legacy_worker.anki_connect
+
+            def fake_reparse_check(path, info=None):
+                if Path(path) == anki_dir:
+                    return True
+                return original_reparse_check(Path(path), info)
+
+            def forbidden_anki_connect(*_args, **_kwargs):
+                raise AssertionError("reparse media directory must fail before AnkiConnect")
+
+            try:
+                os.environ["APPDATA"] = str(app_data)
+                worker._legacy_worker._path_is_reparse = fake_reparse_check
+                worker._legacy_worker.anki_connect = forbidden_anki_connect
+                trusted = worker._legacy_worker.trusted_anki_media_directory(anki_dir)
+                result = worker.restore_missing_anki_media(
+                    [media_name],
+                    manifest,
+                    export_dir,
+                    anki_dir,
+                    "http://127.0.0.1:8765",
+                )
+            finally:
+                worker._legacy_worker._path_is_reparse = original_reparse_check
+                worker._legacy_worker.anki_connect = original_anki_connect
+                if original_app_data is None:
+                    os.environ.pop("APPDATA", None)
+                else:
+                    os.environ["APPDATA"] = original_app_data
+
+        self.assertFalse(trusted)
+        self.assertEqual(result["restored"], [])
+        self.assertEqual(result["failures"][0]["code"], "unsafe_source_or_name")
+
+    def test_already_present_media_in_reparse_directory_blocks_import(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app_data = Path(temp_dir) / "appdata"
+            anki_dir = app_data / "Anki2" / "Profile" / "collection.media"
+            anki_dir.mkdir(parents=True)
+            export_dir = Path(temp_dir) / "export_media"
+            export_dir.mkdir()
+            media_name = "already-present.mp3"
+            media_bytes = b"trusted media"
+            (export_dir / media_name).write_bytes(media_bytes)
+            (anki_dir / media_name).write_bytes(media_bytes)
+            manifest = worker.media_manifest([str(export_dir / media_name)])
+            apkg_path = Path(temp_dir) / "deck.apkg"
+            apkg_path.write_bytes(b"fake apkg")
+            original_app_data = os.environ.get("APPDATA")
+            original_reparse_check = worker._legacy_worker._path_is_reparse
+            original_anki_connect = worker._legacy_worker.anki_connect
+
+            def fake_reparse_check(path, info=None):
+                if Path(path) == anki_dir:
+                    return True
+                return original_reparse_check(Path(path), info)
+
+            def fake_anki_connect(action, params=None, url=""):
+                calls.append(action)
+                if action == "getMediaDirPath":
+                    return str(anki_dir)
+                if action == "importPackage":
+                    raise AssertionError("reparse media directory must block importPackage")
+                raise AssertionError(action)
+
+            try:
+                os.environ["APPDATA"] = str(app_data)
+                worker._legacy_worker._path_is_reparse = fake_reparse_check
+                worker._legacy_worker.anki_connect = fake_anki_connect
+                result = worker.handle_verify_anki_import(
+                    {
+                        "import_apkg": True,
+                        "export_result": {
+                            "apkg_path": str(apkg_path),
+                            "deck_name": "Reparse Already Present",
+                            "cards": 1,
+                            "media_manifest": manifest,
+                            "media_summary": {
+                                "media_files": 1,
+                                "media_bytes": len(media_bytes),
+                            },
+                            "media_dir": str(export_dir),
+                        },
+                    }
+                )
+            finally:
+                worker._legacy_worker._path_is_reparse = original_reparse_check
+                worker._legacy_worker.anki_connect = original_anki_connect
+                if original_app_data is None:
+                    os.environ.pop("APPDATA", None)
+                else:
+                    os.environ["APPDATA"] = original_app_data
+
+        self.assertFalse(result["ok"])
+        self.assertIn("anki_media_preload_conflict", result["failed_checks"])
+        self.assertEqual(calls, ["getMediaDirPath"])
+
+    def test_partial_media_preload_reports_created_file_and_blocks_import(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app_data = Path(temp_dir) / "appdata"
+            anki_dir = app_data / "Anki2" / "Profile" / "collection.media"
+            anki_dir.mkdir(parents=True)
+            export_dir = Path(temp_dir) / "export_media"
+            export_dir.mkdir()
+            first_name = "a-valid.mp3"
+            second_name = "b-tampered.mp3"
+            first_path = export_dir / first_name
+            second_path = export_dir / second_name
+            first_path.write_bytes(b"valid first media")
+            second_path.write_bytes(b"original second")
+            manifest = worker.media_manifest([str(first_path), str(second_path)])
+            second_path.write_bytes(b"tampered second")
+            apkg_path = Path(temp_dir) / "deck.apkg"
+            apkg_path.write_bytes(b"fake apkg")
+            original_app_data = os.environ.get("APPDATA")
+            original_anki_connect = worker._legacy_worker.anki_connect
+
+            def fake_anki_connect(action, params=None, url=""):
+                calls.append(action)
+                if action == "getMediaDirPath":
+                    return str(anki_dir)
+                if action == "importPackage":
+                    raise AssertionError("partial media preload must block importPackage")
+                raise AssertionError(action)
+
+            try:
+                os.environ["APPDATA"] = str(app_data)
+                worker._legacy_worker.anki_connect = fake_anki_connect
+                result = worker.handle_verify_anki_import(
+                    {
+                        "import_apkg": True,
+                        "export_result": {
+                            "apkg_path": str(apkg_path),
+                            "deck_name": "Partial Recovery",
+                            "cards": 1,
+                            "media_manifest": manifest,
+                            "media_summary": {"media_files": 2},
+                            "media_dir": str(export_dir),
+                        },
+                    }
+                )
+            finally:
+                worker._legacy_worker.anki_connect = original_anki_connect
+                if original_app_data is None:
+                    os.environ.pop("APPDATA", None)
+                else:
+                    os.environ["APPDATA"] = original_app_data
+
+        self.assertFalse(result["ok"])
+        self.assertNotIn("importPackage", calls)
+        self.assertEqual(result["media_recovered_count"], 1)
+        self.assertEqual(result["media_recovered"], [first_name])
+        self.assertEqual(result["media_recovery_methods"][first_name], "trusted_atomic_copy")
+        ledger = result["media_recovery_ownership_ledger"]
+        self.assertEqual([item["state"] for item in ledger], ["created", "failed"])
+        self.assertEqual(result["media_recovery_failures"][0]["code"], "source_integrity_failed")
+
+    def test_anki_connect_timeout_reconciles_exact_media_but_rejects_conflict(self):
+        source_bytes = b"small bounded media"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            export_dir = Path(temp_dir) / "export_media"
+            export_dir.mkdir()
+            media_name = "timeout.mp3"
+            source_path = export_dir / media_name
+            source_path.write_bytes(source_bytes)
+            manifest = {
+                media_name: {
+                    "sha256": hashlib.sha256(source_bytes).hexdigest(),
+                    "bytes": len(source_bytes),
+                }
+            }
+            anki_dir = Path(temp_dir) / "portable" / "collection.media"
+            anki_dir.mkdir(parents=True)
+            original_anki_connect = worker._legacy_worker.anki_connect
+
+            for stored_bytes, expected_ok in (
+                (source_bytes, True),
+                (b"conflicting media", False),
+            ):
+                calls = {"retrieve": 0}
+
+                def fake_anki_connect(action, params=None, url=""):
+                    if action == "retrieveMediaFile":
+                        calls["retrieve"] += 1
+                        if calls["retrieve"] == 1:
+                            return None
+                        return base64.b64encode(stored_bytes).decode("ascii")
+                    if action == "storeMediaFile":
+                        raise TimeoutError("simulated timeout after unknown write outcome")
+                    raise AssertionError(action)
+
+                try:
+                    worker._legacy_worker.anki_connect = fake_anki_connect
+                    result = worker.restore_missing_anki_media(
+                        [media_name],
+                        manifest,
+                        export_dir,
+                        anki_dir,
+                        "http://127.0.0.1:8765",
+                    )
+                finally:
+                    worker._legacy_worker.anki_connect = original_anki_connect
+
+                with self.subTest(expected_ok=expected_ok):
+                    if expected_ok:
+                        self.assertEqual(result["restored_by"][media_name], "anki_connect_reconciled")
+                        self.assertEqual(result["failures"], [])
+                    else:
+                        self.assertEqual(result["restored"], [])
+                        self.assertEqual(result["failures"][0]["code"], "destination_conflict")
+
+    def test_anki_connect_unexpected_stored_name_records_possible_orphan(self):
+        source_bytes = b"small bounded media"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            export_dir = Path(temp_dir) / "export_media"
+            export_dir.mkdir()
+            media_name = "orphan.mp3"
+            source_path = export_dir / media_name
+            source_path.write_bytes(source_bytes)
+            manifest = {
+                media_name: {
+                    "sha256": hashlib.sha256(source_bytes).hexdigest(),
+                    "bytes": len(source_bytes),
+                }
+            }
+            anki_dir = Path(temp_dir) / "portable" / "collection.media"
+            anki_dir.mkdir(parents=True)
+            original_anki_connect = worker._legacy_worker.anki_connect
+
+            def fake_anki_connect(action, params=None, url=""):
+                if action == "retrieveMediaFile":
+                    return None
+                if action == "storeMediaFile":
+                    return "orphan_1.mp3"
+                raise AssertionError(action)
+
+            try:
+                worker._legacy_worker.anki_connect = fake_anki_connect
+                result = worker.restore_missing_anki_media(
+                    [media_name],
+                    manifest,
+                    export_dir,
+                    anki_dir,
+                    "http://127.0.0.1:8765",
+                )
+            finally:
+                worker._legacy_worker.anki_connect = original_anki_connect
+
+        self.assertEqual(result["restored"], [])
+        self.assertEqual(result["failures"][0]["code"], "anki_connect_store_failed")
+        self.assertEqual(result["failures"][0]["possible_orphan"], "orphan_1.mp3")
+        self.assertEqual(
+            result["ownership_ledger"][0]["possible_orphan"],
+            "orphan_1.mp3",
+        )
+
+    def test_direct_post_write_cleanup_failure_is_truthful_in_ownership_ledger(self):
+        source_bytes = b"trusted media bytes"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app_data = Path(temp_dir) / "appdata"
+            anki_dir = app_data / "Anki2" / "Profile" / "collection.media"
+            anki_dir.mkdir(parents=True)
+            export_dir = Path(temp_dir) / "export_media"
+            export_dir.mkdir()
+            media_name = "locked.mp3"
+            source_path = export_dir / media_name
+            source_path.write_bytes(source_bytes)
+            manifest = {
+                media_name: {
+                    "sha256": hashlib.sha256(source_bytes).hexdigest(),
+                    "bytes": len(source_bytes),
+                }
+            }
+            original_app_data = os.environ.get("APPDATA")
+            original_verify = worker._legacy_worker._verify_media_file_path
+            original_cleanup = worker._legacy_worker._safe_unlink_owned_file
+
+            def fail_final_verify(path, expected_hash, expected_bytes):
+                return "simulated final verification failure", None
+
+            def fail_cleanup(path, identity):
+                return False, "simulated Windows file lock"
+
+            try:
+                os.environ["APPDATA"] = str(app_data)
+                worker._legacy_worker._verify_media_file_path = fail_final_verify
+                worker._legacy_worker._safe_unlink_owned_file = fail_cleanup
+                result = worker.restore_missing_anki_media(
+                    [media_name],
+                    manifest,
+                    export_dir,
+                    anki_dir,
+                    "http://127.0.0.1:8765",
+                )
+            finally:
+                worker._legacy_worker._verify_media_file_path = original_verify
+                worker._legacy_worker._safe_unlink_owned_file = original_cleanup
+                if original_app_data is None:
+                    os.environ.pop("APPDATA", None)
+                else:
+                    os.environ["APPDATA"] = original_app_data
+
+            self.assertTrue((anki_dir / media_name).exists())
+
+        self.assertEqual(result["restored"], [])
+        self.assertTrue(result["failures"][0]["possible_partial_write"])
+        self.assertEqual(result["failures"][0]["cleanup_error"], "simulated Windows file lock")
+        self.assertTrue(result["ownership_ledger"][0]["possible_partial_write"])
+        self.assertEqual(
+            result["ownership_ledger"][0]["cleanup_error"],
+            "simulated Windows file lock",
+        )
+
+    def test_direct_temporary_cleanup_failure_is_truthful_in_ownership_ledger(self):
+        source_bytes = b"trusted media bytes"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app_data = Path(temp_dir) / "appdata"
+            anki_dir = app_data / "Anki2" / "Profile" / "collection.media"
+            anki_dir.mkdir(parents=True)
+            export_dir = Path(temp_dir) / "export_media"
+            export_dir.mkdir()
+            media_name = "temporary-locked.mp3"
+            source_path = export_dir / media_name
+            source_path.write_bytes(source_bytes)
+            manifest = {
+                media_name: {
+                    "sha256": hashlib.sha256(b"different media bytes").hexdigest(),
+                    "bytes": len(source_bytes),
+                }
+            }
+            original_app_data = os.environ.get("APPDATA")
+            original_cleanup = worker._legacy_worker._safe_unlink_owned_file
+
+            def fail_temporary_cleanup(path, identity):
+                if path is not None and Path(path).suffix == ".tmp":
+                    return False, "simulated temporary file lock"
+                return original_cleanup(path, identity)
+
+            try:
+                os.environ["APPDATA"] = str(app_data)
+                worker._legacy_worker._safe_unlink_owned_file = fail_temporary_cleanup
+                result = worker.restore_missing_anki_media(
+                    [media_name],
+                    manifest,
+                    export_dir,
+                    anki_dir,
+                    "http://127.0.0.1:8765",
+                )
+            finally:
+                worker._legacy_worker._safe_unlink_owned_file = original_cleanup
+                if original_app_data is None:
+                    os.environ.pop("APPDATA", None)
+                else:
+                    os.environ["APPDATA"] = original_app_data
+
+        self.assertEqual(result["restored"], [])
+        self.assertEqual(result["failures"][0]["code"], "source_integrity_failed")
+        self.assertTrue(result["failures"][0]["possible_partial_write"])
+        self.assertEqual(
+            result["failures"][0]["cleanup_error"],
+            "simulated temporary file lock",
+        )
+        self.assertTrue(result["ownership_ledger"][0]["possible_partial_write"])
+        self.assertEqual(
+            result["ownership_ledger"][0]["cleanup_error"],
+            "simulated temporary file lock",
+        )
+
+    def test_direct_media_restore_rejects_short_long_and_wrong_hash_sources(self):
+        source_bytes = b"trusted media bytes"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app_data = Path(temp_dir) / "appdata"
+            anki_dir = app_data / "Anki2" / "Profile" / "collection.media"
+            anki_dir.mkdir(parents=True)
+            source_path = Path(temp_dir) / "source.mp3"
+            source_path.write_bytes(source_bytes)
+            original_app_data = os.environ.get("APPDATA")
+            try:
+                os.environ["APPDATA"] = str(app_data)
+                cases = (
+                    ("short.mp3", len(source_bytes) + 1, hashlib.sha256(source_bytes).hexdigest()),
+                    ("long.mp3", len(source_bytes) - 1, hashlib.sha256(source_bytes[:-1]).hexdigest()),
+                    ("hash.mp3", len(source_bytes), hashlib.sha256(b"different").hexdigest()),
+                )
+                for filename, expected_bytes, expected_hash in cases:
+                    with self.subTest(filename=filename):
+                        result = worker._legacy_worker._restore_anki_media_file_direct_result(
+                            source_path,
+                            anki_dir,
+                            filename,
+                            expected_hash,
+                            expected_bytes,
+                        )
+                        self.assertFalse(result["ok"])
+                        self.assertEqual(result["code"], "source_integrity_failed")
+                        self.assertFalse((anki_dir / filename).exists())
+            finally:
+                if original_app_data is None:
+                    os.environ.pop("APPDATA", None)
+                else:
+                    os.environ["APPDATA"] = original_app_data
+
+    def test_direct_media_restore_stops_when_trusted_directory_identity_changes(self):
+        source_bytes = b"trusted media bytes"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            anki_dir = Path(temp_dir) / "collection.media"
+            anki_dir.mkdir()
+            source_path = Path(temp_dir) / "source.mp3"
+            source_path.write_bytes(source_bytes)
+            original_identity = worker._legacy_worker._trusted_anki_media_directory_identity
+            calls = {"count": 0}
+
+            def changing_identity(_path):
+                calls["count"] += 1
+                return (1, 1) if calls["count"] == 1 else (1, 2)
+
+            try:
+                worker._legacy_worker._trusted_anki_media_directory_identity = changing_identity
+                result = worker._legacy_worker._restore_anki_media_file_direct_result(
+                    source_path,
+                    anki_dir,
+                    "identity.mp3",
+                    hashlib.sha256(source_bytes).hexdigest(),
+                    len(source_bytes),
+                )
+            finally:
+                worker._legacy_worker._trusted_anki_media_directory_identity = original_identity
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "trusted_stream_copy_failed")
+        self.assertIn("目录身份", result["error"])
+
+    def test_direct_post_publish_directory_change_marks_cleanup_unproven(self):
+        source_bytes = b"trusted media bytes"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            anki_dir = Path(temp_dir) / "collection.media"
+            anki_dir.mkdir()
+            source_path = Path(temp_dir) / "source.mp3"
+            source_path.write_bytes(source_bytes)
+            original_identity = worker._legacy_worker._trusted_anki_media_directory_identity
+            calls = {"count": 0}
+
+            def changing_identity(_path):
+                calls["count"] += 1
+                return (1, 1) if calls["count"] <= 2 else (1, 2)
+
+            try:
+                worker._legacy_worker._trusted_anki_media_directory_identity = changing_identity
+                result = worker._legacy_worker._restore_anki_media_file_direct_result(
+                    source_path,
+                    anki_dir,
+                    "identity-after-publish.mp3",
+                    hashlib.sha256(source_bytes).hexdigest(),
+                    len(source_bytes),
+                )
+            finally:
+                worker._legacy_worker._trusted_anki_media_directory_identity = original_identity
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "post_write_integrity_failed")
+        self.assertTrue(result["possible_partial_write"])
+        self.assertTrue(result["cleanup_unproven"])
+        self.assertIn("无法证明", result["cleanup_error"])
+
+    def test_final_media_barrier_blocks_import_if_media_disappears(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            apkg_path = Path(temp_dir) / "deck.apkg"
+            apkg_path.write_bytes(b"fake apkg")
+            export_dir = Path(temp_dir) / "export_media"
+            export_dir.mkdir()
+            media_name = "barrier.mp3"
+            media_bytes = b"barrier media"
+            source_path = export_dir / media_name
+            source_path.write_bytes(media_bytes)
+            manifest = worker.media_manifest([str(source_path)])
+            anki_dir = Path(temp_dir) / "portable" / "collection.media"
+            anki_dir.mkdir(parents=True)
+            (anki_dir / media_name).write_bytes(media_bytes)
+            original_anki_connect = worker._legacy_worker.anki_connect
+            original_inspect = worker._legacy_worker.inspect_anki_media_for_preload
+            inspect_calls = {"count": 0}
+
+            def fake_anki_connect(action, params=None, url=""):
+                calls.append(action)
+                if action == "getMediaDirPath":
+                    return str(anki_dir)
+                if action == "findCards":
+                    return []
+                if action == "importPackage":
+                    raise AssertionError("final media barrier must block importPackage")
+                raise AssertionError(action)
+
+            def disappearing_inspect(expected, media_dir):
+                inspect_calls["count"] += 1
+                if inspect_calls["count"] >= 3:
+                    return {
+                        "missing": [media_name],
+                        "already_present": [],
+                        "conflicts": [],
+                        "failures": [],
+                    }
+                return original_inspect(expected, media_dir)
+
+            try:
+                worker._legacy_worker.anki_connect = fake_anki_connect
+                worker._legacy_worker.inspect_anki_media_for_preload = disappearing_inspect
+                result = worker.handle_verify_anki_import(
+                    {
+                        "import_apkg": True,
+                        "export_result": {
+                            "apkg_path": str(apkg_path),
+                            "deck_name": "Barrier",
+                            "cards": 1,
+                            "media_manifest": manifest,
+                            "media_summary": {"media_files": 1},
+                            "media_dir": str(export_dir),
+                        },
+                    }
+                )
+            finally:
+                worker._legacy_worker.anki_connect = original_anki_connect
+                worker._legacy_worker.inspect_anki_media_for_preload = original_inspect
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["failed_checks"], ["anki_media_final_barrier_failed"])
+        self.assertNotIn("importPackage", calls)
+
+    def test_post_import_media_recovery_failure_can_never_report_ok(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            apkg_path = Path(temp_dir) / "deck.apkg"
+            apkg_path.write_bytes(b"fake apkg")
+            export_dir = Path(temp_dir) / "export_media"
+            export_dir.mkdir()
+            media_name = "post-import.mp3"
+            media_bytes = b"post import media"
+            source_path = export_dir / media_name
+            source_path.write_bytes(media_bytes)
+            manifest = worker.media_manifest([str(source_path)])
+            anki_dir = Path(temp_dir) / "portable" / "collection.media"
+            anki_dir.mkdir(parents=True)
+            (anki_dir / media_name).write_bytes(media_bytes)
+            original_anki_connect = worker._legacy_worker.anki_connect
+            original_compare = worker._legacy_worker.compare_media_manifest
+            original_restore = worker._legacy_worker.restore_missing_anki_media
+            compare_calls = {"count": 0}
+
+            def fake_anki_connect(action, params=None, url=""):
+                if action == "getMediaDirPath":
+                    return str(anki_dir)
+                if action == "findCards":
+                    return [123]
+                if action == "cardsInfo":
+                    return [
+                        {
+                            "cardId": 123,
+                            "fields": {
+                                "Audio": {"value": worker.anki_audio_html(media_name)},
+                            },
+                        }
+                    ]
+                if action == "importPackage":
+                    return True
+                raise AssertionError(action)
+
+            def fake_compare(expected, media_dir, **kwargs):
+                compare_calls["count"] += 1
+                if compare_calls["count"] == 1:
+                    return {
+                        "checked": 0,
+                        "missing": [media_name],
+                        "mismatched": [],
+                        "inaccessible": [],
+                    }
+                return {
+                    "checked": 1,
+                    "missing": [],
+                    "mismatched": [],
+                    "inaccessible": [],
+                }
+
+            def fake_restore(missing_names, *args, **kwargs):
+                if not missing_names:
+                    return {
+                        "attempted": False,
+                        "restored": [],
+                        "restored_by": {},
+                        "failures": [],
+                        "ownership_ledger": [],
+                        "created": [],
+                        "already_present": [],
+                        "failed": [],
+                    }
+                failure = {
+                    "file": media_name,
+                    "code": "post_write_integrity_failed",
+                    "error": "simulated post-import recovery failure",
+                }
+                return {
+                    "attempted": True,
+                    "restored": [],
+                    "restored_by": {},
+                    "failures": [failure],
+                    "ownership_ledger": [{"file": media_name, "state": "failed", **failure}],
+                    "created": [],
+                    "already_present": [],
+                    "failed": [media_name],
+                }
+
+            try:
+                worker._legacy_worker.anki_connect = fake_anki_connect
+                worker._legacy_worker.compare_media_manifest = fake_compare
+                worker._legacy_worker.restore_missing_anki_media = fake_restore
+                result = worker.handle_verify_anki_import(
+                    {
+                        "import_apkg": True,
+                        "export_result": {
+                            "apkg_path": str(apkg_path),
+                            "deck_name": "Post Import Failure",
+                            "cards": 1,
+                            "media_manifest": manifest,
+                            "media_summary": {"media_files": 1},
+                            "media_dir": str(export_dir),
+                        },
+                    }
+                )
+            finally:
+                worker._legacy_worker.anki_connect = original_anki_connect
+                worker._legacy_worker.compare_media_manifest = original_compare
+                worker._legacy_worker.restore_missing_anki_media = original_restore
+
+        self.assertFalse(result["ok"])
+        self.assertIn("anki_media_recovery_failed", result["failed_checks"])
+        self.assertEqual(len(result["media_recovery_failures"]), 1)
 
     def test_verify_anki_import_refuses_media_recovery_when_export_hash_changed(self):
         with tempfile.TemporaryDirectory() as temp_dir:

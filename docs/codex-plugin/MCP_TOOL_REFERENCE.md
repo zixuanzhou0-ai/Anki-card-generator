@@ -640,9 +640,9 @@ overwritePolicy：
 - manifest refs。
 - 未导出项和原因。
 
-CURRENT 基础：M0 工作分支已用精确 family/schema/Note Model ID/字段/模板/CSS/compatibility contract 替换 V1 + `startswith` 宽前缀；完整 APKG 合同覆盖 10 个生产变体，导出只在唯一 `.partial` 校验通过后以 no-replace 语义原子发布。最终自动化为 Vitest 830、正式 `pytest` 561、独立 `unittest discover` 551（有重叠，不相加）、Rust 31 项通过与 1 项忽略、UI smoke 3、V14/V10 release smoke、`check:full` 与 Tauri build 通过。20 卡离线 V14 媒体包为 20/20/52、每卡 6 引用、120 个媒体归属；真实隔离 Anki 数据级核验覆盖 E→C 单卡 1/1/6 和 20 卡 20/20/52 的首次导入、逐媒体哈希、重复跳过与重启持久化。合成视频与静音 TTS 不证明语义、听感、GUI 播放或连续复习。
+CURRENT 基础：M0 工作分支已用精确 family/schema/Note Model ID/字段/模板/CSS/compatibility contract 替换 V1 + `startswith` 宽前缀；完整 APKG 合同覆盖 10 个生产变体，导出只在唯一 `.partial` 校验通过后以 no-replace 语义原子发布。最终自动化为 Vitest 830、正式 `pytest` 581、独立 `unittest discover` 571（有重叠，不相加）、Rust 31 项通过与 1 项忽略、UI smoke 3、V14/V10 release smoke、`check:full` 与 Tauri build 通过。20 卡离线 V14 媒体包为 20/20/52、每卡 6 引用、120 个媒体归属；真实隔离 Anki 数据级核验覆盖 E→C 单卡 1/1/6 和 20 卡 20/20/52 的首次导入、逐媒体哈希、重复跳过与重启持久化。合成视频与静音 TTS 不证明语义、听感、GUI 播放或连续复习。
 
-非 NFC、Windows 保留设备名（含 `CLOCK$`）、规范化冲突与 APKG archive 资源上限已经通过；有界流式读取只覆盖 APKG archive/package/verifier。AnkiConnect 缺失媒体恢复仍把单个最多 256 MiB 的源媒体整文件读入并构造 base64，存在峰值内存放大。
+非 NFC、Windows 保留设备名（含 `CLOCK$`）、规范化冲突与 APKG archive 资源上限已经通过；有界流式读取覆盖 APKG archive/package/verifier 与标准 Windows Anki direct-first 媒体路径。非标准/portable profile 的 AnkiConnect inline 兼容路径仍整文件/Base64，但原始单文件上限为 8 MiB；8 MiB 不是进程峰值。
 
 PROPOSED 边界：本 `cards.export_apkg` MCP 工具本身仍未实现。当前 raw `ExportResult` 只属于内部兼容接口，不认证来源，无法抵抗同时篡改 APKG 与结果的同权限本机攻击者；stat/SHA 和 no-replace 发布只缩小、不能消除 TOCTOU。M2 必须先以认证 Artifact 注册表和不透明 PackageArtifact ref 建立信任根，公共 MCP 不得接收 raw `ExportResult`。Computer Use 真实 GUI/媒体/连续复习、M1 Card Service、stdio MCP 和目标宿主注册完成前，不得标记 production ready。
 

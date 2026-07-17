@@ -293,13 +293,13 @@ V1 本地 stdio 设计不应为了公开目录而过早引入云服务。先证�
 
 历史 V1 + `startswith` 宽前缀会同时接受合法 V14 与伪造 V199。当前 M0 工作分支已将其替换为精确 family/schema/Note Model ID、字段/模板/CSS 与 compatibility contract，并将生产 V14、明确兼容的 V10、固定 `genanki==0.13.1` serializer、完整 APKG 包合同、10 个生产生成变体、`.partial` 校验后 no-replace 原子发布、伪版本/篡改负例、强制 release verifier 和 Anki 写入前整包 preflight 纳入门禁。该固定不等于第 12 节要求的全依赖版本+哈希锁定已经完成。
 
-最终自动化为 Vitest 830、正式 `pytest` 561、独立 `unittest discover` 551（有重叠，不相加）、Rust 31 项通过与 1 项忽略、UI smoke 3、V14/V10 release smoke、`check:full` 与 Tauri build 通过。20 卡生产 V14 离线媒体合同为 20/20/52、每卡 6 引用、120 个归属；真实隔离 Anki 数据级核验覆盖 E→C 单卡 1/1/6 和 20 卡 20/20/52 的首次导入、媒体哈希、重复跳过与重启持久化。合成视频与静音 TTS 不是语义、听感或 GUI 复习证据。内部 raw `ExportResult` 仍不认证来源，无法抵抗能同时篡改 APKG 与结果的同权限本机攻击者；no-replace 原子发布和导入前 rehash 只缩小、不能消除 TOCTOU。正式插件包必须等 M2 认证 Artifact 注册表、不透明引用和受控文件句柄建立后，才能把导入工具暴露给 MCP。
+最终自动化为 Vitest 830、正式 `pytest` 581、独立 `unittest discover` 571（有重叠，不相加）、Rust 31 项通过与 1 项忽略、UI smoke 3、V14/V10 release smoke、`check:full` 与 Tauri build 通过。20 卡生产 V14 离线媒体合同为 20/20/52、每卡 6 引用、120 个归属；真实隔离 Anki 数据级核验覆盖 E→C 单卡 1/1/6 和 20 卡 20/20/52 的首次导入、媒体哈希、重复跳过与重启持久化。合成视频与静音 TTS 不是语义、听感或 GUI 复习证据。内部 raw `ExportResult` 仍不认证来源，无法抵抗能同时篡改 APKG 与结果的同权限本机攻击者；no-replace 原子发布和导入前 rehash 只缩小、不能消除 TOCTOU。正式插件包必须等 M2 认证 Artifact 注册表、不透明引用和受控文件句柄建立后，才能把导入工具暴露给 MCP。
 
 这个完成项不能外推为插件包已经可用：
 
 - 当前仍没有经过安装与宿主注册验证的正式插件包、stdio MCP 或 App resource。
 - M1 Headless Card Service、Artifact/授权边界和版本化 Anki runtime verifier 仍未实现。
-- 非 NFC、Windows 保留设备名（含 `CLOCK$`）、规范化冲突与 APKG archive 资源上限已通过；有界流式读取仅覆盖 APKG archive/package/verifier。AnkiConnect 整文件/base64 媒体恢复仍存在最多 256 MiB 单文件的峰值内存放大。
+- 非 NFC、Windows 保留设备名（含 `CLOCK$`）、规范化冲突与 APKG archive 资源上限已通过；有界流式读取覆盖 APKG archive/package/verifier 与标准 Windows Anki direct-first 媒体路径。非标准/portable profile 的 AnkiConnect inline 兼容路径仍整文件/Base64，但原始单文件上限为 8 MiB；8 MiB 不是进程峰值。
 - M0 只有在 Computer Use 真实桌面验收、GUI 翻面/媒体播放和至少 20 张连续复习通过后才能关闭；现有数据级证据不能代替这些出口。完整边界见 [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md)。
 - 在这些出口满足前，不得声明插件复用了完整 APKG → 真实 Anki 发布闭环。
 

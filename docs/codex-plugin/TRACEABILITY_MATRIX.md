@@ -107,11 +107,11 @@
 | RR-901 | 恢复 | 失败不伪造成功、旧授权不转移 | Task/Checkpoint/SuccessorTaskRebase/AnkiRecoveryDecision | forced exits + re-auth + write-boundary matrix |
 | RR-902 | 长导出/Anki | 终态前不伪造成功 | Task + Package/VerificationArtifact | cancel/crash/retry |
 
-CURRENT M0 证据边界：最终自动化为 Vitest 830、正式 `pytest` 561、独立 `unittest discover` 551（有重叠，不相加）、Rust 31 项通过与 1 项按设计忽略、UI smoke 3、V14/V10 release smoke、`check:full` 与 Tauri build 通过。20 卡离线生产 V14 包为 20 notes / 20 cards / 52 media、每卡 6 引用、120 个归属；隔离真实 Anki 数据级验证覆盖 E→C 单卡 1/1/6 和 20 卡 20/20/52 的首次导入、媒体哈希、重复跳过及重启持久化。素材为合成视频和静音 TTS，不证明语义、听感、GUI 播放或连续复习。
+CURRENT M0 证据边界：最终自动化为 Vitest 830、正式 `pytest` 581、独立 `unittest discover` 571（有重叠，不相加）、Rust 31 项通过与 1 项按设计忽略、UI smoke 3、V14/V10 release smoke、`check:full` 与 Tauri build 通过。20 卡离线生产 V14 包为 20 notes / 20 cards / 52 media、每卡 6 引用、120 个归属；隔离真实 Anki 数据级验证覆盖 E→C 单卡 1/1/6 和 20 卡 20/20/52，6/6 与 52/52 均走 `direct-first / trusted_atomic_copy`，媒体大小/SHA 与 120 个归属闭合，`retrieveMediaFile`/`storeMediaFile` 均为 0 次，重复导入跳过且 `duplicates=0`，真实重启后仍完整。正式 profile/牌组未触碰，隔离进程已关闭。素材为合成视频和静音 TTS，不证明语义、听感、GUI 播放或连续复习。
 
-非 NFC、Windows 保留设备名（含 `CLOCK$`）、大小写/规范化冲突和 APKG archive 资源上限已通过；流式读取结论仅覆盖 APKG archive/package/verifier。AnkiConnect 整文件/base64 媒体恢复仍存在最多 256 MiB 单文件的峰值内存放大。raw `ExportResult` 仍只是内部兼容输入，不认证来源；partial 后的 no-replace 原子发布及导入前 stat/SHA 只缩小、不能消除 TOCTOU。SR-007 的 M2 认证 Artifact 注册表、不透明引用和受控文件句柄完成前，不能把当前入口公开为 MCP 写工具。
+非 NFC、Windows 保留设备名（含 `CLOCK$`）、大小写/规范化冲突和 APKG archive 资源上限已通过；流式读取覆盖 APKG archive/package/verifier 与标准 Windows Anki direct-first 媒体路径。64 MiB direct 样本在禁止整文件读取、Base64 与 AnkiConnect 媒体动作时通过，Python `tracemalloc` 峰值增量低于 32 MiB。非标准/portable profile 的 AnkiConnect inline 路径仍整文件/Base64，但原始媒体硬限制为 8 MiB，且部分写入账本与最终媒体 barrier 已冻结。raw `ExportResult` 仍只是内部兼容输入，不认证来源；partial 后的 no-replace 原子发布及导入前 stat/SHA 只缩小、不能消除 TOCTOU。SR-007 的 M2 认证 Artifact 注册表、不透明引用和受控文件句柄完成前，不能把当前入口公开为 MCP 写工具。
 
-M0 尚缺：Computer Use 桌面验收当前不可用；真实 GUI 翻面、媒体播放和至少 20 张连续复习尚未执行；AnkiConnect base64 峰值内存边界尚未消除；插件/MCP/M1+ 仍未实现。因此 RR-000/RR-601/RR-801 的 CURRENT 子项不构成完整 M0 或 RR-802 运行时完成。
+M0 尚缺：Computer Use 桌面验收当前不可用；真实 GUI 翻面、媒体播放和至少 20 张连续复习尚未执行；插件/MCP/M1+ 仍未实现。非标准 inline 兼容路径与双进程 RSS 仍是明确限制，但 8 MiB fail-closed 已满足 M0 的“消除或进一步收紧”出口。因此 RR-000/RR-601/RR-801 的 CURRENT 子项不构成完整 M0 或 RR-802 运行时完成。
 
 ## 5. UX 要求
 
@@ -134,7 +134,7 @@ M0 尚缺：Computer Use 桌面验收当前不可用；真实 GUI 翻面、媒�
 
 | 里程碑 | 主要契约 | 主要工具 | 必须证据 |
 |---|---|---|---|
-| M0（实施中） | Worker/模板/Export/Anki frozen | 内部 | 最终自动化、20/20/52 离线媒体合同、E→C 单卡 1/1/6 与隔离 Anki 20/20/52 数据级导入/重复/重启已完成；真实 GUI 播放与连续复习、Computer Use、AnkiConnect base64 内存改造待验收 |
+| M0（实施中） | Worker/模板/Export/Anki frozen | 内部 | 最终自动化、20/20/52 离线媒体合同、E→C 单卡 1/1/6、隔离 Anki 20/20/52 数据级导入/重复/重启，以及标准 profile direct-first 流式预置、8 MiB inline 上限、ownership ledger 与最终媒体 barrier 已完成；真实 GUI 播放与连续复习、Computer Use 待验收 |
 | M1 | Headless runtime | 内部 service | 桌面等价、process safety |
 | M2 | Artifact/Task/Authorization/Secret/Profile verification/Anki check contract | task/artifact/capability | tamper/recovery/canary/profile isolation/check completeness |
 | M3 | Language Objective/CardPlan compat | MVP MCP | Codex→Anki 端到端 |

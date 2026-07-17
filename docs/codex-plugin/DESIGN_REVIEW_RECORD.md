@@ -64,9 +64,9 @@ Hermes 本地封装席的结论是 `needs-contract-hardening`，置信度 0.74�
 
 生产 Anki 写路径在媒体预置前执行内部 raw `ExportResult`/payload/路径/APKG 哈希与完整包 preflight，并在媒体准备后、紧贴 `importPackage` 前再次 stat + SHA。raw `ExportResult` 不认证来源，无法抵抗能同时篡改 APKG 与结果的同权限本机攻击者；partial 后的 no-replace 原子发布和重复 rehash 只缩小、不能消除 TOCTOU。M2 必须用认证 Artifact 注册表、不透明引用和受控文件句柄取代该内部兼容信任边界。
 
-最终自动化回归为 Vitest 830、正式 `pytest` 561、独立 `unittest discover` 551、Rust 31 项通过与 1 项按设计忽略、UI smoke 3、V14/V10 release smoke、`check:full` 和 Tauri build 通过；两套 Python 运行有重叠，不能相加。20 卡生产 V14 离线完整合同为 20 notes / 20 cards / 52 个唯一媒体，每卡 6 引用、共 120 个媒体归属。真实隔离 Anki 数据级验证覆盖 E→C 单卡 1/1/6 和 20 卡 20/20/52 的首次导入、逐媒体哈希、重复跳过与重启持久化；此前合同不一致尝试仍作为 fail-closed 0 写入负例保留。
+最终自动化回归为 Vitest 830、正式 `pytest` 581、独立 `unittest discover` 571、Rust 31 项通过与 1 项按设计忽略、UI smoke 3、V14/V10 release smoke、`check:full` 和 Tauri build 通过；两套 Python 运行有重叠，不能相加。20 卡生产 V14 离线完整合同为 20 notes / 20 cards / 52 个唯一媒体，每卡 6 引用、共 120 个媒体归属。真实隔离 Anki 数据级验证覆盖 E→C 单卡 1/1/6 和 20 卡 20/20/52：6/6 与 52/52 媒体均走 `direct-first / trusted_atomic_copy`，逐媒体大小/SHA 与 120 个归属闭合，`retrieveMediaFile`/`storeMediaFile` 均为 0 次，重复跳过且 `duplicates=0`，真实重启后仍完整；正式 profile/牌组未触碰，隔离进程已关闭。此前合同不一致尝试仍作为 fail-closed 0 写入负例保留。
 
-这仍不是 M0 完成声明：20 卡素材是合成视频和静音 TTS，Computer Use 当前不可用，真实 GUI 翻面、播放与连续复习尚未完成。插件安装、目标 Codex 宿主注册、M1 Card Service、stdio MCP 与版本化 runtime verifier 也仍未实现。非 NFC、`CLOCK$` 等保留名、规范化冲突和 APKG archive/package/verifier 的有界流式读取已经通过；AnkiConnect 整文件/base64 媒体恢复仍有最多 256 MiB 单文件的峰值内存放大。
+这仍不是 M0 完成声明：20 卡素材是合成视频和静音 TTS，Computer Use 当前不可用，真实 GUI 翻面、播放与连续复习尚未完成。插件安装、目标 Codex 宿主注册、M1 Card Service、stdio MCP 与版本化 runtime verifier 也仍未实现。非 NFC、`CLOCK$` 等保留名、规范化冲突和 APKG archive/package/verifier 与标准 Windows Anki direct-first 路径的有界流式读取已经通过；非标准 AnkiConnect inline 兼容仍有不超过 8 MiB 原始媒体的整文件/Base64 放大，且 8 MiB 不是进程峰值。
 
 顾问评审后，独立核心契约与安全红队又进行了多轮反向审查。为消除“各实现都看似合理但彼此不兼容”的空间，本目录进一步冻结：
 

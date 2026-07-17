@@ -43,18 +43,20 @@
 - 导出采用“最终目录唯一 `.partial` → 完整包校验 → no-replace 原子发布最终 APKG”；目标路径已存在时拒绝覆盖，校验或发布失败会清理/隔离 partial，且不能发出 100%/done。
 - 生产 V14 与明确支持的 V10 兼容模型由 release smoke 真实生成并使用同一 verifier 核验；verifier 文件缺失会使 smoke 失败。V13、V15、V199、近似名称、非规范 ID/整数、完整字段/模板/model extras 篡改、models registry 偏差、双 collection/重复关键条目和解压限额超限由负向合同测试拒绝。
 - 生产 `verify_anki_import` 在媒体预置前核对内部、证据完整的 raw `ExportResult`、payload 覆盖、绝对路径、APKG 哈希/大小与完整包合同；媒体准备后、紧贴 `importPackage` 前再次 stat + SHA。任一失败都不得调用导入写动作。raw `ExportResult` 不认证来源，不能抵抗同时篡改 APKG 与结果的同权限本机攻击者；上述复核只缩小、不能消除 TOCTOU，M2 仍需认证 Artifact 注册表、不透明句柄和受控文件句柄。
-- 最终自动化回归通过 Vitest 830、正式 `pytest` 561、独立 `unittest discover` 551、Rust 31 项通过与 1 项按设计忽略、UI smoke 3、V14/V10 release smoke、`npm run check:full` 和 `npm run tauri:build`。两套 Python 运行有重叠，不相加。
+- 当前自动化回归通过 Vitest 830、正式 `pytest` 581、独立 `unittest discover` 571、Rust 31 项通过与 1 项按设计忽略、UI smoke 3、V14/V10 release smoke、`npm run check:full` 和 `npm run tauri:build`。两套 Python 运行有重叠，不相加。
 - 20 卡生产 V14 离线媒体包通过完整合同：20 notes / 20 cards / 52 个唯一媒体，每卡 6 引用、共 120 个媒体归属；manifest/ledger/字幕对齐闭合。它使用合成视频和静音 TTS，不代表语义、听感或连续复习。
-- 隔离真实 Anki 已完成 E→C 单卡数据核验：1 note / 1 card / 6 media，逐媒体大小/SHA-256 一致；重复导入跳过，重启后再次通过。
-- 20 卡包完成隔离 Anki 数据级核验：首次导入 20 notes / 20 cards / 52 media，52 个媒体哈希与 120 个归属一致；重复导入跳过，重启后仍为 20/20/52。该结果不包含 GUI 翻面或实际播放。
-- 非 NFC、Windows 保留设备名（含 `CLOCK$`）、大小写/规范化冲突与 APKG archive 资源上限已通过；有界流式读取仅覆盖 APKG archive/package/verifier。
+- 隔离真实 Anki 已完成 E→C 单卡数据核验：1 note / 1 card / 6 media；6/6 均为 `direct-first / trusted_atomic_copy`，逐媒体大小/SHA-256 一致，`retrieveMediaFile`/`storeMediaFile` 均为 0 次；重复导入跳过且 `duplicates=0`，真实重启后再次通过。
+- 20 卡包完成隔离 Anki 数据级核验：首次导入 20 notes / 20 cards / 52 media；52/52 均为 `direct-first / trusted_atomic_copy`，52 个媒体哈希与 120 个归属一致，媒体传输 API 为 0 次；重复导入跳过且 `duplicates=0`，真实重启后仍为 20/20/52。正式 profile/牌组未触碰，隔离进程已关闭。该结果不包含 GUI 翻面或实际播放。
+- 非 NFC、Windows 保留设备名（含 `CLOCK$`）、大小写/规范化冲突与 APKG archive 资源上限已通过。
+- 标准 Windows Anki profile 的缺失媒体恢复已改成 direct-first：使用同一源句柄与目标临时文件句柄、1 MiB 固定块、边复制边计数/SHA-256、flush/fsync、文件/目录 identity 复核和 same-dir no-replace 发布，不再先调用 AnkiConnect 或构造 Base64。64 MiB 自动化样本在强制禁用 `Path.read_bytes`、Base64 与 AnkiConnect 媒体 API 时通过，Python `tracemalloc` 峰值增量低于 32 MiB。
+- 非标准/portable profile 与非 Windows 只保留原始媒体不超过 8 MiB 的 AnkiConnect inline 兼容路径；8 MiB+1 在任何媒体 API 前 fail closed。8 MiB 是原始媒体协议上限，不是进程内存峰值；该小文件路径仍会整块 Base64，不能概括为全部媒体路径均已流式化。
+- 多文件部分预置、超时结果未知、意外后缀孤儿与清理失败均进入 ownership ledger；导入前存在最终媒体 barrier，任一 missing/conflict/inaccessible/recovery failure 都禁止 `importPackage`。
 - 先前合同未对齐的真实尝试由 preflight/final gate fail closed，目标保持 0 note / 0 card / 0 media。
 
 尚未完成的 M0 出口：
 
 - 仍需在真实 Anki GUI 中完成翻面、媒体播放和至少 20 张连续复习；20/20/52 数据级结果不能替代。
 - Computer Use 桌面视觉、焦点、滚动和媒体交互验收仍未执行，因为当前执行环境没有提供该能力；不得用浏览器或静态截图冒充。
-- AnkiConnect 缺失媒体恢复仍会整文件读取最多 256 MiB 并构造 base64，存在峰值内存放大；不能把 APKG 路径的有界流式读取外推到所有媒体路径。
 - 根 README、`docs/USER_GUIDE.md`、`docs/ARCHITECTURE.md` 与历史 reports 的冲突已经在本目录 README 登记；历史报告保持不变。
 
 ### 工作
@@ -73,7 +75,7 @@
 - [x] 完成隔离真实 Anki 20 notes / 20 cards / 52 media 的首次导入、52 哈希、120 归属、重复跳过与重启数据级验收。
 - [ ] 在真实 Anki GUI 完成至少 20 张连续复习、翻面和媒体实际播放。
 - [x] 完成非 NFC、`CLOCK$` 等 Windows 名称冲突与 APKG archive/package/verifier 有界流式读取回归。
-- [ ] 消除或进一步收紧 AnkiConnect 整文件/base64 媒体恢复的峰值内存边界。
+- [x] 将标准 Windows Anki 媒体恢复改为 direct-first 有界流式复制，并把非标准 AnkiConnect 整文件/Base64 兼容路径收紧到 8 MiB 原始媒体上限；冻结 response cap、部分写入账本和最终导入 barrier。
 - [ ] 在 Computer Use 可用的真实 Windows 桌面环境完成视觉/交互验收。
 - [x] 完成前端、Python、Rust、UI smoke、V14/V10 release smoke、`check:full` 与 Tauri build 的最终回归；归档见 [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md)。
 - [x] 登记根 README、用户指南、旧架构和历史 reports 的冲突；不改写历史报告。

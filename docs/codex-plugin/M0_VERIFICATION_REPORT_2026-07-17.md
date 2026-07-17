@@ -25,27 +25,29 @@
 | 门禁 | 结果 |
 |---|---|
 | 前端 Vitest | 830 项通过 |
-| Python 正式 `pytest` | 561 项通过 |
-| 独立 `unittest discover` | 551 项通过 |
+| Python 正式 `pytest` | 581 项通过 |
+| 独立 `unittest discover` | 571 项通过 |
 | Rust | 31 项通过，1 项按设计忽略 |
 | UI smoke | 3 项通过 |
 | V14/V10 release smoke | 通过；使用生产 verifier |
 | `npm run check:full` | 通过 |
 | `npm run tauri:build` | 通过 |
 
-`pytest` 与 `unittest discover` 会覆盖部分相同测试，不能把 561 和 551 相加后宣称为独立测试总数。
+`pytest` 与 `unittest discover` 会覆盖部分相同测试，不能把 581 和 571 相加后宣称为独立测试总数。
 
 ## 4. 已关闭的 M0 安全与包合同问题
 
 - Note Model 使用精确 family、template schema、ID、字段、模板、CSS 与兼容合同，不再依赖 V1 名称前缀。
 - V14 与明确支持的 V10 由 release smoke 真实生成；V13、V15、V199、近似名称和篡改合同必须失败。
 - APKG 候选先写同目录唯一 `.partial`，完整验证后再以 no-replace 语义原子发布；目标已存在时拒绝覆盖。
-- 受信跨盘 Anki 媒体恢复也使用同目录临时文件加 no-replace 发布；发布瞬间若并发出现同内容文件则按幂等成功处理，若内容不同则拒绝覆盖并保留对方文件。
+- 标准 Windows Anki profile 的媒体恢复现在直接使用同一打开的源句柄和目标 `mkstemp` 句柄，以 1 MiB 固定块复制、计数和计算 SHA-256，执行 flush/fsync、目录/文件 identity 复核与同目录 no-replace 发布；发布瞬间若并发出现同内容文件则按幂等成功处理，若内容不同则拒绝覆盖并保留对方文件。
+- source、标准 `collection.media` 及其受信路径组件若为 symlink/junction/reparse，恢复会 fail closed。多文件部分成功、AnkiConnect timeout 的未知结果、意外后缀孤儿和已拥有文件清理失败都会如实进入 ownership ledger；导入前两道媒体 barrier 中任一道未闭合都禁止 `importPackage`。
+- 完整媒体清单在 APKG inspection 和任何 Anki 写动作前执行 2000 项、256 MiB/项、2 GiB/批及非零大小限制；即使全部媒体已经存在，也不能绕过目录 reparse/稳定身份检查。若发布后目录 identity 改变，结果会无条件标记 `possible_partial_write=true` 与 `cleanup_unproven=true`，不把当前路径消失误报为已经清理。
 - 前端只有在 full 与 compact 两份导出结果都具备完整写入证据，且规范化 APKG/media 路径、哈希、大小、mtime、牌组、模型、模板、合同、标签、来源、内容指纹和核心媒体摘要一致时才允许导入；任一缺失或错配均 fail closed，不再回退到可能陈旧的结果。
 - 非 NFC 文件名、Windows 保留设备名（含 `CLOCK$`）、大小写与规范化碰撞均按 fail-closed 处理。
 - APKG archive/package/verifier 路径对包内媒体哈希与提取使用有界流式读取，并执行单条目、条目数和解压后总量上限。
 
-流式结论只适用于 APKG archive/package/verifier。AnkiConnect 缺失媒体恢复仍会把单个最多 256 MiB 的源媒体整体读入内存，构造约为原始体积 4/3 的 base64 文本，并在写后再次整文件取回和解码；受信跨盘 fallback 也仍接收整块字节。因此不能宣称所有媒体路径都已流式化，峰值内存可能显著高于媒体文件本身。
+流式结论现在适用于 APKG archive/package/verifier，以及标准 Windows Anki profile 的 direct-first 媒体预置。64 MiB 自动化样本在把 `Path.read_bytes`、Base64 与 AnkiConnect 媒体动作全部设为“调用即失败”时仍通过，Python `tracemalloc` 峰值增量低于 32 MiB。非标准/portable profile 与非 Windows 仍使用 AnkiConnect inline 兼容路径，但原始单文件被硬限制为 8 MiB，8 MiB+1 会在任何媒体 API 调用前停止；retrieve/store/普通 action 与健康检查的 HTTP 响应也各自有上限。8 MiB 是原始媒体协议上限，不等于 Worker 或 Anki 进程峰值，兼容路径仍是整文件 Base64，因此仍不能宣称所有媒体路径都已流式化。
 
 ## 5. 20 卡生产 V14 离线包
 
@@ -73,6 +75,7 @@
 |---|---|
 | 首次导入 | 1 note / 1 card；目标 deck、model、tag、CardId 匹配 |
 | 媒体 | 6/6：sentence TTS、phrase TTS、WebM、MP4、original audio、poster |
+| 媒体预置路径 | 6/6 均为 `direct-first / trusted_atomic_copy`；`retrieveMediaFile=0`、`storeMediaFile=0` |
 | 跨盘一致性 | 源与目标逐文件 bytes 和 SHA-256 相同 |
 | 缺失/不匹配/不可访问 | 0 / 0 / 0 |
 | 重复导入 | 以 CardId + content SHA-256 命中并跳过；`duplicates=0` |
@@ -88,9 +91,12 @@
 |---|---|
 | 首次导入 | 20 notes / 20 cards |
 | 唯一媒体 | 52/52 均存在，逐文件 bytes 与 SHA-256 一致 |
+| 媒体预置路径 | 52/52 均为 `direct-first / trusted_atomic_copy`；`retrieveMediaFile=0`、`storeMediaFile=0` |
 | 媒体归属 | 120 个 card-media ownership bindings 全部闭合 |
-| 重复导入 | 完整命中并跳过；没有新增重复卡片 |
+| 重复导入 | 完整命中并跳过；`duplicates=0`，没有新增重复卡片 |
 | 重启后 | 仍为 20 notes / 20 cards / 52 media，哈希复核通过 |
+
+两轮均使用专用隔离 profile；用户的正式 Anki profile、牌组与媒体目录未被导入或改写。验证结束后隔离 Anki 进程已经关闭。这里的“重启后”表示真实关闭并重新启动隔离 Anki 后，再次读取 collection 与媒体文件所得的数据级结果；它不表示正常 GUI 退出体验已通过。
 
 这是“真实 Anki 进程 + AnkiConnect + collection/filesystem”的数据级证据。由于素材仍是合成视频和静音音频，且没有通过 GUI 翻面、播放或连续复习，它不是完整运行时或学习体验证据。
 
@@ -100,12 +106,12 @@
 - 尚未在真实 GUI 中逐卡播放原声、慢读、表达 TTS、WebM/MP4，也未完成至少 20 张连续复习。
 - 合成视频与静音 TTS 不提供真人语义、音质、口型、时间感或学习有效性证据。
 - 当前 raw `ExportResult` 只做内部一致性检查，不认证来源；M2 仍需认证 Artifact 注册表、不透明引用和受控文件句柄解决同权限篡改与剩余 TOCTOU。
-- AnkiConnect 整文件/base64 媒体恢复仍存在峰值内存放大。
+- 非标准/portable profile 的 AnkiConnect 兼容路径仍会对不超过 8 MiB 的原始媒体做整文件 Base64；尚未完成 Worker 与 Anki 双进程 RSS 的真实压力曲线，8 MiB 不能被误读为进程峰值。
 - 插件 manifest、Skill、stdio MCP、目标 Codex 宿主注册、M1 Headless Card Service 和版本化 Anki runtime verifier 尚未实现。
 - 当前只固定关键 `genanki` serializer；Python、Node、Rust 和外部二进制尚未全部完成版本加哈希的供应链固定。
 
 ## 8. 发布判定
 
-M0 保持“进行中”。允许声明自动化、APKG 包合同和隔离 Anki 数据级验证通过，不允许声明插件已交付、真实 Anki GUI/播放/连续复习已通过或全部媒体处理均已流式化。
+M0 保持“进行中”。允许声明自动化、APKG 包合同、标准 Windows Anki direct-first 流式媒体预置和隔离 Anki 数据级验证通过，不允许声明插件已交付、真实 Anki GUI/播放/连续复习已通过或全部媒体处理均已流式化。
 
 后续只有在 Computer Use 可用的真实桌面环境完成 GUI 与媒体交互验收，并由版本化 runtime verifier 形成固定检查集证据后，才能把数据级状态提升为完整运行时验证状态。

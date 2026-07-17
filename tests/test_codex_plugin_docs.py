@@ -63,7 +63,7 @@ class CodexPluginDocumentationTests(unittest.TestCase):
         self.assertIn("Computer Use 当前不可用", report)
         self.assertIn("不是完整运行时或学习体验证据", report)
         self.assertIn("不能宣称所有媒体路径都已流式化", report)
-        self.assertIn("不能把 561 和 551 相加", report)
+        self.assertIn("不能把 581 和 571 相加", report)
         self.assertNotIn(".tmp", report)
         self.assertNotIn(chr(92).join(("C:", "Users", "")), report)
 

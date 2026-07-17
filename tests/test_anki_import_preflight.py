@@ -249,6 +249,17 @@ class AnkiImportPreflightTests(unittest.TestCase):
                 )
             )
 
+            empty_media = copy.deepcopy(export_result)
+            empty_media["media_manifest"][media_name]["bytes"] = 0
+            empty_media["media_summary"]["media_bytes"] = 0
+            cases.append(
+                (
+                    "zero-byte media",
+                    empty_media,
+                    "apkg_export_media_manifest_invalid",
+                )
+            )
+
             count_mismatch = copy.deepcopy(export_result)
             count_mismatch["media_summary"]["media_files"] = 2
             cases.append(
@@ -272,6 +283,27 @@ class AnkiImportPreflightTests(unittest.TestCase):
             for name, candidate, expected_check in cases:
                 with self.subTest(name=name):
                     self._assert_write_contract_failure(candidate, expected_check)
+
+    def test_strict_write_contract_rejects_full_manifest_item_limit_before_inspection(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            export_result, _contract = self._fixture(Path(temp_dir))
+            item_count = legacy.ANKI_MEDIA_MAX_ITEMS + 1
+            export_result["media_manifest"] = {
+                f"media-{index:04d}.mp3": {
+                    "sha256": "0" * 64,
+                    "bytes": 1,
+                }
+                for index in range(item_count)
+            }
+            export_result["media_summary"] = {
+                "media_files": item_count,
+                "media_bytes": item_count,
+            }
+
+            self._assert_write_contract_failure(
+                export_result,
+                "apkg_export_media_contract_limit_exceeded",
+            )
 
     def test_strict_write_contract_rejects_incomplete_or_ambiguous_card_ledger(self):
         with tempfile.TemporaryDirectory() as temp_dir:

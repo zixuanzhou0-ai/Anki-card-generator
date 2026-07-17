@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -2593,7 +2594,49 @@ def extract_json_object(text: str) -> dict[str, Any]:
     return model_json_extract_json_object(text)
 
 
-def http_json(url: str, headers: dict[str, str], body: dict[str, Any], timeout: int = 60) -> dict[str, Any]:
+ANKI_MEDIA_MAX_FILE_BYTES = 256 * 1024 * 1024
+ANKI_MEDIA_MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
+ANKI_MEDIA_MAX_ITEMS = 2000
+ANKI_DIRECT_COPY_CHUNK_BYTES = 1024 * 1024
+ANKI_CONNECT_MEDIA_MAX_RAW_BYTES = 8 * 1024 * 1024
+ANKI_CONNECT_MEDIA_MAX_BASE64_CHARS = 4 * ((ANKI_CONNECT_MEDIA_MAX_RAW_BYTES + 2) // 3)
+ANKI_CONNECT_RETRIEVE_MAX_JSON_BYTES = ANKI_CONNECT_MEDIA_MAX_BASE64_CHARS + 4096
+ANKI_CONNECT_SMALL_RESPONSE_MAX_BYTES = 64 * 1024
+ANKI_CONNECT_DEFAULT_RESPONSE_MAX_BYTES = 16 * 1024 * 1024
+ANKI_CONNECT_RESPONSE_TOO_LARGE_MARKER = "ANKI_CONNECT_RESPONSE_TOO_LARGE"
+
+
+def _read_http_response_bytes(response: Any, max_response_bytes: int | None) -> bytes:
+    if max_response_bytes is None:
+        return response.read()
+    if max_response_bytes <= 0:
+        raise ValueError("max_response_bytes must be positive")
+    content_length = response.headers.get("Content-Length") if getattr(response, "headers", None) else None
+    if content_length:
+        try:
+            if int(content_length) > max_response_bytes:
+                raise RuntimeError(
+                    f"{ANKI_CONNECT_RESPONSE_TOO_LARGE_MARKER}: HTTP response exceeds "
+                    f"{max_response_bytes} bytes"
+                )
+        except ValueError:
+            pass
+    raw = response.read(max_response_bytes + 1)
+    if len(raw) > max_response_bytes:
+        raise RuntimeError(
+            f"{ANKI_CONNECT_RESPONSE_TOO_LARGE_MARKER}: HTTP response exceeds "
+            f"{max_response_bytes} bytes"
+        )
+    return raw
+
+
+def http_json(
+    url: str,
+    headers: dict[str, str],
+    body: dict[str, Any],
+    timeout: int = 60,
+    max_response_bytes: int | None = None,
+) -> dict[str, Any]:
     request = urllib.request.Request(
         url,
         data=json.dumps(body).encode("utf-8"),
@@ -2602,9 +2645,9 @@ def http_json(url: str, headers: dict[str, str], body: dict[str, Any], timeout: 
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+            return json.loads(_read_http_response_bytes(response, max_response_bytes).decode("utf-8"))
     except urllib.error.HTTPError as err:
-        detail = err.read().decode("utf-8", errors="replace")
+        detail = _read_http_response_bytes(err, max_response_bytes).decode("utf-8", errors="replace")
         raise RuntimeError(f"API HTTP {err.code}: {detail}") from err
 
 
@@ -2749,6 +2792,12 @@ def classify_worker_exception(error: Exception, *, command: str = "") -> dict[st
 
 def anki_connect(action: str, params: dict[str, Any] | None = None, url: str = "http://127.0.0.1:8765") -> Any:
     validate_anki_connect_url(url)
+    if action == "retrieveMediaFile":
+        response_limit = ANKI_CONNECT_RETRIEVE_MAX_JSON_BYTES
+    elif action == "storeMediaFile":
+        response_limit = ANKI_CONNECT_SMALL_RESPONSE_MAX_BYTES
+    else:
+        response_limit = ANKI_CONNECT_DEFAULT_RESPONSE_MAX_BYTES
     response = http_json(
         url,
         {},
@@ -2758,10 +2807,36 @@ def anki_connect(action: str, params: dict[str, Any] | None = None, url: str = "
             "params": params or {},
         },
         timeout=30,
+        max_response_bytes=response_limit,
     )
     if response.get("error"):
         raise RuntimeError(str(response["error"]))
     return response.get("result")
+
+
+def decode_anki_media_base64(
+    value: Any,
+    *,
+    max_raw_bytes: int = ANKI_CONNECT_MEDIA_MAX_RAW_BYTES,
+) -> bytes:
+    if not isinstance(value, str) or not value:
+        raise ValueError("AnkiConnect 没有返回媒体内容。")
+    max_base64_chars = 4 * ((max_raw_bytes + 2) // 3)
+    if len(value) > max_base64_chars:
+        raise RuntimeError(
+            f"{ANKI_CONNECT_RESPONSE_TOO_LARGE_MARKER}: AnkiConnect media payload exceeds "
+            f"{max_raw_bytes} raw bytes"
+        )
+    try:
+        decoded = base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError) as err:
+        raise ValueError(f"AnkiConnect 返回了无效的媒体 Base64：{err}") from err
+    if len(decoded) > max_raw_bytes:
+        raise RuntimeError(
+            f"{ANKI_CONNECT_RESPONSE_TOO_LARGE_MARKER}: decoded AnkiConnect media exceeds "
+            f"{max_raw_bytes} bytes"
+        )
+    return decoded
 
 
 LOOPBACK_HOSTS = security_boundaries_loopback_hosts
@@ -12760,8 +12835,8 @@ def retrieve_anki_media_bytes(filename: str, anki_url: str) -> bytes | None:
     if not isinstance(result, str) or not result:
         return None
     try:
-        return base64.b64decode(result, validate=True)
-    except (ValueError, binascii.Error):
+        return decode_anki_media_base64(result)
+    except (ValueError, RuntimeError):
         return None
 
 
@@ -16699,79 +16774,424 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     return export_result
 
 
-def trusted_anki_media_directory(media_dir: Path) -> bool:
+_WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _file_identity(info: os.stat_result) -> tuple[int, int]:
+    return (int(info.st_dev), int(info.st_ino))
+
+
+def _is_reparse_stat(info: os.stat_result) -> bool:
+    return bool(
+        int(getattr(info, "st_file_attributes", 0))
+        & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT
+    )
+
+
+def _path_lstat(path: Path) -> os.stat_result:
+    return os.stat(path, follow_symlinks=False)
+
+
+def _path_is_reparse(path: Path, info: os.stat_result | None = None) -> bool:
+    info = info or _path_lstat(path)
+    return path.is_symlink() or _is_reparse_stat(info)
+
+
+def _looks_like_standard_anki_media_directory(media_dir: Path) -> bool:
     if os.name != "nt":
         return False
     app_data = str(os.environ.get("APPDATA") or "").strip()
     if not app_data:
         return False
     try:
-        trusted_root = (Path(app_data) / "Anki2").resolve()
-        resolved_media_dir = media_dir.resolve()
-        resolved_media_dir.relative_to(trusted_root)
-    except (OSError, ValueError):
+        trusted_root = Path(os.path.abspath(str(Path(app_data) / "Anki2")))
+        lexical_media_dir = Path(os.path.abspath(str(media_dir)))
+        relative = lexical_media_dir.relative_to(trusted_root)
+        return len(relative.parts) == 2 and relative.parts[-1].lower() == "collection.media"
+    except ValueError:
         return False
-    return resolved_media_dir.name.lower() == "collection.media" and resolved_media_dir.is_dir()
 
 
-def is_anki_cross_drive_media_error(error: Exception) -> bool:
-    message = str(error).lower()
-    return any(
-        marker in message
-        for marker in (
-            "cross-device",
-            "different disk drive",
-            "os error 17",
-            "不同的磁盘驱动器",
-            "无法将文件移到不同",
-        )
-    )
+def _trusted_anki_media_directory_identity(media_dir: Path) -> tuple[int, int] | None:
+    if os.name != "nt":
+        return None
+    app_data = str(os.environ.get("APPDATA") or "").strip()
+    if not app_data:
+        return None
+    try:
+        trusted_root = Path(os.path.abspath(str(Path(app_data) / "Anki2")))
+        lexical_media_dir = Path(os.path.abspath(str(media_dir)))
+        relative = lexical_media_dir.relative_to(trusted_root)
+        if len(relative.parts) != 2 or relative.parts[-1].lower() != "collection.media":
+            return None
+        profile_dir = trusted_root / relative.parts[0]
+        for component in (trusted_root, profile_dir, lexical_media_dir):
+            info = _path_lstat(component)
+            if not stat.S_ISDIR(info.st_mode) or _path_is_reparse(component, info):
+                return None
+        resolved_root = trusted_root.resolve(strict=True)
+        resolved_media_dir = lexical_media_dir.resolve(strict=True)
+        expected_media_dir = (resolved_root / relative.parts[0] / "collection.media").resolve(strict=True)
+        if os.path.normcase(str(resolved_media_dir)) != os.path.normcase(str(expected_media_dir)):
+            return None
+        return _file_identity(_path_lstat(lexical_media_dir))
+    except (OSError, ValueError):
+        return None
 
 
-def restore_anki_media_file_direct(
-    source_bytes: bytes,
+def trusted_anki_media_directory(media_dir: Path) -> bool:
+    return _trusted_anki_media_directory_identity(media_dir) is not None
+
+
+def _stable_anki_media_directory_identity(media_dir: Path) -> tuple[int, int] | None:
+    """Return a stable directory identity for import barriers.
+
+    Standard Windows profiles must satisfy the stricter trusted-path contract.
+    Portable and non-Windows profiles may use the bounded AnkiConnect fallback,
+    but the media directory itself still cannot be a link or reparse point.
+    """
+    try:
+        info = _path_lstat(media_dir)
+        if not stat.S_ISDIR(info.st_mode) or _path_is_reparse(media_dir, info):
+            return None
+        if _looks_like_standard_anki_media_directory(media_dir):
+            return _trusted_anki_media_directory_identity(media_dir)
+        return _file_identity(info)
+    except OSError:
+        return None
+
+
+def _verify_media_file_path(
+    path: Path,
+    expected_hash: str,
+    expected_bytes: int,
+) -> tuple[str, tuple[int, int] | None]:
+    if not os.path.lexists(path):
+        return "目标媒体文件不存在。", None
+    try:
+        path_info = _path_lstat(path)
+        if _path_is_reparse(path, path_info) or not stat.S_ISREG(path_info.st_mode):
+            return "目标同名项不是安全的普通文件，已拒绝使用。", None
+        digest = hashlib.sha256()
+        total = 0
+        with path.open("rb") as handle:
+            handle_info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(handle_info.st_mode) or _file_identity(handle_info) != _file_identity(path_info):
+                return "目标媒体文件身份在校验前发生变化。", None
+            while True:
+                chunk = handle.read(ANKI_DIRECT_COPY_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > expected_bytes:
+                    return "目标媒体文件大小与可信清单不一致。", None
+                digest.update(chunk)
+            final_handle_info = os.fstat(handle.fileno())
+        final_path_info = _path_lstat(path)
+        if (
+            _path_is_reparse(path, final_path_info)
+            or _file_identity(final_handle_info) != _file_identity(path_info)
+            or _file_identity(final_path_info) != _file_identity(path_info)
+        ):
+            return "目标媒体文件身份在校验期间发生变化。", None
+        if total != expected_bytes or digest.hexdigest() != expected_hash:
+            return "目标媒体文件大小或哈希与可信清单不一致。", None
+        return "", _file_identity(final_path_info)
+    except OSError as err:
+        return str(err), None
+
+
+def _safe_unlink_owned_file(
+    path: Path | None,
+    identity: tuple[int, int] | None,
+) -> tuple[bool, str]:
+    if path is None or identity is None:
+        return False, "缺少可证明的文件所有权，未执行清理。"
+    if not os.path.lexists(path):
+        return True, ""
+    try:
+        info = _path_lstat(path)
+        if (
+            not _path_is_reparse(path, info)
+            and stat.S_ISREG(info.st_mode)
+            and _file_identity(info) == identity
+        ):
+            path.unlink()
+            if not os.path.lexists(path):
+                return True, ""
+            return False, "清理后文件仍然存在。"
+        return False, "文件身份已变化，未删除无法证明属于本任务的路径。"
+    except OSError as err:
+        return False, str(err)
+
+
+def _restore_anki_media_file_direct_result(
+    source_path: Path,
     anki_media_dir: Path,
     filename: str,
     expected_hash: str,
-) -> str:
-    if not trusted_anki_media_directory(anki_media_dir):
-        return "Anki 媒体目录不在受信任的用户配置范围内，已拒绝直接恢复。"
+    expected_bytes: int,
+) -> dict[str, Any]:
+    directory_identity = _trusted_anki_media_directory_identity(anki_media_dir)
+    if directory_identity is None:
+        return {
+            "ok": False,
+            "state": "failed",
+            "code": "unsafe_source_or_name",
+            "error": "Anki 媒体目录不在受信任的标准用户配置范围内，或包含链接/重解析点，已拒绝直接恢复。",
+        }
+    if (
+        windows_safe_basename(filename) != filename
+        or _SHA256_HEX_RE.fullmatch(expected_hash) is None
+        or expected_bytes <= 0
+        or expected_bytes > ANKI_MEDIA_MAX_FILE_BYTES
+    ):
+        return {
+            "ok": False,
+            "state": "failed",
+            "code": "unsafe_source_or_name",
+            "error": "媒体文件名、大小或哈希合同无效，已拒绝直接恢复。",
+        }
 
     destination = anki_media_dir / filename
+    temporary_path: Path | None = None
+    temporary_identity: tuple[int, int] | None = None
+    descriptor = -1
+    outcome: dict[str, Any] = {}
+
+    def finish(value: dict[str, Any]) -> dict[str, Any]:
+        outcome.clear()
+        outcome.update(value)
+        return outcome
+
     try:
-        if destination.exists():
-            if destination.is_file() and file_sha256(destination) == expected_hash:
-                return ""
-            return "Anki 媒体目录中已有同名但内容不同的文件，已拒绝覆盖。"
+        source_parent_info = _path_lstat(source_path.parent)
+        if (
+            _path_is_reparse(source_path.parent, source_parent_info)
+            or not stat.S_ISDIR(source_parent_info.st_mode)
+        ):
+            return finish({
+                "ok": False,
+                "state": "failed",
+                "code": "unsafe_source_or_name",
+                "error": "导出媒体源目录包含链接/重解析点或不是普通目录，已拒绝恢复。",
+            })
+        if os.path.lexists(destination):
+            existing_error, _ = _verify_media_file_path(destination, expected_hash, expected_bytes)
+            if not existing_error:
+                return finish({"ok": True, "state": "already_present", "code": "", "error": ""})
+            return finish({
+                "ok": False,
+                "state": "failed",
+                "code": "destination_conflict",
+                "error": "Anki 媒体目录中已有同名但内容不同或不安全的文件，已拒绝覆盖。",
+            })
 
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=".anki-card-generator-media-",
             suffix=".tmp",
             dir=str(anki_media_dir),
         )
-        os.close(descriptor)
         temporary_path = Path(temporary_name)
+        temporary_handle_info = os.fstat(descriptor)
+        temporary_path_info = _path_lstat(temporary_path)
+        temporary_identity = _file_identity(temporary_handle_info)
+        if (
+            not stat.S_ISREG(temporary_handle_info.st_mode)
+            or _path_is_reparse(temporary_path, temporary_path_info)
+            or _file_identity(temporary_path_info) != temporary_identity
+        ):
+            raise OSError("目标目录临时文件身份异常。")
+
+        digest = hashlib.sha256()
+        total = 0
+        with source_path.open("rb") as source_handle, os.fdopen(descriptor, "w+b") as temporary_handle:
+            descriptor = -1
+            source_path_info = _path_lstat(source_path)
+            source_handle_info = os.fstat(source_handle.fileno())
+            if (
+                _path_is_reparse(source_path, source_path_info)
+                or not stat.S_ISREG(source_path_info.st_mode)
+                or not stat.S_ISREG(source_handle_info.st_mode)
+                or _file_identity(source_path_info) != _file_identity(source_handle_info)
+            ):
+                return finish({
+                    "ok": False,
+                    "state": "failed",
+                    "code": "unsafe_source_or_name",
+                    "error": "导出媒体源不是稳定的普通文件，已拒绝恢复。",
+                })
+            remaining = expected_bytes
+            while remaining:
+                chunk = source_handle.read(min(ANKI_DIRECT_COPY_CHUNK_BYTES, remaining))
+                if not chunk:
+                    return finish({
+                        "ok": False,
+                        "state": "failed",
+                        "code": "source_integrity_failed",
+                        "error": "导出媒体源文件比可信清单更短，已拒绝恢复。",
+                    })
+                temporary_handle.write(chunk)
+                digest.update(chunk)
+                total += len(chunk)
+                remaining -= len(chunk)
+            if source_handle.read(1):
+                return finish({
+                    "ok": False,
+                    "state": "failed",
+                    "code": "source_integrity_failed",
+                    "error": "导出媒体源文件比可信清单更长，已拒绝恢复。",
+                })
+            final_source_path_info = _path_lstat(source_path)
+            if (
+                _path_is_reparse(source_path, final_source_path_info)
+                or _file_identity(final_source_path_info) != _file_identity(source_handle_info)
+            ):
+                return finish({
+                    "ok": False,
+                    "state": "failed",
+                    "code": "source_integrity_failed",
+                    "error": "导出媒体源文件身份在读取期间发生变化，已拒绝恢复。",
+                })
+            if total != expected_bytes or digest.hexdigest() != expected_hash:
+                return finish({
+                    "ok": False,
+                    "state": "failed",
+                    "code": "source_integrity_failed",
+                    "error": "导出媒体源文件大小或哈希与清单不一致，已拒绝恢复。",
+                })
+            temporary_handle.flush()
+            os.fsync(temporary_handle.fileno())
+            temporary_handle.seek(0)
+            verify_digest = hashlib.sha256()
+            verify_total = 0
+            while True:
+                chunk = temporary_handle.read(ANKI_DIRECT_COPY_CHUNK_BYTES)
+                if not chunk:
+                    break
+                verify_total += len(chunk)
+                verify_digest.update(chunk)
+            if verify_total != expected_bytes or verify_digest.hexdigest() != expected_hash:
+                return finish({
+                    "ok": False,
+                    "state": "failed",
+                    "code": "trusted_stream_copy_failed",
+                    "error": "目标目录临时文件完整性校验失败，已拒绝发布。",
+                })
+            if _file_identity(os.fstat(temporary_handle.fileno())) != temporary_identity:
+                raise OSError("目标目录临时文件身份在写入期间发生变化。")
+
+        if _trusted_anki_media_directory_identity(anki_media_dir) != directory_identity:
+            raise OSError("Anki 媒体目录身份在恢复期间发生变化。")
+        temporary_path_info = _path_lstat(temporary_path)
+        if (
+            _path_is_reparse(temporary_path, temporary_path_info)
+            or _file_identity(temporary_path_info) != temporary_identity
+        ):
+            raise OSError("目标目录临时文件身份在发布前发生变化。")
+        if os.path.lexists(destination):
+            existing_error, _ = _verify_media_file_path(destination, expected_hash, expected_bytes)
+            if not existing_error:
+                return finish({"ok": True, "state": "already_present", "code": "", "error": ""})
+            return finish({
+                "ok": False,
+                "state": "failed",
+                "code": "destination_conflict",
+                "error": "恢复期间出现同名媒体冲突，已拒绝覆盖。",
+            })
         try:
-            temporary_path.write_bytes(source_bytes)
-            if file_sha256(temporary_path) != expected_hash:
-                return "目标目录临时文件哈希校验失败，已拒绝写入。"
-            if destination.exists():
-                if destination.is_file() and file_sha256(destination) == expected_hash:
-                    return ""
-                return "恢复期间出现同名媒体冲突，已拒绝覆盖。"
-            try:
-                publish_file_no_replace(temporary_path, destination)
-            except FileExistsError:
-                if destination.is_file() and file_sha256(destination) == expected_hash:
-                    return ""
-                return "恢复期间出现同名媒体冲突，已拒绝覆盖。"
-            if file_sha256(destination) != expected_hash:
-                return "写入后的 Anki 媒体哈希校验失败。"
-            return ""
-        finally:
-            temporary_path.unlink(missing_ok=True)
+            publish_file_no_replace(temporary_path, destination)
+        except FileExistsError:
+            existing_error, _ = _verify_media_file_path(destination, expected_hash, expected_bytes)
+            if not existing_error:
+                return finish({"ok": True, "state": "already_present", "code": "", "error": ""})
+            return finish({
+                "ok": False,
+                "state": "failed",
+                "code": "destination_conflict",
+                "error": "恢复期间出现同名媒体冲突，已拒绝覆盖。",
+            })
+        final_error, final_identity = _verify_media_file_path(destination, expected_hash, expected_bytes)
+        if final_error or final_identity != temporary_identity:
+            cleanup_ok, cleanup_error = _safe_unlink_owned_file(
+                destination,
+                temporary_identity,
+            )
+            return finish({
+                "ok": False,
+                "state": "failed",
+                "code": "post_write_integrity_failed",
+                "error": final_error or "写入后的 Anki 媒体身份与本次临时文件不一致。",
+                "possible_partial_write": not cleanup_ok,
+                "cleanup_error": cleanup_error or None,
+            })
+        if _trusted_anki_media_directory_identity(anki_media_dir) != directory_identity:
+            cleanup_ok, cleanup_error = _safe_unlink_owned_file(
+                destination,
+                temporary_identity,
+            )
+            return finish({
+                "ok": False,
+                "state": "failed",
+                "code": "post_write_integrity_failed",
+                "error": "Anki 媒体目录身份在发布后发生变化。",
+                "possible_partial_write": True,
+                "cleanup_unproven": True,
+                "cleanup_error": cleanup_error
+                or (
+                    "媒体目录身份已经变化；即使当前路径清理成功，也无法证明被替换前目录中的"
+                    "已发布文件已经删除。"
+                ),
+            })
+        temporary_path = None
+        temporary_identity = None
+        return finish({"ok": True, "state": "created", "code": "", "error": ""})
     except OSError as err:
-        return str(err)
+        return finish({
+            "ok": False,
+            "state": "failed",
+            "code": "trusted_stream_copy_failed",
+            "error": str(err),
+        })
+    finally:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        cleanup_ok, cleanup_error = _safe_unlink_owned_file(temporary_path, temporary_identity)
+        if temporary_path is not None and not cleanup_ok:
+            if outcome.get("ok"):
+                outcome.update(
+                    {
+                        "ok": False,
+                        "state": "failed",
+                        "code": "temporary_cleanup_failed",
+                        "error": "无法清理本次任务拥有的 Anki 媒体临时文件，已停止并保留诊断证据。",
+                    }
+                )
+            outcome["possible_partial_write"] = True
+            outcome["cleanup_error"] = cleanup_error or "Anki 媒体临时文件清理失败。"
+
+
+def restore_anki_media_file_direct(
+    source_path: Path,
+    anki_media_dir: Path,
+    filename: str,
+    expected_hash: str,
+    expected_bytes: int,
+) -> str:
+    return str(
+        _restore_anki_media_file_direct_result(
+            source_path,
+            anki_media_dir,
+            filename,
+            expected_hash,
+            expected_bytes,
+        ).get("error")
+        or ""
+    )
 
 
 def restore_missing_anki_media(
@@ -16784,51 +17204,98 @@ def restore_missing_anki_media(
     progress_start_percent: int = 30,
     progress_span_percent: int = 20,
 ) -> dict[str, Any]:
-    max_media_file_bytes = 256 * 1024 * 1024
+    unique_names = sorted(set(missing_names))
     restored: list[str] = []
     restored_by: dict[str, str] = {}
-    failures: list[dict[str, str]] = []
-    total = len(missing_names)
-    for index, name in enumerate(sorted(set(missing_names)), start=1):
+    failures: list[dict[str, Any]] = []
+    ownership_ledger: list[dict[str, Any]] = []
+
+    def add_success(name: str, method: str, state: str) -> None:
+        restored.append(name)
+        restored_by[name] = method
+        ownership_ledger.append(
+            {"file": name, "state": state, "method": method}
+        )
+
+    def add_failure(name: str, code: str, error: str, **details: Any) -> None:
+        item = {"file": name, "code": code, "error": error, **details}
+        failures.append(item)
+        ownership_ledger.append(
+            {
+                "file": name,
+                "state": "failed",
+                "code": code,
+                "error": error,
+                **details,
+            }
+        )
+
+    def result() -> dict[str, Any]:
+        return {
+            "attempted": bool(missing_names),
+            "restored": restored,
+            "restored_by": restored_by,
+            "failures": failures,
+            "ownership_ledger": ownership_ledger,
+            "created": [
+                item["file"] for item in ownership_ledger if item.get("state") == "created"
+            ],
+            "already_present": [
+                item["file"] for item in ownership_ledger if item.get("state") == "already_present"
+            ],
+            "failed": [
+                item["file"] for item in ownership_ledger if item.get("state") == "failed"
+            ],
+        }
+
+    if len(unique_names) > ANKI_MEDIA_MAX_ITEMS:
+        add_failure(
+            "",
+            "media_contract_limit_exceeded",
+            f"待恢复媒体超过 {ANKI_MEDIA_MAX_ITEMS} 项的安全上限。",
+        )
+        return result()
+
+    expected_total_bytes = 0
+    for name in unique_names:
         normalized_name = windows_safe_basename(name)
-        if normalized_name is None:
-            failures.append({"file": name, "error": "媒体文件名不安全，已拒绝恢复。"})
-            continue
-
-        source_path = media_dir / normalized_name
-        if not source_path.exists() or not source_path.is_file():
-            failures.append({"file": name, "error": "导出媒体源文件不存在。"})
-            continue
-
         manifest_entry = expected_manifest.get(name) or {}
-        expected_hash = str(manifest_entry.get("sha256") or "")
+        expected_hash = str(manifest_entry.get("sha256") or "").strip().lower()
         expected_bytes = _strict_export_int(manifest_entry.get("bytes"))
-        try:
-            source_size = source_path.stat().st_size
-            if source_size > max_media_file_bytes:
-                failures.append({"file": name, "error": "媒体文件超过 256 MiB 的安全预置上限。"})
-                continue
-            source_bytes = source_path.read_bytes()
-            actual_hash = hashlib.sha256(source_bytes).hexdigest()
-        except OSError as err:
-            failures.append({"file": name, "error": str(err)})
+        if normalized_name is None:
+            add_failure(name, "unsafe_source_or_name", "媒体文件名不安全，已拒绝恢复。")
             continue
         if (
-            not expected_hash
-            or actual_hash != expected_hash
+            _SHA256_HEX_RE.fullmatch(expected_hash) is None
             or expected_bytes is None
-            or expected_bytes != source_size
-            or len(source_bytes) != source_size
+            or expected_bytes <= 0
+            or expected_bytes > ANKI_MEDIA_MAX_FILE_BYTES
         ):
-            failures.append(
-                {
-                    "file": name,
-                    "error": "导出媒体源文件大小或哈希与清单不一致，已拒绝恢复。",
-                    "expected_sha256": expected_hash,
-                    "actual_sha256": actual_hash,
-                }
+            add_failure(
+                name,
+                "source_integrity_failed",
+                "媒体清单中的大小或 sha256 合同无效，已拒绝恢复。",
             )
             continue
+        expected_total_bytes += expected_bytes
+        if expected_total_bytes > ANKI_MEDIA_MAX_TOTAL_BYTES:
+            add_failure(
+                name,
+                "media_contract_limit_exceeded",
+                "待恢复媒体总量超过 2 GiB 的安全上限。",
+            )
+            break
+    if failures:
+        return result()
+
+    total = len(unique_names)
+    for index, name in enumerate(unique_names, start=1):
+        normalized_name = windows_safe_basename(name)
+        source_path = media_dir / normalized_name
+        manifest_entry = expected_manifest.get(name) or {}
+        expected_hash = str(manifest_entry.get("sha256") or "").strip().lower()
+        expected_bytes = _strict_export_int(manifest_entry.get("bytes"))
+        assert expected_bytes is not None
 
         emit_progress(
             "verify_anki_import",
@@ -16837,6 +17304,120 @@ def restore_missing_anki_media(
             + int((index / max(1, total)) * progress_span_percent),
             f"{progress_label} {index}/{total}。",
         )
+
+        try:
+            anki_media_dir_info = _path_lstat(anki_media_dir)
+            anki_media_dir_reparse = (
+                _path_is_reparse(anki_media_dir, anki_media_dir_info)
+                or not stat.S_ISDIR(anki_media_dir_info.st_mode)
+            )
+        except OSError:
+            anki_media_dir_reparse = True
+        direct_trusted = trusted_anki_media_directory(anki_media_dir)
+        if anki_media_dir_reparse or (
+            _looks_like_standard_anki_media_directory(anki_media_dir)
+            and not direct_trusted
+        ):
+            add_failure(
+                name,
+                "unsafe_source_or_name",
+                "Anki 媒体目录包含链接/重解析点或身份不稳定，已拒绝恢复。",
+            )
+            continue
+
+        if direct_trusted:
+            direct_result = _restore_anki_media_file_direct_result(
+                source_path,
+                anki_media_dir,
+                normalized_name,
+                expected_hash,
+                expected_bytes,
+            )
+            if direct_result.get("ok"):
+                add_success(
+                    name,
+                    "trusted_atomic_copy",
+                    str(direct_result.get("state") or "created"),
+                )
+            else:
+                direct_details = {
+                    key: value
+                    for key, value in direct_result.items()
+                    if key not in {"ok", "state", "code", "error"}
+                    and value is not None
+                }
+                add_failure(
+                    name,
+                    str(direct_result.get("code") or "trusted_stream_copy_failed"),
+                    str(direct_result.get("error") or "无法安全流式预置 Anki 媒体。"),
+                    **direct_details,
+                )
+            continue
+
+        if expected_bytes > ANKI_CONNECT_MEDIA_MAX_RAW_BYTES:
+            add_failure(
+                name,
+                "anki_connect_media_limit_exceeded",
+                (
+                    "当前 Anki 使用非标准或不可直接验证的媒体目录；为避免整文件 Base64 "
+                    f"导致内存峰值，AnkiConnect 兼容路径只允许不超过 "
+                    f"{ANKI_CONNECT_MEDIA_MAX_RAW_BYTES // (1024 * 1024)} MiB 的单个媒体。"
+                    "请改用标准 Anki profile，或手动导入 APKG。"
+                ),
+            )
+            continue
+
+        try:
+            source_parent_info = _path_lstat(source_path.parent)
+            if (
+                _path_is_reparse(source_path.parent, source_parent_info)
+                or not stat.S_ISDIR(source_parent_info.st_mode)
+            ):
+                add_failure(
+                    name,
+                    "unsafe_source_or_name",
+                    "导出媒体源目录包含链接/重解析点或不是普通目录，已拒绝传输。",
+                )
+                continue
+            source_path_info = _path_lstat(source_path)
+            if _path_is_reparse(source_path, source_path_info) or not stat.S_ISREG(source_path_info.st_mode):
+                add_failure(
+                    name,
+                    "unsafe_source_or_name",
+                    "导出媒体源不是安全的普通文件，已拒绝通过 AnkiConnect 传输。",
+                )
+                continue
+            with source_path.open("rb") as source_handle:
+                source_handle_info = os.fstat(source_handle.fileno())
+                if (
+                    not stat.S_ISREG(source_handle_info.st_mode)
+                    or _file_identity(source_handle_info) != _file_identity(source_path_info)
+                ):
+                    add_failure(
+                        name,
+                        "unsafe_source_or_name",
+                        "导出媒体源文件身份不稳定，已拒绝通过 AnkiConnect 传输。",
+                    )
+                    continue
+                source_bytes = source_handle.read(ANKI_CONNECT_MEDIA_MAX_RAW_BYTES + 1)
+                final_source_path_info = _path_lstat(source_path)
+            if (
+                _path_is_reparse(source_path, final_source_path_info)
+                or _file_identity(final_source_path_info) != _file_identity(source_handle_info)
+                or len(source_bytes) != expected_bytes
+                or hashlib.sha256(source_bytes).hexdigest() != expected_hash
+            ):
+                add_failure(
+                    name,
+                    "source_integrity_failed",
+                    "导出媒体源文件大小、哈希或身份与可信清单不一致，已拒绝恢复。",
+                )
+                continue
+        except OSError as err:
+            add_failure(name, "unsafe_source_or_name", f"无法安全读取导出媒体源：{err}")
+            continue
+
+        store_attempted = False
         try:
             existing_data = anki_connect(
                 "retrieveMediaFile",
@@ -16845,22 +17426,32 @@ def restore_missing_anki_media(
             )
             if existing_data:
                 try:
-                    existing_bytes = base64.b64decode(str(existing_data), validate=True)
-                except (binascii.Error, ValueError) as err:
-                    failures.append({"file": name, "error": f"无法校验刚出现的 Anki 同名媒体：{err}"})
+                    existing_bytes = decode_anki_media_base64(existing_data)
+                except (ValueError, RuntimeError) as err:
+                    add_failure(
+                        name,
+                        (
+                            "anki_connect_response_too_large"
+                            if ANKI_CONNECT_RESPONSE_TOO_LARGE_MARKER in str(err)
+                            else "post_write_integrity_failed"
+                        ),
+                        f"无法校验 Anki 中的同名媒体：{err}",
+                    )
                     continue
-                if hashlib.sha256(existing_bytes).hexdigest() == expected_hash:
-                    restored.append(name)
-                    restored_by[name] = "anki_connect_existing_race"
+                if (
+                    len(existing_bytes) == expected_bytes
+                    and hashlib.sha256(existing_bytes).hexdigest() == expected_hash
+                ):
+                    add_success(name, "anki_connect_existing_race", "already_present")
                     continue
-                failures.append(
-                    {
-                        "file": name,
-                        "error": "写入前 Anki 中出现同名但内容不同的媒体，已拒绝覆盖。",
-                    }
+                add_failure(
+                    name,
+                    "destination_conflict",
+                    "写入前 Anki 中出现同名但内容不同的媒体，已拒绝覆盖。",
                 )
                 continue
 
+            store_attempted = True
             stored_name = anki_connect(
                 "storeMediaFile",
                 {
@@ -16871,26 +17462,75 @@ def restore_missing_anki_media(
                 anki_url,
             )
         except Exception as err:
-            if is_anki_cross_drive_media_error(err):
-                direct_error = restore_anki_media_file_direct(
-                    source_bytes,
-                    anki_media_dir,
-                    normalized_name,
-                    expected_hash,
+            error_text = str(err)
+            if not store_attempted:
+                add_failure(
+                    name,
+                    (
+                        "anki_connect_response_too_large"
+                        if ANKI_CONNECT_RESPONSE_TOO_LARGE_MARKER in error_text
+                        else "anki_connect_store_failed"
+                    ),
+                    f"无法在写入前有界校验 Anki 媒体目录：{err}",
+                    possible_partial_write=False,
                 )
-                if not direct_error:
-                    restored.append(name)
-                    restored_by[name] = "trusted_atomic_copy"
-                    continue
-                failures.append(
-                    {
-                        "file": name,
-                        "error": direct_error,
-                        "anki_connect_error": str(err),
-                    }
+                continue
+            cross_drive_error = any(
+                marker in error_text.lower()
+                for marker in (
+                    "cross-device",
+                    "different disk drive",
+                    "os error 17",
+                    "不同的磁盘驱动器",
+                    "无法将文件移到不同",
                 )
-            else:
-                failures.append({"file": name, "error": str(err)})
+            )
+            try:
+                reconciled_data = anki_connect(
+                    "retrieveMediaFile",
+                    {"filename": normalized_name},
+                    anki_url,
+                )
+                reconciled_bytes = (
+                    decode_anki_media_base64(reconciled_data)
+                    if reconciled_data
+                    else None
+                )
+            except Exception as reconcile_err:
+                add_failure(
+                    name,
+                    "anki_connect_store_failed",
+                    f"AnkiConnect 写入结果未知，且无法完成有界核验：{err}",
+                    reconcile_error=str(reconcile_err),
+                    possible_partial_write=True,
+                )
+                continue
+            if (
+                reconciled_bytes is not None
+                and len(reconciled_bytes) == expected_bytes
+                and hashlib.sha256(reconciled_bytes).hexdigest() == expected_hash
+            ):
+                add_success(name, "anki_connect_reconciled", "already_present")
+                continue
+            add_failure(
+                name,
+                (
+                    "destination_conflict"
+                    if reconciled_bytes is not None
+                    else "anki_connect_store_failed"
+                ),
+                (
+                    "AnkiConnect 写入失败后发现同名但内容不同的媒体，已停止导入。"
+                    if reconciled_bytes is not None
+                    else (
+                        "当前 Anki 媒体目录不是可验证的标准 profile，且 AnkiConnect "
+                        "无法完成跨磁盘写入；请改用标准 Anki profile 或手动导入 APKG。"
+                        if cross_drive_error
+                        else f"AnkiConnect 未能写入媒体：{err}"
+                    )
+                ),
+                possible_partial_write=True,
+            )
             continue
 
         stored_basename = windows_safe_basename(str(stored_name or ""))
@@ -16899,11 +17539,11 @@ def restore_missing_anki_media(
             and windows_basename_key(stored_basename) == windows_basename_key(normalized_name)
         )
         if not stored_name_matches:
-            failures.append(
-                {
-                    "file": name,
-                    "error": f"AnkiConnect 返回了意外的媒体文件名：{stored_name}",
-                }
+            add_failure(
+                name,
+                "anki_connect_store_failed",
+                f"AnkiConnect 返回了意外的媒体文件名：{stored_name}",
+                possible_orphan=str(stored_name or ""),
             )
             continue
         try:
@@ -16912,27 +17552,30 @@ def restore_missing_anki_media(
                 {"filename": stored_basename},
                 anki_url,
             )
-            persisted_bytes = base64.b64decode(str(persisted_data or ""), validate=True)
-        except (binascii.Error, ValueError, RuntimeError, OSError) as err:
-            failures.append({"file": name, "error": f"Anki 媒体写后校验失败：{err}"})
-            continue
-        if len(persisted_bytes) != expected_bytes or hashlib.sha256(persisted_bytes).hexdigest() != expected_hash:
-            failures.append(
-                {
-                    "file": name,
-                    "error": "Anki 媒体写入后的大小或哈希与可信清单不一致。",
-                }
+            persisted_bytes = decode_anki_media_base64(persisted_data)
+        except (ValueError, RuntimeError, OSError) as err:
+            add_failure(
+                name,
+                (
+                    "anki_connect_response_too_large"
+                    if ANKI_CONNECT_RESPONSE_TOO_LARGE_MARKER in str(err)
+                    else "post_write_integrity_failed"
+                ),
+                f"Anki 媒体写后校验失败：{err}",
+                possible_partial_write=True,
             )
             continue
-        restored.append(name)
-        restored_by[name] = "anki_connect"
+        if len(persisted_bytes) != expected_bytes or hashlib.sha256(persisted_bytes).hexdigest() != expected_hash:
+            add_failure(
+                name,
+                "post_write_integrity_failed",
+                "Anki 媒体写入后的大小或哈希与可信清单不一致。",
+                possible_partial_write=True,
+            )
+            continue
+        add_success(name, "anki_connect", "created")
 
-    return {
-        "attempted": bool(missing_names),
-        "restored": restored,
-        "restored_by": restored_by,
-        "failures": failures,
-    }
+    return result()
 
 
 def inspect_anki_media_for_preload(
@@ -16944,38 +17587,56 @@ def inspect_anki_media_for_preload(
     conflicts: list[dict[str, str]] = []
     failures: list[dict[str, str]] = []
 
+    if _stable_anki_media_directory_identity(anki_media_dir) is None:
+        return {
+            "missing": missing,
+            "already_present": already_present,
+            "conflicts": conflicts,
+            "failures": [
+                {
+                    "file": "",
+                    "error": "Anki 媒体目录包含链接/重解析点、不是普通目录或身份不稳定，已拒绝使用。",
+                }
+            ],
+        }
+
     for name in sorted(expected_manifest):
         normalized_name = windows_safe_basename(name)
         if normalized_name is None:
             failures.append({"file": name, "error": "媒体文件名不安全，已拒绝预置。"})
             continue
 
-        expected_hash = str((expected_manifest.get(name) or {}).get("sha256") or "").strip()
-        if not expected_hash:
-            failures.append({"file": name, "error": "媒体清单缺少 sha256，已拒绝预置。"})
+        expected_hash = str((expected_manifest.get(name) or {}).get("sha256") or "").strip().lower()
+        expected_bytes = _strict_export_int((expected_manifest.get(name) or {}).get("bytes"))
+        if (
+            _SHA256_HEX_RE.fullmatch(expected_hash) is None
+            or expected_bytes is None
+            or expected_bytes <= 0
+            or expected_bytes > ANKI_MEDIA_MAX_FILE_BYTES
+        ):
+            failures.append({"file": name, "error": "媒体清单缺少有效大小或 sha256，已拒绝预置。"})
             continue
 
         destination = anki_media_dir / normalized_name
-        if not destination.exists():
+        if not os.path.lexists(destination):
             missing.append(name)
             continue
-        if not destination.is_file():
-            conflicts.append({"file": name, "error": "Anki 媒体目录中存在同名非文件项，已拒绝覆盖。"})
-            continue
-        try:
-            actual_hash = file_sha256(destination)
-        except OSError as err:
-            failures.append({"file": name, "error": str(err)})
-            continue
-        if actual_hash == expected_hash:
+        verification_error, _ = _verify_media_file_path(
+            destination,
+            expected_hash,
+            expected_bytes,
+        )
+        if not verification_error:
             already_present.append(name)
         else:
             conflicts.append(
                 {
                     "file": name,
-                    "error": "Anki 媒体目录中已有同名但内容不同的文件，已拒绝覆盖。",
+                    "error": (
+                        "Anki 媒体目录中已有同名但内容不同或不安全的文件，"
+                        f"已拒绝覆盖：{verification_error}"
+                    ),
                     "expected_sha256": expected_hash,
-                    "actual_sha256": actual_hash,
                 }
             )
 
@@ -16996,6 +17657,24 @@ def merge_anki_media_recovery(first: dict[str, Any], second: dict[str, Any]) -> 
         "restored": restored,
         "restored_by": restored_by,
         "failures": [*(first.get("failures") or []), *(second.get("failures") or [])],
+        "ownership_ledger": [
+            *(first.get("ownership_ledger") or []),
+            *(second.get("ownership_ledger") or []),
+        ],
+        "created": list(
+            dict.fromkeys([*(first.get("created") or []), *(second.get("created") or [])])
+        ),
+        "already_present": list(
+            dict.fromkeys(
+                [
+                    *(first.get("already_present") or []),
+                    *(second.get("already_present") or []),
+                ]
+            )
+        ),
+        "failed": list(
+            dict.fromkeys([*(first.get("failed") or []), *(second.get("failed") or [])])
+        ),
     }
 
 
@@ -17302,6 +17981,18 @@ def validate_export_result_write_contract(export_result: dict[str, Any]) -> dict
             "apkg_export_media_manifest_mismatch",
             "可信导出结果中的媒体清单数量与摘要不一致，已停止写入 Anki。",
         )
+    if (
+        expected_media_files > ANKI_MEDIA_MAX_ITEMS
+        or expected_media_bytes > ANKI_MEDIA_MAX_TOTAL_BYTES
+    ):
+        return _import_preflight_failure(
+            "apkg_export_media_contract_limit_exceeded",
+            (
+                "可信导出结果中的媒体数量或总大小超过安全上限，已停止写入 Anki："
+                f"最多 {ANKI_MEDIA_MAX_ITEMS} 项、"
+                f"{ANKI_MEDIA_MAX_TOTAL_BYTES // (1024 * 1024 * 1024)} GiB。"
+            ),
+        )
 
     total_media_bytes = 0
     manifest_name_keys: set[str] = set()
@@ -17319,8 +18010,8 @@ def validate_export_result_write_contract(export_result: dict[str, Any]) -> dict
             not isinstance(digest, str)
             or re.fullmatch(r"[0-9a-f]{64}", digest) is None
             or byte_count is None
-            or byte_count < 0
-            or byte_count > 256 * 1024 * 1024
+            or byte_count <= 0
+            or byte_count > ANKI_MEDIA_MAX_FILE_BYTES
         ):
             return _import_preflight_failure(
                 "apkg_export_media_manifest_invalid",
@@ -17328,7 +18019,10 @@ def validate_export_result_write_contract(export_result: dict[str, Any]) -> dict
                 media_file=name,
             )
         total_media_bytes += byte_count
-    if total_media_bytes != expected_media_bytes or total_media_bytes > 2 * 1024 * 1024 * 1024:
+    if (
+        total_media_bytes != expected_media_bytes
+        or total_media_bytes > ANKI_MEDIA_MAX_TOTAL_BYTES
+    ):
         return _import_preflight_failure(
             "apkg_export_media_manifest_mismatch",
             "可信导出结果中的媒体总大小与清单不一致或超过安全上限，已停止写入 Anki。",
@@ -17867,8 +18561,18 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
     import_result: Any = None
     import_error = ""
     prepared_anki_media_dir: Path | None = None
+    prepared_anki_media_identity: tuple[int, int] | None = None
     media_preload = {"missing": [], "already_present": [], "conflicts": [], "failures": []}
-    media_recovery: dict[str, Any] = {"attempted": False, "restored": [], "restored_by": {}, "failures": []}
+    media_recovery: dict[str, Any] = {
+        "attempted": False,
+        "restored": [],
+        "restored_by": {},
+        "failures": [],
+        "ownership_ledger": [],
+        "created": [],
+        "already_present": [],
+        "failed": [],
+    }
     if import_attempted or prepare_media_only:
         emit_progress(
             "verify_anki_import",
@@ -17882,6 +18586,9 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
                 anki_url,
                 payload.get("wait_for_anki_seconds") or 0,
             )
+            prepared_anki_media_identity = _stable_anki_media_directory_identity(
+                prepared_anki_media_dir
+            )
         except Exception as err:
             timing_ms["anki_media_prepare"] = int((time.perf_counter() - preparation_started) * 1000)
             return with_verify_timing(
@@ -17892,6 +18599,26 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
                     "query": query,
                     "import_attempted": import_attempted,
                     "import_result": False,
+                }
+            )
+
+        if prepared_anki_media_identity is None:
+            timing_ms["anki_media_prepare"] = int((time.perf_counter() - preparation_started) * 1000)
+            return with_verify_timing(
+                {
+                    "ok": False,
+                    "message": "Anki 媒体目录包含链接/重解析点、不是普通目录或身份不稳定，已停止导入。",
+                    "failed_checks": ["anki_media_preload_conflict"],
+                    "query": query,
+                    "import_attempted": import_attempted,
+                    "import_result": False,
+                    "media_preload_conflicts": [],
+                    "media_preload_failures": [
+                        {
+                            "file": "",
+                            "error": "Anki 媒体目录未通过稳定身份检查。",
+                        }
+                    ],
                 }
             )
 
@@ -17923,7 +18650,7 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
         timing_ms["anki_media_prepare"] = int((time.perf_counter() - preparation_started) * 1000)
         if media_recovery["failures"]:
             source_integrity_failed = any(
-                "哈希与清单不一致" in str(item.get("error") or "")
+                str(item.get("code") or "") == "source_integrity_failed"
                 for item in media_recovery["failures"]
             )
             return with_verify_timing(
@@ -17945,10 +18672,47 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
                     "import_attempted": import_attempted,
                     "import_result": False,
                     "media_recovery_attempted": media_recovery["attempted"],
-                    "media_recovered_count": 0,
-                    "media_recovered": [],
-                    "media_recovery_methods": {},
+                    "media_recovered_count": len(media_recovery["restored"]),
+                    "media_recovered": media_recovery["restored"],
+                    "media_recovery_methods": media_recovery["restored_by"],
                     "media_recovery_failures": media_recovery["failures"],
+                    "media_recovery_ownership_ledger": media_recovery["ownership_ledger"],
+                }
+            )
+
+        final_media_barrier = inspect_anki_media_for_preload(
+            expected_manifest,
+            prepared_anki_media_dir,
+        )
+        directory_identity_changed = (
+            prepared_anki_media_identity is not None
+            and _stable_anki_media_directory_identity(prepared_anki_media_dir)
+            != prepared_anki_media_identity
+        )
+        if (
+            directory_identity_changed
+            or final_media_barrier["missing"]
+            or final_media_barrier["conflicts"]
+            or final_media_barrier["failures"]
+        ):
+            return with_verify_timing(
+                {
+                    "ok": False,
+                    "message": "Anki 媒体最终写入闸门未闭合，已停止导入。",
+                    "failed_checks": ["anki_media_final_barrier_failed"],
+                    "query": query,
+                    "import_attempted": import_attempted,
+                    "import_result": False,
+                    "media_recovery_attempted": media_recovery["attempted"],
+                    "media_recovered_count": len(media_recovery["restored"]),
+                    "media_recovered": media_recovery["restored"],
+                    "media_recovery_methods": media_recovery["restored_by"],
+                    "media_recovery_failures": media_recovery["failures"],
+                    "media_recovery_ownership_ledger": media_recovery["ownership_ledger"],
+                    "media_final_barrier": {
+                        **final_media_barrier,
+                        "directory_identity_changed": directory_identity_changed,
+                    },
                 }
             )
 
@@ -17977,6 +18741,7 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
                     "media_recovered": media_recovery["restored"],
                     "media_recovery_methods": media_recovery["restored_by"],
                     "media_recovery_failures": media_recovery["failures"],
+                    "media_recovery_ownership_ledger": media_recovery["ownership_ledger"],
                 }
             )
 
@@ -18019,6 +18784,41 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
                         "query": query,
                         "import_attempted": True,
                         "import_result": False,
+                    }
+                )
+            immediate_media_barrier = inspect_anki_media_for_preload(
+                expected_manifest,
+                prepared_anki_media_dir,
+            )
+            immediate_directory_identity_changed = (
+                prepared_anki_media_identity is not None
+                and _stable_anki_media_directory_identity(prepared_anki_media_dir)
+                != prepared_anki_media_identity
+            )
+            if (
+                immediate_directory_identity_changed
+                or immediate_media_barrier["missing"]
+                or immediate_media_barrier["conflicts"]
+                or immediate_media_barrier["failures"]
+                or media_recovery["failures"]
+            ):
+                return with_verify_timing(
+                    {
+                        "ok": False,
+                        "message": "导入前的最终媒体完整性复核未通过，已停止写入 Anki。",
+                        "failed_checks": ["anki_media_final_barrier_failed"],
+                        "query": query,
+                        "import_attempted": True,
+                        "import_result": False,
+                        "media_recovered_count": len(media_recovery["restored"]),
+                        "media_recovered": media_recovery["restored"],
+                        "media_recovery_methods": media_recovery["restored_by"],
+                        "media_recovery_failures": media_recovery["failures"],
+                        "media_recovery_ownership_ledger": media_recovery["ownership_ledger"],
+                        "media_final_barrier": {
+                            **immediate_media_barrier,
+                            "directory_identity_changed": immediate_directory_identity_changed,
+                        },
                     }
                 )
             emit_progress(
@@ -18365,6 +19165,8 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
         ledger_text_hash_mismatch=ledger_text_hash_mismatch,
         media_ledger_card_text_mismatches=media_ledger_card_text_mismatches,
     )
+    if media_recovery["failures"] and "anki_media_recovery_failed" not in failed_checks:
+        failed_checks.append("anki_media_recovery_failed")
     message = verify_anki_import_message(
         failed_checks,
         duplicate_imported_cards=duplicate_imported_cards,
@@ -18417,6 +19219,7 @@ def handle_verify_anki_import(payload: dict[str, Any]) -> dict[str, Any]:
             "media_recovered": media_recovery["restored"],
             "media_recovery_methods": media_recovery["restored_by"],
             "media_recovery_failures": media_recovery["failures"],
+            "media_recovery_ownership_ledger": media_recovery["ownership_ledger"],
             "media_already_present_count": len(media_preload["already_present"]),
             "media_preload_conflicts": media_preload["conflicts"],
             "media_preload_failures": media_preload["failures"],
@@ -18459,6 +19262,7 @@ def check_anki_connect() -> tuple[bool, str]:
             {},
             {"action": "version", "version": 6, "params": {}},
             timeout=2,
+            max_response_bytes=ANKI_CONNECT_SMALL_RESPONSE_MAX_BYTES,
         )
         version = response.get("result")
         return True, f"AnkiConnect {version}" if version else "AnkiConnect 可用"

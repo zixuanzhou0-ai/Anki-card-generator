@@ -22,12 +22,15 @@
 - V13、V15、V199、近似名称、非规范 ID/整数、完整字段/模板/model extras/CSS 篡改、registry 偏差、双 collection/重复关键条目与解压限额超限必须失败。
 - release smoke 强制生成并核验 V14 与 V10；`verify_apkg.py` 缺失不再被跳过。
 - Anki 写入路径先核对应用内部、证据完整的 raw `ExportResult`、payload 覆盖、绝对路径、实际 APKG 哈希/大小与完整包合同；失败不能进入媒体预置或 `importPackage`。这个兼容入口不认证 `ExportResult` 来源，无法抵抗能同时篡改 APKG 与 `ExportResult` 的同权限本机攻击者。媒体准备后还会在 `importPackage` 前再次 stat + SHA；这与原子发布都只缩小而不能消除 TOCTOU。M2 的认证 Artifact 注册表、不透明句柄和受控文件句柄才是公共插件写路径的信任根。
-- 最终自动化回归已通过：Vitest 830、正式 `pytest` 561、独立 `unittest discover` 551、Rust 31 项通过与 1 项按设计忽略、UI smoke 3、V14/V10 release smoke、`npm run check:full` 和 `npm run tauri:build`。`pytest` 与 `unittest` 有重叠，不能相加。
+- 最终自动化回归已通过：Vitest 830、正式 `pytest` 581、独立 `unittest discover` 571、Rust 31 项通过与 1 项按设计忽略、UI smoke 3、V14/V10 release smoke、`npm run check:full` 和 `npm run tauri:build`。`pytest` 与 `unittest` 有重叠，不能相加。
 - 20 卡生产 V14 离线完整合同为 20 notes / 20 cards / 52 个唯一媒体，每卡 6 个引用、共 120 个媒体归属，manifest/ledger/字幕对齐闭合。它使用合成视频和静音 TTS，不是语义、听感或连续复习证据。
-- 真实隔离 Anki 数据级验证覆盖 E→C 单卡 1/1/6，以及 20 卡首次导入 20/20/52；逐文件大小/SHA 和 120 个归属一致，重复导入跳过，重启后保持原计数与哈希。它不证明 GUI 翻面或实际播放。此前合同不一致尝试仍作为 fail-closed 0 写入负例保留。
-- 非 NFC、Windows 保留设备名（含 `CLOCK$`）、大小写/规范化冲突与 APKG archive 资源上限已经通过；有界流式读取只适用于 APKG archive/package/verifier。
+- 真实隔离 Anki 数据级验证覆盖 E→C 单卡 1/1/6，以及 20 卡首次导入 20/20/52；6/6 与 52/52 媒体均走 `direct-first / trusted_atomic_copy`，逐文件大小/SHA 和 120 个归属一致，`retrieveMediaFile`/`storeMediaFile` 均为 0 次，重复导入跳过且 `duplicates=0`，真实重启后保持原计数与哈希。正式 profile/牌组未触碰，隔离进程已关闭。它不证明 GUI 翻面或实际播放。此前合同不一致尝试仍作为 fail-closed 0 写入负例保留。
+- 非 NFC、Windows 保留设备名（含 `CLOCK$`）、大小写/规范化冲突与 APKG archive 资源上限已经通过。
+- 标准 Windows Anki profile 的缺失媒体恢复现在 direct-first：同一源句柄和 `mkstemp` 原句柄以 1 MiB 分块复制/计数/哈希，flush/fsync、identity 复核后 same-dir no-replace 发布；64 MiB 样本在禁用整文件读取、Base64 与 AnkiConnect 媒体 API 时通过，Python `tracemalloc` 峰值增量低于 32 MiB。
+- 非标准/portable profile 与非 Windows 仍依赖整文件 Base64 的 AnkiConnect inline 兼容路径，但原始单文件上限收紧到 8 MiB；8 MiB+1 会在任何媒体 API 调用前停止。8 MiB 是协议原始媒体上限，不代表 Worker/Anki 进程峰值。
+- timeout、意外后缀孤儿、部分预置和清理失败都会进入 ownership ledger；最终媒体 barrier 未闭合时禁止 `importPackage`，导入后补救失败也不能返回成功。
 
-这些证据不等于 M0 或插件发布已经完成：Computer Use 桌面验收当前不可用，至少 20 张真实 GUI 连续复习、翻面、焦点、滚动和媒体播放仍未完成。AnkiConnect 缺失媒体恢复仍把单个最多 256 MiB 的媒体整体读入内存、构造 base64 并整文件取回解码，峰值内存可能显著高于源文件；可信跨盘 fallback 也接收整块字节，因此不能概括为全部媒体路径已流式化。当前只固定关键 `genanki` serializer，不代表 Python/Node/Rust/外部二进制已全部按哈希锁定。插件 manifest/Skill/MCP/App UI 尚未安装，M1 Headless Card Service、M2 认证 Artifact 边界与版本化 runtime verifier 也尚未实现；M0 仍为进行中。详见 [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md)。
+这些证据不等于 M0 或插件发布已经完成：Computer Use 桌面验收当前不可用，至少 20 张真实 GUI 连续复习、翻面、焦点、滚动和媒体播放仍未完成。非标准 AnkiConnect 兼容路径仍有最多 8 MiB 原始媒体的整文件/Base64 放大，尚未形成 Worker 与 Anki 双进程 RSS 压力曲线；不能概括为全部媒体路径均已流式化。完整 Win32 目录句柄固定、私有 ACL staging、raw `ExportResult` 来源认证和 `importPackage(path)` 最终按路径打开的 TOCTOU 仍属于 M2。当前只固定关键 `genanki` serializer，不代表 Python/Node/Rust/外部二进制已全部按哈希锁定。插件 manifest/Skill/MCP/App UI 尚未安装，M1 Headless Card Service、M2 认证 Artifact 边界与版本化 runtime verifier 也尚未实现；M0 仍为进行中。详见 [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md)。
 
 ## 3. Codex 宿主
 

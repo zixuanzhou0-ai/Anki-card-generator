@@ -188,16 +188,18 @@ R8b 真实渲染、播放与复习核验通过
 5. 导出候选先写入最终目录中的唯一 `.partial`；只有整包合同通过才以 no-replace 语义原子发布最终 APKG，目标路径已存在时拒绝覆盖。校验、发布或最终 stat/SHA 失败会删除/隔离 partial，且不能发出 100%/done。
 6. 真实生成的 V14 与 V10 APKG 进入 release smoke；V13、V15、V199、近似名称、非规范 ID/整数和字段/模板/model extras/CSS 篡改进入负向合同测试。release smoke 强制调用生产 `verify_apkg.py`；验证器缺失、合同不唯一或报告失败都会阻断发布，独立 CLI 合同失败时 `ok=false` 且退出码为 1。
 7. 生产 `verify_anki_import` 先执行 contract preflight：验证应用内部生成、证据完整的 raw `ExportResult`、payload 覆盖一致性、绝对 APKG/media 路径、实际 SHA-256/大小、整包卡片/牌组/模型/字段/媒体账本和相同精确合同；失败时媒体准备和 `importPackage` 均为 0 次。raw `ExportResult` 只属于内部兼容接口，并未认证来源，因而无法抵抗能同时篡改 APKG 和 `ExportResult` 的同权限本机攻击者。媒体准备后、紧贴 `importPackage` 前再次 stat + SHA 以及 partial 后的 no-replace 原子发布都只缩小、不能从原理上消除路径 TOCTOU。M2 必须以认证 Artifact 注册表、不透明句柄和受控文件句柄替代调用方可构造的 `ExportResult`；在此之前它不能作为公共 MCP 信任根。
-8. 受信跨盘媒体 fallback 在目标目录写临时文件并以 no-replace 语义发布；并发产生同内容目标时幂等成功，并发产生不同内容目标时拒绝覆盖。竞态注入测试同时冻结这两条语义。
+8. 标准 Windows Anki profile 的媒体预置是 direct-first：不先调用 AnkiConnect，而是从同一已打开源句柄以 1 MiB 固定块读取并同步计数/SHA-256，写入 `mkstemp` 返回的原句柄，flush/fsync 后复核源、临时文件与目录 identity，再以 same-dir no-replace 语义发布。并发产生同内容目标时幂等成功，并发产生不同内容目标时拒绝覆盖；source、标准媒体目录或受信路径组件含 symlink/junction/reparse 时 fail closed。
 9. 前端导入入口要求 full 与 compact 导出结果都通过完整证据检查，并对规范化路径、APKG 哈希/大小/mtime、牌组、模型、模板、合同、标签、卡片/片段、来源与内容指纹及核心媒体摘要做同一产物配对；任一缺失或错配返回空，不再回退到陈旧摘要。
-10. 最终自动化回归通过 Vitest 830、正式 `pytest` 561、独立 `unittest discover` 551、Rust 31 项通过与 1 项按设计忽略、UI smoke 3、V14/V10 release smoke、`npm run check:full` 和 `npm run tauri:build`。`pytest` 与 `unittest` 有重叠，不能相加为独立测试总数。
+10. 最终自动化回归通过 Vitest 830、正式 `pytest` 581、独立 `unittest discover` 571、Rust 31 项通过与 1 项按设计忽略、UI smoke 3、V14/V10 release smoke、`npm run check:full` 和 `npm run tauri:build`。`pytest` 与 `unittest` 有重叠，不能相加为独立测试总数。
 11. 20 卡生产 V14 离线 APKG 通过完整合同：20 notes / 20 cards / 52 个唯一媒体，每卡 6 个引用、共 120 个媒体归属；manifest/ledger 为 52，20/20 字幕对齐且包问题为 0。素材是合成视频与静音 TTS，不是语义、听感或复习证据。
-12. 隔离真实 Anki 已完成 E→C 单卡跨盘数据级核验：1 note / 1 card / 6 media，逐文件大小和 SHA-256 一致，missing/mismatch/inaccessible 为 0；重复导入跳过，重启后再次通过计数与哈希复核。
-13. 同一 20 卡包完成隔离 Anki 数据级核验：首次导入 20 notes / 20 cards / 52 media，52 个媒体哈希和 120 个 card-media ownership bindings 闭合；重复导入跳过，重启后仍为 20/20/52。它不证明 GUI 翻面、播放或连续复习。
-14. 非 NFC、Windows 保留设备名（含 `CLOCK$`）、大小写/规范化冲突与 APKG archive 资源上限已经通过。APKG archive/package/verifier 的包内媒体读取有界流式化；AnkiConnect 缺失媒体恢复仍整文件读取最多 256 MiB 并 base64 编解码，存在峰值内存放大。
-15. 在合同未对齐的先前真实尝试中，preflight/final gate fail closed，隔离目标保持 0 note / 0 card / 0 media，证明失败没有产生半写入。
+12. 隔离真实 Anki 已完成 E→C 单卡跨盘数据级核验：1 note / 1 card / 6 media；6/6 通过 `direct-first / trusted_atomic_copy` 预置，逐文件大小和 SHA-256 一致，missing/mismatch/inaccessible 为 0，`retrieveMediaFile`/`storeMediaFile` 为 0 次；重复导入跳过且 `duplicates=0`，真实重启后再次通过计数与哈希复核。
+13. 同一 20 卡包完成隔离 Anki 数据级核验：首次导入 20 notes / 20 cards / 52 media；52/52 通过 `direct-first / trusted_atomic_copy` 预置，52 个媒体哈希和 120 个 card-media ownership bindings 闭合，媒体传输 API 为 0 次；重复导入跳过且 `duplicates=0`，真实重启后仍为 20/20/52。正式 profile/牌组未触碰，隔离进程已关闭。它不证明 GUI 翻面、播放或连续复习。
+14. 非 NFC、Windows 保留设备名（含 `CLOCK$`）、大小写/规范化冲突与 APKG archive 资源上限已经通过。APKG archive/package/verifier 与标准 Windows Anki direct path 均使用有界流式读取；64 MiB direct 样本在禁用整文件读取、Base64 和 AnkiConnect 媒体动作时通过，Python `tracemalloc` 峰值增量低于 32 MiB。
+15. 非标准/portable profile 与非 Windows 只保留不超过 8 MiB 原始媒体的 AnkiConnect inline 兼容路径；8 MiB+1 在任何媒体 API 前失败。8 MiB 不是进程峰值，该路径仍会整文件 Base64；retrieve/store/普通 action 和健康检查的响应分别受限。
+16. 多文件部分写入用 ownership ledger 区分 created/already-present/failed，并保留 timeout 未知结果、可能孤儿、可能残留与清理错误。媒体准备后和紧贴 `importPackage` 前的最终 barrier 都要求全部 manifest 大小/SHA 闭合、目录 identity 不变且零 recovery failure；导入后补救失败也不能返回 `ok=true`。
+17. 在合同未对齐的先前真实尝试中，preflight/final gate fail closed，隔离目标保持 0 note / 0 card / 0 media，证明失败没有产生半写入。
 
-这里的“已实现”只指当前 Worker/APKG 与隔离 Anki 数据级基线，且 `genanki` 固定不等于全部依赖已做版本+哈希供应链锁定。M0 仍需 Computer Use 桌面视觉/交互验收、真实 GUI 翻面与媒体播放，以及至少 20 张连续复习；当前执行环境没有 Computer Use。独立 runtime verifier、Card Service、MCP、插件安装、raw `ExportResult` 的 M2 认证替代与 AnkiConnect base64 内存改造均不属于当前完成项，因此 M0 状态仍为进行中。详见 [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md)。
+这里的“已实现”只指当前 Worker/APKG、标准 Windows Anki direct-first 媒体路径与隔离 Anki 数据级基线，且 `genanki` 固定不等于全部依赖已做版本+哈希供应链锁定。M0 仍需 Computer Use 桌面视觉/交互验收、真实 GUI 翻面与媒体播放，以及至少 20 张连续复习；当前执行环境没有 Computer Use。独立 runtime verifier、Card Service、MCP、插件安装、raw `ExportResult` 的 M2 认证替代、完整 Win32 目录句柄/私有 staging 与非标准 profile 的全流式兼容均不属于当前完成项，因此 M0 状态仍为进行中。详见 [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md)。
 
 ## 10. R7：导入授权
 
