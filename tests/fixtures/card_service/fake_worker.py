@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
+import tempfile
 import time
+from pathlib import Path
 
 
 PROGRESS_PREFIX = "__ANKI_CARD_PROGRESS__"
@@ -43,6 +46,32 @@ def main() -> None:
         return
     if mode == "overflow":
         print(json.dumps({"data": "x" * 200_000}))
+        return
+    if mode == "workspace_probe":
+        Path("workspace-probe.bin").write_bytes(b"workspace-bound")
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "command": command,
+                    "cwdName": Path.cwd().name,
+                    "tempName": Path(tempfile.gettempdir()).name,
+                }
+            )
+        )
+        return
+    if mode == "workspace_fill":
+        requested_bytes = max(0, min(int(request.get("fill_bytes") or 0), 16 * 1024 * 1024))
+        with Path("workspace-fill.bin").open("wb") as handle:
+            remaining = requested_bytes
+            block = b"x" * 65_536
+            while remaining:
+                chunk = block[: min(len(block), remaining)]
+                handle.write(chunk)
+                handle.flush()
+                os.fsync(handle.fileno())
+                remaining -= len(chunk)
+        print(json.dumps({"ok": True, "command": command, "written": requested_bytes}))
         return
     if mode == "broker":
         from acg.broker_client import configured_broker_client

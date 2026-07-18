@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import subprocess
 import sys
 import time
@@ -15,7 +16,14 @@ from card_service.broker import BrokerBudget, BrokerReservationLedger, ModelTtsB
 from card_service.broker_runtime import AuthorizedProviderCall, TaskBrokerAuthorization, make_task_broker_handler
 from card_service.credentials import CredentialStore, InMemoryCredentialBackend
 from card_service.provider_egress import ProviderProfile, ProviderTransportResponse
-from card_service.service import CardService, CardServiceError, MethodPolicy, _verify_sandbox_attestation
+from card_service.service import (
+    MAX_TASK_WORKSPACE_BYTES,
+    CardService,
+    CardServiceError,
+    MethodPolicy,
+    _task_workspace_usage,
+    _verify_sandbox_attestation,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,7 +67,9 @@ def test_capabilities_expose_only_restricted_high_level_methods(tmp_path: Path) 
     assert capabilities["processIsolation"]["forcedOutboundBroker"] is False
     assert capabilities["processIsolation"]["complete"] is False
     assert capabilities["mediaToolPolicy"]["managedAbsoluteTools"] is False
+    assert capabilities["mediaToolPolicy"]["taskWorkspaceBudget"] is True
     assert capabilities["mediaToolPolicy"]["complete"] is False
+    assert capabilities["processIsolation"]["taskWorkspaceWorkingDirectory"] is True
     assert capabilities["trustedSurfaces"]["localSettings"] is True
     assert capabilities["trustedSurfaces"]["authorizationLedger"] is False
     assert capabilities["methods"] == ["runtime.check_environment", "runtime.extract_learning_points"]
@@ -233,6 +243,94 @@ def test_successful_task_persists_snapshot_without_raw_request_and_reads_result(
     snapshot_text = (tmp_path / "state" / "tasks" / f"{started['id']}.json").read_text(encoding="utf-8")
     assert "input-canary" not in snapshot_text
     assert "inputFingerprint" in snapshot_text
+
+
+def test_task_process_uses_its_bounded_workspace_as_working_directory(tmp_path: Path) -> None:
+    card_service = service(tmp_path)
+    started = card_service.start_task("runtime.check_environment", {"mode": "workspace_probe"})
+    finished = wait_terminal(card_service, started["id"])
+    assert finished["state"] == "succeeded"
+    assert finished["isolation"]["taskWorkspaceWorkingDirectory"] is True
+    assert finished["isolation"]["taskWorkspaceLogicalBytes"] == len(b"workspace-bound")
+    assert finished["isolation"]["taskWorkspaceEntries"] == 1
+    result = card_service.read_result(started["id"])
+    assert result["cwdName"] == started["id"]
+    assert result["tempName"] == started["id"]
+    workspace = tmp_path / "state" / "sandboxes" / started["id"]
+    assert (workspace / "workspace-probe.bin").read_bytes() == b"workspace-bound"
+
+
+def test_task_workspace_byte_limit_terminates_the_worker_without_a_result(tmp_path: Path) -> None:
+    card_service = service(tmp_path, task_workspace_limit_bytes=64 * 1024)
+    started = card_service.start_task(
+        "runtime.check_environment",
+        {"mode": "workspace_fill", "fill_bytes": 256 * 1024},
+    )
+    finished = wait_terminal(card_service, started["id"])
+    assert finished["state"] == "failed"
+    assert finished["error"] == {
+        "code": "TASK_WORKSPACE_BYTE_LIMIT",
+        "message": "Task workspace exceeded its 65536 byte limit",
+        "retryable": True,
+        "stage": "workspace",
+        "fallbacks": ["reduce_media_batch"],
+    }
+    with pytest.raises(CardServiceError) as result_error:
+        card_service.read_result(started["id"])
+    assert result_error.value.code == "RESULT_NOT_READY"
+
+
+def test_task_workspace_accounting_blocks_entry_overflow_and_links(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    for index in range(17):
+        (workspace / f"entry-{index}.txt").write_text("x", encoding="utf-8")
+    with pytest.raises(CardServiceError) as entry_error:
+        _task_workspace_usage(workspace, byte_limit=1024, entry_limit=16)
+    assert entry_error.value.code == "TASK_WORKSPACE_ENTRY_LIMIT"
+
+    hardlink_root = tmp_path / "hardlink-workspace"
+    hardlink_root.mkdir()
+    hardlink_target = tmp_path / "hardlink-target.txt"
+    hardlink_target.write_text("outside", encoding="utf-8")
+    os.link(hardlink_target, hardlink_root / "alias.txt")
+    with pytest.raises(CardServiceError) as hardlink_error:
+        _task_workspace_usage(hardlink_root, byte_limit=1024, entry_limit=16)
+    assert hardlink_error.value.code == "TASK_WORKSPACE_HARDLINK_BLOCKED"
+
+    link_root = tmp_path / "link-workspace"
+    link_root.mkdir()
+    target = tmp_path / "outside.txt"
+    target.write_text("outside", encoding="utf-8")
+    try:
+        (link_root / "escape.txt").symlink_to(target)
+    except OSError:
+        pytest.skip("This Windows host does not permit test symlink creation")
+    with pytest.raises(CardServiceError) as link_error:
+        _task_workspace_usage(link_root, byte_limit=1024, entry_limit=16)
+    assert link_error.value.code == "TASK_WORKSPACE_REPARSE_BLOCKED"
+
+
+def test_task_creation_rejects_a_preexisting_reparse_workspace_root(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    redirected = tmp_path / "redirected"
+    redirected.mkdir()
+    try:
+        (state / "sandboxes").symlink_to(redirected, target_is_directory=True)
+    except OSError:
+        pytest.skip("This Windows host does not permit test directory symlink creation")
+    card_service = service(tmp_path)
+    with pytest.raises(CardServiceError) as caught:
+        card_service.start_task("runtime.check_environment", {})
+    assert caught.value.code == "TASK_WORKSPACE_REPARSE_BLOCKED"
+    assert list(redirected.iterdir()) == []
+
+
+def test_task_workspace_policy_rejects_values_above_the_service_hard_cap(tmp_path: Path) -> None:
+    with pytest.raises(CardServiceError) as caught:
+        service(tmp_path, task_workspace_limit_bytes=MAX_TASK_WORKSPACE_BYTES + 1)
+    assert caught.value.code == "TASK_WORKSPACE_POLICY_INVALID"
 
 
 def test_worker_error_is_structured_and_safe(tmp_path: Path) -> None:

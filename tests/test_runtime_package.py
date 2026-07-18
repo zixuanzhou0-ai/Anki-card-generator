@@ -437,9 +437,13 @@ def test_card_service_package_mode_rejects_path_overrides_and_detects_runtime_mu
     assert card_service.capabilities()["mediaToolPolicy"]["fixedProtocolAllowlist"] is True
     assert card_service.capabilities()["mediaToolPolicy"]["fixedDemuxerAllowlist"] is True
     assert card_service.capabilities()["mediaToolPolicy"]["externalConfigDisabled"] is True
-    assert card_service.capabilities()["mediaToolPolicy"]["complete"] is (os.name == "nt")
+    assert card_service.capabilities()["mediaToolPolicy"]["resourceEvidencePreflight"] is True
+    assert card_service.capabilities()["mediaToolPolicy"]["perOutputFileLimit"] is True
+    assert card_service.capabilities()["mediaToolPolicy"]["taskWorkspaceBudget"] is True
+    assert card_service.capabilities()["mediaToolPolicy"]["complete"] is False
     assert card_service.capabilities()["processIsolation"]["runtimePackageDacl"] is (os.name == "nt")
     assert card_service.capabilities()["processIsolation"]["taskWorkspaceDacl"] is (os.name == "nt")
+    assert card_service.capabilities()["processIsolation"]["taskWorkspaceWorkingDirectory"] is True
     assert card_service.capabilities()["processIsolation"]["appContainerOrRestrictedSidDacl"] is (os.name == "nt")
     assert card_service.capabilities()["processIsolation"]["forcedOutboundBroker"] is (os.name == "nt")
     managed_environment = card_service._managed_environment()
