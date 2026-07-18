@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+import card_service.windows_sandbox_acl as windows_sandbox_acl_module
+
 from card_service.windows_sandbox_acl import (
     FILE_FULL_CONTROL,
     FILE_GENERIC_READ_EXECUTE,
@@ -38,6 +40,18 @@ def test_runtime_and_task_sids_are_stable_and_task_bound() -> None:
     with pytest.raises(WindowsSandboxAclError) as invalid:
         task_sandbox_sid("not-a-task")
     assert invalid.value.code == "WINDOWS_TASK_ID_INVALID"
+
+
+def test_runtime_sid_derivation_is_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unexpected_profile_creation(name: str) -> str:
+        raise AssertionError(f"verification attempted to create AppContainer profile {name}")
+
+    monkeypatch.setattr(
+        windows_sandbox_acl_module,
+        "_ensure_appcontainer_profile",
+        unexpected_profile_creation,
+    )
+    assert runtime_sandbox_sid("read-only-verification-fixture").startswith("S-1-15-2-")
 
 
 def test_runtime_tree_receives_only_recovery_and_sandbox_read_execute_aces(tmp_path: Path) -> None:

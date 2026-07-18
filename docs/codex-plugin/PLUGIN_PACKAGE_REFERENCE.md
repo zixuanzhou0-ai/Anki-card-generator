@@ -152,6 +152,16 @@ V1 不使用 hooks。当前生成规范与验证器对 hooks 字段存在差异�
 - 实物候选包含 4391 个资源、289,210,657 bytes；外层 manifest SHA-256 为 `9ab03b75dc2a0c2197e280fdd47a9f9a83c2fe25fc786459822cfcbf23f262d6`。它在普通权限下通过官方 plugin validator，并由真实 Codex `0.144.1` 从候选目录完成唯一只读工具调用。
 - 候选 manifest 与 CLI 固定报告 `installable=false`、`mcpDeclared=false`、`outerSignatureVerified=false`、`publisherKeyManaged=false`；构建不接收私钥、不联网、不生成 MCP/App 映射。它是发行结构证据，不是可安装发布物。
 
+`scripts/create_plugin_release_signing_request.py` 是候选包到外部发布签名系统之间的只读交接入口：
+
+- 入口会先用 `PluginReleaseBundle` 重新验证完整候选的 canonical manifest、精确资源集合、双层 SPDX、内层运行包签名和 Windows DACL；不能对一个孤立或被篡改的 manifest 直接生成请求。
+- 发布 trust policy 必须位于插件候选目录之外，使用 canonical JSON 固定 authority、单调 sequence、最低插件版本、最长签名寿命、精确 Ed25519 公钥/epoch/status，以及撤销版本和 manifest digest。候选包不能携带一份任意公钥来自证。
+- 请求使用独立域 `study.plugin-release-manifest.v1`，绑定 package ID、插件版本、manifest SHA-256、key ID/epoch 和签发/过期时间；输出同时给出待签 message、message SHA-256 和 trust-policy SHA-256。
+- 该脚本的参数中没有私钥，也不调用网络或签名程序；输出固定 `privateKeyRead=false`、`networkUsed=false`、`signatureCreated=false`、`installable=false`。真实私钥只能在仓库外的离线/HSM 流水线消费待签 message。
+- `card_service.plugin_release_trust` 已实现 detached signature 的独立验签、密钥撤销、签名期限、最低版本、manifest 撤销，以及本地 trust-sequence/同版本异内容防回滚地板。当前没有正式发布公钥策略和签名返回物，因此这条机制只完成了交接合同，不能把被动候选升级为可安装发布物。
+- `scripts/create_ephemeral_plugin_probe_signature.py` 只用于本地实物验收：每次生成随机密钥，最长 24 小时，只输出公钥策略、签名请求和 detached signature，私钥不落盘。289,210,657-byte 真实候选已经先后通过该探针和独立 `verify_plugin_release_signature.py`，两次均绑定 manifest `9ab03b75dc2a0c2197e280fdd47a9f9a83c2fe25fc786459822cfcbf23f262d6`，并保持 `installable=false`。
+- `.mcp.json`、manifest 的 `mcpServers`、外层 Authenticode/等价代码签名与正式独立复制安装验证仍保持阻断。后续 finalizer 必须重新构造并验签最终 payload，不能把“签过被动 manifest”解释为“允许执行 MCP”。
+
 M1 托管运行包的内层合同已经固定为：
 
 - `workers/requirements-win-cp313.lock` 固定 CPython 3.13 / cp313 / win_amd64 的 25 个直接和传递 wheel 版本与 SHA-256。`scripts/generate_python_runtime_lock.py` 从 wheel METADATA/WHEEL 生成锁并拒绝 sdist、非 wheel、重复包、根版本不符、平台不兼容和哈希变化；锁本身是必需的签名运行资源。

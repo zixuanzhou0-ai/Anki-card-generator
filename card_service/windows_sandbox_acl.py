@@ -273,6 +273,31 @@ def _ensure_appcontainer_profile(name: str) -> str:
             advapi32.FreeSid(sid)
 
 
+def _derive_appcontainer_sid(name: str) -> str:
+    kernel32, advapi32 = _libraries()
+    userenv = ctypes.WinDLL("userenv", use_last_error=True)
+    advapi32.FreeSid.argtypes = [ctypes.c_void_p]
+    advapi32.FreeSid.restype = ctypes.c_void_p
+    userenv.DeriveAppContainerSidFromAppContainerName.argtypes = [
+        wintypes.LPCWSTR,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    userenv.DeriveAppContainerSidFromAppContainerName.restype = ctypes.c_long
+    sid = ctypes.c_void_p()
+    try:
+        result = userenv.DeriveAppContainerSidFromAppContainerName(name, ctypes.byref(sid))
+        unsigned_result = int(result) & 0xFFFFFFFF
+        if unsigned_result != 0 or not sid:
+            raise WindowsSandboxAclError(
+                "WINDOWS_APPCONTAINER_SID_FAILED",
+                f"Could not derive the AppContainer SID: 0x{unsigned_result:08X}",
+            )
+        return _sid_to_text(kernel32, advapi32, sid)
+    finally:
+        if sid:
+            advapi32.FreeSid(sid)
+
+
 def _derive_capability_sid(name: str) -> str:
     kernel32, advapi32 = _libraries()
     kernelbase = ctypes.WinDLL("kernelbase", use_last_error=True)
@@ -319,6 +344,12 @@ def _derive_capability_sid(name: str) -> str:
 
 
 def runtime_sandbox_sid(package_id: str = "anki-study-managed-runtime") -> str:
+    return _derive_appcontainer_sid(_runtime_appcontainer_name(package_id))
+
+
+def ensure_runtime_sandbox_profile(package_id: str = "anki-study-managed-runtime") -> str:
+    """Provision the per-user profile; release verification must use runtime_sandbox_sid()."""
+
     return _ensure_appcontainer_profile(_runtime_appcontainer_name(package_id))
 
 
