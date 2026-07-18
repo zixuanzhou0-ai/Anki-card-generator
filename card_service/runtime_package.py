@@ -24,6 +24,7 @@ from .runtime_trust import (
 
 
 MAX_PACKAGE_MANIFEST_BYTES = 4 * 1024 * 1024
+MAX_SBOM_BYTES = 16 * 1024 * 1024
 PACKAGE_MANIFEST_NAME = "runtime-package-v1.json"
 CARD_SERVICE_VERSION = "0.1.0"
 SBOM_RESOURCE_ID = "metadata:sbom-spdx"
@@ -55,6 +56,21 @@ class RuntimePackageError(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+def _read_bounded(path: Path, maximum_bytes: int, *, code: str, label: str) -> bytes:
+    try:
+        if path.stat().st_size > maximum_bytes:
+            raise RuntimePackageError(code, f"{label} is too large")
+        with path.open("rb") as handle:
+            source = handle.read(maximum_bytes + 1)
+    except RuntimePackageError:
+        raise
+    except OSError as error:
+        raise RuntimePackageError(code, f"{label} is unavailable") from error
+    if not source or len(source) > maximum_bytes:
+        raise RuntimePackageError(code, f"{label} is empty or too large")
+    return source
 
 
 def current_runtime_platform() -> str:
@@ -112,10 +128,17 @@ def _verify_spdx_sbom(
     package_version: str,
     entries: dict[str, RuntimePackageResource],
 ) -> None:
+    if resource.size > MAX_SBOM_BYTES:
+        raise RuntimePackageError("RUNTIME_PACKAGE_SBOM_INVALID", "Runtime package SBOM is too large")
     try:
-        source = resource.path.read_bytes()
+        source = _read_bounded(
+            resource.path,
+            MAX_SBOM_BYTES,
+            code="RUNTIME_PACKAGE_SBOM_INVALID",
+            label="Runtime package SBOM",
+        )
         value = json.loads(source)
-    except (OSError, ValueError) as error:
+    except ValueError as error:
         raise RuntimePackageError("RUNTIME_PACKAGE_SBOM_INVALID", "Runtime package SBOM is invalid") from error
     if not isinstance(value, dict) or canonical_bytes(value) != source:
         raise RuntimePackageError("RUNTIME_PACKAGE_SBOM_INVALID", "Runtime package SBOM must use canonical JSON")
@@ -190,12 +213,12 @@ class ManagedRuntimePackage:
         self.manifest_path = manifest_candidate.resolve()
         if self.manifest_path.parent != self.root:
             raise RuntimePackageError("RUNTIME_PACKAGE_MANIFEST_INVALID", "Runtime package manifest escaped its root")
-        try:
-            source = self.manifest_path.read_bytes()
-        except OSError as error:
-            raise RuntimePackageError("RUNTIME_PACKAGE_MANIFEST_MISSING", "Runtime package manifest is unavailable") from error
-        if not source or len(source) > MAX_PACKAGE_MANIFEST_BYTES:
-            raise RuntimePackageError("RUNTIME_PACKAGE_MANIFEST_INVALID", "Runtime package manifest is empty or too large")
+        source = _read_bounded(
+            self.manifest_path,
+            MAX_PACKAGE_MANIFEST_BYTES,
+            code="RUNTIME_PACKAGE_MANIFEST_INVALID",
+            label="Runtime package manifest",
+        )
         try:
             value = json.loads(source)
         except ValueError as error:

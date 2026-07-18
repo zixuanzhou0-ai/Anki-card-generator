@@ -1,0 +1,271 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from card_service.runtime_builder import (
+    RuntimeBuildError,
+    RuntimeBuildResource,
+    build_runtime_package,
+)
+from card_service.runtime_package import ManagedRuntimePackage, RuntimePackageError
+from card_service.runtime_trust import SIGNATURE_FILE_NAME
+
+
+ROOT = Path(__file__).resolve().parents[1]
+RESOURCE_PATHS = {
+    "managed-python:executable": "python/python.exe",
+    "card-service:worker-bootstrap": "service/card_service/worker_bootstrap.py",
+    "card-service:broker-client": "worker/acg/broker_client.py",
+    "card-service:windows-restricted-launcher": "service/card_service/windows_restricted_launcher.py",
+    "card-service:windows-sandbox-acl": "service/card_service/windows_sandbox_acl.py",
+    "legacy-worker:entry": "worker/anki_worker.py",
+    "legacy-worker:module:acg/media_tool_policy.py": "worker/acg/media_tool_policy.py",
+    "managed-tool:ffmpeg": "tools/ffmpeg.exe",
+    "managed-tool:ffprobe": "tools/ffprobe.exe",
+    "managed-tool:yt-dlp": "tools/yt-dlp.exe",
+}
+
+
+def resources(source_root: Path) -> list[RuntimeBuildResource]:
+    values: list[RuntimeBuildResource] = []
+    for index, (resource_id, relative_path) in enumerate(RESOURCE_PATHS.items()):
+        source = source_root / f"source-{index}.bin"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(f"fixture-{index}".encode())
+        values.append(RuntimeBuildResource(resource_id, source.resolve(), relative_path))
+    extra = source_root / "module.py"
+    extra.write_text("VALUE = 1\n", encoding="utf-8")
+    values.append(
+        RuntimeBuildResource(
+            "card-service:module:example.py",
+            extra.resolve(),
+            "service/card_service/example.py",
+        )
+    )
+    return values
+
+
+def test_builder_is_deterministic_atomic_and_unsigned(tmp_path: Path) -> None:
+    inputs = resources(tmp_path / "inputs")
+    first = build_runtime_package(
+        (tmp_path / "runtime-a").resolve(),
+        version="0.1.0-dev",
+        resources=reversed(inputs),
+        created_at="2026-07-18T00:00:00Z",
+    )
+    second = build_runtime_package(
+        (tmp_path / "runtime-b").resolve(),
+        version="0.1.0-dev",
+        resources=inputs,
+        created_at="2026-07-18T00:00:00Z",
+    )
+
+    assert first.manifest_sha256 == second.manifest_sha256
+    assert first.manifest_path.read_bytes() == second.manifest_path.read_bytes()
+    assert first.sbom_path.read_bytes() == second.sbom_path.read_bytes()
+    assert first.resource_count == len(inputs) + 1
+    assert not (first.root / SIGNATURE_FILE_NAME).exists()
+    package = ManagedRuntimePackage(first.root)
+    assert package.public_summary()["signatureVerified"] is False
+    assert package.public_summary()["sbomVerified"] is True
+    with pytest.raises(RuntimePackageError) as unsigned:
+        ManagedRuntimePackage(first.root, require_signature=True)
+    assert unsigned.value.code == "RUNTIME_TRUST_POLICY_REQUIRED"
+
+
+def test_builder_sbom_covers_every_non_sbom_resource_exactly(tmp_path: Path) -> None:
+    result = build_runtime_package(
+        (tmp_path / "runtime").resolve(),
+        version="0.1.0-dev",
+        resources=resources(tmp_path / "inputs"),
+        created_at="2026-07-18T00:00:00Z",
+    )
+    manifest = json.loads(result.manifest_path.read_bytes())
+    sbom = json.loads(result.sbom_path.read_bytes())
+    expected = {
+        f"./{resource['relativePath']}": resource["sha256"]
+        for resource in manifest["resources"]
+        if resource["resourceId"] != "metadata:sbom-spdx"
+    }
+    observed = {
+        entry["fileName"]: entry["checksums"][0]["checksumValue"]
+        for entry in sbom["files"]
+    }
+    assert observed == expected
+    assert [entry["fileName"] for entry in sbom["files"]] == sorted(observed)
+    assert sbom["documentNamespace"].startswith("urn:uuid:")
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    [
+        (
+            lambda values: values.append(values[0]),
+            "RUNTIME_BUILD_RESOURCE_INVALID",
+        ),
+        (
+            lambda values: values.append(
+                RuntimeBuildResource(
+                    "card-service:module:collision",
+                    values[0].source,
+                    values[0].relative_path.upper(),
+                )
+            ),
+            "RUNTIME_BUILD_PATH_COLLISION",
+        ),
+        (
+            lambda values: values.__setitem__(
+                0,
+                RuntimeBuildResource(
+                    values[0].resource_id,
+                    values[0].source,
+                    "../escape",
+                ),
+            ),
+            "RUNTIME_BUILD_PATH_INVALID",
+        ),
+        (
+            lambda values: values.append(
+                RuntimeBuildResource(
+                    "card-service:module:reserved",
+                    values[0].source,
+                    "RUNTIME-PACKAGE-V1.JSON",
+                )
+            ),
+            "RUNTIME_BUILD_PATH_COLLISION",
+        ),
+    ],
+)
+def test_builder_rejects_duplicate_or_escaping_resources(
+    tmp_path: Path,
+    mutation,
+    expected_code: str,
+) -> None:
+    values = resources(tmp_path / "inputs")
+    mutation(values)
+    with pytest.raises(RuntimeBuildError) as caught:
+        build_runtime_package(
+            (tmp_path / "runtime").resolve(),
+            version="0.1.0-dev",
+            resources=values,
+            created_at="2026-07-18T00:00:00Z",
+        )
+    assert caught.value.code == expected_code
+    assert not (tmp_path / "runtime").exists()
+
+
+def test_builder_rejects_missing_required_resource_and_existing_output(tmp_path: Path) -> None:
+    values = resources(tmp_path / "inputs")
+    values = [value for value in values if value.resource_id != "managed-tool:ffmpeg"]
+    with pytest.raises(RuntimeBuildError) as missing:
+        build_runtime_package(
+            (tmp_path / "missing").resolve(),
+            version="0.1.0-dev",
+            resources=values,
+            created_at="2026-07-18T00:00:00Z",
+        )
+    assert missing.value.code == "RUNTIME_BUILD_RESOURCE_MISSING"
+
+    output = (tmp_path / "existing").resolve()
+    output.mkdir()
+    marker = output / "keep.txt"
+    marker.write_text("keep", encoding="utf-8")
+    with pytest.raises(RuntimeBuildError) as existing:
+        build_runtime_package(
+            output,
+            version="0.1.0-dev",
+            resources=resources(tmp_path / "other-inputs"),
+            created_at="2026-07-18T00:00:00Z",
+        )
+    assert existing.value.code == "RUNTIME_BUILD_OUTPUT_EXISTS"
+    assert marker.read_text(encoding="utf-8") == "keep"
+
+
+@pytest.mark.parametrize(
+    "created_at",
+    [
+        "2026-07-18",
+        "2026-07-18T00:00:00+08:00",
+        "2026-07-18T00:00:00.123Z",
+    ],
+)
+def test_builder_requires_an_explicit_reproducible_utc_timestamp(
+    tmp_path: Path,
+    created_at: str,
+) -> None:
+    with pytest.raises(RuntimeBuildError) as caught:
+        build_runtime_package(
+            (tmp_path / "runtime").resolve(),
+            version="0.1.0-dev",
+            resources=resources(tmp_path / "inputs"),
+            created_at=created_at,
+        )
+    assert caught.value.code == "RUNTIME_BUILD_TIMESTAMP_INVALID"
+
+
+def test_builder_output_does_not_contain_private_key_material(tmp_path: Path) -> None:
+    result = build_runtime_package(
+        (tmp_path / "runtime").resolve(),
+        version="0.1.0-dev",
+        resources=resources(tmp_path / "inputs"),
+        created_at="2026-07-18T00:00:00Z",
+    )
+    serialized = result.manifest_path.read_bytes() + result.sbom_path.read_bytes()
+    assert b"privateKey" not in serialized
+    assert b"signingKey" not in serialized
+    assert hashlib.sha256(serialized).hexdigest()
+
+
+def test_offline_builder_cli_collects_the_real_service_and_worker_tree(tmp_path: Path) -> None:
+    python_root = tmp_path / "managed-python"
+    python_root.mkdir()
+    (python_root / "python.exe").write_bytes(b"managed-python-fixture")
+    tools = {}
+    for name in ("ffmpeg", "ffprobe", "yt-dlp"):
+        path = tmp_path / f"{name}.exe"
+        path.write_bytes(f"{name}-fixture".encode())
+        tools[name] = path
+    output = (tmp_path / "runtime").resolve()
+
+    process = subprocess.run(
+        [
+            sys.executable,
+            "scripts/build_managed_runtime.py",
+            "--output",
+            str(output),
+            "--version",
+            "0.1.0-dev",
+            "--created-at",
+            "2026-07-18T00:00:00Z",
+            "--repository-root",
+            str(ROOT),
+            "--python-root",
+            str(python_root),
+            "--ffmpeg",
+            str(tools["ffmpeg"]),
+            "--ffprobe",
+            str(tools["ffprobe"]),
+            "--yt-dlp",
+            str(tools["yt-dlp"]),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert process.returncode == 0, process.stderr
+    summary = json.loads(process.stdout)
+    assert summary["signed"] is False
+    assert summary["resourceCount"] > len(RESOURCE_PATHS)
+    package = ManagedRuntimePackage(output)
+    assert package.resource_path("card-service:worker-bootstrap").name == "worker_bootstrap.py"
+    assert package.resource_path("legacy-worker:entry").name == "anki_worker.py"
+    assert package.public_summary()["sbomVerified"] is True

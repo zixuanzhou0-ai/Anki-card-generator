@@ -13,6 +13,8 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+import card_service.runtime_package as runtime_package_module
+import card_service.runtime_trust as runtime_trust_module
 from card_service.runtime_manifest import canonical_bytes
 from card_service.runtime_package import (
     ManagedRuntimePackage,
@@ -238,6 +240,51 @@ def test_runtime_package_requires_canonical_root_contained_hashed_resources(tmp_
     with pytest.raises(RuntimePackageError) as unlisted:
         load_package(unlisted_root)
     assert unlisted.value.code == "RUNTIME_PACKAGE_UNLISTED_RESOURCE"
+
+
+def test_runtime_metadata_files_are_rejected_before_unbounded_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_root = (tmp_path / "manifest-runtime").resolve()
+    write_package(manifest_root)
+    monkeypatch.setattr(runtime_package_module, "MAX_PACKAGE_MANIFEST_BYTES", 64)
+    with pytest.raises(RuntimePackageError) as manifest_error:
+        ManagedRuntimePackage(manifest_root)
+    assert manifest_error.value.code == "RUNTIME_PACKAGE_MANIFEST_INVALID"
+
+    sbom_root = (tmp_path / "sbom-runtime").resolve()
+    write_package(sbom_root)
+    sbom_path = sbom_root / "metadata" / "SBOM.spdx.json"
+    sbom_source = b" " * 65
+    sbom_path.write_bytes(sbom_source)
+    manifest = json.loads((sbom_root / "runtime-package-v1.json").read_bytes())
+    sbom_resource = next(
+        item for item in manifest["resources"] if item["resourceId"] == "metadata:sbom-spdx"
+    )
+    sbom_resource["size"] = len(sbom_source)
+    sbom_resource["sha256"] = hashlib.sha256(sbom_source).hexdigest()
+    (sbom_root / "runtime-package-v1.json").write_bytes(canonical_bytes(manifest))
+    sign_package(sbom_root)
+    monkeypatch.setattr(runtime_package_module, "MAX_PACKAGE_MANIFEST_BYTES", 4 * 1024 * 1024)
+    monkeypatch.setattr(runtime_package_module, "MAX_SBOM_BYTES", 64)
+    with pytest.raises(RuntimePackageError) as sbom_error:
+        load_package(sbom_root)
+    assert sbom_error.value.code == "RUNTIME_PACKAGE_SBOM_INVALID"
+
+    trust_root = (tmp_path / "trust-runtime").resolve()
+    write_package(trust_root)
+    monkeypatch.setattr(runtime_trust_module, "MAX_TRUST_POLICY_BYTES", 64)
+    with pytest.raises(RuntimeTrustError) as trust_error:
+        RuntimePackageTrustPolicy.load(trust_policy_path(trust_root).resolve())
+    assert trust_error.value.code == "RUNTIME_TRUST_POLICY_INVALID"
+
+    monkeypatch.setattr(runtime_trust_module, "MAX_TRUST_POLICY_BYTES", 256 * 1024)
+    policy = RuntimePackageTrustPolicy.load(trust_policy_path(trust_root).resolve())
+    monkeypatch.setattr(runtime_trust_module, "MAX_SIGNATURE_BYTES", 64)
+    with pytest.raises(RuntimePackageError) as signature_error:
+        ManagedRuntimePackage(trust_root, trust_policy=policy, require_signature=True, now=TEST_NOW)
+    assert signature_error.value.code == "RUNTIME_PACKAGE_SIGNATURE_INVALID"
 
 
 @pytest.mark.parametrize(

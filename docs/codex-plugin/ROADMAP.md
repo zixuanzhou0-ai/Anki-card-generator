@@ -117,8 +117,9 @@ M0 出口已经关闭：
 - 已完成受限 Card Service API、任务快照/恢复、进度/取消/超时、无通用 Shell、Worker 运行时清单、受信本地设置与授权入口、Broker 账本与 task-owned HMAC IPC。
 - 已完成 Windows task-owned Job、restricted primary token、AppContainer、每任务 capability SID、runtime/task workspace 精确 DACL 和无网络 capability 的真实负面测试。
 - 已完成托管运行包内层供应链边界：canonical `runtime-package-v1.json`、detached Ed25519 签名、由受信 launcher 单独提供的发布者策略、签名有效期/密钥撤销/最低版本、同 sequence 分叉与本机版本回退拒绝，以及覆盖全部运行资源的 canonical SPDX 2.3 SBOM。
+- 已新增离线、确定性、原子且拒绝覆盖已有目录的正式 staging 构建器 `scripts/build_managed_runtime.py`：只收集显式仓库源码、预装配 Python 运行时和固定 FFmpeg/ffprobe/yt-dlp，逐文件复制后复核 SHA-256，生成精确 SPDX 2.3 与 canonical manifest。相同输入与显式 UTC 时间产生相同 manifest/SBOM；构建器不接收、读取或输出发布私钥，也不在运行时联网下载组件。manifest、SBOM、签名、信任策略和回退 floor 已改为先检查文件大小再有界读取，避免超大元数据在拒绝前耗尽内存。
 - 正式 packaged mode 现在必须同时提供运行包和受信策略；运行包不能通过自带公钥建立信任。测试私钥只存在于测试代码内，仓库和运行包均不包含发布私钥。
-- Python 直接依赖已改为精确版本；最终发布仍需生成带哈希的完整传递依赖锁、真实离线签名密钥流程和外层 Authenticode/等价安装包签名。
+- Python 直接依赖已改为精确版本；构建器要求上游提供预装配的干净 Python 根，不会把当前系统 Python 当成可信来源。最终发布仍需生成带哈希的完整传递依赖锁、从该锁装配 Python 根、真实离线/HSM 签名流程和外层 Authenticode/等价安装包签名。
 - 已把 FFmpeg、ffprobe 和 yt-dlp 绑定到签名运行包中的精确资源。托管 FFmpeg/ffprobe 只接受绝对本地普通文件，固定 `file` protocol 与显式 demuxer allowlist，拒绝 playlist、concat/subfile、网络协议、策略覆盖、reparse 输入、Shell/stdin 覆盖，并施加 300 秒上限；托管 yt-dlp 忽略外部配置和插件，禁止 exec、playlist 与 remote components，并锁定受信 FFmpeg 目录。
 - 真实畸形 MP4 已在 Windows AppContainer + task-owned Job + 专用 DACL 中 fail closed；正常 WAV→MP3 和 H.264/AAC 切片仍通过。受限子进程现在真实以自己的 task workspace 为工作目录，不再以只读运行包目录为 cwd；Service 对该目录按不跟随 link/reparse 的逻辑字节与条目数实施持续预算，默认 2 GiB/20,000 项、硬上限 8 GiB/100,000 项，超限会终止任务并拒绝结果。开发模式也使用独立工作目录和预算，但只有正式 packaged DACL 模式能把它作为文件系统写边界。
 - 托管 FFmpeg 现增加执行前资源证据闸门：同一命令输入合计最多 8 GiB、32 个流、12 小时，视频限制单轴 8192、每帧最多 8192×4320 像素、240 fps、300 万帧及 16 TiB 逻辑解码量，音频限制 192 kHz、8 声道及 64 GiB 逻辑解码量；FFprobe 输出、探测耗时和码率也有限。输入在探测期间变化会拒绝，所有输出统一施加 512 MiB `-fs` 硬上限，达到上限的半成品会删除。FFmpeg 参数现只允许产品实际使用的单本地输入、单最终输出语法；第二输入/输出、循环/实时参数、任意滤镜、显式输出格式和未知选项在进程启动前拒绝，`-vf`/`-af` 只接受固定缩放与音量表达式。目标必须是新文件，失败、超时、空输出和假成功不会留下可消费的半成品。
@@ -136,7 +137,7 @@ M0 出口已经关闭：
 - 真实受限 Legacy Worker 已完成“受控 YouTube 字幕 → 本地候选 → Service 模型 Broker → 学习点结果”认证 stdio 闭环；source/model 两类 reservation 均结算，持久 JSON 不含 provider secret 或 signed caption query canary。该证明使用确定性 fake transport，不是一次真实 YouTube 公网可用性测试。
 - 已增加首条桌面/Headless 语义等价合同：同一个冻结的单学习点请求分别由桌面 Legacy Worker 直调与 Headless Card Service 执行，核心 Project/segments/生成学习点一致；两边随后独立导出，Note Model 合同、media manifest、card-media ledger 和 audio audit 一致，任务终态均为 100%。同一“未选择学习点”请求的 code/message/retryable/stage 也一致；Card Service 现在保留经过 allowlist/限长的 Worker stage/fallbacks，但不持久化任意 details。该样本关闭 TTS 且不含视频，Headless 导出为隔离调度等价测试而显式关闭 restricted launcher；它不能替代受限视频/TTS、真实 Anki verify 和完整取消矩阵。
 - 本里程碑仍未完成：M2 的逐 OperationIntent approval ledger、撤销/原子消费和正式 profile 注册尚未实现；公网 provider 也未做真实用户凭据调用，Vertex TTS OAuth egress 仍 fail closed。完整 YouTube 视频/音频获取仍未开放，托管模式不会静默退回直接 yt-dlp；更广泛的 codec parser 崩溃/fuzz corpus、安全 Artifact 保留清理、更多桌面/Headless 语义等价证据和正式外层插件 launcher/离线可安装包仍在后续切片。真实宿主探针只证明开发态 MCP 注册与只读调用，不等于已安装插件或正式供应链出口。
-- 当前回归证据包括正式 Python 全集 870 项、正式 Worker `unittest discover` 598 项、Vitest 830 项，以及 lint、类型检查和生产构建，以及真实受限 Legacy Worker 的模型、TTS、字幕→模型三条认证 stdio 闭环和一条桌面/Headless 单卡语义等价合同；这些集合有重叠且不是 M1 完成判定。
+- 当前回归证据包括正式 Python `tests/` 全集 887 项、正式 Worker `unittest discover` 598 项、Vitest 830 项，以及 lint、类型检查和生产构建，以及真实受限 Legacy Worker 的模型、TTS、字幕→模型三条认证 stdio 闭环和一条桌面/Headless 单卡语义等价合同；这些集合有重叠且不是 M1 完成判定。裸 `pytest` 会误收集历史 `target/test-results/tmp` 运行包副本，因此正式范围固定为 `pytest tests`，不通过删除历史证据来获得假绿。
 
 ### 出口
 

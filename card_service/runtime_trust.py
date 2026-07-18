@@ -24,6 +24,7 @@ SIGNATURE_DOMAIN = "study.runtime-package-manifest.v1"
 SIGNATURE_FILE_NAME = "runtime-package-v1.sig.json"
 MAX_TRUST_POLICY_BYTES = 256 * 1024
 MAX_SIGNATURE_BYTES = 32 * 1024
+MAX_TRUST_FLOOR_BYTES = 256 * 1024
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _UTC_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
@@ -62,6 +63,21 @@ def _stable_file(path: Path, *, code: str) -> Path:
     if not resolved.is_file():
         raise RuntimeTrustError(code, "Runtime trust file is unavailable")
     return resolved
+
+
+def _read_bounded(path: Path, maximum_bytes: int, *, code: str, label: str) -> bytes:
+    try:
+        if path.stat().st_size > maximum_bytes:
+            raise RuntimeTrustError(code, f"{label} is too large")
+        with path.open("rb") as handle:
+            source = handle.read(maximum_bytes + 1)
+    except RuntimeTrustError:
+        raise
+    except OSError as error:
+        raise RuntimeTrustError(code, f"{label} is unavailable") from error
+    if not source or len(source) > maximum_bytes:
+        raise RuntimeTrustError(code, f"{label} is empty or too large")
+    return source
 
 
 def _decode_base64url(value: Any, *, expected_length: int, code: str) -> bytes:
@@ -232,12 +248,12 @@ class RuntimePackageTrustPolicy:
     @classmethod
     def load(cls, path: str | Path) -> "RuntimePackageTrustPolicy":
         resolved = _stable_file(Path(path), code="RUNTIME_TRUST_POLICY_INVALID")
-        try:
-            source = resolved.read_bytes()
-        except OSError as error:
-            raise RuntimeTrustError("RUNTIME_TRUST_POLICY_INVALID", "Runtime trust policy is unavailable") from error
-        if not source or len(source) > MAX_TRUST_POLICY_BYTES:
-            raise RuntimeTrustError("RUNTIME_TRUST_POLICY_INVALID", "Runtime trust policy is empty or too large")
+        source = _read_bounded(
+            resolved,
+            MAX_TRUST_POLICY_BYTES,
+            code="RUNTIME_TRUST_POLICY_INVALID",
+            label="Runtime trust policy",
+        )
         try:
             value = json.loads(source)
         except ValueError as error:
@@ -283,12 +299,12 @@ def verify_runtime_signature(
     now: datetime | None = None,
 ) -> VerifiedRuntimeSignature:
     resolved = _stable_file(signature_path, code="RUNTIME_PACKAGE_SIGNATURE_INVALID")
-    try:
-        source = resolved.read_bytes()
-    except OSError as error:
-        raise RuntimeTrustError("RUNTIME_PACKAGE_SIGNATURE_INVALID", "Runtime package signature is unavailable") from error
-    if not source or len(source) > MAX_SIGNATURE_BYTES:
-        raise RuntimeTrustError("RUNTIME_PACKAGE_SIGNATURE_INVALID", "Runtime package signature is empty or too large")
+    source = _read_bounded(
+        resolved,
+        MAX_SIGNATURE_BYTES,
+        code="RUNTIME_PACKAGE_SIGNATURE_INVALID",
+        label="Runtime package signature",
+    )
     try:
         value = json.loads(source)
     except ValueError as error:
@@ -372,9 +388,14 @@ def enforce_runtime_rollback_floor(
     }
     if floor_path.is_file():
         try:
-            source = floor_path.read_bytes()
+            source = _read_bounded(
+                _stable_file(floor_path, code="RUNTIME_TRUST_FLOOR_INVALID"),
+                MAX_TRUST_FLOOR_BYTES,
+                code="RUNTIME_TRUST_FLOOR_INVALID",
+                label="Runtime trust floor",
+            )
             previous = json.loads(source)
-        except (OSError, ValueError) as error:
+        except ValueError as error:
             raise RuntimeTrustError("RUNTIME_TRUST_FLOOR_INVALID", "Runtime trust floor is unreadable") from error
         if not isinstance(previous, dict) or set(previous) != set(value) or canonical_bytes(previous) != source:
             raise RuntimeTrustError("RUNTIME_TRUST_FLOOR_INVALID", "Runtime trust floor is invalid")

@@ -1,6 +1,6 @@
 # 插件包、安装与分发参考
 
-> 状态：IMPLEMENTING；仓库已有通过官方验证器的被动插件与 Skill 骨架，开发态只读 MCP 已通过真实 Codex 宿主探针，但尚未声明可安装 MCP/App
+> 状态：CURRENT IMPLEMENTING；仓库已有通过官方验证器的被动插件与 Skill 骨架，开发态只读 MCP 已通过真实 Codex 宿主探针，但尚未声明可安装 MCP/App
 > 日期：2026-07-18
 > 实施时必须重新用当时的官方验证器核验清单字段。
 
@@ -137,11 +137,14 @@ V1 不使用 hooks。当前生成规范与验证器对 hooks 字段存在差异�
 
 M1 托管运行包的内层合同已经固定为：
 
+- `scripts/build_managed_runtime.py` 是当前唯一正式 staging 入口：要求显式 output/version/UTC build time/repository root/预装配 Python root/FFmpeg/ffprobe/yt-dlp，离线收集并原子发布一个**未签名**目录。它拒绝已有输出、reparse 源、路径逃逸、大小写碰撞、Windows 保留名、缺失资源和超限 manifest/SBOM；同一输入生成稳定的 namespace、资源排序和摘要。
+- 构建阶段故意不接受私钥。发布流水线必须在仓库外对 canonical manifest 完成 detached 签名，再由外层受信 launcher 提供独立 trust policy；测试私钥不得用于正式包。
 - `runtime-package-v1.json` 是 canonical JSON，绑定 package identity/version、Card Service 最低兼容版本、目标平台、SPDX 2.3 SBOM 声明和全部运行资源的 size/SHA-256。
 - `runtime-package-v1.sig.json` 是 detached Ed25519 签名；签名覆盖 authority、keyId/keyEpoch、签发/过期时间和 manifest digest，并使用 `study.runtime-package-manifest.v1` 域隔离。
 - 发布者 trust policy 不得放进运行包自证；它必须由已经受信的 launcher/外层发布物单独提供。正式 `--runtime-package` 模式缺少 `--runtime-trust-policy` 时 fail closed。
 - trust policy 固定 authority、单调 sequence、精确 32-byte 公钥及其 SHA-256、active/revoked 状态、最低运行包版本和撤销版本。相同 sequence 不同 digest、较低 sequence、低版本和同版本不同内容均被拒绝。
 - `metadata/SBOM.spdx.json` 必须是 canonical SPDX 2.3，并逐文件覆盖 manifest 中除 SBOM 自身外的全部资源；SBOM 与 manifest 任一不一致都拒绝启动。
+- manifest、SBOM、detached signature、trust policy 和本地 anti-rollback floor 均在解析前执行 stat + 有界读取；仅在读取后判断长度不满足该边界。
 - 运行包签名只完成内层资源认证；在外层插件安装包签名、真实发布密钥保管、完整传递依赖哈希锁和可复现构建完成前，能力摘要继续报告 `complete: false`。
 
 M1 媒体运行时在该签名包内进一步要求：
