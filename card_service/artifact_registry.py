@@ -1,0 +1,631 @@
+from __future__ import annotations
+
+import base64
+import hashlib
+import hmac
+import json
+import math
+import os
+import re
+import secrets
+import stat
+import threading
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Mapping, Sequence
+
+
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_HANDLE_RE = re.compile(r"^study_[A-Za-z0-9_-]{43}$")
+_WINDOWS_ABSOLUTE_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\|//)")
+_MEDIA_TYPE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}$")
+_MAX_SAFE_INTEGER = 9_007_199_254_740_991
+_MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
+_MAX_RECORD_BYTES = 128 * 1024
+_MAX_BLOB_BYTES = 2 * 1024 * 1024 * 1024
+
+_FORBIDDEN_SECRET_KEYS = {
+    "apikey",
+    "authorization",
+    "cookie",
+    "credential",
+    "password",
+    "refreshtoken",
+    "secret",
+    "token",
+}
+
+
+class ArtifactRegistryError(RuntimeError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+@dataclass(frozen=True)
+class ArtifactAudienceBinding:
+    owner_digest: str
+    host_id: str
+    plugin_id: str
+    session_id: str
+
+    def project_scope(self, project_id: str) -> dict[str, Any]:
+        return {
+            "schema": "study.artifact.project-scope",
+            "schemaVersion": 1,
+            "ownerDigest": self.owner_digest,
+            "hostId": self.host_id,
+            "pluginId": self.plugin_id,
+            "projectId": project_id,
+        }
+
+    def audience(self, service_instance_id: str) -> dict[str, Any]:
+        return {
+            "schema": "study.artifact.audience-binding",
+            "schemaVersion": 1,
+            "ownerDigest": self.owner_digest,
+            "hostId": self.host_id,
+            "pluginId": self.plugin_id,
+            "sessionId": self.session_id,
+            "serviceInstanceId": service_instance_id,
+        }
+
+
+@dataclass(frozen=True)
+class ArtifactPublication:
+    handle: str
+    artifact_ref: Mapping[str, Any]
+    envelope: Mapping[str, Any]
+
+
+def _utf16_sort_key(value: str) -> bytes:
+    return value.encode("utf-16-be", errors="surrogatepass")
+
+
+def _canonicalize(value: Any) -> str:
+    if value is None:
+        return "null"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if isinstance(value, int) and not isinstance(value, bool):
+        if abs(value) > _MAX_SAFE_INTEGER:
+            raise ArtifactRegistryError("ARTIFACT_NUMBER_UNSAFE", "Integer is outside the interoperable JSON range")
+        return str(value)
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ArtifactRegistryError("ARTIFACT_NUMBER_NONFINITE", "Non-finite JSON numbers are forbidden")
+        return _canonical_float(value)
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError as error:
+            raise ArtifactRegistryError("ARTIFACT_STRING_INVALID", "JSON strings cannot contain lone surrogates") from error
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if isinstance(value, list):
+        return "[" + ",".join(_canonicalize(item) for item in value) + "]"
+    if isinstance(value, dict):
+        if not all(isinstance(key, str) for key in value):
+            raise ArtifactRegistryError("ARTIFACT_KEY_INVALID", "JSON object keys must be strings")
+        keys = sorted(value, key=_utf16_sort_key)
+        return "{" + ",".join(
+            f"{json.dumps(key, ensure_ascii=False, separators=(',', ':'))}:{_canonicalize(value[key])}"
+            for key in keys
+        ) + "}"
+    raise ArtifactRegistryError("ARTIFACT_VALUE_INVALID", f"Unsupported JSON value type: {type(value).__name__}")
+
+
+def _canonical_float(value: float) -> str:
+    """Render a finite IEEE-754 double using RFC 8785/ECMAScript thresholds."""
+    if value == 0:
+        return "0"
+    negative = value < 0
+    rendered = repr(abs(value)).lower()
+    if "e" in rendered:
+        mantissa, exponent_text = rendered.split("e", 1)
+        exponent = int(exponent_text)
+    else:
+        mantissa = rendered
+        exponent = 0
+    if "." in mantissa:
+        whole, fraction = mantissa.split(".", 1)
+    else:
+        whole, fraction = mantissa, ""
+    digits = (whole + fraction).lstrip("0") or "0"
+    scale = exponent - len(fraction)
+    while len(digits) > 1 and digits.endswith("0"):
+        digits = digits[:-1]
+        scale += 1
+    absolute = abs(value)
+    if 1e-6 <= absolute < 1e21:
+        point = len(digits) + scale
+        if point <= 0:
+            result = "0." + ("0" * -point) + digits
+        elif point >= len(digits):
+            result = digits + ("0" * (point - len(digits)))
+        else:
+            result = digits[:point] + "." + digits[point:]
+    else:
+        scientific_exponent = len(digits) + scale - 1
+        coefficient = digits[0] + (("." + digits[1:]) if len(digits) > 1 else "")
+        sign = "+" if scientific_exponent >= 0 else ""
+        result = f"{coefficient}e{sign}{scientific_exponent}"
+    return ("-" if negative else "") + result
+
+
+def canonical_json_bytes(value: Any) -> bytes:
+    return _canonicalize(value).encode("utf-8")
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _normalized_key(key: str) -> str:
+    return "".join(character for character in key.casefold() if character.isalnum())
+
+
+def _looks_like_absolute_path(value: str) -> bool:
+    return (
+        value.startswith("/")
+        or value.casefold().startswith("file://")
+        or bool(_WINDOWS_ABSOLUTE_RE.match(value))
+    )
+
+
+def _reject_secrets_and_paths(value: Any, *, trail: tuple[str, ...] = ()) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if not isinstance(key, str):
+                raise ArtifactRegistryError("ARTIFACT_KEY_INVALID", "Artifact keys must be strings")
+            if _normalized_key(key) in _FORBIDDEN_SECRET_KEYS:
+                raise ArtifactRegistryError("ARTIFACT_SECRET_FORBIDDEN", f"Secret-bearing field is forbidden at {'.'.join(trail + (key,))}")
+            _reject_secrets_and_paths(child, trail=trail + (key,))
+        return
+    if isinstance(value, list):
+        for index, child in enumerate(value):
+            _reject_secrets_and_paths(child, trail=trail + (str(index),))
+        return
+    if isinstance(value, str) and _looks_like_absolute_path(value):
+        raise ArtifactRegistryError("ARTIFACT_PATH_FORBIDDEN", f"Absolute local path is forbidden at {'.'.join(trail)}")
+
+
+def _validate_id(name: str, value: str) -> None:
+    if not isinstance(value, str) or not _ID_RE.fullmatch(value):
+        raise ArtifactRegistryError("ARTIFACT_ID_INVALID", f"{name} is invalid")
+
+
+def _validate_digest(name: str, value: str) -> None:
+    if not isinstance(value, str) or not _SHA256_RE.fullmatch(value):
+        raise ArtifactRegistryError("ARTIFACT_DIGEST_INVALID", f"{name} must be a lowercase SHA-256 digest")
+
+
+def _validate_revision(name: str, value: int) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1 or value > _MAX_SAFE_INTEGER:
+        raise ArtifactRegistryError("ARTIFACT_REVISION_INVALID", f"{name} must be a positive safe integer")
+
+
+def _ensure_directory(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+        raise ArtifactRegistryError("ARTIFACT_STORAGE_UNSAFE", "Artifact storage contains a link or reparse directory")
+    return path
+
+
+def _atomic_publish(path: Path, data: bytes) -> None:
+    _ensure_directory(path.parent)
+    temporary = path.parent / f".{path.name}.{secrets.token_hex(12)}.partial"
+    try:
+        with temporary.open("xb") as output:
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError as error:
+            raise ArtifactRegistryError("ARTIFACT_ALREADY_EXISTS", "Immutable artifact record already exists") from error
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _safe_read(path: Path, *, maximum_bytes: int) -> bytes:
+    try:
+        info = path.lstat()
+    except FileNotFoundError as error:
+        raise ArtifactRegistryError("ARTIFACT_NOT_FOUND", "Artifact registry entry was not found") from error
+    if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+        raise ArtifactRegistryError("ARTIFACT_STORAGE_UNSAFE", "Artifact registry entry is not a regular file")
+    if info.st_nlink != 1:
+        raise ArtifactRegistryError("ARTIFACT_STORAGE_UNSAFE", "Artifact registry entry has an unexpected hard-link count")
+    if info.st_size > maximum_bytes:
+        raise ArtifactRegistryError("ARTIFACT_TOO_LARGE", "Artifact registry entry exceeds its size limit")
+    data = path.read_bytes()
+    if len(data) != info.st_size:
+        raise ArtifactRegistryError("ARTIFACT_CHANGED", "Artifact registry entry changed while being read")
+    after = path.lstat()
+    if (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) != (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns):
+        raise ArtifactRegistryError("ARTIFACT_CHANGED", "Artifact registry entry changed while being read")
+    return data
+
+
+class ArtifactRegistry:
+    def __init__(self, root: Path, *, authentication_key: bytes, service_instance_id: str, key_id: str = "artifact-registry-v1") -> None:
+        if not isinstance(authentication_key, bytes) or len(authentication_key) < 32:
+            raise ArtifactRegistryError("ARTIFACT_KEY_INVALID", "Registry authentication key must contain at least 256 bits")
+        _validate_id("service_instance_id", service_instance_id)
+        _validate_id("key_id", key_id)
+        self._root = _ensure_directory(Path(root).absolute())
+        self._authentication_key = bytes(authentication_key)
+        self._service_instance_id = service_instance_id
+        self._key_id = key_id
+        self._lock = threading.RLock()
+        for child in ("artifacts", "records", "handles", "revocations", "blobs"):
+            _ensure_directory(self._root / child)
+
+    def _ensure_storage_parent(self, path: Path) -> None:
+        absolute = path.absolute()
+        try:
+            relative = absolute.relative_to(self._root)
+        except ValueError as error:
+            raise ArtifactRegistryError("ARTIFACT_STORAGE_UNSAFE", "Artifact path escapes the registry root") from error
+        current = _ensure_directory(self._root)
+        for part in relative.parts:
+            current = _ensure_directory(current / part)
+
+    def _publish(self, path: Path, data: bytes) -> None:
+        self._ensure_storage_parent(path.parent)
+        _atomic_publish(path, data)
+
+    def _read(self, path: Path, *, maximum_bytes: int) -> bytes:
+        self._ensure_storage_parent(path.parent)
+        return _safe_read(path, maximum_bytes=maximum_bytes)
+
+    def _mac(self, domain: str, value: Mapping[str, Any]) -> str:
+        message = domain.encode("ascii") + b"\x00" + canonical_json_bytes(dict(value))
+        return hmac.new(self._authentication_key, message, hashlib.sha256).hexdigest()
+
+    def _json(self, path: Path, maximum_bytes: int) -> dict[str, Any]:
+        raw = self._read(path, maximum_bytes=maximum_bytes)
+        try:
+            value = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ArtifactRegistryError("ARTIFACT_RECORD_INVALID", "Artifact registry entry is not canonical JSON") from error
+        if not isinstance(value, dict) or canonical_json_bytes(value) != raw:
+            raise ArtifactRegistryError("ARTIFACT_RECORD_INVALID", "Artifact registry entry is not canonical JSON")
+        return value
+
+    def _artifact_path(self, project_id: str, artifact_id: str, artifact_revision: int) -> Path:
+        identity = _sha256(f"{project_id}\x00{artifact_id}\x00{artifact_revision}".encode("utf-8"))
+        return self._root / "artifacts" / identity[:2] / f"{identity}.json"
+
+    def _record_path(self, registry_auth_ref: str) -> Path:
+        identity = _sha256(registry_auth_ref.encode("utf-8"))
+        return self._root / "records" / identity[:2] / f"{identity}.json"
+
+    def _handle_path(self, handle: str) -> Path:
+        identity = _sha256(handle.encode("ascii"))
+        return self._root / "handles" / identity[:2] / f"{identity}.json"
+
+    def _revocation_path(self, registry_auth_ref: str) -> Path:
+        identity = _sha256(registry_auth_ref.encode("utf-8"))
+        return self._root / "revocations" / identity[:2] / f"{identity}.json"
+
+    def _blob_path(self, digest: str) -> Path:
+        return self._root / "blobs" / digest[:2] / digest
+
+    def _validate_audience(self, audience: ArtifactAudienceBinding) -> None:
+        _validate_digest("owner_digest", audience.owner_digest)
+        _validate_id("host_id", audience.host_id)
+        _validate_id("plugin_id", audience.plugin_id)
+        _validate_id("session_id", audience.session_id)
+
+    @staticmethod
+    def _validate_completeness(value: Mapping[str, Any]) -> None:
+        if not isinstance(value, Mapping):
+            raise ArtifactRegistryError("ARTIFACT_COMPLETENESS_INVALID", "Completeness must be an object")
+        allowed = {"complete", "partial_declared", "unknown", "blocked"}
+        if value.get("state") not in allowed:
+            raise ArtifactRegistryError("ARTIFACT_COMPLETENESS_INVALID", "Completeness state is invalid")
+        omitted = value.get("omittedLocators", [])
+        reasons = value.get("reasonCodes", [])
+        if not isinstance(omitted, list) or not isinstance(reasons, list):
+            raise ArtifactRegistryError("ARTIFACT_COMPLETENESS_INVALID", "Completeness lists are invalid")
+        if value.get("state") == "complete" and (omitted or reasons):
+            raise ArtifactRegistryError("ARTIFACT_COMPLETENESS_INVALID", "Complete artifacts cannot declare omissions")
+
+    @staticmethod
+    def _validate_producer(value: Mapping[str, Any]) -> None:
+        if not isinstance(value, Mapping):
+            raise ArtifactRegistryError("ARTIFACT_PRODUCER_INVALID", "Producer must be an object")
+        _validate_id("producer.component", value.get("component"))
+        _validate_id("producer.version", value.get("version"))
+
+    @staticmethod
+    def _ref_key(value: Mapping[str, Any]) -> tuple[str, int, str]:
+        return str(value.get("artifactId")), int(value.get("artifactRevision", 0)), str(value.get("artifactDigest"))
+
+    def _verify_record(self, record: Mapping[str, Any]) -> None:
+        if record.get("schema") != "study.artifact.registry-record" or record.get("schemaVersion") != 1:
+            raise ArtifactRegistryError("ARTIFACT_RECORD_INVALID", "Registry record schema is invalid")
+        auth_tag = record.get("authTag")
+        if not isinstance(auth_tag, str) or not _SHA256_RE.fullmatch(auth_tag):
+            raise ArtifactRegistryError("ARTIFACT_AUTH_INVALID", "Registry authentication tag is invalid")
+        unsigned = dict(record)
+        unsigned.pop("authTag", None)
+        if not hmac.compare_digest(auth_tag, self._mac("study.artifact.registry-record.v1", unsigned)):
+            raise ArtifactRegistryError("ARTIFACT_AUTH_INVALID", "Registry authentication failed")
+        if record.get("keyId") != self._key_id:
+            raise ArtifactRegistryError("ARTIFACT_AUTH_INVALID", "Registry record uses an unavailable authentication key")
+
+    def _verify_artifact_ref(self, artifact_ref: Mapping[str, Any], audience: ArtifactAudienceBinding, *, expected_project_id: str | None = None, seen: set[tuple[str, int, str]] | None = None) -> dict[str, Any]:
+        required = {"artifactId", "projectId", "projectRevision", "artifactRevision", "payloadSchema", "payloadSchemaVersion", "artifactDigest", "registryAuthRef"}
+        if set(artifact_ref) != required:
+            raise ArtifactRegistryError("ARTIFACT_REF_INVALID", "Artifact reference fields are invalid")
+        _validate_id("artifactId", artifact_ref["artifactId"])
+        _validate_id("projectId", artifact_ref["projectId"])
+        _validate_revision("projectRevision", artifact_ref["projectRevision"])
+        _validate_revision("artifactRevision", artifact_ref["artifactRevision"])
+        _validate_id("payloadSchema", artifact_ref["payloadSchema"])
+        _validate_revision("payloadSchemaVersion", artifact_ref["payloadSchemaVersion"])
+        _validate_digest("artifactDigest", artifact_ref["artifactDigest"])
+        _validate_id("registryAuthRef", artifact_ref["registryAuthRef"])
+        if expected_project_id is not None and artifact_ref["projectId"] != expected_project_id:
+            raise ArtifactRegistryError("ARTIFACT_SCOPE_MISMATCH", "Cross-project artifact reference is forbidden")
+        key = self._ref_key(artifact_ref)
+        active = seen if seen is not None else set()
+        if key in active:
+            raise ArtifactRegistryError("ARTIFACT_PARENT_CYCLE", "Artifact parent cycle was detected")
+        active.add(key)
+        try:
+            envelope = self._json(self._artifact_path(artifact_ref["projectId"], artifact_ref["artifactId"], artifact_ref["artifactRevision"]), _MAX_ARTIFACT_BYTES)
+            if any(envelope.get(field) != artifact_ref[field] for field in required):
+                raise ArtifactRegistryError("ARTIFACT_REF_MISMATCH", "Artifact reference does not match its envelope")
+            unsigned_envelope = dict(envelope)
+            unsigned_envelope.pop("artifactDigest", None)
+            unsigned_envelope.pop("registryAuthRef", None)
+            if _sha256(canonical_json_bytes(unsigned_envelope)) != artifact_ref["artifactDigest"]:
+                raise ArtifactRegistryError("ARTIFACT_DIGEST_MISMATCH", "Artifact digest verification failed")
+            payload = envelope.get("payload")
+            if _sha256(canonical_json_bytes(payload)) != envelope.get("payloadSha256"):
+                raise ArtifactRegistryError("ARTIFACT_PAYLOAD_MISMATCH", "Artifact payload digest verification failed")
+            record = self._json(self._record_path(artifact_ref["registryAuthRef"]), _MAX_RECORD_BYTES)
+            self._verify_record(record)
+            expected_record = {
+                "registryAuthRef": artifact_ref["registryAuthRef"],
+                "artifactId": artifact_ref["artifactId"],
+                "projectId": artifact_ref["projectId"],
+                "projectOwnerDigest": audience.owner_digest,
+                "artifactDigest": artifact_ref["artifactDigest"],
+                "projectScopeDigest": _sha256(canonical_json_bytes(audience.project_scope(artifact_ref["projectId"]))),
+            }
+            if any(record.get(field) != value for field, value in expected_record.items()):
+                raise ArtifactRegistryError("ARTIFACT_AUTH_MISMATCH", "Registry record does not authorize this artifact")
+            if self._revocation_path(artifact_ref["registryAuthRef"]).exists():
+                revocation = self._json(self._revocation_path(artifact_ref["registryAuthRef"]), _MAX_RECORD_BYTES)
+                revocation_tag = revocation.get("authTag")
+                unsigned_revocation = dict(revocation)
+                unsigned_revocation.pop("authTag", None)
+                if (
+                    revocation.get("registryAuthRef") != artifact_ref["registryAuthRef"]
+                    or not isinstance(revocation_tag, str)
+                    or not hmac.compare_digest(revocation_tag, self._mac("study.artifact.revocation.v1", unsigned_revocation))
+                ):
+                    raise ArtifactRegistryError("ARTIFACT_REVOCATION_INVALID", "Artifact revocation record is invalid")
+                raise ArtifactRegistryError("ARTIFACT_REVOKED", "Artifact has been revoked")
+            for parent in envelope.get("parents", []):
+                if not isinstance(parent, Mapping):
+                    raise ArtifactRegistryError("ARTIFACT_PARENT_INVALID", "Artifact parent reference is invalid")
+                self._verify_artifact_ref(parent, audience, expected_project_id=artifact_ref["projectId"], seen=active)
+            return envelope
+        finally:
+            active.remove(key)
+
+    def publish(self, *, audience: ArtifactAudienceBinding, project_id: str, project_revision: int, artifact_id: str, artifact_revision: int, payload_schema: str, payload_schema_version: int, payload: Any, producer: Mapping[str, Any], parents: Sequence[Mapping[str, Any]], input_fingerprint: str, completeness: Mapping[str, Any], issue_refs: Sequence[str]) -> ArtifactPublication:
+        with self._lock:
+            self._validate_audience(audience)
+            _validate_id("project_id", project_id)
+            _validate_id("artifact_id", artifact_id)
+            _validate_revision("project_revision", project_revision)
+            _validate_revision("artifact_revision", artifact_revision)
+            _validate_id("payload_schema", payload_schema)
+            _validate_revision("payload_schema_version", payload_schema_version)
+            _validate_digest("input_fingerprint", input_fingerprint)
+            self._validate_producer(producer)
+            self._validate_completeness(completeness)
+            if not isinstance(issue_refs, Sequence) or isinstance(issue_refs, (str, bytes)):
+                raise ArtifactRegistryError("ARTIFACT_ISSUES_INVALID", "Issue references must be a list")
+            for issue_ref in issue_refs:
+                _validate_id("issue_ref", issue_ref)
+            if len(set(issue_refs)) != len(issue_refs):
+                raise ArtifactRegistryError("ARTIFACT_ISSUES_INVALID", "Issue references must be unique")
+            verified_parents: list[Mapping[str, Any]] = []
+            for parent in parents:
+                self._verify_artifact_ref(parent, audience, expected_project_id=project_id)
+                verified_parents.append(dict(parent))
+            parent_keys = [self._ref_key(parent) for parent in verified_parents]
+            if len(set(parent_keys)) != len(parent_keys):
+                raise ArtifactRegistryError("ARTIFACT_PARENT_INVALID", "Artifact parents must be unique")
+            prior_versions = [parent for parent in verified_parents if parent["artifactId"] == artifact_id]
+            if artifact_revision == 1 and prior_versions:
+                raise ArtifactRegistryError("ARTIFACT_REVISION_CONFLICT", "The first artifact revision cannot have an earlier self revision")
+            if artifact_revision > 1:
+                if len(prior_versions) != 1 or prior_versions[0]["artifactRevision"] != artifact_revision - 1:
+                    raise ArtifactRegistryError("ARTIFACT_REVISION_CONFLICT", "A new artifact revision must name exactly its immediately preceding revision as a parent")
+                if prior_versions[0]["payloadSchema"] != payload_schema:
+                    raise ArtifactRegistryError("ARTIFACT_REVISION_CONFLICT", "Artifact revisions cannot change payload schema")
+            if any(parent["projectRevision"] > project_revision for parent in verified_parents):
+                raise ArtifactRegistryError("ARTIFACT_REVISION_CONFLICT", "Parent project revision cannot exceed the new project revision")
+            _reject_secrets_and_paths(payload)
+            _reject_secrets_and_paths(dict(producer))
+            _reject_secrets_and_paths(dict(completeness))
+            registry_auth_ref = "auth_" + secrets.token_urlsafe(24)
+            created_at = _utc_now()
+            unsigned_envelope: dict[str, Any] = {
+                "envelopeSchema": "study.artifact.envelope",
+                "envelopeSchemaVersion": 1,
+                "payloadSchema": payload_schema,
+                "payloadSchemaVersion": payload_schema_version,
+                "artifactId": artifact_id,
+                "projectId": project_id,
+                "projectRevision": project_revision,
+                "artifactRevision": artifact_revision,
+                "payloadSha256": _sha256(canonical_json_bytes(payload)),
+                "createdAt": created_at,
+                "producer": dict(producer),
+                "parents": verified_parents,
+                "inputFingerprint": input_fingerprint,
+                "completeness": dict(completeness),
+                "issueRefs": list(issue_refs),
+                "payload": payload,
+            }
+            artifact_digest = _sha256(canonical_json_bytes(unsigned_envelope))
+            envelope = {**unsigned_envelope, "artifactDigest": artifact_digest, "registryAuthRef": registry_auth_ref}
+            artifact_ref = {
+                "artifactId": artifact_id,
+                "projectId": project_id,
+                "projectRevision": project_revision,
+                "artifactRevision": artifact_revision,
+                "payloadSchema": payload_schema,
+                "payloadSchemaVersion": payload_schema_version,
+                "artifactDigest": artifact_digest,
+                "registryAuthRef": registry_auth_ref,
+            }
+            scope_digest = _sha256(canonical_json_bytes(audience.project_scope(project_id)))
+            unsigned_record = {
+                "schema": "study.artifact.registry-record",
+                "schemaVersion": 1,
+                "registryAuthRef": registry_auth_ref,
+                "artifactId": artifact_id,
+                "projectId": project_id,
+                "projectOwnerDigest": audience.owner_digest,
+                "artifactDigest": artifact_digest,
+                "createdByServiceInstanceId": self._service_instance_id,
+                "keyId": self._key_id,
+                "projectScopeDigest": scope_digest,
+                "createdAt": created_at,
+            }
+            record = {**unsigned_record, "authTag": self._mac("study.artifact.registry-record.v1", unsigned_record)}
+            artifact_bytes = canonical_json_bytes(envelope)
+            record_bytes = canonical_json_bytes(record)
+            if len(artifact_bytes) > _MAX_ARTIFACT_BYTES:
+                raise ArtifactRegistryError("ARTIFACT_TOO_LARGE", "Artifact envelope exceeds its size limit")
+            self._publish(self._artifact_path(project_id, artifact_id, artifact_revision), artifact_bytes)
+            try:
+                self._publish(self._record_path(registry_auth_ref), record_bytes)
+            except Exception:
+                try:
+                    self._artifact_path(project_id, artifact_id, artifact_revision).unlink()
+                except OSError:
+                    pass
+                raise
+            handle = self.issue_handle(artifact_ref, audience)
+            return ArtifactPublication(handle=handle, artifact_ref=artifact_ref, envelope=envelope)
+
+    def issue_handle(self, artifact_ref: Mapping[str, Any], audience: ArtifactAudienceBinding) -> str:
+        with self._lock:
+            self._validate_audience(audience)
+            self._verify_artifact_ref(artifact_ref, audience)
+            handle = "study_" + base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii").rstrip("=")
+            unsigned = {
+                "schema": "study.artifact.handle-binding",
+                "schemaVersion": 1,
+                "handleDigest": _sha256(handle.encode("ascii")),
+                "artifactRef": dict(artifact_ref),
+                "projectScopeDigest": _sha256(canonical_json_bytes(audience.project_scope(artifact_ref["projectId"]))),
+                "audienceDigest": _sha256(canonical_json_bytes(audience.audience(self._service_instance_id))),
+                "serviceInstanceId": self._service_instance_id,
+                "createdAt": _utc_now(),
+            }
+            binding = {**unsigned, "authTag": self._mac("study.artifact.handle-binding.v1", unsigned)}
+            self._publish(self._handle_path(handle), canonical_json_bytes(binding))
+            return handle
+
+    def resolve(self, handle: str, audience: ArtifactAudienceBinding) -> dict[str, Any]:
+        with self._lock:
+            self._validate_audience(audience)
+            if not isinstance(handle, str) or not _HANDLE_RE.fullmatch(handle):
+                raise ArtifactRegistryError("ARTIFACT_HANDLE_INVALID", "Artifact handle is invalid")
+            binding = self._json(self._handle_path(handle), _MAX_RECORD_BYTES)
+            auth_tag = binding.get("authTag")
+            unsigned = dict(binding)
+            unsigned.pop("authTag", None)
+            if not isinstance(auth_tag, str) or not hmac.compare_digest(auth_tag, self._mac("study.artifact.handle-binding.v1", unsigned)):
+                raise ArtifactRegistryError("ARTIFACT_HANDLE_AUTH_INVALID", "Artifact handle authentication failed")
+            expected = {
+                "handleDigest": _sha256(handle.encode("ascii")),
+                "serviceInstanceId": self._service_instance_id,
+                "audienceDigest": _sha256(canonical_json_bytes(audience.audience(self._service_instance_id))),
+            }
+            if any(binding.get(field) != value for field, value in expected.items()):
+                raise ArtifactRegistryError("ARTIFACT_HANDLE_SCOPE_MISMATCH", "Artifact handle is not valid for this session")
+            artifact_ref = binding.get("artifactRef")
+            if not isinstance(artifact_ref, Mapping):
+                raise ArtifactRegistryError("ARTIFACT_HANDLE_INVALID", "Artifact handle contains no artifact reference")
+            expected_scope = _sha256(canonical_json_bytes(audience.project_scope(artifact_ref.get("projectId"))))
+            if binding.get("projectScopeDigest") != expected_scope:
+                raise ArtifactRegistryError("ARTIFACT_HANDLE_SCOPE_MISMATCH", "Artifact handle project scope does not match")
+            return self._verify_artifact_ref(artifact_ref, audience)
+
+    def revoke(self, artifact_ref: Mapping[str, Any], audience: ArtifactAudienceBinding, *, reason_code: str) -> bool:
+        with self._lock:
+            try:
+                envelope = self._verify_artifact_ref(artifact_ref, audience)
+            except ArtifactRegistryError as error:
+                if error.code == "ARTIFACT_REVOKED":
+                    return False
+                raise
+            _validate_id("reason_code", reason_code)
+            unsigned_record = {
+                "schema": "study.artifact.revocation",
+                "schemaVersion": 1,
+                "registryAuthRef": envelope["registryAuthRef"],
+                "artifactDigest": envelope["artifactDigest"],
+                "reasonCode": reason_code,
+                "revokedAt": _utc_now(),
+            }
+            record = {**unsigned_record, "authTag": self._mac("study.artifact.revocation.v1", unsigned_record)}
+            try:
+                self._publish(self._revocation_path(envelope["registryAuthRef"]), canonical_json_bytes(record))
+                return True
+            except ArtifactRegistryError as error:
+                if error.code == "ARTIFACT_ALREADY_EXISTS":
+                    return False
+                raise
+
+    def put_blob(self, data: bytes, *, media_type: str) -> dict[str, Any]:
+        if not isinstance(data, bytes) or len(data) > _MAX_BLOB_BYTES:
+            raise ArtifactRegistryError("ARTIFACT_BLOB_TOO_LARGE", "Blob exceeds its size limit")
+        if not isinstance(media_type, str) or not _MEDIA_TYPE_RE.fullmatch(media_type):
+            raise ArtifactRegistryError("ARTIFACT_BLOB_INVALID", "Blob media type is invalid")
+        digest = _sha256(data)
+        path = self._blob_path(digest)
+        with self._lock:
+            try:
+                self._publish(path, data)
+            except ArtifactRegistryError as error:
+                if error.code != "ARTIFACT_ALREADY_EXISTS" or self._read(path, maximum_bytes=_MAX_BLOB_BYTES) != data:
+                    raise
+        return {"blobId": f"sha256:{digest}", "sha256": digest, "sizeBytes": len(data), "mediaType": media_type}
+
+    def read_blob(self, blob_ref: Mapping[str, Any]) -> bytes:
+        digest = blob_ref.get("sha256")
+        size = blob_ref.get("sizeBytes")
+        _validate_digest("blob.sha256", digest)
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0 or size > _MAX_BLOB_BYTES:
+            raise ArtifactRegistryError("ARTIFACT_BLOB_INVALID", "Blob size is invalid")
+        data = self._read(self._blob_path(digest), maximum_bytes=_MAX_BLOB_BYTES)
+        if len(data) != size or _sha256(data) != digest or blob_ref.get("blobId") != f"sha256:{digest}":
+            raise ArtifactRegistryError("ARTIFACT_BLOB_MISMATCH", "Blob integrity verification failed")
+        return data

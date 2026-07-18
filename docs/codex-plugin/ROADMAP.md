@@ -176,6 +176,10 @@ M0 出口已经关闭：
 - 原子检查点、.bak 和审计。
 - 将当前 legacy Project 先经递归 sanitizer 生成完整非秘密 canonical projection，segments/cards、reliability manifest 和 export 必需字段必须无损；路径改为 resource slots，任何 Artifact 持久化前拒绝秘密字段。
 
+当前已完成 M2 的第一个内部切片：新增不可变 ArtifactEnvelope/RegistryRecord/handle binding 与内容寻址 Blob store。Artifact/payload 摘要使用 JCS canonical bytes，认证记录与撤销记录使用域隔离 HMAC；随机 handle 只以 SHA-256 保存，并绑定 owner、host、plugin、session 与 service instance。解析会递归复核 payload、envelope、认证记录、项目 scope、直接及传递父 revision、撤销状态和 Blob 字节，跨项目 transplant、重算摘要伪造、元数据篡改、并发撤销、secret/path 字段及 Windows 重解析目录写逃逸均失败关闭。该切片 21 项定向测试和正式 Python 全集 `982 passed, 1 skipped` 已通过。
+
+这不表示 M2 已完成：注册表尚未接入 Card Service 公共 MCP surface，认证密钥仍由进程内构造参数提供，正式 OS key protection/rotation、应用数据 ACL、项目 revision CAS/idempotency、StudyTask/checkpoint、successor task、OperationIntent/approval ledger、SecretRef 与 legacy Project canonical projection 仍在后续切片。公共 MCP 在这些边界完成前仍不能接受 ArtifactRef 对象或开放生成/导入写操作。
+
 ### 出口
 
 - 产物篡改被拒绝。
