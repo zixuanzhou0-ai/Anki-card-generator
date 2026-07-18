@@ -12,7 +12,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .credentials import PROFILE_REF_PATTERN
+from .broker_authorization_issuer import (
+    BrokerAuthorizationIssuer,
+    BrokerAuthorizationIssuerError,
+    IssuedBrokerAuthorization,
+)
+from .credentials import PROFILE_REF_PATTERN, CredentialBackend
 from .process_isolation import ProcessIsolationError, TaskOwnedProcessGroup
 from .storage import AtomicJsonStore
 from .trusted_surface_auth import encode_response_key, new_response_key, verify_response
@@ -39,6 +44,7 @@ class TrustedSurfaceManager:
         state_dir: str | Path,
         python_path: str | Path | None = None,
         surface_path: str | Path | None = None,
+        credential_backend: CredentialBackend | None = None,
     ) -> None:
         root = Path(state_dir).expanduser()
         if not root.is_absolute():
@@ -62,6 +68,9 @@ class TrustedSurfaceManager:
         self._session_digests: dict[str, str] = {}
         self._response_keys: dict[str, bytes] = {}
         self._verified_responses: dict[str, dict[str, Any]] = {}
+        self._credential_backend = credential_backend
+        self._authorization_issuer: BrokerAuthorizationIssuer | None = None
+        self._issued_authorizations: dict[str, IssuedBrokerAuthorization] = {}
         self._lock = threading.RLock()
 
     @staticmethod
@@ -74,6 +83,8 @@ class TrustedSurfaceManager:
             "consentWindow": True,
             "digestPinned": True,
             "authenticatedResponse": True,
+            "brokerAuthorizationIssuance": True,
+            "authorizationPathDisclosure": False,
             "secretViaModel": False,
             "authorizationLedger": False,
             "complete": False,
@@ -104,6 +115,38 @@ class TrustedSurfaceManager:
         if not title.strip() or not summary.strip() or len(title) > 120 or len(summary) > 2_000:
             raise TrustedSurfaceError("INVALID_CONSENT_COPY", "Consent title or summary is invalid")
         return self._create_session("consent", title=title.strip(), summary=summary.strip(), purpose=purpose)
+
+    def _issuer(self) -> BrokerAuthorizationIssuer:
+        with self._lock:
+            if self._authorization_issuer is None:
+                try:
+                    self._authorization_issuer = BrokerAuthorizationIssuer(
+                        state_dir=self.root,
+                        credential_backend=self._credential_backend,
+                    )
+                except (BrokerAuthorizationIssuerError, RuntimeError) as error:
+                    code = getattr(error, "code", "BROKER_AUTHORIZATION_ISSUER_UNAVAILABLE")
+                    raise TrustedSurfaceError(code, str(error)) from error
+            return self._authorization_issuer
+
+    def create_broker_authorization_session(self, draft: Any) -> dict[str, Any]:
+        try:
+            prepared = self._issuer().prepare(draft)
+        except BrokerAuthorizationIssuerError as error:
+            raise TrustedSurfaceError(error.code, str(error)) from error
+        return self._create_session(
+            "consent",
+            title=prepared.title,
+            summary=prepared.summary,
+            purpose="network_access",
+            authorizationKind="broker_startup",
+            brokerAuthorization=prepared.value,
+        )
+
+    def issued_authorization(self, session_ref: str) -> IssuedBrokerAuthorization | None:
+        """Internal-only handoff; public session results never contain this object or path."""
+        with self._lock:
+            return self._issued_authorizations.get(session_ref)
 
     def _create_session(self, surface: str, **fields: Any) -> dict[str, Any]:
         session_ref = str(uuid.uuid4())
@@ -219,7 +262,10 @@ class TrustedSurfaceManager:
         with self._lock:
             verified = self._verified_responses.get(session_ref)
         if verified is not None:
-            allowed = {"schemaVersion", "sessionRef", "state", "credential", "userGestureRecorded", "errorCode"}
+            allowed = {
+                "schemaVersion", "sessionRef", "state", "credential", "userGestureRecorded",
+                "authorization", "errorCode",
+            }
             return {key: value for key, value in verified.items() if key in allowed}
         response_path = self.responses_dir / f"{session_ref}.json"
         if not response_path.is_file():
@@ -240,8 +286,31 @@ class TrustedSurfaceManager:
             raise TrustedSurfaceError("SESSION_RESPONSE_INVALID", "Trusted surface response session mismatch")
         if response.get("requestNonce") != request.get("requestNonce"):
             raise TrustedSurfaceError("SESSION_RESPONSE_INVALID", "Trusted surface response nonce mismatch")
+        finalized = dict(response)
+        if request.get("authorizationKind") == "broker_startup":
+            if response.get("state") == "approved" and response.get("userGestureRecorded") is True:
+                try:
+                    issued = self._issuer().issue(
+                        session_ref=session_ref,
+                        prepared=request.get("brokerAuthorization") or {},
+                    )
+                except BrokerAuthorizationIssuerError as error:
+                    finalized = {
+                        "schemaVersion": 1,
+                        "sessionRef": session_ref,
+                        "state": "failed",
+                        "userGestureRecorded": True,
+                        "errorCode": error.code,
+                    }
+                else:
+                    finalized["authorization"] = dict(issued.public_summary)
+                    with self._lock:
+                        self._issued_authorizations[session_ref] = issued
         with self._lock:
-            self._verified_responses[session_ref] = dict(response)
+            self._verified_responses[session_ref] = finalized
             self._response_keys.pop(session_ref, None)
-        allowed = {"schemaVersion", "sessionRef", "state", "credential", "userGestureRecorded", "errorCode"}
-        return {key: value for key, value in response.items() if key in allowed}
+        allowed = {
+            "schemaVersion", "sessionRef", "state", "credential", "userGestureRecorded",
+            "authorization", "errorCode",
+        }
+        return {key: value for key, value in finalized.items() if key in allowed}

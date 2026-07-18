@@ -6,6 +6,7 @@ import ipaddress
 import json
 import re
 import ssl
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -74,9 +75,16 @@ class ProviderProfile:
             raise ProviderEgressError("PROVIDER_NOT_ALLOWED", "Provider is not allowed")
         model = self.model.strip()
         voice = self.voice.strip()
-        if not model or len(model) > 200 or any(ord(char) < 32 for char in model):
+        unsafe_categories = {"Cc", "Cf", "Cs", "Zl", "Zp"}
+        if (
+            not model
+            or len(model) > 200
+            or any(unicodedata.category(char) in unsafe_categories for char in model)
+        ):
             raise ProviderEgressError("PROFILE_INVALID", "Provider model is invalid")
-        if len(voice) > 120 or any(ord(char) < 32 for char in voice):
+        if len(voice) > 120 or any(
+            unicodedata.category(char) in unsafe_categories for char in voice
+        ):
             raise ProviderEgressError("PROFILE_INVALID", "Provider voice is invalid")
         if self.capability == "tts" and not voice:
             raise ProviderEgressError("PROFILE_INVALID", "TTS provider voice is required")

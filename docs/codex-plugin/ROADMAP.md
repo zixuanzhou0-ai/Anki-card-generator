@@ -109,7 +109,7 @@ M0 出口已经关闭：
 - 将 FFmpeg/ffprobe、yt-dlp 和解析 helper 迁入每任务受限子进程：Windows task-owned Job Object + AppContainer/专用 restricted SID 与 staging DACL + broker/代理端点强制出站策略，固定 protocol/demuxer allowlist、无 Shell和资源配额；仅有 low-priv token 不算完成。
 - 禁止 Legacy Worker 持有 provider secret 或直连公网；增加 Card Service model/TTS broker 与 task-owned IPC，结构化构造请求并逐调用原子 reserve/settle token、字节、TTS、调用数和成本。
 
-### 当前实施进度（2026-07-17）
+### 当前实施进度（2026-07-18）
 
 - 已完成受限 Card Service API、任务快照/恢复、进度/取消/超时、无通用 Shell、Worker 运行时清单、受信本地设置与授权入口、Broker 账本与 task-owned HMAC IPC。
 - 已完成 Windows task-owned Job、restricted primary token、AppContainer、每任务 capability SID、runtime/task workspace 精确 DACL 和无网络 capability 的真实负面测试。
@@ -125,11 +125,12 @@ M0 出口已经关闭：
 - 生产 TTS 与 TTS 测试现已迁入同一 task-owned broker：Worker 只提交文本/语言/音频格式意图，Service 固定 provider、origin、model、voice、认证和预算；MIMO/Qwen/Gemini JSON 音频与 OpenAI/xAI binary 音频均返回统一的长度、SHA-256、MIME 证据，Qwen 二次媒体 URL fail closed。真实受限 Legacy Worker 已通过认证 stdio 完成一次无 Worker secret/origin/model/voice 的 TTS 测试并结算 ledger。
 - 正式 stdio 启动器现已装配 Service-owned profile/intent resolver。启动清单必须是 canonical JSON、短期有效、位于固定 state dir 的 `trusted-surfaces/authorizations` 受信目录；它绑定方法→能力→profile、固定 provider/origin/model/voice、configuration fingerprint、credential revision、调用/请求/响应/成本预算与 intent ref。Card Service 在任务创建和每次 Broker 调用前复核过期及凭据版本，且拒绝任务自报 profile、revision、intent、budget、预留成本或 broker descriptor。能力摘要只暴露清单 digest/期限/计数，不暴露路径或秘密。
 - 受信本地设置/确认窗口的响应通道已从“请求文件中的可读 nonce”加固为每会话一次性 HMAC：256-bit 响应密钥只经启动后的私有 stdin 交付窗口，不写 session/response 文件、不返回调用方；响应必须通过域隔离 MAC，读取 nonce 后伪造批准、篡改响应或重复启动同一会话都会被拒绝。Worker/UI 任意 details 不进入控制面。
+- 已完成 M1 短期 Broker 启动授权的受信签发闭环：`system.open_broker_authorization` 只接受固定 schema 的 provider/profile、方法绑定、来源能力、有效期和硬预算；Service 解析并规范化 provider origin/model/voice，远程 profile 的 credential revision 直接从 OS 凭据元数据冻结，Hermes 固定 revision 0。可信窗口以可滚动正文展示全部授权范围，HMAC 验证真实点击后才在固定 authorizations 目录签发 canonical manifest；公开结果仅返回 digest、期限和数量，不返回路径、secret 或执行 token。调用/请求/响应/成本预算按 operation intent 在所有消费任务间合计，不能通过创建多个 task 放大。运行中的 Card Service 随后内部热加载该清单，排队任务则继续使用创建时冻结的 Broker factory，不会借用后批准的新授权。
 - 已交付首个受控来源切片：正式授权清单可按方法绑定 `source.youtube_subtitles`；旧 V1 清单不含来源策略时保持兼容并默认关闭该能力。Service 只接受任务已授权的 YouTube video ID、字幕语言和 VTT 格式，固定访问 YouTube watch/timedtext 端点，解析全部 DNS 地址并拒绝任一非公网答案，连接固定公网 IP 且保留 TLS hostname 校验，不跟随重定向，并限制 watch/subtitle 响应字节和超时。signed caption query 只存在于 Service 短期内存，不进入 Worker、结果或 ledger；Worker 仅接收含有效时间 cue、长度和 SHA-256 的规范化 VTT。托管 Worker 直接运行联网 yt-dlp 会在创建子进程前 fail closed。
 - 真实受限 Legacy Worker 已完成“受控 YouTube 字幕 → 本地候选 → Service 模型 Broker → 学习点结果”认证 stdio 闭环；source/model 两类 reservation 均结算，持久 JSON 不含 provider secret 或 signed caption query canary。该证明使用确定性 fake transport，不是一次真实 YouTube 公网可用性测试。
 - 已增加首条桌面/Headless 语义等价合同：同一个冻结的单学习点请求分别由桌面 Legacy Worker 直调与 Headless Card Service 执行，核心 Project/segments/生成学习点一致；两边随后独立导出，Note Model 合同、media manifest、card-media ledger 和 audio audit 一致，任务终态均为 100%。同一“未选择学习点”请求的 code/message/retryable/stage 也一致；Card Service 现在保留经过 allowlist/限长的 Worker stage/fallbacks，但不持久化任意 details。该样本关闭 TTS 且不含视频，Headless 导出为隔离调度等价测试而显式关闭 restricted launcher；它不能替代受限视频/TTS、真实 Anki verify 和完整取消矩阵。
-- 本里程碑仍未完成：该启动清单还缺正式 launcher/受信设置表面的生产签发流程与 M2 的逐 OperationIntent approval ledger；公网 provider 也未做真实用户凭据调用，Vertex TTS OAuth egress 仍 fail closed。完整 YouTube 视频/音频获取仍未开放，托管模式不会静默退回直接 yt-dlp；扩展恶意媒体/资源耗尽 corpus、桌面/Headless 语义等价证据和正式可安装插件包仍在后续切片。
-- 当前回归证据包括正式 Python 全集 825 项、正式 Worker `unittest discover` 584 项，以及真实受限 Legacy Worker 的模型、TTS、字幕→模型三条认证 stdio 闭环和一条桌面/Headless 单卡语义等价合同；这些集合有重叠且不是 M1 完成判定。
+- 本里程碑仍未完成：M2 的逐 OperationIntent approval ledger、撤销/原子消费和正式 profile 注册尚未实现；公网 provider 也未做真实用户凭据调用，Vertex TTS OAuth egress 仍 fail closed。完整 YouTube 视频/音频获取仍未开放，托管模式不会静默退回直接 yt-dlp；扩展恶意媒体/资源耗尽 corpus、更多桌面/Headless 语义等价证据和正式外层插件 launcher/可安装包仍在后续切片。
+- 当前回归证据包括正式 Python 全集 841 项、正式 Worker `unittest discover` 584 项，以及真实受限 Legacy Worker 的模型、TTS、字幕→模型三条认证 stdio 闭环和一条桌面/Headless 单卡语义等价合同；这些集合有重叠且不是 M1 完成判定。
 
 ### 出口
 

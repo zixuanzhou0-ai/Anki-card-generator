@@ -18,7 +18,9 @@ from urllib.parse import parse_qsl, urlsplit
 
 from workers.acg.secret_scrub import is_runtime_secret_key, is_sensitive_url_query_key
 
+from .broker_configuration import BrokerConfigurationError, ServiceBrokerRuntime
 from .broker_ipc import BROKER_REQUEST_PREFIX, BROKER_RESPONSE_PREFIX, TaskBrokerChannel
+from .credentials import CredentialBackend
 from .process_isolation import ProcessIsolationError, TaskOwnedProcessGroup
 from .runtime_manifest import (
     ManagedRuntimeManifest,
@@ -264,6 +266,8 @@ class _RuntimeTask:
     broker_session: TaskBrokerChannel | None = None
     sandbox_workspace: Path | None = None
     task_sandbox_sid: str | None = None
+    broker_handler_factory: BrokerHandlerFactory | None = None
+    broker_method_blocker: BrokerMethodBlocker | None = None
     lock: threading.RLock = field(default_factory=threading.RLock)
 
 
@@ -288,6 +292,8 @@ class CardService:
         broker_handler_factory: BrokerHandlerFactory | None = None,
         broker_method_blocker: BrokerMethodBlocker | None = None,
         broker_runtime_capabilities: dict[str, Any] | None = None,
+        credential_backend: CredentialBackend | None = None,
+        trusted_surface_path: str | Path | None = None,
         use_restricted_launcher: bool | None = None,
     ) -> None:
         repository_root = Path(__file__).resolve().parent.parent
@@ -371,6 +377,8 @@ class CardService:
         self.trusted_surfaces = TrustedSurfaceManager(
             state_dir=self.store.root / "trusted-surfaces",
             python_path=self.python_path,
+            surface_path=trusted_surface_path,
+            credential_backend=credential_backend,
         )
         self.method_policies = dict(method_policies or METHOD_POLICIES)
         self.max_stdout_bytes = max(1, int(max_stdout_bytes))
@@ -381,6 +389,9 @@ class CardService:
         self.broker_handler_factory = broker_handler_factory
         self.broker_method_blocker = broker_method_blocker
         self.broker_runtime_capabilities = dict(broker_runtime_capabilities or {})
+        self._credential_backend = credential_backend
+        self._active_broker_runtime: ServiceBrokerRuntime | None = None
+        self._broker_runtime_lock = threading.RLock()
         self.use_restricted_launcher = os.name == "nt" if use_restricted_launcher is None else bool(use_restricted_launcher)
         if self.use_restricted_launcher and os.name != "nt":
             raise CardServiceError("RESTRICTED_LAUNCHER_UNAVAILABLE", "Restricted launcher is only available on Windows")
@@ -417,13 +428,14 @@ class CardService:
         self._recover_orphaned_tasks()
 
     def _broker_blocker(self, method: str, policy: MethodPolicy) -> str | None:
-        if not policy.requires_broker:
-            return None
-        if self.broker_handler_factory is None:
-            return "model_tts_broker_not_ready"
-        if self.broker_method_blocker is None:
-            return None
-        return self.broker_method_blocker(method)
+        with self._broker_runtime_lock:
+            if not policy.requires_broker:
+                return None
+            if self.broker_handler_factory is None:
+                return "model_tts_broker_not_ready"
+            if self.broker_method_blocker is None:
+                return None
+            return self.broker_method_blocker(method)
 
     def _method_availability(self, method: str, policy: MethodPolicy) -> dict[str, Any]:
         blocker = self._broker_blocker(method, policy)
@@ -440,7 +452,12 @@ class CardService:
                 for method, policy in sorted(self.method_policies.items())
             },
             "taskMethods": ["task.get", "task.cancel", "task.list_recoverable", "task.read_result"],
-            "systemMethods": ["system.get_capabilities", "system.open_local_settings", "system.get_trusted_surface"],
+            "systemMethods": [
+                "system.get_capabilities",
+                "system.open_local_settings",
+                "system.open_broker_authorization",
+                "system.get_trusted_surface",
+            ],
             "genericShell": False,
             "genericWorkerCommand": False,
             "secretBearingRequests": False,
@@ -523,7 +540,10 @@ class CardService:
         policy = self.method_policies.get(method)
         if policy is None:
             raise CardServiceError("METHOD_NOT_ALLOWED", f"Card Service method is not allowed: {method}")
-        blocker = self._broker_blocker(method, policy)
+        with self._broker_runtime_lock:
+            blocker = self._broker_blocker(method, policy)
+            task_broker_factory = self.broker_handler_factory
+            task_broker_blocker = self.broker_method_blocker
         if blocker is not None:
             raise CardServiceError(
                 "BROKER_REQUIRED" if blocker == "model_tts_broker_not_ready" else "BROKER_AUTHORIZATION_UNAVAILABLE",
@@ -581,6 +601,8 @@ class CardService:
             request=request,
             sandbox_workspace=sandbox_workspace,
             task_sandbox_sid=task_sid,
+            broker_handler_factory=task_broker_factory,
+            broker_method_blocker=task_broker_blocker,
         )
         with self._tasks_lock:
             self._tasks[task_id] = runtime
@@ -651,12 +673,64 @@ class CardService:
                 return self.trusted_surfaces.launch(str(session["sessionRef"]))
             except TrustedSurfaceError as error:
                 raise CardServiceError(error.code, str(error)) from error
+        if method == "system.open_broker_authorization":
+            try:
+                session = self.trusted_surfaces.create_broker_authorization_session(values)
+                return self.trusted_surfaces.launch(str(session["sessionRef"]))
+            except TrustedSurfaceError as error:
+                raise CardServiceError(error.code, str(error)) from error
         if method == "system.get_trusted_surface":
             try:
-                return self.trusted_surfaces.get_session(str(values.get("sessionRef") or ""))
+                session_ref = str(values.get("sessionRef") or "")
+                result = self.trusted_surfaces.get_session(session_ref)
+                issued = self.trusted_surfaces.issued_authorization(session_ref)
+                if result.get("authorization") is not None and issued is not None:
+                    self._activate_broker_authorization(
+                        issued.manifest_path,
+                        expected_digest=str(issued.public_summary["authorizationDigest"]),
+                    )
+                return result
             except TrustedSurfaceError as error:
                 raise CardServiceError(error.code, str(error)) from error
         return self.start_task(method, values)
+
+    def _activate_broker_authorization(self, manifest_path: Path, *, expected_digest: str) -> None:
+        expected = (self.store.root / "trusted-surfaces" / "authorizations").resolve()
+        try:
+            candidate = manifest_path.resolve(strict=True)
+        except OSError as error:
+            raise CardServiceError(
+                "BROKER_MANIFEST_UNAVAILABLE",
+                "Issued broker authorization is unavailable",
+            ) from error
+        if candidate.parent != expected:
+            raise CardServiceError(
+                "BROKER_MANIFEST_OUTSIDE_TRUSTED_SURFACE",
+                "Issued broker authorization is outside the trusted state directory",
+            )
+        with self._broker_runtime_lock:
+            current_digest = self.broker_runtime_capabilities.get("authorizationManifestDigest")
+            issued_digest = None
+            try:
+                runtime = ServiceBrokerRuntime.from_manifest(
+                    candidate,
+                    state_dir=self.store.root,
+                    credential_backend=self._credential_backend,
+                )
+                issued_digest = runtime.configuration.manifest_digest
+            except BrokerConfigurationError as error:
+                raise CardServiceError(error.code, str(error)) from error
+            if issued_digest != expected_digest:
+                raise CardServiceError(
+                    "BROKER_MANIFEST_DIGEST_MISMATCH",
+                    "Issued broker authorization changed before activation",
+                )
+            if current_digest == issued_digest and self._active_broker_runtime is not None:
+                return
+            self._active_broker_runtime = runtime
+            self.broker_handler_factory = runtime.handler_factory
+            self.broker_method_blocker = runtime.method_blocker
+            self.broker_runtime_capabilities = runtime.capabilities()
 
     def _managed_environment(self) -> dict[str, str]:
         safe_keys = (
@@ -752,14 +826,14 @@ class CardService:
                 self.runtime_manifest.verify_serialized(self.runtime_manifest_path)
             except (RuntimeManifestError, RuntimePackageError) as error:
                 raise CardServiceError(error.code, str(error)) from error
-            attach_broker = self.broker_handler_factory is not None and (
-                policy.requires_broker or self.broker_method_blocker is None
+            attach_broker = runtime.broker_handler_factory is not None and (
+                policy.requires_broker or runtime.broker_method_blocker is None
             )
             if attach_broker:
-                if self.broker_handler_factory is None:
+                if runtime.broker_handler_factory is None:
                     raise CardServiceError("BROKER_REQUIRED", "Task-owned model/TTS broker is unavailable")
                 try:
-                    handler = self.broker_handler_factory(
+                    handler = runtime.broker_handler_factory(
                         task_id,
                         str(runtime.snapshot["method"]),
                         dict(runtime.request),

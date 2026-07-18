@@ -160,8 +160,8 @@ M1 Provider Egress 的当前内层边界为：
 - Qwen 只有内联音频可进入任务结果；provider 返回二次 URL 时以 `TTS_SECONDARY_URL_BLOCKED` 失败，Worker 不再自行下载。受管 Vertex TTS 在 Service OAuth egress 完成前继续 fail closed。
 - Hermes 只允许字面 `127.0.0.1`/`::1` 的显式 HTTP origin，使用 credential revision 0；远程服务必须 HTTPS。任意自定义 OpenAI-compatible origin 在 M2 的受信 origin authorization 和连接时 IP 约束完成前 fail closed。
 - Legacy Worker 的 OpenAI-compatible、Anthropic 和 Gemini 模型入口已接入该通道；受管请求递归拒绝 URL/Header/secret/profile/credential/intent/budget，批次和内部重试使用确定性的独立 work unit。Gemini Vertex 在 Service-owned OAuth egress 完成前 fail closed。
-- 正式 stdio 支持 `--broker-authorization-manifest`，但只接受固定 Card Service state dir 下 `trusted-surfaces/authorizations` 的稳定普通文件，不接受工作区或调用方任意路径。清单必须是 canonical `study.card-service.broker-authorization` V1，短期有效并绑定方法、能力、profile configuration fingerprint、credential revision、intent ref 和硬预算；任何未知字段、过期/超长期限、能力错配、陈旧凭据或任务自报授权字段都 fail closed。Service 能力摘要只公开清单 digest/期限/计数。
-- 真实受限 Legacy Worker 已通过认证 stdio 完成无 Worker API Key/Base URL 的卡片生成，以及无 Worker API Key/Base URL/model/voice 的 TTS 测试；Service 重建模型或声音请求、注入认证、验证音频证据并结算 ledger。当前默认传输仍只对临时 Hermes-style loopback 做过真实 POST；公网 provider 未使用真实用户凭据验证，受信表面签发该启动清单和 M2 逐操作批准账本尚未完成，因此 `modelTtsBroker.complete` 仍为 false。
+- 正式 stdio 支持 `--broker-authorization-manifest`，但只接受固定 Card Service state dir 下 `trusted-surfaces/authorizations` 的稳定普通文件，不接受工作区或调用方任意路径。清单必须是 canonical `study.card-service.broker-authorization` V1，短期有效并绑定方法、能力、profile configuration fingerprint、credential revision、intent ref 和硬预算；任何未知字段、过期/超长期限、能力错配、陈旧凭据或任务自报授权字段都 fail closed。Service 能力摘要只公开清单 digest/期限/计数。正常 tools-only 路径不要求调用方提供该内部路径：`system.open_broker_authorization` 启动受信确认窗口，真实点击通过 HMAC 验证后由 Service 在固定目录签发并热加载，调用方只收到脱敏摘要。
+- 真实受限 Legacy Worker 已通过认证 stdio 完成无 Worker API Key/Base URL 的卡片生成，以及无 Worker API Key/Base URL/model/voice 的 TTS 测试；Service 重建模型或声音请求、注入认证、验证音频证据并结算 ledger。当前默认传输仍只对临时 Hermes-style loopback 做过真实 POST；公网 provider 未使用真实用户凭据验证，M2 逐操作批准/撤销/消费账本尚未完成，因此 `modelTtsBroker.complete` 仍为 false。
 
 ## 3.1 受信本地设置与确认表面
 
@@ -174,7 +174,7 @@ server/local-settings 是最小本地凭据配置窗口；server/consent-ui 是�
 - consent-ui 同时提供受信授权管理器：直接从 Service 读取脱敏的资源授权、OperationApproval 和 ImportApproval，允许用户在消费前逐项撤销；撤销/消费原子互斥，MCP 只收到结果摘要，不接触内部 authorization/ledger ID。
 - 能从 tools-only 宿主启动；若宿主/系统阻止启动，对应高影响操作 fail closed。
 
-当前 M1 受信窗口启动器已经固定 Python/UI 绝对路径和 UI SHA-256，并把响应改为每会话一次性 HMAC：响应密钥只经私有 stdin 交付 digest-pinned 子进程，不落盘、不进入调用结果；Service 在接受 user gesture 前验证域隔离 MAC 与 session/nonce，并拒绝重复启动。正式 profile 配置注册、短期 broker authorization 清单签发以及 M2 approval ledger 仍是后续边界。
+当前 M1 受信窗口启动器已经固定 Python/UI 绝对路径和 UI SHA-256，并把响应改为每会话一次性 HMAC：响应密钥只经私有 stdin 交付 digest-pinned 子进程，不落盘、不进入调用结果；Service 在接受 user gesture 前验证域隔离 MAC 与 session/nonce，并拒绝重复启动。短期 broker authorization 现由同一受信窗口展示规范化 profile/origin/model/voice、方法、来源、期限和预算，批准后由 Service canonical 签发并内部热加载；远程 credential revision 从 OS 凭据元数据冻结，公开结果不含路径或 secret。正式 profile 注册目录及 M2 approval ledger 仍是后续边界。
 
 M1 实现窗口与启动器，M2 实现授权账本、过期/撤销/重放保护；M3 首次使用旅程以此为前提。
 ## 4. Skill 包

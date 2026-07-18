@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 import threading
 from pathlib import Path
 
@@ -35,6 +36,25 @@ def make_budget(**overrides: object) -> BrokerBudget:
     }
     values.update(overrides)
     return BrokerBudget(**values)  # type: ignore[arg-type]
+
+
+def _reserve_from_process(ledger_path: str, task_id: str, start, results) -> None:
+    ledger = BrokerReservationLedger(Path(ledger_path))
+    start.wait(10)
+    try:
+        ledger.reserve(
+            make_call(
+                {"messages": [task_id]},
+                task_id=task_id,
+                work_unit_id=f"unit-{task_id}",
+                idempotency_key=f"idempotency-{task_id}",
+            ),
+            make_budget(max_remote_calls=1),
+        )
+    except BrokerError as error:
+        results.put(error.code)
+    else:
+        results.put("reserved")
 
 
 def test_credential_revision_is_monotonic_for_add_replace_delete_and_rollback(tmp_path: Path) -> None:
@@ -123,6 +143,57 @@ def test_limits_fail_before_send(tmp_path: Path, call_overrides: dict[str, objec
         ledger.reserve(make_call({"messages": ["hello"]}, **call_overrides), make_budget(**budget_overrides))
     assert caught.value.code == expected_code
     assert ledger.list_records() == []
+
+
+def test_budget_is_cumulative_across_tasks_bound_to_the_same_operation_intent(tmp_path: Path) -> None:
+    ledger = BrokerReservationLedger((tmp_path / "ledger.json").resolve())
+    budget = make_budget(max_remote_calls=1)
+    first = make_call({"messages": ["first"]})
+    ledger.reserve(first, budget)
+
+    with pytest.raises(BrokerError) as exceeded:
+        ledger.reserve(
+            make_call(
+                {"messages": ["second"]},
+                task_id="task-2",
+                work_unit_id="unit-2",
+                idempotency_key="idempotency-2",
+            ),
+            budget,
+        )
+    assert exceeded.value.code == "CALL_BUDGET_EXCEEDED"
+
+    independent = ledger.reserve(
+        make_call(
+            {"messages": ["independent"]},
+            task_id="task-3",
+            work_unit_id="unit-3",
+            operation_intent_ref="intent-2",
+            idempotency_key="idempotency-3",
+        ),
+        budget,
+    )
+    assert independent["operationIntentRef"] == "intent-2"
+
+
+def test_interprocess_ledger_lock_allows_only_one_budget_winner(tmp_path: Path) -> None:
+    context = multiprocessing.get_context("spawn")
+    start = context.Event()
+    results = context.Queue()
+    ledger_path = str((tmp_path / "ledger.json").resolve())
+    processes = [
+        context.Process(target=_reserve_from_process, args=(ledger_path, f"task-{index}", start, results))
+        for index in range(2)
+    ]
+    for process in processes:
+        process.start()
+    start.set()
+    outcomes = [results.get(timeout=15) for _ in processes]
+    for process in processes:
+        process.join(timeout=15)
+        assert process.exitcode == 0
+    assert sorted(outcomes) == ["CALL_BUDGET_EXCEEDED", "reserved"]
+    assert len(BrokerReservationLedger(Path(ledger_path)).list_records()) == 1
 
 
 def test_revocation_blocks_new_reservations(tmp_path: Path) -> None:
@@ -233,9 +304,21 @@ def test_concurrent_same_call_is_sent_at_most_once(tmp_path: Path) -> None:
     assert errors == ["INVALID_RESERVATION_STATE"]
 
 
-def test_reserved_crash_releases_without_counting_as_sent(tmp_path: Path) -> None:
+def test_second_ledger_does_not_recover_a_live_process_reservation(tmp_path: Path) -> None:
     path = (tmp_path / "ledger.json").resolve()
     BrokerReservationLedger(path).reserve(make_call({"messages": ["hello"]}), make_budget())
+    recovered = BrokerReservationLedger(path)
+    assert recovered.list_records()[0]["state"] == "reserved"
+
+
+def test_reserved_dead_process_releases_without_counting_as_sent(tmp_path: Path) -> None:
+    path = (tmp_path / "ledger.json").resolve()
+    BrokerReservationLedger(path).reserve(make_call({"messages": ["hello"]}), make_budget())
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state["reservations"][0]["ownerProcessToken"] = "99999999:unknown"
+    from card_service.storage import AtomicJsonStore
+
+    AtomicJsonStore._write_atomic(path, state)
     recovered = BrokerReservationLedger(path)
     assert recovered.list_records()[0]["state"] == "released_before_send"
 

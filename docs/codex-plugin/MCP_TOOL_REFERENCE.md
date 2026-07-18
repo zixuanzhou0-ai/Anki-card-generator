@@ -242,6 +242,12 @@ host 部分至少分别报告：pluginManifestLoaded、stdioServiceLaunch、tool
 
 由真实用户动作打开 Card Service 提供的受信本地配置窗口。密钥在该窗口中直接写入 OS 凭据存储，不经过对话、MCP structuredContent 或 App UI tool arguments。输出只包含 configurationSessionRef 和完成/取消状态。凭据新增、替换、删除/清空、回滚，以及 OAuth 账户/token material 变化都由 Service 原子单调 bump credentialRevision；并发更新序列化，旧 revision 永不复用并立即使旧验证/批准 stale。
 
+### system.open_broker_authorization（M1 内部过渡接口）
+
+该接口用于 M1 tools-only 启动链，不是 M2 最终 `system.request_operation_confirmation` 的替代品。输入必须完整匹配固定 schema：`lifetimeSeconds`、硬预算、1–16 个非秘密 provider profile、方法→能力→profile 绑定以及 YouTube 字幕能力开关；未知字段、secret、调用方自报 credential revision/fingerprint/intent、超限预算或不受支持 origin 均拒绝。Service 先规范化 profile 并从 OS 凭据元数据冻结 revision，再让受信本地窗口以可滚动文本展示全部范围。只有 HMAC 认证的真实批准才会签发最长 60 分钟的 canonical manifest 并由同一 Service 内部热加载；调用、请求、响应和成本额度按该 operation intent 跨全部 task 合计，启动更多任务不能重置额度。
+
+公开响应仅包含 trusted-surface session 状态以及授权 digest、过期时间、profile/method 数量和字幕能力布尔值；不返回 manifest 路径、凭据、内部 intent 或 bearer。拒绝、关闭、凭据在确认期间改变、响应 MAC 错误或窗口异常均不得签发。M2 必须把该粗粒度启动授权替换为逐 OperationIntent 的持久批准、撤销和原子消费账本。
+
 该工具不能被来源文本、模型输出或后台任务自动触发。
 
 ### system.validate_profile

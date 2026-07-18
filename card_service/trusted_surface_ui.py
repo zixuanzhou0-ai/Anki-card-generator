@@ -112,13 +112,35 @@ def show_local_settings(request: dict[str, Any]) -> None:
 def show_consent(request: dict[str, Any]) -> None:
     root = tk.Tk()
     root.title("Codex Study · 本地确认")
-    root.geometry("620x360")
-    root.minsize(540, 320)
+    root.geometry("720x520")
+    root.minsize(600, 420)
     frame = ttk.Frame(root, padding=24)
     frame.pack(fill="both", expand=True)
     ttk.Label(frame, text=str(request["title"]), font=("Microsoft YaHei UI", 18, "bold")).pack(anchor="w")
-    ttk.Label(frame, text=str(request["summary"]), wraplength=560, justify="left").pack(anchor="w", pady=(14, 20))
-    ttk.Label(frame, text="只有这个本地窗口中的真实点击才会被记录；对话里的“我同意”不会替代它。", wraplength=560).pack(anchor="w")
+    summary_frame = ttk.Frame(frame)
+    summary_frame.pack(fill="both", expand=True, pady=(14, 16))
+    summary = tk.Text(
+        summary_frame,
+        wrap="word",
+        height=12,
+        font=("Microsoft YaHei UI", 11),
+        padx=12,
+        pady=10,
+        relief="solid",
+        borderwidth=1,
+        takefocus=True,
+    )
+    scrollbar = ttk.Scrollbar(summary_frame, orient="vertical", command=summary.yview)
+    summary.configure(yscrollcommand=scrollbar.set)
+    summary.insert("1.0", str(request["summary"]))
+    summary.configure(state="disabled")
+    summary.pack(side="left", fill="both", expand=True)
+    scrollbar.pack(side="right", fill="y")
+    ttk.Label(
+        frame,
+        text="请核对上方全部范围。只有这个本地窗口中的真实点击才会被记录；对话里的“我同意”不会替代它。",
+        wraplength=650,
+    ).pack(anchor="w", pady=(0, 14))
 
     def finish(state: str) -> None:
         write_response(request, state, userGestureRecorded=state in {"approved", "declined"})
@@ -127,7 +149,8 @@ def show_consent(request: dict[str, Any]) -> None:
     buttons = ttk.Frame(frame)
     buttons.pack(fill="x", side="bottom")
     ttk.Button(buttons, text="拒绝", command=lambda: finish("declined")).pack(side="right")
-    ttk.Button(buttons, text="确认", command=lambda: finish("approved")).pack(side="right", padx=(0, 10))
+    approve_label = "授权并继续" if request.get("authorizationKind") == "broker_startup" else "确认"
+    ttk.Button(buttons, text=approve_label, command=lambda: finish("approved")).pack(side="right", padx=(0, 10))
     root.protocol("WM_DELETE_WINDOW", lambda: finish("cancelled"))
     root.mainloop()
 
