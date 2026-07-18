@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from .python_runtime_lock import PythonRuntimeLockError, parse_requirements_lock
 from .runtime_manifest import canonical_bytes, file_sha256
 from .runtime_trust import (
     SIGNATURE_FILE_NAME,
@@ -28,6 +29,13 @@ MAX_SBOM_BYTES = 16 * 1024 * 1024
 PACKAGE_MANIFEST_NAME = "runtime-package-v1.json"
 CARD_SERVICE_VERSION = "0.1.0"
 SBOM_RESOURCE_ID = "metadata:sbom-spdx"
+PYTHON_RUNTIME_LOCK_RESOURCE_ID = "metadata:python-runtime-lock"
+REQUIRED_PYTHON_RUNTIME_PACKAGES = {
+    "cryptography": "49.0.0",
+    "genanki": "0.13.1",
+    "pypdf": "6.14.2",
+    "yt-dlp": "2026.7.4",
+}
 REQUIRED_RUNTIME_RESOURCES = frozenset(
     {
         "managed-python:executable",
@@ -40,6 +48,7 @@ REQUIRED_RUNTIME_RESOURCES = frozenset(
         "managed-tool:ffmpeg",
         "managed-tool:ffprobe",
         "managed-tool:yt-dlp",
+        PYTHON_RUNTIME_LOCK_RESOURCE_ID,
         SBOM_RESOURCE_ID,
     }
 )
@@ -183,6 +192,20 @@ def _verify_spdx_sbom(
         ordered_names.append(file_name)
     if ordered_names != sorted(ordered_names, key=lambda item: item.encode("utf-8")) or observed != expected:
         raise RuntimePackageError("RUNTIME_PACKAGE_SBOM_MISMATCH", "Runtime package SBOM does not cover exact resources")
+
+
+def _verify_python_runtime_lock(resource: RuntimePackageResource) -> None:
+    try:
+        locked = parse_requirements_lock(resource.path)
+    except PythonRuntimeLockError as error:
+        raise RuntimePackageError("RUNTIME_PACKAGE_PYTHON_LOCK_INVALID", "Python runtime lock is invalid") from error
+    for name, version in REQUIRED_PYTHON_RUNTIME_PACKAGES.items():
+        requirement = locked.get(name)
+        if requirement is None or requirement.version != version:
+            raise RuntimePackageError(
+                "RUNTIME_PACKAGE_PYTHON_LOCK_INVALID",
+                "Python runtime lock does not pin required package versions",
+            )
 
 
 class ManagedRuntimePackage:
@@ -349,6 +372,7 @@ class ManagedRuntimePackage:
         if missing:
             raise RuntimePackageError("RUNTIME_PACKAGE_RESOURCE_MISSING", "Runtime package is missing required resources")
         _verify_spdx_sbom(entries[SBOM_RESOURCE_ID], package_version=version, entries=entries)
+        _verify_python_runtime_lock(entries[PYTHON_RUNTIME_LOCK_RESOURCE_ID])
         actual_path_keys: set[str] = set()
         for path in self.root.rglob("*"):
             if path.is_symlink() or _has_reparse_attribute(path):

@@ -97,6 +97,7 @@ docs/CLEANUP_BOUNDARIES_*.md
 __pycache__/
 workers/__pycache__/
 src-tauri/target/
+runtime-tools/**/target/
 
 # Editor directories and files
 .vscode/*

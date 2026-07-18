@@ -45,7 +45,7 @@ def _repository_resources(root: Path) -> list[RuntimeBuildResource]:
     worker_root = (root / "workers").resolve()
     resources = _tree_resources(
         card_service_root,
-        target_root="service/card_service",
+        target_root="card_service",
         id_prefix="card-service:module",
         special_ids={
             "worker_bootstrap.py": "card-service:worker-bootstrap",
@@ -57,7 +57,7 @@ def _repository_resources(root: Path) -> list[RuntimeBuildResource]:
     resources.extend(
         _tree_resources(
             worker_root,
-            target_root="worker",
+            target_root="workers",
             id_prefix="legacy-worker:module",
             special_ids={
                 "anki_worker.py": "legacy-worker:entry",
@@ -93,6 +93,7 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--created-at", required=True)
     value.add_argument("--repository-root", type=Path, required=True)
     value.add_argument("--python-root", type=Path, required=True)
+    value.add_argument("--python-lock", type=Path, required=True)
     value.add_argument("--ffmpeg", type=Path, required=True)
     value.add_argument("--ffprobe", type=Path, required=True)
     value.add_argument("--yt-dlp", type=Path, required=True)
@@ -106,6 +107,11 @@ def main() -> None:
         resources.extend(_python_resources(arguments.python_root.resolve()))
         resources.extend(
             [
+                RuntimeBuildResource(
+                    "metadata:python-runtime-lock",
+                    arguments.python_lock.resolve(),
+                    "metadata/python-runtime-requirements.lock",
+                ),
                 RuntimeBuildResource("managed-tool:ffmpeg", arguments.ffmpeg.resolve(), "tools/ffmpeg.exe"),
                 RuntimeBuildResource("managed-tool:ffprobe", arguments.ffprobe.resolve(), "tools/ffprobe.exe"),
                 RuntimeBuildResource("managed-tool:yt-dlp", arguments.yt_dlp.resolve(), "tools/yt-dlp.exe"),

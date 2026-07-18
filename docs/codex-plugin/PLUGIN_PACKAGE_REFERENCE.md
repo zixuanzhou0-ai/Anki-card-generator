@@ -1,6 +1,6 @@
 # 插件包、安装与分发参考
 
-> 状态：CURRENT IMPLEMENTING；仓库已有通过官方验证器的被动插件与 Skill 骨架，开发态只读 MCP 已通过真实 Codex 宿主探针，但尚未声明可安装 MCP/App
+> 状态：CURRENT IMPLEMENTING；仓库已有通过官方验证器的被动插件与 Skill 骨架，开发态与签名 packaged runtime 的只读 MCP 均已通过真实 Codex 宿主探针，但尚未声明可安装 MCP/App
 > 日期：2026-07-18
 > 实施时必须重新用当时的官方验证器核验清单字段。
 
@@ -40,7 +40,7 @@ plugins/
     SBOM.spdx.json
 ~~~
 
-这是目标布局。当前已在 `plugins/anki-study-agent` 创建不声明 MCP/App 的被动 manifest、Skill、Agent metadata 和学习/工作流/安全参考合同；官方 plugin/Skill 验证器、仓库合同测试和一次独立前向测试均通过。前向测试在 Card Service 工具缺席时明确停止，没有使用 Shell 绕过或伪造 APKG/Anki 核验。开发态最小 MCP stdio 桥已经通过真实 Codex `0.144.1` app-server 注册与调用，只公开 `system.get_capabilities`；但探针仍从仓库启动 Python 与 Card Service。只有外层受信 launcher、离线运行包和独立复制后的宿主验证全部通过，才增加 `.mcp.json` 和 manifest 的 `mcpServers`。禁止用开发工作区路径或空 MCP 占位文件伪造可安装状态。
+这是目标布局。当前已在 `plugins/anki-study-agent` 创建不声明 MCP/App 的被动 manifest、Skill、Agent metadata 和学习/工作流/安全参考合同；官方 plugin/Skill 验证器、仓库合同测试和一次独立前向测试均通过。前向测试在 Card Service 工具缺席时明确停止，没有使用 Shell 绕过或伪造 APKG/Anki 核验。最小 MCP stdio 桥已经通过真实 Codex `0.144.1` app-server 的开发态和签名 packaged runtime 两类注册与调用，只公开 `system.get_capabilities`；packaged 探针验证了内层签名、SPDX、完整 Python lock 和运行时精确 DACL，但使用的是不落盘私钥的短期本地探针签名。只有外层受信 launcher、正式发布签名和独立复制后的可安装插件宿主验证全部通过，才增加 `.mcp.json` 和 manifest 的 `mcpServers`。禁止用开发工作区路径、临时探针信任策略或空 MCP 占位文件伪造可安装状态。
 
 职责：
 
@@ -137,7 +137,9 @@ V1 不使用 hooks。当前生成规范与验证器对 hooks 字段存在差异�
 
 M1 托管运行包的内层合同已经固定为：
 
-- `scripts/build_managed_runtime.py` 是当前唯一正式 staging 入口：要求显式 output/version/UTC build time/repository root/预装配 Python root/FFmpeg/ffprobe/yt-dlp，离线收集并原子发布一个**未签名**目录。它拒绝已有输出、reparse 源、路径逃逸、大小写碰撞、Windows 保留名、缺失资源和超限 manifest/SBOM；同一输入生成稳定的 namespace、资源排序和摘要。
+- `workers/requirements-win-cp313.lock` 固定 CPython 3.13 / cp313 / win_amd64 的 25 个直接和传递 wheel 版本与 SHA-256。`scripts/generate_python_runtime_lock.py` 从 wheel METADATA/WHEEL 生成锁并拒绝 sdist、非 wheel、重复包、根版本不符、平台不兼容和哈希变化；锁本身是必需的签名运行资源。
+- `scripts/assemble_managed_python.py` 只从该锁和精确 wheelhouse 以 `--no-index --require-hashes --only-binary` 组装便携 CPython；排除 ambient site-packages、Scripts、FFmpeg 和缓存，禁用并拒绝 pyc。组装元数据记录 Python identity、lock digest、wheel 数和无网络事实，不记录构建机路径。
+- `scripts/build_managed_runtime.py` 是当前唯一正式 staging 入口：要求显式 output/version/UTC build time/repository root/预装配 Python root/Python lock/FFmpeg/ffprobe/yt-dlp，离线收集并原子发布一个**未签名**目录。Card Service 与 Worker 固定打包为顶层 `card_service/` 和 `workers/`，正式启动不依赖 `PYTHONPATH`。构建器拒绝已有输出、reparse 源、路径逃逸、大小写碰撞、Windows 保留名、缺失资源和超限 manifest/SBOM；同一输入生成稳定的 namespace、资源排序和摘要。
 - 构建阶段故意不接受私钥。发布流水线必须在仓库外对 canonical manifest 完成 detached 签名，再由外层受信 launcher 提供独立 trust policy；测试私钥不得用于正式包。
 - `runtime-package-v1.json` 是 canonical JSON，绑定 package identity/version、Card Service 最低兼容版本、目标平台、SPDX 2.3 SBOM 声明和全部运行资源的 size/SHA-256。
 - `runtime-package-v1.sig.json` 是 detached Ed25519 签名；签名覆盖 authority、keyId/keyEpoch、签发/过期时间和 manifest digest，并使用 `study.runtime-package-manifest.v1` 域隔离。
@@ -145,11 +147,12 @@ M1 托管运行包的内层合同已经固定为：
 - trust policy 固定 authority、单调 sequence、精确 32-byte 公钥及其 SHA-256、active/revoked 状态、最低运行包版本和撤销版本。相同 sequence 不同 digest、较低 sequence、低版本和同版本不同内容均被拒绝。
 - `metadata/SBOM.spdx.json` 必须是 canonical SPDX 2.3，并逐文件覆盖 manifest 中除 SBOM 自身外的全部资源；SBOM 与 manifest 任一不一致都拒绝启动。
 - manifest、SBOM、detached signature、trust policy 和本地 anti-rollback floor 均在解析前执行 stat + 有界读取；仅在读取后判断长度不满足该边界。
-- 运行包签名只完成内层资源认证；在外层插件安装包签名、真实发布密钥保管、完整传递依赖哈希锁和可复现构建完成前，能力摘要继续报告 `complete: false`。
+- `scripts/create_ephemeral_runtime_probe_signature.py` 只用于本地宿主探针：每次生成随机 Ed25519 密钥，最长有效 24 小时，只写公钥策略和 detached signature，绝不写私钥；它不能进入发布包或替代真实发布密钥。
+- 当前实物 packaged 探针包含 4380 项、286,753,841 bytes，真实 Codex `0.144.1` 成功调用唯一只读工具并确认 `signatureVerified=true`、`runtimePackageDacl=true`。该证据只证明内层包可启动；在外层插件安装包签名、真实发布密钥保管和独立复制后的可安装插件验证完成前，能力摘要继续报告 `complete: false`。
 
 M1 媒体运行时在该签名包内进一步要求：
 
-- manifest 必须包含 Worker 的 `acg/media_tool_policy.py` 以及精确 `managed-tool:ffmpeg`、`managed-tool:ffprobe`、`managed-tool:yt-dlp` 资源；Card Service 只把这三条已验证绝对路径交给受限 Worker，正式模式不回退到 PATH。
+- manifest 必须包含 Worker 的 `acg/media_tool_policy.py` 以及精确 `managed-tool:ffmpeg`、`managed-tool:ffprobe`、`managed-tool:yt-dlp` 资源；Card Service 只把这三条已验证绝对路径交给受限 Worker，正式模式不回退到 PATH。`managed-tool:yt-dlp` 是无第三方 Rust 依赖的相对定位启动器，只执行同一包内 `python.exe -I -B -m yt_dlp`，拒绝 build machine 上由 pip console script 写死的系统 Python。
 - FFmpeg/ffprobe 命令由 Worker 内部策略构造：只允许本地普通文件输入、固定 `file` protocol、固定 demuxer allowlist、禁止 playlist/concat/subfile/网络协议与策略覆盖，且无 Shell、无交互 stdin、超时有界。工具、输入和输出路径逐级拒绝 symlink/junction/reparse ancestor，并拒绝 UNC、NT 设备与 ADS 路径形式。
 - 托管 FFmpeg 在启动前以受限 FFprobe 证据冻结输入总字节、流数、时长、码率、分辨率、像素、帧率/帧数、采样率、声道和逻辑解码量；原始 PCM 根据显式格式/采样率/声道及文件大小计算，不允许用缺失容器元数据绕过。输入探测中变化或证据未知即拒绝；输出固定 512 MiB `-fs` 上限，触顶半成品删除。命令合同严格限制为一个本地普通文件输入和一个新的最终输出；多输入/多输出、循环/实时参数、未知选项、任意滤镜和显式输出格式在启动前拒绝，滤镜只允许产品固定缩放与音量表达式。非零退出、超时、空输出或成功但未产出文件都会清理本次创建的普通文件并 fail closed。每个任务另有独立 cwd；Service 对其实施不跟随 link/reparse 的总逻辑字节和条目预算，默认 2 GiB/20,000 项、硬上限 8 GiB/100,000 项，最终成功前再次复核。Service 级准入在同一进程内原子计算 retained actual + active worst-case headroom + proposed task，默认总上限 8 GiB/100,000 项；准入、运行中每秒复核和成功接纳使用 4 GiB 卷剩余空间缓冲，容量证据不足或跌破缓冲线时 fail closed。能力摘要固定报告 `aggregateWorkspaceBudgetScope=service_process`、`volumeFreeSpaceReserveEnforcement=admission_and_periodic` 与 `externalWriterHardQuota=false`；它不声称跨多个 Service 进程原子，也不声称限制任意外部写入者。正式 packaged DACL 模式将该目录同时作为唯一受权写边界；开发模式的目录预算不等同于文件系统隔离。终态工作区在 M2 Artifact 引用/保留合同完成前不会自动递归删除，因此真实占用持续计入总预算。小于 1 MiB 的真实极宽、高帧率、稀疏超长时轴、逻辑解码量大于 16 TiB 和 33 流容器已经证明预检在解码前拒绝；其中两类真实探测在 AppContainer + Job + DACL 内完成。命令语法不接受循环/playlist/concat，后续仍需更广泛的 codec parser 崩溃/fuzz corpus、跨进程协调与 M2 输入 staging。
 - yt-dlp 强制 `--ignore-config`、禁用插件目录、exec、playlist 和 playlist 元数据，并固定受信 FFmpeg 目录；正式托管模式即使请求显式要求也拒绝 remote components。
