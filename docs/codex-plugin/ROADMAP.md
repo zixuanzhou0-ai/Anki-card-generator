@@ -226,7 +226,11 @@ Registry 的公开 profile 永不返回 SecretRef、秘密或原始 operationId�
 
 该切片新增 33 项测试，M2 十组件联合回归为 `244 passed`，正式 Python 全集为 `1205 passed, 1 skipped`。测试使用可控 DNS resolver 和 fake pinned transport，证明安全合同而不冒充真实公网/YouTube 可用性验收。
 
-这不表示 M2 已完成：Artifact Registry、StudyTask、Project Registry、AuthorizationLedger、CredentialStore、ServiceProfileRegistry、profile verification、legacy projection 与 local/network resource ledger 尚未作为同一事务边界接入 Card Service 公共 MCP surface，Learning Contract 也尚未发布为 canonical Artifact ref。受信本地文件/目录选择器和 URL 输入窗口到 gesture verifier 的生产 attestation 适配器仍未接线，因此公共签发目前按设计不可用；目录逐子项 manifest/安全句柄、运行时 rehydration/staging 与 Anki ImportApproval 也未实现。正式 service authentication key protection/rotation、应用数据 ACL、可信 stdio audience 握手、精细 scope relation proof、完整 Broker reservation 与授权联合事务、受信设置事务、`system.validate_profile` 公共任务和 Anki 证据链仍在后续切片。公共 MCP 在这些边界完成前仍不能接受 ArtifactRef 对象或开放生成/导入写操作。
+第十一个内部切片已经实现 `TaskResourceStager` 与带认证的本地资源 resolution proof。已消费的 file/directory grant 会在再次验证 audience、service、撤销 epoch、资源 revision、约束和当前快照后，以独占句柄、有界流复制进 task-owned workspace；Worker 只收到 workspace-relative locator，不收到原始绝对路径或 staging ref。目录递归冻结有序 manifest，逐项拒绝 symlink/junction/reparse、hardlink、保留名、非 NFC/大小写冲突、深度/条目/总字节越界，并以二次扫描拒绝复制期间变化。
+
+私有 staging receipt 使用域隔离 HMAC 绑定 source ref 摘要、revision、task/audience/service/workspace identity、manifest 和路径；重建时同时复核 receipt、公开 proof、源授权、workspace identity 与暂存字节。生产模式要求正式 hardener，Windows 中 staged payload 对 task SID 仅授予 read/execute，Service/当前用户/SYSTEM/Administrators 保持管理权限；失败或取消不允许留下可消费的 partial。该切片新增 22 项测试，M2 十一组件联合回归为 `266 passed`，正式 Python 全集为 `1227 passed, 1 skipped`。
+
+这不表示 M2 已完成：该 stager 仍是 Card Service 内部构件，尚未由唯一生产 composition root 绑定正式 `harden_staged_path` 并接入 public MCP/可信 UI/Source Adapter；其跨进程锁当前串行化整个复制阶段，安全但尚未做大型目录吞吐优化。Artifact Registry、StudyTask、Project Registry、AuthorizationLedger、CredentialStore、ServiceProfileRegistry、profile verification、legacy projection 与 local/network resource ledger 也尚未作为同一事务边界接入 Card Service 公共 MCP surface，Learning Contract 尚未发布为 canonical Artifact ref。受信本地文件/目录选择器和 URL 输入窗口到 gesture verifier 的生产 attestation 适配器、网络资源 staging、逐子项公开 ref、Anki ImportApproval、正式 service authentication key protection/rotation、应用数据 ACL、可信 stdio audience 握手、精细 scope relation proof、完整 Broker reservation 与授权联合事务、受信设置事务、`system.validate_profile` 公共任务和 Anki 证据链仍在后续切片。公共 MCP 在这些边界完成前仍不能接受 ArtifactRef 对象或开放生成/导入写操作。
 
 ### 出口
 

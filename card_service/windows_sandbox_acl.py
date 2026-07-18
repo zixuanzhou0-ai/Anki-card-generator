@@ -473,6 +473,16 @@ def task_workspace_grants(task_sid: str, *, user_sid: str | None = None) -> tupl
         (task_sid, FILE_MODIFY),
     )
 
+def staged_resource_grants(task_sid: str, *, user_sid: str | None = None) -> tuple[tuple[str, int], ...]:
+    return (
+        (user_sid or current_user_sid(), FILE_FULL_CONTROL),
+        (SYSTEM_SID, FILE_FULL_CONTROL),
+        (ADMINISTRATORS_SID, FILE_FULL_CONTROL),
+        (task_sid, FILE_GENERIC_READ_EXECUTE),
+    )
+
+
+
 
 def service_root_grants(*, user_sid: str | None = None) -> tuple[tuple[str, int], ...]:
     return (
@@ -526,7 +536,7 @@ def create_task_workspace(root: str | Path, task_id: str) -> tuple[Path, str]:
 
 def harden_staged_path(path: str | Path, task_sid: str) -> None:
     target = _stable_existing_path(path)
-    grants = task_workspace_grants(task_sid)
+    grants = staged_resource_grants(task_sid)
     paths = [target, *target.rglob("*")] if target.is_dir() else [target]
     for child in paths:
         _stable_existing_path(child)

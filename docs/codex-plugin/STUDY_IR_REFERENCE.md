@@ -277,7 +277,9 @@ type InputRef =
 ~~~
 
 InputRef 不携带永久原始绝对路径或 raw URL。fileResourceRef、directoryResourceRef 和 networkResourceRef 由本地服务通过受信授权流程签发；MCP 后续调用只能缩小范围，不能替换 URL path/query 或扩大目录。
-CURRENT M2 内部实现已能签发 `fileResourceRef`、`directoryResourceRef`、`outputResourceRef` 和 `networkResourceRef`。本地 raw path 只留在认证私有账本；网络 raw/signed URL 只留在当前 Service 进程的短期 locator 内存，持久记录只保存不可逆 request/query 摘要和脱敏 origin。所有 ref 绑定 owner/host/plugin/session/service instance、资源 revision/策略、动作、硬上限、期限、次数和撤销 epoch。它们尚未成为公共 `InputRef` 入口；生产受信选择器/附件桥/URL 输入表面、目录逐子项 ref 与运行时安全句柄仍未完成，Service 重启后的网络 ref 必须重新授权。
+CURRENT M2 内部实现已能签发 `fileResourceRef`、`directoryResourceRef`、`outputResourceRef` 和 `networkResourceRef`。本地 raw path 只留在认证私有账本；网络 raw/signed URL 只留在当前 Service 进程的短期 locator 内存，持久记录只保存不可逆 request/query 摘要和脱敏 origin。所有 ref 绑定 owner/host/plugin/session/service instance、资源 revision/策略、动作、硬上限、期限、次数和撤销 epoch。
+
+本地 file/directory ref 还可在再次授权验证后重建为 task-bound staged snapshot：内部 receipt 绑定 source revision、workspace identity 与逐项 manifest，对 Worker 只暴露相对 task locator。它们尚未成为公共 `InputRef` 入口；生产受信选择器/附件桥/URL 输入表面、逐子项公共 ref、网络 staging 与统一 Card Service 事务仍未完成，Service 重启后的网络 ref 必须重新授权。
 
 
 ## 5.1 Learning Contract 与偏好层
@@ -2984,7 +2986,9 @@ type SanitizedLegacyPayloadV1 = {
 
 CURRENT M2 已实现内部 `LegacyProjectProjectionPublisher`：顶层 Project allowlist 与投影 envelope 使用封闭字段集，嵌套 JSON 仍按原 Project 结构保留，但受递归 secret/config/resource 扫描、节点/深度/字节/安全整数上限约束。它在任一 Blob/Artifact 写入前完成净化，并把同项目 SourceAsset、MediaLedger 及可选 reliability/inventory/diagnostics refs 绑定为认证父链；内部 resolve 重新验证 canonical Blob、schema digest、slot pointer 和父引用，public summary 只返回计数/布尔状态。
 
-这仍只是 sanitize/publish 合同，不是 15.2 的运行时重建。CURRENT 本地资源账本可在一次受控消费后为完全相同的 path/pointer/kind 生成精确 `LegacyResourceBinding`，但生产选择器 attestation、network binding、目录子项句柄、全部嵌套结构的逐类型 closed schema、受权 rehydration/staging、跨 Registry 原子事务、孤儿 Blob 保留清理和公共 MCP 接线仍是未完成门槛；因此 raw Project 仍不能成为公共工具输入或输出。
+这仍只是 sanitize/publish 合同，不是完整的 15.2 运行时重建。CURRENT 本地资源账本可在一次受控消费后为完全相同的 path/pointer/kind 生成精确 `LegacyResourceBinding`，并由内部 `TaskResourceStager` 把已验证的 file/directory grant 复制为认证的 task-local snapshot。
+
+生产选择器 attestation、network binding/staging、目录子项公共句柄、全部嵌套结构的逐类型 closed schema、legacy projection slot 到 staged locator 的统一 composition、跨 Registry 原子事务、孤儿 Blob 保留清理和公共 MCP 接线仍是未完成门槛；因此 raw Project 仍不能成为公共工具输入或输出。
 
 ## 15.2 Legacy 运行时重建
 

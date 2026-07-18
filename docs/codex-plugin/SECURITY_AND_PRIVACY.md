@@ -464,7 +464,11 @@ raw URL/路径只有在 pointer、资源 kind、resource revision 和原值 SHA-
 - 覆盖必须新的、精确绑定的内部授权记录。
 - partial 文件不成为 PackageArtifact。
 - 不允许用户素材目录被当作临时执行目录。
-CURRENT M2 已完成上述文件、输入目录和输出目录的内部 grant ledger：签发前快照，逐次消费重验，权限只能缩小，过期/次数/撤销/受众/篡改失败关闭。输入目录当前只授权并重验根，目录内每个子项的 DirectoryManifest、安全打开/复制与任务级 staging 仍未实现；`ResolvedLocalResource.path` 只可留在 Card Service 内部，不能直接作为 Worker 或公共 MCP 的安全句柄。
+CURRENT M2 已完成上述文件、输入目录和输出目录的内部 grant ledger：签发前快照，逐次消费重验，权限只能缩小，过期/次数/撤销/受众/篡改失败关闭。消费结果带有认证 resolution proof，并在每次 staging/rehydration 前再次绑定 path 摘要、revision、snapshot、constraints 与 revocation epoch。
+
+内部 `TaskResourceStager` 已实现文件与目录的任务级快照：独占打开、打开句柄身份重验、有界流复制、目录逐项 manifest、二次扫描、名称/深度/条目/总字节限制，以及 reparse/hardlink/竞态/篡改拒绝。私有 receipt 认证 source、task、audience、service、workspace 与 manifest；Worker 可见值只有 task-workspace 相对路径，不含 raw source path 或可转移 staging bearer。Windows hardening 对 task SID 仅开放 read/execute，失败清理不能静默留下可消费 partial。
+
+该实现目前仍是内部安全原语：正式 Card Service composition root 尚未绑定唯一 hardener、trusted picker/attachment attestation 与公共 `study.register_inputs`，网络资源也未进入这条 staging 链。构造 stager 的 callback 不是公共扩展点，Agent/MCP 不得自行注入“成功” hardener；这些接线完成前公共写入口继续 fail closed。
 
 
 ## 8. 网络与 SSRF

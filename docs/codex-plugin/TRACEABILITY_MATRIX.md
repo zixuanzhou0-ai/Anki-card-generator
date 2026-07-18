@@ -47,7 +47,7 @@
 | PR-506 | 宿主能力实测 | host capability snapshot | system.get_capabilities | manifest/stdio/tool/trusted-UI matrix | M3/M4 |
 | PR-507 | raw URL 不进入 MCP | trusted-entry-only network grant | system.request_network_grant | schema absence + ordinary/signed URL canary | M2/M3 |
 
-当前 M2 内部证据：PR-002 的 ArtifactEnvelope/认证 Registry 与 legacy Project 非秘密 canonical projection、PR-205/402/403/404 的 StudyTask/检查点/successor、PR-207 的 Project/Contract 双 revision、语义操作、幂等与固定失效矩阵、SR-013 的 model/TTS OperationIntent/Approval/Authorization 账本内核、PR-406/502/504 的认证 SecretRef/credentialRevision、持久非秘密 Service Profile Registry 与逐 profile verification registry，以及 PR-001/SR-002/SR-003/SR-018 的 local/network resource registry 均已有服务端实现和自动化测试。本地资源账本覆盖路径/链接/身份/哈希重验；网络账本覆盖 raw URL 仅进程内、脱敏持久摘要、全部地址公网判定、DNS rebinding、同源重定向、固定 IP + TLS hostname、无 ambient auth、限额、幂等、过期、撤销和 HMAC 防篡改。M2 十组件联合回归为 244 passed，正式 Python 全集为 1205 passed、1 skipped。受信窗口/选择器/URL 输入生产 attestation、受信设置/验证任务、目录逐子项句柄、运行时 rehydration/staging、ImportApproval、公共 MCP 工具、统一事务接线和正式安装边界仍未完成，表中 M3 出口不因此提前满足。
+当前 M2 内部证据：PR-002 的 ArtifactEnvelope/认证 Registry 与 legacy Project 非秘密 canonical projection、PR-205/402/403/404 的 StudyTask/检查点/successor、PR-207 的 Project/Contract 双 revision、语义操作、幂等与固定失效矩阵、SR-013 的 model/TTS OperationIntent/Approval/Authorization 账本内核、PR-406/502/504 的认证 SecretRef/credentialRevision、持久非秘密 Service Profile Registry 与逐 profile verification registry，以及 PR-001/SR-002/SR-003/SR-018 的 local/network resource registry 均已有服务端实现和自动化测试。本地资源链还覆盖认证 resolution proof、task-bound staging receipt、文件/目录有界复制、逐项 manifest、竞态/篡改复核和 Windows task SID 只读 DACL；网络账本覆盖 raw URL 仅进程内、脱敏持久摘要、全部地址公网判定、DNS rebinding、同源重定向、固定 IP + TLS hostname、无 ambient auth、限额、幂等、过期、撤销和 HMAC 防篡改。M2 十一组件联合回归为 266 passed，正式 Python 全集为 1227 passed、1 skipped。受信窗口/选择器/URL 输入生产 attestation、受信设置/验证任务、逐子项公共 ref、网络 staging、ImportApproval、公共 MCP 工具、统一事务接线和正式安装边界仍未完成，表中 M3 出口不因此提前满足。
 
 ## 2. 学习要求
 
@@ -69,7 +69,7 @@
 | ID | 要求 | 控制 | 工具边界 | 测试 | 里程碑 |
 |---|---|---|---|---|---|
 | SR-001 | 提示注入不提权 | untrusted data + internal authorization ledger | no raw actions | source/tool injection | M2/M3 |
-| SR-002 | 不传原始路径 | resource handles + internal ledger | register_inputs | traversal/reparse | M2 |
+| SR-002 | 不传原始路径 | resource handles + authenticated task staging | register_inputs | traversal/reparse/hardlink/race/receipt tamper | M2/M3 |
 | SR-003 | 防 SSRF | network proxy | canonical networkResourceRef | DNS/rebind/redirect | M2/M3 |
 | SR-004 | 文档资源隔离 | parser sandbox | adapter only | bomb/timeout/memory | M5 |
 | SR-005 | 供应链固定 | hashes/SBOM/signature | no repair_env | PATH/package tamper | M1/M3 |

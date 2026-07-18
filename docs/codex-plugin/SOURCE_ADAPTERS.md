@@ -149,7 +149,9 @@ CURRENT M2 内部 `LocalResourceGrantRegistry` 已实现 file/directory/output r
 - 未读取原因。
 
 所有子项逐项校验，不因根目录安全就信任内部 reparse point。
-DirectoryManifest、逐子项 ref、安全打开/复制和受限 staging 仍是后续切片；根目录 grant 不能被误写成“其全部后代已经冻结并验证”。
+CURRENT M2 内部 `TaskResourceStager` 已实现目录逐项安全打开/复制、稳定排序 manifest、二次扫描与 task-bound 受限 staging。它逐项拒绝 symlink/junction/reparse、hardlink、非 NFC/大小写冲突、保留名和资源上限越界；Worker 只读取 workspace-relative locator。
+
+这不是公共 DirectoryManifest adapter：生产选择器 attestation、每项 opaque InputRef、include/exclude/skip reason、Card Service 事务接线与 SourceAsset 发布仍未完成。根目录 grant 在完成 staging 前仍不能被描述成“全部后代已经冻结”。
 
 
 ## 6. 视频、字幕与音频

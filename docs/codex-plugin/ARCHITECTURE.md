@@ -516,7 +516,9 @@ CURRENT 内部 `ServiceProfileVerificationRegistry` 现可直接使用上述持�
 - CURRENT M2 的 `LocalResourceGrantRegistry` 已在 Card Service 内部为本地文件、输入目录和输出目录签发短期 opaque ref。私有记录使用 canonical JSON、域隔离 HMAC、跨进程锁、审计备份和 no-replace/原子替换；ref 与 owner/host/plugin/session/service instance 共同绑定。文件逐次使用前重验 regular-file 身份、唯一链接、大小、mtime 和 SHA-256；输入目录重验根身份/mtime，输出目录重验稳定身份。权限只允许缩小，过期、次数耗尽、撤销 epoch、资源变化或记录篡改均失败关闭。
 - raw path 只存在于该认证私有账本；公开 summary 与 legacy projection 都不返回路径。受控消费结果可以为完全相同的 Project pointer/path/kind 生成精确 `LegacyResourceBinding`，但这仍是内部合同，不是公共 bearer。
 - CURRENT M2 的 `NetworkResourceGrantRegistry` 已在 Card Service 内部签发 audience/service 绑定的 `networkResourceRef`。raw/signed URL 只存在于当前 Service 进程的短期 locator 内存；认证持久记录只保存 HMAC 摘要、脱敏 display origin、封闭策略、次数、期限与撤销状态。签发、消费和每个重定向 hop 都重新解析全部地址，任一非公网结果即拒绝；传输固定到已验证 IP，同时保留 TLS SNI/hostname 校验，不读取环境代理、Cookie 或系统集成凭据。Service 重启后旧 ref 变为 `reauthorization_required`，不能从持久摘要恢复 URL。
-- legacy 桥与资源账本当前尚未作为同一事务边界接入 Card Service/MCP，也未实现生产受信选择/URL 输入 attestation、目录逐子项安全句柄或 runtime rehydration/staging。Artifact publish 失败可能留下已经净化的内容寻址孤儿 Blob；跨 Registry 原子事务和保留清理属于后续 M2。
+- CURRENT M2 的内部 `TaskResourceStager` 会重新验证已消费 local grant 的 proof、audience、撤销 epoch、revision、约束和当前快照，再以独占句柄和有界流复制到 task workspace。目录复制产生排序、认证的逐项 manifest，并拒绝 reparse、hardlink、名称碰撞、资源越界和复制期变化；Worker 只得到 workspace-relative locator。
+- staging receipt 以域隔离 HMAC 绑定 source ref 摘要、task/audience/service、workspace identity、manifest 与暂存字节。Windows staged payload 对 task SID 只授予 read/execute；生产模式没有正式 hardener 就失败关闭。当前实现以跨进程锁串行化完整复制阶段，优先保证原子性与幂等，后续再优化大型目录吞吐。
+- legacy 桥、资源账本与 stager 尚未由唯一生产 composition root 作为同一事务边界接入 Card Service/MCP，也未实现生产受信选择/URL 输入 attestation、网络资源 staging 或逐子项公共 ref。Artifact publish 失败可能留下已经净化的内容寻址孤儿 Blob；跨 Registry 原子事务和保留清理属于后续 M2。
 - 旧桌面项目可通过显式迁移器导入，不直接假设字段等价。
 
 ## 11. 进程与部署

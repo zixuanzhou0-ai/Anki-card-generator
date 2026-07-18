@@ -77,6 +77,8 @@ class ResolvedLocalResource:
     resource_revision_digest: str
     revocation_epoch: int
     constraints: Mapping[str, Any]
+    snapshot: Mapping[str, Any]
+    resolution_proof: str
 
     def legacy_binding(
         self,
@@ -882,6 +884,143 @@ class LocalResourceGrantRegistry:
         record, raw = self._load_record(binding["grantId"])
         self._authorize_record(record, audience_digest)
         return resource_ref, record, raw
+    def _resolution_proof(
+        self,
+        *,
+        resource_ref: str,
+        grant_id: str,
+        kind: str,
+        resource_revision_digest: str,
+        path: Path,
+        revocation_epoch: int,
+        constraints: Mapping[str, Any],
+        snapshot: Mapping[str, Any],
+    ) -> str:
+        return self._mac(
+            "study.local-resource.resolution.v1",
+            {
+                "resourceRefDigest": self._opaque_digest(
+                    "study.local-resource.resolved-ref.v1", resource_ref
+                ),
+                "grantId": grant_id,
+                "kind": kind,
+                "resourceRevisionDigest": resource_revision_digest,
+                "revocationEpoch": revocation_epoch,
+                "constraints": dict(constraints),
+                "pathDigest": self._opaque_digest(
+                    "study.local-resource.resolved-path.v1", str(path)
+                ),
+                "snapshot": dict(snapshot),
+                "serviceInstanceId": self._service_instance_id,
+            },
+        )
+
+    def _resolved(
+        self,
+        *,
+        resource_ref: str,
+        record: Mapping[str, Any],
+        path: Path,
+        constraints: Mapping[str, Any],
+    ) -> ResolvedLocalResource:
+        snapshot = json.loads(json.dumps(record["snapshot"]))
+        effective_constraints = json.loads(json.dumps(dict(constraints)))
+        return ResolvedLocalResource(
+            resource_ref=resource_ref,
+            grant_id=record["grantId"],
+            kind=record["kind"],
+            path=path,
+            display_name=record["displayName"],
+            resource_revision_digest=record["resourceRevisionDigest"],
+            revocation_epoch=record["revocationEpoch"],
+            constraints=effective_constraints,
+            snapshot=snapshot,
+            resolution_proof=self._resolution_proof(
+                resource_ref=resource_ref,
+                grant_id=record["grantId"],
+                kind=record["kind"],
+                resource_revision_digest=record["resourceRevisionDigest"],
+                revocation_epoch=record["revocationEpoch"],
+                path=path,
+                constraints=effective_constraints,
+                snapshot=snapshot,
+            ),
+        )
+
+    def assert_resolution_active(
+        self,
+        resource: ResolvedLocalResource,
+        audience: ArtifactAudienceBinding,
+        *,
+        required_action: str | None = None,
+    ) -> None:
+        if not isinstance(resource, ResolvedLocalResource):
+            raise LocalResourceRegistryError(
+                "RESOURCE_RESOLUTION_INVALID", "resolved local resource is invalid"
+            )
+        expected_proof = self._resolution_proof(
+            resource_ref=resource.resource_ref,
+            grant_id=resource.grant_id,
+            kind=resource.kind,
+            resource_revision_digest=resource.resource_revision_digest,
+            revocation_epoch=resource.revocation_epoch,
+            path=resource.path,
+            constraints=resource.constraints,
+            snapshot=resource.snapshot,
+        )
+        if not hmac.compare_digest(resource.resolution_proof, expected_proof):
+            raise LocalResourceRegistryError(
+                "RESOURCE_RESOLUTION_INVALID", "resolved local resource proof is invalid"
+            )
+        with self._transaction():
+            normalized_ref, record, _ = self._resolve_record(resource.resource_ref, audience)
+            if (
+                normalized_ref != resource.resource_ref
+                or record["grantId"] != resource.grant_id
+                or record["kind"] != resource.kind
+                or record["resourceRevisionDigest"] != resource.resource_revision_digest
+                or record["snapshot"] != dict(resource.snapshot)
+            ):
+                raise LocalResourceRegistryError(
+                    "RESOURCE_RESOLUTION_INVALID",
+                    "resolved local resource no longer matches its authenticated grant",
+                )
+            state = _record_state(record, self._now())
+            if record["revocationEpoch"] != resource.revocation_epoch:
+                raise LocalResourceRegistryError(
+                    "RESOURCE_REVOCATION_CHANGED", "resource revocation epoch changed"
+                )
+            if state == "revoked":
+                raise LocalResourceRegistryError(
+                    "RESOURCE_REVOKED", "resource grant has been revoked"
+                )
+            if state == "expired":
+                raise LocalResourceRegistryError(
+                    "RESOURCE_EXPIRED", "resource grant has expired"
+                )
+            if required_action is not None and required_action not in record["constraints"]["actions"]:
+                raise LocalResourceRegistryError(
+                    "RESOURCE_ACTION_FORBIDDEN", "resource action exceeds the approved grant"
+                )
+            if not _constraints_are_narrower(resource.constraints, record["constraints"]):
+                raise LocalResourceRegistryError(
+                    "RESOURCE_CONSTRAINT_FORBIDDEN",
+                    "resolved resource constraints exceed the approved grant",
+                )
+            normalized_path = _normalize_lexical_path(record["rawPath"])
+            if os.path.normcase(str(normalized_path)) != os.path.normcase(str(resource.path)):
+                raise LocalResourceRegistryError(
+                    "RESOURCE_PATH_MISMATCH", "resolved local resource path changed"
+                )
+            current_snapshot, current_digest = _snapshot(normalized_path, record["kind"])
+            if (
+                current_snapshot != record["snapshot"]
+                or current_digest != record["resourceRevisionDigest"]
+            ):
+                raise LocalResourceRegistryError(
+                    "RESOURCE_CHANGED", "resource changed after user authorization"
+                )
+
 
 
     def issue_grant(
@@ -1152,14 +1291,10 @@ class LocalResourceGrantRegistry:
                         raise LocalResourceRegistryError(
                             "RESOURCE_USE_ID_CONFLICT", "useId was reused for a different request"
                         )
-                    return ResolvedLocalResource(
+                    return self._resolved(
                         resource_ref=normalized_ref,
-                        grant_id=record["grantId"],
-                        kind=record["kind"],
+                        record=record,
                         path=normalized_path,
-                        display_name=record["displayName"],
-                        resource_revision_digest=record["resourceRevisionDigest"],
-                        revocation_epoch=record["revocationEpoch"],
                         constraints=effective_constraints,
                     )
             if state == "exhausted":
@@ -1192,14 +1327,10 @@ class LocalResourceGrantRegistry:
                 canonical_json_bytes(updated),
                 previous_raw,
             )
-            return ResolvedLocalResource(
+            return self._resolved(
                 resource_ref=normalized_ref,
-                grant_id=record["grantId"],
-                kind=record["kind"],
+                record=updated,
                 path=normalized_path,
-                display_name=record["displayName"],
-                resource_revision_digest=record["resourceRevisionDigest"],
-                revocation_epoch=record["revocationEpoch"],
                 constraints=effective_constraints,
             )
 

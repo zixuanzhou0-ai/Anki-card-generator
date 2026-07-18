@@ -35,6 +35,11 @@ from .network_resource_registry import (
     PinnedNetworkFetcher,
     ResolvedNetworkResource,
 )
+from .resource_staging import (
+    ResourceStagingError,
+    StagedResource,
+    TaskResourceStager,
+)
 from .project_registry import ProjectRegistry, ProjectRegistryError
 from .service_profiles import (
     ServiceProfileVerificationError,
@@ -69,6 +74,9 @@ __all__ = [
     "StudyTaskError",
     "ProjectRegistry",
     "ProjectRegistryError",
+    "ResourceStagingError",
+    "StagedResource",
+    "TaskResourceStager",
     "ServiceProfileVerificationError",
     "ServiceProfileVerificationRegistry",
     "ServiceProfileRegistry",

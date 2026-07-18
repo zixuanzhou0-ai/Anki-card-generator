@@ -263,7 +263,9 @@ host 部分至少分别报告：pluginManifestLoaded、stdioServiceLaunch、tool
 ### system.request_output_grant
 
 打开受信目录选择器，返回 outputResourceRef、显示名称、允许 create/versioned/replace 操作和有效期。默认不包含 replace；覆盖需要独立新确认。
-CURRENT M2 已实现 file/directory/output grant 的内部认证账本、opaque ref、逐次消费和撤销语义，但上述两个 public MCP 工具及受信选择器/宿主附件 adapter 尚未接线。内部 ref 不得手工拼装或由 Agent 参数直接签发；在生产 adapter 完成前，新授权按设计 fail closed。
+CURRENT M2 已实现 file/directory/output grant 的内部认证账本、opaque ref、逐次消费、撤销和 task staging：已消费的 file/directory grant 可被复制成带认证 receipt 的 task-local snapshot，Worker locator 只含 workspace-relative path。
+
+上述两个 public MCP 工具、受信选择器/宿主附件 adapter 和生产 Card Service composition 尚未接线。内部 ref/staging receipt 不得手工拼装、返回给 Agent，或由 Agent 参数直接签发；在生产 adapter 完成前，新授权按设计 fail closed。
 
 
 ### system.request_network_grant
@@ -369,6 +371,8 @@ Service 先对整个 ChangeSet 做 schema/长度/预算/路线约束校验，再
 ### 5.5 study.register_inputs
 
 输入包含 projectId、InputRef 数组和 snapshotPolicy。授权不会作为模型可提交的 bearer 传入；Card Service 使用当前可信连接身份和内部授权账本校验每个 InputRef。
+
+CURRENT 内部 stager 已能把经过验证的本地 ref 转换为 task-local 相对 locator，但本 `study.register_inputs` 公共工具尚未接线。公共响应不得包含 source path、私有 receipt、resolution proof、stagingRef 或绝对 task path。
 
 snapshotPolicy：
 

@@ -108,7 +108,7 @@ def test_task_workspace_uses_task_sid_and_staged_files_are_rehardened(tmp_path: 
     )
     harden_staged_path(staged_root, task_sid)
     file_entries = read_dacl(staged)
-    assert any(entry.sid == task_sid and entry.access_mask == FILE_MODIFY for entry in file_entries)
+    assert any(entry.sid == task_sid and entry.access_mask == FILE_GENERIC_READ_EXECUTE for entry in file_entries)
     assert all(entry.sid != "S-1-1-0" for entry in file_entries)
 
 
