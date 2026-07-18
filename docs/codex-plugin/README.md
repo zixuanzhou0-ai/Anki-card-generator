@@ -95,7 +95,7 @@
 - 非 NFC 名称、Windows 保留设备名（含 `CLOCK$`）、大小写/规范化冲突及 APKG archive 资源上限已经完成 fail-closed 回归；APKG archive/package/verifier 与标准 Windows Anki direct path 均采用有界流式读取。64 MiB direct 样本在整文件读取、Base64 和 AnkiConnect 媒体动作被禁止时通过，Python `tracemalloc` 峰值增量低于 32 MiB；这不等于非标准兼容路径或双进程 RSS 已全部流式化/量化。
 - 在合同尚未对齐的先前尝试中，生产 preflight 与最终包门禁按设计 fail closed；隔离目标保持 0 note / 0 card / 0 media。该负例证明失败没有产生半写入，不能被改写成成功测试。
 
-M0 已经完成，但 Codex 插件尚未交付：Computer Use 已在真实 Windows Anki 26.05 中完成翻面、滚动、焦点、四类媒体播放、Space/Enter 路由、20 张连续复习、重复导入、重启及 V14/V15 并存验收；合成视频与静音 TTS 仍不能替代真人语义、听感和长期学习效果验收。插件 manifest、目标 Codex 宿主注册、stdio MCP、M1 Headless Card Service，以及 M2 Artifact 注册表/不透明引用/受控文件句柄仍未完成。详见 [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md)。
+M0 已经完成，但 Codex 插件尚未交付：仓库已有被动 plugin manifest/Skill、最小 stdio MCP、M1 Headless Card Service 多个受限切片、签名 runtime、原生 pinned launcher、完整被动候选，以及无私钥/无联网的 install candidate、public-key-only signing request 和 finalizer。真实 Codex `0.144.1` 已从隔离候选连续两次完成唯一只读工具调用；当前真实 launcher 仍为 `NotSigned`，也没有生产发布策略/HSM 签名，因此正式安装流程按设计失败关闭。M1 仍需生产签名身份、真实独立安装验收、完整桌面等价矩阵和插件侧通用 Anki runtime verifier；M2 Artifact 注册表/不透明引用/受控文件句柄也尚未实现。详见 [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md) 与 [M1 安装最终化验证报告](M1_INSTALL_FINALIZER_VERIFICATION_2026-07-18.md)。
 
 ### 4.2 遗留文档冲突清单（只登记，不回写历史快照）
 
@@ -133,13 +133,14 @@ M0 已经完成，但 Codex 插件尚未交付：Computer Use 已在真实 Windo
 
 12. [安全与隐私](SECURITY_AND_PRIVACY.md)：内部授权记录、提示注入、路径、网络、秘密和 Anki 写入。
 13. [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md)：最终自动化、V15 20 卡媒体包、隔离 Anki 数据证据、真实 GUI/20 张连续复习和剩余学习效果边界。
-14. [可靠性与核验](RELIABILITY_AND_VERIFICATION.md)：从素材到真实 Anki 的逐级证据链。
-15. [基准与评估](BENCHMARK_AND_EVALUATION.md)：功能、对抗、学习效果和发布阈值。
-16. [路线图](ROADMAP.md)：阶段、出口条件、迁移和发布策略。
-17. [决策记录](DECISIONS.md)：已选方案、理由、替代方案和复议触发器。
-18. [可追溯矩阵](TRACEABILITY_MATRIX.md)：目标到接口、测试与里程碑的映射。
-19. [术语表](GLOSSARY.md)：跨文档统一语义。
-20. [设计评审记录](DESIGN_REVIEW_RECORD.md)：内部委员会、Gemini 与 Hermes/Grok 的终审结论、分歧和裁决。
+14. [M1 安装最终化验证报告](M1_INSTALL_FINALIZER_VERIFICATION_2026-07-18.md)：安装候选、独立签名域、Authenticode、原生预检、实物宿主探针和继续阻断项。
+15. [可靠性与核验](RELIABILITY_AND_VERIFICATION.md)：从素材到真实 Anki 的逐级证据链。
+16. [基准与评估](BENCHMARK_AND_EVALUATION.md)：功能、对抗、学习效果和发布阈值。
+17. [路线图](ROADMAP.md)：阶段、出口条件、迁移和发布策略。
+18. [决策记录](DECISIONS.md)：已选方案、理由、替代方案和复议触发器。
+19. [可追溯矩阵](TRACEABILITY_MATRIX.md)：目标到接口、测试与里程碑的映射。
+20. [术语表](GLOSSARY.md)：跨文档统一语义。
+21. [设计评审记录](DESIGN_REVIEW_RECORD.md)：内部委员会、Gemini 与 Hermes/Grok 的终审结论、分歧和裁决。
 
 ## 6. 当前可复用资产
 

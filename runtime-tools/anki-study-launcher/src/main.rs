@@ -32,6 +32,12 @@ struct LauncherLayout {
     trust_policy: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaunchMode {
+    Stdio,
+    VerifyInstallOnly,
+}
+
 fn trace(message: &str) {
     if env::var_os("ANKI_STUDY_LAUNCHER_TRACE").as_deref() == Some(OsStr::new("1")) {
         eprintln!("[anki-study-launcher] {message}");
@@ -391,12 +397,18 @@ fn resolve_layout(executable: &Path) -> Result<LauncherLayout, String> {
     })
 }
 
-fn parse_arguments(arguments: impl Iterator<Item = OsString>) -> Result<(), String> {
+fn parse_arguments(arguments: impl Iterator<Item = OsString>) -> Result<LaunchMode, String> {
     let values: Vec<OsString> = arguments.collect();
-    if values.len() != 1 || values[0] != OsStr::new("--stdio") {
-        return Err("launcher only accepts the fixed --stdio mode".to_owned());
+    if values.len() != 1 {
+        return Err("launcher requires exactly one fixed mode".to_owned());
     }
-    Ok(())
+    if values[0] == OsStr::new("--stdio") {
+        return Ok(LaunchMode::Stdio);
+    }
+    if values[0] == OsStr::new("--verify-install-only") {
+        return Ok(LaunchMode::VerifyInstallOnly);
+    }
+    Err("launcher only accepts fixed stdio or install verification mode".to_owned())
 }
 
 fn state_directory() -> Result<PathBuf, String> {
@@ -423,7 +435,7 @@ fn state_directory() -> Result<PathBuf, String> {
 
 fn run() -> Result<i32, String> {
     trace("starting");
-    parse_arguments(env::args_os().skip(1))?;
+    let mode = parse_arguments(env::args_os().skip(1))?;
     let expected_manifest =
         expected_digest(EXPECTED_RUNTIME_MANIFEST_SHA256, "runtime manifest SHA-256")?;
     let expected_trust = expected_digest(
@@ -454,6 +466,9 @@ fn run() -> Result<i32, String> {
             trace("passive plugin layout verified");
             None
         };
+    if mode == LaunchMode::VerifyInstallOnly && install_authorization.is_none() {
+        return Err("passive launcher cannot authorize an install package".to_owned());
+    }
     let trust_policy = stable_file_within(
         &layout.plugin_root,
         layout
@@ -476,6 +491,10 @@ fn run() -> Result<i32, String> {
         .runtime_root
         .canonicalize()
         .map_err(|_| "runtime package root cannot be resolved".to_owned())?;
+    if mode == LaunchMode::VerifyInstallOnly {
+        trace("install-only verification completed");
+        return Ok(0);
+    }
     let state = state_directory()?;
     if let Some(authorization) = install_authorization.as_ref() {
         release_verifier::enforce_install_rollback_floor(&state, authorization)?;
@@ -526,7 +545,7 @@ fn main() {
 mod tests {
     use super::{
         assert_no_reparse_ancestors, hex_digest, is_sha256, parse_arguments, runtime_relative_path,
-        sha256_file, windows_reserved_name,
+        sha256_file, windows_reserved_name, LaunchMode,
     };
     use sha2::{Digest, Sha256};
     use std::env;
@@ -536,7 +555,14 @@ mod tests {
 
     #[test]
     fn accepts_only_the_fixed_stdio_mode() {
-        assert!(parse_arguments([OsString::from("--stdio")].into_iter()).is_ok());
+        assert_eq!(
+            parse_arguments([OsString::from("--stdio")].into_iter()).unwrap(),
+            LaunchMode::Stdio
+        );
+        assert_eq!(
+            parse_arguments([OsString::from("--verify-install-only")].into_iter()).unwrap(),
+            LaunchMode::VerifyInstallOnly
+        );
         assert!(parse_arguments([].into_iter()).is_err());
         assert!(parse_arguments(
             [OsString::from("--stdio"), OsString::from("--other")].into_iter()
