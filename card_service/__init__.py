@@ -23,6 +23,11 @@ from .legacy_project_projection import (
     LegacyResourceBinding,
     sanitize_legacy_project,
 )
+from .local_resource_registry import (
+    LocalResourceGrantRegistry,
+    LocalResourceRegistryError,
+    ResolvedLocalResource,
+)
 from .project_registry import ProjectRegistry, ProjectRegistryError
 from .service_profiles import (
     ServiceProfileVerificationError,
@@ -44,6 +49,9 @@ __all__ = [
     "LegacyProjectProjectionPublisher",
     "LegacyResourceBinding",
     "sanitize_legacy_project",
+    "LocalResourceGrantRegistry",
+    "LocalResourceRegistryError",
+    "ResolvedLocalResource",
     "TaskManifestError",
     "StudyTaskCoordinator",
     "StudyTaskError",

@@ -513,7 +513,9 @@ CURRENT 内部 `ServiceProfileVerificationRegistry` 现可直接使用上述持�
 - M1 的签名运行时等价合同现在覆盖真实 AppContainer 内的 Service-owned 整句/表达 TTS 和 APKG 导出。Service 创建的输出根、restricted token 默认 DACL 与 Worker 新建子目录共享 task capability 边界；托管媒体工具必须位于签名 runtime root，所有媒体输入/输出必须位于 task workspace，边界内逐组件拒绝 reparse，不能通过不可访问的盘符祖先误报或放宽检查。托管音频审计不可用、超时、非法或非正时长均 fail closed；如果远程 TTS 已返回而本地审计失败，不重复计费调用。临时签名实物为 4385 项、286,933,332 bytes，manifest SHA-256 `6073b8f7743fcd51a3ac599d6a7816bee4e5c582570c4517231029a197cde990`；它证明调度/媒体语义和包不可变性，不代表正式发行身份。
 - CURRENT M2 的 `LegacyProjectProjectionPublisher` 是旧桌面 Project 与 Artifact Registry 之间的内部桥。它先在内存中递归净化，再验证同项目 SourceAsset/MediaLedger/可靠性/清单/诊断父 Artifact，最后写入固定 schema SHA-256 绑定的 JCS Blob 和认证 envelope；raw Project 永远不是 Artifact payload。
 - Project 中的 raw http(s)、本机路径、盘符相对路径和上级穿越路径只能由受信资源层提供的精确 `LegacyResourceBinding` 替换为 `$resourceSlot`。原值摘要只用于发布前比对，不进入持久 slot；slot 只保存内部绑定 ID、资源 revision 摘要，以及网络资源的 canonical request/query-redaction 摘要和无 userinfo/query/fragment 的 display origin。对外 summary 不暴露这些内部绑定、Blob 或 profile identity。
-- 该桥当前只实现 sanitize/publish/internal-resolve/public-summary 合同，不实现真实资源授权签发、runtime rehydration 或 Card Service/MCP 接线。Artifact publish 失败可能留下已经净化的内容寻址孤儿 Blob；跨 Registry 原子事务和保留清理属于后续 M2。
+- CURRENT M2 的 `LocalResourceGrantRegistry` 已在 Card Service 内部为本地文件、输入目录和输出目录签发短期 opaque ref。私有记录使用 canonical JSON、域隔离 HMAC、跨进程锁、审计备份和 no-replace/原子替换；ref 与 owner/host/plugin/session/service instance 共同绑定。文件逐次使用前重验 regular-file 身份、唯一链接、大小、mtime 和 SHA-256；输入目录重验根身份/mtime，输出目录重验稳定身份。权限只允许缩小，过期、次数耗尽、撤销 epoch、资源变化或记录篡改均失败关闭。
+- raw path 只存在于该认证私有账本；公开 summary 与 legacy projection 都不返回路径。受控消费结果可以为完全相同的 Project pointer/path/kind 生成精确 `LegacyResourceBinding`，但这仍是内部合同，不是公共 bearer。
+- legacy 桥与资源账本当前尚未作为同一事务边界接入 Card Service/MCP，也未实现目录逐子项安全句柄、网络资源授权或 runtime rehydration/staging。Artifact publish 失败可能留下已经净化的内容寻址孤儿 Blob；跨 Registry 原子事务和保留清理属于后续 M2。
 - 旧桌面项目可通过显式迁移器导入，不直接假设字段等价。
 
 ## 11. 进程与部署

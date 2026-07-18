@@ -277,6 +277,8 @@ type InputRef =
 ~~~
 
 InputRef 不携带永久原始绝对路径或 raw URL。fileResourceRef、directoryResourceRef 和 networkResourceRef 由本地服务通过受信授权流程签发；MCP 后续调用只能缩小范围，不能替换 URL path/query 或扩大目录。
+CURRENT M2 内部实现已能签发 `fileResourceRef`、`directoryResourceRef` 和 `outputResourceRef`：raw path 只留在认证私有账本，ref 绑定 owner/host/plugin/session/service instance、资源 revision、动作、硬上限、期限、次数和撤销 epoch。该实现尚未成为公共 `InputRef` 入口；`networkResourceRef`、生产受信选择器/附件桥、目录逐子项 ref 与运行时安全句柄仍未完成。
+
 
 ## 5.1 Learning Contract 与偏好层
 
@@ -2982,7 +2984,7 @@ type SanitizedLegacyPayloadV1 = {
 
 CURRENT M2 已实现内部 `LegacyProjectProjectionPublisher`：顶层 Project allowlist 与投影 envelope 使用封闭字段集，嵌套 JSON 仍按原 Project 结构保留，但受递归 secret/config/resource 扫描、节点/深度/字节/安全整数上限约束。它在任一 Blob/Artifact 写入前完成净化，并把同项目 SourceAsset、MediaLedger 及可选 reliability/inventory/diagnostics refs 绑定为认证父链；内部 resolve 重新验证 canonical Blob、schema digest、slot pointer 和父引用，public summary 只返回计数/布尔状态。
 
-这只是 sanitize/publish 合同，不是 15.2 的运行时重建。生产 ResourceBinding 签发、全部嵌套结构的逐类型 closed schema、受权 rehydration、跨 Registry 原子事务、孤儿 Blob 保留清理和公共 MCP 接线仍是未完成门槛；因此 raw Project 仍不能成为公共工具输入或输出。
+这仍只是 sanitize/publish 合同，不是 15.2 的运行时重建。CURRENT 本地资源账本可在一次受控消费后为完全相同的 path/pointer/kind 生成精确 `LegacyResourceBinding`，但生产选择器 attestation、network binding、目录子项句柄、全部嵌套结构的逐类型 closed schema、受权 rehydration/staging、跨 Registry 原子事务、孤儿 Blob 保留清理和公共 MCP 接线仍是未完成门槛；因此 raw Project 仍不能成为公共工具输入或输出。
 
 ## 15.2 Legacy 运行时重建
 

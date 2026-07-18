@@ -8,7 +8,7 @@
 
 | ID | 要求 | 领域/架构 | 工具/界面 | 验证 | 里程碑 |
 |---|---|---|---|---|---|
-| PR-001 | 注册附件、文件、目录、URL | InputRef/SourceAsset | register_inputs | 来源 adapter corpus | M3/M5 |
+| PR-001 | 注册附件、文件、目录、URL | InputRef/SourceAsset + LocalResourceGrant | register_inputs | grant/来源 adapter corpus | M2 内核；M3/M5 公共入口 |
 | PR-002 | 稳定身份/修订 | SourceIdentity/ArtifactEnvelope | start_source_inspection | hash/revision/TOCTOU | M2 |
 | PR-003 | 显示完整性 | CompletenessRecord | Inline/Fullscreen | partial/unknown cases | M2/M4 |
 | PR-004 | 多源关系 | UnitRelation/ConflictSet | candidate detail | duplicate/conflict benchmark | M6 |
@@ -47,7 +47,7 @@
 | PR-506 | 宿主能力实测 | host capability snapshot | system.get_capabilities | manifest/stdio/tool/trusted-UI matrix | M3/M4 |
 | PR-507 | raw URL 不进入 MCP | trusted-entry-only network grant | system.request_network_grant | schema absence + ordinary/signed URL canary | M2/M3 |
 
-当前 M2 内部证据：PR-002 的 ArtifactEnvelope/认证 Registry 与 legacy Project 非秘密 canonical projection、PR-205/402/403/404 的 StudyTask/检查点/successor、PR-207 的 Project/Contract 双 revision、语义操作、幂等与固定失效矩阵、SR-013 的 model/TTS OperationIntent/Approval/Authorization 账本内核，以及 PR-406/502/504 的认证 SecretRef/credentialRevision、持久非秘密 Service Profile Registry 与逐 profile verification registry 已有服务端实现和自动化测试。Legacy sanitizer 覆盖 fixed schema、递归 secret/config 移除、raw URL/path→精确 resource slot、同项目证据父链、canonical Blob/marker 复核与 public summary 最小披露；Profile 配置闭包、规范指纹、revision CAS、幂等、身份路径、凭据实时绑定、外部替换/删除 uncertain，以及凭据 add/replace/delete/rollback/OAuth/concurrency、歧义 crash、latest-failure、stale-at-publish、TTL 与旧备份防回滚均覆盖。M2 八组安全组件联合回归为 192 passed，正式 Python 全集为 1154 passed、1 skipped。受信窗口生产 attestation 适配、受信设置/验证任务、生产 ResourceBinding/运行时 rehydration、资源/ImportApproval、公共 MCP 工具、统一事务接线和正式安装边界仍未完成，表中 M3 出口不因此提前满足。
+当前 M2 内部证据：PR-002 的 ArtifactEnvelope/认证 Registry 与 legacy Project 非秘密 canonical projection、PR-205/402/403/404 的 StudyTask/检查点/successor、PR-207 的 Project/Contract 双 revision、语义操作、幂等与固定失效矩阵、SR-013 的 model/TTS OperationIntent/Approval/Authorization 账本内核、PR-406/502/504 的认证 SecretRef/credentialRevision、持久非秘密 Service Profile Registry 与逐 profile verification registry，以及 PR-001/SR-002 的 file/directory/output `LocalResourceGrantRegistry` 均已有服务端实现和自动化测试。Legacy sanitizer 覆盖 fixed schema、递归 secret/config 移除、raw URL/path→精确 resource slot、同项目证据父链、canonical Blob/marker 复核与 public summary 最小披露；本地资源账本覆盖短期 audience/service 绑定、opaque ref、路径/链接/身份/哈希重验、约束只缩小、幂等消费、次数/过期/撤销和 HMAC 防篡改。M2 九组件联合回归为 211 passed，正式 Python 全集为 1172 passed、1 skipped。受信窗口/选择器生产 attestation 适配、受信设置/验证任务、networkResourceRef/SSRF、目录逐子项句柄、运行时 rehydration/staging、ImportApproval、公共 MCP 工具、统一事务接线和正式安装边界仍未完成，表中 M3 出口不因此提前满足。
 
 ## 2. 学习要求
 

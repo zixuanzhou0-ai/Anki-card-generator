@@ -136,6 +136,8 @@ Agent 不能直接提交任意绝对路径。用户通过宿主附件或本地�
 - 规范路径仍在授权根。
 - 文件身份和元数据未发生未解释变化。
 - 没有 symlink、junction、reparse point、UNC、设备路径、ADS 或保留名逃逸。
+CURRENT M2 内部 `LocalResourceGrantRegistry` 已实现 file/directory/output ref 的上述根授权、短期 audience/service 绑定、动作与资源上限、逐次身份重验、幂等消费和撤销。生产本地选择器/宿主附件 adapter 尚未接线，因此 Agent 还不能通过公共工具自行签发这些 ref。
+
 
 ### 5.2 目录
 
@@ -147,6 +149,8 @@ Agent 不能直接提交任意绝对路径。用户通过宿主附件或本地�
 - 未读取原因。
 
 所有子项逐项校验，不因根目录安全就信任内部 reparse point。
+DirectoryManifest、逐子项 ref、安全打开/复制和受限 staging 仍是后续切片；根目录 grant 不能被误写成“其全部后代已经冻结并验证”。
+
 
 ## 6. 视频、字幕与音频
 

@@ -404,13 +404,13 @@ type ImportApprovalLedgerState = {
 - 原工具重试时重建并核对同一 OperationRequestManifestDigest、audience、intentDigest、profile/configurationFingerprint/credentialRevision、精确 disclosure/egress、资源/费用上限与当前撤销状态；任何变化都要求新 intent。随后生成的 TaskInputManifestDigest 包含 intentDigest。
 - 重启/新 session 后旧 audience 授权绝不搬迁或回填旧任务。若 WorkReuseDigest、稳定 capability、profile configuration 和已完成 Artifact 均一致，且新 disclosure/egress 等价或更窄，Service 可在重新验证/确认后创建 successor task 与新 TaskInputManifest；SuccessorTaskRebase 同时引用旧/新授权审计。范围扩大或语义/配置变化禁止 remaining 复用。
 
-CURRENT 内部实现已经覆盖 model/TTS OperationIntent、OperationApproval 和 task-bound InternalAuthorization 的认证存储、一次性批准消费、逐调用幂等消费、共享 remote-call 上限、过期和 revocation epoch。Task AuthorizationBinding 不包含内部 authorizationId。所有批准/撤销写入默认失败关闭，只有构造时注入的 trusted gesture attestation verifier 返回精确 audience/target/action 绑定的 true 才能发生。该 verifier 尚未与 `TrustedSurfaceManager` 生产响应适配器接线，资源授权、ImportApproval、凭据账本及公共 MCP 也尚未实现，因此不能据此声称端到端授权已完成。
+CURRENT 内部实现已经覆盖 model/TTS OperationIntent、OperationApproval、task-bound InternalAuthorization、认证 SecretRef/credentialRevision、非秘密 Service Profile，以及 file/directory/output 本地资源授权账本。Task AuthorizationBinding 不包含内部 authorizationId；资源 ref 也只定位当前 audience/service 下的认证私有记录。所有批准/撤销写入默认失败关闭，只有构造时注入的 trusted gesture attestation verifier 返回精确 audience/target/action 绑定的 true 才能发生。该 verifier 尚未与 `TrustedSurfaceManager` 和本地选择器的生产响应适配器接线，networkResourceRef、ImportApproval、统一跨 Registry 事务及公共 MCP 也尚未实现，因此不能据此声称端到端授权已完成。
 
 CURRENT M2 的 legacy Project 投影边界坚持“先净化、后持久化”：递归遍历在内存中完成，API/TTS 配置、SecretRef/profile 注入和 secret-bearing 键被移除并记录非秘密 JSON pointer；高置信凭据值或显式 canary 即使藏在普通字段中也使整单失败。Project 顶层使用封闭 allowlist，嵌套 JSON 有节点、深度、字节与安全整数上限，任意调用方预置的 `$resourceSlot` marker 均视为伪造。
 
 raw URL/路径只有在 pointer、资源 kind、resource revision 和原值 SHA-256 与受信 `LegacyResourceBinding` 完全一致时才替换；缺绑定、错型、错值、重复身份或未消费绑定全部拒绝。持久 slot 不保存原值摘要，网络只保存 canonical request digest、query-redaction digest 和已去 userinfo/query/fragment 的 display origin。model/TTS 连接参数只存在于封闭 Service Profile Registry；legacy payload 只保存 profileRef + configurationFingerprint。内部解包还会复核 Blob/canonical JSON/schema digest、marker↔pointer、同项目父 Artifact 与撤销状态。
 
-当前 public summary 不返回 Project projection、BlobRef、internalResourceBindingId、profileRef 或 configurationFingerprint；公共 MCP 也尚未接线。此切片不能代替生产资源授权签发、运行时 rehydration、应用数据 ACL 或跨 Registry 事务。发布 envelope 失败时可能遗留已经净化、内容寻址的孤儿 Blob，后续保留清理不得把它描述为 raw Project 泄漏，也不得在引用/事务合同完成前贸然删除。
+当前 Project public summary 不返回 Project projection、BlobRef、internalResourceBindingId、profileRef 或 configurationFingerprint；本地资源 public summary 不返回 raw path、内部 grantId、attestation、useId 或认证标签。公共 MCP 和生产选择器仍未接线，本地资源账本也不能代替运行时安全句柄/rehydration、应用数据 ACL 或跨 Registry 事务。发布 envelope 失败时可能遗留已经净化、内容寻址的孤儿 Blob，后续保留清理不得把它描述为 raw Project 泄漏，也不得在引用/事务合同完成前贸然删除。
 
 ### 5.1 stdio 身份、所有权与本地 ACL
 
@@ -464,6 +464,8 @@ raw URL/路径只有在 pointer、资源 kind、resource revision 和原值 SHA-
 - 覆盖必须新的、精确绑定的内部授权记录。
 - partial 文件不成为 PackageArtifact。
 - 不允许用户素材目录被当作临时执行目录。
+CURRENT M2 已完成上述文件、输入目录和输出目录的内部 grant ledger：签发前快照，逐次消费重验，权限只能缩小，过期/次数/撤销/受众/篡改失败关闭。输入目录当前只授权并重验根，目录内每个子项的 DirectoryManifest、安全打开/复制与任务级 staging 仍未实现；`ResolvedLocalResource.path` 只可留在 Card Service 内部，不能直接作为 Worker 或公共 MCP 的安全句柄。
+
 
 ## 8. 网络与 SSRF
 
