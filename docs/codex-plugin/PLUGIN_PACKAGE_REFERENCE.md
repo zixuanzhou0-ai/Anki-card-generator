@@ -144,6 +144,14 @@ V1 不使用 hooks。当前生成规范与验证器对 hooks 字段存在差异�
 - 平台修复后的两个全新隔离 target release 构建均为 308,736 bytes、SHA-256 `c11b912b0590c406aef361400820e776ae7d009b85c8b7019f2e912d9caed3c3`。替换 trust policy 或首个运行资源均在 Python 启动前以退出码 125 拒绝；独立复制目录通过官方 plugin validator，并在全新 `CODEX_HOME` 中由真实 Codex `0.144.1` 完成只读工具调用。
 - 这些证据证明 launcher 代码、离线构建和独立副本路径成立，不证明发行者身份。正式 Authenticode/等价安装包签名、发布私钥保管、撤销与最终安装器验证仍是启用 `.mcp.json` 前的硬门槛。
 
+当前已实现独立的 Windows Authenticode 发布闸门 `card_service.windows_authenticode` 与只读 CLI `scripts/verify_launcher_authenticode.py`：
+
+- 发布者策略必须是候选目录之外的有界 canonical JSON，固定 authority、单调 sequence、RSA 最低位数/允许的 EC 曲线、必需 EKU，以及每张发布证书的 DER SHA-256、精确 subject 和 active/revoked 状态；launcher 不能用自身携带的证书建立信任。
+- 原生验证调用 `WinVerifyTrust`，使用 `WTD_CACHE_ONLY_URL_RETRIEVAL | WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT`；证书链和撤销状态只能使用 Windows 本地缓存，无法证明时失败关闭，不允许验签器静默联网。随后从 WinTrust provider evidence 取得实际 signer certificate，并复核外部证书 pin、Code Signing EKU、digital-signature KeyUsage、非 CA、密钥强度、证书有效期和可信时间戳。
+- 验证前后重新计算 launcher SHA-256；验证期间发生变化会返回 `AUTHENTICODE_FILE_CHANGED`，不能把对旧字节的签名结论套到新文件。
+- 当前实物 launcher 的 Windows 状态是 `NotSigned`，本机 CurrentUser 代码签名证书数量为 0；因此真实发布闸门必须拒绝它。测试中的内存证书和模拟 WinTrust evidence 只验证策略与证书约束，不会安装证书、生成生产发布身份或改变候选的 `installable=false`。
+- 正式可安装包仍要求外部 CA/企业发布身份签发并带可信时间戳的 launcher、正式证书 pin policy、缓存可证明的链/撤销状态，以及独立复制后的真实 Windows/Codex 安装验收；任一项缺失都不得生成 `.mcp.json`。
+
 `scripts/build_plugin_release_candidate.py` 是当前外层候选包的唯一装配入口：
 
 - 输入只允许通过官方验证的被动插件根、原生 launcher、已签名 runtime 和独立 trust policy；检测到 `.mcp.json`、`.app.json`、`mcpServers`、`apps` 或源插件自带 `server/` 时立即拒绝。
