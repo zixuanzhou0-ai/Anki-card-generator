@@ -178,7 +178,9 @@ M0 出口已经关闭：
 
 当前已完成 M2 的第一个内部切片：新增不可变 ArtifactEnvelope/RegistryRecord/handle binding 与内容寻址 Blob store。Artifact/payload 摘要使用 JCS canonical bytes，认证记录与撤销记录使用域隔离 HMAC；随机 handle 只以 SHA-256 保存，并绑定 owner、host、plugin、session 与 service instance。解析会递归复核 payload、envelope、认证记录、项目 scope、直接及传递父 revision、撤销状态和 Blob 字节，跨项目 transplant、重算摘要伪造、元数据篡改、并发撤销、secret/path 字段及 Windows 重解析目录写逃逸均失败关闭。该切片 21 项定向测试和正式 Python 全集 `982 passed, 1 skipped` 已通过。
 
-这不表示 M2 已完成：注册表尚未接入 Card Service 公共 MCP surface，认证密钥仍由进程内构造参数提供，正式 OS key protection/rotation、应用数据 ACL、项目 revision CAS/idempotency、StudyTask/checkpoint、successor task、OperationIntent/approval ledger、SecretRef 与 legacy Project canonical projection 仍在后续切片。公共 MCP 在这些边界完成前仍不能接受 ArtifactRef 对象或开放生成/导入写操作。
+第二个内部切片已经冻结 WorkReuseManifestV1、StableCapabilityBindingV1、AuthorizationBindingManifestV1、TaskInputManifestV1 与 SuccessorTaskRebaseV1 的服务端 canonical builder。输入 Artifact、来源快照、服务配置、能力和授权集合使用稳定排序并拒绝重复；项目语义身份明确排除 session/service/authorization/credential revision，profile validation 则把 credential revision 作为被验证输入；具体执行身份另行绑定当前 audience、授权、能力、credential revision、egress、OperationIntent、成本、批次与 successor rebase。字段突变、顺序、重复、范围扩大、secret/path 与未知控制面值由 21 项新测试覆盖，正式 Python 全集为 `1003 passed, 1 skipped`。
+
+这不表示 M2 已完成：注册表尚未接入 Card Service 公共 MCP surface，认证密钥仍由进程内构造参数提供，正式 OS key protection/rotation、应用数据 ACL、项目 revision CAS/idempotency、StudyTask 状态机与 checkpoint 持久化、successor task 实际复用、OperationIntent/approval ledger、SecretRef 与 legacy Project canonical projection 仍在后续切片。公共 MCP 在这些边界完成前仍不能接受 ArtifactRef 对象或开放生成/导入写操作。
 
 ### 出口
 

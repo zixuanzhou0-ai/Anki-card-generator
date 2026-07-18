@@ -161,6 +161,12 @@ def canonical_json_bytes(value: Any) -> bytes:
     return _canonicalize(value).encode("utf-8")
 
 
+def validate_persistable_json(value: Any) -> None:
+    """Fail closed before task, artifact, checkpoint, or audit persistence."""
+    _reject_secrets_and_paths(value)
+    canonical_json_bytes(value)
+
+
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
