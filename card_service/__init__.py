@@ -10,6 +10,11 @@ from .authorization_ledger import AuthorizationLedger, AuthorizationLedgerError
 from .service import CardService, CardServiceError
 from .task_manifests import TaskManifestError
 from .task_coordinator import StudyTaskCoordinator, StudyTaskError
+from .service_profile_registry import (
+    ServiceProfileRegistry,
+    ServiceProfileRegistryError,
+    profile_configuration_fingerprint,
+)
 from .project_registry import ProjectRegistry, ProjectRegistryError
 from .service_profiles import (
     ServiceProfileVerificationError,
@@ -32,4 +37,7 @@ __all__ = [
     "ProjectRegistryError",
     "ServiceProfileVerificationError",
     "ServiceProfileVerificationRegistry",
+    "ServiceProfileRegistry",
+    "ServiceProfileRegistryError",
+    "profile_configuration_fingerprint",
 ]

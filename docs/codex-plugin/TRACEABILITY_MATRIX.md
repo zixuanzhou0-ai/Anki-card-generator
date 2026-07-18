@@ -47,7 +47,7 @@
 | PR-506 | 宿主能力实测 | host capability snapshot | system.get_capabilities | manifest/stdio/tool/trusted-UI matrix | M3/M4 |
 | PR-507 | raw URL 不进入 MCP | trusted-entry-only network grant | system.request_network_grant | schema absence + ordinary/signed URL canary | M2/M3 |
 
-当前 M2 内部证据：PR-002 的 ArtifactEnvelope/认证 Registry、PR-205/402/403/404 的 StudyTask/检查点/successor、PR-207 的 Project/Contract 双 revision、语义操作、幂等与固定失效矩阵、SR-013 的 model/TTS OperationIntent/Approval/Authorization 账本内核，以及 PR-406/502/504 的认证 SecretRef/credentialRevision 与逐 profile verification registry 已有服务端实现和自动化测试。凭据 add/replace/delete/rollback/OAuth/concurrency、外部替换、歧义 crash、latest-failure、stale-at-publish、TTL 与旧备份防回滚均覆盖；正式 Python 全集为 1102 passed、1 skipped。受信窗口生产 attestation 适配、持久 Service Profile Registry、资源/ImportApproval、公共 MCP 工具、统一事务接线和正式安装边界仍未完成，表中 M3 出口不因此提前满足。
+当前 M2 内部证据：PR-002 的 ArtifactEnvelope/认证 Registry、PR-205/402/403/404 的 StudyTask/检查点/successor、PR-207 的 Project/Contract 双 revision、语义操作、幂等与固定失效矩阵、SR-013 的 model/TTS OperationIntent/Approval/Authorization 账本内核，以及 PR-406/502/504 的认证 SecretRef/credentialRevision、持久非秘密 Service Profile Registry 与逐 profile verification registry 已有服务端实现和自动化测试。Profile 配置闭包、规范指纹、revision CAS、幂等、身份路径、凭据实时绑定、外部替换/删除 uncertain，以及凭据 add/replace/delete/rollback/OAuth/concurrency、歧义 crash、latest-failure、stale-at-publish、TTL 与旧备份防回滚均覆盖；正式 Python 全集为 1136 passed、1 skipped。受信窗口生产 attestation 适配、受信设置/验证任务、资源/ImportApproval、公共 MCP 工具、统一事务接线和正式安装边界仍未完成，表中 M3 出口不因此提前满足。
 
 ## 2. 学习要求
 

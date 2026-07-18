@@ -202,7 +202,13 @@ Project Registry 对 projectRevision 与 contractRevision 同时执行 CAS，只
 
 该切片新增 21 项测试，连同 broker 与 Hermes 零凭据合同的定向集合为 `46 passed`；正式 Python 全集为 `1102 passed, 1 skipped`。覆盖 SecretRef canary、跨实例并发、失败写入序列不复用、外部替换、歧义崩溃恢复、rollback/OAuth/delete、Hermes 零凭据、配置/凭据失效、latest-failure、TTL、stale-at-publish、幂等、HMAC 篡改和旧备份不得恢复就绪。
 
-这不表示 M2 已完成：Artifact Registry、StudyTask、Project Registry、AuthorizationLedger、CredentialStore 与 profile verification 尚未作为同一事务边界接入 Card Service 公共 MCP surface，Learning Contract 也尚未发布为 canonical Artifact ref。授权账本的受信窗口 attestation 适配器仍未接线，因此生产批准目前按设计不能成功；file/directory/network/output 资源授权和 Anki ImportApproval 也未实现。正式 service authentication key protection/rotation、应用数据 ACL、可信 stdio audience 握手、精细 scope relation proof、完整 Broker reservation 与授权联合事务、Anki 证据链和 legacy Project canonical projection 仍在后续切片。profile binding resolver 目前是内部依赖注入边界，尚未接入持久化 Service Profile Registry 或 `system.validate_profile` 公共任务。公共 MCP 在这些边界完成前仍不能接受 ArtifactRef 对象或开放生成/导入写操作。
+第七个内部切片已经实现持久、非秘密的 `ServiceProfileRegistry`。model/TTS 配置复用固定 Provider Egress allowlist 与规范化 endpoint，Hermes 和 AnkiConnect 仅允许字面 loopback；所有配置使用封闭 schema，configurationFingerprint 为 canonical bytes 的纯 SHA-256。profile 创建/更新/停用使用 expectedRevision CAS 和跨进程锁，operationId 仅以 HMAC 摘要保存；历史结果已被后续 revision 覆盖时明确失败，不能返回错误的“幂等成功”。记录使用 canonical JSON、域隔离 HMAC、no-replace 创建与审计备份，并严格校验字段闭包、身份路径、revision 耗尽、操作历史及保存时凭据绑定。
+
+Registry 的公开 profile 永不返回 SecretRef、秘密或原始 operationId；远程 profile 可先保存为 missing，再由受信设置写入秘密。每次 resolve 都实时读取 `CredentialStore`，所以凭据 add/replace/delete/rollback 或外部材料变化无需重存 profile 即使旧验证 stale；外部替换和删除都保持 `uncertain` 并阻断，不能伪装成普通 missing。Hermes 仍保持 revision 0 且不触碰 credential backend。持久 resolver 已直接接入 `ServiceProfileVerificationRegistry` 的合同测试。
+
+该切片自身新增 34 项测试；正式 Python 全集为 `1136 passed, 1 skipped`。覆盖固定/loopback provider 规范化、secret-bearing/任意 origin 拒绝、配置指纹、CAS/并发、幂等冲突与 superseded、停用/恢复、HMAC 篡改、认证但开放结构、身份移植、revision 与 JSON 安全整数耗尽、SecretRef/operation canary、外部替换/删除 uncertain、旧备份不回滚，以及凭据变化使已通过验证立即 stale。
+
+这不表示 M2 已完成：Artifact Registry、StudyTask、Project Registry、AuthorizationLedger、CredentialStore、ServiceProfileRegistry 与 profile verification 尚未作为同一事务边界接入 Card Service 公共 MCP surface，Learning Contract 也尚未发布为 canonical Artifact ref。授权账本的受信窗口 attestation 适配器仍未接线，因此生产批准目前按设计不能成功；file/directory/network/output 资源授权和 Anki ImportApproval 也未实现。正式 service authentication key protection/rotation、应用数据 ACL、可信 stdio audience 握手、精细 scope relation proof、完整 Broker reservation 与授权联合事务、受信设置事务、`system.validate_profile` 公共任务、Anki 证据链和 legacy Project canonical projection 仍在后续切片。公共 MCP 在这些边界完成前仍不能接受 ArtifactRef 对象或开放生成/导入写操作。
 
 ### 出口
 
