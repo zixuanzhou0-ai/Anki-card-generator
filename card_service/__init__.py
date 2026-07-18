@@ -11,6 +11,10 @@ from .service import CardService, CardServiceError
 from .task_manifests import TaskManifestError
 from .task_coordinator import StudyTaskCoordinator, StudyTaskError
 from .project_registry import ProjectRegistry, ProjectRegistryError
+from .service_profiles import (
+    ServiceProfileVerificationError,
+    ServiceProfileVerificationRegistry,
+)
 
 __all__ = [
     "ArtifactAudienceBinding",
@@ -26,4 +30,6 @@ __all__ = [
     "StudyTaskError",
     "ProjectRegistry",
     "ProjectRegistryError",
+    "ServiceProfileVerificationError",
+    "ServiceProfileVerificationRegistry",
 ]

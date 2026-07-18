@@ -478,6 +478,10 @@ CURRENT 内部 `ProjectRegistry` 已实现 projectRevision + contractRevision �
 
 秘密只以 SecretRef 进入配置。MCP 工具、App UI、任务快照、日志和审计不能返回密钥明文。
 
+CURRENT 内部 `CredentialStore` 已把真实秘密限制在 OS credential backend，并以 HMAC 派生 SecretRef、material MAC、high-water revision、expectedRevision CAS 和跨进程文件锁维护认证事务。add/replace/delete/rollback/OAuth material change 都生成不复用的新 revision；崩溃后只有 intended 或 previous material 能被证明时才提交/回退，其他材料进入 `uncertain` 并禁止 broker 解析。认证密钥按需保存在同一秘密后端，所以 Hermes revision 0 路径不会凭空创建 provider credential。该实现尚未形成公共设置工具，正式 service key rotation/ACL 仍未完成。
+
+CURRENT 内部 `ServiceProfileVerificationRegistry` 使用受信 resolver 在结果发布时和能力读取时分别解析当前绑定；结果精确绑定 capability/profile/fingerprint/revision 与单调 sequence，支持 stale-at-publish、7 天过期和 latest-failure-wins。账本为 canonical JSON + 域隔离 HMAC + 跨进程锁；损坏时旧 `.bak` 只供审计，绝不恢复旧 ready。它尚未接入持久化 Profile Registry、统一任务协调器或公共 `system.validate_profile`，aggregate 也不提供 gate API。
+
 ## 9. 宿主适配
 
 定义与宿主无关的 WorkRailViewModel，然后分别映射：

@@ -100,12 +100,13 @@ def test_concurrent_credential_updates_receive_unique_revisions(tmp_path: Path) 
 def test_pending_credential_revision_is_reconciled_without_reuse(tmp_path: Path) -> None:
     store, backend = make_credentials(tmp_path)
     store.set_secret("model.primary", "first")
-    path = next(store.root.glob("*.json"))
-    metadata = json.loads(path.read_text(encoding="utf-8"))
-    metadata.update(state="pending", credentialRevision=2)
-    from card_service.storage import AtomicJsonStore
-
-    AtomicJsonStore._write_atomic(path, metadata)
+    with store._transaction():
+        store._begin(
+            "model.primary",
+            operation="set",
+            intended_material_mac=store._material_mac("second"),
+            expected_revision=1,
+        )
     backend.write("CodexStudy/model.primary", "second")
     recovered = CredentialStore(state_dir=store.root, backend=backend)
     assert recovered.metadata("model.primary")["credentialRevision"] == 2
