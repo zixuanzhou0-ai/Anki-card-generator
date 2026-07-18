@@ -180,7 +180,13 @@ M0 出口已经关闭：
 
 第二个内部切片已经冻结 WorkReuseManifestV1、StableCapabilityBindingV1、AuthorizationBindingManifestV1、TaskInputManifestV1 与 SuccessorTaskRebaseV1 的服务端 canonical builder。输入 Artifact、来源快照、服务配置、能力和授权集合使用稳定排序并拒绝重复；项目语义身份明确排除 session/service/authorization/credential revision，profile validation 则把 credential revision 作为被验证输入；具体执行身份另行绑定当前 audience、授权、能力、credential revision、egress、OperationIntent、成本、批次与 successor rebase。字段突变、顺序、重复、范围扩大、secret/path 与未知控制面值由 21 项新测试覆盖，正式 Python 全集为 `1003 passed, 1 skipped`。
 
-这不表示 M2 已完成：注册表尚未接入 Card Service 公共 MCP surface，认证密钥仍由进程内构造参数提供，正式 OS key protection/rotation、应用数据 ACL、项目 revision CAS/idempotency、StudyTask 状态机与 checkpoint 持久化、successor task 实际复用、OperationIntent/approval ledger、SecretRef 与 legacy Project canonical projection 仍在后续切片。公共 MCP 在这些边界完成前仍不能接受 ArtifactRef 对象或开放生成/导入写操作。
+第三个内部切片已经实现认证 StudyTask 存储、work unit 状态机、单调进度、结构化 failure、取消终态、revision CAS、每任务 operationId 幂等账本和 scope checkpoint。任务记录与 current/.bak checkpoint 使用域隔离 HMAC、canonical JSON、no-replace/同目录原子替换和跨协调器文件锁；task 主记录损坏时不会用可能更旧的 `.bak` 回滚，checkpoint 指针则可从 `.bak` 恢复并标记任务已经前进。公开快照只签发当前会话 Artifact handle，不持久化 raw handle，也不返回 HMAC、内部 task record digest 或 project scope digest。
+
+同一 audience 仍可原任务继续；session/service 改变时旧任务只能标记 interrupted，随后以新 audience、能力和授权创建新 taskId。successor 保持 WorkReuseDigest，重建 TaskInputManifest/SuccessorTaskRebase，只复用状态为 completed、结果非空且重新通过 Artifact 完整性/父链/scope 校验的 work unit；活动或失败单元整单元重试。稳定 profile 配置和实现不变时允许重新验证后的 credentialRevision 变化，能力变化或授权绑定集合扩大则拒绝。当前“narrower”证明只支持删除完整的 `(action, constraintsDigest, exactScopeDigest)` 绑定，尚不证明同一授权记录内部的细粒度 scope 缩小；双向 authorization audit ref 也尚未由正式 approval ledger 背书。
+
+该切片新增 25 项测试，Artifact + manifest + task 定向集合为 `67 passed`；正式 Python 全集为 `1028 passed, 1 skipped`。覆盖 HMAC/受众/scope 篡改、checkpoint 恢复与防回滚、跨协调器 CAS 竞争、operation 冲突、非有限/倒退进度、终态、跨会话重授权、凭据 revision 轮换、范围扩大拒绝和复用产物篡改失败关闭。
+
+这不表示 M2 已完成：注册表和 StudyTask 尚未接入 Card Service 公共 MCP surface，认证密钥仍由进程内构造参数提供，正式 OS key protection/rotation、应用数据 ACL、项目 revision/expectedRevision/idempotency、可信 stdio audience 握手、OperationIntent/approval/authorization ledger、精细 scope relation proof、SecretRef/credential ledger、Broker reservation ledger、Anki 证据链与 legacy Project canonical projection 仍在后续切片。公共 MCP 在这些边界完成前仍不能接受 ArtifactRef 对象或开放生成/导入写操作。
 
 ### 出口
 

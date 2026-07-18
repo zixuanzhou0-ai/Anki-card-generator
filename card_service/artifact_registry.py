@@ -558,6 +558,26 @@ class ArtifactRegistry:
             self._publish(self._handle_path(handle), canonical_json_bytes(binding))
             return handle
 
+    def verify_ref(self, artifact_ref: Mapping[str, Any], audience: ArtifactAudienceBinding) -> dict[str, Any]:
+        """Verify an internal reference without accepting any caller-supplied handle metadata."""
+        with self._lock:
+            self._validate_audience(audience)
+            return self._verify_artifact_ref(artifact_ref, audience)
+
+    def resolve_with_ref(self, handle: str, audience: ArtifactAudienceBinding) -> tuple[dict[str, Any], dict[str, Any]]:
+        envelope = self.resolve(handle, audience)
+        artifact_ref = {
+            "artifactId": envelope["artifactId"],
+            "projectId": envelope["projectId"],
+            "projectRevision": envelope["projectRevision"],
+            "artifactRevision": envelope["artifactRevision"],
+            "payloadSchema": envelope["payloadSchema"],
+            "payloadSchemaVersion": envelope["payloadSchemaVersion"],
+            "artifactDigest": envelope["artifactDigest"],
+            "registryAuthRef": envelope["registryAuthRef"],
+        }
+        return artifact_ref, envelope
+
     def resolve(self, handle: str, audience: ArtifactAudienceBinding) -> dict[str, Any]:
         with self._lock:
             self._validate_audience(audience)

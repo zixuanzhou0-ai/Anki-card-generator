@@ -429,7 +429,7 @@ snapshotPolicy：
 
 ### 6.2 study.get_task
 
-输入 taskId。输出完整 StudyTaskSnapshot：
+输入 taskId。输出完整 StudyTaskSnapshot，包括单调递增的 taskRevision。任何后续变更必须回传 expectedRevision 与 operationId；revision 冲突不得覆盖较新状态，同 operationId 仅在输入摘要完全一致时幂等返回：
 
 - phasePercent 与单调 overallPercent。
 - 完成/总条目、完成/总批次。

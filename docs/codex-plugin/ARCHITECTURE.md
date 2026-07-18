@@ -378,6 +378,7 @@ type StudyTaskFailure = {
 type StudyTaskSnapshot = {
   schema: "study.task.snapshot";
   schemaVersion: 1;
+  taskRevision: number;
   taskId: string;
   intent: WorkflowActionId;
   state: TaskState;
@@ -411,6 +412,7 @@ CURRENT 的 src/app/workerTaskState.ts::TaskSnapshot 是桌面 Worker 叶子任�
 约束：
 
 - 总体进度单调；只有 succeeded 为 100%。
+- 所有任务变更都必须携带 expectedRevision 和 operationId；Service 在同一存储事务中执行 CAS、记录 operation digest，并让相同 operationId + 相同输入幂等返回、相同 operationId + 不同输入失败。taskRevision 每次成功变更严格递增，读取和 checkpoint 不增加 revision。
 - 事件和轮询按 taskId 幂等合并。
 - authorizationRecordDigest 固定为 SHA-256(JCS(InternalAuthorizationRecord 去掉 signature 字段))；signature 必须在使用前按 keyId 独立验证。exactScopeDigest 固定为 SHA-256(JCS({ subject, action, intentId, taskId: taskId ?? null, resourceBindings, serviceBindings: serviceBindings ?? null }))。exactResourceRefs 先按 UTF-8 字节序稳定排序并拒绝重复；AuthorizationBindingManifestV1.bindings 再按 action、authorizationRecordDigest、exactScopeDigest、expectedRevocationEpoch 排序并拒绝重复，等价授权不得因数组顺序产生不同摘要。
 - authorizationBindingDigest 只对上述 canonical AuthorizationBindingManifestV1 做 JCS：绑定当前 audience/session/service instance、不可变授权记录/constraints、精确 scope 和 expected revocation epoch；明确排除 consumedUses、lastConsumedAt、当前时间和错误文本。每次执行/恢复仍在服务端原子读取 active/revoked/expired/consumed 状态，摘要不能代替账本。

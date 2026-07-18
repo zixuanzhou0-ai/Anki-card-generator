@@ -71,6 +71,10 @@ def _digest(value: Mapping[str, Any]) -> str:
         raise TaskManifestError("TASK_MANIFEST_FORBIDDEN_DATA", error.message) from error
 
 
+def manifest_digest(value: Mapping[str, Any]) -> str:
+    return _digest(value)
+
+
 def _require_exact_fields(value: Mapping[str, Any], required: set[str], optional: set[str], label: str) -> None:
     if not isinstance(value, Mapping) or not required.issubset(value) or not set(value).issubset(required | optional):
         raise TaskManifestError("TASK_MANIFEST_INVALID", f"{label} fields are invalid")
