@@ -6,6 +6,7 @@ import hmac
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -58,6 +59,13 @@ MIN_TASK_WORKSPACE_ENTRIES = 16
 MAX_TASK_WORKSPACE_ENTRIES = 100_000
 DEFAULT_TASK_WORKSPACE_BYTES = 2 * 1024 * 1024 * 1024
 DEFAULT_TASK_WORKSPACE_ENTRIES = 20_000
+MAX_TASK_WORKSPACE_SERVICE_BYTES = 64 * 1024 * 1024 * 1024
+MAX_TASK_WORKSPACE_SERVICE_ENTRIES = 1_000_000
+DEFAULT_TASK_WORKSPACE_SERVICE_BYTES = 8 * 1024 * 1024 * 1024
+DEFAULT_TASK_WORKSPACE_SERVICE_ENTRIES = 100_000
+MIN_TASK_WORKSPACE_VOLUME_RESERVE_BYTES = 64 * 1024 * 1024
+MAX_TASK_WORKSPACE_VOLUME_RESERVE_BYTES = 128 * 1024 * 1024 * 1024
+DEFAULT_TASK_WORKSPACE_VOLUME_RESERVE_BYTES = 4 * 1024 * 1024 * 1024
 TASK_WORKSPACE_REPARSE_ATTRIBUTE = 0x400
 BrokerOperationHandler = Callable[[str, dict[str, Any]], Any]
 BrokerHandlerFactory = Callable[[str, str, dict[str, Any]], BrokerOperationHandler]
@@ -129,6 +137,14 @@ def _canonical_fingerprint(value: Any) -> str:
 class TaskWorkspaceUsage:
     logical_bytes: int
     entry_count: int
+
+
+@dataclass(frozen=True)
+class TaskWorkspaceFleetUsage:
+    logical_bytes: int
+    entry_count: int
+    workspace_count: int
+    by_task: dict[str, TaskWorkspaceUsage]
 
 
 def _has_reparse_attribute(value: os.stat_result) -> bool:
@@ -291,6 +307,127 @@ def _task_workspace_usage(
                 stage="workspace",
             ) from error
     return TaskWorkspaceUsage(logical_bytes=logical_bytes, entry_count=entry_count)
+
+
+def _task_workspace_fleet_usage(
+    root: Path,
+    *,
+    service_byte_limit: int,
+    service_entry_limit: int,
+) -> TaskWorkspaceFleetUsage:
+    """Account all managed task workspaces without following path indirection."""
+
+    root_stat = _assert_no_reparse_components(root)
+    if not stat.S_ISDIR(root_stat.st_mode) or stat.S_ISLNK(root_stat.st_mode) or _has_reparse_attribute(root_stat):
+        raise CardServiceError(
+            "TASK_WORKSPACE_REPARSE_BLOCKED",
+            "The task workspace root cannot be a link or reparse point",
+            retryable=False,
+            stage="workspace",
+        )
+    logical_bytes = 0
+    entry_count = 0
+    by_task: dict[str, TaskWorkspaceUsage] = {}
+    try:
+        with os.scandir(root) as entries:
+            for entry in entries:
+                try:
+                    entry_stat = entry.stat(follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                except OSError as error:
+                    raise CardServiceError(
+                        "TASK_WORKSPACE_UNAVAILABLE",
+                        "The task workspace fleet could not be inspected",
+                        retryable=False,
+                        stage="workspace",
+                    ) from error
+                if stat.S_ISLNK(entry_stat.st_mode) or _has_reparse_attribute(entry_stat):
+                    raise CardServiceError(
+                        "TASK_WORKSPACE_REPARSE_BLOCKED",
+                        "Task workspace fleet entries cannot be links or reparse points",
+                        retryable=False,
+                        stage="workspace",
+                    )
+                if not stat.S_ISDIR(entry_stat.st_mode):
+                    raise CardServiceError(
+                        "TASK_WORKSPACE_UNMANAGED_ENTRY",
+                        "The task workspace root contains an unmanaged entry",
+                        retryable=False,
+                        stage="workspace",
+                    )
+                try:
+                    parsed_task_id = uuid.UUID(entry.name)
+                except ValueError as error:
+                    raise CardServiceError(
+                        "TASK_WORKSPACE_UNMANAGED_ENTRY",
+                        "The task workspace root contains an unmanaged directory",
+                        retryable=False,
+                        stage="workspace",
+                    ) from error
+                task_id = str(parsed_task_id)
+                if task_id != entry.name.casefold() or task_id in by_task:
+                    raise CardServiceError(
+                        "TASK_WORKSPACE_UNMANAGED_ENTRY",
+                        "The task workspace root contains a non-canonical task directory",
+                        retryable=False,
+                        stage="workspace",
+                    )
+                usage = _task_workspace_usage(
+                    Path(entry.path),
+                    byte_limit=service_byte_limit,
+                    entry_limit=service_entry_limit,
+                )
+                by_task[task_id] = usage
+                logical_bytes += usage.logical_bytes
+                entry_count += usage.entry_count + 1
+                if logical_bytes > service_byte_limit:
+                    raise CardServiceError(
+                        "TASK_WORKSPACE_SERVICE_LIMIT",
+                        f"Retained task workspaces exceeded the {service_byte_limit} byte service limit",
+                        retryable=True,
+                        stage="workspace",
+                        fallbacks=("release_old_tasks", "reduce_media_batch"),
+                    )
+                if entry_count > service_entry_limit:
+                    raise CardServiceError(
+                        "TASK_WORKSPACE_SERVICE_ENTRY_LIMIT",
+                        f"Retained task workspaces exceeded the {service_entry_limit} entry service limit",
+                        retryable=True,
+                        stage="workspace",
+                        fallbacks=("release_old_tasks", "reduce_media_batch"),
+                    )
+    except CardServiceError:
+        raise
+    except OSError as error:
+        raise CardServiceError(
+            "TASK_WORKSPACE_UNAVAILABLE",
+            "The task workspace fleet could not be inspected",
+            retryable=False,
+            stage="workspace",
+        ) from error
+    return TaskWorkspaceFleetUsage(
+        logical_bytes=logical_bytes,
+        entry_count=entry_count,
+        workspace_count=len(by_task),
+        by_task=by_task,
+    )
+
+
+def _remove_empty_task_workspace(path: Path) -> bool:
+    """Rollback only a never-launched empty workspace; never recurse over artifacts."""
+
+    try:
+        path_stat = _assert_no_reparse_components(path)
+        if not stat.S_ISDIR(path_stat.st_mode):
+            return False
+        with os.scandir(path) as entries:
+            if next(entries, None) is not None:
+                return False
+        os.rmdir(path)
+        return True
+    except (CardServiceError, OSError):
+        return False
 
 
 def _find_secret_path(value: Any, path: str = "$") -> str | None:
@@ -467,6 +604,9 @@ class CardService:
         task_active_process_limit: int = 16,
         task_workspace_limit_bytes: int = DEFAULT_TASK_WORKSPACE_BYTES,
         task_workspace_entry_limit: int = DEFAULT_TASK_WORKSPACE_ENTRIES,
+        task_workspace_service_limit_bytes: int = DEFAULT_TASK_WORKSPACE_SERVICE_BYTES,
+        task_workspace_service_entry_limit: int = DEFAULT_TASK_WORKSPACE_SERVICE_ENTRIES,
+        task_workspace_volume_reserve_bytes: int = DEFAULT_TASK_WORKSPACE_VOLUME_RESERVE_BYTES,
         broker_handler_factory: BrokerHandlerFactory | None = None,
         broker_method_blocker: BrokerMethodBlocker | None = None,
         broker_runtime_capabilities: dict[str, Any] | None = None,
@@ -566,6 +706,9 @@ class CardService:
         self.task_active_process_limit = max(1, int(task_active_process_limit))
         self.task_workspace_limit_bytes = int(task_workspace_limit_bytes)
         self.task_workspace_entry_limit = int(task_workspace_entry_limit)
+        self.task_workspace_service_limit_bytes = int(task_workspace_service_limit_bytes)
+        self.task_workspace_service_entry_limit = int(task_workspace_service_entry_limit)
+        self.task_workspace_volume_reserve_bytes = int(task_workspace_volume_reserve_bytes)
         if not MIN_TASK_WORKSPACE_BYTES <= self.task_workspace_limit_bytes <= MAX_TASK_WORKSPACE_BYTES:
             raise CardServiceError(
                 "TASK_WORKSPACE_POLICY_INVALID",
@@ -575,6 +718,33 @@ class CardService:
             raise CardServiceError(
                 "TASK_WORKSPACE_POLICY_INVALID",
                 "Task workspace entry limit is outside the supported safety range",
+            )
+        if not (
+            self.task_workspace_limit_bytes
+            <= self.task_workspace_service_limit_bytes
+            <= MAX_TASK_WORKSPACE_SERVICE_BYTES
+        ):
+            raise CardServiceError(
+                "TASK_WORKSPACE_POLICY_INVALID",
+                "Service workspace byte limit must cover one task and remain inside the hard cap",
+            )
+        if not (
+            self.task_workspace_entry_limit + 1
+            <= self.task_workspace_service_entry_limit
+            <= MAX_TASK_WORKSPACE_SERVICE_ENTRIES
+        ):
+            raise CardServiceError(
+                "TASK_WORKSPACE_POLICY_INVALID",
+                "Service workspace entry limit must cover one task and remain inside the hard cap",
+            )
+        if not (
+            MIN_TASK_WORKSPACE_VOLUME_RESERVE_BYTES
+            <= self.task_workspace_volume_reserve_bytes
+            <= MAX_TASK_WORKSPACE_VOLUME_RESERVE_BYTES
+        ):
+            raise CardServiceError(
+                "TASK_WORKSPACE_POLICY_INVALID",
+                "Task workspace volume reserve is outside the supported safety range",
             )
         self.broker_handler_factory = broker_handler_factory
         self.broker_method_blocker = broker_method_blocker
@@ -615,6 +785,8 @@ class CardService:
             raise CardServiceError(error.code, str(error)) from error
         self._tasks: dict[str, _RuntimeTask] = {}
         self._tasks_lock = threading.RLock()
+        self._workspace_budget_lock = threading.RLock()
+        self._workspace_reservations: set[str] = set()
         self._recover_orphaned_tasks()
 
     def _broker_blocker(self, method: str, policy: MethodPolicy) -> str | None:
@@ -684,6 +856,9 @@ class CardService:
                 "taskWorkspaceWorkingDirectory": True,
                 "taskWorkspaceLimitBytes": self.task_workspace_limit_bytes,
                 "taskWorkspaceEntryLimit": self.task_workspace_entry_limit,
+                "taskWorkspaceServiceLimitBytes": self.task_workspace_service_limit_bytes,
+                "taskWorkspaceServiceEntryLimit": self.task_workspace_service_entry_limit,
+                "taskWorkspaceVolumeReserveBytes": self.task_workspace_volume_reserve_bytes,
                 "appContainerOrRestrictedSidDacl": self.runtime_package_dacl,
                 "forcedOutboundBroker": self.runtime_package_dacl,
                 "complete": False,
@@ -703,6 +878,12 @@ class CardService:
                 "resourceEvidencePreflight": self.runtime_package is not None,
                 "perOutputFileLimit": self.runtime_package is not None,
                 "taskWorkspaceBudget": True,
+                "aggregateWorkspaceBudget": True,
+                "aggregateWorkspaceBudgetScope": "service_process",
+                "volumeFreeSpaceReserve": True,
+                "volumeFreeSpaceReserveEnforcement": "admission_and_periodic",
+                "externalWriterHardQuota": False,
+                "automaticArtifactRetentionCleanup": False,
                 "subprocessTimeoutSeconds": 300,
                 "complete": False,
             },
@@ -731,6 +912,109 @@ class CardService:
                 "retryable": True,
             }
             self.store.write_task(str(snapshot.get("id") or ""), snapshot)
+
+    def _sandboxes_root(self) -> Path:
+        candidate = self.store.root / "sandboxes"
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            _assert_no_reparse_components(candidate)
+            root = candidate.resolve(strict=True)
+        except CardServiceError:
+            raise
+        except OSError as error:
+            raise CardServiceError(
+                "TASK_WORKSPACE_CREATE_FAILED",
+                "Could not create the isolated task workspace root",
+            ) from error
+        if root.parent != self.store.root:
+            raise CardServiceError(
+                "TASK_WORKSPACE_REPARSE_BLOCKED",
+                "Task workspace root escaped the Card Service state directory",
+                retryable=False,
+                stage="workspace",
+            )
+        return root
+
+    def _enforce_workspace_capacity(
+        self,
+        *,
+        proposed_task_id: str | None = None,
+    ) -> Path:
+        """Reserve worst-case active-task growth before it can consume the volume."""
+
+        with self._workspace_budget_lock:
+            root = self._sandboxes_root()
+            fleet = _task_workspace_fleet_usage(
+                root,
+                service_byte_limit=self.task_workspace_service_limit_bytes,
+                service_entry_limit=self.task_workspace_service_entry_limit,
+            )
+            reserved_byte_headroom = 0
+            reserved_entry_headroom = 0
+            for task_id in self._workspace_reservations:
+                usage = fleet.by_task.get(task_id)
+                if usage is None:
+                    reserved_byte_headroom += self.task_workspace_limit_bytes
+                    reserved_entry_headroom += self.task_workspace_entry_limit + 1
+                    continue
+                reserved_byte_headroom += max(
+                    0,
+                    self.task_workspace_limit_bytes - usage.logical_bytes,
+                )
+                reserved_entry_headroom += max(
+                    0,
+                    self.task_workspace_entry_limit - usage.entry_count,
+                )
+            proposed_bytes = 0
+            proposed_entries = 0
+            if proposed_task_id is not None and proposed_task_id not in self._workspace_reservations:
+                proposed_bytes = self.task_workspace_limit_bytes
+                proposed_entries = self.task_workspace_entry_limit + 1
+            projected_bytes = fleet.logical_bytes + reserved_byte_headroom + proposed_bytes
+            projected_entries = fleet.entry_count + reserved_entry_headroom + proposed_entries
+            if projected_bytes > self.task_workspace_service_limit_bytes:
+                raise CardServiceError(
+                    "TASK_WORKSPACE_SERVICE_LIMIT",
+                    f"Task admission would exceed the {self.task_workspace_service_limit_bytes} byte service workspace limit",
+                    retryable=True,
+                    stage="workspace",
+                    fallbacks=("release_old_tasks", "reduce_media_batch"),
+                )
+            if projected_entries > self.task_workspace_service_entry_limit:
+                raise CardServiceError(
+                    "TASK_WORKSPACE_SERVICE_ENTRY_LIMIT",
+                    f"Task admission would exceed the {self.task_workspace_service_entry_limit} entry service workspace limit",
+                    retryable=True,
+                    stage="workspace",
+                    fallbacks=("release_old_tasks", "reduce_media_batch"),
+                )
+            try:
+                volume_free_bytes = max(0, int(shutil.disk_usage(root).free))
+            except OSError as error:
+                raise CardServiceError(
+                    "TASK_WORKSPACE_VOLUME_UNAVAILABLE",
+                    "The task workspace volume capacity could not be inspected",
+                    retryable=True,
+                    stage="workspace",
+                ) from error
+            required_free_bytes = (
+                self.task_workspace_volume_reserve_bytes
+                + reserved_byte_headroom
+                + proposed_bytes
+            )
+            if volume_free_bytes < required_free_bytes:
+                raise CardServiceError(
+                    "TASK_WORKSPACE_VOLUME_RESERVE",
+                    "Task admission would consume the configured minimum free-space reserve",
+                    retryable=True,
+                    stage="workspace",
+                    fallbacks=("release_old_tasks", "change_storage_volume", "reduce_media_batch"),
+                )
+            return root
+
+    def _release_workspace_reservation(self, task_id: str) -> None:
+        with self._workspace_budget_lock:
+            self._workspace_reservations.discard(task_id)
 
     def start_task(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         policy = self.method_policies.get(method)
@@ -762,51 +1046,39 @@ class CardService:
         task_id = str(uuid.uuid4())
         sandbox_workspace: Path | None = None
         task_sid: str | None = None
-        sandboxes_candidate = self.store.root / "sandboxes"
-        try:
-            sandboxes_candidate.mkdir(parents=True, exist_ok=True)
-            _assert_no_reparse_components(sandboxes_candidate)
-            sandboxes_root = sandboxes_candidate.resolve(strict=True)
-            if sandboxes_root.parent != self.store.root:
-                raise CardServiceError(
-                    "TASK_WORKSPACE_REPARSE_BLOCKED",
-                    "Task workspace root escaped the Card Service state directory",
-                    retryable=False,
-                    stage="workspace",
-                )
-        except CardServiceError:
-            raise
-        except OSError as error:
-            raise CardServiceError(
-                "TASK_WORKSPACE_CREATE_FAILED",
-                "Could not create the isolated task workspace root",
-            ) from error
-        if self.runtime_package_dacl:
+        with self._workspace_budget_lock:
+            sandboxes_root = self._enforce_workspace_capacity(proposed_task_id=task_id)
+            expected_workspace = sandboxes_root / task_id
             try:
-                sandbox_workspace, task_sid = create_task_workspace(
-                    sandboxes_root,
-                    task_id,
-                )
-            except WindowsSandboxAclError as error:
-                raise CardServiceError(error.code, str(error)) from error
-        else:
-            try:
-                sandbox_workspace = (sandboxes_root / task_id).resolve()
-                if sandbox_workspace.parent != sandboxes_root:
-                    raise OSError("task workspace escaped its root")
-                sandbox_workspace.mkdir(mode=0o700, exist_ok=False)
+                if self.runtime_package_dacl:
+                    sandbox_workspace, task_sid = create_task_workspace(
+                        sandboxes_root,
+                        task_id,
+                    )
+                else:
+                    sandbox_workspace = (sandboxes_root / task_id).resolve()
+                    if sandbox_workspace.parent != sandboxes_root:
+                        raise OSError("task workspace escaped its root")
+                    sandbox_workspace.mkdir(mode=0o700, exist_ok=False)
+                assert sandbox_workspace is not None
                 _task_workspace_usage(
                     sandbox_workspace,
                     byte_limit=self.task_workspace_limit_bytes,
                     entry_limit=self.task_workspace_entry_limit,
                 )
+            except WindowsSandboxAclError as error:
+                _remove_empty_task_workspace(expected_workspace)
+                raise CardServiceError(error.code, str(error)) from error
             except CardServiceError:
+                _remove_empty_task_workspace(expected_workspace)
                 raise
             except OSError as error:
+                _remove_empty_task_workspace(expected_workspace)
                 raise CardServiceError(
                     "TASK_WORKSPACE_CREATE_FAILED",
                     "Could not create the isolated task workspace",
                 ) from error
+            self._workspace_reservations.add(task_id)
         now = _now_ms()
         snapshot: dict[str, Any] = {
             "schemaVersion": SCHEMA_VERSION,
@@ -837,11 +1109,43 @@ class CardService:
             broker_handler_factory=task_broker_factory,
             broker_method_blocker=task_broker_blocker,
         )
-        with self._tasks_lock:
-            self._tasks[task_id] = runtime
-        self.store.write_task(task_id, snapshot)
-        thread = threading.Thread(target=self._run_task, args=(runtime, policy), daemon=True, name=f"card-task-{task_id}")
-        thread.start()
+        registered = False
+        try:
+            with self._tasks_lock:
+                self._tasks[task_id] = runtime
+                registered = True
+            self.store.write_task(task_id, snapshot)
+            thread = threading.Thread(
+                target=self._run_task,
+                args=(runtime, policy),
+                daemon=True,
+                name=f"card-task-{task_id}",
+            )
+            thread.start()
+        except Exception as error:
+            self._release_workspace_reservation(task_id)
+            if registered:
+                with self._tasks_lock:
+                    self._tasks.pop(task_id, None)
+            _remove_empty_task_workspace(sandbox_workspace)
+            failed_snapshot = dict(snapshot)
+            failed_snapshot["state"] = "failed"
+            failed_snapshot["updatedAt"] = _now_ms()
+            failed_snapshot["error"] = {
+                "code": "TASK_START_FAILED",
+                "message": "Card Service could not start the managed task",
+                "retryable": True,
+            }
+            try:
+                self.store.write_task(task_id, failed_snapshot)
+            except OSError:
+                pass
+            raise CardServiceError(
+                "TASK_START_FAILED",
+                "Card Service could not start the managed task",
+                retryable=True,
+                stage="workspace",
+            ) from error
         return self.get_task(task_id) or dict(snapshot)
 
     def get_task(self, task_id: str) -> dict[str, Any] | None:
@@ -1032,6 +1336,10 @@ class CardService:
             time.sleep(0.02)
         if process.poll() is None:
             process.kill()
+            try:
+                process.wait(timeout=self.cancellation_grace_seconds)
+            except subprocess.TimeoutExpired:
+                pass
 
     def _run_task(self, runtime: _RuntimeTask, policy: MethodPolicy) -> None:
         task_id = str(runtime.snapshot["id"])
@@ -1077,6 +1385,7 @@ class CardService:
                 byte_limit=self.task_workspace_limit_bytes,
                 entry_limit=self.task_workspace_entry_limit,
             )
+            self._enforce_workspace_capacity()
             attach_broker = runtime.broker_handler_factory is not None and (
                 policy.requires_broker or runtime.broker_method_blocker is None
             )
@@ -1174,6 +1483,9 @@ class CardService:
                     "taskWorkspaceWorkingDirectory": True,
                     "taskWorkspaceLimitBytes": self.task_workspace_limit_bytes,
                     "taskWorkspaceEntryLimit": self.task_workspace_entry_limit,
+                    "taskWorkspaceServiceLimitBytes": self.task_workspace_service_limit_bytes,
+                    "taskWorkspaceServiceEntryLimit": self.task_workspace_service_entry_limit,
+                    "taskWorkspaceVolumeReserveBytes": self.task_workspace_volume_reserve_bytes,
                     "taskWorkspaceLogicalBytes": initial_workspace_usage.logical_bytes,
                     "taskWorkspaceEntries": initial_workspace_usage.entry_count,
                     "networkRestricted": None if self.use_restricted_launcher else False,
@@ -1359,6 +1671,7 @@ class CardService:
                     )
                     process.stdin.flush()
             next_workspace_check = time.monotonic()
+            next_service_capacity_check = next_workspace_check + 1.0
             while process.poll() is None:
                 if runtime.cancel_event.is_set():
                     self._terminate(process)
@@ -1379,6 +1692,14 @@ class CardService:
                         self._terminate(process)
                         break
                     next_workspace_check = now + 0.1
+                if now >= next_service_capacity_check:
+                    try:
+                        self._enforce_workspace_capacity()
+                    except CardServiceError as error:
+                        workspace_limit_error.append(error)
+                        self._terminate(process)
+                        break
+                    next_service_capacity_check = now + 1.0
                 time.sleep(0.02)
             for reader in readers:
                 reader.join(timeout=2.0)
@@ -1408,6 +1729,7 @@ class CardService:
                 byte_limit=self.task_workspace_limit_bytes,
                 entry_limit=self.task_workspace_entry_limit,
             )
+            self._enforce_workspace_capacity()
             with runtime.lock:
                 runtime.snapshot["isolation"]["taskWorkspaceLogicalBytes"] = final_workspace_usage.logical_bytes
                 runtime.snapshot["isolation"]["taskWorkspaceEntries"] = final_workspace_usage.entry_count
@@ -1423,6 +1745,7 @@ class CardService:
             if secret_path:
                 raise CardServiceError("SECRET_IN_RESULT", "Legacy worker result contained secret-bearing material")
             result_ref = self.store.write_result(task_id, result)
+            self._release_workspace_reservation(task_id)
             with runtime.lock:
                 runtime.snapshot["state"] = "succeeded"
                 runtime.snapshot["resultRef"] = result_ref
@@ -1437,6 +1760,9 @@ class CardService:
                 }
                 self._persist_runtime(runtime)
         except CardServiceError as error:
+            if runtime.process is not None and runtime.process.poll() is None:
+                self._terminate(runtime.process)
+            self._release_workspace_reservation(task_id)
             state = "cancelled" if error.code == "TASK_CANCELLED" else "failed"
             with runtime.lock:
                 runtime.snapshot["state"] = state
@@ -1457,6 +1783,9 @@ class CardService:
                 runtime.snapshot["progress"]["message"] = _safe_error(str(error), 500)
                 self._persist_runtime(runtime)
         except Exception as error:  # defensive service boundary
+            if runtime.process is not None and runtime.process.poll() is None:
+                self._terminate(runtime.process)
+            self._release_workspace_reservation(task_id)
             with runtime.lock:
                 runtime.snapshot["state"] = "failed"
                 runtime.snapshot["error"] = {
@@ -1482,3 +1811,4 @@ class CardService:
                 except ProcessIsolationError:
                     pass
                 runtime.process_group = None
+            self._release_workspace_reservation(task_id)

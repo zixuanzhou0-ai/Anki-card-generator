@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,6 +18,7 @@ from card_service.broker_runtime import AuthorizedProviderCall, TaskBrokerAuthor
 from card_service.credentials import CredentialStore, InMemoryCredentialBackend
 from card_service.provider_egress import ProviderProfile, ProviderTransportResponse
 from card_service.service import (
+    MIN_TASK_WORKSPACE_VOLUME_RESERVE_BYTES,
     MAX_TASK_WORKSPACE_BYTES,
     CardService,
     CardServiceError,
@@ -36,8 +38,8 @@ def service(tmp_path: Path, **overrides: object) -> CardService:
         "worker_path": FAKE_WORKER,
         "python_path": Path(sys.executable),
         "method_policies": {
-            "runtime.check_environment": MethodPolicy("check_env", 2.0),
-            "runtime.extract_learning_points": MethodPolicy("extract_learning_points", 2.0),
+            "runtime.check_environment": MethodPolicy("check_env", 8.0),
+            "runtime.extract_learning_points": MethodPolicy("extract_learning_points", 8.0),
         },
     }
     options.update(overrides)
@@ -68,6 +70,12 @@ def test_capabilities_expose_only_restricted_high_level_methods(tmp_path: Path) 
     assert capabilities["processIsolation"]["complete"] is False
     assert capabilities["mediaToolPolicy"]["managedAbsoluteTools"] is False
     assert capabilities["mediaToolPolicy"]["taskWorkspaceBudget"] is True
+    assert capabilities["mediaToolPolicy"]["aggregateWorkspaceBudget"] is True
+    assert capabilities["mediaToolPolicy"]["aggregateWorkspaceBudgetScope"] == "service_process"
+    assert capabilities["mediaToolPolicy"]["volumeFreeSpaceReserve"] is True
+    assert capabilities["mediaToolPolicy"]["volumeFreeSpaceReserveEnforcement"] == "admission_and_periodic"
+    assert capabilities["mediaToolPolicy"]["externalWriterHardQuota"] is False
+    assert capabilities["mediaToolPolicy"]["automaticArtifactRetentionCleanup"] is False
     assert capabilities["mediaToolPolicy"]["complete"] is False
     assert capabilities["processIsolation"]["taskWorkspaceWorkingDirectory"] is True
     assert capabilities["trustedSurfaces"]["localSettings"] is True
@@ -243,6 +251,8 @@ def test_successful_task_persists_snapshot_without_raw_request_and_reads_result(
     snapshot_text = (tmp_path / "state" / "tasks" / f"{started['id']}.json").read_text(encoding="utf-8")
     assert "input-canary" not in snapshot_text
     assert "inputFingerprint" in snapshot_text
+    assert "volumeFreeBytes" not in snapshot_text
+    assert "retainedLogicalBytes" not in snapshot_text
 
 
 def test_task_process_uses_its_bounded_workspace_as_working_directory(tmp_path: Path) -> None:
@@ -278,6 +288,26 @@ def test_task_workspace_byte_limit_terminates_the_worker_without_a_result(tmp_pa
     with pytest.raises(CardServiceError) as result_error:
         card_service.read_result(started["id"])
     assert result_error.value.code == "RESULT_NOT_READY"
+
+
+def test_failed_oversized_workspace_does_not_poison_a_later_safe_task(tmp_path: Path) -> None:
+    card_service = service(
+        tmp_path,
+        task_workspace_limit_bytes=64 * 1024,
+        task_workspace_service_limit_bytes=512 * 1024,
+    )
+    oversized = card_service.start_task(
+        "runtime.check_environment",
+        {"mode": "workspace_fill", "fill_bytes": 128 * 1024},
+    )
+    failed = wait_terminal(card_service, oversized["id"])
+    assert failed["state"] == "failed"
+    assert failed["error"]["code"] == "TASK_WORKSPACE_BYTE_LIMIT"
+
+    safe = card_service.start_task("runtime.check_environment", {"ordinary": "safe"})
+    finished = wait_terminal(card_service, safe["id"])
+    assert finished["state"] == "succeeded"
+    assert card_service.read_result(safe["id"])["echo"] == {"ordinary": "safe"}
 
 
 def test_task_workspace_accounting_blocks_entry_overflow_and_links(tmp_path: Path) -> None:
@@ -331,6 +361,160 @@ def test_task_workspace_policy_rejects_values_above_the_service_hard_cap(tmp_pat
     with pytest.raises(CardServiceError) as caught:
         service(tmp_path, task_workspace_limit_bytes=MAX_TASK_WORKSPACE_BYTES + 1)
     assert caught.value.code == "TASK_WORKSPACE_POLICY_INVALID"
+
+    with pytest.raises(CardServiceError) as aggregate_error:
+        service(
+            tmp_path,
+            task_workspace_limit_bytes=128 * 1024,
+            task_workspace_service_limit_bytes=64 * 1024,
+        )
+    assert aggregate_error.value.code == "TASK_WORKSPACE_POLICY_INVALID"
+
+    with pytest.raises(CardServiceError) as reserve_error:
+        service(tmp_path, task_workspace_volume_reserve_bytes=MIN_TASK_WORKSPACE_VOLUME_RESERVE_BYTES - 1)
+    assert reserve_error.value.code == "TASK_WORKSPACE_POLICY_INVALID"
+
+
+def test_service_workspace_admission_reserves_active_tasks_at_their_full_limit(tmp_path: Path) -> None:
+    card_service = service(
+        tmp_path,
+        task_workspace_limit_bytes=64 * 1024,
+        task_workspace_service_limit_bytes=96 * 1024,
+    )
+    first = card_service.start_task("runtime.check_environment", {"mode": "slow"})
+    with pytest.raises(CardServiceError) as caught:
+        card_service.start_task("runtime.check_environment", {})
+    assert caught.value.code == "TASK_WORKSPACE_SERVICE_LIMIT"
+    assert caught.value.stage == "workspace"
+    assert caught.value.fallbacks == ("release_old_tasks", "reduce_media_batch")
+    assert [path.name for path in (tmp_path / "state" / "sandboxes").iterdir()] == [first["id"]]
+    card_service.cancel_task(first["id"])
+    assert wait_terminal(card_service, first["id"])["state"] == "cancelled"
+
+
+def test_retained_terminal_workspace_counts_against_the_next_task_admission(tmp_path: Path) -> None:
+    card_service = service(
+        tmp_path,
+        task_workspace_limit_bytes=64 * 1024,
+        task_workspace_service_limit_bytes=96 * 1024,
+    )
+    first = card_service.start_task(
+        "runtime.check_environment",
+        {"mode": "workspace_fill", "fill_bytes": 40 * 1024},
+    )
+    finished = wait_terminal(card_service, first["id"])
+    assert finished["state"] == "succeeded"
+    assert finished["isolation"]["taskWorkspaceLogicalBytes"] == 40 * 1024
+    with pytest.raises(CardServiceError) as caught:
+        card_service.start_task("runtime.check_environment", {})
+    assert caught.value.code == "TASK_WORKSPACE_SERVICE_LIMIT"
+
+
+def test_retained_workspace_entries_count_against_the_service_entry_budget(tmp_path: Path) -> None:
+    card_service = service(
+        tmp_path,
+        task_workspace_entry_limit=16,
+        task_workspace_service_entry_limit=20,
+    )
+    first = card_service.start_task("runtime.check_environment", {"mode": "workspace_probe"})
+    assert wait_terminal(card_service, first["id"])["state"] == "succeeded"
+    second = card_service.start_task("runtime.check_environment", {"mode": "workspace_probe"})
+    assert wait_terminal(card_service, second["id"])["state"] == "succeeded"
+    with pytest.raises(CardServiceError) as caught:
+        card_service.start_task("runtime.check_environment", {})
+    assert caught.value.code == "TASK_WORKSPACE_SERVICE_ENTRY_LIMIT"
+
+
+def test_task_admission_rejects_unmanaged_entries_in_the_workspace_root(tmp_path: Path) -> None:
+    sandboxes = tmp_path / "state" / "sandboxes"
+    sandboxes.mkdir(parents=True)
+    (sandboxes / "unmanaged.txt").write_text("not a task workspace", encoding="utf-8")
+    card_service = service(tmp_path)
+    with pytest.raises(CardServiceError) as caught:
+        card_service.start_task("runtime.check_environment", {})
+    assert caught.value.code == "TASK_WORKSPACE_UNMANAGED_ENTRY"
+
+
+def test_task_start_persistence_failure_releases_reservation_and_empty_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    card_service = service(
+        tmp_path,
+        task_workspace_limit_bytes=64 * 1024,
+        task_workspace_service_limit_bytes=64 * 1024,
+    )
+    original_write_task = card_service.store.write_task
+
+    def fail_write_task(_task_id: str, _snapshot: dict[str, object]) -> None:
+        raise OSError("simulated task-store failure")
+
+    monkeypatch.setattr(card_service.store, "write_task", fail_write_task)
+    with pytest.raises(CardServiceError) as caught:
+        card_service.start_task("runtime.check_environment", {})
+    assert caught.value.code == "TASK_START_FAILED"
+    assert list((tmp_path / "state" / "sandboxes").iterdir()) == []
+
+    monkeypatch.setattr(card_service.store, "write_task", original_write_task)
+    safe = card_service.start_task("runtime.check_environment", {"ordinary": "after-rollback"})
+    assert wait_terminal(card_service, safe["id"])["state"] == "succeeded"
+
+
+def test_task_admission_preserves_the_configured_volume_free_space_reserve(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_limit = 64 * 1024
+    reserve = MIN_TASK_WORKSPACE_VOLUME_RESERVE_BYTES
+    card_service = service(
+        tmp_path,
+        task_workspace_limit_bytes=task_limit,
+        task_workspace_service_limit_bytes=task_limit,
+        task_workspace_volume_reserve_bytes=reserve,
+    )
+    monkeypatch.setattr(
+        "card_service.service.shutil.disk_usage",
+        lambda _path: SimpleNamespace(free=reserve + task_limit - 1),
+    )
+    with pytest.raises(CardServiceError) as caught:
+        card_service.start_task("runtime.check_environment", {})
+    assert caught.value.code == "TASK_WORKSPACE_VOLUME_RESERVE"
+    assert caught.value.fallbacks == (
+        "release_old_tasks",
+        "change_storage_volume",
+        "reduce_media_batch",
+    )
+    assert list((tmp_path / "state" / "sandboxes").iterdir()) == []
+
+
+def test_running_task_fails_closed_if_external_usage_consumes_the_volume_reserve(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_limit = 64 * 1024
+    reserve = MIN_TASK_WORKSPACE_VOLUME_RESERVE_BYTES
+    calls = 0
+
+    def changing_disk_usage(_path: Path) -> SimpleNamespace:
+        nonlocal calls
+        calls += 1
+        free = reserve + task_limit * 4 if calls <= 2 else reserve - 1
+        return SimpleNamespace(free=free)
+
+    monkeypatch.setattr("card_service.service.shutil.disk_usage", changing_disk_usage)
+    card_service = service(
+        tmp_path,
+        task_workspace_limit_bytes=task_limit,
+        task_workspace_service_limit_bytes=task_limit,
+        task_workspace_volume_reserve_bytes=reserve,
+    )
+    started = card_service.start_task("runtime.check_environment", {"mode": "slow"})
+    finished = wait_terminal(card_service, started["id"], timeout=8.0)
+    assert finished["state"] == "failed"
+    assert finished["error"]["code"] == "TASK_WORKSPACE_VOLUME_RESERVE"
+    with pytest.raises(CardServiceError) as result_error:
+        card_service.read_result(started["id"])
+    assert result_error.value.code == "RESULT_NOT_READY"
 
 
 def test_worker_error_is_structured_and_safe(tmp_path: Path) -> None:
