@@ -404,7 +404,7 @@ type ImportApprovalLedgerState = {
 - 原工具重试时重建并核对同一 OperationRequestManifestDigest、audience、intentDigest、profile/configurationFingerprint/credentialRevision、精确 disclosure/egress、资源/费用上限与当前撤销状态；任何变化都要求新 intent。随后生成的 TaskInputManifestDigest 包含 intentDigest。
 - 重启/新 session 后旧 audience 授权绝不搬迁或回填旧任务。若 WorkReuseDigest、稳定 capability、profile configuration 和已完成 Artifact 均一致，且新 disclosure/egress 等价或更窄，Service 可在重新验证/确认后创建 successor task 与新 TaskInputManifest；SuccessorTaskRebase 同时引用旧/新授权审计。范围扩大或语义/配置变化禁止 remaining 复用。
 
-CURRENT 内部实现已经覆盖 model/TTS OperationIntent、OperationApproval、task-bound InternalAuthorization、认证 SecretRef/credentialRevision、非秘密 Service Profile，以及 file/directory/output 本地资源授权账本。Task AuthorizationBinding 不包含内部 authorizationId；资源 ref 也只定位当前 audience/service 下的认证私有记录。所有批准/撤销写入默认失败关闭，只有构造时注入的 trusted gesture attestation verifier 返回精确 audience/target/action 绑定的 true 才能发生。该 verifier 尚未与 `TrustedSurfaceManager` 和本地选择器的生产响应适配器接线，networkResourceRef、ImportApproval、统一跨 Registry 事务及公共 MCP 也尚未实现，因此不能据此声称端到端授权已完成。
+CURRENT 内部实现已经覆盖 model/TTS OperationIntent、OperationApproval、task-bound InternalAuthorization、认证 SecretRef/credentialRevision、非秘密 Service Profile，以及 file/directory/output/network 资源授权账本。Task AuthorizationBinding 不包含内部 authorizationId；资源 ref 也只定位当前 audience/service 下的认证私有记录。所有批准/撤销写入默认失败关闭，只有构造时注入的 trusted gesture attestation verifier 返回精确 audience/target/action 绑定的 true 才能发生。该 verifier 尚未与 `TrustedSurfaceManager`、本地选择器和 URL 输入窗口的生产响应适配器接线，ImportApproval、统一跨 Registry 事务及公共 MCP 也尚未实现，因此不能据此声称端到端授权已完成。
 
 CURRENT M2 的 legacy Project 投影边界坚持“先净化、后持久化”：递归遍历在内存中完成，API/TTS 配置、SecretRef/profile 注入和 secret-bearing 键被移除并记录非秘密 JSON pointer；高置信凭据值或显式 canary 即使藏在普通字段中也使整单失败。Project 顶层使用封闭 allowlist，嵌套 JSON 有节点、深度、字节与安全整数上限，任意调用方预置的 `$resourceSlot` marker 均视为伪造。
 
@@ -488,7 +488,11 @@ CURRENT M2 已完成上述文件、输入目录和输出目录的内部 grant le
 - AnkiConnect 固定明确回环端点、配置的 API key 和版本范围，不跟随重定向。
 - yt-dlp 走等价网络约束，不能成为代理绕过。
 
-当前 M1 只实现上述目标的一条窄路径：`source.youtube_subtitles` 由 Service 从任务授权中重建固定 YouTube video identity，Worker 只能提交 video ID、语言和 `vtt`。Service 只访问 `youtube.com`/`www.youtube.com` 的 watch 与 `/api/timedtext`，解析全部 DNS 结果且任一非公网地址即拒绝，连接时固定已验证公网 IP并保留 TLS SNI/hostname 校验；重定向、userinfo、非 443 端口、fragment、非固定 host/path、超时和超限响应均 fail closed。caption signed query 不返回 Worker、不写 ledger。该切片尚未实现 M2 的 opaque `networkResourceRef`、逐请求批准/撤销账本或完整视频下载；托管 Worker 的直接联网 yt-dlp 因此一律在启动前拒绝。
+CURRENT M2 已实现通用内部 `NetworkResourceGrantRegistry` 与固定地址 HTTPS fetcher：raw/signed URL 只留在当前 Service 进程的 locator 内存，认证记录仅保存不可逆 canonical request/query 摘要、脱敏 display origin 与授权策略。签发、消费和同源重定向每一跳都解析全部 A/AAAA，任一非公网地址即拒绝；连接固定到已验证地址并保留 TLS SNI/hostname 校验。默认不跟随重定向，允许时也只能按冻结策略逐跳授权；不继承 Cookie、Authorization、系统代理或环境凭据，响应 header 只保留安全 allowlist，字节数和跳数都有硬上限。
+
+V1 通用入口只允许 HTTPS/443，拒绝 userinfo、fragment、非规范转义、反斜杠和调用方自报 header。YouTube URL 收敛为 video ID；其他带 query 的 URL 一律按敏感值分类。raw URL 不落盘，因此 Service 重启后旧 ref 只能检查为 `reauthorization_required`，不能继续访问或从摘要反推出 URL。33 项定向测试覆盖普通/签名 URL、YouTube 规范化、私网/混合 DNS、DNS rebinding、同源重定向、固定 IP 传输、header/cookie 剥离、响应限额、跨 audience/service、幂等、撤销、过期和 HMAC 篡改。
+
+当前 M1 的 `source.youtube_subtitles` 仍是已经接入任务执行链的窄路径；通用 network registry 尚未接入生产受信 URL 输入窗口、Source Adapter、yt-dlp staging 或公共 MCP。托管 Worker 的直接联网 yt-dlp 因此仍在启动前拒绝。本次测试使用可控 resolver/transport，不代表已完成真实公网可用性验收。
 
 ## 9. 文档与媒体解析及资源隔离
 

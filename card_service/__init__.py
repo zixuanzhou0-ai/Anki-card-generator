@@ -28,6 +28,13 @@ from .local_resource_registry import (
     LocalResourceRegistryError,
     ResolvedLocalResource,
 )
+from .network_resource_registry import (
+    NetworkFetchResponse,
+    NetworkResourceGrantRegistry,
+    NetworkResourceRegistryError,
+    PinnedNetworkFetcher,
+    ResolvedNetworkResource,
+)
 from .project_registry import ProjectRegistry, ProjectRegistryError
 from .service_profiles import (
     ServiceProfileVerificationError,
@@ -52,6 +59,11 @@ __all__ = [
     "LocalResourceGrantRegistry",
     "LocalResourceRegistryError",
     "ResolvedLocalResource",
+    "NetworkFetchResponse",
+    "NetworkResourceGrantRegistry",
+    "NetworkResourceRegistryError",
+    "PinnedNetworkFetcher",
+    "ResolvedNetworkResource",
     "TaskManifestError",
     "StudyTaskCoordinator",
     "StudyTaskError",

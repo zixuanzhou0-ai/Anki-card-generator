@@ -220,7 +220,13 @@ Registry 的公开 profile 永不返回 SecretRef、秘密或原始 operationId�
 
 该切片新增 18 项测试，M2 九组件联合回归为 `211 passed`，正式 Python 全集为 `1172 passed, 1 skipped`。覆盖无手势、四项 audience 与 service instance 越界、引用/请求/使用/attestation canary、文件替换、hardlink/symlink、路径语法、权限放大、幂等冲突、使用耗尽、过期重放、撤销、HMAC/绑定篡改、输出目录合法变更和 legacy 精确绑定。
 
-这不表示 M2 已完成：Artifact Registry、StudyTask、Project Registry、AuthorizationLedger、CredentialStore、ServiceProfileRegistry、profile verification、legacy projection 与 local resource ledger 尚未作为同一事务边界接入 Card Service 公共 MCP surface，Learning Contract 也尚未发布为 canonical Artifact ref。受信本地文件/目录选择器到 resource gesture verifier 的生产 attestation 适配器仍未接线，因此公共签发目前按设计不可用；`networkResourceRef`、SSRF/重定向授权、目录逐子项 manifest/安全句柄、运行时 rehydration/staging 与 Anki ImportApproval 也未实现。正式 service authentication key protection/rotation、应用数据 ACL、可信 stdio audience 握手、精细 scope relation proof、完整 Broker reservation 与授权联合事务、受信设置事务、`system.validate_profile` 公共任务和 Anki 证据链仍在后续切片。公共 MCP 在这些边界完成前仍不能接受 ArtifactRef 对象或开放生成/导入写操作。
+第十个内部切片已经实现 `NetworkResourceGrantRegistry`、`networkResourceRef` 与固定地址 HTTPS fetcher。raw/signed URL 只存在于当前 Service 进程的短期 locator 内存；认证持久记录只保存 HMAC 保护的 request/query digest、脱敏 display origin、封闭策略、次数、期限和撤销状态。YouTube URL 规范化为 video ID，其他 query 保守标记为敏感；userinfo、fragment、反斜杠、畸形转义、非 HTTPS/443 和调用方 header 均在签发前拒绝。
+
+签发、消费与每个同源重定向 hop 都重新解析全部地址，任一非公网结果即 fail closed；传输固定到已验证 IP，同时保留 TLS SNI/hostname 校验，不读取环境代理、Cookie、Authorization 或系统集成凭据。权限只能缩小，request/use 幂等、maxUses、过期、撤销 epoch、响应字节/重定向上限和 HMAC 篡改都有覆盖。raw URL 不落盘，所以 Service 重启后旧记录只能返回 `reauthorization_required`，不能自动恢复网络能力。
+
+该切片新增 33 项测试，M2 十组件联合回归为 `244 passed`，正式 Python 全集为 `1205 passed, 1 skipped`。测试使用可控 DNS resolver 和 fake pinned transport，证明安全合同而不冒充真实公网/YouTube 可用性验收。
+
+这不表示 M2 已完成：Artifact Registry、StudyTask、Project Registry、AuthorizationLedger、CredentialStore、ServiceProfileRegistry、profile verification、legacy projection 与 local/network resource ledger 尚未作为同一事务边界接入 Card Service 公共 MCP surface，Learning Contract 也尚未发布为 canonical Artifact ref。受信本地文件/目录选择器和 URL 输入窗口到 gesture verifier 的生产 attestation 适配器仍未接线，因此公共签发目前按设计不可用；目录逐子项 manifest/安全句柄、运行时 rehydration/staging 与 Anki ImportApproval 也未实现。正式 service authentication key protection/rotation、应用数据 ACL、可信 stdio audience 握手、精细 scope relation proof、完整 Broker reservation 与授权联合事务、受信设置事务、`system.validate_profile` 公共任务和 Anki 证据链仍在后续切片。公共 MCP 在这些边界完成前仍不能接受 ArtifactRef 对象或开放生成/导入写操作。
 
 ### 出口
 

@@ -272,6 +272,8 @@ CURRENT M2 已实现 file/directory/output grant 的内部认证账本、opaque 
 
 如果用户已把 URL 粘贴到对话，Skill 不得把该值复制进工具参数。疑似 signed/token/auth/query 凭据时应说明对话记录可能已经暴露、建议撤销或轮换，然后要求在受信表面输入新值。此设计为所有 URL 增加一次本地输入动作，以换取“raw URL 从不进入 MCP request”的可验证边界。
 
+CURRENT M2 已实现该工具之后的内部 network grant/consume/redirect/revoke/fetch 合同与 33 项定向测试，但没有实现本 public MCP 工具或生产受信 URL 输入窗口。内部 registry 不能被 Agent 直接调用来绕过真实用户动作；Service 重启后因 raw URL 不落盘，旧 ref 返回 `reauthorization_required`。
+
 ### system.request_operation_confirmation
 
 > CURRENT 内部状态：model/TTS OperationIntent/Approval/InternalAuthorization 账本内核已实现摘要、受众、一次性批准消费、task 绑定、共享调用预算与撤销 epoch；受信窗口 attestation 生产适配器和本 MCP 工具尚未接线，默认 verifier 缺失时批准失败关闭。

@@ -277,7 +277,7 @@ type InputRef =
 ~~~
 
 InputRef 不携带永久原始绝对路径或 raw URL。fileResourceRef、directoryResourceRef 和 networkResourceRef 由本地服务通过受信授权流程签发；MCP 后续调用只能缩小范围，不能替换 URL path/query 或扩大目录。
-CURRENT M2 内部实现已能签发 `fileResourceRef`、`directoryResourceRef` 和 `outputResourceRef`：raw path 只留在认证私有账本，ref 绑定 owner/host/plugin/session/service instance、资源 revision、动作、硬上限、期限、次数和撤销 epoch。该实现尚未成为公共 `InputRef` 入口；`networkResourceRef`、生产受信选择器/附件桥、目录逐子项 ref 与运行时安全句柄仍未完成。
+CURRENT M2 内部实现已能签发 `fileResourceRef`、`directoryResourceRef`、`outputResourceRef` 和 `networkResourceRef`。本地 raw path 只留在认证私有账本；网络 raw/signed URL 只留在当前 Service 进程的短期 locator 内存，持久记录只保存不可逆 request/query 摘要和脱敏 origin。所有 ref 绑定 owner/host/plugin/session/service instance、资源 revision/策略、动作、硬上限、期限、次数和撤销 epoch。它们尚未成为公共 `InputRef` 入口；生产受信选择器/附件桥/URL 输入表面、目录逐子项 ref 与运行时安全句柄仍未完成，Service 重启后的网络 ref 必须重新授权。
 
 
 ## 5.1 Learning Contract 与偏好层

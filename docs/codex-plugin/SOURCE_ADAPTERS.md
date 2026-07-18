@@ -192,6 +192,8 @@ DirectoryManifest、逐子项 ref、安全打开/复制和受限 staging 仍是�
 - 下载器和运行时来自受信路径/哈希。
 - Artifact 只保存脱敏 canonical source identity：origin、受控 path display、适配器明确允许的公共身份参数或 query digest/redaction、final origin/redirect digests、内容 hash 和 observedAt。raw URL、signed query、token、userinfo、fragment 与认证 header 只可短期存在于内部授权/网络代理内，禁止进入 Artifact、MCP、日志或截图。
 
+CURRENT M2 内部 `NetworkResourceGrantRegistry` 已实现上述授权与代理内核：HTTPS/443 封闭入口、raw URL 仅进程内、认证 opaque ref、全部地址公网判定、消费/重定向重解析、固定 IP + TLS hostname、无环境代理/Cookie/ambient auth、限时限字节、幂等、过期和撤销。它尚未接入生产受信 URL 输入表面、具体 Source Adapter 或 yt-dlp staging；真实网页/视频快照与 EvidenceAnchor 仍属于后续适配器工作。
+
 ## 7. 网页
 
 网页必须快照，而不是只保存 URL。快照包含：
