@@ -15,6 +15,14 @@ from .service_profile_registry import (
     ServiceProfileRegistryError,
     profile_configuration_fingerprint,
 )
+from .legacy_project_projection import (
+    LEGACY_PROJECT_PROJECTION_SCHEMA,
+    LEGACY_PROJECT_PROJECTION_SCHEMA_SHA256,
+    LegacyProjectProjectionError,
+    LegacyProjectProjectionPublisher,
+    LegacyResourceBinding,
+    sanitize_legacy_project,
+)
 from .project_registry import ProjectRegistry, ProjectRegistryError
 from .service_profiles import (
     ServiceProfileVerificationError,
@@ -30,6 +38,12 @@ __all__ = [
     "AuthorizationLedgerError",
     "CardService",
     "CardServiceError",
+    "LEGACY_PROJECT_PROJECTION_SCHEMA",
+    "LEGACY_PROJECT_PROJECTION_SCHEMA_SHA256",
+    "LegacyProjectProjectionError",
+    "LegacyProjectProjectionPublisher",
+    "LegacyResourceBinding",
+    "sanitize_legacy_project",
     "TaskManifestError",
     "StudyTaskCoordinator",
     "StudyTaskError",

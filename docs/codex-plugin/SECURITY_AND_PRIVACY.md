@@ -406,6 +406,12 @@ type ImportApprovalLedgerState = {
 
 CURRENT 内部实现已经覆盖 model/TTS OperationIntent、OperationApproval 和 task-bound InternalAuthorization 的认证存储、一次性批准消费、逐调用幂等消费、共享 remote-call 上限、过期和 revocation epoch。Task AuthorizationBinding 不包含内部 authorizationId。所有批准/撤销写入默认失败关闭，只有构造时注入的 trusted gesture attestation verifier 返回精确 audience/target/action 绑定的 true 才能发生。该 verifier 尚未与 `TrustedSurfaceManager` 生产响应适配器接线，资源授权、ImportApproval、凭据账本及公共 MCP 也尚未实现，因此不能据此声称端到端授权已完成。
 
+CURRENT M2 的 legacy Project 投影边界坚持“先净化、后持久化”：递归遍历在内存中完成，API/TTS 配置、SecretRef/profile 注入和 secret-bearing 键被移除并记录非秘密 JSON pointer；高置信凭据值或显式 canary 即使藏在普通字段中也使整单失败。Project 顶层使用封闭 allowlist，嵌套 JSON 有节点、深度、字节与安全整数上限，任意调用方预置的 `$resourceSlot` marker 均视为伪造。
+
+raw URL/路径只有在 pointer、资源 kind、resource revision 和原值 SHA-256 与受信 `LegacyResourceBinding` 完全一致时才替换；缺绑定、错型、错值、重复身份或未消费绑定全部拒绝。持久 slot 不保存原值摘要，网络只保存 canonical request digest、query-redaction digest 和已去 userinfo/query/fragment 的 display origin。model/TTS 连接参数只存在于封闭 Service Profile Registry；legacy payload 只保存 profileRef + configurationFingerprint。内部解包还会复核 Blob/canonical JSON/schema digest、marker↔pointer、同项目父 Artifact 与撤销状态。
+
+当前 public summary 不返回 Project projection、BlobRef、internalResourceBindingId、profileRef 或 configurationFingerprint；公共 MCP 也尚未接线。此切片不能代替生产资源授权签发、运行时 rehydration、应用数据 ACL 或跨 Registry 事务。发布 envelope 失败时可能遗留已经净化、内容寻址的孤儿 Blob，后续保留清理不得把它描述为 raw Project 泄漏，也不得在引用/事务合同完成前贸然删除。
+
 ### 5.1 stdio 身份、所有权与本地 ACL
 
 - Card Service 启动时记录真实 OS user SID、host instance、plugin instance、service instance 和 session；只接受该受信启动链路的连接。

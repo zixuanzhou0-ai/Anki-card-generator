@@ -208,7 +208,13 @@ Registry 的公开 profile 永不返回 SecretRef、秘密或原始 operationId�
 
 该切片自身新增 34 项测试；正式 Python 全集为 `1136 passed, 1 skipped`。覆盖固定/loopback provider 规范化、secret-bearing/任意 origin 拒绝、配置指纹、CAS/并发、幂等冲突与 superseded、停用/恢复、HMAC 篡改、认证但开放结构、身份移植、revision 与 JSON 安全整数耗尽、SecretRef/operation canary、外部替换/删除 uncertain、旧备份不回滚，以及凭据变化使已通过验证立即 stale。
 
-这不表示 M2 已完成：Artifact Registry、StudyTask、Project Registry、AuthorizationLedger、CredentialStore、ServiceProfileRegistry 与 profile verification 尚未作为同一事务边界接入 Card Service 公共 MCP surface，Learning Contract 也尚未发布为 canonical Artifact ref。授权账本的受信窗口 attestation 适配器仍未接线，因此生产批准目前按设计不能成功；file/directory/network/output 资源授权和 Anki ImportApproval 也未实现。正式 service authentication key protection/rotation、应用数据 ACL、可信 stdio audience 握手、精细 scope relation proof、完整 Broker reservation 与授权联合事务、受信设置事务、`system.validate_profile` 公共任务、Anki 证据链和 legacy Project canonical projection 仍在后续切片。公共 MCP 在这些边界完成前仍不能接受 ArtifactRef 对象或开放生成/导入写操作。
+第八个内部切片已经实现 legacy Project 的非秘密 canonical projection。递归 sanitizer 在任何持久化调用前执行：固定顶层 Project 字段闭包，递归移除 API/TTS 配置和 secret-bearing 字段，以审计 JSON pointer 记录移除位置；http(s)、绝对/盘符相对/上级穿越路径必须逐值匹配 Resource Broker 提供的 path、kind、revision 与原值摘要绑定，替换成唯一 `$resourceSlot`，缺失、类型/值不符或未消费绑定均失败关闭。provider/model/voice 连接配置不进入 Project，只保留 model/TTS profileRef 与 configurationFingerprint 绑定。
+
+投影保留 segments/cards、enabled、relative media name、reliability manifest、learning-point inventory、generation diagnostics 和 export 所需非秘密字段，使用固定 `legacy.project.nonsecret.v1` schema SHA-256 与 JCS Blob；SourceAsset、MediaLedger 及可选 reliability/inventory/diagnostics ArtifactRef 必须同项目、已认证、未撤销并作为父链。内部解析重新验证 Blob 摘要、canonical JSON、closed schema、资源 marker↔pointer 一致性和父引用；公开摘要不返回 Project、BlobRef、profileRef、configurationFingerprint 或 internalResourceBindingId。若最终 Artifact 发布在 Blob 写入后失败，可能留下内容寻址的“已净化孤儿 Blob”，但不会留下 raw Project、路径、URL 或秘密；统一跨 Registry 事务和安全垃圾回收仍是后续工作。
+
+该切片新增 18 项测试，M2 八组安全组件联合回归为 `192 passed`，正式 Python 全集为 `1154 passed, 1 skipped`。覆盖 signed URL/userinfo/query、display origin 的 userinfo/query/非法端口/空白主机拒绝、Windows/相对穿越路径、字段/值 canary、marker 伪造、资源绑定缺失/错型/错值/未消费、跨项目/错 schema/撤销父引用、可选证据不一致、服务绑定闭包、Blob 篡改、深度上限、普通冒号文本不误伤，以及对外摘要不泄露内部投影。
+
+这不表示 M2 已完成：Artifact Registry、StudyTask、Project Registry、AuthorizationLedger、CredentialStore、ServiceProfileRegistry、profile verification 与 legacy projection 尚未作为同一事务边界接入 Card Service 公共 MCP surface，Learning Contract 也尚未发布为 canonical Artifact ref。授权账本的受信窗口 attestation 适配器仍未接线，因此生产批准目前按设计不能成功；file/directory/network/output 资源授权、生产 ResourceBinding 签发、运行时 rehydration 和 Anki ImportApproval 也未实现。正式 service authentication key protection/rotation、应用数据 ACL、可信 stdio audience 握手、精细 scope relation proof、完整 Broker reservation 与授权联合事务、受信设置事务、`system.validate_profile` 公共任务和 Anki 证据链仍在后续切片。公共 MCP 在这些边界完成前仍不能接受 ArtifactRef 对象或开放生成/导入写操作。
 
 ### 出口
 

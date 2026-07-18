@@ -2979,6 +2979,11 @@ type SanitizedLegacyPayloadV1 = {
 - 路径和网络位置改写为 resourceSlots；raw source/final/redirect URL 与 api_config/tts_config 等秘密配置完全从 projection 删除。M0 必须用本地与 signed-URL Project/export fixture 证明“业务非秘密字段无损，绝对路径、raw URL/query 与秘密字段为零”。
 - 持久化类型只能是 SanitizedLegacyPayloadV1，不能用泛型 T 让原始 Project 在类型上继续合法。
 - M0/M1 用包含嵌套 api_config/tts_config 的 fixture 做正负合同测试。
+
+CURRENT M2 已实现内部 `LegacyProjectProjectionPublisher`：顶层 Project allowlist 与投影 envelope 使用封闭字段集，嵌套 JSON 仍按原 Project 结构保留，但受递归 secret/config/resource 扫描、节点/深度/字节/安全整数上限约束。它在任一 Blob/Artifact 写入前完成净化，并把同项目 SourceAsset、MediaLedger 及可选 reliability/inventory/diagnostics refs 绑定为认证父链；内部 resolve 重新验证 canonical Blob、schema digest、slot pointer 和父引用，public summary 只返回计数/布尔状态。
+
+这只是 sanitize/publish 合同，不是 15.2 的运行时重建。生产 ResourceBinding 签发、全部嵌套结构的逐类型 closed schema、受权 rehydration、跨 Registry 原子事务、孤儿 Blob 保留清理和公共 MCP 接线仍是未完成门槛；因此 raw Project 仍不能成为公共工具输入或输出。
+
 ## 15.2 Legacy 运行时重建
 
 sanitized Artifact 不能直接传给仍依赖 api_config/tts_config 和本地路径的现有 Worker。Card Service 使用显式、仅内存适配器：
