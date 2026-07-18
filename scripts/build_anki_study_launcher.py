@@ -21,6 +21,11 @@ def parser() -> argparse.ArgumentParser:
     )
     value.add_argument("--runtime-root", type=Path, required=True)
     value.add_argument("--runtime-trust-policy", type=Path, required=True)
+    value.add_argument(
+        "--plugin-install-trust-policy",
+        type=Path,
+        help="External canonical publisher policy to pin for installable builds; omit for passive builds.",
+    )
     value.add_argument("--output", type=Path, required=True)
     value.add_argument(
         "--cargo-manifest",
@@ -36,6 +41,11 @@ def main() -> None:
         result = build_plugin_launcher(
             runtime_root=arguments.runtime_root.resolve(),
             runtime_trust_policy=arguments.runtime_trust_policy.resolve(),
+            plugin_install_trust_policy=(
+                arguments.plugin_install_trust_policy.resolve()
+                if arguments.plugin_install_trust_policy is not None
+                else None
+            ),
             output=arguments.output.resolve(),
             cargo_manifest=arguments.cargo_manifest.resolve(),
         )

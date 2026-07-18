@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from .runtime_manifest import RuntimeManifestError, assert_stable_path, file_sha256
+from .plugin_release_trust import PluginReleaseTrustError, PluginReleaseTrustPolicy
 from .runtime_package import ManagedRuntimePackage, RuntimePackageError
 from .runtime_trust import RuntimePackageTrustPolicy, RuntimeTrustError
 
@@ -32,6 +33,7 @@ class PluginLauncherBuildResult:
     size: int
     runtime_manifest_sha256: str
     runtime_trust_policy_sha256: str
+    plugin_install_trust_policy_sha256: str | None
 
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
@@ -87,6 +89,7 @@ def build_plugin_launcher(
     runtime_trust_policy: Path,
     output: Path,
     cargo_manifest: Path,
+    plugin_install_trust_policy: Path | None = None,
     runner: Runner = subprocess.run,
 ) -> PluginLauncherBuildResult:
     output_parent = _stable_directory(output.parent, "Launcher output parent")
@@ -101,7 +104,24 @@ def build_plugin_launcher(
             require_signature=True,
         )
         manifest_path = assert_stable_path(cargo_manifest)
-    except (OSError, RuntimeManifestError, RuntimePackageError, RuntimeTrustError) as error:
+        install_trust_path = None
+        if plugin_install_trust_policy is not None:
+            install_trust_path = assert_stable_path(plugin_install_trust_policy)
+            install_policy = PluginReleaseTrustPolicy.load(install_trust_path)
+            if install_policy.minimum_plugin_version.count(".") != 2 or any(
+                marker in install_policy.minimum_plugin_version for marker in ("-", "+")
+            ):
+                raise PluginReleaseTrustError(
+                    "PLUGIN_RELEASE_TRUST_POLICY_INVALID",
+                    "Install trust policy minimum version must use stable semver",
+                )
+    except (
+        OSError,
+        RuntimeManifestError,
+        RuntimePackageError,
+        RuntimeTrustError,
+        PluginReleaseTrustError,
+    ) as error:
         raise PluginLauncherBuildError(
             "PLUGIN_LAUNCHER_INPUT_INVALID",
             "Signed runtime, trust policy, or launcher source is invalid",
@@ -114,6 +134,7 @@ def build_plugin_launcher(
 
     manifest_digest = package.digest
     trust_digest = file_sha256(trust_path)
+    install_trust_digest = file_sha256(install_trust_path) if install_trust_path else None
     environment = {
         **os.environ,
         "ANKI_STUDY_RUNTIME_MANIFEST_SHA256": manifest_digest,
@@ -122,6 +143,9 @@ def build_plugin_launcher(
         "CARGO_NET_OFFLINE": "true",
         "SOURCE_DATE_EPOCH": "0",
     }
+    environment.pop("ANKI_STUDY_PLUGIN_INSTALL_TRUST_POLICY_SHA256", None)
+    if install_trust_digest is not None:
+        environment["ANKI_STUDY_PLUGIN_INSTALL_TRUST_POLICY_SHA256"] = install_trust_digest
     if os.name == "nt":
         environment["RUSTFLAGS"] = "-C link-arg=/Brepro"
     with tempfile.TemporaryDirectory(prefix=f".{output.name}.build-", dir=output_parent) as temporary:
@@ -190,6 +214,7 @@ def build_plugin_launcher(
         size=output.stat().st_size,
         runtime_manifest_sha256=manifest_digest,
         runtime_trust_policy_sha256=trust_digest,
+        plugin_install_trust_policy_sha256=install_trust_digest,
     )
 
 
@@ -202,6 +227,8 @@ def result_json(result: PluginLauncherBuildResult) -> str:
             "size": result.size,
             "runtimeManifestSha256": result.runtime_manifest_sha256,
             "runtimeTrustPolicySha256": result.runtime_trust_policy_sha256,
+            "pluginInstallTrustPolicySha256": result.plugin_install_trust_policy_sha256,
+            "installVerificationEnabled": result.plugin_install_trust_policy_sha256 is not None,
             "privateKeyRead": False,
             "networkUsed": False,
         },

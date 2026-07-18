@@ -12,12 +12,17 @@ from card_service.plugin_launcher_builder import (
     build_plugin_launcher,
 )
 from tests.test_runtime_package import trust_policy_path, write_package
+from tests.test_plugin_release_trust import write_policy as write_plugin_release_policy
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_launcher_builder_pins_signed_inputs_and_builds_offline_atomically(tmp_path: Path) -> None:
+def test_launcher_builder_pins_signed_inputs_and_builds_offline_atomically(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANKI_STUDY_PLUGIN_INSTALL_TRUST_POLICY_SHA256", "f" * 64)
     runtime = (tmp_path / "runtime").resolve()
     write_package(runtime)
     trust = trust_policy_path(runtime).resolve()
@@ -48,6 +53,7 @@ def test_launcher_builder_pins_signed_inputs_and_builds_offline_atomically(tmp_p
         (runtime / "runtime-package-v1.json").read_bytes()
     ).hexdigest()
     assert result.runtime_trust_policy_sha256 == hashlib.sha256(trust.read_bytes()).hexdigest()
+    assert result.plugin_install_trust_policy_sha256 is None
     assert "--locked" in observed["command"]
     assert "--offline" in observed["command"]
     environment = observed["environment"]
@@ -58,6 +64,40 @@ def test_launcher_builder_pins_signed_inputs_and_builds_offline_atomically(tmp_p
         assert environment["RUSTFLAGS"] == "-C link-arg=/Brepro"
     assert environment["ANKI_STUDY_RUNTIME_MANIFEST_SHA256"] == result.runtime_manifest_sha256
     assert environment["ANKI_STUDY_RUNTIME_TRUST_POLICY_SHA256"] == result.runtime_trust_policy_sha256
+    assert "ANKI_STUDY_PLUGIN_INSTALL_TRUST_POLICY_SHA256" not in environment
+
+
+def test_launcher_builder_pins_external_install_policy_when_explicit(tmp_path: Path) -> None:
+    runtime = (tmp_path / "runtime").resolve()
+    write_package(runtime)
+    trust = trust_policy_path(runtime).resolve()
+    install_policy_root = tmp_path / "install-policy"
+    install_policy_root.mkdir()
+    install_policy_path, _ = write_plugin_release_policy(install_policy_root)
+    output = (tmp_path / "output" / "anki-study-agent.exe").resolve()
+    output.parent.mkdir()
+    observed: dict[str, object] = {}
+
+    def fake_runner(command, **kwargs):
+        observed["environment"] = kwargs["env"]
+        target = Path(command[command.index("--target-dir") + 1])
+        binary = target / "release" / LAUNCHER_BINARY_NAME
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(b"install-verifying-launcher")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    result = build_plugin_launcher(
+        runtime_root=runtime,
+        runtime_trust_policy=trust,
+        plugin_install_trust_policy=install_policy_path,
+        output=output,
+        cargo_manifest=(ROOT / "runtime-tools" / "anki-study-launcher" / "Cargo.toml").resolve(),
+        runner=fake_runner,
+    )
+
+    expected = hashlib.sha256(install_policy_path.read_bytes()).hexdigest()
+    assert result.plugin_install_trust_policy_sha256 == expected
+    assert observed["environment"]["ANKI_STUDY_PLUGIN_INSTALL_TRUST_POLICY_SHA256"] == expected
 
 
 def test_launcher_builder_rejects_existing_output_and_invalid_trust(tmp_path: Path) -> None:

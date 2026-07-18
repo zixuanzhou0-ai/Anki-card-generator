@@ -1,3 +1,5 @@
+mod release_verifier;
+
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -20,6 +22,8 @@ const EXPECTED_RUNTIME_MANIFEST_SHA256: Option<&str> =
     option_env!("ANKI_STUDY_RUNTIME_MANIFEST_SHA256");
 const EXPECTED_RUNTIME_TRUST_POLICY_SHA256: Option<&str> =
     option_env!("ANKI_STUDY_RUNTIME_TRUST_POLICY_SHA256");
+const EXPECTED_PLUGIN_INSTALL_TRUST_POLICY_SHA256: Option<&str> =
+    option_env!("ANKI_STUDY_PLUGIN_INSTALL_TRUST_POLICY_SHA256");
 
 #[derive(Debug)]
 struct LauncherLayout {
@@ -430,6 +434,23 @@ fn run() -> Result<i32, String> {
         env::current_exe().map_err(|_| "launcher executable is unavailable".to_owned())?;
     let layout = resolve_layout(&executable)?;
     trace("plugin layout resolved");
+    if let Some(install_trust_digest) = EXPECTED_PLUGIN_INSTALL_TRUST_POLICY_SHA256 {
+        let install_trust_digest = expected_digest(
+            Some(install_trust_digest),
+            "plugin install trust policy SHA-256",
+        )?;
+        release_verifier::verify_installed_plugin(
+            &layout.plugin_root,
+            install_trust_digest,
+            expected_manifest,
+            expected_trust,
+            std::time::SystemTime::now(),
+        )?;
+        trace("signed install manifest verified");
+    } else {
+        release_verifier::assert_passive_plugin(&layout.plugin_root)?;
+        trace("passive plugin layout verified");
+    }
     let trust_policy = stable_file_within(
         &layout.plugin_root,
         layout

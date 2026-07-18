@@ -135,13 +135,17 @@ V1 不使用 hooks。当前生成规范与验证器对 hooks 字段存在差异�
 - 退出前保存任务安全状态。
 - 不监听 LAN。
 
-当前原生 launcher 实现位于 `runtime-tools/anki-study-launcher`，只直接依赖锁定的 `serde_json` 与 `sha2`：
+当前原生 launcher 实现位于 `runtime-tools/anki-study-launcher`，只直接依赖锁定的 `serde_json`、`sha2` 与 `ed25519-dalek 3.0.0`：
 
-- `scripts/build_anki_study_launcher.py` 先用 Card Service 的正式验证器检查运行包 detached signature、发布者策略、SBOM 和资源，再把精确 runtime manifest SHA-256 与 trust-policy SHA-256 编入 launcher；构建固定 `--locked --offline`、禁用增量、固定 `SOURCE_DATE_EPOCH`，Windows 链接使用 `/Brepro`，不接收或读取发布私钥。
+- `scripts/build_anki_study_launcher.py` 先用 Card Service 的正式验证器检查运行包 detached signature、发布者策略、SBOM 和资源，再把精确 runtime manifest SHA-256 与 trust-policy SHA-256 编入 launcher；构建固定 `--locked --offline`、禁用增量、固定 `SOURCE_DATE_EPOCH`，Windows 链接使用 `/Brepro`，不接收或读取发布私钥。只有显式提供候选目录之外的 `--plugin-install-trust-policy` 时，才把该策略摘要编入可安装 launcher；环境中偶然存在的同名变量会被清除。
 - launcher 只接受固定 `--stdio`，从自己的 `server/launcher` 位置解析插件根、`server/runtime` 与发布者策略，不读取 cwd/PATH；拒绝 symlink/junction/reparse、路径逃逸、大小写碰撞、Windows 保留名、缺失/额外文件、size/SHA-256 不符和错误的策略摘要。
 - launcher 在启动 Python 前流式复核 manifest 固定的全部 4380 项资源与精确文件集合，缓冲区位于堆上；随后只启动已验证的包内 Python，固定 `-E -s -B -m card_service.mcp_stdio`，移除 Python 路径覆盖变量并继承 stdio，不监听端口。
 - 受限宿主可能移除 `PROCESSOR_ARCHITECTURE`，便携 Python 的 `platform.machine()` 会因此返回空值。未来运行包从 Python 自身的 `sysconfig` 构建标签判定平台；当前已签名运行包由受信 x64 launcher 固定设置 `PROCESSOR_ARCHITECTURE=AMD64` 并清除 WOW64 覆盖，避免把受限环境误判为 `windows-`。
-- 平台修复后的两个全新隔离 target release 构建均为 308,736 bytes、SHA-256 `c11b912b0590c406aef361400820e776ae7d009b85c8b7019f2e912d9caed3c3`。替换 trust policy 或首个运行资源均在 Python 启动前以退出码 125 拒绝；独立复制目录通过官方 plugin validator，并在全新 `CODEX_HOME` 中由真实 Codex `0.144.1` 完成只读工具调用。
+- 加入安装清单闸门后的两个全新隔离 target release 构建均为 314,368 bytes、SHA-256 `2dffc71f4b72a0224935e9f5f031b95fb7baa29073564827578c317cc781e65a`。替换 trust policy 或首个运行资源均在 Python 启动前以退出码 125 拒绝；独立复制目录通过官方 plugin validator，并在全新 `CODEX_HOME` 中由真实 Codex `0.144.1` 完成只读工具调用。
+- 未编入安装策略 pin 的 launcher 固定为被动模式：插件根出现 `.mcp.json`、`install-package-v1.json`、`install-package-v1.sig.json`、安装发布策略，或 `plugin.json` 声明 `mcpServers/apps` 时，都会在 Python 启动前退出 125。真实伪造 `.mcp.json` 的二进制探针已验证该行为，不能把旧的被动签名或手工 MCP 文件升级成可执行插件。
+- 编入安装策略 pin 的 launcher 只接受 canonical `install-package-v1.json` 与 `install-package-v1.sig.json`。签名使用独立域 `study.plugin-install-manifest.v1`，不能复用被动候选的 `study.plugin-release-manifest.v1` 签名；外部策略约束 authority、key/epoch/status、最长寿命、最低稳定 SemVer、撤销版本与 manifest。资源表精确覆盖外层文件，`server/runtime` 只以固定 manifest/trust digest 委托给随后执行的内层完整验证器。
+- 安装 manifest 还把 `plugin.json` 精确绑定到 `./.mcp.json`；MCP 配置只能声明 `./server/launcher/anki-study-agent.exe --stdio`、cwd `.` 与 900 秒工具超时。签名资源中的 `releaseState` 四个 true 只有在原生 Ed25519 验签真实完成后才返回授权，不能作为 payload 自报事实使用。
+- [`ed25519-dalek 3.0.0`](https://docs.rs/ed25519-dalek/3.0.0) 采用 BSD-3-Clause，依赖锁落到 `curve25519-dalek 5.0.0`；当前 Rust 1.94.1 高于其 MSRV 1.85。依赖评审确认旧版 `ed25519-dalek <2` 的 [RUSTSEC-2022-0093](https://rustsec.org/advisories/RUSTSEC-2022-0093.html) 与旧版 `curve25519-dalek <4.1.3` 的 [RUSTSEC-2024-0344](https://rustsec.org/advisories/RUSTSEC-2024-0344.html) 不适用于当前锁定版本。
 - 这些证据证明 launcher 代码、离线构建和独立副本路径成立，不证明发行者身份。正式 Authenticode/等价安装包签名、发布私钥保管、撤销与最终安装器验证仍是启用 `.mcp.json` 前的硬门槛。
 
 当前已实现独立的 Windows Authenticode 发布闸门 `card_service.windows_authenticode` 与只读 CLI `scripts/verify_launcher_authenticode.py`：
@@ -157,7 +161,7 @@ V1 不使用 hooks。当前生成规范与验证器对 hooks 字段存在差异�
 - 输入只允许通过官方验证的被动插件根、原生 launcher、已签名 runtime 和独立 trust policy；检测到 `.mcp.json`、`.app.json`、`mcpServers`、`apps` 或源插件自带 `server/` 时立即拒绝。
 - 输出固定生成 canonical `release-package-v1.json` 和根级 SPDX 2.3，逐文件覆盖插件、launcher、runtime manifest/signature、trust policy 和全部运行资源；拒绝路径逃逸、reparse、Windows 保留名、大小写碰撞、缺失/额外文件、源文件复制中变化和已有输出覆盖。
 - 外层插件树使用当前用户、SYSTEM、Administrators 的受保护精确 DACL；`server/runtime` 再使用固定 runtime AppContainer SID 的只读执行 DACL。装配前后逐项读回验证，防止普通复制破坏 sandbox 边界。
-- 实物候选包含 4391 个资源、289,210,657 bytes；外层 manifest SHA-256 为 `9ab03b75dc2a0c2197e280fdd47a9f9a83c2fe25fc786459822cfcbf23f262d6`。它在普通权限下通过官方 plugin validator，并由真实 Codex `0.144.1` 从候选目录完成唯一只读工具调用。
+- 使用新版被动闸门构建的实物候选包含 4391 个资源、289,216,289 bytes；外层 manifest SHA-256 为 `a6f597824355f2648e272241bf2e8f6514ae138807ca96e8e4e4a3a809b28ea7`。它在普通权限下通过官方 plugin validator，并由真实 Codex `0.144.1` 从候选目录完成唯一只读工具调用。该候选仍未生成新的外层探针签名，旧候选的签名不能复用。
 - 候选 manifest 与 CLI 固定报告 `installable=false`、`mcpDeclared=false`、`outerSignatureVerified=false`、`publisherKeyManaged=false`；构建不接收私钥、不联网、不生成 MCP/App 映射。它是发行结构证据，不是可安装发布物。
 
 `scripts/create_plugin_release_signing_request.py` 是候选包到外部发布签名系统之间的只读交接入口：
@@ -168,7 +172,7 @@ V1 不使用 hooks。当前生成规范与验证器对 hooks 字段存在差异�
 - 该脚本的参数中没有私钥，也不调用网络或签名程序；输出固定 `privateKeyRead=false`、`networkUsed=false`、`signatureCreated=false`、`installable=false`。真实私钥只能在仓库外的离线/HSM 流水线消费待签 message。
 - `card_service.plugin_release_trust` 已实现 detached signature 的独立验签、密钥撤销、签名期限、最低版本、manifest 撤销，以及本地 trust-sequence/同版本异内容防回滚地板。当前没有正式发布公钥策略和签名返回物，因此这条机制只完成了交接合同，不能把被动候选升级为可安装发布物。
 - `scripts/create_ephemeral_plugin_probe_signature.py` 只用于本地实物验收：每次生成随机密钥，最长 24 小时，只输出公钥策略、签名请求和 detached signature，私钥不落盘。289,210,657-byte 真实候选已经先后通过该探针和独立 `verify_plugin_release_signature.py`，两次均绑定 manifest `9ab03b75dc2a0c2197e280fdd47a9f9a83c2fe25fc786459822cfcbf23f262d6`，并保持 `installable=false`。
-- `.mcp.json`、manifest 的 `mcpServers`、外层 Authenticode/等价代码签名与正式独立复制安装验证仍保持阻断。后续 finalizer 必须重新构造并验签最终 payload，不能把“签过被动 manifest”解释为“允许执行 MCP”。
+- `.mcp.json`、manifest 的 `mcpServers`、外层 Authenticode/等价代码签名与正式独立复制安装验证仍保持阻断。后续 finalizer 必须重新构造并验签最终 payload，不能把“签过被动 manifest”解释为“允许执行 MCP”。原生安装 verifier 已实现签名、撤销与最低版本判定，但本机单调 anti-rollback floor 尚未接入原生启动路径，仍是正式安装器的硬门槛。
 
 M1 托管运行包的内层合同已经固定为：
 
