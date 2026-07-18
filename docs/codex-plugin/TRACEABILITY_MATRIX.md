@@ -1,7 +1,7 @@
 # 可追溯矩阵
 
-> 状态：CURRENT M0 追踪 + PROPOSED 后续要求
-> 日期：2026-07-17
+> 状态：CURRENT M0/M1 与 M2 内部切片追踪 + PROPOSED 后续要求
+> 日期：2026-07-18
 > 目标：每个重要承诺都能追到领域契约、工具、测试和里程碑。
 
 ## 1. 产品要求
@@ -46,6 +46,8 @@
 | PR-505 | V1 不运行时安装 | signed package policy | 无 install/repair_env 工具 | tool inventory/package tests | M3 |
 | PR-506 | 宿主能力实测 | host capability snapshot | system.get_capabilities | manifest/stdio/tool/trusted-UI matrix | M3/M4 |
 | PR-507 | raw URL 不进入 MCP | trusted-entry-only network grant | system.request_network_grant | schema absence + ordinary/signed URL canary | M2/M3 |
+
+当前 M2 内部证据：PR-002 的 ArtifactEnvelope/认证 Registry、PR-205/402/403/404 的 StudyTask/检查点/successor，以及 PR-207 的 Project/Contract 双 revision、语义操作、幂等与固定失效矩阵已有服务端实现和自动化测试。对应公共 MCP 工具、统一事务接线和正式安装边界仍未完成，表中 M3 出口不因此提前满足。
 
 ## 2. 学习要求
 

@@ -469,6 +469,8 @@ app-data/
 - 只读检查和预览可以并发。
 - Anki 导入使用 import intent/idempotency key，重试前先检查是否已存在。
 
+CURRENT 内部 `ProjectRegistry` 已实现 projectRevision + contractRevision 双 CAS、项目创建 idempotency key 与语义 operationId 幂等、固定 Learning Contract ChangeSet 以及按实际变化字段计算的失效矩阵。记录使用 canonical JSON、域隔离 HMAC、跨进程文件锁、no-replace 创建和认证备份；公开快照不包含内部账本或认证数据。它尚未与 Artifact Registry/StudyTask 组成单一 compare-and-publish 事务，也尚未暴露为 MCP 工具，因此不能把内部实现推导为项目工具已经发布。
+
 ## 8. 能力与秘密
 
 能力状态严格分层：fixedCapabilities 表达宿主、本地运行时、来源适配器、Anki 和 runtime verifier；serviceProfiles 对 model/TTS/AnkiConnect 的每个 profile 单独记录。ServiceProfileVerificationRecord 绑定 capability、profileRef、configurationFingerprint、credentialRevision、单调 sequence、checkedAt 与结果/错误码；最新失败覆盖旧成功，service aggregate 只用于展示。

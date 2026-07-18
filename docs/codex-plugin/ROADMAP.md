@@ -186,7 +186,11 @@ M0 出口已经关闭：
 
 该切片新增 25 项测试，Artifact + manifest + task 定向集合为 `67 passed`；正式 Python 全集为 `1028 passed, 1 skipped`。覆盖 HMAC/受众/scope 篡改、checkpoint 恢复与防回滚、跨协调器 CAS 竞争、operation 冲突、非有限/倒退进度、终态、跨会话重授权、凭据 revision 轮换、范围扩大拒绝和复用产物篡改失败关闭。
 
-这不表示 M2 已完成：注册表和 StudyTask 尚未接入 Card Service 公共 MCP surface，认证密钥仍由进程内构造参数提供，正式 OS key protection/rotation、应用数据 ACL、项目 revision/expectedRevision/idempotency、可信 stdio audience 握手、OperationIntent/approval/authorization ledger、精细 scope relation proof、SecretRef/credential ledger、Broker reservation ledger、Anki 证据链与 legacy Project canonical projection 仍在后续切片。公共 MCP 在这些边界完成前仍不能接受 ArtifactRef 对象或开放生成/导入写操作。
+第四个内部切片已经实现认证 Project Registry 与 Learning Contract 版本控制。项目创建使用 owner/host/plugin 稳定作用域和调用方 opaque idempotency key 派生不可猜测 projectId；原始幂等键不落盘，session 变化不夺走长期项目，plugin/owner/host 变化则不能读取或复用项目。项目主记录采用 canonical JSON、域隔离 HMAC、no-replace 创建、同目录原子替换、认证 `.bak` 和跨注册表文件锁；当前记录损坏时不会以旧备份静默回滚项目状态。
+
+Project Registry 对 projectRevision 与 contractRevision 同时执行 CAS，只接受冻结的九类语义操作，不接受 JSON Patch 或任意字段路径。operationId 在 revision 检查前提供精确 payload 幂等重放；同 ID 不同 payload 拒绝。失效集合只由真正发生变化的字段决定：发现语义变化使 discovery 及下游 stale，预算变化从 selection 开始，语言变化从 planning 开始；混合 ChangeSet 中的无效 no-op 不会扩大失效范围。公开 project snapshot 不包含认证标签、scope digest、operation ledger、原始幂等键、密钥或绝对路径。30 项新增测试与 Artifact/manifest/task 联合集合 `97 passed`，正式 Python 全集为 `1058 passed, 1 skipped`；覆盖双 revision 冲突、跨注册表唯一写入胜者、幂等重放、最小失效、Unicode 规范化、作用域隔离、HMAC/备份/篡改和秘密/路径拒绝。
+
+这不表示 M2 已完成：Artifact Registry、StudyTask 和 Project Registry 尚未作为同一事务边界接入 Card Service 公共 MCP surface，Learning Contract 也尚未发布为 canonical Artifact ref。认证密钥仍由进程内构造参数提供，正式 OS key protection/rotation、应用数据 ACL、可信 stdio audience 握手、OperationIntent/approval/authorization ledger、精细 scope relation proof、SecretRef/credential ledger、Broker reservation ledger、Anki 证据链与 legacy Project canonical projection 仍在后续切片。公共 MCP 在这些边界完成前仍不能接受 ArtifactRef 对象或开放生成/导入写操作。
 
 ### 出口
 

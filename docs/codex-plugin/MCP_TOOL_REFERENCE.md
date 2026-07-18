@@ -303,6 +303,8 @@ prepare request
 
 ### 5.1 study.create_project
 
+> CURRENT 内部状态：认证 Project Registry 已实现创建幂等、长期项目 scope 与双修订初始快照；本 MCP 工具尚未注册，Learning Contract Artifact ref 尚未接线。
+
 输入：
 
 ~~~ts
@@ -341,6 +343,8 @@ prepare request
 - 相同 idempotencyKey 返回同一项目。
 
 ### 5.2 study.update_learning_contract
+
+> CURRENT 内部状态：固定语义操作、双 revision CAS、operationId 精确幂等和最小失效矩阵已有服务端存储实现与回归测试；公共 MCP schema、canonical learningContractRef 发布和跨 Artifact/Task 原子提交仍未实现。
 
 输入 projectId、expectedProjectRevision、expectedContractRevision、operationId 和非空 operations。operations 只允许 StudyIR 冻结的语义联合：set_purpose、set_target_behavior、set_learner_level、replace_routes、set_budget、set_languages、set_evidence_policy、add_exclusion、remove_exclusion；不接受 JSON Patch、任意字段路径或模型生成的对象合并。
 

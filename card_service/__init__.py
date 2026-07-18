@@ -9,6 +9,7 @@ from .artifact_registry import (
 from .service import CardService, CardServiceError
 from .task_manifests import TaskManifestError
 from .task_coordinator import StudyTaskCoordinator, StudyTaskError
+from .project_registry import ProjectRegistry, ProjectRegistryError
 
 __all__ = [
     "ArtifactAudienceBinding",
@@ -20,4 +21,6 @@ __all__ = [
     "TaskManifestError",
     "StudyTaskCoordinator",
     "StudyTaskError",
+    "ProjectRegistry",
+    "ProjectRegistryError",
 ]
