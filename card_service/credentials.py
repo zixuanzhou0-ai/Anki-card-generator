@@ -21,6 +21,7 @@ from .storage import AtomicJsonStore
 
 PROFILE_REF_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 MAX_CREDENTIAL_RECORD_BYTES = 64 * 1024
+SERVICE_KEY_PURPOSE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 
 
 class CredentialStoreError(RuntimeError):
@@ -232,9 +233,33 @@ class CredentialStore:
     def _key(self) -> bytes:
         if self._authentication_key is None:
             self._authentication_key = self._load_authentication_key(create=True)
+
         if self._authentication_key is None:
             raise CredentialStoreError("Credential metadata authentication key is unavailable")
         return self._authentication_key
+    def derive_service_key(self, purpose: str, *, context: bytes = b"") -> bytes:
+        """Derive a domain-separated internal key without exposing the root key.
+
+        The caller must use a non-secret, stable context. Only the OS-backed root
+        key is persisted; derived keys remain in the owning service process.
+        """
+
+        if not isinstance(purpose, str) or not SERVICE_KEY_PURPOSE_PATTERN.fullmatch(purpose):
+            raise CredentialStoreError("Invalid service key derivation purpose")
+        if not isinstance(context, bytes) or len(context) > 1024:
+            raise CredentialStoreError("Invalid service key derivation context")
+        with self._transaction():
+            root_key = self._key()
+            return hmac.new(
+                root_key,
+                b"study.service-key-derivation.v1\x00"
+                + purpose.encode("ascii")
+                + b"\x00"
+                + len(context).to_bytes(2, "big")
+                + context,
+                hashlib.sha256,
+            ).digest()
+
 
     def _mac(self, domain: str, value: dict[str, Any]) -> str:
         payload = domain.encode("ascii") + b"\x00" + canonical_json_bytes(value)

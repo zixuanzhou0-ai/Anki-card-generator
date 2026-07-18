@@ -478,7 +478,7 @@ CURRENT 内部 `ProjectRegistry` 已实现 projectRevision + contractRevision �
 
 秘密只以 SecretRef 进入配置。MCP 工具、App UI、任务快照、日志和审计不能返回密钥明文。
 
-CURRENT 内部 `CredentialStore` 已把真实秘密限制在 OS credential backend，并以 HMAC 派生 SecretRef、material MAC、high-water revision、expectedRevision CAS 和跨进程文件锁维护认证事务。add/replace/delete/rollback/OAuth material change 都生成不复用的新 revision；崩溃后只有 intended 或 previous material 能被证明时才提交/回退，其他材料进入 `uncertain` 并禁止 broker 解析。认证密钥按需保存在同一秘密后端，所以 Hermes revision 0 路径不会凭空创建 provider credential。该实现尚未形成公共设置工具，正式 service key rotation/ACL 仍未完成。
+CURRENT 内部 `CredentialStore` 已把真实秘密限制在 OS credential backend，并以 HMAC 派生 SecretRef、material MAC、high-water revision、expectedRevision CAS 和跨进程文件锁维护认证事务。add/replace/delete/rollback/OAuth material change 都生成不复用的新 revision；崩溃后只有 intended 或 previous material 能被证明时才提交/回退，其他材料进入 `uncertain` 并禁止 broker 解析。认证密钥按需保存在同一秘密后端，所以 Hermes revision 0 路径不会凭空创建 provider credential；Card Service 的本地 grant 与 staging receipt key 也从该 OS-backed 根材料按 purpose/context 域隔离派生，派生 key 不落盘。service instance ID 只在当前进程生命周期内随机生成，不从持久材料恢复。该实现尚未形成公共设置工具，正式 service key rotation/ACL 仍未完成。
 
 CURRENT 内部 `ServiceProfileRegistry` 已持久化封闭、规范化且不含秘密的 model/TTS/AnkiConnect 配置。固定 provider 继续复用 Provider Egress 的 origin/模型/voice 约束，Hermes 和 AnkiConnect 只允许字面 loopback；configurationFingerprint 是 canonical 配置的纯 SHA-256。profileRevision 使用 expectedRevision CAS，operationId 只以 HMAC 摘要落盘；记录采用 canonical JSON、域隔离 HMAC、跨进程锁、no-replace 创建和审计备份，并严格校验字段闭包、身份路径、历史操作与保存时凭据绑定。公开快照不返回 SecretRef、秘密或原始 operationId；每次解析都从 `CredentialStore` 读取当前 credentialRevision/state，所以外部替换或删除保持 `uncertain` 并失败关闭。
 
@@ -518,7 +518,8 @@ CURRENT 内部 `ServiceProfileVerificationRegistry` 现可直接使用上述持�
 - CURRENT M2 的 `NetworkResourceGrantRegistry` 已在 Card Service 内部签发 audience/service 绑定的 `networkResourceRef`。raw/signed URL 只存在于当前 Service 进程的短期 locator 内存；认证持久记录只保存 HMAC 摘要、脱敏 display origin、封闭策略、次数、期限与撤销状态。签发、消费和每个重定向 hop 都重新解析全部地址，任一非公网结果即拒绝；传输固定到已验证 IP，同时保留 TLS SNI/hostname 校验，不读取环境代理、Cookie 或系统集成凭据。Service 重启后旧 ref 变为 `reauthorization_required`，不能从持久摘要恢复 URL。
 - CURRENT M2 的内部 `TaskResourceStager` 会重新验证已消费 local grant 的 proof、audience、撤销 epoch、revision、约束和当前快照，再以独占句柄和有界流复制到 task workspace。目录复制产生排序、认证的逐项 manifest，并拒绝 reparse、hardlink、名称碰撞、资源越界和复制期变化；Worker 只得到 workspace-relative locator。
 - staging receipt 以域隔离 HMAC 绑定 source ref 摘要、task/audience/service、workspace identity、manifest 与暂存字节。Windows staged payload 对 task SID 只授予 read/execute；生产模式没有正式 hardener 就失败关闭。当前实现以跨进程锁串行化完整复制阶段，优先保证原子性与幂等，后续再优化大型目录吞吐。
-- legacy 桥、资源账本与 stager 尚未由唯一生产 composition root 作为同一事务边界接入 Card Service/MCP，也未实现生产受信选择/URL 输入 attestation、网络资源 staging 或逐子项公共 ref。Artifact publish 失败可能留下已经净化的内容寻址孤儿 Blob；跨 Registry 原子事务和保留清理属于后续 M2。
+- CURRENT `ServiceResourceRuntime` 已由 Card Service 惰性拥有同一个 local grant registry 和 stager；packaged runtime 只绑定正式 `harden_staged_path`，并拒绝调用方注入 gesture verifier。能力快照不披露路径、key 或私有 receipt。
+- 该 composition root 仍不是完整事务边界：legacy 桥、StudyTask、Source Adapter、Worker 调度和公共 MCP 尚未接线，也未实现生产受信选择/URL 输入 attestation、网络资源 staging 或逐子项公共 ref。Artifact publish 失败可能留下已经净化的内容寻址孤儿 Blob；跨 Registry 原子事务和保留清理属于后续 M2。
 - 旧桌面项目可通过显式迁移器导入，不直接假设字段等价。
 
 ## 11. 进程与部署

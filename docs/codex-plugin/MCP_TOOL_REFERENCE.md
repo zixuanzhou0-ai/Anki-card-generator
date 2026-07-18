@@ -17,7 +17,7 @@ MCP 工具服务于用户意图，而不是暴露内部 Worker。工具层必须
 
 官方工具设计参考：[Describe tools](https://developers.openai.com/apps-sdk/build/mcp-server#step-2--describe-tools)。
 
-当前 M1 桥只实现协议握手、工具发现和零参数只读能力快照。它不接受 opaque Artifact、OperationIntent 或任何路径，也不公开生成、导出、Anki 写入、凭据、原始 Worker 或 Shell 能力；下文其余工具仍是后续里程碑的目标合同。
+当前 M1 桥只实现协议握手、工具发现和零参数只读能力快照。Card Service 内部已经惰性组合本地资源 grant/staging runtime，但该内部能力不等于公共工具：桥仍不接受 opaque Artifact、OperationIntent 或任何路径，也不公开资源签发、生成、导出、Anki 写入、凭据、原始 Worker 或 Shell 能力；下文其余工具仍是后续里程碑的目标合同。
 
 ## 2. 公共请求约定
 

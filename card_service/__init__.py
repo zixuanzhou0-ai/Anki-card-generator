@@ -40,6 +40,10 @@ from .resource_staging import (
     StagedResource,
     TaskResourceStager,
 )
+from .resource_runtime import (
+    ServiceResourceRuntime,
+    ServiceResourceRuntimeError,
+)
 from .project_registry import ProjectRegistry, ProjectRegistryError
 from .service_profiles import (
     ServiceProfileVerificationError,
@@ -77,6 +81,8 @@ __all__ = [
     "ResourceStagingError",
     "StagedResource",
     "TaskResourceStager",
+    "ServiceResourceRuntime",
+    "ServiceResourceRuntimeError",
     "ServiceProfileVerificationError",
     "ServiceProfileVerificationRegistry",
     "ServiceProfileRegistry",

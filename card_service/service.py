@@ -23,7 +23,7 @@ from workers.acg.secret_scrub import is_runtime_secret_key, is_sensitive_url_que
 
 from .broker_configuration import BrokerConfigurationError, ServiceBrokerRuntime
 from .broker_ipc import BROKER_REQUEST_PREFIX, BROKER_RESPONSE_PREFIX, TaskBrokerChannel
-from .credentials import CredentialBackend
+from .credentials import CredentialBackend, CredentialStore, CredentialStoreError
 from .process_isolation import ProcessIsolationError, TaskOwnedProcessGroup
 from .runtime_manifest import (
     ManagedRuntimeManifest,
@@ -32,6 +32,7 @@ from .runtime_manifest import (
     worker_runtime_entries,
 )
 from .runtime_package import ManagedRuntimePackage, RuntimePackageError
+from .resource_runtime import ServiceResourceRuntime, ServiceResourceRuntimeError
 from .runtime_trust import (
     RuntimePackageTrustPolicy,
     RuntimeTrustError,
@@ -43,6 +44,7 @@ from .windows_sandbox_acl import (
     WindowsSandboxAclError,
     create_task_workspace,
     harden_task_writable_path,
+    harden_staged_path,
     runtime_sandbox_sid,
     verify_runtime_tree_dacl,
 )
@@ -621,6 +623,7 @@ class CardService:
         credential_backend: CredentialBackend | None = None,
         trusted_surface_path: str | Path | None = None,
         use_restricted_launcher: bool | None = None,
+        resource_gesture_verifier: Callable[[str, str, str, str], bool] | None = None,
     ) -> None:
         repository_root = Path(__file__).resolve().parent.parent
         self.runtime_package: ManagedRuntimePackage | None = None
@@ -633,6 +636,12 @@ class CardService:
                 "RUNTIME_TRUST_POLICY_CONFLICT",
                 "Runtime trust policy is only valid with a packaged runtime",
             )
+        if runtime_package is not None and resource_gesture_verifier is not None:
+            raise CardServiceError(
+                "RESOURCE_GESTURE_VERIFIER_INJECTION_FORBIDDEN",
+                "Packaged runtime resource gestures must come from the trusted local surface",
+            )
+
         if runtime_package is not None:
             if worker_path is not None or python_path is not None or managed_tool_directories:
                 raise CardServiceError(
@@ -758,6 +767,10 @@ class CardService:
         self.broker_method_blocker = broker_method_blocker
         self.broker_runtime_capabilities = dict(broker_runtime_capabilities or {})
         self._credential_backend = credential_backend
+        self._resource_gesture_verifier = resource_gesture_verifier
+        self._resource_runtime: ServiceResourceRuntime | None = None
+        self._resource_runtime_lock = threading.RLock()
+
         self._active_broker_runtime: ServiceBrokerRuntime | None = None
         self._broker_runtime_lock = threading.RLock()
         self.use_restricted_launcher = os.name == "nt" if use_restricted_launcher is None else bool(use_restricted_launcher)
@@ -799,6 +812,64 @@ class CardService:
         self._workspace_budget_lock = threading.RLock()
         self._workspace_reservations: set[str] = set()
         self._recover_orphaned_tasks()
+
+    def _resource_runtime_capabilities(self) -> dict[str, Any]:
+        with self._resource_runtime_lock:
+            runtime = self._resource_runtime
+        if runtime is not None:
+            return {**runtime.capabilities(), "initialized": True}
+        return {
+            "schemaVersion": 1,
+            "initialized": False,
+            "credentialProtectionAvailable": (
+                self._credential_backend is not None or os.name == "nt"
+            ),
+            "trustedGrantIssuance": self._resource_gesture_verifier is not None,
+            "taskStaging": True,
+            "productionHardeningRequired": self.runtime_package is not None,
+            "productionHardeningAvailable": (
+                os.name == "nt" and self.runtime_package_dacl
+            ),
+            "workerLocatorRelativeOnly": True,
+            "sourcePathDisclosure": False,
+            "complete": False,
+        }
+
+    def _ensure_resource_runtime(self) -> ServiceResourceRuntime:
+        with self._resource_runtime_lock:
+            if self._resource_runtime is not None:
+                return self._resource_runtime
+            try:
+                credential_store = CredentialStore(
+                    state_dir=self.store.root / "trusted-surfaces" / "credentials",
+                    backend=self._credential_backend,
+                )
+                hardener = (
+                    harden_staged_path
+                    if os.name == "nt" and self.runtime_package_dacl
+                    else None
+                )
+                runtime = ServiceResourceRuntime(
+                    state_dir=self.store.root / "resource-runtime",
+                    credential_store=credential_store,
+                    gesture_verifier=self._resource_gesture_verifier,
+                    harden_callback=hardener,
+                    require_hardening=self.runtime_package is not None,
+                )
+            except (CredentialStoreError, ServiceResourceRuntimeError, OSError) as error:
+                raise CardServiceError(
+                    getattr(error, "code", "RESOURCE_RUNTIME_UNAVAILABLE"),
+                    "Card Service local resource runtime is unavailable",
+                    retryable=False,
+                    stage="resource_authorization",
+                ) from error
+            self._resource_runtime = runtime
+            return runtime
+
+    def initialize_local_resource_runtime(self) -> dict[str, Any]:
+        """Internal trusted-adapter composition hook; it is not an MCP tool."""
+
+        return {**self._ensure_resource_runtime().capabilities(), "initialized": True}
 
     def _broker_blocker(self, method: str, policy: MethodPolicy) -> str | None:
         with self._broker_runtime_lock:
@@ -899,6 +970,7 @@ class CardService:
                 "complete": False,
             },
             "trustedSurfaces": self.trusted_surfaces.capabilities(),
+            "localResourceRuntime": self._resource_runtime_capabilities(),
         }
 
     @staticmethod
