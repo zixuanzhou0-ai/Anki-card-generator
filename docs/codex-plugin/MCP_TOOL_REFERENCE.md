@@ -272,6 +272,8 @@ host 部分至少分别报告：pluginManifestLoaded、stdioServiceLaunch、tool
 
 ### system.request_operation_confirmation
 
+> CURRENT 内部状态：model/TTS OperationIntent/Approval/InternalAuthorization 账本内核已实现摘要、受众、一次性批准消费、task 绑定、共享调用预算与撤销 epoch；受信窗口 attestation 生产适配器和本 MCP 工具尚未接线，默认 verifier 缺失时批准失败关闭。
+
 当 system.validate_profile、study.start_discovery、study.plan_cards、cards.generate 或需要重新授权的 study.resume_task 将首次向新服务发送数据，或超过 Learning Contract 已批准的模型/TTS 调用、卡片数量、媒体数量、费用/时间上限时，Service 必须先创建 OperationRequestManifestV1，再由其摘要创建不可变 OperationIntent，并返回 CONFIRMATION_REQUIRED + operationIntentId；此时不得启动远程调用。
 
 OperationRequestManifest 的 subject 是 project_task 或 profile_validation。前者绑定项目/学习合同/输入 Artifact/来源修订；后者始终绑定 profileRef、configurationFingerprint 与 credentialRevision，只有验证未提交设置草稿时才额外绑定 configurationSessionRef，不要求项目。每条 DisclosureEntryV1 把一个 capability/profile/origin/model-or-voice 目标与一个数据类别、精确来源修订/locator 集和该目标自己的请求字节、输入/输出 token、TTS 字符/秒数上限绑定；不能跨 target 交换片段。ProfileConfigurationManifest/EgressManifest 与 AudienceBindingManifest 都使用固定 JCS preimage。CostBudgetV1 绑定整数最小货币单位、计价快照版本、调用/卡片/媒体上限；价格未知时明确显示 unknown，并以硬资源上限约束。

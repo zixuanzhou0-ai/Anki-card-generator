@@ -6,6 +6,7 @@ from .artifact_registry import (
     ArtifactRegistry,
     ArtifactRegistryError,
 )
+from .authorization_ledger import AuthorizationLedger, AuthorizationLedgerError
 from .service import CardService, CardServiceError
 from .task_manifests import TaskManifestError
 from .task_coordinator import StudyTaskCoordinator, StudyTaskError
@@ -16,6 +17,8 @@ __all__ = [
     "ArtifactPublication",
     "ArtifactRegistry",
     "ArtifactRegistryError",
+    "AuthorizationLedger",
+    "AuthorizationLedgerError",
     "CardService",
     "CardServiceError",
     "TaskManifestError",

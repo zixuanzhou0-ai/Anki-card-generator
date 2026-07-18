@@ -190,7 +190,13 @@ M0 出口已经关闭：
 
 Project Registry 对 projectRevision 与 contractRevision 同时执行 CAS，只接受冻结的九类语义操作，不接受 JSON Patch 或任意字段路径。operationId 在 revision 检查前提供精确 payload 幂等重放；同 ID 不同 payload 拒绝。失效集合只由真正发生变化的字段决定：发现语义变化使 discovery 及下游 stale，预算变化从 selection 开始，语言变化从 planning 开始；混合 ChangeSet 中的无效 no-op 不会扩大失效范围。公开 project snapshot 不包含认证标签、scope digest、operation ledger、原始幂等键、密钥或绝对路径。30 项新增测试与 Artifact/manifest/task 联合集合 `97 passed`，正式 Python 全集为 `1058 passed, 1 skipped`；覆盖双 revision 冲突、跨注册表唯一写入胜者、幂等重放、最小失效、Unicode 规范化、作用域隔离、HMAC/备份/篡改和秘密/路径拒绝。
 
-这不表示 M2 已完成：Artifact Registry、StudyTask 和 Project Registry 尚未作为同一事务边界接入 Card Service 公共 MCP surface，Learning Contract 也尚未发布为 canonical Artifact ref。认证密钥仍由进程内构造参数提供，正式 OS key protection/rotation、应用数据 ACL、可信 stdio audience 握手、OperationIntent/approval/authorization ledger、精细 scope relation proof、SecretRef/credential ledger、Broker reservation ledger、Anki 证据链与 legacy Project canonical projection 仍在后续切片。公共 MCP 在这些边界完成前仍不能接受 ArtifactRef 对象或开放生成/导入写操作。
+第五个内部切片已经实现 model/TTS OperationIntent、OperationApproval 与 InternalAuthorization 核心账本。OperationRequestManifest、project_task/profile_validation 判别 subject、逐目标 DisclosureManifest、CostBudget 和 service binding 全部先严格规范化再计算 JCS 摘要；session/service/host/plugin/OS user 任一变化都使 audienceDigest 变化。创建 intent、批准消费和逐调用消费各有独立幂等摘要，原始 idempotency/consumption/use ID 不落盘。真实决定只接受 Card Service 注入的手势 attestation verifier；未注入时默认失败关闭，普通调用不能仅凭一个摘要写入 approved。
+
+批准只在创建 task 时原子消费一次，并在同一认证记录中签发 task-bound call_model/call_tts 授权；Task AuthorizationBinding 的五个公开字段与 Card Service 内部 authorizationId 分开。授权记录自身使用独立域 HMAC 签名，外层 intent/可变 ledger 再使用域隔离 HMAC；精确 subject、task、action、tagged resource revisions、profile configuration、credentialRevision、egress、disclosure/cost/batch 与 maxUses 均被绑定。逐调用消费同时受单授权 maxUses 与 OperationIntent 共享 remote-call 上限约束，多个 model/TTS authorization 不能放大预算；revocation epoch、过期、配置变化和并发消费均失败关闭。账本限制最长 24 小时和 2048 次远程调用，并在写入前施加 4 MiB 认证记录上限。
+
+该切片新增 23 项测试；Artifact/manifest/task/project/authorization 联合集合为 `120 passed`，正式 Python 全集为 `1081 passed, 1 skipped`。覆盖无批准、缺失手势验签器、受众/服务/会话重放、精确幂等、共享预算、双层 HMAC、内部签名、secret/path、profile validation、非远程动作、过期/撤销、跨实例竞态和 TaskManifest 不泄露内部 authorizationId。
+
+这不表示 M2 已完成：Artifact Registry、StudyTask、Project Registry 与 AuthorizationLedger 尚未作为同一事务边界接入 Card Service 公共 MCP surface，Learning Contract 也尚未发布为 canonical Artifact ref。授权账本的受信窗口 attestation 适配器仍未接线，因此生产批准目前按设计不能成功；file/directory/network/output 资源授权和 Anki ImportApproval 也未实现。认证密钥仍由进程内构造参数提供，正式 OS key protection/rotation、应用数据 ACL、可信 stdio audience 握手、精细 scope relation proof、SecretRef/credential ledger、完整 Broker reservation ledger、Anki 证据链与 legacy Project canonical projection 仍在后续切片。公共 MCP 在这些边界完成前仍不能接受 ArtifactRef 对象或开放生成/导入写操作。
 
 ### 出口
 

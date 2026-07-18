@@ -404,6 +404,8 @@ type ImportApprovalLedgerState = {
 - 原工具重试时重建并核对同一 OperationRequestManifestDigest、audience、intentDigest、profile/configurationFingerprint/credentialRevision、精确 disclosure/egress、资源/费用上限与当前撤销状态；任何变化都要求新 intent。随后生成的 TaskInputManifestDigest 包含 intentDigest。
 - 重启/新 session 后旧 audience 授权绝不搬迁或回填旧任务。若 WorkReuseDigest、稳定 capability、profile configuration 和已完成 Artifact 均一致，且新 disclosure/egress 等价或更窄，Service 可在重新验证/确认后创建 successor task 与新 TaskInputManifest；SuccessorTaskRebase 同时引用旧/新授权审计。范围扩大或语义/配置变化禁止 remaining 复用。
 
+CURRENT 内部实现已经覆盖 model/TTS OperationIntent、OperationApproval 和 task-bound InternalAuthorization 的认证存储、一次性批准消费、逐调用幂等消费、共享 remote-call 上限、过期和 revocation epoch。Task AuthorizationBinding 不包含内部 authorizationId。所有批准/撤销写入默认失败关闭，只有构造时注入的 trusted gesture attestation verifier 返回精确 audience/target/action 绑定的 true 才能发生。该 verifier 尚未与 `TrustedSurfaceManager` 生产响应适配器接线，资源授权、ImportApproval、凭据账本及公共 MCP 也尚未实现，因此不能据此声称端到端授权已完成。
+
 ### 5.1 stdio 身份、所有权与本地 ACL
 
 - Card Service 启动时记录真实 OS user SID、host instance、plugin instance、service instance 和 session；只接受该受信启动链路的连接。
