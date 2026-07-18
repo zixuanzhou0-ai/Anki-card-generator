@@ -111,6 +111,7 @@ M0 出口已经关闭：
 
 ### 当前实施进度（2026-07-18）
 
+- 已创建仓库内 `plugins/anki-study-agent` 被动插件包：manifest、Skill、Agent metadata 和学习/工作流/安全参考合同均通过官方 plugin/Skill 验证器与 3 项仓库合同测试。manifest 明确不声明尚未注册的 MCP/App；独立前向测试证明工具缺席时 Skill 会诚实停止，不会用 Shell 绕过或伪造 APKG/Anki 核验。该结果不等于插件已安装或 Card Service 已通过 Codex 宿主注册。
 - 已完成受限 Card Service API、任务快照/恢复、进度/取消/超时、无通用 Shell、Worker 运行时清单、受信本地设置与授权入口、Broker 账本与 task-owned HMAC IPC。
 - 已完成 Windows task-owned Job、restricted primary token、AppContainer、每任务 capability SID、runtime/task workspace 精确 DACL 和无网络 capability 的真实负面测试。
 - 已完成托管运行包内层供应链边界：canonical `runtime-package-v1.json`、detached Ed25519 签名、由受信 launcher 单独提供的发布者策略、签名有效期/密钥撤销/最低版本、同 sequence 分叉与本机版本回退拒绝，以及覆盖全部运行资源的 canonical SPDX 2.3 SBOM。
@@ -133,7 +134,7 @@ M0 出口已经关闭：
 - 真实受限 Legacy Worker 已完成“受控 YouTube 字幕 → 本地候选 → Service 模型 Broker → 学习点结果”认证 stdio 闭环；source/model 两类 reservation 均结算，持久 JSON 不含 provider secret 或 signed caption query canary。该证明使用确定性 fake transport，不是一次真实 YouTube 公网可用性测试。
 - 已增加首条桌面/Headless 语义等价合同：同一个冻结的单学习点请求分别由桌面 Legacy Worker 直调与 Headless Card Service 执行，核心 Project/segments/生成学习点一致；两边随后独立导出，Note Model 合同、media manifest、card-media ledger 和 audio audit 一致，任务终态均为 100%。同一“未选择学习点”请求的 code/message/retryable/stage 也一致；Card Service 现在保留经过 allowlist/限长的 Worker stage/fallbacks，但不持久化任意 details。该样本关闭 TTS 且不含视频，Headless 导出为隔离调度等价测试而显式关闭 restricted launcher；它不能替代受限视频/TTS、真实 Anki verify 和完整取消矩阵。
 - 本里程碑仍未完成：M2 的逐 OperationIntent approval ledger、撤销/原子消费和正式 profile 注册尚未实现；公网 provider 也未做真实用户凭据调用，Vertex TTS OAuth egress 仍 fail closed。完整 YouTube 视频/音频获取仍未开放，托管模式不会静默退回直接 yt-dlp；更广泛的 codec parser 崩溃/fuzz corpus、安全 Artifact 保留清理、更多桌面/Headless 语义等价证据和正式外层插件 launcher/可安装包仍在后续切片。
-- 当前回归证据包括正式 Python 全集 867 项、正式 Worker `unittest discover` 595 项、Vitest 830 项，以及 lint、类型检查和生产构建，以及真实受限 Legacy Worker 的模型、TTS、字幕→模型三条认证 stdio 闭环和一条桌面/Headless 单卡语义等价合同；这些集合有重叠且不是 M1 完成判定。
+- 当前回归证据包括正式 Python 全集 870 项、正式 Worker `unittest discover` 598 项、Vitest 830 项，以及 lint、类型检查和生产构建，以及真实受限 Legacy Worker 的模型、TTS、字幕→模型三条认证 stdio 闭环和一条桌面/Headless 单卡语义等价合同；这些集合有重叠且不是 M1 完成判定。
 
 ### 出口
 

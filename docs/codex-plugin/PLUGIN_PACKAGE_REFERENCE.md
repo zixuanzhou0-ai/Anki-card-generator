@@ -1,6 +1,6 @@
 # 插件包、安装与分发参考
 
-> 状态：PROPOSED 打包设计，当前仓库还没有 Codex 插件包
+> 状态：IMPLEMENTING；仓库已有通过官方验证器的被动插件与 Skill 骨架，尚未声明或注册 MCP/App
 > 日期：2026-07-17
 > 实施时必须重新用当时的官方验证器核验清单字段。
 
@@ -40,7 +40,7 @@ plugins/
     SBOM.spdx.json
 ~~~
 
-这是目标布局。M0 完成后先创建不声明 MCP/App 的被动插件与 Skill 骨架；只有真实 stdio 服务至少提供 system.get_capabilities、通过宿主注册测试后，才增加 .mcp.json 和 manifest 的 mcpServers。禁止用空 MCP 占位文件伪造可用状态。
+这是目标布局。当前已在 `plugins/anki-study-agent` 创建不声明 MCP/App 的被动 manifest、Skill、Agent metadata 和学习/工作流/安全参考合同；官方 plugin/Skill 验证器、仓库合同测试和一次独立前向测试均通过。前向测试在 Card Service 工具缺席时明确停止，没有使用 Shell 绕过或伪造 APKG/Anki 核验。只有真实 stdio 服务至少提供 `system.get_capabilities`、通过宿主注册测试后，才增加 `.mcp.json` 和 manifest 的 `mcpServers`。禁止用空 MCP 占位文件伪造可用状态。
 
 职责：
 
@@ -328,11 +328,11 @@ V1 本地 stdio 设计不应为了公开目录而过早引入云服务。先证�
 
 这个完成项不能外推为插件包已经可用：
 
-- 当前仍没有经过安装与宿主注册验证的正式插件包、stdio MCP 或 App resource。
+- 当前已有仓库内被动插件/Skill 包，但仍没有经过安装与宿主注册验证的正式插件包、stdio MCP 或 App resource。
 - M1 Headless Card Service 已完成受限任务、AppContainer/DACL、认证 broker IPC、签名运行包及本地媒体策略的若干切片，但完整 M1 出口尚未满足；M2 Artifact/授权边界和插件侧通用 Anki runtime evidence 适配器仍未实现。M0 交付的仍只是受精确合同约束的 Anki 26.05 媒体快捷键桥。
 - 非 NFC、Windows 保留设备名（含 `CLOCK$`）、规范化冲突与 APKG archive 资源上限已通过；有界流式读取覆盖 APKG archive/package/verifier 与标准 Windows Anki direct-first 媒体路径。非标准/portable profile 的 AnkiConnect inline 兼容路径仍整文件/Base64，但原始单文件上限为 8 MiB；8 MiB 不是进程峰值。
 - M0 的 Computer Use、GUI 翻面/媒体播放和 20 张连续复习出口已经通过；完整边界见 [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md)。
-- M1–M3 的 Headless Service、认证 Artifact/授权边界、stdio MCP、Skill、宿主注册和可安装包出口满足前，不得声明 Codex 插件已经复用完整 APKG → 真实 Anki 发布闭环。
+- 被动 Skill 不等于运行时可用；M1–M3 的 Headless Service 出口、认证 Artifact/授权边界、stdio MCP、宿主注册和可安装包出口满足前，不得声明 Codex 插件已经复用完整 APKG → 真实 Anki 发布闭环。
 
 ## 14. 包验收
 

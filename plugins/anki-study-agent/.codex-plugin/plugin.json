@@ -1,0 +1,27 @@
+{
+  "name": "anki-study-agent",
+  "version": "0.1.0",
+  "description": "Turn authorized sources into evidence-backed, verified Anki study tasks.",
+  "author": {
+    "name": "zixuanzhou0-ai",
+    "url": "https://github.com/zixuanzhou0-ai"
+  },
+  "homepage": "https://github.com/zixuanzhou0-ai/Anki-card-generator",
+  "repository": "https://github.com/zixuanzhou0-ai/Anki-card-generator",
+  "keywords": ["anki", "learning", "flashcards", "codex"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Anki Study Agent",
+    "shortDescription": "Create evidence-backed Anki cards from your sources.",
+    "longDescription": "Discover learning objectives, generate media-rich cards, export APKG, and verify them in Anki.",
+    "developerName": "zixuanzhou0-ai",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": [
+      "把这个附件中值得长期记住的内容做成卡片。",
+      "从这个视频选出 10 个值得主动表达的英语词块。",
+      "继续上次中断的制卡任务。"
+    ],
+    "brandColor": "#245B85"
+  }
+}
