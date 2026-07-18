@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import shutil
 import subprocess
 import tempfile
@@ -13,6 +14,8 @@ from workers.acg.media_tool_policy import (
     FFMPEG_FORMAT_WHITELIST,
     FFMPEG_PROTOCOL_BLACKLIST,
     FFMPEG_PROTOCOL_WHITELIST,
+    MAX_MEDIA_OUTPUT_BYTES,
+    MAX_MEDIA_STREAMS,
     MediaToolPolicyError,
     ffmpeg_command,
     ffprobe_command,
@@ -55,6 +58,9 @@ class MediaToolPolicyTests(unittest.TestCase):
             self.assertIn("-probesize", command)
             self.assertIn("-analyzeduration", command)
         self.assertIn("-nostdin", ffmpeg)
+        self.assertIn("-max_streams", ffmpeg)
+        self.assertIn(str(MAX_MEDIA_STREAMS), ffmpeg)
+        self.assertEqual(ffmpeg[-3:], ["-fs", str(MAX_MEDIA_OUTPUT_BYTES), str(self.output)])
         self.assertEqual(ffmpeg.count("-protocol_whitelist"), 1)
         self.assertEqual(ffmpeg.count("-format_whitelist"), 1)
 
@@ -90,7 +96,10 @@ class MediaToolPolicyTests(unittest.TestCase):
     def test_subprocess_policy_forces_no_shell_no_stdin_and_bounded_timeout(self) -> None:
         completed = subprocess.CompletedProcess([str(self.ffmpeg)], 0, stdout="", stderr="")
         with patch.dict(os.environ, self.environment, clear=False):
-            with patch("workers.acg.media_tool_policy.subprocess.run", return_value=completed) as run:
+            with (
+                patch("workers.acg.media_tool_policy.validate_media_resource_limits"),
+                patch("workers.acg.media_tool_policy.subprocess.run", return_value=completed) as run,
+            ):
                 result = run_ffmpeg(
                     ["-i", str(self.source), "-vn", str(self.output)],
                     timeout=10_000,
@@ -103,6 +112,99 @@ class MediaToolPolicyTests(unittest.TestCase):
         self.assertIs(kwargs["shell"], False)
         self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
         self.assertEqual(kwargs["timeout"], 300.0)
+
+    def test_managed_run_rejects_resource_bombs_before_ffmpeg_launch(self) -> None:
+        base_stream = {
+            "index": 0,
+            "codec_type": "video",
+            "width": 1920,
+            "height": 1080,
+            "duration": "10",
+            "nb_frames": "300",
+            "avg_frame_rate": "30/1",
+            "r_frame_rate": "30/1",
+            "bit_rate": "1000000",
+        }
+        cases = [
+            ({"streams": [{**base_stream, "width": 9000}], "format": {"duration": "10"}}, "MEDIA_DIMENSION_LIMIT_EXCEEDED"),
+            ({"streams": [{**base_stream, "avg_frame_rate": "300/1"}], "format": {"duration": "10"}}, "MEDIA_FRAME_RATE_LIMIT_EXCEEDED"),
+            ({"streams": [{**base_stream, "duration": "50000"}], "format": {"duration": "50000"}}, "MEDIA_DURATION_LIMIT_EXCEEDED"),
+            (
+                {
+                    "streams": [
+                        {
+                            "index": 0,
+                            "codec_type": "audio",
+                            "duration": "10",
+                            "sample_rate": "384000",
+                            "channels": 2,
+                        }
+                    ],
+                    "format": {"duration": "10"},
+                },
+                "MEDIA_SAMPLE_RATE_LIMIT_EXCEEDED",
+            ),
+            ({"streams": [{**base_stream, "index": index} for index in range(33)], "format": {"duration": "10"}}, "MEDIA_STREAM_LIMIT_EXCEEDED"),
+            ({"streams": [{"index": 0, "codec_type": "attachment"}], "format": {}}, "MEDIA_ATTACHMENT_BLOCKED"),
+        ]
+        with patch.dict(os.environ, self.environment, clear=False):
+            for evidence, expected_code in cases:
+                with self.subTest(expected_code=expected_code):
+                    from workers.acg import media_tool_policy
+
+                    media_tool_policy._RESOURCE_PROBE_CACHE.clear()
+                    probe = subprocess.CompletedProcess(
+                        [str(self.ffprobe)],
+                        0,
+                        stdout=json.dumps(evidence),
+                        stderr="",
+                    )
+                    with patch("workers.acg.media_tool_policy.subprocess.run", return_value=probe) as run:
+                        with self.assertRaises(MediaToolPolicyError) as caught:
+                            run_ffmpeg(["-i", str(self.source), "-vn", str(self.output)])
+                    self.assertEqual(caught.exception.code, expected_code)
+                    self.assertEqual(run.call_count, 1)
+
+    def test_raw_pcm_limits_are_derived_without_untrusted_probe(self) -> None:
+        pcm = self.root / "speech.pcm"
+        pcm.write_bytes(b"\x00\x00" * 16_000)
+        completed = subprocess.CompletedProcess([str(self.ffmpeg)], 0, stdout="", stderr="")
+        with patch.dict(os.environ, self.environment, clear=False):
+            with patch("workers.acg.media_tool_policy.subprocess.run", return_value=completed) as run:
+                result = run_ffmpeg(
+                    [
+                        "-f", "s16le", "-ar", "16000", "-ac", "1", "-i", str(pcm),
+                        "-acodec", "libmp3lame", str(self.output),
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+        self.assertIs(result, completed)
+        self.assertEqual(run.call_count, 1)
+
+    def test_output_at_hard_limit_is_removed_and_fails_closed(self) -> None:
+        pcm = self.root / "short.pcm"
+        pcm.write_bytes(b"\x00\x00" * 16)
+
+        def writes_limit(*_args, **_kwargs):
+            self.output.write_bytes(b"1234")
+            return subprocess.CompletedProcess([str(self.ffmpeg)], 0, stdout="", stderr="")
+
+        with patch.dict(os.environ, self.environment, clear=False):
+            with (
+                patch("workers.acg.media_tool_policy.MAX_MEDIA_OUTPUT_BYTES", 4),
+                patch("workers.acg.media_tool_policy.subprocess.run", side_effect=writes_limit),
+            ):
+                with self.assertRaises(MediaToolPolicyError) as caught:
+                    run_ffmpeg(
+                        ["-f", "s16le", "-ar", "16000", "-ac", "1", "-i", str(pcm), str(self.output)],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
+        self.assertEqual(caught.exception.code, "MEDIA_OUTPUT_SIZE_LIMIT_EXCEEDED")
+        self.assertFalse(self.output.exists())
 
     def test_relative_missing_and_reparse_inputs_are_rejected_before_launch(self) -> None:
         with patch.dict(os.environ, self.environment, clear=False):

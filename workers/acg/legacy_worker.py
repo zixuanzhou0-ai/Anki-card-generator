@@ -6364,7 +6364,12 @@ def subtitle_language_aliases(language: str) -> set[str]:
 def run_ffprobe_json(video_path: Path) -> dict[str, Any] | None:
     try:
         completed = media_policy_run_ffprobe(
-            ["-print_format", "json", "-show_streams"],
+            [
+                "-show_entries",
+                "stream=index,codec_type,codec_name:stream_tags=language,title",
+                "-of",
+                "json",
+            ],
             video_path,
             timeout=30,
             stdout=subprocess.PIPE,

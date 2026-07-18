@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
+import math
 import os
 import re
 import shutil
 import stat
 import subprocess
+import threading
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -48,6 +51,7 @@ BLOCKED_ARGUMENT_OPTIONS = frozenset(
         "-dump_attachment",
         "-filter_complex_script",
         "-filter_script",
+        "-fs",
         "-init_hw_device",
         "-protocol_blacklist",
         "-protocol_whitelist",
@@ -62,6 +66,24 @@ _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 _MAX_ARGUMENTS = 512
 _MAX_ARGUMENT_LENGTH = 32_768
 _MAX_TOOL_TIMEOUT_SECONDS = 300.0
+MAX_MEDIA_INPUT_BYTES = 8 * 1024 * 1024 * 1024
+MAX_MEDIA_OUTPUT_BYTES = 512 * 1024 * 1024
+MAX_MEDIA_STREAMS = 32
+MAX_MEDIA_DURATION_SECONDS = 12 * 60 * 60
+MAX_VIDEO_WIDTH = 8_192
+MAX_VIDEO_HEIGHT = 8_192
+MAX_VIDEO_PIXELS_PER_FRAME = 8_192 * 4_320
+MAX_VIDEO_FRAME_RATE = 240.0
+MAX_VIDEO_FRAMES = 3_000_000
+MAX_DECODED_VIDEO_BYTES = 16 * 1024 * 1024 * 1024 * 1024
+MAX_AUDIO_SAMPLE_RATE = 192_000
+MAX_AUDIO_CHANNELS = 8
+MAX_DECODED_AUDIO_BYTES = 64 * 1024 * 1024 * 1024
+MAX_MEDIA_BIT_RATE = 500_000_000
+MAX_RESOURCE_PROBE_STDOUT_BYTES = 1024 * 1024
+MAX_RESOURCE_PROBE_STDERR_BYTES = 256 * 1024
+_RESOURCE_PROBE_CACHE: dict[tuple[str, int, int], dict[str, Any]] = {}
+_RESOURCE_PROBE_LOCK = threading.RLock()
 
 
 class MediaToolPolicyError(RuntimeError):
@@ -126,6 +148,31 @@ def _local_input_path(value: str) -> Path:
     return resolved
 
 
+def _local_output_path(value: str) -> Path:
+    if (
+        not value
+        or value == "-"
+        or "\x00" in value
+        or (_SCHEME_RE.match(value) and not _WINDOWS_DRIVE_RE.match(value))
+    ):
+        raise MediaToolPolicyError("MEDIA_OUTPUT_PATH_INVALID", "Media output must be an absolute local file")
+    path = Path(value)
+    if not path.is_absolute():
+        raise MediaToolPolicyError("MEDIA_OUTPUT_PATH_INVALID", "Media output path must be absolute")
+    if path.is_symlink() or (path.exists() and _has_reparse_attribute(path)):
+        raise MediaToolPolicyError("MEDIA_OUTPUT_REPARSE_BLOCKED", "Media output cannot be a reparse point")
+    raw_parent = path.parent
+    if raw_parent.is_symlink() or (raw_parent.exists() and _has_reparse_attribute(raw_parent)):
+        raise MediaToolPolicyError("MEDIA_OUTPUT_REPARSE_BLOCKED", "Media output directory cannot be a reparse point")
+    try:
+        parent = raw_parent.resolve(strict=True)
+    except OSError as error:
+        raise MediaToolPolicyError("MEDIA_OUTPUT_PATH_INVALID", "Media output directory is unavailable") from error
+    if not parent.is_dir() or _has_reparse_attribute(parent):
+        raise MediaToolPolicyError("MEDIA_OUTPUT_REPARSE_BLOCKED", "Media output directory cannot be a reparse point")
+    return parent / path.name
+
+
 def validate_media_arguments(arguments: Sequence[str]) -> list[str]:
     if not arguments or len(arguments) > _MAX_ARGUMENTS:
         raise MediaToolPolicyError("MEDIA_ARGUMENTS_INVALID", "Media tool arguments are empty or too numerous")
@@ -152,11 +199,214 @@ def validate_media_arguments(arguments: Sequence[str]) -> list[str]:
         index += 1
     if "-i" not in [value.casefold() for value in normalized]:
         raise MediaToolPolicyError("MEDIA_ARGUMENTS_INVALID", "Media command must declare an input")
+    normalized[-1] = str(_local_output_path(normalized[-1]))
     return normalized
 
 
-def ffmpeg_command(arguments: Sequence[str]) -> list[str]:
-    validated = validate_media_arguments(arguments)
+def _finite_number(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _positive_integer(value: Any) -> int | None:
+    number = _finite_number(value)
+    if number is None or number <= 0 or not number.is_integer():
+        return None
+    return int(number)
+
+
+def _frame_rate(value: Any) -> float | None:
+    text = str(value or "").strip()
+    if not text or text in {"0/0", "N/A"}:
+        return None
+    if "/" in text:
+        numerator, denominator = text.split("/", 1)
+        top = _finite_number(numerator)
+        bottom = _finite_number(denominator)
+        if top is None or bottom is None or bottom == 0:
+            return None
+        return top / bottom
+    return _finite_number(text)
+
+
+def _probe_resource_evidence(path: Path) -> dict[str, Any]:
+    stat_result = path.stat()
+    cache_key = (str(path), int(stat_result.st_size), int(stat_result.st_mtime_ns))
+    with _RESOURCE_PROBE_LOCK:
+        cached = _RESOURCE_PROBE_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+        command = ffprobe_command(
+            [
+                "-show_entries",
+                (
+                    "format=duration,size,bit_rate:"
+                    "stream=index,codec_type,width,height,duration,nb_frames,avg_frame_rate,r_frame_rate,"
+                    "sample_rate,channels,bit_rate"
+                ),
+                "-of",
+                "json",
+            ],
+            path,
+        )
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        try:
+            completed = subprocess.run(
+                command,
+                shell=False,
+                stdin=subprocess.DEVNULL,
+                timeout=30,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=creationflags,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise MediaToolPolicyError("MEDIA_RESOURCE_PROBE_TIMEOUT", "Media resource probe timed out") from error
+        stdout = completed.stdout or ""
+        stderr = completed.stderr or ""
+        if (
+            len(stdout.encode("utf-8", errors="replace")) > MAX_RESOURCE_PROBE_STDOUT_BYTES
+            or len(stderr.encode("utf-8", errors="replace")) > MAX_RESOURCE_PROBE_STDERR_BYTES
+        ):
+            raise MediaToolPolicyError("MEDIA_RESOURCE_PROBE_OUTPUT_EXCEEDED", "Media resource probe output is too large")
+        if completed.returncode != 0:
+            raise MediaToolPolicyError("MEDIA_RESOURCE_PROBE_FAILED", "Media resource probe failed")
+        try:
+            evidence = json.loads(stdout)
+        except json.JSONDecodeError as error:
+            raise MediaToolPolicyError("MEDIA_RESOURCE_PROBE_INVALID", "Media resource probe returned invalid JSON") from error
+        if not isinstance(evidence, dict):
+            raise MediaToolPolicyError("MEDIA_RESOURCE_PROBE_INVALID", "Media resource probe returned invalid evidence")
+        final_stat = path.stat()
+        if (
+            int(final_stat.st_size) != cache_key[1]
+            or int(final_stat.st_mtime_ns) != cache_key[2]
+        ):
+            raise MediaToolPolicyError("MEDIA_INPUT_CHANGED_DURING_PROBE", "Media input changed during resource probe")
+        if len(_RESOURCE_PROBE_CACHE) >= 128:
+            _RESOURCE_PROBE_CACHE.pop(next(iter(_RESOURCE_PROBE_CACHE)))
+        _RESOURCE_PROBE_CACHE[cache_key] = evidence
+        return evidence
+
+
+def _validate_probed_resource(path: Path, evidence: dict[str, Any]) -> None:
+    streams = evidence.get("streams")
+    format_evidence = evidence.get("format")
+    if not isinstance(streams, list) or not isinstance(format_evidence, dict):
+        raise MediaToolPolicyError("MEDIA_RESOURCE_PROBE_INVALID", "Media resource evidence is incomplete")
+    if not streams or len(streams) > MAX_MEDIA_STREAMS:
+        raise MediaToolPolicyError("MEDIA_STREAM_LIMIT_EXCEEDED", "Media stream count is outside the allowed range")
+    format_duration = _finite_number(format_evidence.get("duration"))
+    format_bit_rate = _positive_integer(format_evidence.get("bit_rate"))
+    if format_bit_rate is not None and format_bit_rate > MAX_MEDIA_BIT_RATE:
+        raise MediaToolPolicyError("MEDIA_BIT_RATE_LIMIT_EXCEEDED", "Media bit rate exceeds the allowed limit")
+    has_timed_stream = False
+    for stream in streams:
+        if not isinstance(stream, dict):
+            raise MediaToolPolicyError("MEDIA_RESOURCE_PROBE_INVALID", "Media stream evidence is invalid")
+        stream_type = str(stream.get("codec_type") or "")
+        if stream_type == "attachment":
+            raise MediaToolPolicyError("MEDIA_ATTACHMENT_BLOCKED", "Embedded media attachments are blocked")
+        if stream_type not in {"video", "audio", "subtitle", "data"}:
+            raise MediaToolPolicyError("MEDIA_STREAM_TYPE_BLOCKED", "Media stream type is not allowed")
+        stream_duration = _finite_number(stream.get("duration"))
+        duration_candidates = [
+            value
+            for value in (stream_duration, format_duration)
+            if value is not None and value > 0
+        ]
+        duration = max(duration_candidates) if duration_candidates else None
+        stream_bit_rate = _positive_integer(stream.get("bit_rate"))
+        if stream_bit_rate is not None and stream_bit_rate > MAX_MEDIA_BIT_RATE:
+            raise MediaToolPolicyError("MEDIA_BIT_RATE_LIMIT_EXCEEDED", "Media stream bit rate exceeds the allowed limit")
+        if stream_type not in {"video", "audio"}:
+            continue
+        has_timed_stream = True
+        if duration is None or duration <= 0 or duration > MAX_MEDIA_DURATION_SECONDS:
+            raise MediaToolPolicyError("MEDIA_DURATION_LIMIT_EXCEEDED", "Media duration is unknown or exceeds the limit")
+        if stream_type == "video":
+            width = _positive_integer(stream.get("width"))
+            height = _positive_integer(stream.get("height"))
+            if width is None or height is None or width > MAX_VIDEO_WIDTH or height > MAX_VIDEO_HEIGHT:
+                raise MediaToolPolicyError("MEDIA_DIMENSION_LIMIT_EXCEEDED", "Video dimensions exceed the allowed limit")
+            pixels = width * height
+            if pixels > MAX_VIDEO_PIXELS_PER_FRAME:
+                raise MediaToolPolicyError("MEDIA_PIXEL_LIMIT_EXCEEDED", "Video pixels per frame exceed the allowed limit")
+            rate = _frame_rate(stream.get("avg_frame_rate")) or _frame_rate(stream.get("r_frame_rate"))
+            if rate is None or rate <= 0 or rate > MAX_VIDEO_FRAME_RATE:
+                raise MediaToolPolicyError("MEDIA_FRAME_RATE_LIMIT_EXCEEDED", "Video frame rate is unknown or exceeds the limit")
+            reported_frames = _positive_integer(stream.get("nb_frames")) or 0
+            frames = max(reported_frames, int(math.ceil(duration * rate)))
+            if frames > MAX_VIDEO_FRAMES or pixels * frames * 4 > MAX_DECODED_VIDEO_BYTES:
+                raise MediaToolPolicyError("MEDIA_DECODE_LIMIT_EXCEEDED", "Video logical decode size exceeds the limit")
+        elif stream_type == "audio":
+            sample_rate = _positive_integer(stream.get("sample_rate"))
+            channels = _positive_integer(stream.get("channels"))
+            if sample_rate is None or sample_rate > MAX_AUDIO_SAMPLE_RATE:
+                raise MediaToolPolicyError("MEDIA_SAMPLE_RATE_LIMIT_EXCEEDED", "Audio sample rate exceeds the allowed limit")
+            if channels is None or channels > MAX_AUDIO_CHANNELS:
+                raise MediaToolPolicyError("MEDIA_CHANNEL_LIMIT_EXCEEDED", "Audio channel count exceeds the allowed limit")
+            if duration * sample_rate * channels * 4 > MAX_DECODED_AUDIO_BYTES:
+                raise MediaToolPolicyError("MEDIA_DECODE_LIMIT_EXCEEDED", "Audio logical decode size exceeds the limit")
+    if not has_timed_stream:
+        raise MediaToolPolicyError("MEDIA_TIMED_STREAM_REQUIRED", "Media input has no timed audio or video stream")
+
+
+def _input_specs(arguments: Sequence[str]) -> list[tuple[Path, str, int | None, int | None]]:
+    specs: list[tuple[Path, str, int | None, int | None]] = []
+    explicit_format = ""
+    sample_rate: int | None = None
+    channels: int | None = None
+    index = 0
+    while index < len(arguments):
+        value = arguments[index].casefold()
+        if value in {"-f", "-ar", "-ac"} and index + 1 < len(arguments):
+            next_value = arguments[index + 1]
+            if value == "-f":
+                explicit_format = next_value.casefold()
+            elif value == "-ar":
+                sample_rate = _positive_integer(next_value)
+            else:
+                channels = _positive_integer(next_value)
+            index += 2
+            continue
+        if value == "-i" and index + 1 < len(arguments):
+            specs.append((Path(arguments[index + 1]), explicit_format, sample_rate, channels))
+            explicit_format = ""
+            sample_rate = None
+            channels = None
+            index += 2
+            continue
+        index += 1
+    return specs
+
+
+def validate_media_resource_limits(arguments: Sequence[str]) -> None:
+    specs = _input_specs(arguments)
+    total_bytes = sum(path.stat().st_size for path, *_ in specs)
+    if total_bytes <= 0 or total_bytes > MAX_MEDIA_INPUT_BYTES:
+        raise MediaToolPolicyError("MEDIA_INPUT_SIZE_LIMIT_EXCEEDED", "Media input bytes exceed the allowed limit")
+    for path, explicit_format, sample_rate, channels in specs:
+        if explicit_format == "s16le":
+            if sample_rate is None or not 8_000 <= sample_rate <= MAX_AUDIO_SAMPLE_RATE:
+                raise MediaToolPolicyError("MEDIA_SAMPLE_RATE_LIMIT_EXCEEDED", "Raw audio sample rate is invalid")
+            if channels is None or channels > MAX_AUDIO_CHANNELS:
+                raise MediaToolPolicyError("MEDIA_CHANNEL_LIMIT_EXCEEDED", "Raw audio channel count is invalid")
+            decoded_bytes = path.stat().st_size
+            duration = path.stat().st_size / (sample_rate * channels * 2)
+            if duration <= 0 or duration > MAX_MEDIA_DURATION_SECONDS or decoded_bytes > MAX_DECODED_AUDIO_BYTES:
+                raise MediaToolPolicyError("MEDIA_DECODE_LIMIT_EXCEEDED", "Raw audio logical decode size exceeds the limit")
+            continue
+        _validate_probed_resource(path, _probe_resource_evidence(path))
+
+
+def _ffmpeg_command(validated: Sequence[str]) -> list[str]:
     return [
         str(managed_tool_path("ffmpeg")),
         "-nostdin",
@@ -175,13 +425,22 @@ def ffmpeg_command(arguments: Sequence[str]) -> list[str]:
         "50000000",
         "-analyzeduration",
         "30000000",
+        "-max_streams",
+        str(MAX_MEDIA_STREAMS),
         "-filter_threads",
         "2",
         "-filter_complex_threads",
         "2",
         "-y",
-        *validated,
+        *validated[:-1],
+        "-fs",
+        str(MAX_MEDIA_OUTPUT_BYTES),
+        validated[-1],
     ]
+
+
+def ffmpeg_command(arguments: Sequence[str]) -> list[str]:
+    return _ffmpeg_command(validate_media_arguments(arguments))
 
 
 def ffprobe_command(arguments: Sequence[str], input_path: str | Path) -> list[str]:
@@ -210,6 +469,8 @@ def ffprobe_command(arguments: Sequence[str], input_path: str | Path) -> list[st
         "50000000",
         "-analyzeduration",
         "30000000",
+        "-max_streams",
+        str(MAX_MEDIA_STREAMS),
         *normalized,
         str(resolved_input),
     ]
@@ -229,13 +490,24 @@ def run_ffmpeg(
 ) -> subprocess.CompletedProcess[str]:
     if "shell" in kwargs or "stdin" in kwargs or "timeout" in kwargs:
         raise MediaToolPolicyError("MEDIA_SUBPROCESS_OVERRIDE_BLOCKED", "Media subprocess policy override is blocked")
-    return subprocess.run(
-        ffmpeg_command(arguments),
+    validated = validate_media_arguments(arguments)
+    if os.environ.get(MANAGED_RUNTIME_ENV) == "1":
+        validate_media_resource_limits(validated)
+    completed = subprocess.run(
+        _ffmpeg_command(validated),
         shell=False,
         stdin=subprocess.DEVNULL,
         timeout=_timeout(timeout),
         **kwargs,
     )
+    output_path = Path(validated[-1])
+    if output_path.exists():
+        if output_path.is_symlink() or _has_reparse_attribute(output_path):
+            raise MediaToolPolicyError("MEDIA_OUTPUT_REPARSE_BLOCKED", "Media output became a reparse point")
+        if output_path.stat().st_size >= MAX_MEDIA_OUTPUT_BYTES:
+            output_path.unlink(missing_ok=True)
+            raise MediaToolPolicyError("MEDIA_OUTPUT_SIZE_LIMIT_EXCEEDED", "Media output reached the safety limit")
+    return completed
 
 
 def run_ffprobe(
