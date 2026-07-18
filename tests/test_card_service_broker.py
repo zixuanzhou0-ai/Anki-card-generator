@@ -295,13 +295,42 @@ def test_concurrent_same_call_is_sent_at_most_once(tmp_path: Path) -> None:
         except BrokerError as error:
             errors.append(error.code)
 
-    threads = [threading.Thread(target=execute) for _ in range(2)]
+    start = threading.Barrier(2)
+
+    def execute_concurrently() -> None:
+        start.wait()
+        execute()
+
+    threads = [threading.Thread(target=execute_concurrently) for _ in range(2)]
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join()
     assert len(sends) == 1
-    assert errors == ["INVALID_RESERVATION_STATE"]
+    assert errors == ["DUPLICATE_BROKER_CALL"]
+
+
+def test_settled_broker_call_has_the_same_duplicate_contract(tmp_path: Path) -> None:
+    store, _ = make_credentials(tmp_path)
+    metadata = store.set_secret("model.primary", "provider-secret")
+    broker = ModelTtsBroker(
+        credential_store=store,
+        ledger=BrokerReservationLedger((tmp_path / "ledger.json").resolve()),
+    )
+    payload = {"messages": ["hello"]}
+    bound_call = make_call(payload, credential_revision=metadata["credentialRevision"])
+    sends: list[int] = []
+
+    def sender(*_: object) -> tuple[object, int, int | None]:
+        sends.append(1)
+        return {"ok": True}, 10, 1
+
+    broker.execute(call=bound_call, budget=make_budget(), provider_payload=payload, sender=sender)
+    with pytest.raises(BrokerError) as duplicate:
+        broker.execute(call=bound_call, budget=make_budget(), provider_payload=payload, sender=sender)
+
+    assert duplicate.value.code == "DUPLICATE_BROKER_CALL"
+    assert len(sends) == 1
 
 
 def test_second_ledger_does_not_recover_a_live_process_reservation(tmp_path: Path) -> None:

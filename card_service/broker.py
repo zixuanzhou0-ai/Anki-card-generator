@@ -242,6 +242,16 @@ class BrokerReservationLedger:
                 self._save(value)
 
     def reserve(self, call: BrokerCall, budget: BrokerBudget) -> dict[str, Any]:
+        reservation, _ = self.reserve_for_execution(call, budget)
+        return reservation
+
+    def reserve_for_execution(self, call: BrokerCall, budget: BrokerBudget) -> tuple[dict[str, Any], bool]:
+        """Reserve a call and atomically report whether this invocation created it.
+
+        The creation disposition is intentionally transient. Persisting it in the
+        ledger would let concurrent callers infer the same value and reintroduce
+        a race between reserve, send, and settle.
+        """
         if call.capability not in {"model", "tts", "source"}:
             raise BrokerError("INVALID_CAPABILITY", "Broker capability must be model, tts, or source")
         if min(call.request_bytes, call.maximum_response_bytes) < 0:
@@ -250,7 +260,7 @@ class BrokerReservationLedger:
             with self._interprocess_lock():
                 return self._reserve_locked(call, budget)
 
-    def _reserve_locked(self, call: BrokerCall, budget: BrokerBudget) -> dict[str, Any]:
+    def _reserve_locked(self, call: BrokerCall, budget: BrokerBudget) -> tuple[dict[str, Any], bool]:
         value = self._load()
         profile_revoked = call.profile_ref in set(value.get("revokedProfiles") or [])
         existing = next(
@@ -276,7 +286,7 @@ class BrokerReservationLedger:
                     existing.update(state="released_before_send", updatedAt=int(time.time() * 1000))
                     self._save(value)
                 raise BrokerError("PROFILE_REVOKED", "Broker profile is revoked")
-            return dict(existing)
+            return dict(existing), False
         if profile_revoked:
             raise BrokerError("PROFILE_REVOKED", "Broker profile is revoked")
         # A budget belongs to the approved operation intent, not to each task that
@@ -323,7 +333,7 @@ class BrokerReservationLedger:
         }
         value["reservations"].append(record)
         self._save(value)
-        return dict(record)
+        return dict(record), True
 
     def transition(self, reservation_id: str, expected: set[str], state: str, **usage: Any) -> dict[str, Any]:
         with self._lock:
@@ -402,9 +412,9 @@ class ModelTtsBroker:
     ) -> Any:
         if canonical_digest(provider_payload) != call.request_payload_digest:
             raise BrokerError("PAYLOAD_DIGEST_MISMATCH", "Provider payload does not match the broker call")
-        reservation = self.ledger.reserve(call, budget)
-        if reservation["state"] == "settled":
-            raise BrokerError("ALREADY_SETTLED", "Broker call is already settled")
+        reservation, created = self.ledger.reserve_for_execution(call, budget)
+        if not created and reservation["state"] in {"reserved", "sent", "settled"}:
+            raise BrokerError("DUPLICATE_BROKER_CALL", "Broker call was already accepted")
         if reservation["state"] != "reserved":
             raise BrokerError("RETRY_REQUIRES_RECONCILIATION", "Broker call cannot be replayed automatically")
         with self._send_lock:
