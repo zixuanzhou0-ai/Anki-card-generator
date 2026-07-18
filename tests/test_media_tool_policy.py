@@ -86,6 +86,88 @@ class MediaToolPolicyTests(unittest.TestCase):
                         ffmpeg_command(arguments)
                     self.assertEqual(caught.exception.code, code)
 
+    def test_ffmpeg_grammar_rejects_multiple_outputs_inputs_and_unbounded_options(self) -> None:
+        second_source = self.root / "second.mp4"
+        first_output = self.root / "first.mp3"
+        second_output = self.root / "second.mp3"
+        second_source.write_bytes(b"fixture")
+        cases = [
+            (
+                ["-i", str(self.source), str(first_output), str(second_output)],
+                "MEDIA_MULTIPLE_OUTPUTS_BLOCKED",
+            ),
+            (
+                ["-i", str(self.source), "-i", str(second_source), str(second_output)],
+                "MEDIA_MULTIPLE_INPUTS_BLOCKED",
+            ),
+            (
+                ["-stream_loop", "-1", "-i", str(self.source), str(second_output)],
+                "MEDIA_UNBOUNDED_OPERATION_BLOCKED",
+            ),
+            (
+                ["-loop", "1", "-i", str(self.source), str(second_output)],
+                "MEDIA_UNBOUNDED_OPERATION_BLOCKED",
+            ),
+            (
+                ["-f", "lavfi", "-i", str(self.source), str(second_output)],
+                "MEDIA_INPUT_DEMUXER_BLOCKED",
+            ),
+            (
+                ["-i", str(self.source), "-metadata", "title=unsafe", str(second_output)],
+                "MEDIA_ARGUMENT_OPTION_BLOCKED",
+            ),
+            (
+                ["-i", str(self.source), "-vf", "movie=C:/Windows/win.ini", str(second_output)],
+                "MEDIA_FILTER_BLOCKED",
+            ),
+            (
+                ["-i", str(self.source), "-af", "amovie=C:/Windows/win.ini", str(second_output)],
+                "MEDIA_FILTER_BLOCKED",
+            ),
+        ]
+        with patch.dict(os.environ, self.environment, clear=False):
+            for arguments, code in cases:
+                with self.subTest(arguments=arguments):
+                    with self.assertRaises(MediaToolPolicyError) as caught:
+                        ffmpeg_command(arguments)
+                    self.assertEqual(caught.exception.code, code)
+        self.assertFalse(first_output.exists())
+        self.assertFalse(second_output.exists())
+
+    def test_existing_output_is_never_overwritten(self) -> None:
+        self.output.write_bytes(b"keep")
+        with patch.dict(os.environ, self.environment, clear=False):
+            with self.assertRaises(MediaToolPolicyError) as caught:
+                ffmpeg_command(["-i", str(self.source), "-vn", str(self.output)])
+        self.assertEqual(caught.exception.code, "MEDIA_OUTPUT_ALREADY_EXISTS")
+        self.assertEqual(self.output.read_bytes(), b"keep")
+
+    def test_product_video_poster_and_volume_filters_remain_allowed(self) -> None:
+        video_output = self.root / "clip.mp4"
+        poster_output = self.root / "poster.jpg"
+        audio_output = self.root / "audio.mp3"
+        with patch.dict(os.environ, self.environment, clear=False):
+            video = ffmpeg_command(
+                ["-i", str(self.source), "-vf", "scale=-2:540", "-c:v", "libx264", str(video_output)]
+            )
+            poster = ffmpeg_command(
+                [
+                    "-i",
+                    str(self.source),
+                    "-frames:v",
+                    "1",
+                    "-vf",
+                    "scale='min(960,iw)':-2",
+                    str(poster_output),
+                ]
+            )
+            audio = ffmpeg_command(
+                ["-i", str(self.source), "-af", "volume=0.650", "-acodec", "libmp3lame", str(audio_output)]
+            )
+        self.assertEqual(video[-1], str(video_output))
+        self.assertEqual(poster[-1], str(poster_output))
+        self.assertEqual(audio[-1], str(audio_output))
+
     def test_packaged_mode_never_falls_back_to_path(self) -> None:
         with patch.dict(os.environ, {"ACG_MANAGED_RUNTIME": "1", "ACG_MANAGED_FFMPEG": ""}, clear=True):
             with patch("workers.acg.media_tool_policy.shutil.which", return_value=str(self.ffmpeg)):
@@ -95,10 +177,15 @@ class MediaToolPolicyTests(unittest.TestCase):
 
     def test_subprocess_policy_forces_no_shell_no_stdin_and_bounded_timeout(self) -> None:
         completed = subprocess.CompletedProcess([str(self.ffmpeg)], 0, stdout="", stderr="")
+
+        def writes_output(*_args, **_kwargs):
+            self.output.write_bytes(b"media")
+            return completed
+
         with patch.dict(os.environ, self.environment, clear=False):
             with (
                 patch("workers.acg.media_tool_policy.validate_media_resource_limits"),
-                patch("workers.acg.media_tool_policy.subprocess.run", return_value=completed) as run,
+                patch("workers.acg.media_tool_policy.subprocess.run", side_effect=writes_output) as run,
             ):
                 result = run_ffmpeg(
                     ["-i", str(self.source), "-vn", str(self.output)],
@@ -169,8 +256,13 @@ class MediaToolPolicyTests(unittest.TestCase):
         pcm = self.root / "speech.pcm"
         pcm.write_bytes(b"\x00\x00" * 16_000)
         completed = subprocess.CompletedProcess([str(self.ffmpeg)], 0, stdout="", stderr="")
+
+        def writes_output(*_args, **_kwargs):
+            self.output.write_bytes(b"media")
+            return completed
+
         with patch.dict(os.environ, self.environment, clear=False):
-            with patch("workers.acg.media_tool_policy.subprocess.run", return_value=completed) as run:
+            with patch("workers.acg.media_tool_policy.subprocess.run", side_effect=writes_output) as run:
                 result = run_ffmpeg(
                     [
                         "-f", "s16le", "-ar", "16000", "-ac", "1", "-i", str(pcm),
@@ -206,16 +298,126 @@ class MediaToolPolicyTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "MEDIA_OUTPUT_SIZE_LIMIT_EXCEEDED")
         self.assertFalse(self.output.exists())
 
+    def test_failed_and_timed_out_runs_remove_partial_outputs(self) -> None:
+        failed_output = self.root / "failed.mp3"
+        timed_out_output = self.root / "timed-out.mp3"
+        locked_output = self.root / "locked.mp3"
+
+        def writes_then_fails(*_args, **_kwargs):
+            failed_output.write_bytes(b"partial")
+            return subprocess.CompletedProcess([str(self.ffmpeg)], 1, stdout="", stderr="failed")
+
+        def writes_then_times_out(*_args, **_kwargs):
+            timed_out_output.write_bytes(b"partial")
+            raise subprocess.TimeoutExpired([str(self.ffmpeg)], 1)
+
+        def writes_locked_partial(*_args, **_kwargs):
+            locked_output.write_bytes(b"partial")
+            return subprocess.CompletedProcess([str(self.ffmpeg)], 1, stdout="", stderr="failed")
+
+        environment = {**self.environment, "ACG_MANAGED_RUNTIME": "0"}
+        with patch.dict(os.environ, environment, clear=False):
+            with patch("workers.acg.media_tool_policy.subprocess.run", side_effect=writes_then_fails):
+                completed = run_ffmpeg(
+                    ["-i", str(self.source), "-vn", str(failed_output)],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+            self.assertEqual(completed.returncode, 1)
+            self.assertFalse(failed_output.exists())
+
+            with patch("workers.acg.media_tool_policy.subprocess.run", side_effect=writes_then_times_out):
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    run_ffmpeg(
+                        ["-i", str(self.source), "-vn", str(timed_out_output)],
+                        timeout=1,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
+            self.assertFalse(timed_out_output.exists())
+
+            with (
+                patch("workers.acg.media_tool_policy.subprocess.run", side_effect=writes_locked_partial),
+                patch.object(Path, "unlink", side_effect=PermissionError("locked")),
+            ):
+                with self.assertRaises(MediaToolPolicyError) as cleanup:
+                    run_ffmpeg(
+                        ["-i", str(self.source), "-vn", str(locked_output)],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
+            self.assertEqual(cleanup.exception.code, "MEDIA_OUTPUT_CLEANUP_FAILED")
+            locked_output.unlink(missing_ok=True)
+
+    def test_success_without_a_nonempty_regular_output_fails_closed(self) -> None:
+        completed = subprocess.CompletedProcess([str(self.ffmpeg)], 0, stdout="", stderr="")
+        environment = {**self.environment, "ACG_MANAGED_RUNTIME": "0"}
+        with patch.dict(os.environ, environment, clear=False):
+            with patch("workers.acg.media_tool_policy.subprocess.run", return_value=completed):
+                with self.assertRaises(MediaToolPolicyError) as missing:
+                    run_ffmpeg(
+                        ["-i", str(self.source), "-vn", str(self.output)],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
+            self.assertEqual(missing.exception.code, "MEDIA_OUTPUT_MISSING")
+
+            with patch(
+                "workers.acg.media_tool_policy.subprocess.run",
+                side_effect=lambda *_args, **_kwargs: (
+                    self.output.write_bytes(b"") or completed
+                ),
+            ):
+                with self.assertRaises(MediaToolPolicyError) as empty:
+                    run_ffmpeg(
+                        ["-i", str(self.source), "-vn", str(self.output)],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
+            self.assertEqual(empty.exception.code, "MEDIA_OUTPUT_INVALID")
+            self.assertFalse(self.output.exists())
+
     def test_relative_missing_and_reparse_inputs_are_rejected_before_launch(self) -> None:
         with patch.dict(os.environ, self.environment, clear=False):
             for value, code in (
                 ("relative.mp4", "MEDIA_INPUT_PATH_INVALID"),
                 (str(self.root / "missing.mp4"), "MEDIA_INPUT_MISSING"),
+                (r"\\server\share\source.mp4", "MEDIA_INPUT_PATH_INVALID"),
             ):
                 with self.subTest(value=value):
                     with self.assertRaises(MediaToolPolicyError) as caught:
                         ffmpeg_command(["-i", value, str(self.output)])
                     self.assertEqual(caught.exception.code, code)
+
+    def test_reparse_ancestors_and_alternate_stream_outputs_are_rejected(self) -> None:
+        real_directory = self.root / "real-media"
+        linked_directory = self.root / "linked-media"
+        real_directory.mkdir()
+        nested_source = real_directory / "source.mp4"
+        nested_source.write_bytes(b"fixture")
+        try:
+            linked_directory.symlink_to(real_directory, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"directory symlinks are unavailable: {error}")
+
+        with patch.dict(os.environ, self.environment, clear=False):
+            with self.assertRaises(MediaToolPolicyError) as input_reparse:
+                ffmpeg_command(["-i", str(linked_directory / "source.mp4"), str(self.output)])
+            self.assertEqual(input_reparse.exception.code, "MEDIA_INPUT_REPARSE_BLOCKED")
+
+            with self.assertRaises(MediaToolPolicyError) as output_reparse:
+                ffmpeg_command(["-i", str(self.source), str(linked_directory / "output.mp3")])
+            self.assertEqual(output_reparse.exception.code, "MEDIA_OUTPUT_REPARSE_BLOCKED")
+
+            alternate_stream = f"{self.root / 'output.mp3'}:hidden"
+            with self.assertRaises(MediaToolPolicyError) as alternate:
+                ffmpeg_command(["-i", str(self.source), alternate_stream])
+            self.assertEqual(alternate.exception.code, "MEDIA_OUTPUT_PATH_INVALID")
 
     def test_real_local_transcode_and_malformed_probe_remain_bounded(self) -> None:
         real_ffmpeg = shutil.which("ffmpeg")
@@ -261,6 +463,49 @@ class MediaToolPolicyTests(unittest.TestCase):
                 errors="replace",
             )
             self.assertNotEqual(probed.returncode, 0)
+
+    def test_real_ffmpeg_rejects_multi_output_and_loop_shapes_before_execution(self) -> None:
+        real_ffmpeg = shutil.which("ffmpeg")
+        real_ffprobe = shutil.which("ffprobe")
+        if not real_ffmpeg or not real_ffprobe:
+            self.skipTest("managed FFmpeg fixture is unavailable")
+        wav_path = self.root / "bounded-source.wav"
+        first_output = self.root / "unexpected-first.mp3"
+        second_output = self.root / "unexpected-second.mp3"
+        loop_output = self.root / "unexpected-loop.mp3"
+        with wave.open(str(wav_path), "wb") as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(16_000)
+            output.writeframes(b"\x00\x00" * 3_200)
+        environment = {
+            "ACG_MANAGED_RUNTIME": "1",
+            "ACG_MANAGED_FFMPEG": str(Path(real_ffmpeg).resolve()),
+            "ACG_MANAGED_FFPROBE": str(Path(real_ffprobe).resolve()),
+        }
+        with patch.dict(os.environ, environment, clear=False):
+            with self.assertRaises(MediaToolPolicyError) as multiple:
+                run_ffmpeg(
+                    ["-i", str(wav_path), str(first_output), str(second_output)],
+                    timeout=5,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+            self.assertEqual(multiple.exception.code, "MEDIA_MULTIPLE_OUTPUTS_BLOCKED")
+
+            with self.assertRaises(MediaToolPolicyError) as looping:
+                run_ffmpeg(
+                    ["-stream_loop", "-1", "-t", "0.2", "-i", str(wav_path), str(loop_output)],
+                    timeout=5,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+            self.assertEqual(looping.exception.code, "MEDIA_UNBOUNDED_OPERATION_BLOCKED")
+        self.assertFalse(first_output.exists())
+        self.assertFalse(second_output.exists())
+        self.assertFalse(loop_output.exists())
 
     def test_real_mp4_slice_uses_product_profile_under_fixed_policy(self) -> None:
         real_ffmpeg = shutil.which("ffmpeg")

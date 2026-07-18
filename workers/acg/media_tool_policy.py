@@ -28,23 +28,52 @@ FFMPEG_FORMAT_WHITELIST = (
     "aac,ac3,aiff,asf,avi,caf,flac,flv,h264,hevc,image2,image2pipe,matroska,mjpeg,"
     "mov,mp3,mpeg,mpegts,ogg,opus,s16le,wav,webm,webvtt"
 )
-ALLOWED_EXPLICIT_FORMATS = frozenset(
+ALLOWED_EXPLICIT_INPUT_FORMATS = frozenset({"s16le"})
+ALLOWED_FFMPEG_VALUE_OPTIONS = frozenset(
     {
-        "aac",
-        "flac",
-        "image2",
-        "matroska",
-        "mov",
-        "mp3",
-        "mp4",
-        "null",
-        "ogg",
-        "opus",
-        "s16le",
-        "wav",
-        "webm",
+        "-ac",
+        "-acodec",
+        "-af",
+        "-ar",
+        "-b:a",
+        "-b:v",
+        "-c:a",
+        "-c:s",
+        "-c:v",
+        "-cpu-used",
+        "-crf",
+        "-deadline",
+        "-frames:v",
+        "-level",
+        "-map",
+        "-movflags",
+        "-pix_fmt",
+        "-preset",
+        "-profile:v",
+        "-q:a",
+        "-q:v",
+        "-row-mt",
+        "-ss",
+        "-t",
+        "-vf",
     }
 )
+ALLOWED_FFMPEG_FLAG_OPTIONS = frozenset({"-vn"})
+UNBOUNDED_FFMPEG_OPTIONS = frozenset(
+    {
+        "-loop",
+        "-re",
+        "-readrate",
+        "-stream_loop",
+    }
+)
+ALLOWED_VIDEO_FILTERS = frozenset(
+    {
+        "scale=-2:540",
+        "scale='min(960,iw)':-2",
+    }
+)
+_VOLUME_FILTER_RE = re.compile(r"^volume=(?:0\.[0-9]{3}|1\.000)$")
 BLOCKED_ARGUMENT_OPTIONS = frozenset(
     {
         "-attach",
@@ -98,6 +127,26 @@ def _has_reparse_attribute(path: Path) -> bool:
     return bool(attributes & reparse_flag)
 
 
+def _windows_path_form_blocked(value: str) -> bool:
+    normalized = value.replace("/", "\\")
+    if normalized.startswith("\\\\"):
+        return True
+    return bool(_WINDOWS_DRIVE_RE.match(value) and ":" in value[2:])
+
+
+def _ensure_no_reparse_components(path: Path, code: str, message: str) -> None:
+    current = Path(path.anchor)
+    for component in path.parts[1:]:
+        current /= component
+        try:
+            if current.is_symlink() or (current.exists() and _has_reparse_attribute(current)):
+                raise MediaToolPolicyError(code, message)
+        except MediaToolPolicyError:
+            raise
+        except OSError as error:
+            raise MediaToolPolicyError(code, message) from error
+
+
 def managed_tool_path(name: str) -> Path:
     env_name = MANAGED_TOOL_ENV.get(name)
     if env_name is None:
@@ -105,10 +154,13 @@ def managed_tool_path(name: str) -> Path:
     configured = str(os.environ.get(env_name) or "").strip()
     if configured:
         candidate = Path(configured)
-        if not candidate.is_absolute():
+        if not candidate.is_absolute() or _windows_path_form_blocked(configured):
             raise MediaToolPolicyError("MANAGED_MEDIA_TOOL_INVALID", "Managed media tool path must be absolute")
-        if candidate.is_symlink() or (candidate.exists() and _has_reparse_attribute(candidate)):
-            raise MediaToolPolicyError("MANAGED_MEDIA_TOOL_INVALID", "Managed media tool path contains a reparse point")
+        _ensure_no_reparse_components(
+            candidate,
+            "MANAGED_MEDIA_TOOL_INVALID",
+            "Managed media tool path contains a reparse point",
+        )
         try:
             resolved = candidate.resolve(strict=True)
         except OSError as error:
@@ -133,12 +185,15 @@ def _local_input_path(value: str) -> Path:
     if _SCHEME_RE.match(value) and not _WINDOWS_DRIVE_RE.match(value):
         raise MediaToolPolicyError("MEDIA_INPUT_PROTOCOL_BLOCKED", "Media input protocol is blocked")
     path = Path(value)
-    if not path.is_absolute():
+    if not path.is_absolute() or _windows_path_form_blocked(value):
         raise MediaToolPolicyError("MEDIA_INPUT_PATH_INVALID", "Media input path must be absolute")
     if path.suffix.casefold() in BLOCKED_INPUT_SUFFIXES:
         raise MediaToolPolicyError("MEDIA_INPUT_DEMUXER_BLOCKED", "Playlist and concat media inputs are blocked")
-    if path.is_symlink() or (path.exists() and _has_reparse_attribute(path)):
-        raise MediaToolPolicyError("MEDIA_INPUT_REPARSE_BLOCKED", "Media input cannot be a reparse point")
+    _ensure_no_reparse_components(
+        path,
+        "MEDIA_INPUT_REPARSE_BLOCKED",
+        "Media input path cannot contain a reparse point",
+    )
     try:
         resolved = path.resolve(strict=True)
     except OSError as error:
@@ -157,13 +212,18 @@ def _local_output_path(value: str) -> Path:
     ):
         raise MediaToolPolicyError("MEDIA_OUTPUT_PATH_INVALID", "Media output must be an absolute local file")
     path = Path(value)
-    if not path.is_absolute():
+    if not path.is_absolute() or _windows_path_form_blocked(value):
         raise MediaToolPolicyError("MEDIA_OUTPUT_PATH_INVALID", "Media output path must be absolute")
     if path.is_symlink() or (path.exists() and _has_reparse_attribute(path)):
         raise MediaToolPolicyError("MEDIA_OUTPUT_REPARSE_BLOCKED", "Media output cannot be a reparse point")
+    if path.exists():
+        raise MediaToolPolicyError("MEDIA_OUTPUT_ALREADY_EXISTS", "Media output must be a new file")
     raw_parent = path.parent
-    if raw_parent.is_symlink() or (raw_parent.exists() and _has_reparse_attribute(raw_parent)):
-        raise MediaToolPolicyError("MEDIA_OUTPUT_REPARSE_BLOCKED", "Media output directory cannot be a reparse point")
+    _ensure_no_reparse_components(
+        raw_parent,
+        "MEDIA_OUTPUT_REPARSE_BLOCKED",
+        "Media output directory path cannot contain a reparse point",
+    )
     try:
         parent = raw_parent.resolve(strict=True)
     except OSError as error:
@@ -173,33 +233,68 @@ def _local_output_path(value: str) -> Path:
     return parent / path.name
 
 
+def _validate_ffmpeg_option_value(option: str, value: str) -> None:
+    if option == "-vf" and value not in ALLOWED_VIDEO_FILTERS:
+        raise MediaToolPolicyError("MEDIA_FILTER_BLOCKED", "Video filter is not allowed")
+    if option == "-af" and _VOLUME_FILTER_RE.fullmatch(value) is None:
+        raise MediaToolPolicyError("MEDIA_FILTER_BLOCKED", "Audio filter is not allowed")
+
+
 def validate_media_arguments(arguments: Sequence[str]) -> list[str]:
     if not arguments or len(arguments) > _MAX_ARGUMENTS:
         raise MediaToolPolicyError("MEDIA_ARGUMENTS_INVALID", "Media tool arguments are empty or too numerous")
     normalized = [str(value) for value in arguments]
     if any("\x00" in value or len(value) > _MAX_ARGUMENT_LENGTH for value in normalized):
         raise MediaToolPolicyError("MEDIA_ARGUMENTS_INVALID", "Media tool argument is invalid")
+    output_index = len(normalized) - 1
+    normalized[output_index] = str(_local_output_path(normalized[output_index]))
+    input_count = 0
     index = 0
-    while index < len(normalized):
+    while index < output_index:
         value = normalized[index]
         lowered = value.casefold()
         if lowered in BLOCKED_ARGUMENT_OPTIONS:
             raise MediaToolPolicyError("MEDIA_ARGUMENT_OVERRIDE_BLOCKED", "Media tool policy override is blocked")
+        if lowered in UNBOUNDED_FFMPEG_OPTIONS:
+            raise MediaToolPolicyError(
+                "MEDIA_UNBOUNDED_OPERATION_BLOCKED",
+                "Looping and real-time media operations are blocked",
+            )
         if lowered == "-f":
-            if index + 1 >= len(normalized) or normalized[index + 1].casefold() not in ALLOWED_EXPLICIT_FORMATS:
+            if (
+                input_count > 0
+                or index + 1 >= output_index
+                or normalized[index + 1].casefold() not in ALLOWED_EXPLICIT_INPUT_FORMATS
+            ):
                 raise MediaToolPolicyError("MEDIA_INPUT_DEMUXER_BLOCKED", "Explicit media format is blocked")
             index += 2
             continue
         if lowered == "-i":
-            if index + 1 >= len(normalized):
+            if index + 1 >= output_index:
                 raise MediaToolPolicyError("MEDIA_ARGUMENTS_INVALID", "Media input argument is missing")
+            input_count += 1
+            if input_count > 1:
+                raise MediaToolPolicyError("MEDIA_MULTIPLE_INPUTS_BLOCKED", "Media command must use one input")
             normalized[index + 1] = str(_local_input_path(normalized[index + 1]))
             index += 2
             continue
-        index += 1
-    if "-i" not in [value.casefold() for value in normalized]:
+        if lowered in ALLOWED_FFMPEG_VALUE_OPTIONS:
+            if index + 1 >= output_index:
+                raise MediaToolPolicyError("MEDIA_ARGUMENTS_INVALID", "Media option value is missing")
+            _validate_ffmpeg_option_value(lowered, normalized[index + 1])
+            index += 2
+            continue
+        if lowered in ALLOWED_FFMPEG_FLAG_OPTIONS:
+            index += 1
+            continue
+        if not value.startswith("-"):
+            raise MediaToolPolicyError(
+                "MEDIA_MULTIPLE_OUTPUTS_BLOCKED",
+                "Media command must declare exactly one final output",
+            )
+        raise MediaToolPolicyError("MEDIA_ARGUMENT_OPTION_BLOCKED", "Media tool option is not allowed")
+    if input_count != 1:
         raise MediaToolPolicyError("MEDIA_ARGUMENTS_INVALID", "Media command must declare an input")
-    normalized[-1] = str(_local_output_path(normalized[-1]))
     return normalized
 
 
@@ -482,6 +577,18 @@ def _timeout(value: float | int | None) -> float:
     return max(1.0, min(float(value), _MAX_TOOL_TIMEOUT_SECONDS))
 
 
+def _remove_run_output(path: Path) -> None:
+    try:
+        if path.is_symlink() or path.is_file():
+            path.unlink(missing_ok=True)
+        elif path.exists():
+            raise MediaToolPolicyError("MEDIA_OUTPUT_CLEANUP_FAILED", "Media output is not safe to remove")
+    except MediaToolPolicyError:
+        raise
+    except OSError as error:
+        raise MediaToolPolicyError("MEDIA_OUTPUT_CLEANUP_FAILED", "Media output cleanup failed") from error
+
+
 def run_ffmpeg(
     arguments: Sequence[str],
     *,
@@ -493,20 +600,35 @@ def run_ffmpeg(
     validated = validate_media_arguments(arguments)
     if os.environ.get(MANAGED_RUNTIME_ENV) == "1":
         validate_media_resource_limits(validated)
-    completed = subprocess.run(
-        _ffmpeg_command(validated),
-        shell=False,
-        stdin=subprocess.DEVNULL,
-        timeout=_timeout(timeout),
-        **kwargs,
-    )
     output_path = Path(validated[-1])
-    if output_path.exists():
-        if output_path.is_symlink() or _has_reparse_attribute(output_path):
-            raise MediaToolPolicyError("MEDIA_OUTPUT_REPARSE_BLOCKED", "Media output became a reparse point")
-        if output_path.stat().st_size >= MAX_MEDIA_OUTPUT_BYTES:
-            output_path.unlink(missing_ok=True)
-            raise MediaToolPolicyError("MEDIA_OUTPUT_SIZE_LIMIT_EXCEEDED", "Media output reached the safety limit")
+    try:
+        completed = subprocess.run(
+            _ffmpeg_command(validated),
+            shell=False,
+            stdin=subprocess.DEVNULL,
+            timeout=_timeout(timeout),
+            **kwargs,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        _remove_run_output(output_path)
+        raise
+    if completed.returncode != 0:
+        _remove_run_output(output_path)
+        return completed
+    if output_path.is_symlink():
+        _remove_run_output(output_path)
+        raise MediaToolPolicyError("MEDIA_OUTPUT_REPARSE_BLOCKED", "Media output became a reparse point")
+    if not output_path.exists():
+        raise MediaToolPolicyError("MEDIA_OUTPUT_MISSING", "Media tool reported success without an output file")
+    if _has_reparse_attribute(output_path):
+        _remove_run_output(output_path)
+        raise MediaToolPolicyError("MEDIA_OUTPUT_REPARSE_BLOCKED", "Media output became a reparse point")
+    if not output_path.is_file() or output_path.stat().st_size <= 0:
+        _remove_run_output(output_path)
+        raise MediaToolPolicyError("MEDIA_OUTPUT_INVALID", "Media output is not a non-empty regular file")
+    if output_path.stat().st_size >= MAX_MEDIA_OUTPUT_BYTES:
+        _remove_run_output(output_path)
+        raise MediaToolPolicyError("MEDIA_OUTPUT_SIZE_LIMIT_EXCEEDED", "Media output reached the safety limit")
     return completed
 
 
