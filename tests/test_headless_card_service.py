@@ -10,6 +10,7 @@ import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -26,6 +27,7 @@ from card_service.service import (
     _task_workspace_usage,
     _verify_sandbox_attestation,
 )
+from card_service.windows_sandbox_acl import FILE_MODIFY, create_task_workspace, read_dacl
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -339,6 +341,25 @@ def test_task_workspace_accounting_blocks_entry_overflow_and_links(tmp_path: Pat
     with pytest.raises(CardServiceError) as link_error:
         _task_workspace_usage(link_root, byte_limit=1024, entry_limit=16)
     assert link_error.value.code == "TASK_WORKSPACE_REPARSE_BLOCKED"
+
+
+def test_task_workspace_accounting_tolerates_a_file_removed_during_scan(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace-race"
+    workspace.mkdir()
+    transient = workspace / "atomic-export.partial"
+    transient.write_bytes(b"temporary")
+    original_stat = os.stat
+
+    def stat_after_dir_entry(path: object, *args: object, **kwargs: object):
+        if Path(path) == transient and kwargs.get("follow_symlinks") is False:
+            raise FileNotFoundError(str(transient))
+        return original_stat(path, *args, **kwargs)
+
+    with patch("card_service.service.os.stat", side_effect=stat_after_dir_entry):
+        usage = _task_workspace_usage(workspace, byte_limit=1024, entry_limit=16)
+
+    assert usage.logical_bytes == 0
+    assert usage.entry_count == 1
 
 
 def test_task_creation_rejects_a_preexisting_reparse_workspace_root(tmp_path: Path) -> None:
@@ -707,6 +728,81 @@ def test_real_legacy_worker_check_environment_runs_headlessly(tmp_path: Path) ->
     assert result["schema_version"] == 2
     assert isinstance(result["status_items"], list)
     assert {item["id"] for item in result["status_items"]} >= {"python", "ffmpeg", "genanki", "yt_dlp"}
+
+
+def test_managed_worker_python_is_isolated_and_never_writes_bytecode(tmp_path: Path) -> None:
+    card_service = service(tmp_path)
+    started = card_service.start_task("runtime.check_environment", {"mode": "runtime_flags"})
+    finished = wait_terminal(card_service, started["id"])
+    assert finished["state"] == "succeeded", finished.get("error")
+    assert card_service.read_result(started["id"]) == {
+        "ok": True,
+        "isolated": 1,
+        "dontWriteBytecode": 1,
+        "safePath": True,
+    }
+
+
+def test_export_worker_receives_only_service_owned_task_output_directory(tmp_path: Path) -> None:
+    requested_output = (tmp_path / "caller-output").resolve()
+    requested_output.mkdir()
+    sentinel = requested_output / "keep.txt"
+    sentinel.write_text("caller-owned", encoding="utf-8")
+    requested_canonical = requested_output / "caller.apkg"
+    card_service = service(
+        tmp_path,
+        method_policies={"runtime.export_apkg": MethodPolicy("export", 8.0)},
+    )
+
+    started = card_service.start_task(
+        "runtime.export_apkg",
+        {
+            "mode": "success",
+            "output_dir": str(requested_output),
+            "canonical_apkg_path": str(requested_canonical),
+        },
+    )
+    finished = wait_terminal(card_service, started["id"])
+    assert finished["state"] == "succeeded", finished.get("error")
+    result = card_service.read_result(started["id"])
+    worker_request = result["echo"]
+    worker_output = Path(worker_request["output_dir"]).resolve()
+    expected_workspace = (
+        tmp_path / "state" / "sandboxes" / str(started["id"])
+    ).resolve()
+
+    assert worker_output == expected_workspace / "exports"
+    assert "canonical_apkg_path" not in worker_request
+    assert sentinel.read_text(encoding="utf-8") == "caller-owned"
+    assert not requested_canonical.exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="task SID DACL verification is Windows-only")
+def test_export_worker_grants_task_sid_access_to_service_owned_output_directory(tmp_path: Path) -> None:
+    workspace, task_sid = create_task_workspace(
+        tmp_path / "sandboxes",
+        "00000000-0000-4000-8000-000000000001",
+    )
+    runtime = SimpleNamespace(
+        request={"output_dir": str(tmp_path / "caller-output")},
+        snapshot={"method": "runtime.export_apkg"},
+        sandbox_workspace=workspace,
+        task_sandbox_sid=task_sid,
+    )
+    card_service = service(tmp_path / "service")
+
+    worker_request = card_service._worker_request(runtime)
+
+    export_root = Path(worker_request["output_dir"])
+    task_entries = [entry for entry in read_dacl(export_root) if entry.sid == task_sid]
+    assert task_entries
+    assert {entry.access_mask for entry in task_entries} == {FILE_MODIFY}
+    worker_created = export_root / "worker-created"
+    worker_created.mkdir()
+    media_dir = worker_created / "media"
+    media_dir.mkdir()
+    assert any(entry.sid == task_sid and entry.access_mask == FILE_MODIFY for entry in read_dacl(worker_created))
+    assert any(entry.sid == task_sid and entry.access_mask == FILE_MODIFY for entry in read_dacl(media_dir))
 
 
 def test_task_owned_authenticated_stdio_broker_reaches_worker_without_persisting_channel_proof(tmp_path: Path) -> None:

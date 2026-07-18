@@ -28,7 +28,8 @@ pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows restricted toke
 def test_restricted_sid_child_starts_inside_exact_task_workspace_without_sid_disclosure(tmp_path: Path) -> None:
     task_id = str(uuid.uuid4())
     workspace, task_sid = create_task_workspace((tmp_path / "tasks").resolve(), task_id)
-    proof = workspace / "proof.txt"
+    proof = workspace / "worker-created" / "media" / "proof.txt"
+    reopened = workspace / "worker-created" / "media" / "reopened.txt"
     runtime_sid = runtime_sandbox_sid()
     launcher = Path(__file__).resolve().parents[1] / "card_service" / "windows_restricted_launcher.py"
     command = [
@@ -46,7 +47,10 @@ def test_restricted_sid_child_starts_inside_exact_task_workspace_without_sid_dis
         str(Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe"),
         "/d",
         "/c",
-        f"echo sandbox-ok>{proof.name}",
+        "mkdir worker-created"
+        " && mkdir worker-created\\media"
+        " && echo sandbox-ok>worker-created\\media\\proof.txt"
+        " && type worker-created\\media\\proof.txt>worker-created\\media\\reopened.txt",
     ]
     process = subprocess.Popen(
         command,
@@ -70,6 +74,7 @@ def test_restricted_sid_child_starts_inside_exact_task_workspace_without_sid_dis
     assert process.returncode == 0, stderr
     assert stdout == ""
     assert proof.read_text(encoding="utf-8").strip() == "sandbox-ok"
+    assert reopened.read_text(encoding="utf-8").strip() == "sandbox-ok"
     attestation_lines = [
         line for line in stderr.splitlines() if line.startswith(SANDBOX_ATTESTATION_PREFIX)
     ]

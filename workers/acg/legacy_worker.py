@@ -10,6 +10,7 @@ import json
 import math
 import os
 import re
+import secrets
 import shutil
 import socket
 import stat
@@ -13214,17 +13215,36 @@ def audio_duration_seconds(path: Path) -> float | None:
             timeout=10,
             **hidden_subprocess_flags(),
         )
-    except (MediaToolPolicyError, subprocess.TimeoutExpired):
+    except (MediaToolPolicyError, subprocess.TimeoutExpired) as error:
+        if os.environ.get("ACG_MANAGED_RUNTIME") == "1":
+            code = error.code if isinstance(error, MediaToolPolicyError) else "MEDIA_DURATION_PROBE_TIMEOUT"
+            raise RuntimeError(f"AUDIO_DURATION_AUDIT_UNAVAILABLE[{code}]") from error
         return None
     if completed.returncode != 0:
+        if os.environ.get("ACG_MANAGED_RUNTIME") == "1":
+            detail = clean_study_text((completed.stderr or "").strip())[:240]
+            raise RuntimeError(
+                f"AUDIO_DURATION_AUDIT_FAILED[ffprobe_exit_{completed.returncode}]"
+                + (f": {detail}" if detail else "")
+            )
         return None
     try:
         duration = float((completed.stdout or "").strip())
     except (TypeError, ValueError):
+        if os.environ.get("ACG_MANAGED_RUNTIME") == "1":
+            raise RuntimeError("AUDIO_DURATION_AUDIT_FAILED[invalid_duration]")
         return None
     if not math.isfinite(duration) or duration <= 0:
+        if os.environ.get("ACG_MANAGED_RUNTIME") == "1":
+            raise RuntimeError("AUDIO_DURATION_AUDIT_FAILED[non_positive_duration]")
         return None
     return duration
+
+
+def tts_generation_retryable(error: Any) -> bool:
+    """Do not repeat a paid broker call when only the local post-generation audit failed."""
+
+    return not str(error or "").startswith("AUDIO_DURATION_AUDIT_")
 
 
 def tts_semantic_config(project: dict[str, Any]) -> dict[str, Any]:
@@ -15590,6 +15610,21 @@ def export_run_timestamp() -> float:
     return time.time()
 
 
+def create_export_run_directory(output_dir: Path, *, prefix: str) -> Path:
+    """Create a unique export directory without Python 3.13's Windows 0o700 ACL override."""
+
+    if os.name != "nt" or os.environ.get("ACG_MANAGED_RUNTIME") != "1":
+        return Path(tempfile.mkdtemp(prefix=prefix, dir=str(output_dir)))
+    for _attempt in range(256):
+        candidate = output_dir / f"{prefix}{secrets.token_hex(8)}"
+        try:
+            candidate.mkdir()
+        except FileExistsError:
+            continue
+        return candidate
+    raise FileExistsError("Could not allocate a unique managed export directory")
+
+
 def export_quality_audit(project: dict[str, Any], export_segments: list[dict[str, Any]]) -> dict[str, Any]:
     empty_required_fields = 0
     blocked_text_values = 0
@@ -15789,14 +15824,13 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
 
     emit_progress("export", "template", 10, "正在准备 Anki 模板和导出目录。")
     export_run_id = int(export_run_timestamp())
-    export_root = Path(
-        tempfile.mkdtemp(
-            prefix=f"AnkiCard-{safe_filename(project.get('title', 'deck'))}-{export_run_id}-",
-            dir=str(output_dir),
-        )
+    export_root = create_export_run_directory(
+        output_dir,
+        prefix=f"AnkiCard-{safe_filename(project.get('title', 'deck'))}-{export_run_id}-",
     )
     media_dir = export_root / "media"
     media_dir.mkdir()
+    emit_progress("export", "template", 10, "导出目录已就绪，正在读取卡片模板资源。")
 
     if is_document_project:
         deck_kind_code = "document_reading" if project.get("document_study_mode") == "language_reading" else "document_knowledge"
@@ -15819,6 +15853,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     card_style = normalize_card_style(project.get("card_style"))
     template_family = anki_template_family(template_id, deck_kind_code, card_style, review_density)
     template_label, template_css, front_template, back_template = anki_template_assets(template_id, deck_kind_code, card_style, review_density)
+    emit_progress("export", "template", 10, "卡片模板资源已读取，正在验证模板契约。")
     template_version = anki_template_version(template_id, deck_kind_code)
     anki_tag = f"anki_card_generator_{template_version.lower()}"
     is_ciba_template = normalize_template_id(template_id) == "ciba_tianxia_v1"
@@ -15837,6 +15872,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         qfmt=front_template,
         afmt=back_template,
     )
+    emit_progress("export", "template", 10, "模板资源契约已验证，正在构建 Anki 模型。")
     model = genanki.Model(
         str(note_model_contract.note_model_id),
         note_model_contract.model_name,
@@ -15850,6 +15886,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         ],
         css=template_css,
     )
+    emit_progress("export", "template", 10, "Anki 模型已构建，正在准备目标牌组。")
     default_deck = genanki.Deck(stable_id(deck_name, 1500000000), deck_name)
     batch_decks_by_item_id: dict[str, Any] = {}
     decks_for_package: list[Any] = [default_deck]
@@ -15869,15 +15906,19 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     fallback_batch_deck = genanki.Deck(stable_id(f"{deck_name}::未分组", 1500000000), f"{deck_name}::未分组") if is_batch_export else default_deck
     fallback_batch_deck_used = False
     generated_model_deck_ids = [int(deck.deck_id) for deck in decks_for_package]
+    emit_progress("export", "template", 10, "目标牌组已准备，正在序列化 Anki 模型。")
+    generated_model_json = model.to_json(0, generated_model_deck_ids[0])
+    emit_progress("export", "template", 10, "Anki 模型已序列化，正在执行最终模板验证。")
     validate_generated_note_model(
         note_model_contract,
         field_names=model_field_names,
         css=template_css,
         qfmt=front_template,
         afmt=back_template,
-        model_json=model.to_json(0, generated_model_deck_ids[0]),
+        model_json=generated_model_json,
         deck_ids=generated_model_deck_ids,
     )
+    emit_progress("export", "template", 11, "卡片模板已验证，正在检查字幕与卡片质量。")
 
     exported_batch_item_ids: set[str] = set()
     media_files: list[str] = []
@@ -16094,6 +16135,7 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
         warnings.append(f"导出前审计发现 {quality_audit['empty_required_fields']} 个学习字段为空；请在质量诊断中抽查。")
     if quality_audit["answer_not_in_source"]:
         warnings.append(f"导出前审计发现 {quality_audit['answer_not_in_source']} 张非听力卡答案未能直接匹配原句；请抽查。")
+    emit_progress("export", "quality_audit", 11, "导出质量审计通过，正在准备 TTS。")
     timing_ms["source_prepare"] = int((time.perf_counter() - prepare_started) * 1000)
     tts_started = time.perf_counter()
     tts_generation_enabled = False
@@ -16161,6 +16203,8 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
 
         def retry_task_serial(task: dict[str, Any], first_error: Any) -> dict[str, Any]:
             attempts: list[dict[str, Any]] = [{"mode": "initial", "ok": False, "error": str(first_error)}]
+            if not tts_generation_retryable(first_error):
+                return {**task, "error": str(first_error), "tts_recovery_attempts": attempts}
             retry_texts: list[tuple[str, str | None]] = [("original_retry", task.get("text_override"))]
             try:
                 safe_text = tts_speech_safe_variant(tts_task_expected_text(task))

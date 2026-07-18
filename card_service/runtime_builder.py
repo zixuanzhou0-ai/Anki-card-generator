@@ -3,14 +3,13 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-import shutil
 import stat
 import tempfile
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Iterable
+from typing import Callable, Iterable
 
 from .runtime_manifest import RuntimeManifestError, assert_stable_path, canonical_bytes, file_sha256
 from .runtime_package import (
@@ -116,9 +115,16 @@ def _copy_verified(source: Path, target: Path) -> tuple[int, str]:
         raise RuntimeBuildError(str(code), "Runtime build source is unavailable or unsafe") from error
     before = stable.stat()
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(stable, target)
-    source_digest = file_sha256(stable)
+    source_hash = hashlib.sha256()
+    with stable.open("rb") as source_handle, target.open("xb") as target_handle:
+        for chunk in iter(lambda: source_handle.read(1024 * 1024), b""):
+            source_hash.update(chunk)
+            target_handle.write(chunk)
+    source_digest = source_hash.hexdigest()
     after = stable.stat()
+    # Deliberately re-read the destination instead of trusting bytes passed to
+    # write(). This preserves the independent copy-integrity check while avoiding
+    # a redundant second read of every source file.
     target_digest = file_sha256(target)
     if (
         before.st_size != after.st_size
@@ -142,6 +148,7 @@ def build_runtime_package(
     resources: Iterable[RuntimeBuildResource],
     created_at: str,
     creator: str = "Organization: Anki Study Agent",
+    progress: Callable[[int, int, int], None] | None = None,
 ) -> RuntimeBuildResult:
     """Build an unsigned, deterministic runtime package staging directory.
 
@@ -196,7 +203,8 @@ def build_runtime_package(
         staging.mkdir()
         manifest_resources: list[dict[str, object]] = []
         total_bytes = 0
-        for resource_id, source, relative in prepared:
+        resource_total = len(prepared)
+        for resource_index, (resource_id, source, relative) in enumerate(prepared, start=1):
             size, digest = _copy_verified(source, staging.joinpath(*relative.parts))
             total_bytes += size
             if total_bytes > MAX_BUILD_BYTES:
@@ -209,6 +217,12 @@ def build_runtime_package(
                     "sha256": digest,
                 }
             )
+            if progress is not None and (
+                resource_index == 1
+                or resource_index % 250 == 0
+                or resource_index == resource_total
+            ):
+                progress(resource_index, resource_total, total_bytes)
 
         namespace_material = canonical_bytes(
             {

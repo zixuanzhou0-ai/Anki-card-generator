@@ -38,7 +38,11 @@ def _tree_resources(
         resources.append(
             RuntimeBuildResource(
                 resource_id=resource_id,
-                source=source.resolve(),
+                # build_runtime_package/_copy_verified performs the authoritative
+                # strict realpath, reparse and file-kind validation immediately
+                # before copying. Resolving every source here duplicates that
+                # expensive Windows check for thousands of portable-Python files.
+                source=source,
                 relative_path=f"{target_root}/{relative}",
             )
         )
@@ -129,11 +133,30 @@ def main() -> None:
                 RuntimeBuildResource("managed-tool:yt-dlp", arguments.yt_dlp.resolve(), "tools/yt-dlp.exe"),
             ]
         )
+
+        def report_progress(completed: int, total: int, copied_bytes: int) -> None:
+            print(
+                "__ANKI_RUNTIME_BUILD_PROGRESS__"
+                + json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "completedResources": completed,
+                        "totalResources": total,
+                        "copiedBytes": copied_bytes,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+                file=sys.stderr,
+                flush=True,
+            )
+
         result = build_runtime_package(
             arguments.output.resolve(),
             version=arguments.version,
             resources=resources,
             created_at=arguments.created_at,
+            progress=report_progress,
         )
     except (PythonRuntimeAssemblyError, RuntimeBuildError) as error:
         raise SystemExit(f"{error.code}: {error}") from error

@@ -20,6 +20,7 @@ DISABLE_MAX_PRIVILEGE = 0x1
 TOKEN_ASSIGN_PRIMARY = 0x0001
 TOKEN_DUPLICATE = 0x0002
 TOKEN_QUERY = 0x0008
+TOKEN_ADJUST_DEFAULT = 0x0080
 CREATE_SUSPENDED = 0x00000004
 CREATE_NO_WINDOW = 0x08000000
 EXTENDED_STARTUPINFO_PRESENT = 0x00080000
@@ -37,8 +38,15 @@ ERROR_INSUFFICIENT_BUFFER = 122
 TOKEN_IS_APPCONTAINER = 29
 TOKEN_CAPABILITIES = 30
 TOKEN_APPCONTAINER_SID = 31
+TOKEN_DEFAULT_DACL_INFORMATION_CLASS = 6
 SE_GROUP_ENABLED = 0x00000004
 PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES = 0x00020009
+FILE_MODIFY = 0x001301BF
+GRANT_ACCESS = 1
+TRUSTEE_IS_SID = 0
+TRUSTEE_IS_UNKNOWN = 0
+OBJECT_INHERIT_ACE = 0x01
+CONTAINER_INHERIT_ACE = 0x02
 
 
 class STARTUPINFOW(ctypes.Structure):
@@ -95,6 +103,29 @@ class SECURITY_CAPABILITIES(ctypes.Structure):
 
 class TOKEN_APPCONTAINER_INFORMATION(ctypes.Structure):
     _fields_ = [("TokenAppContainer", ctypes.c_void_p)]
+
+
+class TOKEN_DEFAULT_DACL(ctypes.Structure):
+    _fields_ = [("DefaultDacl", ctypes.c_void_p)]
+
+
+class TRUSTEE_W(ctypes.Structure):
+    _fields_ = [
+        ("pMultipleTrustee", ctypes.c_void_p),
+        ("MultipleTrusteeOperation", wintypes.DWORD),
+        ("TrusteeForm", wintypes.DWORD),
+        ("TrusteeType", wintypes.DWORD),
+        ("ptstrName", ctypes.c_void_p),
+    ]
+
+
+class EXPLICIT_ACCESS_W(ctypes.Structure):
+    _fields_ = [
+        ("grfAccessPermissions", wintypes.DWORD),
+        ("grfAccessMode", wintypes.DWORD),
+        ("grfInheritance", wintypes.DWORD),
+        ("Trustee", TRUSTEE_W),
+    ]
 
 
 def _canonical_bytes(value: dict[str, Any]) -> bytes:
@@ -175,6 +206,20 @@ def launch_restricted(
         ctypes.POINTER(wintypes.DWORD),
     ]
     advapi32.GetTokenInformation.restype = wintypes.BOOL
+    advapi32.SetTokenInformation.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    ]
+    advapi32.SetTokenInformation.restype = wintypes.BOOL
+    advapi32.SetEntriesInAclW.argtypes = [
+        wintypes.ULONG,
+        ctypes.POINTER(EXPLICIT_ACCESS_W),
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi32.SetEntriesInAclW.restype = wintypes.DWORD
     advapi32.CreateRestrictedToken.argtypes = [
         wintypes.HANDLE,
         wintypes.DWORD,
@@ -227,11 +272,13 @@ def launch_restricted(
     attribute_list_buffer: ctypes.Array[ctypes.c_char] | None = None
     attribute_list_initialized = False
     child_token = wintypes.HANDLE()
+    task_default_acl = ctypes.c_void_p()
+    default_dacl_buffer: ctypes.Array[ctypes.c_char] | None = None
     filesystem_restricted = runtime_sid is not None or task_sid is not None
     if filesystem_restricted and (runtime_sid is None or task_sid is None):
         raise RuntimeError("runtime and task restricting SIDs must be supplied together")
     try:
-        access = TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE | TOKEN_QUERY
+        access = TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ADJUST_DEFAULT
         if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), access, ctypes.byref(source_token)):
             raise _fail("OpenProcessToken")
         disabled_sid_size = wintypes.DWORD(SECURITY_MAX_SID_SIZE)
@@ -282,6 +329,57 @@ def launch_restricted(
             ctypes.byref(restricted_token),
         ):
             raise _fail("CreateRestrictedToken")
+        if filesystem_restricted:
+            default_dacl_size = wintypes.DWORD()
+            ctypes.set_last_error(0)
+            if advapi32.GetTokenInformation(
+                restricted_token,
+                TOKEN_DEFAULT_DACL_INFORMATION_CLASS,
+                None,
+                0,
+                ctypes.byref(default_dacl_size),
+            ) or ctypes.get_last_error() != ERROR_INSUFFICIENT_BUFFER:
+                raise _fail("GetTokenInformation(default DACL size)")
+            default_dacl_buffer = ctypes.create_string_buffer(default_dacl_size.value)
+            if not advapi32.GetTokenInformation(
+                restricted_token,
+                TOKEN_DEFAULT_DACL_INFORMATION_CLASS,
+                default_dacl_buffer,
+                default_dacl_size,
+                ctypes.byref(default_dacl_size),
+            ):
+                raise _fail("GetTokenInformation(default DACL)")
+            current_default_dacl = ctypes.cast(
+                default_dacl_buffer,
+                ctypes.POINTER(TOKEN_DEFAULT_DACL),
+            ).contents
+            task_entry = (EXPLICIT_ACCESS_W * 1)()
+            task_entry[0].grfAccessPermissions = FILE_MODIFY
+            task_entry[0].grfAccessMode = GRANT_ACCESS
+            task_entry[0].grfInheritance = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE
+            task_entry[0].Trustee = TRUSTEE_W(
+                None,
+                0,
+                TRUSTEE_IS_SID,
+                TRUSTEE_IS_UNKNOWN,
+                task_capability_sid.value,
+            )
+            status = advapi32.SetEntriesInAclW(
+                1,
+                task_entry,
+                current_default_dacl.DefaultDacl,
+                ctypes.byref(task_default_acl),
+            )
+            if status != 0 or not task_default_acl:
+                raise OSError(int(status), "SetEntriesInAclW(default DACL) failed")
+            updated_default_dacl = TOKEN_DEFAULT_DACL(task_default_acl.value)
+            if not advapi32.SetTokenInformation(
+                restricted_token,
+                TOKEN_DEFAULT_DACL_INFORMATION_CLASS,
+                ctypes.byref(updated_default_dacl),
+                ctypes.sizeof(updated_default_dacl),
+            ):
+                raise _fail("SetTokenInformation(default DACL)")
         if not advapi32.DuplicateToken(
             restricted_token,
             SECURITY_IDENTIFICATION,
@@ -520,6 +618,8 @@ def launch_restricted(
                 kernel32.CloseHandle(handle)
         for sid in sandbox_sid_allocations:
             kernel32.LocalFree(sid)
+        if task_default_acl:
+            kernel32.LocalFree(task_default_acl)
 
 
 def main() -> None:

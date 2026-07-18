@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
 import hmac
 import json
@@ -41,6 +42,7 @@ from .trusted_surfaces import TrustedSurfaceError, TrustedSurfaceManager
 from .windows_sandbox_acl import (
     WindowsSandboxAclError,
     create_task_workspace,
+    harden_task_writable_path,
     runtime_sandbox_sid,
     verify_runtime_tree_dacl,
 )
@@ -257,6 +259,12 @@ def _task_workspace_usage(
                         )
                     try:
                         file_stat = os.stat(entry.path, follow_symlinks=False)
+                    except FileNotFoundError:
+                        # Exporters create and atomically replace/delete temporary
+                        # files while the service performs periodic accounting. A
+                        # file that vanished after DirEntry.stat no longer consumes
+                        # workspace quota and is not evidence of path indirection.
+                        continue
                     except OSError as error:
                         raise CardServiceError(
                             "TASK_WORKSPACE_UNAVAILABLE",
@@ -778,7 +786,10 @@ class CardService:
                     self.restricted_launcher_path if self.use_restricted_launcher else None,
                 )
                 runtime_entries.extend(managed_tool_runtime_entries(self.managed_tool_directories))
-            self.runtime_manifest = ManagedRuntimeManifest(runtime_entries)
+            self.runtime_manifest = ManagedRuntimeManifest(
+                runtime_entries,
+                runtime_root=self.runtime_package.root if self.runtime_package is not None else None,
+            )
             self.runtime_manifest_path = (self.store.root / "runtime" / "manifest-v1.json").resolve()
             self.runtime_manifest.write(self.runtime_manifest_path)
         except RuntimeManifestError as error:
@@ -1291,16 +1302,63 @@ class CardService:
         environment["PATH"] = os.pathsep.join(dict.fromkeys(path_entries))
         if self.runtime_package is not None:
             environment["ACG_MANAGED_RUNTIME"] = "1"
+            environment["ACG_MANAGED_RUNTIME_ROOT"] = str(self.runtime_package.root)
             environment.update({name: str(path) for name, path in self.managed_media_tools.items()})
         environment["PYTHONIOENCODING"] = "utf-8"
         environment["PYTHONUTF8"] = "1"
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
         if task_workspace is not None:
             workspace_value = str(task_workspace)
+            environment["ACG_TASK_WORKSPACE"] = workspace_value
             environment["TEMP"] = workspace_value
             environment["TMP"] = workspace_value
             environment["TMPDIR"] = workspace_value
         return environment
+
+    def _worker_request(self, runtime: _RuntimeTask) -> dict[str, Any]:
+        request = copy.deepcopy(runtime.request)
+        if str(runtime.snapshot.get("method") or "") != "runtime.export_apkg":
+            return request
+        workspace = runtime.sandbox_workspace
+        if workspace is None:
+            raise CardServiceError(
+                "TASK_WORKSPACE_UNAVAILABLE",
+                "The isolated task workspace was not created",
+                retryable=False,
+                stage="workspace",
+            )
+        export_root = workspace / "exports"
+        try:
+            export_root.mkdir(mode=0o700, exist_ok=False)
+            resolved = export_root.resolve()
+        except OSError as error:
+            raise CardServiceError(
+                "TASK_EXPORT_WORKSPACE_CREATE_FAILED",
+                "Could not create the service-owned export workspace",
+                retryable=False,
+                stage="workspace",
+            ) from error
+        _assert_no_reparse_components(resolved)
+        if resolved.parent != workspace.resolve():
+            raise CardServiceError(
+                "TASK_EXPORT_WORKSPACE_INVALID",
+                "The service-owned export workspace escaped the task boundary",
+                retryable=False,
+                stage="workspace",
+            )
+        if runtime.task_sandbox_sid is not None:
+            try:
+                harden_task_writable_path(resolved, runtime.task_sandbox_sid)
+            except WindowsSandboxAclError as error:
+                raise CardServiceError(
+                    "TASK_EXPORT_WORKSPACE_ACL_FAILED",
+                    "Could not grant the isolated task access to its export workspace",
+                    retryable=False,
+                    stage="workspace",
+                ) from error
+        request["output_dir"] = str(resolved)
+        request.pop("canonical_apkg_path", None)
+        return request
 
     def _persist_runtime(self, runtime: _RuntimeTask) -> None:
         with runtime.lock:
@@ -1348,6 +1406,7 @@ class CardService:
         stdout_bytes = 0
         stderr_bytes = 0
         stream_limit_error: list[str] = []
+        control_channel_error: list[CardServiceError] = []
         workspace_limit_error: list[CardServiceError] = []
         worker_error: list[dict[str, Any]] = []
         restricted_child_exit: list[dict[str, Any]] = []
@@ -1380,6 +1439,7 @@ class CardService:
                     retryable=False,
                     stage="workspace",
                 )
+            worker_request = self._worker_request(runtime)
             initial_workspace_usage = _task_workspace_usage(
                 runtime.sandbox_workspace,
                 byte_limit=self.task_workspace_limit_bytes,
@@ -1396,7 +1456,7 @@ class CardService:
                     handler = runtime.broker_handler_factory(
                         task_id,
                         str(runtime.snapshot["method"]),
-                        dict(runtime.request),
+                        copy.deepcopy(worker_request),
                     )
                 except Exception as error:
                     raise CardServiceError(
@@ -1410,6 +1470,8 @@ class CardService:
                 )
             worker_command = [
                 str(self.python_path),
+                "-I",
+                "-B",
                 str(self.bootstrap_path),
                 str(self.worker_path),
                 policy.worker_command,
@@ -1423,6 +1485,8 @@ class CardService:
             if self.use_restricted_launcher:
                 process_command = [
                     str(self.python_path),
+                    "-I",
+                    "-B",
                     str(self.restricted_launcher_path),
                     "--task-id",
                     task_id,
@@ -1494,13 +1558,9 @@ class CardService:
                 self._persist_runtime(runtime)
             assert process.stdin is not None and process.stdout is not None and process.stderr is not None
             stdin_lock = threading.RLock()
-            if self.use_restricted_launcher:
-                start_key = base64.urlsafe_b64encode(sandbox_attestation_key).decode("ascii").rstrip("=")
-                process.stdin.write(f"START {start_key}\n")
-                process.stdin.flush()
             launch_envelope: dict[str, Any] = {
                 "schemaVersion": 1,
-                "request": runtime.request,
+                "request": worker_request,
             }
             if runtime.broker_session is not None:
                 launch_envelope["brokerDescriptor"] = runtime.broker_session.descriptor()
@@ -1518,7 +1578,7 @@ class CardService:
                         return
                     stdout_parts.append(chunk)
 
-            def read_stderr() -> None:
+            def read_stderr_loop() -> None:
                 nonlocal stderr_bytes
                 for line in process.stderr:
                     stderr_bytes += len(line.encode("utf-8", errors="replace"))
@@ -1619,14 +1679,59 @@ class CardService:
                         continue
                     stderr_parts.append(stripped)
 
+            def read_stderr() -> None:
+                try:
+                    read_stderr_loop()
+                except Exception:
+                    control_channel_error.append(
+                        CardServiceError(
+                            "WORKER_CONTROL_CHANNEL_FAILED",
+                            "Managed Worker control channel failed unexpectedly",
+                            retryable=True,
+                            stage="runtime_control",
+                        )
+                    )
+                    self._terminate(process)
+
             readers = [
                 threading.Thread(target=read_stdout, daemon=True, name=f"card-stdout-{task_id}"),
                 threading.Thread(target=read_stderr, daemon=True, name=f"card-stderr-{task_id}"),
             ]
             for reader in readers:
                 reader.start()
+
+            def write_worker_control(value: str, *, stage: str) -> None:
+                try:
+                    with stdin_lock:
+                        process.stdin.write(value)
+                        process.stdin.flush()
+                except OSError as error:
+                    try:
+                        process.wait(timeout=0.5)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    for reader in readers:
+                        reader.join(timeout=0.5)
+                    payload = worker_error[-1] if worker_error else {}
+                    stderr_message = next((line for line in reversed(stderr_parts) if line), "")
+                    if not payload and not stderr_message and restricted_child_exit:
+                        payload = restricted_child_exit[-1]
+                    if payload or stderr_message:
+                        raise _worker_failure(
+                            payload,
+                            stderr_message or "Managed Worker exited during startup",
+                        ) from error
+                    raise CardServiceError(
+                        "WORKER_CONTROL_CHANNEL_CLOSED",
+                        f"Managed Worker closed its control channel during {stage}",
+                        retryable=False,
+                        stage="runtime_startup",
+                    ) from error
+
             deadline = time.monotonic() + policy.timeout_seconds
             if self.use_restricted_launcher:
+                start_key = base64.urlsafe_b64encode(sandbox_attestation_key).decode("ascii").rstrip("=")
+                write_worker_control(f"START {start_key}\n", stage="sandbox handshake")
                 handshake_deadline = min(deadline, time.monotonic() + 5.0)
                 while (
                     not sandbox_attestation_seen.is_set()
@@ -1653,23 +1758,21 @@ class CardService:
                         else "Restricted launcher did not complete its pre-resume handshake",
                     )
                 if sandbox_attestation_seen.is_set():
-                    with stdin_lock:
-                        process.stdin.write(
-                            json.dumps(
-                                self.runtime_manifest.value,
-                                ensure_ascii=False,
-                                sort_keys=True,
-                                separators=(",", ":"),
-                            )
-                            + "\n"
+                    write_worker_control(
+                        json.dumps(
+                            self.runtime_manifest.value,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
                         )
-                        process.stdin.flush()
-            if process.poll() is None:
-                with stdin_lock:
-                    process.stdin.write(
-                        json.dumps(launch_envelope, ensure_ascii=False, separators=(",", ":")) + "\n"
+                        + "\n",
+                        stage="runtime manifest transfer",
                     )
-                    process.stdin.flush()
+            if process.poll() is None:
+                write_worker_control(
+                    json.dumps(launch_envelope, ensure_ascii=False, separators=(",", ":")) + "\n",
+                    stage="launch envelope transfer",
+                )
             next_workspace_check = time.monotonic()
             next_service_capacity_check = next_workspace_check + 1.0
             while process.poll() is None:
@@ -1707,6 +1810,8 @@ class CardService:
                 raise CardServiceError("TASK_CANCELLED", "Task cancelled")
             if workspace_limit_error:
                 raise workspace_limit_error[0]
+            if control_channel_error:
+                raise control_channel_error[0]
             if stream_limit_error:
                 raise CardServiceError("WORKER_OUTPUT_LIMIT", stream_limit_error[0])
             if process.returncode != 0:

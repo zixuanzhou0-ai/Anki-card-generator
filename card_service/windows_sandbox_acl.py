@@ -13,6 +13,7 @@ from typing import Iterable
 
 SE_FILE_OBJECT = 1
 DACL_SECURITY_INFORMATION = 0x00000004
+UNPROTECTED_DACL_SECURITY_INFORMATION = 0x20000000
 PROTECTED_DACL_SECURITY_INFORMATION = 0x80000000
 SET_ACCESS = 2
 TRUSTEE_IS_SID = 0
@@ -368,6 +369,7 @@ def apply_exact_dacl(
     grants: Iterable[tuple[str, int]],
     *,
     inherit_to_children: bool,
+    protect_from_parent: bool = True,
 ) -> tuple[DaclEntry, ...]:
     target = _stable_existing_path(path)
     kernel32, advapi32 = _libraries()
@@ -392,7 +394,12 @@ def apply_exact_dacl(
         status = advapi32.SetNamedSecurityInfoW(
             str(target),
             SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            DACL_SECURITY_INFORMATION
+            | (
+                PROTECTED_DACL_SECURITY_INFORMATION
+                if protect_from_parent
+                else UNPROTECTED_DACL_SECURITY_INFORMATION
+            ),
             None,
             None,
             new_acl,
@@ -508,7 +515,12 @@ def create_task_workspace(root: str | Path, task_id: str) -> tuple[Path, str]:
     task_sid = task_sandbox_sid(task_id)
     workspace = workspace_root / task_id
     workspace.mkdir(exist_ok=False)
-    apply_exact_dacl(workspace, task_workspace_grants(task_sid), inherit_to_children=True)
+    apply_exact_dacl(
+        workspace,
+        task_workspace_grants(task_sid),
+        inherit_to_children=True,
+        protect_from_parent=False,
+    )
     return workspace, task_sid
 
 
@@ -519,3 +531,19 @@ def harden_staged_path(path: str | Path, task_sid: str) -> None:
     for child in paths:
         _stable_existing_path(child)
         apply_exact_dacl(child, grants, inherit_to_children=child.is_dir())
+
+
+def harden_task_writable_path(path: str | Path, task_sid: str) -> None:
+    """Apply the task grant while preserving safe inheritance for Worker-created children."""
+
+    target = _stable_existing_path(path)
+    grants = task_workspace_grants(task_sid)
+    paths = [target, *target.rglob("*")] if target.is_dir() else [target]
+    for child in paths:
+        _stable_existing_path(child)
+        apply_exact_dacl(
+            child,
+            grants,
+            inherit_to_children=child.is_dir(),
+            protect_from_parent=False,
+        )

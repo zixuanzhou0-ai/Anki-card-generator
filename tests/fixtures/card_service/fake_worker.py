@@ -73,6 +73,18 @@ def main() -> None:
                 remaining -= len(chunk)
         print(json.dumps({"ok": True, "command": command, "written": requested_bytes}))
         return
+    if mode == "runtime_flags":
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "isolated": sys.flags.isolated,
+                    "dontWriteBytecode": sys.flags.dont_write_bytecode,
+                    "safePath": sys.flags.safe_path,
+                }
+            )
+        )
+        return
     if mode == "broker":
         from acg.broker_client import configured_broker_client
 

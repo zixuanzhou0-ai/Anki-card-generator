@@ -13,6 +13,8 @@ from typing import Any, Sequence
 
 
 MANAGED_RUNTIME_ENV = "ACG_MANAGED_RUNTIME"
+MANAGED_RUNTIME_ROOT_ENV = "ACG_MANAGED_RUNTIME_ROOT"
+TASK_WORKSPACE_ENV = "ACG_TASK_WORKSPACE"
 MANAGED_TOOL_ENV = {
     "ffmpeg": "ACG_MANAGED_FFMPEG",
     "ffprobe": "ACG_MANAGED_FFPROBE",
@@ -134,9 +136,30 @@ def _windows_path_form_blocked(value: str) -> bool:
     return bool(_WINDOWS_DRIVE_RE.match(value) and ":" in value[2:])
 
 
-def _ensure_no_reparse_components(path: Path, code: str, message: str) -> None:
-    current = Path(path.anchor)
-    for component in path.parts[1:]:
+def _ensure_no_reparse_components(
+    path: Path,
+    code: str,
+    message: str,
+    *,
+    boundary: Path | None = None,
+) -> None:
+    if boundary is None:
+        current = Path(path.anchor)
+        components = path.parts[1:]
+    else:
+        current = _lexical_absolute(boundary)
+        try:
+            components = path.relative_to(current).parts
+        except ValueError as error:
+            raise MediaToolPolicyError(code, message) from error
+        try:
+            if current.is_symlink() or (current.exists() and _has_reparse_attribute(current)):
+                raise MediaToolPolicyError(code, message)
+        except MediaToolPolicyError:
+            raise
+        except OSError as error:
+            raise MediaToolPolicyError(code, message) from error
+    for component in components:
         current /= component
         try:
             if current.is_symlink() or (current.exists() and _has_reparse_attribute(current)):
@@ -147,33 +170,63 @@ def _ensure_no_reparse_components(path: Path, code: str, message: str) -> None:
             raise MediaToolPolicyError(code, message) from error
 
 
+def _lexical_absolute(path: Path) -> Path:
+    """Normalize without opening a stronger realpath handle than AppContainer allows."""
+
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def _managed_boundary(env_name: str, path: Path, code: str, message: str) -> Path:
+    configured = str(os.environ.get(env_name) or "").strip()
+    if not configured:
+        raise MediaToolPolicyError(code, message)
+    raw_root = Path(configured)
+    if not raw_root.is_absolute() or _windows_path_form_blocked(configured):
+        raise MediaToolPolicyError(code, message)
+    root = _lexical_absolute(raw_root)
+    try:
+        path.relative_to(root)
+    except ValueError as error:
+        raise MediaToolPolicyError(code, message) from error
+    return root
+
+
 def managed_tool_path(name: str) -> Path:
     env_name = MANAGED_TOOL_ENV.get(name)
     if env_name is None:
         raise MediaToolPolicyError("MEDIA_TOOL_NOT_ALLOWED", "Media tool is not allowed")
     configured = str(os.environ.get(env_name) or "").strip()
     if configured:
-        candidate = Path(configured)
-        if not candidate.is_absolute() or _windows_path_form_blocked(configured):
+        raw_candidate = Path(configured)
+        if not raw_candidate.is_absolute() or _windows_path_form_blocked(configured):
             raise MediaToolPolicyError("MANAGED_MEDIA_TOOL_INVALID", "Managed media tool path must be absolute")
+        candidate = _lexical_absolute(raw_candidate)
+        managed = os.environ.get(MANAGED_RUNTIME_ENV) == "1"
+        boundary = (
+            _managed_boundary(
+                MANAGED_RUNTIME_ROOT_ENV,
+                candidate,
+                "MANAGED_MEDIA_TOOL_INVALID",
+                "Managed media tool escaped its signed runtime boundary",
+            )
+            if managed
+            else None
+        )
         _ensure_no_reparse_components(
             candidate,
             "MANAGED_MEDIA_TOOL_INVALID",
             "Managed media tool path contains a reparse point",
+            boundary=boundary,
         )
-        try:
-            resolved = candidate.resolve(strict=True)
-        except OSError as error:
-            raise MediaToolPolicyError("MANAGED_MEDIA_TOOL_MISSING", "Managed media tool is unavailable") from error
-        if not resolved.is_file():
+        if not candidate.is_file():
             raise MediaToolPolicyError("MANAGED_MEDIA_TOOL_MISSING", "Managed media tool is unavailable")
-        return resolved
+        return candidate
     if os.environ.get(MANAGED_RUNTIME_ENV) == "1":
         raise MediaToolPolicyError("MANAGED_MEDIA_TOOL_MISSING", "Packaged runtime is missing a managed media tool")
     discovered = shutil.which(name)
     if not discovered:
         raise MediaToolPolicyError("MANAGED_MEDIA_TOOL_MISSING", f"{name} is unavailable")
-    return Path(discovered).resolve(strict=True)
+    return _lexical_absolute(Path(discovered))
 
 
 def _local_input_path(value: str) -> Path:
@@ -184,23 +237,31 @@ def _local_input_path(value: str) -> Path:
         raise MediaToolPolicyError("MEDIA_INPUT_PROTOCOL_BLOCKED", "Media input protocol is blocked")
     if _SCHEME_RE.match(value) and not _WINDOWS_DRIVE_RE.match(value):
         raise MediaToolPolicyError("MEDIA_INPUT_PROTOCOL_BLOCKED", "Media input protocol is blocked")
-    path = Path(value)
-    if not path.is_absolute() or _windows_path_form_blocked(value):
+    raw_path = Path(value)
+    if not raw_path.is_absolute() or _windows_path_form_blocked(value):
         raise MediaToolPolicyError("MEDIA_INPUT_PATH_INVALID", "Media input path must be absolute")
+    path = _lexical_absolute(raw_path)
     if path.suffix.casefold() in BLOCKED_INPUT_SUFFIXES:
         raise MediaToolPolicyError("MEDIA_INPUT_DEMUXER_BLOCKED", "Playlist and concat media inputs are blocked")
+    boundary = (
+        _managed_boundary(
+            TASK_WORKSPACE_ENV,
+            path,
+            "MEDIA_INPUT_PATH_INVALID",
+            "Managed media input escaped its task workspace",
+        )
+        if os.environ.get(MANAGED_RUNTIME_ENV) == "1"
+        else None
+    )
     _ensure_no_reparse_components(
         path,
         "MEDIA_INPUT_REPARSE_BLOCKED",
         "Media input path cannot contain a reparse point",
+        boundary=boundary,
     )
-    try:
-        resolved = path.resolve(strict=True)
-    except OSError as error:
-        raise MediaToolPolicyError("MEDIA_INPUT_MISSING", "Media input file is unavailable") from error
-    if not resolved.is_file():
+    if not path.is_file():
         raise MediaToolPolicyError("MEDIA_INPUT_MISSING", "Media input file is unavailable")
-    return resolved
+    return path
 
 
 def _local_output_path(value: str) -> Path:
@@ -211,23 +272,32 @@ def _local_output_path(value: str) -> Path:
         or (_SCHEME_RE.match(value) and not _WINDOWS_DRIVE_RE.match(value))
     ):
         raise MediaToolPolicyError("MEDIA_OUTPUT_PATH_INVALID", "Media output must be an absolute local file")
-    path = Path(value)
-    if not path.is_absolute() or _windows_path_form_blocked(value):
+    raw_path = Path(value)
+    if not raw_path.is_absolute() or _windows_path_form_blocked(value):
         raise MediaToolPolicyError("MEDIA_OUTPUT_PATH_INVALID", "Media output path must be absolute")
+    path = _lexical_absolute(raw_path)
     if path.is_symlink() or (path.exists() and _has_reparse_attribute(path)):
         raise MediaToolPolicyError("MEDIA_OUTPUT_REPARSE_BLOCKED", "Media output cannot be a reparse point")
     if path.exists():
         raise MediaToolPolicyError("MEDIA_OUTPUT_ALREADY_EXISTS", "Media output must be a new file")
     raw_parent = path.parent
+    boundary = (
+        _managed_boundary(
+            TASK_WORKSPACE_ENV,
+            raw_parent,
+            "MEDIA_OUTPUT_PATH_INVALID",
+            "Managed media output escaped its task workspace",
+        )
+        if os.environ.get(MANAGED_RUNTIME_ENV) == "1"
+        else None
+    )
     _ensure_no_reparse_components(
         raw_parent,
         "MEDIA_OUTPUT_REPARSE_BLOCKED",
         "Media output directory path cannot contain a reparse point",
+        boundary=boundary,
     )
-    try:
-        parent = raw_parent.resolve(strict=True)
-    except OSError as error:
-        raise MediaToolPolicyError("MEDIA_OUTPUT_PATH_INVALID", "Media output directory is unavailable") from error
+    parent = _lexical_absolute(raw_parent)
     if not parent.is_dir() or _has_reparse_attribute(parent):
         raise MediaToolPolicyError("MEDIA_OUTPUT_REPARSE_BLOCKED", "Media output directory cannot be a reparse point")
     return parent / path.name

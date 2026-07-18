@@ -64,7 +64,12 @@ class RuntimeEntry:
 
 
 class ManagedRuntimeManifest:
-    def __init__(self, entries: Iterable[tuple[str, Path]]) -> None:
+    def __init__(
+        self,
+        entries: Iterable[tuple[str, Path]],
+        *,
+        runtime_root: Path | None = None,
+    ) -> None:
         resolved_entries: list[RuntimeEntry] = []
         seen_ids: set[str] = set()
         seen_paths: set[str] = set()
@@ -88,8 +93,12 @@ class ManagedRuntimeManifest:
         if not resolved_entries:
             raise RuntimeManifestError("RUNTIME_MANIFEST_EMPTY", "Managed runtime manifest must not be empty")
         self.entries = tuple(sorted(resolved_entries, key=lambda item: item.resource_id.encode("utf-8")))
+        self.runtime_root = runtime_root.resolve(strict=True) if runtime_root is not None else None
+        if self.runtime_root is not None and not self.runtime_root.is_dir():
+            raise RuntimeManifestError("RUNTIME_ROOT_INVALID", "Managed runtime root must be a directory")
         self.value = {
             "schemaVersion": 1,
+            "runtimeRoot": str(self.runtime_root) if self.runtime_root is not None else None,
             "entries": [entry.manifest_value() for entry in self.entries],
         }
         self.digest = hashlib.sha256(canonical_bytes(self.value)).hexdigest()

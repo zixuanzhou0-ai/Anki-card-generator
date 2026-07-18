@@ -45,7 +45,7 @@
       "extract_learning_points": ["source", "download", "subtitle", "sentences", "local_recall", "ai_review", "classify", "done"],
       "generate_cards_from_learning_points": ["source", "ai", "cards", "done"],
       "generate": ["source", "download", "subtitle", "segments", "document", "batch", "context", "learning_point_expansion", "phrase_review", "ai", "cards", "done"],
-      "export": ["prepare", "template", "tts", "notes", "media", "package", "done"],
+      "export": ["prepare", "template", "quality_audit", "tts", "notes", "media", "package", "done"],
       "verify_anki_import": ["prepare_media", "restore_media", "import_preflight", "import", "query"]
     },
     "progress_emitting_commands": [

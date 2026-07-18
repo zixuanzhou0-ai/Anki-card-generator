@@ -37,6 +37,8 @@ class MediaToolPolicyTests(unittest.TestCase):
             path.write_bytes(b"fixture")
         self.environment = {
             "ACG_MANAGED_RUNTIME": "1",
+            "ACG_MANAGED_RUNTIME_ROOT": str(self.root),
+            "ACG_TASK_WORKSPACE": str(self.root),
             "ACG_MANAGED_FFMPEG": str(self.ffmpeg),
             "ACG_MANAGED_FFPROBE": str(self.ffprobe),
         }
@@ -63,6 +65,18 @@ class MediaToolPolicyTests(unittest.TestCase):
         self.assertEqual(ffmpeg[-3:], ["-fs", str(MAX_MEDIA_OUTPUT_BYTES), str(self.output)])
         self.assertEqual(ffmpeg.count("-protocol_whitelist"), 1)
         self.assertEqual(ffmpeg.count("-format_whitelist"), 1)
+
+    def test_managed_paths_do_not_require_strict_realpath_handles(self) -> None:
+        with (
+            patch.dict(os.environ, self.environment, clear=False),
+            patch.object(Path, "resolve", side_effect=PermissionError("strong realpath handle denied")),
+        ):
+            ffmpeg = ffmpeg_command(["-i", str(self.source), "-vn", str(self.output)])
+            ffprobe = ffprobe_command(["-show_streams", "-of", "json"], self.source)
+
+        self.assertEqual(ffmpeg[0], str(self.ffmpeg))
+        self.assertEqual(ffprobe[0], str(self.ffprobe))
+        self.assertEqual(ffprobe[-1], str(self.source))
 
     def test_playlist_protocol_and_policy_override_inputs_fail_closed(self) -> None:
         playlist = self.root / "attack.ffconcat"
@@ -433,6 +447,8 @@ class MediaToolPolicyTests(unittest.TestCase):
             output.writeframes(b"\x00\x00" * 3_200)
         environment = {
             "ACG_MANAGED_RUNTIME": "1",
+            "ACG_MANAGED_RUNTIME_ROOT": str(Path(real_ffmpeg).resolve().parent),
+            "ACG_TASK_WORKSPACE": str(self.root),
             "ACG_MANAGED_FFMPEG": str(Path(real_ffmpeg).resolve()),
             "ACG_MANAGED_FFPROBE": str(Path(real_ffprobe).resolve()),
         }
@@ -480,6 +496,8 @@ class MediaToolPolicyTests(unittest.TestCase):
             output.writeframes(b"\x00\x00" * 3_200)
         environment = {
             "ACG_MANAGED_RUNTIME": "1",
+            "ACG_MANAGED_RUNTIME_ROOT": str(Path(real_ffmpeg).resolve().parent),
+            "ACG_TASK_WORKSPACE": str(self.root),
             "ACG_MANAGED_FFMPEG": str(Path(real_ffmpeg).resolve()),
             "ACG_MANAGED_FFPROBE": str(Path(real_ffprobe).resolve()),
         }
@@ -625,6 +643,8 @@ class MediaToolPolicyTests(unittest.TestCase):
 
         environment = {
             "ACG_MANAGED_RUNTIME": "1",
+            "ACG_MANAGED_RUNTIME_ROOT": str(Path(real_ffmpeg).resolve().parent),
+            "ACG_TASK_WORKSPACE": str(self.root),
             "ACG_MANAGED_FFMPEG": ffmpeg,
             "ACG_MANAGED_FFPROBE": str(Path(real_ffprobe).resolve()),
         }
@@ -692,6 +712,8 @@ class MediaToolPolicyTests(unittest.TestCase):
         self.assertEqual(fixture.returncode, 0, fixture.stderr)
         environment = {
             "ACG_MANAGED_RUNTIME": "1",
+            "ACG_MANAGED_RUNTIME_ROOT": str(Path(real_ffmpeg).resolve().parent),
+            "ACG_TASK_WORKSPACE": str(self.root),
             "ACG_MANAGED_FFMPEG": str(Path(real_ffmpeg).resolve()),
             "ACG_MANAGED_FFPROBE": str(Path(real_ffprobe).resolve()),
         }

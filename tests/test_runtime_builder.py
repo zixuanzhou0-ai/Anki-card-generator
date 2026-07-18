@@ -102,11 +102,15 @@ def resources(source_root: Path) -> list[RuntimeBuildResource]:
 
 def test_builder_is_deterministic_atomic_and_unsigned(tmp_path: Path) -> None:
     inputs = resources(tmp_path / "inputs")
+    progress: list[tuple[int, int, int]] = []
     first = build_runtime_package(
         (tmp_path / "runtime-a").resolve(),
         version="0.1.0-dev",
         resources=reversed(inputs),
         created_at="2026-07-18T00:00:00Z",
+        progress=lambda completed, total, copied_bytes: progress.append(
+            (completed, total, copied_bytes)
+        ),
     )
     second = build_runtime_package(
         (tmp_path / "runtime-b").resolve(),
@@ -119,6 +123,10 @@ def test_builder_is_deterministic_atomic_and_unsigned(tmp_path: Path) -> None:
     assert first.manifest_path.read_bytes() == second.manifest_path.read_bytes()
     assert first.sbom_path.read_bytes() == second.sbom_path.read_bytes()
     assert first.resource_count == len(inputs) + 1
+    assert progress[0][0] == 1
+    assert progress[-1][0:2] == (len(inputs), len(inputs))
+    assert progress[-1][2] > 0
+    assert progress == sorted(progress)
     assert not (first.root / SIGNATURE_FILE_NAME).exists()
     package = ManagedRuntimePackage(first.root)
     assert package.public_summary()["signatureVerified"] is False
