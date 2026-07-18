@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -12,6 +13,7 @@ from typing import Callable
 
 from .python_runtime_lock import (
     PythonRuntimeLockError,
+    parse_requirements_lock,
     verify_wheelhouse_against_lock,
 )
 from .runtime_manifest import RuntimeManifestError, assert_stable_path, canonical_bytes, file_sha256
@@ -20,6 +22,12 @@ from .runtime_manifest import RuntimeManifestError, assert_stable_path, canonica
 MAX_CORE_FILES = 50_000
 MAX_CORE_BYTES = 4 * 1024 * 1024 * 1024
 BUILD_METADATA_NAME = "python-runtime-build-v1.json"
+MAX_BUILD_METADATA_BYTES = 64 * 1024
+MANAGED_PYTHON_VERSION = "3.13.12"
+MANAGED_PYTHON_ARCHITECTURE = "amd64"
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+_ARCHITECTURE_RE = re.compile(r"^[A-Za-z0-9_]{1,32}$")
 _ROOT_EXCLUSIONS = frozenset(
     {
         "doc",
@@ -71,6 +79,16 @@ class PythonRuntimeAssemblyResult:
     wheel_count: int
     core_file_count: int
     total_bytes: int
+
+
+@dataclass(frozen=True)
+class PythonRuntimeBuildMetadata:
+    implementation: str
+    python_version: str
+    architecture: str
+    requirements_lock_sha256: str
+    wheel_count: int
+    core_file_count: int
 
 
 def _has_reparse_attribute(path: Path) -> bool:
@@ -239,6 +257,114 @@ def _reject_generated_bytecode(root: Path) -> None:
             )
 
 
+def load_python_runtime_build_metadata(path: Path) -> PythonRuntimeBuildMetadata:
+    try:
+        stable = assert_stable_path(path)
+        if stable.stat().st_size > MAX_BUILD_METADATA_BYTES:
+            raise PythonRuntimeAssemblyError(
+                "PYTHON_RUNTIME_BUILD_METADATA_INVALID",
+                "Python runtime build metadata is too large",
+            )
+        with stable.open("rb") as handle:
+            source = handle.read(MAX_BUILD_METADATA_BYTES + 1)
+        if not source or len(source) > MAX_BUILD_METADATA_BYTES:
+            raise PythonRuntimeAssemblyError(
+                "PYTHON_RUNTIME_BUILD_METADATA_INVALID",
+                "Python runtime build metadata is empty or too large",
+            )
+        value = json.loads(source)
+    except PythonRuntimeAssemblyError:
+        raise
+    except (OSError, RuntimeManifestError, ValueError) as error:
+        raise PythonRuntimeAssemblyError(
+            "PYTHON_RUNTIME_BUILD_METADATA_INVALID",
+            "Python runtime build metadata is unavailable or invalid",
+        ) from error
+    expected = {
+        "schemaVersion",
+        "implementation",
+        "pythonVersion",
+        "architecture",
+        "requirementsLockSha256",
+        "wheelCount",
+        "coreFileCount",
+        "networkUsedDuringAssembly",
+    }
+    if (
+        not isinstance(value, dict)
+        or set(value) != expected
+        or canonical_bytes(value) != source
+        or value.get("schemaVersion") != 1
+        or value.get("implementation") != "cpython"
+        or not isinstance(value.get("pythonVersion"), str)
+        or _VERSION_RE.fullmatch(value["pythonVersion"]) is None
+        or not isinstance(value.get("architecture"), str)
+        or _ARCHITECTURE_RE.fullmatch(value["architecture"]) is None
+        or not isinstance(value.get("requirementsLockSha256"), str)
+        or _SHA256_RE.fullmatch(value["requirementsLockSha256"]) is None
+        or isinstance(value.get("wheelCount"), bool)
+        or not isinstance(value.get("wheelCount"), int)
+        or value["wheelCount"] < 1
+        or value["wheelCount"] > 1024
+        or isinstance(value.get("coreFileCount"), bool)
+        or not isinstance(value.get("coreFileCount"), int)
+        or value["coreFileCount"] < 1
+        or value["coreFileCount"] > MAX_CORE_FILES
+        or value.get("networkUsedDuringAssembly") is not False
+    ):
+        raise PythonRuntimeAssemblyError(
+            "PYTHON_RUNTIME_BUILD_METADATA_INVALID",
+            "Python runtime build metadata shape is invalid",
+        )
+    return PythonRuntimeBuildMetadata(
+        implementation="cpython",
+        python_version=value["pythonVersion"],
+        architecture=value["architecture"].lower(),
+        requirements_lock_sha256=value["requirementsLockSha256"],
+        wheel_count=value["wheelCount"],
+        core_file_count=value["coreFileCount"],
+    )
+
+
+def verify_assembled_python_runtime(
+    root: Path,
+    lock_path: Path,
+    *,
+    expected_version: str = MANAGED_PYTHON_VERSION,
+    expected_architecture: str = MANAGED_PYTHON_ARCHITECTURE,
+) -> PythonRuntimeBuildMetadata:
+    root = _stable_directory(
+        root,
+        code="PYTHON_RUNTIME_BUILD_METADATA_INVALID",
+        label="Assembled Python root",
+    )
+    try:
+        locked = parse_requirements_lock(lock_path.resolve())
+        lock_digest = file_sha256(lock_path.resolve())
+    except (PythonRuntimeLockError, OSError) as error:
+        raise PythonRuntimeAssemblyError(
+            "PYTHON_RUNTIME_BUILD_METADATA_INVALID",
+            "Python runtime lock cannot be composed with the assembled runtime",
+        ) from error
+    metadata = load_python_runtime_build_metadata(root / BUILD_METADATA_NAME)
+    if (
+        metadata.requirements_lock_sha256 != lock_digest
+        or metadata.wheel_count != len(locked)
+        or metadata.python_version != expected_version
+        or metadata.architecture not in {expected_architecture.lower(), "x86_64"}
+        or not (root / "python.exe").is_file()
+        or not (root / "Lib").is_dir()
+        or (root / "Scripts").exists()
+        or (root / "pyvenv.cfg").exists()
+    ):
+        raise PythonRuntimeAssemblyError(
+            "PYTHON_RUNTIME_BUILD_METADATA_MISMATCH",
+            "Assembled Python does not match its requirements lock or portable layout",
+        )
+    _reject_generated_bytecode(root)
+    return metadata
+
+
 def assemble_python_runtime(
     source_root: Path,
     output_root: Path,
@@ -302,6 +428,12 @@ def assemble_python_runtime(
             "networkUsedDuringAssembly": False,
         }
         (staging / BUILD_METADATA_NAME).write_bytes(canonical_bytes(metadata))
+        verify_assembled_python_runtime(
+            staging.resolve(),
+            lock_path.resolve(),
+            expected_version=expected_version,
+            expected_architecture=expected_architecture,
+        )
         total_bytes = sum(
             path.stat().st_size
             for path in staging.rglob("*")

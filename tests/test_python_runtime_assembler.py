@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -9,8 +10,10 @@ from card_service.python_runtime_assembler import (
     PythonRuntimeAssemblyError,
     PythonRuntimeIdentity,
     assemble_python_runtime,
+    verify_assembled_python_runtime,
 )
 from card_service.python_runtime_lock import generate_requirements_lock
+from card_service.runtime_manifest import canonical_bytes
 from tests.test_python_runtime_lock import wheel
 
 
@@ -180,3 +183,51 @@ def test_assembler_rejects_generated_bytecode_from_an_installed_wheel(tmp_path: 
         )
     assert caught.value.code == "PYTHON_RUNTIME_BYTECODE_PRESENT"
     assert not output.exists()
+
+
+def test_assembled_runtime_metadata_is_bound_to_the_exact_dependency_lock(tmp_path: Path) -> None:
+    source, lock, wheelhouse = fixture(tmp_path)
+    output = (tmp_path / "portable-python").resolve()
+    assemble_python_runtime(
+        source,
+        output,
+        lock_path=lock,
+        wheelhouse=wheelhouse,
+        expected_version="3.13.12",
+        probe=lambda _path: IDENTITY,
+        installer=fake_installer,
+    )
+    metadata_path = output / BUILD_METADATA_NAME
+    metadata = json.loads(metadata_path.read_bytes())
+    metadata["requirementsLockSha256"] = "0" * 64
+    metadata_path.write_bytes(canonical_bytes(metadata))
+
+    with pytest.raises(PythonRuntimeAssemblyError) as caught:
+        verify_assembled_python_runtime(output, lock)
+    assert caught.value.code == "PYTHON_RUNTIME_BUILD_METADATA_MISMATCH"
+
+
+def test_assembled_runtime_metadata_must_be_canonical_and_bounded(tmp_path: Path) -> None:
+    source, lock, wheelhouse = fixture(tmp_path)
+    output = (tmp_path / "portable-python").resolve()
+    assemble_python_runtime(
+        source,
+        output,
+        lock_path=lock,
+        wheelhouse=wheelhouse,
+        expected_version="3.13.12",
+        probe=lambda _path: IDENTITY,
+        installer=fake_installer,
+    )
+    metadata_path = output / BUILD_METADATA_NAME
+    metadata = json.loads(metadata_path.read_bytes())
+    metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
+    with pytest.raises(PythonRuntimeAssemblyError) as caught:
+        verify_assembled_python_runtime(output, lock)
+    assert caught.value.code == "PYTHON_RUNTIME_BUILD_METADATA_INVALID"
+
+    metadata_path.write_bytes(b"x" * (64 * 1024 + 1))
+    with pytest.raises(PythonRuntimeAssemblyError) as oversized:
+        verify_assembled_python_runtime(output, lock)
+    assert oversized.value.code == "PYTHON_RUNTIME_BUILD_METADATA_INVALID"

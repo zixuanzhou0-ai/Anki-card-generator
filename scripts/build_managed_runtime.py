@@ -14,6 +14,11 @@ from card_service.runtime_builder import (
     RuntimeBuildResource,
     build_runtime_package,
 )
+from card_service.python_runtime_assembler import (
+    BUILD_METADATA_NAME,
+    PythonRuntimeAssemblyError,
+    verify_assembled_python_runtime,
+)
 
 
 def _tree_resources(
@@ -76,7 +81,10 @@ def _python_resources(root: Path) -> list[RuntimeBuildResource]:
         root,
         target_root="python",
         id_prefix="managed-python:file",
-        special_ids={"python.exe": "managed-python:executable"},
+        special_ids={
+            "python.exe": "managed-python:executable",
+            BUILD_METADATA_NAME: "managed-python:build-metadata",
+        },
         include=lambda path: "__pycache__" not in path.parts and path.suffix not in {".pyc", ".pyo"},
     )
     if not any(resource.resource_id == "managed-python:executable" for resource in resources):
@@ -103,6 +111,10 @@ def parser() -> argparse.ArgumentParser:
 def main() -> None:
     arguments = parser().parse_args()
     try:
+        verify_assembled_python_runtime(
+            arguments.python_root.resolve(),
+            arguments.python_lock.resolve(),
+        )
         resources = _repository_resources(arguments.repository_root.resolve())
         resources.extend(_python_resources(arguments.python_root.resolve()))
         resources.extend(
@@ -123,7 +135,7 @@ def main() -> None:
             resources=resources,
             created_at=arguments.created_at,
         )
-    except RuntimeBuildError as error:
+    except (PythonRuntimeAssemblyError, RuntimeBuildError) as error:
         raise SystemExit(f"{error.code}: {error}") from error
     print(
         json.dumps(

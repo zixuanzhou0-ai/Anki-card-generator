@@ -13,6 +13,7 @@ from card_service.runtime_builder import (
     RuntimeBuildResource,
     build_runtime_package,
 )
+from card_service.runtime_manifest import canonical_bytes
 from card_service.runtime_package import ManagedRuntimePackage, RuntimePackageError
 from card_service.runtime_trust import SIGNATURE_FILE_NAME
 
@@ -20,6 +21,7 @@ from card_service.runtime_trust import SIGNATURE_FILE_NAME
 ROOT = Path(__file__).resolve().parents[1]
 RESOURCE_PATHS = {
     "managed-python:executable": "python/python.exe",
+    "managed-python:build-metadata": "python/python-runtime-build-v1.json",
     "card-service:worker-bootstrap": "card_service/worker_bootstrap.py",
     "card-service:broker-client": "workers/acg/broker_client.py",
     "card-service:windows-restricted-launcher": "card_service/windows_restricted_launcher.py",
@@ -53,16 +55,38 @@ def python_runtime_lock_fixture() -> bytes:
     ).encode()
 
 
+def python_runtime_build_metadata_fixture(
+    lock_source: bytes,
+    *,
+    wheel_count: int = 4,
+    core_file_count: int = 1,
+) -> bytes:
+    return canonical_bytes(
+        {
+            "schemaVersion": 1,
+            "implementation": "cpython",
+            "pythonVersion": "3.13.12",
+            "architecture": "amd64",
+            "requirementsLockSha256": hashlib.sha256(lock_source).hexdigest(),
+            "wheelCount": wheel_count,
+            "coreFileCount": core_file_count,
+            "networkUsedDuringAssembly": False,
+        }
+    )
+
+
 def resources(source_root: Path) -> list[RuntimeBuildResource]:
     values: list[RuntimeBuildResource] = []
+    lock_source = python_runtime_lock_fixture()
     for index, (resource_id, relative_path) in enumerate(RESOURCE_PATHS.items()):
         source = source_root / f"source-{index}.bin"
         source.parent.mkdir(parents=True, exist_ok=True)
-        source.write_bytes(
-            python_runtime_lock_fixture()
-            if resource_id == "metadata:python-runtime-lock"
-            else f"fixture-{index}".encode()
-        )
+        content = f"fixture-{index}".encode()
+        if resource_id == "metadata:python-runtime-lock":
+            content = lock_source
+        elif resource_id == "managed-python:build-metadata":
+            content = python_runtime_build_metadata_fixture(lock_source)
+        source.write_bytes(content)
         values.append(RuntimeBuildResource(resource_id, source.resolve(), relative_path))
     extra = source_root / "module.py"
     extra.write_text("VALUE = 1\n", encoding="utf-8")
@@ -249,8 +273,15 @@ def test_builder_output_does_not_contain_private_key_material(tmp_path: Path) ->
 
 def test_offline_builder_cli_collects_the_real_service_and_worker_tree(tmp_path: Path) -> None:
     python_root = tmp_path / "managed-python"
-    python_root.mkdir()
+    (python_root / "Lib").mkdir(parents=True)
     (python_root / "python.exe").write_bytes(b"managed-python-fixture")
+    committed_lock = (ROOT / "workers" / "requirements-win-cp313.lock").read_bytes()
+    (python_root / "python-runtime-build-v1.json").write_bytes(
+        python_runtime_build_metadata_fixture(
+            committed_lock,
+            wheel_count=25,
+        )
+    )
     tools = {}
     for name in ("ffmpeg", "ffprobe", "yt-dlp"):
         path = tmp_path / f"{name}.exe"

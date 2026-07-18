@@ -495,6 +495,7 @@ app-data/
 - CURRENT 20 卡生产 V15 离线包为 20 notes / 20 cards / 52 个唯一媒体，manifest、逐媒体哈希、字幕对齐和模型作用域 GUID 闭合。真实隔离 Anki 证据包括 E→C 单卡、V15 20 卡重复/重启及 V14/V15 同字段并存；Computer Use 在 Anki 26.05 完成了 20 张连续复习、翻面、滚动、焦点和四类媒体交互。素材为合成视频与静音 TTS，不构成真人语义、听感或长期学习效果证据。
 - 非 NFC、Windows 保留设备名（含 `CLOCK$`）、大小写/规范化冲突和 APKG archive 资源上限已 fail closed；有界流式读取覆盖 APKG archive/package/verifier 与标准 Windows Anki direct-first 媒体路径。非标准/portable profile 的 AnkiConnect inline 兼容仍整文件/Base64，原始单文件上限为 8 MiB；8 MiB 不是进程峰值。
 - M0 已完成。M1 Card Service 与最小 stdio MCP 已在开发态和签名 packaged runtime 下通过真实 Codex `0.144.1` 宿主注册/只读调用；M1 仍未完成外层受信 launcher、正式发布签名、可安装插件接线、完整桌面等价矩阵和插件侧通用 runtime verifier。Anki 媒体快捷键 add-on 当前只声明支持 26.05。
+- M1 的便携 CPython 使用 25 项精确 wheel 锁离线装配；有界 canonical `python-runtime-build-v1.json` 绑定 Python identity、lock SHA-256、wheel 数和无网络事实。staging 前与正式包加载时都会把它和实际锁交叉验证，并以 `managed-python:build-metadata` 纳入 SBOM/签名资源，禁止把来自不同构建的 Python root 与依赖锁拼接。
 - 旧桌面项目可通过显式迁移器导入，不直接假设字段等价。
 
 ## 11. 进程与部署

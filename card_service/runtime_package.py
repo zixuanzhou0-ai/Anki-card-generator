@@ -12,6 +12,12 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from .python_runtime_assembler import (
+    MANAGED_PYTHON_ARCHITECTURE,
+    MANAGED_PYTHON_VERSION,
+    PythonRuntimeAssemblyError,
+    load_python_runtime_build_metadata,
+)
 from .python_runtime_lock import PythonRuntimeLockError, parse_requirements_lock
 from .runtime_manifest import canonical_bytes, file_sha256
 from .runtime_trust import (
@@ -30,6 +36,7 @@ PACKAGE_MANIFEST_NAME = "runtime-package-v1.json"
 CARD_SERVICE_VERSION = "0.1.0"
 SBOM_RESOURCE_ID = "metadata:sbom-spdx"
 PYTHON_RUNTIME_LOCK_RESOURCE_ID = "metadata:python-runtime-lock"
+PYTHON_RUNTIME_BUILD_METADATA_RESOURCE_ID = "managed-python:build-metadata"
 REQUIRED_PYTHON_RUNTIME_PACKAGES = {
     "cryptography": "49.0.0",
     "genanki": "0.13.1",
@@ -39,6 +46,7 @@ REQUIRED_PYTHON_RUNTIME_PACKAGES = {
 REQUIRED_RUNTIME_RESOURCES = frozenset(
     {
         "managed-python:executable",
+        PYTHON_RUNTIME_BUILD_METADATA_RESOURCE_ID,
         "card-service:worker-bootstrap",
         "card-service:broker-client",
         "card-service:windows-restricted-launcher",
@@ -194,10 +202,14 @@ def _verify_spdx_sbom(
         raise RuntimePackageError("RUNTIME_PACKAGE_SBOM_MISMATCH", "Runtime package SBOM does not cover exact resources")
 
 
-def _verify_python_runtime_lock(resource: RuntimePackageResource) -> None:
+def _verify_python_runtime_lock(
+    resource: RuntimePackageResource,
+    build_metadata_resource: RuntimePackageResource,
+) -> None:
     try:
         locked = parse_requirements_lock(resource.path)
-    except PythonRuntimeLockError as error:
+        build_metadata = load_python_runtime_build_metadata(build_metadata_resource.path)
+    except (PythonRuntimeAssemblyError, PythonRuntimeLockError) as error:
         raise RuntimePackageError("RUNTIME_PACKAGE_PYTHON_LOCK_INVALID", "Python runtime lock is invalid") from error
     for name, version in REQUIRED_PYTHON_RUNTIME_PACKAGES.items():
         requirement = locked.get(name)
@@ -206,6 +218,16 @@ def _verify_python_runtime_lock(resource: RuntimePackageResource) -> None:
                 "RUNTIME_PACKAGE_PYTHON_LOCK_INVALID",
                 "Python runtime lock does not pin required package versions",
             )
+    if (
+        build_metadata.requirements_lock_sha256 != resource.sha256
+        or build_metadata.wheel_count != len(locked)
+        or build_metadata.python_version != MANAGED_PYTHON_VERSION
+        or build_metadata.architecture not in {MANAGED_PYTHON_ARCHITECTURE, "x86_64"}
+    ):
+        raise RuntimePackageError(
+            "RUNTIME_PACKAGE_PYTHON_LOCK_INVALID",
+            "Python runtime build metadata does not match the signed dependency lock",
+        )
 
 
 class ManagedRuntimePackage:
@@ -372,7 +394,10 @@ class ManagedRuntimePackage:
         if missing:
             raise RuntimePackageError("RUNTIME_PACKAGE_RESOURCE_MISSING", "Runtime package is missing required resources")
         _verify_spdx_sbom(entries[SBOM_RESOURCE_ID], package_version=version, entries=entries)
-        _verify_python_runtime_lock(entries[PYTHON_RUNTIME_LOCK_RESOURCE_ID])
+        _verify_python_runtime_lock(
+            entries[PYTHON_RUNTIME_LOCK_RESOURCE_ID],
+            entries[PYTHON_RUNTIME_BUILD_METADATA_RESOURCE_ID],
+        )
         actual_path_keys: set[str] = set()
         for path in self.root.rglob("*"):
             if path.is_symlink() or _has_reparse_attribute(path):

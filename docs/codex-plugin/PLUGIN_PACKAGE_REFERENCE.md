@@ -138,8 +138,8 @@ V1 不使用 hooks。当前生成规范与验证器对 hooks 字段存在差异�
 M1 托管运行包的内层合同已经固定为：
 
 - `workers/requirements-win-cp313.lock` 固定 CPython 3.13 / cp313 / win_amd64 的 25 个直接和传递 wheel 版本与 SHA-256。`scripts/generate_python_runtime_lock.py` 从 wheel METADATA/WHEEL 生成锁并拒绝 sdist、非 wheel、重复包、根版本不符、平台不兼容和哈希变化；锁本身是必需的签名运行资源。
-- `scripts/assemble_managed_python.py` 只从该锁和精确 wheelhouse 以 `--no-index --require-hashes --only-binary` 组装便携 CPython；排除 ambient site-packages、Scripts、FFmpeg 和缓存，禁用并拒绝 pyc。组装元数据记录 Python identity、lock digest、wheel 数和无网络事实，不记录构建机路径。
-- `scripts/build_managed_runtime.py` 是当前唯一正式 staging 入口：要求显式 output/version/UTC build time/repository root/预装配 Python root/Python lock/FFmpeg/ffprobe/yt-dlp，离线收集并原子发布一个**未签名**目录。Card Service 与 Worker 固定打包为顶层 `card_service/` 和 `workers/`，正式启动不依赖 `PYTHONPATH`。构建器拒绝已有输出、reparse 源、路径逃逸、大小写碰撞、Windows 保留名、缺失资源和超限 manifest/SBOM；同一输入生成稳定的 namespace、资源排序和摘要。
+- `scripts/assemble_managed_python.py` 只从该锁和精确 wheelhouse 以 `--no-index --require-hashes --only-binary` 组装便携 CPython；排除 ambient site-packages、Scripts、FFmpeg 和缓存，禁用并拒绝 pyc。组装元数据 `python-runtime-build-v1.json` 以有界 canonical JSON 记录 Python identity、lock digest、wheel 数和无网络事实，不记录构建机路径；发布前会再次验证该元数据与实际锁的 SHA-256/条目数以及便携目录结构。
+- `scripts/build_managed_runtime.py` 是当前唯一正式 staging 入口：要求显式 output/version/UTC build time/repository root/预装配 Python root/Python lock/FFmpeg/ffprobe/yt-dlp，先拒绝与锁不匹配、含 Scripts/pyvenv/pyc 或缺少 build metadata 的 Python root，再离线收集并原子发布一个**未签名**目录。`python-runtime-build-v1.json` 使用固定资源 ID `managed-python:build-metadata` 纳入 SBOM 和签名 manifest；运行包加载器还会把其中的 lock digest/wheel 数与 `metadata:python-runtime-lock` 交叉验证。Card Service 与 Worker 固定打包为顶层 `card_service/` 和 `workers/`，正式启动不依赖 `PYTHONPATH`。构建器拒绝已有输出、reparse 源、路径逃逸、大小写碰撞、Windows 保留名、缺失资源和超限 manifest/SBOM；同一输入生成稳定的 namespace、资源排序和摘要。
 - 构建阶段故意不接受私钥。发布流水线必须在仓库外对 canonical manifest 完成 detached 签名，再由外层受信 launcher 提供独立 trust policy；测试私钥不得用于正式包。
 - `runtime-package-v1.json` 是 canonical JSON，绑定 package identity/version、Card Service 最低兼容版本、目标平台、SPDX 2.3 SBOM 声明和全部运行资源的 size/SHA-256。
 - `runtime-package-v1.sig.json` 是 detached Ed25519 签名；签名覆盖 authority、keyId/keyEpoch、签发/过期时间和 manifest digest，并使用 `study.runtime-package-manifest.v1` 域隔离。
@@ -148,7 +148,7 @@ M1 托管运行包的内层合同已经固定为：
 - `metadata/SBOM.spdx.json` 必须是 canonical SPDX 2.3，并逐文件覆盖 manifest 中除 SBOM 自身外的全部资源；SBOM 与 manifest 任一不一致都拒绝启动。
 - manifest、SBOM、detached signature、trust policy 和本地 anti-rollback floor 均在解析前执行 stat + 有界读取；仅在读取后判断长度不满足该边界。
 - `scripts/create_ephemeral_runtime_probe_signature.py` 只用于本地宿主探针：每次生成随机 Ed25519 密钥，最长有效 24 小时，只写公钥策略和 detached signature，绝不写私钥；它不能进入发布包或替代真实发布密钥。
-- 当前实物 packaged 探针包含 4380 项、286,753,841 bytes，真实 Codex `0.144.1` 成功调用唯一只读工具并确认 `signatureVerified=true`、`runtimePackageDacl=true`。该证据只证明内层包可启动；在外层插件安装包签名、真实发布密钥保管和独立复制后的可安装插件验证完成前，能力摘要继续报告 `complete: false`。
+- 当前最新实物 packaged 探针包含 4380 项、286,759,977 bytes，manifest SHA-256 为 `3ba6c9ea3cdb8c2c945df22aff817d5872bee1f1627f0931315e65ba915ca0b2`；真实 Codex `0.144.1` 在隔离且禁用无关 plugin/remote-plugin 同步的宿主中成功调用唯一只读工具，并确认 `signatureVerified=true`、`runtimePackageDacl=true`。该证据只证明内层包及 Python-lock 组合可启动；在外层插件安装包签名、真实发布密钥保管和独立复制后的可安装插件验证完成前，能力摘要继续报告 `complete: false`。
 
 M1 媒体运行时在该签名包内进一步要求：
 

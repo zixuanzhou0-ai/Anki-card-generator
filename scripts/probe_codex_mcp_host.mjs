@@ -191,6 +191,10 @@ async function main() {
   const codexArgs = [
     ...codex.argsPrefix,
     "app-server",
+    "--disable",
+    "plugins",
+    "--disable",
+    "remote_plugin",
     "--stdio",
     "-c",
     `mcp_servers.${SERVER}.command=${tomlString(python)}`,
