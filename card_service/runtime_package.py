@@ -7,6 +7,7 @@ import platform
 import re
 import stat
 import sys
+import sysconfig
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -93,6 +94,14 @@ def _read_bounded(path: Path, maximum_bytes: int, *, code: str, label: str) -> b
 def current_runtime_platform() -> str:
     system = "windows" if os.name == "nt" else sys.platform.lower()
     machine = platform.machine().lower()
+    if os.name == "nt":
+        python_platform = sysconfig.get_platform().lower()
+        if python_platform in {"win-amd64", "win-x86_64"}:
+            machine = "amd64"
+        elif python_platform in {"win-arm64", "win-aarch64"}:
+            machine = "arm64"
+        elif python_platform in {"win32", "win-x86"}:
+            machine = "x86"
     architecture = "x86_64" if machine in {"amd64", "x86_64"} else machine
     return f"{system}-{architecture}"
 

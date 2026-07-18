@@ -453,7 +453,8 @@ fn run() -> Result<i32, String> {
         .canonicalize()
         .map_err(|_| "runtime package root cannot be resolved".to_owned())?;
     let state = state_directory()?;
-    let status = Command::new(&python)
+    let mut command = Command::new(&python);
+    command
         .arg("-E")
         .arg("-s")
         .arg("-B")
@@ -472,7 +473,12 @@ fn run() -> Result<i32, String> {
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    #[cfg(windows)]
+    command
+        .env("PROCESSOR_ARCHITECTURE", "AMD64")
+        .env_remove("PROCESSOR_ARCHITEW6432");
+    let status = command
         .status()
         .map_err(|_| "managed Card Service could not start".to_owned())?;
     Ok(status.code().unwrap_or(EXIT_LAUNCHER_FAILURE))

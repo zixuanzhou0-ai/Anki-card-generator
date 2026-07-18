@@ -491,10 +491,10 @@ app-data/
 - Card Service 对当前 WorkerCommand 建适配器，允许内部演进。
 - CURRENT 卡片 family 为 immersive_v11，生产 template schema 为 V15。M0 已移除 V1 + `startswith` 宽前缀，冻结 V15/V14/V10 的精确 family/schema/Note Model ID、完整字段/模板/model extras/CSS 与 compatibility contract；V15 使用模型作用域 GUID，历史 V10/V12/V14 GUID 不变。完整 APKG 合同进一步闭合 ZIP/JSON、模型/牌组/note/card、CardId/纯内容 SHA、媒体账本和安全 HTML；10 个生产生成变体均通过真实导出验证。
 - CURRENT 导出使用同目录唯一 `.partial` → 整包校验 → no-replace 原子发布，目标路径已存在时拒绝覆盖，失败不发布新最终包或 done。Anki 写入前会重验内部 raw `ExportResult` 与整包；但 raw `ExportResult` 不认证来源，不能防止同权限攻击者同时篡改包和结果，重复 stat/SHA 与 no-replace 发布也只缩小、不消除 TOCTOU。M2 的认证 Artifact 注册表、不透明引用与受控文件句柄是公共插件边界。
-- M0 最终证据保存在独立验证报告；最新 M1 分支证据为正式 `pytest tests` 914 项、Vitest 830 项、Worker `unittest discover` 598 项、原生插件 launcher 5 项 Rust 单元测试与严格 clippy、托管 yt-dlp launcher 2 项 Rust 测试，以及 Tauri 31 项通过、1 项按设计忽略。各集合有重叠，不相加；完整发布回归仍以路线图出口为准。
+- M0 最终证据保存在独立验证报告；最新 M1 分支证据为正式 `pytest tests` 921 项、Vitest 830 项、Worker `unittest discover` 598 项、原生插件 launcher 5 项 Rust 单元测试与严格 clippy、托管 yt-dlp launcher 2 项 Rust 测试，以及 Tauri 31 项通过、1 项按设计忽略。各集合有重叠，不相加；完整发布回归仍以路线图出口为准。
 - CURRENT 20 卡生产 V15 离线包为 20 notes / 20 cards / 52 个唯一媒体，manifest、逐媒体哈希、字幕对齐和模型作用域 GUID 闭合。真实隔离 Anki 证据包括 E→C 单卡、V15 20 卡重复/重启及 V14/V15 同字段并存；Computer Use 在 Anki 26.05 完成了 20 张连续复习、翻面、滚动、焦点和四类媒体交互。素材为合成视频与静音 TTS，不构成真人语义、听感或长期学习效果证据。
 - 非 NFC、Windows 保留设备名（含 `CLOCK$`）、大小写/规范化冲突和 APKG archive 资源上限已 fail closed；有界流式读取覆盖 APKG archive/package/verifier 与标准 Windows Anki direct-first 媒体路径。非标准/portable profile 的 AnkiConnect inline 兼容仍整文件/Base64，原始单文件上限为 8 MiB；8 MiB 不是进程峰值。
-- M0 已完成。M1 Card Service 与最小 stdio MCP 已在开发态、签名 packaged runtime 和独立复制的原生 pinned launcher 下通过真实 Codex `0.144.1` 宿主注册/只读调用；launcher 在启动 Python 前验证精确 manifest/trust pins、全部资源和文件集合。M1 仍未完成正式发布密钥、外层 Authenticode/等价签名、可安装插件接线、完整桌面等价矩阵和插件侧通用 runtime verifier。Anki 媒体快捷键 add-on 当前只声明支持 26.05。
+- M0 已完成。M1 Card Service 与最小 stdio MCP 已在开发态、签名 packaged runtime、独立复制的原生 pinned launcher 和完整被动离线候选包下通过真实 Codex `0.144.1` 宿主注册/只读调用；launcher 在启动 Python 前验证精确 manifest/trust pins、全部资源和文件集合，候选包再绑定外层 SPDX/manifest 与双层精确 DACL。M1 仍未完成正式发布密钥、外层 Authenticode/等价签名、可安装插件接线、完整桌面等价矩阵和插件侧通用 runtime verifier。Anki 媒体快捷键 add-on 当前只声明支持 26.05。
 - M1 的便携 CPython 使用 25 项精确 wheel 锁离线装配；有界 canonical `python-runtime-build-v1.json` 绑定 Python identity、lock SHA-256、wheel 数和无网络事实。staging 前与正式包加载时都会把它和实际锁交叉验证，并以 `managed-python:build-metadata` 纳入 SBOM/签名资源，禁止把来自不同构建的 Python root 与依赖锁拼接。
 - 旧桌面项目可通过显式迁移器导入，不直接假设字段等价。
 

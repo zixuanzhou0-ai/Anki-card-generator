@@ -248,6 +248,20 @@ def wait_terminal(card_service: CardService, task_id: str) -> dict[str, object]:
     raise AssertionError("task did not finish")
 
 
+def test_runtime_platform_uses_python_build_tag_when_machine_environment_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runtime_package_module.os, "name", "nt")
+    monkeypatch.setattr(runtime_package_module.platform, "machine", lambda: "")
+    monkeypatch.setattr(
+        runtime_package_module.sysconfig,
+        "get_platform",
+        lambda: "win-amd64",
+    )
+
+    assert current_runtime_platform() == "windows-x86_64"
+
+
 def test_runtime_package_requires_canonical_root_contained_hashed_resources(tmp_path: Path) -> None:
     root = (tmp_path / "runtime").resolve()
     write_package(root)

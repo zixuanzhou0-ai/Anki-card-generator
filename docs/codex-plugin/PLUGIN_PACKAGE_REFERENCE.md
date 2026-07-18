@@ -1,6 +1,6 @@
 # 插件包、安装与分发参考
 
-> 状态：CURRENT IMPLEMENTING；被动插件、签名 packaged runtime 和原生 pinned launcher 已通过真实 Codex 宿主探针，但尚未声明可安装 MCP/App
+> 状态：CURRENT IMPLEMENTING；被动插件、签名 packaged runtime、原生 pinned launcher 和非安装型离线候选包已通过真实 Codex 宿主探针，但尚未声明可安装 MCP/App
 > 日期：2026-07-18
 > 实施时必须重新用当时的官方验证器核验清单字段。
 
@@ -40,7 +40,7 @@ plugins/
     SBOM.spdx.json
 ~~~
 
-这是目标布局。当前已在 `plugins/anki-study-agent` 创建不声明 MCP/App 的被动 manifest、Skill、Agent metadata 和学习/工作流/安全参考合同；官方 plugin/Skill 验证器、仓库合同测试和一次独立前向测试均通过。前向测试在 Card Service 工具缺席时明确停止，没有使用 Shell 绕过或伪造 APKG/Anki 核验。最小 MCP stdio 桥已经通过真实 Codex `0.144.1` app-server 的开发态、签名 packaged runtime 和独立复制的 pinned launcher 三类注册与调用，只公开 `system.get_capabilities`；launcher 探针验证了内层签名、SPDX、完整 Python lock、运行时精确 DACL，以及启动前的全部资源哈希/精确文件集合。当前仍使用不落盘私钥的短期本地探针签名，launcher 也尚未获得正式 Authenticode/等价外层签名；只有正式发布公钥/私钥管理、外层签名和可安装插件宿主验证全部通过，才增加 `.mcp.json` 和 manifest 的 `mcpServers`。禁止用开发工作区路径、临时探针信任策略或空 MCP 占位文件伪造可安装状态。
+这是目标布局。当前已在 `plugins/anki-study-agent` 创建不声明 MCP/App 的被动 manifest、Skill、Agent metadata 和学习/工作流/安全参考合同；官方 plugin/Skill 验证器、仓库合同测试和一次独立前向测试均通过。前向测试在 Card Service 工具缺席时明确停止，没有使用 Shell 绕过或伪造 APKG/Anki 核验。最小 MCP stdio 桥已经通过真实 Codex `0.144.1` app-server 的开发态、签名 packaged runtime、独立复制的 pinned launcher 和完整被动候选包四类注册与调用，只公开 `system.get_capabilities`；候选包探针验证了内层签名、双层 SPDX、完整 Python lock、外层/运行时精确 DACL，以及启动前的全部资源哈希/精确文件集合。当前仍使用不落盘私钥的短期本地探针签名，launcher 也尚未获得正式 Authenticode/等价外层签名；只有正式发布公钥/私钥管理、外层签名和可安装插件宿主验证全部通过，才增加 `.mcp.json` 和 manifest 的 `mcpServers`。禁止用开发工作区路径、临时探针信任策略或空 MCP 占位文件伪造可安装状态。
 
 职责：
 
@@ -140,8 +140,17 @@ V1 不使用 hooks。当前生成规范与验证器对 hooks 字段存在差异�
 - `scripts/build_anki_study_launcher.py` 先用 Card Service 的正式验证器检查运行包 detached signature、发布者策略、SBOM 和资源，再把精确 runtime manifest SHA-256 与 trust-policy SHA-256 编入 launcher；构建固定 `--locked --offline`、禁用增量、固定 `SOURCE_DATE_EPOCH`，Windows 链接使用 `/Brepro`，不接收或读取发布私钥。
 - launcher 只接受固定 `--stdio`，从自己的 `server/launcher` 位置解析插件根、`server/runtime` 与发布者策略，不读取 cwd/PATH；拒绝 symlink/junction/reparse、路径逃逸、大小写碰撞、Windows 保留名、缺失/额外文件、size/SHA-256 不符和错误的策略摘要。
 - launcher 在启动 Python 前流式复核 manifest 固定的全部 4380 项资源与精确文件集合，缓冲区位于堆上；随后只启动已验证的包内 Python，固定 `-E -s -B -m card_service.mcp_stdio`，移除 Python 路径覆盖变量并继承 stdio，不监听端口。
-- 最终格式化后的两个全新隔离 target release 构建均为 308,736 bytes、SHA-256 `3ae189f968a34c3c850dbab4aa00cec9b834f6d89deb3f759bd130bde1adb1fa`。替换 trust policy 或首个运行资源均在 Python 启动前以退出码 125 拒绝；独立复制目录通过官方 plugin validator，并在全新 `CODEX_HOME` 中由真实 Codex `0.144.1` 完成只读工具调用。
+- 受限宿主可能移除 `PROCESSOR_ARCHITECTURE`，便携 Python 的 `platform.machine()` 会因此返回空值。未来运行包从 Python 自身的 `sysconfig` 构建标签判定平台；当前已签名运行包由受信 x64 launcher 固定设置 `PROCESSOR_ARCHITECTURE=AMD64` 并清除 WOW64 覆盖，避免把受限环境误判为 `windows-`。
+- 平台修复后的两个全新隔离 target release 构建均为 308,736 bytes、SHA-256 `c11b912b0590c406aef361400820e776ae7d009b85c8b7019f2e912d9caed3c3`。替换 trust policy 或首个运行资源均在 Python 启动前以退出码 125 拒绝；独立复制目录通过官方 plugin validator，并在全新 `CODEX_HOME` 中由真实 Codex `0.144.1` 完成只读工具调用。
 - 这些证据证明 launcher 代码、离线构建和独立副本路径成立，不证明发行者身份。正式 Authenticode/等价安装包签名、发布私钥保管、撤销与最终安装器验证仍是启用 `.mcp.json` 前的硬门槛。
+
+`scripts/build_plugin_release_candidate.py` 是当前外层候选包的唯一装配入口：
+
+- 输入只允许通过官方验证的被动插件根、原生 launcher、已签名 runtime 和独立 trust policy；检测到 `.mcp.json`、`.app.json`、`mcpServers`、`apps` 或源插件自带 `server/` 时立即拒绝。
+- 输出固定生成 canonical `release-package-v1.json` 和根级 SPDX 2.3，逐文件覆盖插件、launcher、runtime manifest/signature、trust policy 和全部运行资源；拒绝路径逃逸、reparse、Windows 保留名、大小写碰撞、缺失/额外文件、源文件复制中变化和已有输出覆盖。
+- 外层插件树使用当前用户、SYSTEM、Administrators 的受保护精确 DACL；`server/runtime` 再使用固定 runtime AppContainer SID 的只读执行 DACL。装配前后逐项读回验证，防止普通复制破坏 sandbox 边界。
+- 实物候选包含 4391 个资源、289,210,657 bytes；外层 manifest SHA-256 为 `9ab03b75dc2a0c2197e280fdd47a9f9a83c2fe25fc786459822cfcbf23f262d6`。它在普通权限下通过官方 plugin validator，并由真实 Codex `0.144.1` 从候选目录完成唯一只读工具调用。
+- 候选 manifest 与 CLI 固定报告 `installable=false`、`mcpDeclared=false`、`outerSignatureVerified=false`、`publisherKeyManaged=false`；构建不接收私钥、不联网、不生成 MCP/App 映射。它是发行结构证据，不是可安装发布物。
 
 M1 托管运行包的内层合同已经固定为：
 
