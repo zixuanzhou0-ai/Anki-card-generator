@@ -39,8 +39,8 @@ def serve(service: CardService) -> None:
         print(json.dumps(response, ensure_ascii=False, separators=(",", ":")), flush=True)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Codex Study local Card Service")
+def build_parser(description: str = "Codex Study local Card Service") -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--state-dir", type=Path, required=True)
     runtime_mode = parser.add_mutually_exclusive_group(required=True)
     runtime_mode.add_argument("--runtime-package", type=Path)
@@ -50,7 +50,10 @@ def main() -> None:
     parser.add_argument("--worker", type=Path)
     parser.add_argument("--python", type=Path)
     parser.add_argument("--tool-dir", action="append", type=Path, default=[])
-    arguments = parser.parse_args()
+    return parser
+
+
+def create_service(arguments: argparse.Namespace, parser: argparse.ArgumentParser) -> CardService:
     if not arguments.development_unpackaged_runtime and (
         arguments.worker is not None or arguments.python is not None or arguments.tool_dir
     ):
@@ -68,7 +71,7 @@ def main() -> None:
             )
         except BrokerConfigurationError as error:
             parser.error(f"{error.code}: {error}")
-    service = CardService(
+    return CardService(
         state_dir=arguments.state_dir,
         worker_path=arguments.worker,
         python_path=arguments.python,
@@ -79,6 +82,11 @@ def main() -> None:
         broker_method_blocker=(broker_runtime.method_blocker if broker_runtime is not None else None),
         broker_runtime_capabilities=(broker_runtime.capabilities() if broker_runtime is not None else None),
     )
+
+
+def main() -> None:
+    parser = build_parser()
+    service = create_service(parser.parse_args(), parser)
     serve(service)
 
 

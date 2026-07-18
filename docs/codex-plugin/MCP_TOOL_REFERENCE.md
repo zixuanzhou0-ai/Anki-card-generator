@@ -1,7 +1,7 @@
 # MCP 工具参考
 
-> 状态：PROPOSED 公共工具契约，尚未实现
-> 日期：2026-07-17
+> 状态：PROPOSED 公共工具契约；M1 已实现并用真实 Codex 宿主验证只读 `system.get_capabilities`，其余公共工具尚未实现
+> 日期：2026-07-18
 > 工具名和 schema 在实现前仍可调整；一旦 V1 发布即按版本策略维护。
 
 ## 1. 设计目标
@@ -16,6 +16,8 @@ MCP 工具服务于用户意图，而不是暴露内部 Worker。工具层必须
 - 可由 App UI 和对话共享。
 
 官方工具设计参考：[Describe tools](https://developers.openai.com/apps-sdk/build/mcp-server#step-2--describe-tools)。
+
+当前 M1 桥只实现协议握手、工具发现和零参数只读能力快照。它不接受 opaque Artifact、OperationIntent 或任何路径，也不公开生成、导出、Anki 写入、凭据、原始 Worker 或 Shell 能力；下文其余工具仍是后续里程碑的目标合同。
 
 ## 2. 公共请求约定
 
