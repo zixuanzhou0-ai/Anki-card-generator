@@ -136,32 +136,51 @@ async function main() {
   trace("starting");
   const requestedRuntime = process.env.ANKI_STUDY_RUNTIME_PACKAGE?.trim();
   const requestedTrust = process.env.ANKI_STUDY_RUNTIME_TRUST_POLICY?.trim();
+  const requestedLauncher = process.env.ANKI_STUDY_PLUGIN_LAUNCHER?.trim();
   if (Boolean(requestedRuntime) !== Boolean(requestedTrust)) {
     throw new Error("Packaged MCP probe requires both runtime package and trust policy paths.");
   }
-  const packaged = Boolean(requestedRuntime && requestedTrust);
-  trace(packaged ? "mode=packaged" : "mode=development");
+  if (requestedLauncher && (requestedRuntime || requestedTrust)) {
+    throw new Error("Launcher probe cannot also receive direct runtime package inputs.");
+  }
+  const launcherMode = Boolean(requestedLauncher);
+  const packaged = launcherMode || Boolean(requestedRuntime && requestedTrust);
+  trace(launcherMode ? "mode=launcher" : packaged ? "mode=packaged" : "mode=development");
   const requestTimeoutMs = requestTimeout(packaged);
-  const runtimePackage = packaged ? path.resolve(requestedRuntime) : null;
-  const trustPolicy = packaged ? path.resolve(requestedTrust) : null;
-  const python = packaged
+  const runtimePackage = requestedRuntime ? path.resolve(requestedRuntime) : null;
+  const trustPolicy = requestedTrust ? path.resolve(requestedTrust) : null;
+  const launcher = launcherMode ? path.resolve(requestedLauncher) : null;
+  const python = packaged && !launcherMode
     ? path.join(runtimePackage, "python", process.platform === "win32" ? "python.exe" : "python")
     : resolvePython();
-  const serverCwd = packaged ? runtimePackage : ROOT;
-  for (const required of [python, serverCwd, ...(packaged ? [runtimePackage, trustPolicy] : [])]) {
+  const serverCommand = launcher || python;
+  const serverCwd = launcherMode
+    ? path.resolve(path.dirname(launcher), "..", "..")
+    : packaged
+      ? runtimePackage
+      : ROOT;
+  for (const required of [
+    serverCommand,
+    serverCwd,
+    ...(packaged && !launcherMode ? [runtimePackage, trustPolicy] : []),
+  ]) {
     if (!existsSync(required)) {
       throw new Error(`Packaged MCP probe input is unavailable: ${required}`);
     }
   }
   mkdirSync(PROBE_ROOT, { recursive: true });
   const runRoot = packaged ? mkdtempSync(path.join(PROBE_ROOT, "packaged-run-")) : PROBE_ROOT;
-  const codeHome = path.join(PROBE_ROOT, "codex-home");
+  const codeHome = path.join(runRoot, "codex-home");
   const stateDir = path.join(runRoot, "card-service-state");
+  const localAppData = path.join(runRoot, "local-app-data");
   mkdirSync(codeHome, { recursive: true });
   mkdirSync(stateDir, { recursive: true });
+  mkdirSync(localAppData, { recursive: true });
   trace("probe directories ready");
 
-  const serverArgs = packaged
+  const serverArgs = launcherMode
+    ? ["--stdio"]
+    : packaged
     ? [
         "-E",
         "-s",
@@ -197,7 +216,7 @@ async function main() {
     "remote_plugin",
     "--stdio",
     "-c",
-    `mcp_servers.${SERVER}.command=${tomlString(python)}`,
+    `mcp_servers.${SERVER}.command=${tomlString(serverCommand)}`,
     "-c",
     `mcp_servers.${SERVER}.args=${tomlArray(serverArgs)}`,
     "-c",
@@ -213,6 +232,7 @@ async function main() {
     env: {
       ...process.env,
       CODEX_HOME: codeHome,
+      ...(launcherMode ? { LOCALAPPDATA: localAppData } : {}),
     },
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
@@ -364,7 +384,11 @@ async function main() {
       `${JSON.stringify(
         {
           ok: true,
-          mode: packaged ? "signed-packaged-runtime" : "development-unpackaged-runtime",
+          mode: launcherMode
+            ? "pinned-launcher-packaged-runtime"
+            : packaged
+              ? "signed-packaged-runtime"
+              : "development-unpackaged-runtime",
           codexHost: {
             userAgent: initialized?.userAgent || null,
             platformFamily: initialized?.platformFamily || null,
