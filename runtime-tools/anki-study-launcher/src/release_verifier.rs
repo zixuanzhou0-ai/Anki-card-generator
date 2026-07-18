@@ -2,8 +2,8 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, File, Metadata};
-use std::io::Read;
+use std::fs::{self, File, Metadata, OpenOptions};
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -16,11 +16,13 @@ const LAUNCHER: &str = "server/launcher/anki-study-agent.exe";
 const RUNTIME_ROOT: &str = "server/runtime";
 const RUNTIME_POLICY: &str = "server/runtime-publisher-trust-v1.json";
 const SBOM: &str = "SBOM.spdx.json";
+const INSTALL_FLOOR: &str = "plugin-install-trust-floor-v1.json";
 const DOMAIN: &str = "study.plugin-install-manifest.v1";
 const MAX_MANIFEST: u64 = 8 * 1024 * 1024;
 const MAX_POLICY: u64 = 256 * 1024;
 const MAX_SIGNATURE: u64 = 32 * 1024;
 const MAX_METADATA: u64 = 256 * 1024;
+const MAX_FLOOR: u64 = 64 * 1024;
 const MAX_FILES: usize = 60_000;
 const MAX_DEPTH: usize = 40;
 
@@ -991,6 +993,193 @@ pub(crate) fn assert_passive_plugin(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn atomic_replace(source: &Path, target: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
+    }
+
+    let existing = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let replacement = target
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let moved = unsafe {
+        MoveFileExW(
+            existing.as_ptr(),
+            replacement.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        return Err("plugin install rollback floor could not be replaced atomically".to_owned());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn atomic_replace(source: &Path, target: &Path) -> Result<(), String> {
+    fs::rename(source, target)
+        .map_err(|_| "plugin install rollback floor could not be replaced atomically".to_owned())
+}
+
+fn write_floor_atomic(root: &Path, target: &Path, source: &[u8]) -> Result<(), String> {
+    let mut opened = None;
+    for attempt in 0..32_u8 {
+        let candidate = root.join(format!(
+            ".{INSTALL_FLOOR}.{}.{attempt}.tmp",
+            std::process::id()
+        ));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => {
+                opened = Some((candidate, file));
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => {
+                return Err(
+                    "plugin install rollback floor temporary file cannot be created".to_owned(),
+                )
+            }
+        }
+    }
+    let (temporary, mut file) = opened
+        .ok_or_else(|| "plugin install rollback floor temporary name is unavailable".to_owned())?;
+    let result = (|| {
+        file.write_all(source)
+            .map_err(|_| "plugin install rollback floor cannot be written".to_owned())?;
+        file.sync_all()
+            .map_err(|_| "plugin install rollback floor cannot be flushed".to_owned())?;
+        drop(file);
+        atomic_replace(&temporary, target)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+pub(crate) fn enforce_install_rollback_floor(
+    state_root: &Path,
+    authorization: &InstallAuthorization,
+) -> Result<(), String> {
+    let root = stable_root(state_root)?;
+    let target = root.join(INSTALL_FLOOR);
+    let current = serde_json::json!({
+        "authority": authorization.authority,
+        "manifestSha256": authorization.manifest_sha256,
+        "packageId": authorization.package_id,
+        "pluginVersion": authorization.plugin_version,
+        "schemaVersion": 1,
+        "trustPolicySha256": authorization.trust_policy_sha256,
+        "trustSequence": authorization.trust_sequence,
+    });
+    let existing = match fs::symlink_metadata(&target) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => return Err("plugin install rollback floor metadata is unavailable".to_owned()),
+    };
+    if existing {
+        let source = read_bounded(
+            &stable_file(&root, INSTALL_FLOOR)?,
+            MAX_FLOOR,
+            "plugin install rollback floor",
+        )?;
+        let previous = canonical(&source, MAX_FLOOR, "plugin install rollback floor")?;
+        let object = previous
+            .as_object()
+            .filter(|value| {
+                exact_keys(
+                    value,
+                    &[
+                        "authority",
+                        "manifestSha256",
+                        "packageId",
+                        "pluginVersion",
+                        "schemaVersion",
+                        "trustPolicySha256",
+                        "trustSequence",
+                    ],
+                )
+            })
+            .ok_or_else(|| "plugin install rollback floor shape is invalid".to_owned())?;
+        if object.get("schemaVersion").and_then(Value::as_u64) != Some(1)
+            || object.get("authority").and_then(Value::as_str)
+                != Some(authorization.authority.as_str())
+            || object.get("packageId").and_then(Value::as_str)
+                != Some(authorization.package_id.as_str())
+        {
+            return Err("plugin install rollback floor identity changed".to_owned());
+        }
+        let previous_sequence = object
+            .get("trustSequence")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "plugin install rollback floor sequence is invalid".to_owned())?;
+        let previous_policy = object
+            .get("trustPolicySha256")
+            .and_then(Value::as_str)
+            .filter(|value| is_sha256(value))
+            .ok_or_else(|| "plugin install rollback floor policy is invalid".to_owned())?;
+        let previous_version = object
+            .get("pluginVersion")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "plugin install rollback floor version is invalid".to_owned())?;
+        let previous_version = stable_semver(previous_version)?;
+        let previous_manifest = object
+            .get("manifestSha256")
+            .and_then(Value::as_str)
+            .filter(|value| is_sha256(value))
+            .ok_or_else(|| "plugin install rollback floor manifest is invalid".to_owned())?;
+        if authorization.trust_sequence < previous_sequence {
+            return Err("plugin install trust policy moved backwards".to_owned());
+        }
+        if authorization.trust_sequence == previous_sequence
+            && authorization.trust_policy_sha256 != previous_policy
+        {
+            return Err("plugin install trust policy sequence was reused".to_owned());
+        }
+        let version = stable_semver(&authorization.plugin_version)?;
+        if version < previous_version {
+            return Err("plugin install version moved backwards".to_owned());
+        }
+        if version == previous_version && authorization.manifest_sha256 != previous_manifest {
+            return Err("plugin install version was reused with different content".to_owned());
+        }
+        if previous == current {
+            return Ok(());
+        }
+    }
+    let source = serde_json::to_vec(&current)
+        .map_err(|_| "plugin install rollback floor cannot be canonicalized".to_owned())?;
+    if source.is_empty() || source.len() as u64 > MAX_FLOOR {
+        return Err("plugin install rollback floor is too large".to_owned());
+    }
+    write_floor_atomic(&root, &target, &source)?;
+    let persisted = read_bounded(
+        &stable_file(&root, INSTALL_FLOOR)?,
+        MAX_FLOOR,
+        "plugin install rollback floor",
+    )?;
+    if persisted != source {
+        return Err("plugin install rollback floor did not persist exactly".to_owned());
+    }
+    Ok(())
+}
+
 pub(crate) fn verify_installed_plugin(
     root: &Path,
     expected_policy_digest: &str,
@@ -1051,10 +1240,10 @@ pub(crate) fn verify_installed_plugin(
 #[cfg(test)]
 mod tests {
     use super::{
-        assert_passive_plugin, decode_base64url, hex, parse_policy, stable_semver, utc_seconds,
-        verify_installed_plugin, verify_signature, DOMAIN, INSTALL_MANIFEST, INSTALL_POLICY,
-        INSTALL_SIGNATURE, LAUNCHER, MCP_CONFIG, PLUGIN_MANIFEST, RUNTIME_POLICY, RUNTIME_ROOT,
-        SBOM,
+        assert_passive_plugin, decode_base64url, enforce_install_rollback_floor, hex, parse_policy,
+        stable_semver, utc_seconds, verify_installed_plugin, verify_signature, DOMAIN,
+        INSTALL_FLOOR, INSTALL_MANIFEST, INSTALL_POLICY, INSTALL_SIGNATURE, LAUNCHER, MCP_CONFIG,
+        PLUGIN_MANIFEST, RUNTIME_POLICY, RUNTIME_ROOT, SBOM,
     };
     use ed25519_dalek::{Signer, SigningKey};
     use serde_json::{json, Value};
@@ -1418,6 +1607,63 @@ mod tests {
         )
         .unwrap_err()
         .contains("version or manifest is revoked"));
+    }
+
+    #[test]
+    fn install_floor_is_atomic_idempotent_and_rejects_rollback_or_forks() {
+        let fixture = install_fixture();
+        let authorization = verify_installed_plugin(
+            &fixture.root,
+            &fixture.policy_digest,
+            &fixture.runtime_manifest,
+            &fixture.runtime_trust,
+            fixture.now,
+        )
+        .unwrap();
+        let state = fixture.root.join("state");
+        fs::create_dir(&state).unwrap();
+        enforce_install_rollback_floor(&state, &authorization).unwrap();
+        enforce_install_rollback_floor(&state, &authorization).unwrap();
+        assert_eq!(fs::read_dir(&state).unwrap().count(), 1);
+        assert!(state.join(INSTALL_FLOOR).is_file());
+
+        let mut newer = authorization.clone();
+        newer.trust_sequence += 1;
+        newer.trust_policy_sha256 = "c".repeat(64);
+        newer.plugin_version = "0.2.0".to_owned();
+        newer.manifest_sha256 = "d".repeat(64);
+        enforce_install_rollback_floor(&state, &newer).unwrap();
+        assert!(enforce_install_rollback_floor(&state, &authorization)
+            .unwrap_err()
+            .contains("moved backwards"));
+
+        let fork_state = fixture.root.join("fork-state");
+        fs::create_dir(&fork_state).unwrap();
+        enforce_install_rollback_floor(&fork_state, &authorization).unwrap();
+        let mut fork = authorization.clone();
+        fork.trust_policy_sha256 = "e".repeat(64);
+        assert!(enforce_install_rollback_floor(&fork_state, &fork)
+            .unwrap_err()
+            .contains("sequence was reused"));
+
+        let content_state = fixture.root.join("content-state");
+        fs::create_dir(&content_state).unwrap();
+        enforce_install_rollback_floor(&content_state, &authorization).unwrap();
+        let mut replacement = authorization.clone();
+        replacement.manifest_sha256 = "f".repeat(64);
+        assert!(enforce_install_rollback_floor(&content_state, &replacement)
+            .unwrap_err()
+            .contains("different content"));
+
+        let corrupt_state = fixture.root.join("corrupt-state");
+        fs::create_dir(&corrupt_state).unwrap();
+        enforce_install_rollback_floor(&corrupt_state, &authorization).unwrap();
+        fs::write(corrupt_state.join(INSTALL_FLOOR), b"{}").unwrap();
+        assert!(
+            enforce_install_rollback_floor(&corrupt_state, &authorization)
+                .unwrap_err()
+                .contains("shape is invalid")
+        );
     }
 
     #[test]

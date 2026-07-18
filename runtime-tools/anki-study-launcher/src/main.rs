@@ -434,23 +434,26 @@ fn run() -> Result<i32, String> {
         env::current_exe().map_err(|_| "launcher executable is unavailable".to_owned())?;
     let layout = resolve_layout(&executable)?;
     trace("plugin layout resolved");
-    if let Some(install_trust_digest) = EXPECTED_PLUGIN_INSTALL_TRUST_POLICY_SHA256 {
-        let install_trust_digest = expected_digest(
-            Some(install_trust_digest),
-            "plugin install trust policy SHA-256",
-        )?;
-        release_verifier::verify_installed_plugin(
-            &layout.plugin_root,
-            install_trust_digest,
-            expected_manifest,
-            expected_trust,
-            std::time::SystemTime::now(),
-        )?;
-        trace("signed install manifest verified");
-    } else {
-        release_verifier::assert_passive_plugin(&layout.plugin_root)?;
-        trace("passive plugin layout verified");
-    }
+    let install_authorization =
+        if let Some(install_trust_digest) = EXPECTED_PLUGIN_INSTALL_TRUST_POLICY_SHA256 {
+            let install_trust_digest = expected_digest(
+                Some(install_trust_digest),
+                "plugin install trust policy SHA-256",
+            )?;
+            let authorization = release_verifier::verify_installed_plugin(
+                &layout.plugin_root,
+                install_trust_digest,
+                expected_manifest,
+                expected_trust,
+                std::time::SystemTime::now(),
+            )?;
+            trace("signed install manifest verified");
+            Some(authorization)
+        } else {
+            release_verifier::assert_passive_plugin(&layout.plugin_root)?;
+            trace("passive plugin layout verified");
+            None
+        };
     let trust_policy = stable_file_within(
         &layout.plugin_root,
         layout
@@ -474,6 +477,10 @@ fn run() -> Result<i32, String> {
         .canonicalize()
         .map_err(|_| "runtime package root cannot be resolved".to_owned())?;
     let state = state_directory()?;
+    if let Some(authorization) = install_authorization.as_ref() {
+        release_verifier::enforce_install_rollback_floor(&state, authorization)?;
+        trace("plugin install rollback floor verified");
+    }
     let mut command = Command::new(&python);
     command
         .arg("-E")
