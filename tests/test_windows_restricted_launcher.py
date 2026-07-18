@@ -279,3 +279,146 @@ def test_malformed_media_probe_is_contained_inside_appcontainer_and_job(tmp_path
     assert attestation["appContainerToken"] is True
     assert attestation["networkRestricted"] is True
     assert attestation["filesystemRestrictedByDedicatedSidDacl"] is True
+
+
+def test_real_resource_bomb_probes_are_contained_inside_appcontainer_and_job(tmp_path: Path) -> None:
+    source_ffmpeg = shutil.which("ffmpeg")
+    source_ffprobe = shutil.which("ffprobe")
+    if not source_ffmpeg or not source_ffprobe:
+        pytest.skip("FFmpeg fixtures are unavailable")
+    task_id = str(uuid.uuid4())
+    workspace, task_sid = create_task_workspace((tmp_path / "tasks").resolve(), task_id)
+    logical_decode_bomb = workspace / "logical-decode-bomb.mkv"
+    sparse_duration = workspace / "sparse-duration.mkv"
+    fixture_commands = [
+        [
+            source_ffmpeg,
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black:s=8192x4320:r=240:d=0.00834",
+            "-vf",
+            "setpts=PTS*144000",
+            "-fps_mode",
+            "passthrough",
+            "-c:v",
+            "ffv1",
+            "-y",
+            str(logical_decode_bomb),
+        ],
+        [
+            source_ffmpeg,
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black:s=16x16:r=1:d=2",
+            "-vf",
+            "setpts=PTS*50000",
+            "-fps_mode",
+            "passthrough",
+            "-c:v",
+            "ffv1",
+            "-y",
+            str(sparse_duration),
+        ],
+    ]
+    for fixture_command in fixture_commands:
+        built = subprocess.run(
+            fixture_command,
+            shell=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30,
+        )
+        assert built.returncode == 0, built.stderr
+    assert logical_decode_bomb.stat().st_size < 1024 * 1024
+    assert sparse_duration.stat().st_size < 1024 * 1024
+
+    sibling = workspace.parent / "sibling-state.txt"
+    sibling.write_text("unchanged", encoding="utf-8")
+    runtime_root = (tmp_path / "runtime").resolve()
+    runtime_root.mkdir(parents=True)
+    ffprobe = runtime_root / "ffprobe.exe"
+    shutil.copy2(source_ffprobe, ffprobe)
+    runtime_sid = runtime_sandbox_sid()
+    harden_runtime_tree(runtime_root, runtime_sid)
+    launcher = Path(__file__).resolve().parents[1] / "card_service" / "windows_restricted_launcher.py"
+
+    observed = {}
+    for index, source in enumerate((logical_decode_bomb, sparse_duration), start=1):
+        command = [
+            sys.executable,
+            str(launcher),
+            "--task-id",
+            task_id,
+            "--cwd",
+            str(workspace),
+            "--runtime-sid",
+            runtime_sid,
+            "--task-sid",
+            task_sid,
+            "--",
+            str(ffprobe),
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-protocol_whitelist",
+            FFMPEG_PROTOCOL_WHITELIST,
+            "-protocol_blacklist",
+            FFMPEG_PROTOCOL_BLACKLIST,
+            "-format_whitelist",
+            FFMPEG_FORMAT_WHITELIST,
+            "-max_alloc",
+            "268435456",
+            "-show_streams",
+            "-show_format",
+            "-of",
+            "json",
+            str(source),
+        ]
+        process = subprocess.Popen(
+            command,
+            cwd=str(launcher.parent),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        group = TaskOwnedProcessGroup(memory_limit_bytes=512 * 1024 * 1024, active_process_limit=3)
+        try:
+            group.assign(process)
+            key_text = base64.urlsafe_b64encode(bytes([100 + index]) * 32).decode("ascii").rstrip("=")
+            stdout, stderr = process.communicate(f"START {key_text}\n", timeout=15)
+        finally:
+            group.close()
+        assert process.returncode == 0, stderr
+        observed[source.name] = json.loads(stdout)
+        attestation_lines = [
+            line for line in stderr.splitlines() if line.startswith(SANDBOX_ATTESTATION_PREFIX)
+        ]
+        assert len(attestation_lines) == 1
+        attestation = json.loads(attestation_lines[0][len(SANDBOX_ATTESTATION_PREFIX) :])
+        assert attestation["appContainerToken"] is True
+        assert attestation["networkRestricted"] is True
+        assert attestation["filesystemRestrictedByDedicatedSidDacl"] is True
+
+    decode_stream = observed["logical-decode-bomb.mkv"]["streams"][0]
+    assert decode_stream["width"] == 8192
+    assert decode_stream["height"] == 4320
+    assert decode_stream["avg_frame_rate"] == "240/1"
+    assert float(observed["logical-decode-bomb.mkv"]["format"]["duration"]) > 1_200
+    assert float(observed["sparse-duration.mkv"]["format"]["duration"]) > 50_000
+    assert sibling.read_text(encoding="utf-8") == "unchanged"

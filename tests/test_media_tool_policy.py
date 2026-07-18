@@ -507,6 +507,149 @@ class MediaToolPolicyTests(unittest.TestCase):
         self.assertFalse(second_output.exists())
         self.assertFalse(loop_output.exists())
 
+    def test_real_compact_resource_bomb_corpus_is_rejected_before_decode(self) -> None:
+        real_ffmpeg = shutil.which("ffmpeg")
+        real_ffprobe = shutil.which("ffprobe")
+        if not real_ffmpeg or not real_ffprobe:
+            self.skipTest("managed FFmpeg fixture is unavailable")
+        ffmpeg = str(Path(real_ffmpeg).resolve())
+
+        wide = self.root / "wide.mkv"
+        high_fps = self.root / "high-fps.mkv"
+        sparse_duration = self.root / "sparse-duration.mkv"
+        logical_decode_bomb = self.root / "logical-decode-bomb.mkv"
+        streams_33 = self.root / "streams-33.mkv"
+        fixture_commands = [
+            [
+                ffmpeg,
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=9000x2:r=1:d=1",
+                "-frames:v",
+                "1",
+                "-c:v",
+                "ffv1",
+                "-y",
+                str(wide),
+            ],
+            [
+                ffmpeg,
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=16x16:r=300:d=0.1",
+                "-c:v",
+                "ffv1",
+                "-y",
+                str(high_fps),
+            ],
+            [
+                ffmpeg,
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=16x16:r=1:d=2",
+                "-vf",
+                "setpts=PTS*50000",
+                "-fps_mode",
+                "passthrough",
+                "-c:v",
+                "ffv1",
+                "-y",
+                str(sparse_duration),
+            ],
+            [
+                ffmpeg,
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=8192x4320:r=240:d=0.00834",
+                "-vf",
+                "setpts=PTS*144000",
+                "-fps_mode",
+                "passthrough",
+                "-c:v",
+                "ffv1",
+                "-y",
+                str(logical_decode_bomb),
+            ],
+            [
+                ffmpeg,
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "anullsrc=r=8000:cl=mono",
+                "-t",
+                "0.1",
+                *[part for _ in range(33) for part in ("-map", "0:a")],
+                "-c:a",
+                "pcm_s16le",
+                "-y",
+                str(streams_33),
+            ],
+        ]
+        for command in fixture_commands:
+            built = subprocess.run(
+                command,
+                shell=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(built.returncode, 0, built.stderr)
+        self.assertLess(logical_decode_bomb.stat().st_size, 1024 * 1024)
+        self.assertLess(sparse_duration.stat().st_size, 1024 * 1024)
+
+        environment = {
+            "ACG_MANAGED_RUNTIME": "1",
+            "ACG_MANAGED_FFMPEG": ffmpeg,
+            "ACG_MANAGED_FFPROBE": str(Path(real_ffprobe).resolve()),
+        }
+        cases = [
+            (wide, "MEDIA_DIMENSION_LIMIT_EXCEEDED"),
+            (high_fps, "MEDIA_FRAME_RATE_LIMIT_EXCEEDED"),
+            (sparse_duration, "MEDIA_DURATION_LIMIT_EXCEEDED"),
+            (logical_decode_bomb, "MEDIA_DECODE_LIMIT_EXCEEDED"),
+            (streams_33, "MEDIA_RESOURCE_PROBE_FAILED"),
+        ]
+        with patch.dict(os.environ, environment, clear=False):
+            for source, expected_code in cases:
+                output = self.root / f"{source.stem}.mp3"
+                with self.subTest(source=source.name):
+                    with self.assertRaises(MediaToolPolicyError) as caught:
+                        run_ffmpeg(
+                            ["-i", str(source), "-vn", str(output)],
+                            timeout=5,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            text=True,
+                        )
+                    self.assertEqual(caught.exception.code, expected_code)
+                    self.assertFalse(output.exists())
+
     def test_real_mp4_slice_uses_product_profile_under_fixed_policy(self) -> None:
         real_ffmpeg = shutil.which("ffmpeg")
         real_ffprobe = shutil.which("ffprobe")
