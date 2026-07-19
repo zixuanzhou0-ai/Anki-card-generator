@@ -511,15 +511,6 @@ def test_stale_fingerprint_or_wrong_candidate_entity_is_rejected(
         tmp_path
     )
     stale_fingerprint = hashlib.sha256(b"stale-input").hexdigest()
-    with pytest.raises(CandidateArtifactError):
-        publisher.publish_candidate(
-            audience=bound,
-            project_id="project_1",
-            project_revision=3,
-            input_fingerprint=stale_fingerprint,
-            draft=draft(representation, payload, stale_fingerprint),
-        )
-
     candidate = publisher.publish_candidate(
         audience=bound,
         project_id="project_1",

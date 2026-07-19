@@ -669,6 +669,8 @@ eligibility 只能由当前 GateEvaluationSet 按冻结规则派生，调用方�
 
 不可变 Artifact 禁止候选与门禁互相引用形成摘要环。固定发布图是：Evidence/SemanticUnit/Objective 作为 CandidateProposal Artifact 内的实体 → GateEvaluation Artifact 以 EntityRef 指向该 CandidateProposal → Discovery Artifact 同时引用两者。`LearningCandidate` 是 Service 读取两个认证 Artifact 后形成的公共投影；CandidateProposal payload 本身不保存 gateEvaluationRef，模型也不能把 eligibility、scores 或 GateResult 写入 proposal。安全门禁失败且原提案可能含路径、URL 或秘密模式时，只发布不含原文的 CandidateRejection 摘要。
 
+CURRENT 内部发现实现把模型参与拆成 `high-recall-language-proposer-v1` 与 `independent-learning-reviewer-v1` 两个封闭角色。前者只看通过披露筛选的认证来源窗口，只能返回目标形式、候选类型、语义功能、路线和精确 spans；后者只看安全提案、目标 quote、同一披露窗口内最多 240 字符的前后文和 Learning Contract，只能返回语义支持、冲突、learner fit 与简短理由。两个角色都无权写 eligibility、scores、GateResult、重复标记、选择或锁定状态；确定性服务门禁才派生这些字段。独立在这里表示角色、上下文和 schema 独立，并不要求不同供应商。敏感来源节点在模型调用前剔除，越界 span 拒绝，安全失败提案不进入复核，缺少复核结果派生 `needs_review`。ProposalBatch 与 ReviewBatch 是 CandidateProposal/GateEvaluation 的认证父 Artifact；公共 MCP 和真实 Broker/Approval/可恢复任务仍须单独接线。
+
 未解决 conflict 不能进入普通事实卡。可生成“不同来源如何主张”的论证/归因卡，但题面必须保留分歧。
 
 ## 12. 组合选择

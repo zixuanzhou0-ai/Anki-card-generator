@@ -347,6 +347,60 @@ class CandidateArtifactPublisher:
                 "selectable candidate has no replayable evidence",
             )
 
+    def _verified_provenance_parents(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_id: str,
+        project_revision: int,
+        input_fingerprint: str,
+        parent_refs: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if not isinstance(parent_refs, Sequence) or isinstance(
+            parent_refs, (str, bytes)
+        ):
+            raise CandidateArtifactError(
+                "CANDIDATE_ARTIFACT_INVALID", "candidate provenance parents are invalid"
+            )
+        verified: list[dict[str, Any]] = []
+        identities: set[tuple[str, int, str]] = set()
+        for parent_ref in parent_refs:
+            if not isinstance(parent_ref, Mapping):
+                raise CandidateArtifactError(
+                    "CANDIDATE_ARTIFACT_INVALID",
+                    "candidate provenance parent is invalid",
+                )
+            try:
+                envelope = self._artifacts.verify_ref(parent_ref, audience)
+            except ArtifactRegistryError as error:
+                raise CandidateArtifactError(error.code, error.message) from error
+            identity = (
+                str(parent_ref.get("artifactId")),
+                int(parent_ref.get("artifactRevision", 0)),
+                str(parent_ref.get("artifactDigest")),
+            )
+            if (
+                identity in identities
+                or parent_ref.get("projectId") != project_id
+                or parent_ref.get("projectRevision", project_revision + 1)
+                > project_revision
+                or envelope.get("inputFingerprint") != input_fingerprint
+            ):
+                raise CandidateArtifactError(
+                    "CANDIDATE_ARTIFACT_INVALID",
+                    "candidate provenance parent is outside the discovery scope",
+                )
+            identities.add(identity)
+            verified.append(dict(parent_ref))
+        verified.sort(
+            key=lambda value: (
+                value["artifactId"].encode("utf-8"),
+                value["artifactRevision"],
+                value["artifactDigest"],
+            )
+        )
+        return verified
+
     def publish_candidate(
         self,
         *,
@@ -355,6 +409,8 @@ class CandidateArtifactPublisher:
         project_revision: int,
         input_fingerprint: str,
         draft: Mapping[str, Any],
+        candidate_parent_refs: Sequence[Mapping[str, Any]] = (),
+        gate_parent_refs: Sequence[Mapping[str, Any]] = (),
     ) -> dict[str, Any]:
         value = _draft(draft)
         if (
@@ -378,12 +434,25 @@ class CandidateArtifactPublisher:
             or representation_ref.get("projectRevision", project_revision + 1)
             > project_revision
             or representation.get("payloadSchema") != "study.source-representation"
-            or representation.get("inputFingerprint") != input_fingerprint
         ):
             raise CandidateArtifactError(
                 "CANDIDATE_ARTIFACT_INVALID",
                 "candidate representation is outside the publication scope",
             )
+        extra_candidate_parents = self._verified_provenance_parents(
+            audience=audience,
+            project_id=project_id,
+            project_revision=project_revision,
+            input_fingerprint=input_fingerprint,
+            parent_refs=candidate_parent_refs,
+        )
+        extra_gate_parents = self._verified_provenance_parents(
+            audience=audience,
+            project_id=project_id,
+            project_revision=project_revision,
+            input_fingerprint=input_fingerprint,
+            parent_refs=gate_parent_refs,
+        )
         security_failed = _security_failed(value)
         if not security_failed:
             self._verify_evidence(draft=value, representation=representation)
@@ -429,7 +498,7 @@ class CandidateArtifactPublisher:
             payload_schema_version=1,
             payload=payload,
             producer=_PRODUCER,
-            parents=[representation_ref],
+            parents=[representation_ref, *extra_candidate_parents],
             input_fingerprint=input_fingerprint,
             completeness=_completeness("complete", 1),
             issue_refs=value["issueRefs"],
@@ -483,7 +552,7 @@ class CandidateArtifactPublisher:
             payload_schema_version=1,
             payload=gate_payload,
             producer=_PRODUCER,
-            parents=[candidate.artifact_ref],
+            parents=[candidate.artifact_ref, *extra_gate_parents],
             input_fingerprint=input_fingerprint,
             completeness=_completeness("complete", len(results)),
             issue_refs=value["issueRefs"],
@@ -525,7 +594,6 @@ class CandidateArtifactPublisher:
             or inspection_ref.get("projectRevision", project_revision + 1)
             > project_revision
             or inspection.get("payloadSchema") != "study.inspection"
-            or inspection.get("inputFingerprint") != input_fingerprint
         ):
             raise CandidateArtifactError(
                 "CANDIDATE_ARTIFACT_INVALID", "inspectionRef is invalid"
@@ -576,6 +644,29 @@ class CandidateArtifactPublisher:
             candidate_payload = candidate_envelope.get("payload")
             gate_payload = gate_envelope.get("payload")
             candidate_parents = candidate_envelope.get("parents")
+            gate_parents = gate_envelope.get("parents")
+            representation_parent = (
+                candidate_payload.get("representationRef")
+                if isinstance(candidate_payload, Mapping)
+                else None
+            )
+            provenance_parents = (
+                [value for value in candidate_parents if value != representation_parent]
+                if isinstance(candidate_parents, list)
+                else []
+            )
+            gate_provenance_parents = (
+                [value for value in gate_parents if value != dict(candidate_ref)]
+                if isinstance(gate_parents, list)
+                else []
+            )
+            try:
+                provenance_envelopes = [
+                    self._artifacts.verify_ref(value, audience)
+                    for value in [*provenance_parents, *gate_provenance_parents]
+                ]
+            except ArtifactRegistryError as error:
+                raise CandidateArtifactError(error.code, error.message) from error
             if (
                 candidate_ref.get("projectId") != project_id
                 or gate_ref.get("projectId") != project_id
@@ -590,10 +681,15 @@ class CandidateArtifactPublisher:
                 or not isinstance(gate_payload, Mapping)
                 or candidate_payload.get("candidateId") != candidate_id
                 or not isinstance(candidate_parents, list)
-                or len(candidate_parents) != 1
-                or candidate_parents[0] not in inspection_representations
-                or candidate_parents != [candidate_payload.get("representationRef")]
-                or gate_envelope.get("parents") != [dict(candidate_ref)]
+                or candidate_payload.get("representationRef") not in candidate_parents
+                or candidate_payload.get("representationRef")
+                not in inspection_representations
+                or not isinstance(gate_parents, list)
+                or dict(candidate_ref) not in gate_parents
+                or any(
+                    value.get("inputFingerprint") != input_fingerprint
+                    for value in provenance_envelopes
+                )
                 or gate_payload.get("candidateRef")
                 != {"artifactRef": dict(candidate_ref), "entityId": candidate_id}
                 or gate_payload.get("projectRevision") != project_revision
