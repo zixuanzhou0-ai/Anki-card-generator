@@ -25,6 +25,14 @@ from .artifact_registry import ArtifactAudienceBinding
 from .broker_configuration import BrokerConfigurationError, ServiceBrokerRuntime
 from .broker_ipc import BROKER_REQUEST_PREFIX, BROKER_RESPONSE_PREFIX, TaskBrokerChannel
 from .credentials import CredentialBackend, CredentialStore, CredentialStoreError
+from .local_resource_registry import (
+    MAX_DEPTH,
+    MAX_DIRECTORY_BYTES,
+    MAX_DIRECTORY_ENTRIES,
+    MAX_FILE_BYTES,
+    MAX_OUTPUT_BYTES,
+    MAX_OUTPUT_FILES,
+)
 from .process_isolation import ProcessIsolationError, TaskOwnedProcessGroup
 from .runtime_manifest import (
     ManagedRuntimeManifest,
@@ -75,6 +83,7 @@ TASK_WORKSPACE_REPARSE_ATTRIBUTE = 0x400
 BrokerOperationHandler = Callable[[str, dict[str, Any]], Any]
 BrokerHandlerFactory = Callable[[str, str, dict[str, Any]], BrokerOperationHandler]
 BrokerMethodBlocker = Callable[[str], str | None]
+_RESOURCE_GRANT_REQUEST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 SERVICE_OWNED_BROKER_REQUEST_KEYS = frozenset(
     {
@@ -772,6 +781,7 @@ class CardService:
         self._resource_runtime: ServiceResourceRuntime | None = None
         self._local_picker_requests: dict[str, dict[str, Any]] = {}
         self._completed_local_picker_grants: dict[str, dict[str, Any]] = {}
+        self._local_picker_request_index: dict[tuple[str, str, str, str, str], dict[str, str]] = {}
         self._resource_runtime_lock = threading.RLock()
 
         self._active_broker_runtime: ServiceBrokerRuntime | None = None
@@ -876,6 +886,37 @@ class CardService:
         """Internal trusted-adapter composition hook; it is not an MCP tool."""
 
         return {**self._ensure_resource_runtime().capabilities(), "initialized": True}
+
+    @staticmethod
+    def public_local_resource_constraints(kind: str) -> dict[str, Any]:
+        if kind == "file":
+            return {"actions": ["read"], "maxBytes": MAX_FILE_BYTES}
+        if kind == "directory":
+            return {
+                "actions": ["enumerate", "read"],
+                "maxDepth": MAX_DEPTH,
+                "maxEntries": MAX_DIRECTORY_ENTRIES,
+                "maxTotalBytes": MAX_DIRECTORY_BYTES,
+            }
+        if kind == "output_directory":
+            return {
+                "actions": ["create", "versioned"],
+                "maxFiles": min(MAX_OUTPUT_FILES, 1_024),
+                "maxTotalBytes": min(MAX_OUTPUT_BYTES, 32 * 1024 * 1024 * 1024),
+            }
+        raise CardServiceError("INVALID_RESOURCE_KIND", "Unsupported public resource kind")
+
+    @staticmethod
+    def _local_picker_request_key(
+        audience: ArtifactAudienceBinding, grant_request_id: str
+    ) -> tuple[str, str, str, str, str]:
+        return (
+            audience.owner_digest,
+            audience.host_id,
+            audience.plugin_id,
+            audience.session_id,
+            grant_request_id,
+        )
 
     @staticmethod
     def _local_resource_scope_summary(
@@ -993,6 +1034,54 @@ class CardService:
             self._completed_local_picker_grants[session_ref] = finalized
         return json.loads(json.dumps(finalized, ensure_ascii=False))
 
+    def request_local_resource_picker(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        grant_request_id: str,
+        kind: str,
+    ) -> dict[str, Any]:
+        """Idempotently begin or poll one trusted public resource request."""
+
+        if not _RESOURCE_GRANT_REQUEST_RE.fullmatch(grant_request_id):
+            raise CardServiceError(
+                "RESOURCE_GRANT_REQUEST_INVALID", "Resource grant request identifier is invalid"
+            )
+        constraints = self.public_local_resource_constraints(kind)
+        max_uses = 8 if kind != "output_directory" else 16
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                {"kind": kind, "constraints": constraints, "maxUses": max_uses},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        key = self._local_picker_request_key(audience, grant_request_id)
+        with self._resource_runtime_lock:
+            indexed = self._local_picker_request_index.get(key)
+            if indexed is not None:
+                if indexed["fingerprint"] != fingerprint:
+                    raise CardServiceError(
+                        "RESOURCE_GRANT_REQUEST_CONFLICT",
+                        "Resource grant request identifier was reused with different scope",
+                    )
+                session_ref = indexed["sessionRef"]
+            else:
+                opened = self.open_local_resource_picker(
+                    audience=audience,
+                    grant_request_id=grant_request_id,
+                    kind=kind,
+                    constraints=constraints,
+                    max_uses=max_uses,
+                )
+                session_ref = str(opened["sessionRef"])
+                self._local_picker_request_index[key] = {
+                    "sessionRef": session_ref,
+                    "fingerprint": fingerprint,
+                }
+                return opened
+        return self.complete_local_resource_picker(session_ref)
+
     def _broker_blocker(self, method: str, policy: MethodPolicy) -> str | None:
         with self._broker_runtime_lock:
             if not policy.requires_broker:
@@ -1020,6 +1109,8 @@ class CardService:
             "taskMethods": ["task.get", "task.cancel", "task.list_recoverable", "task.read_result"],
             "systemMethods": [
                 "system.get_capabilities",
+                "system.request_source_grant",
+                "system.request_output_grant",
                 "system.open_local_settings",
                 "system.open_broker_authorization",
                 "system.get_trusted_surface",

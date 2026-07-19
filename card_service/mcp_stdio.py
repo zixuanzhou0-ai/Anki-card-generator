@@ -5,7 +5,19 @@ import re
 import sys
 from typing import Any, TextIO
 
+from .mcp_resource_tools import (
+    RESOURCE_GRANT_TOOL_NAMES,
+    McpResourceToolInputError,
+    call_resource_tool,
+    resource_tool_definitions,
+)
 from .service import CardService, CardServiceError
+from .trusted_mcp_audience import (
+    TrustedMcpAudienceError,
+    TrustedMcpAudienceSession,
+    create_development_mcp_audience,
+    create_packaged_mcp_audience,
+)
 from .stdio import build_parser, create_service
 
 
@@ -50,8 +62,9 @@ def _tool_definition() -> dict[str, Any]:
                             "type": "array",
                             "items": {"type": "string"},
                         },
+                        "audienceBinding": {"type": "object"},
                     },
-                    "required": ["transport", "protocolVersion", "exposedTools"],
+                    "required": ["transport", "protocolVersion", "exposedTools", "audienceBinding"],
                     "additionalProperties": False,
                 },
                 "cardService": {"type": "object"},
@@ -78,6 +91,15 @@ def _tool_definition() -> dict[str, Any]:
             "openWorldHint": False,
         },
     }
+
+
+def _tool_definitions(
+    audience_session: TrustedMcpAudienceSession | None,
+) -> list[dict[str, Any]]:
+    definitions = [_tool_definition()]
+    if audience_session is not None:
+        definitions.extend(resource_tool_definitions())
+    return definitions
 
 
 def _response(
@@ -108,7 +130,7 @@ def _tool_error(error: CardServiceError | None = None) -> dict[str, Any]:
         "content": [
             {
                 "type": "text",
-                "text": "The local Card Service could not report its capabilities.",
+                "text": "The local Card Service could not complete the requested operation.",
             }
         ],
         "structuredContent": {
@@ -121,7 +143,12 @@ def _tool_error(error: CardServiceError | None = None) -> dict[str, Any]:
     }
 
 
-def _handle_request(service: CardService, request: dict[str, Any]) -> dict[str, Any] | None:
+def _handle_request(
+    service: CardService,
+    request: dict[str, Any],
+    audience_session: TrustedMcpAudienceSession | None = None,
+    user_action_timeout_seconds: float = 300.0,
+) -> dict[str, Any] | None:
     request_id = request.get("id")
     method = request.get("method")
     params = request.get("params", {})
@@ -154,8 +181,9 @@ def _handle_request(service: CardService, request: dict[str, Any]) -> dict[str, 
                     "version": SERVER_VERSION,
                 },
                 "instructions": (
-                    "Start with system.get_capabilities. This M1 bridge intentionally "
-                    "does not expose generation, export, import, credentials, or raw Worker commands."
+                    "Start with system.get_capabilities. Trusted launcher sessions may request "
+                    "opaque source and output grants through native pickers. Generation, export, "
+                    "import, credentials, and raw Worker commands remain unavailable."
                 ),
             },
         )
@@ -164,11 +192,31 @@ def _handle_request(service: CardService, request: dict[str, Any]) -> dict[str, 
         return _response(request_id, result={})
 
     if method == "tools/list":
-        return _response(request_id, result={"tools": [_tool_definition()]})
+        return _response(
+            request_id, result={"tools": _tool_definitions(audience_session)}
+        )
 
     if method == "tools/call":
         tool_name = params.get("name")
         arguments = params.get("arguments", {})
+        if tool_name in RESOURCE_GRANT_TOOL_NAMES:
+            if audience_session is None:
+                return _rpc_error(request_id, -32602, "Unknown tool")
+            try:
+                result = call_resource_tool(
+                    service,
+                    tool_name=str(tool_name),
+                    arguments=arguments,
+                    audience_session=audience_session,
+                    user_action_timeout_seconds=user_action_timeout_seconds,
+                )
+            except McpResourceToolInputError:
+                return _rpc_error(request_id, -32602, "Invalid resource tool arguments")
+            except CardServiceError as error:
+                return _response(request_id, result=_tool_error(error))
+            except Exception:
+                return _response(request_id, result=_tool_error())
+            return _response(request_id, result=result)
         if tool_name != CAPABILITY_TOOL_NAME:
             return _rpc_error(request_id, -32602, "Unknown tool")
         if not isinstance(arguments, dict) or arguments:
@@ -184,7 +232,15 @@ def _handle_request(service: CardService, request: dict[str, Any]) -> dict[str, 
             "mcpBridge": {
                 "transport": "stdio",
                 "protocolVersion": MCP_PROTOCOL_VERSION,
-                "exposedTools": [CAPABILITY_TOOL_NAME],
+                "exposedTools": [
+                    definition["name"]
+                    for definition in _tool_definitions(audience_session)
+                ],
+                "audienceBinding": (
+                    audience_session.public_summary()
+                    if audience_session is not None
+                    else {"schemaVersion": 1, "available": False, "identifiersDisclosed": False}
+                ),
             },
             "cardService": capabilities,
         }
@@ -213,6 +269,9 @@ def serve(
     service: CardService,
     input_stream: TextIO | None = None,
     output_stream: TextIO | None = None,
+    *,
+    audience_session: TrustedMcpAudienceSession | None = None,
+    user_action_timeout_seconds: float = 300.0,
 ) -> None:
     source = input_stream or sys.stdin
     sink = output_stream or sys.stdout
@@ -227,7 +286,12 @@ def serve(
             if not isinstance(request, dict):
                 response = _rpc_error(None, -32600, "Invalid Request")
             else:
-                response = _handle_request(service, request)
+                response = _handle_request(
+                    service,
+                    request,
+                    audience_session,
+                    user_action_timeout_seconds,
+                )
         if response is not None:
             sink.write(json.dumps(response, ensure_ascii=False, separators=(",", ":")) + "\n")
             sink.flush()
@@ -235,8 +299,18 @@ def serve(
 
 def main() -> None:
     parser = build_parser("Codex Study MCP bridge for the local Card Service")
-    service = create_service(parser.parse_args(), parser)
-    serve(service)
+    arguments = parser.parse_args()
+    service = create_service(arguments, parser)
+    try:
+        if arguments.runtime_package is not None:
+            audience_session = create_packaged_mcp_audience(service.runtime_package.root)
+        elif arguments.development_trusted_mcp_session:
+            audience_session = create_development_mcp_audience()
+        else:
+            audience_session = None
+    except TrustedMcpAudienceError as error:
+        parser.error(f"{error.code}: trusted MCP launch proof is unavailable")
+    serve(service, audience_session=audience_session)
 
 
 if __name__ == "__main__":

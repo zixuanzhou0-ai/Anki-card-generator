@@ -1,6 +1,6 @@
 # MCP 工具参考
 
-> 状态：PROPOSED 公共工具契约；M1 已实现并用真实 Codex 宿主验证只读 `system.get_capabilities`，其余公共工具尚未实现
+> 状态：CURRENT 最小桥 + PROPOSED 完整工具契约；可信会话已实现 `system.get_capabilities`、`system.request_source_grant` 与 `system.request_output_grant`
 > 日期：2026-07-18
 > 工具名和 schema 在实现前仍可调整；一旦 V1 发布即按版本策略维护。
 
@@ -17,7 +17,7 @@ MCP 工具服务于用户意图，而不是暴露内部 Worker。工具层必须
 
 官方工具设计参考：[Describe tools](https://developers.openai.com/apps-sdk/build/mcp-server#step-2--describe-tools)。
 
-当前 M1 桥只实现协议握手、工具发现和零参数只读能力快照。Card Service 内部已经惰性组合本地资源 grant/staging runtime，但该内部能力不等于公共工具：桥仍不接受 opaque Artifact、OperationIntent 或任何路径，也不公开资源签发、生成、导出、Anki 写入、凭据、原始 Worker 或 Shell 能力；下文其余工具仍是后续里程碑的目标合同。
+当前桥实现协议握手、动态工具发现、零参数只读能力快照，以及可信会话中的本地 source/output opaque grant。没有原生 launcher audience 时只公开 `system.get_capabilities`；可信 audience 由父 PID、固定 launcher 可执行文件、当前 OS 用户 SID 摘要和每进程随机 nonce 派生，工具参数不能自报。桥仍不接受任意路径、URL、Artifact 或 OperationIntent，也不公开生成、导出、Anki 写入、凭据、原始 Worker 或 Shell；下文其余工具仍是后续里程碑的目标合同。
 
 ## 2. 公共请求约定
 
@@ -258,14 +258,17 @@ host 部分至少分别报告：pluginManifestLoaded、stdioServiceLaunch、tool
 
 ### system.request_source_grant
 
-只能由真实用户动作触发受信本地文件/目录选择器。输出 InputRef、授权根摘要、限制和过期时间；InputRef 中只有 fileResourceRef/directoryResourceRef，不返回独立授权 bearer 或原始绝对路径。宿主 attachmentRef 若已具备稳定授权，可由服务转换为同等 InputRef。
+CURRENT 输入是封闭对象 `{ grantRequestId, selectionKind }`，其中 `selectionKind` 只能为 `file` 或 `directory`。`grantRequestId` 是调用方幂等键；同一可信 audience 下同 ID/同范围重复调用轮询同一 picker，会话内同 ID 改变范围则拒绝。工具不能接收 path、URL、audience、权限或 attestation。真实用户在本地 picker 中选择后，输出 `inputRef`：仅含 kind、fileResourceRef/directoryResourceRef、显示名、resourceRevisionDigest、服务端固定 constraints 与 expiresAt。raw path、picker sessionRef、密文、attestation、内部 grantId、receipt 和 locator 均不返回。
+
+宿主 attachmentRef 若未来具备稳定授权，可由服务转换为同等 InputRef；该 adapter 尚未实现。
 
 ### system.request_output_grant
 
-打开受信目录选择器，返回 outputResourceRef、显示名称、允许 create/versioned/replace 操作和有效期。默认不包含 replace；覆盖需要独立新确认。
-CURRENT M2 已实现 file/directory/output grant 的内部认证账本、opaque ref、逐次消费、撤销和 task staging：已消费的 file/directory grant 可被复制成带认证 receipt 的 task-local snapshot，Worker locator 只含 workspace-relative path。
+CURRENT 输入是封闭对象 `{ grantRequestId }`。Service 固定打开输出目录 picker，返回 `outputRef`，其约束只包含 `create` 与 `versioned`，默认不含 `replace`；调用方不能通过参数扩大权限。返回值仅含 outputResourceRef、显示名、resourceRevisionDigest、constraints 和 expiresAt。覆盖仍需要未来独立确认与授权合同。
 
-上述两个 public MCP 工具和宿主附件 adapter 尚未接线。真实本地 picker、加密响应、短期 attestation 与 Card Service 内部 grant composition 已实现，但不构成公共工具：内部 attestation/staging receipt 不得返回给 Agent，raw path 仍不得出现在 Agent 参数中；公共入口发布前，新授权从 MCP 继续 fail closed。
+CURRENT M2 已实现 file/directory/output grant 的认证账本、opaque ref、逐次消费、撤销和 task staging：已消费的 file/directory grant 可被复制成带认证 receipt 的 task-local snapshot，Worker locator 只含 workspace-relative path。公开工具只完成“真实选择 → opaque ref”，尚未把 ref 绑定到 `study.register_inputs`、StudyTask/Worker 调度或 APKG 发布。
+
+两个工具都只在可信 stdio audience 中注册；无 audience 时调用得到 Unknown tool。picker 等待超时会返回 `awaiting_user`，使用相同 `grantRequestId` 可继续轮询。`cancelled` 与 `failed` 是显式终态；公开失败只返回固定错误码，不回显路径或私有异常。
 
 
 ### system.request_network_grant

@@ -136,7 +136,7 @@ Agent 不能直接提交任意绝对路径。用户通过宿主附件或本地�
 - 规范路径仍在授权根。
 - 文件身份和元数据未发生未解释变化。
 - 没有 symlink、junction、reparse point、UNC、设备路径、ADS 或保留名逃逸。
-CURRENT M2 内部 `LocalResourceGrantRegistry` 已实现 file/directory/output ref 的上述根授权、短期 audience/service 绑定、动作与资源上限、逐次身份重验、幂等消费和撤销，并由 Card Service 的惰性 `ServiceResourceRuntime` 统一拥有。真实本地 picker 已通过加密私有响应和短期精确 attestation 接到内部 adapter；宿主附件和公共 MCP 尚未接线，因此 Agent 仍不能通过公共工具自行签发这些 ref。
+CURRENT M2 内部 `LocalResourceGrantRegistry` 已实现 file/directory/output ref 的上述根授权、短期 audience/service 绑定、动作与资源上限、逐次身份重验、幂等消费和撤销，并由 Card Service 的惰性 `ServiceResourceRuntime` 统一拥有。真实本地 picker 已通过加密私有响应和短期精确 attestation 接到 adapter；可信 stdio 会话现在可用 `system.request_source_grant`/`system.request_output_grant` 取得这些 opaque ref。宿主附件、`study.register_inputs`、Source Adapter/StudyTask/Worker locator 和 APKG 输出绑定尚未接线，因此取得 ref 仍不等于可开始生成。
 
 
 ### 5.2 目录

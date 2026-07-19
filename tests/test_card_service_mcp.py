@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from card_service.mcp_stdio import CAPABILITY_TOOL_NAME, MCP_PROTOCOL_VERSION, serve
+from card_service.mcp_resource_tools import OUTPUT_GRANT_TOOL_NAME, SOURCE_GRANT_TOOL_NAME
+from card_service.trusted_mcp_audience import create_development_mcp_audience
 from card_service.service import CardServiceError
 
 
@@ -33,7 +35,12 @@ class _CapabilityService:
         return self.result
 
 
-def _run_messages(service: _CapabilityService, messages: list[object]) -> list[dict[str, Any]]:
+def _run_messages(
+    service: _CapabilityService,
+    messages: list[object],
+    *,
+    trusted_audience: bool = False,
+) -> list[dict[str, Any]]:
     source = io.StringIO(
         "".join(
             value if isinstance(value, str) else json.dumps(value) + "\n"
@@ -41,7 +48,12 @@ def _run_messages(service: _CapabilityService, messages: list[object]) -> list[d
         )
     )
     sink = io.StringIO()
-    serve(service, source, sink)  # type: ignore[arg-type]
+    serve(
+        service,
+        source,
+        sink,
+        audience_session=(create_development_mcp_audience() if trusted_audience else None),
+    )  # type: ignore[arg-type]
     return [json.loads(line) for line in sink.getvalue().splitlines()]
 
 
@@ -77,6 +89,12 @@ def test_mcp_bridge_negotiates_and_exposes_only_read_only_capabilities() -> None
     assert responses[0]["result"]["capabilities"] == {"tools": {"listChanged": False}}
     tools = responses[1]["result"]["tools"]
     assert [tool["name"] for tool in tools] == [CAPABILITY_TOOL_NAME]
+    capability_schema = tools[0]["outputSchema"]
+    assert set(capability_schema["properties"]) == {
+        "schemaVersion", "mcpBridge", "cardService", "error"
+    }
+    bridge_schema = capability_schema["properties"]["mcpBridge"]
+    assert "audienceBinding" in bridge_schema["properties"]
     assert tools[0]["annotations"] == {
         "readOnlyHint": True,
         "destructiveHint": False,
@@ -86,9 +104,46 @@ def test_mcp_bridge_negotiates_and_exposes_only_read_only_capabilities() -> None
     assert tools[0]["inputSchema"]["additionalProperties"] is False
     result = responses[2]["result"]
     assert result["structuredContent"]["mcpBridge"]["exposedTools"] == [CAPABILITY_TOOL_NAME]
+    assert result["structuredContent"]["mcpBridge"]["audienceBinding"] == {
+        "schemaVersion": 1, "available": False, "identifiersDisclosed": False
+    }
     assert result["structuredContent"]["cardService"]["genericShell"] is False
     assert service.calls == [("system.get_capabilities", {})]
     assert responses[3]["result"] == {}
+
+
+def test_mcp_bridge_reports_trusted_session_without_disclosing_identity() -> None:
+    service = _CapabilityService()
+    responses = _run_messages(
+        service,
+        [
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": CAPABILITY_TOOL_NAME, "arguments": {}},
+            }
+        ],
+        trusted_audience=True,
+    )
+
+    bridge = responses[0]["result"]["structuredContent"]["mcpBridge"]
+    assert bridge["audienceBinding"] == {
+        "schemaVersion": 1,
+        "available": True,
+        "mode": "development_explicit",
+        "identifiersDisclosed": False,
+        "toolArgumentsCanDeclareAudience": False,
+    }
+    serialized = json.dumps(bridge, sort_keys=True)
+    assert "ownerDigest" not in serialized
+    assert "hostId" not in serialized
+    assert "sessionId" not in serialized
+    assert bridge["exposedTools"] == [
+        CAPABILITY_TOOL_NAME,
+        SOURCE_GRANT_TOOL_NAME,
+        OUTPUT_GRANT_TOOL_NAME,
+    ]
 
 
 def test_mcp_bridge_rejects_invalid_protocol_and_tool_shapes() -> None:
@@ -162,6 +217,7 @@ def test_real_mcp_stdio_process_reports_card_service_capabilities(tmp_path: Path
             "--development-unpackaged-runtime",
             "--worker",
             str(FAKE_WORKER.resolve()),
+            "--development-trusted-mcp-session",
             "--python",
             str(Path(sys.executable).resolve()),
         ],
@@ -194,7 +250,11 @@ def test_real_mcp_stdio_process_reports_card_service_capabilities(tmp_path: Path
         )
         assert initialized["result"]["serverInfo"]["name"] == "anki-study-card-service"
         listed = rpc({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
-        assert [tool["name"] for tool in listed["result"]["tools"]] == [CAPABILITY_TOOL_NAME]
+        assert [tool["name"] for tool in listed["result"]["tools"]] == [
+            CAPABILITY_TOOL_NAME,
+            SOURCE_GRANT_TOOL_NAME,
+            OUTPUT_GRANT_TOOL_NAME,
+        ]
         called = rpc(
             {
                 "jsonrpc": "2.0",
@@ -208,6 +268,8 @@ def test_real_mcp_stdio_process_reports_card_service_capabilities(tmp_path: Path
         assert capabilities["genericShell"] is False
         assert capabilities["secretBearingRequests"] is False
         assert called["result"]["structuredContent"]["mcpBridge"]["transport"] == "stdio"
+        assert called["result"]["structuredContent"]["mcpBridge"]["audienceBinding"]["available"] is True
+        assert called["result"]["structuredContent"]["mcpBridge"]["audienceBinding"]["identifiersDisclosed"] is False
     finally:
         process.stdin.close()
         process.wait(timeout=5)

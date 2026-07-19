@@ -67,6 +67,41 @@ fn hex_digest(value: impl AsRef<[u8]>) -> String {
         .map(|byte| format!("{byte:02x}"))
         .collect()
 }
+#[cfg(windows)]
+fn session_nonce() -> Result<String, String> {
+    const BCRYPT_USE_SYSTEM_PREFERRED_RNG: u32 = 0x00000002;
+    #[link(name = "bcrypt")]
+    extern "system" {
+        fn BCryptGenRandom(
+            algorithm: *mut core::ffi::c_void,
+            buffer: *mut u8,
+            buffer_length: u32,
+            flags: u32,
+        ) -> i32;
+    }
+    let mut bytes = [0_u8; 32];
+    let status = unsafe {
+        BCryptGenRandom(
+            core::ptr::null_mut(),
+            bytes.as_mut_ptr(),
+            bytes.len() as u32,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        )
+    };
+    if status != 0 {
+        return Err("Windows system RNG could not create an MCP session proof".to_owned());
+    }
+    Ok(hex_digest(bytes))
+}
+
+#[cfg(not(windows))]
+fn session_nonce() -> Result<String, String> {
+    let mut bytes = [0_u8; 32];
+    File::open("/dev/urandom")
+        .and_then(|mut source| source.read_exact(&mut bytes))
+        .map_err(|_| "OS RNG could not create an MCP session proof".to_owned())?;
+    Ok(hex_digest(bytes))
+}
 
 fn has_reparse_attribute(metadata: &Metadata) -> bool {
     if metadata.file_type().is_symlink() {
@@ -495,6 +530,7 @@ fn run() -> Result<i32, String> {
         trace("install-only verification completed");
         return Ok(0);
     }
+    let mcp_session_nonce = session_nonce()?;
     let state = state_directory()?;
     if let Some(authorization) = install_authorization.as_ref() {
         release_verifier::enforce_install_rollback_floor(&state, authorization)?;
@@ -516,6 +552,8 @@ fn run() -> Result<i32, String> {
         .current_dir(&runtime_root)
         .env_remove("PYTHONHOME")
         .env_remove("PYTHONPATH")
+        .env("ANKI_STUDY_MCP_LAUNCHER_PID", process::id().to_string())
+        .env("ANKI_STUDY_MCP_SESSION_NONCE", mcp_session_nonce)
         .env_remove("PYTHONSTARTUP")
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .stdin(Stdio::inherit())
@@ -545,8 +583,17 @@ fn main() {
 mod tests {
     use super::{
         assert_no_reparse_ancestors, hex_digest, is_sha256, parse_arguments, runtime_relative_path,
-        sha256_file, windows_reserved_name, LaunchMode,
+        session_nonce, sha256_file, windows_reserved_name, LaunchMode,
     };
+    #[test]
+    fn creates_unique_lowercase_session_proofs() {
+        let first = session_nonce().unwrap();
+        let second = session_nonce().unwrap();
+        assert!(is_sha256(&first));
+        assert!(is_sha256(&second));
+        assert_ne!(first, second);
+    }
+
     use sha2::{Digest, Sha256};
     use std::env;
     use std::ffi::OsString;

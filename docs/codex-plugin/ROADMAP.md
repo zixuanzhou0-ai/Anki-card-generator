@@ -236,7 +236,13 @@ Registry 的公开 profile 永不返回 SecretRef、秘密或原始 operationId�
 
 该切片新增 10 项测试；受信窗口/资源/打包聚类为 `144 passed`，正式 Python 全集为 `1247 passed, 1 skipped`。Computer Use 已捕获真实 Windows 选择器并打开原生文件对话框，确认中文层级、范围说明、按钮、缩放和系统 dialog 正常；由于 Tk owned native dialog 未向自动化返回可操作前台 process id，自动完成文件选择没有 GUI 证据，不能用 31 项加密/Manager/Card Service 集成测试冒充真实点击闭环。
 
-这不表示 M2 已完成：组合根和真实本地选择器尚未把 staged locator 绑定到 StudyTask、Source Adapter 或 Worker 调度；宿主附件 adapter、公共 `system.request_source_grant`/`system.request_output_grant` 也未发布。其跨进程锁当前串行化整个复制阶段，安全但尚未做大型目录吞吐优化。Artifact Registry、StudyTask、Project Registry、AuthorizationLedger、CredentialStore、ServiceProfileRegistry、profile verification、legacy projection 与 local/network resource ledger 仍未作为同一事务边界接入 Card Service 公共 MCP surface，Learning Contract 尚未发布为 canonical Artifact ref。URL 输入窗口、网络资源 staging、逐子项公共 ref、Anki ImportApproval、正式 service key rotation、完整应用数据 ACL、可信 stdio audience 握手、精细 scope relation proof、完整 Broker reservation 与授权联合事务、受信设置事务、`system.validate_profile` 公共任务和 Anki 证据链仍在后续切片。公共 MCP 在这些边界完成前仍不能接受 ArtifactRef 对象或开放生成/导入写操作。
+第十四个切片已建立可信 stdio audience 与最小公共资源入口。正式运行必须由已固定安装布局中的原生 `anki-study-agent` 直接启动；launcher 使用 OS CSPRNG 为每次进程生成 256-bit nonce，并把自身 PID 与 nonce 交给子进程。MCP 端消费后立即删除这两个环境值，核对父 PID、父可执行文件精确路径和当前 OS 用户 SID 摘要，再派生只在本进程有效的 host/session binding。MCP 参数不能自报 owner、host、plugin、session 或 audience；直接运行 packaged Python、伪造父 PID/路径或缺失证明均在工具注册前失败关闭。开发态只有同时显式选择 unpackaged runtime 与 trusted MCP session 才能启用同等测试入口。
+
+可信会话现在公开 `system.request_source_grant` 与 `system.request_output_grant`。两个工具使用封闭 schema，只接受调用方幂等 `grantRequestId` 以及 source 的 file/directory 枚举；不接受 path、URL、audience、attestation、权限或 replace。Service 固定授权范围和上限，打开真实本地 picker，并把私有加密响应转换为仅含 opaque resource ref、显示名、资源 revision 摘要、约束和有效期的结果。未建立可信 audience 时，`tools/list` 只返回 `system.get_capabilities`，资源工具调用返回 Unknown tool。公开响应不含 raw path、sessionRef、密文、attestation、私有 receipt 或 staging locator。
+
+该切片的 audience/MCP/资源/无头服务定向回归为 `74 passed`，运行时/安装包/原生 launcher 扩大聚类为 `159 passed, 1 skipped`，正式 Python 全集为 `1265 passed, 1 skipped`；原生 launcher Rust 单测为 `14 passed`。这仍不表示 M2 或 M3 已完成：新 opaque ref 尚未经 `study.register_inputs` 绑定到 StudyTask、Source Adapter 或 Worker 调度，输出 ref 尚未绑定 APKG 发布，宿主 attachment adapter、URL 输入、网络 staging、逐子项公共 ref、Anki ImportApproval 和生成/导出/导入工具仍未开放。跨进程锁仍串行化整个本地复制阶段；picker 等待期间的 stdio 调用也尚未升级为可取消长任务。
+
+Artifact Registry、StudyTask、Project Registry、AuthorizationLedger、CredentialStore、ServiceProfileRegistry、profile verification、legacy projection 与 local/network resource ledger 仍未作为同一事务边界接入 Card Service 公共 MCP surface，Learning Contract 尚未发布为 canonical Artifact ref。正式 service key rotation、完整应用数据 ACL、Codex 宿主进程身份证明、精细 scope relation proof、完整 Broker reservation 与授权联合事务、受信设置事务、`system.validate_profile` 公共任务和 Anki 证据链仍在后续切片。公共 MCP 在这些边界完成前仍不能接受任意 ArtifactRef 对象或开放生成、APKG 导出与 Anki 写操作。
 
 ### 出口
 

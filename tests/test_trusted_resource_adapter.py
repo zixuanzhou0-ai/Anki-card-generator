@@ -76,7 +76,7 @@ def test_card_service_turns_trusted_picker_result_into_opaque_grant(
     assert "attestation" not in serialized.lower()
     assert service.trusted_surfaces.selected_local_resource(session_ref) is None
     assert service.complete_local_resource_picker(session_ref) == result
-    assert "system.request_source_grant" not in service.capabilities()["systemMethods"]
+    assert "system.request_source_grant" in service.capabilities()["systemMethods"]
 
     runtime = service._ensure_resource_runtime()
     resolved = runtime.consume_local_grant(
@@ -117,3 +117,57 @@ def test_card_service_rejects_non_json_picker_constraints_before_launch(
         assert failure.value.code == "RESOURCE_CONSTRAINT_INVALID"
 
     assert not list(service.trusted_surfaces.sessions_dir.glob("*.json"))
+
+
+def test_public_resource_request_is_idempotent_and_scope_is_service_owned(
+    tmp_path: Path,
+) -> None:
+    state_dir = (tmp_path / "service-state").resolve()
+    service = CardService(
+        state_dir=state_dir,
+        python_path=Path(sys.executable).resolve(),
+        trusted_surface_path=FAKE_SURFACE.resolve(),
+        credential_backend=InMemoryCredentialBackend(),
+        use_restricted_launcher=False,
+    )
+    first = service.request_local_resource_picker(
+        audience=audience(), grant_request_id="public-source-1", kind="file"
+    )
+    session_ref = str(first["sessionRef"])
+    request_path = service.trusted_surfaces.sessions_dir / f"{session_ref}.json"
+    selected_path = (
+        request_path.parents[3] / f"trusted-picker-{session_ref}.txt"
+    ).resolve()
+    selected_path.write_text("public adapter content", encoding="utf-8")
+
+    deadline = time.monotonic() + 5
+    result: dict[str, object] = {}
+    while time.monotonic() < deadline:
+        result = service.request_local_resource_picker(
+            audience=audience(), grant_request_id="public-source-1", kind="file"
+        )
+        if result.get("state") not in {"created", "open"}:
+            break
+        time.sleep(0.02)
+    assert result["state"] == "selected"
+    assert service.request_local_resource_picker(
+        audience=audience(), grant_request_id="public-source-1", kind="file"
+    ) == result
+    grant = result["resourceGrant"]
+    assert isinstance(grant, dict)
+    assert grant["constraints"] == {
+        "actions": ["read"], "maxBytes": 32 * 1024 * 1024 * 1024
+    }
+    assert grant["remainingUses"] == 8
+
+    with pytest.raises(CardServiceError) as conflict:
+        service.request_local_resource_picker(
+            audience=audience(), grant_request_id="public-source-1", kind="directory"
+        )
+    assert conflict.value.code == "RESOURCE_GRANT_REQUEST_CONFLICT"
+
+    with pytest.raises(CardServiceError) as invalid:
+        service.request_local_resource_picker(
+            audience=audience(), grant_request_id="../invalid", kind="file"
+        )
+    assert invalid.value.code == "RESOURCE_GRANT_REQUEST_INVALID"

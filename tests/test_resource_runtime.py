@@ -260,7 +260,7 @@ def test_card_service_lazily_owns_one_resource_runtime_without_public_write_tool
     assert before["initialized"] is False
     assert before["trustedGrantIssuance"] is True
     assert backend.values == {}
-    assert "system.request_source_grant" not in service.capabilities()["systemMethods"]
+    assert "system.request_source_grant" in service.capabilities()["systemMethods"]
 
     initialized = service.initialize_local_resource_runtime()
     again = service.initialize_local_resource_runtime()

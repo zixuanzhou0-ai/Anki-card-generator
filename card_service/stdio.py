@@ -44,6 +44,7 @@ def build_parser(description: str = "Codex Study local Card Service") -> argpars
     parser.add_argument("--state-dir", type=Path, required=True)
     runtime_mode = parser.add_mutually_exclusive_group(required=True)
     runtime_mode.add_argument("--runtime-package", type=Path)
+    parser.add_argument("--development-trusted-mcp-session", action="store_true")
     runtime_mode.add_argument("--development-unpackaged-runtime", action="store_true")
     parser.add_argument("--runtime-trust-policy", type=Path)
     parser.add_argument("--broker-authorization-manifest", type=Path)
@@ -54,6 +55,9 @@ def build_parser(description: str = "Codex Study local Card Service") -> argpars
 
 
 def create_service(arguments: argparse.Namespace, parser: argparse.ArgumentParser) -> CardService:
+    if arguments.development_trusted_mcp_session and not arguments.development_unpackaged_runtime:
+        parser.error("--development-trusted-mcp-session requires --development-unpackaged-runtime")
+
     if not arguments.development_unpackaged_runtime and (
         arguments.worker is not None or arguments.python is not None or arguments.tool_dir
     ):

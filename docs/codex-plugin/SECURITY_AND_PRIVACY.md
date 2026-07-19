@@ -404,19 +404,20 @@ type ImportApprovalLedgerState = {
 - 原工具重试时重建并核对同一 OperationRequestManifestDigest、audience、intentDigest、profile/configurationFingerprint/credentialRevision、精确 disclosure/egress、资源/费用上限与当前撤销状态；任何变化都要求新 intent。随后生成的 TaskInputManifestDigest 包含 intentDigest。
 - 重启/新 session 后旧 audience 授权绝不搬迁或回填旧任务。若 WorkReuseDigest、稳定 capability、profile configuration 和已完成 Artifact 均一致，且新 disclosure/egress 等价或更窄，Service 可在重新验证/确认后创建 successor task 与新 TaskInputManifest；SuccessorTaskRebase 同时引用旧/新授权审计。范围扩大或语义/配置变化禁止 remaining 复用。
 
-CURRENT 内部实现已经覆盖 model/TTS OperationIntent、OperationApproval、task-bound InternalAuthorization、认证 SecretRef/credentialRevision、非秘密 Service Profile，以及 file/directory/output/network 资源授权账本。Task AuthorizationBinding 不包含内部 authorizationId；资源 ref 也只定位当前 audience/service 下的认证私有记录。所有批准/撤销写入默认失败关闭；开发态测试可注入精确 audience/target/action 绑定的 verifier，但 packaged Card Service 明确拒绝任意 verifier 注入。本地资源账本已接入 `TrustedSurfaceManager` 的真实 picker verifier；URL 输入、Operation/ImportApproval、统一跨 Registry 事务及公共 MCP 尚未接线，因此不能据此声称端到端授权已完成。
+CURRENT 内部实现已经覆盖 model/TTS OperationIntent、OperationApproval、task-bound InternalAuthorization、认证 SecretRef/credentialRevision、非秘密 Service Profile，以及 file/directory/output/network 资源授权账本。Task AuthorizationBinding 不包含内部 authorizationId；资源 ref 也只定位当前 audience/service 下的认证私有记录。所有批准/撤销写入默认失败关闭；开发态测试可注入精确 audience/target/action 绑定的 verifier，但 packaged Card Service 明确拒绝任意 verifier 注入。本地资源账本已接入 `TrustedSurfaceManager` 的真实 picker verifier；可信 stdio 会话已公开 source/output grant 两个最小工具。URL 输入、Operation/ImportApproval、统一跨 Registry 事务、StudyTask/Worker 绑定及其余公共 MCP 尚未接线，因此不能据此声称端到端授权已完成。
 
 CURRENT M2 的 legacy Project 投影边界坚持“先净化、后持久化”：递归遍历在内存中完成，API/TTS 配置、SecretRef/profile 注入和 secret-bearing 键被移除并记录非秘密 JSON pointer；高置信凭据值或显式 canary 即使藏在普通字段中也使整单失败。Project 顶层使用封闭 allowlist，嵌套 JSON 有节点、深度、字节与安全整数上限，任意调用方预置的 `$resourceSlot` marker 均视为伪造。
 
 raw URL/路径只有在 pointer、资源 kind、resource revision 和原值 SHA-256 与受信 `LegacyResourceBinding` 完全一致时才替换；缺绑定、错型、错值、重复身份或未消费绑定全部拒绝。持久 slot 不保存原值摘要，网络只保存 canonical request digest、query-redaction digest 和已去 userinfo/query/fragment 的 display origin。model/TTS 连接参数只存在于封闭 Service Profile Registry；legacy payload 只保存 profileRef + configurationFingerprint。内部解包还会复核 Blob/canonical JSON/schema digest、marker↔pointer、同项目父 Artifact 与撤销状态。
 
-当前 Project public summary 不返回 Project projection、BlobRef、internalResourceBindingId、profileRef 或 configurationFingerprint；本地资源 public summary 不返回 raw path、内部 grantId、attestation、useId 或认证标签。Card Service 已惰性拥有本地资源账本、task stager 与真实 picker adapter；picker raw path 只以一次性 AES-GCM 密文短暂落入响应文件，认证解密后删除，公开结果不含路径。公共 MCP、宿主附件、StudyTask/Worker locator 绑定和完整应用数据 ACL 仍未接线；该组合不能代替跨 Registry 事务。发布 envelope 失败时可能遗留已经净化、内容寻址的孤儿 Blob，后续保留清理不得把它描述为 raw Project 泄漏，也不得在引用/事务合同完成前贸然删除。
+当前 Project public summary 不返回 Project projection、BlobRef、internalResourceBindingId、profileRef 或 configurationFingerprint；本地资源 public summary 不返回 raw path、内部 grantId、attestation、useId 或认证标签。Card Service 已惰性拥有本地资源账本、task stager 与真实 picker adapter；picker raw path 只以一次性 AES-GCM 密文短暂落入响应文件，认证解密后删除。公开 MCP 的 source/output grant 结果也只含 opaque ref、显示名、revision 摘要、服务端约束和有效期，不含路径、picker session、密文、attestation、私有 receipt 或 locator。宿主附件、StudyTask/Worker locator 绑定和完整应用数据 ACL 仍未接线；该组合不能代替跨 Registry 事务。发布 envelope 失败时可能遗留已经净化、内容寻址的孤儿 Blob，后续保留清理不得把它描述为 raw Project 泄漏，也不得在引用/事务合同完成前贸然删除。
 
 ### 5.1 stdio 身份、所有权与本地 ACL
 
-- Card Service 启动时记录真实 OS user SID、host instance、plugin instance、service instance 和 session；只接受该受信启动链路的连接。
-- 这些身份来自宿主握手、父进程/通道证明和本机 ACL，不接受 MCP 参数自报。
-- 应用数据目录、凭据、项目注册表、授权账本和 Unix/Windows IPC 端点仅授予当前 OS 用户与必要的服务主体。
+- 正式 MCP 必须由固定安装布局中的原生 launcher 直接启动。launcher 用 OS CSPRNG 生成每进程 256-bit nonce；MCP 子进程消费并删除 nonce/PID 环境值，核对真实父 PID 和父可执行文件，再结合当前 OS 用户 SID 摘要派生 host/session binding。
+- owner/host/plugin/session 不存在于公共工具参数，调用方不能自报或覆盖。缺失证明、直接运行 packaged Python、父 PID 不符或 launcher 路径不符都会在资源工具注册前失败关闭。
+- 当前证明只确认“固定原生 launcher 的直接子进程”和当前 OS 用户，不声称已经证明 launcher 的父进程是某个 Codex 发行版本。安装签名与清单、应用数据 ACL、宿主 attestation 是独立层，仍需在正式发布门槛逐项闭合。
+- 凭据、项目注册表、授权账本和 IPC 端点的正式 DACL/ACL 仍按发布清单验证；同一用户下任意代码执行不在完全抵御范围内。
 - 项目 owner 至少绑定 OS user SID 与 plugin installation identity；list/get project 和 get artifact 先做 owner/scope 校验。
 - 新服务实例读取旧项目需要通过签名 manifest、同一用户和明确的安装迁移策略；同用户的任意第二进程不自动获得枚举权。
 - 威胁模型明确承认：同一 OS 用户下已完全攻陷的恶意进程可能访问该用户资源；本项目仍通过 ACL、进程边界、签名、最小秘密暴露和短会话授权降低风险，但不声称抵御已取得同用户任意代码执行的攻击者。
@@ -468,7 +469,7 @@ CURRENT M2 已完成上述文件、输入目录和输出目录的内部 grant le
 
 内部 `TaskResourceStager` 已实现文件与目录的任务级快照：独占打开、打开句柄身份重验、有界流复制、目录逐项 manifest、二次扫描、名称/深度/条目/总字节限制，以及 reparse/hardlink/竞态/篡改拒绝。私有 receipt 认证 source、task、audience、service、workspace 与 manifest；Worker 可见值只有 task-workspace 相对路径，不含 raw source path 或可转移 staging bearer。Windows hardening 对 task SID 仅开放 read/execute，失败清理不能静默留下可消费 partial。
 
-该实现目前仍是内部安全原语：Card Service composition root 已在 packaged runtime 绑定唯一正式 hardener 和本地 picker verifier，并禁止任意 gesture verifier 注入；开发态只有显式测试构造可使用注入 verifier。宿主 attachment attestation、公共 `study.register_inputs`、StudyTask/Worker locator 绑定与网络 staging 仍未完成；这些接线完成前公共写入口继续 fail closed。
+Card Service composition root 已在 packaged runtime 绑定唯一正式 hardener 和本地 picker verifier，并禁止任意 gesture verifier 注入；开发态只有显式测试构造可使用注入 verifier。可信 stdio 仅把 source/output picker 与 opaque grant 签发公开；尚未公开 `study.register_inputs`，也未把 ref 绑定到 StudyTask/Worker locator 或 APKG 输出发布。宿主 attachment attestation 与网络 staging 仍未完成；这些接线完成前生成、导出和 Anki 写入口继续 fail closed。
 
 
 ## 8. 网络与 SSRF
