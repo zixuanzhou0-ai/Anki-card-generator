@@ -35,7 +35,7 @@ Read [learning-contract.md](references/learning-contract.md) when selecting obje
 7. Generate only validated plans. Export only cards that pass the export gate.
 8. Import into Anki only after the trusted local confirmation returns approved. Poll the import task and distinguish `apkg_ready`, `imported_unverified`, and `anki_data_verified`.
 9. Treat `runtimeVerification=not_assessed` as the current ceiling. Do not claim that rendering, playback, focus behavior, or restart review was verified.
-10. On restart, list recoverable tasks and resume only a candidate-discovery task returned by the service. Never use that route to replay export or Anki writes.
+10. On restart, list projects and read the selected project's authoritative workflow snapshot before acting. Then list recoverable tasks and resume only a candidate-discovery task returned by the service. Never use that route to replay export or Anki writes.
 
 Read [workflow-contract.md](references/workflow-contract.md) for stage vocabulary, tool order, recovery rules, and completion claims.
 

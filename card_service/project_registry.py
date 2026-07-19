@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -30,6 +31,12 @@ MAX_TITLE_LENGTH = 240
 MAX_EXCLUSIONS = 256
 MAX_ROUTES = 32
 MAX_SAFE_INTEGER = 9_007_199_254_740_991
+MAX_PROJECT_SCAN_RECORDS = 10_000
+PROJECT_CURSOR_PREFIX = "study_project_cursor_"
+PROJECT_CURSOR_DOMAIN = b"study.project-registry.cursor.v1\x00"
+PROJECT_CURSOR_RE = re.compile(
+    r"^study_project_cursor_[A-Za-z0-9_-]{40,1700}\.[A-Za-z0-9_-]{40,80}$"
+)
 
 ID_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-")
 LEARNING_ROUTES = frozenset(
@@ -68,6 +75,24 @@ def _now() -> str:
 
 def _sha(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def _base64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+def _decode_base64url(value: str) -> bytes:
+    try:
+        decoded = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+    except (TypeError, ValueError) as error:
+        raise ProjectRegistryError(
+            "PROJECT_CURSOR_INVALID", "Project cursor encoding is invalid"
+        ) from error
+    if not hmac.compare_digest(_base64url(decoded), value):
+        raise ProjectRegistryError(
+            "PROJECT_CURSOR_INVALID", "Project cursor encoding is not canonical"
+        )
+    return decoded
 
 
 def _require_id(value: Any, label: str) -> str:
@@ -218,6 +243,92 @@ class ProjectRegistry:
         except FileExistsError:
             pass
         self._thread_lock = threading.RLock()
+
+    def _audience_digest(self, audience: ArtifactAudienceBinding) -> str:
+        return _sha(
+            canonical_json_bytes(
+                {
+                    "ownerDigest": audience.owner_digest,
+                    "hostId": audience.host_id,
+                    "pluginId": audience.plugin_id,
+                }
+            )
+        )
+
+    def _encode_cursor(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        updated_at: str,
+        project_id: str,
+    ) -> str:
+        payload = canonical_json_bytes(
+            {
+                "schemaVersion": 1,
+                "serviceInstanceId": self._service_instance_id,
+                "audienceDigest": self._audience_digest(audience),
+                "updatedAt": updated_at,
+                "projectId": project_id,
+            }
+        )
+        tag = hmac.new(
+            self._authentication_key,
+            PROJECT_CURSOR_DOMAIN + payload,
+            hashlib.sha256,
+        ).digest()
+        return PROJECT_CURSOR_PREFIX + _base64url(payload) + "." + _base64url(tag)
+
+    def _decode_cursor(
+        self, value: str, audience: ArtifactAudienceBinding
+    ) -> tuple[str, str]:
+        if not isinstance(value, str) or not PROJECT_CURSOR_RE.fullmatch(value):
+            raise ProjectRegistryError(
+                "PROJECT_CURSOR_INVALID", "Project cursor is invalid"
+            )
+        body = value[len(PROJECT_CURSOR_PREFIX) :]
+        try:
+            payload_text, tag_text = body.split(".", 1)
+        except ValueError as error:
+            raise ProjectRegistryError(
+                "PROJECT_CURSOR_INVALID", "Project cursor is invalid"
+            ) from error
+        payload = _decode_base64url(payload_text)
+        tag = _decode_base64url(tag_text)
+        expected = hmac.new(
+            self._authentication_key,
+            PROJECT_CURSOR_DOMAIN + payload,
+            hashlib.sha256,
+        ).digest()
+        if not hmac.compare_digest(tag, expected):
+            raise ProjectRegistryError(
+                "PROJECT_CURSOR_INVALID", "Project cursor authentication failed"
+            )
+        try:
+            decoded = json.loads(payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ProjectRegistryError(
+                "PROJECT_CURSOR_INVALID", "Project cursor payload is invalid"
+            ) from error
+        if (
+            not isinstance(decoded, dict)
+            or set(decoded)
+            != {
+                "schemaVersion",
+                "serviceInstanceId",
+                "audienceDigest",
+                "updatedAt",
+                "projectId",
+            }
+            or decoded.get("schemaVersion") != 1
+            or decoded.get("serviceInstanceId") != self._service_instance_id
+            or decoded.get("audienceDigest") != self._audience_digest(audience)
+            or not isinstance(decoded.get("updatedAt"), str)
+            or not isinstance(decoded.get("projectId"), str)
+        ):
+            raise ProjectRegistryError(
+                "PROJECT_CURSOR_INVALID", "Project cursor fields are invalid"
+            )
+        return decoded["updatedAt"], decoded["projectId"]
 
     def _ensure_parent(self, path: Path) -> None:
         absolute = path.absolute()
@@ -585,6 +696,69 @@ class ProjectRegistry:
             reverse=True,
         )
         return projects
+
+    def list_projects_page(
+        self,
+        audience: ArtifactAudienceBinding,
+        *,
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ProjectRegistryError(
+                "PROJECT_LIST_INVALID", "Project list limit is invalid"
+            )
+        position = self._decode_cursor(cursor, audience) if cursor is not None else None
+        projects: list[dict[str, Any]] = []
+        with self._transaction():
+            paths: list[Path] = []
+            for path in self._projects_root.glob("*/*.json"):
+                paths.append(path)
+                if len(paths) > MAX_PROJECT_SCAN_RECORDS:
+                    raise ProjectRegistryError(
+                        "PROJECT_LIST_SCAN_LIMIT",
+                        "Project storage exceeds the bounded scan limit",
+                    )
+            for path in sorted(paths, key=lambda item: str(item).casefold()):
+                record = self._decode(self._safe_read(path))
+                try:
+                    self._authorize(record, audience)
+                except ProjectRegistryError as error:
+                    if error.code == "PROJECT_SCOPE_MISMATCH":
+                        continue
+                    raise
+                projects.append(self._public(record))
+        projects.sort(
+            key=lambda item: (item["updatedAt"], item["projectId"]),
+            reverse=True,
+        )
+        start = 0
+        if position is not None:
+            try:
+                start = next(
+                    index + 1
+                    for index, item in enumerate(projects)
+                    if (item["updatedAt"], item["projectId"]) == position
+                )
+            except StopIteration as error:
+                raise ProjectRegistryError(
+                    "PROJECT_CURSOR_STALE",
+                    "Project cursor position no longer exists",
+                ) from error
+        items = projects[start : start + limit]
+        next_cursor = None
+        if start + len(items) < len(projects) and items:
+            last = items[-1]
+            next_cursor = self._encode_cursor(
+                audience=audience,
+                updated_at=last["updatedAt"],
+                project_id=last["projectId"],
+            )
+        return {
+            "totalProjects": len(projects),
+            "items": items,
+            "nextCursor": next_cursor,
+        }
 
     @staticmethod
     def _artifact_refs(

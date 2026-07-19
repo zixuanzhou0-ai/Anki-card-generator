@@ -366,6 +366,7 @@ class StudyRuntime:
             ),
             "publicAnkiWrite": self.anki_import_execution is not None,
             "publicProjectTools": True,
+            "publicProjectQueries": True,
             "publicInputRegistration": True,
             "publicSourceInspection": True,
             "pathDisclosure": False,
@@ -401,6 +402,176 @@ class StudyRuntime:
     def list_projects(self, audience: ArtifactAudienceBinding) -> list[dict[str, Any]]:
         try:
             return self.projects.list_projects(audience)
+        except ProjectRegistryError as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
+    @staticmethod
+    def _public_project_task(task: Mapping[str, Any]) -> dict[str, Any]:
+        progress = task.get("progress")
+        if not isinstance(progress, Mapping):
+            progress = {}
+        public_progress: dict[str, Any] = {
+            "phase": str(progress.get("phase") or "unknown"),
+            "phasePercent": progress.get("phasePercent"),
+            "overallPercent": progress.get("overallPercent"),
+            "lastProgressAt": str(progress.get("lastProgressAt") or ""),
+        }
+        for field in (
+            "completedItems",
+            "totalItems",
+            "completedBatches",
+            "totalBatches",
+        ):
+            if progress.get(field) is not None:
+                public_progress[field] = progress[field]
+        state = str(task.get("state") or "")
+        resumability = str(task.get("resumability") or "none")
+        return {
+            "taskId": str(task.get("taskId") or ""),
+            "intent": str(task.get("intent") or ""),
+            "state": state,
+            "cancellable": bool(task.get("cancellable")),
+            "resumability": resumability,
+            "recoverable": (
+                state in {"failed", "cancelled", "interrupted"}
+                and resumability != "none"
+            ),
+            "progress": public_progress,
+            "updatedAt": str(task.get("updatedAt") or ""),
+        }
+
+    def _current_project_task(
+        self,
+        project: Mapping[str, Any],
+        audience: ArtifactAudienceBinding,
+    ) -> dict[str, Any] | None:
+        workflow = project.get("workflow")
+        task_id = workflow.get("currentTaskId") if isinstance(workflow, Mapping) else None
+        if task_id is None:
+            return None
+        if not isinstance(task_id, str) or not task_id:
+            raise StudyRuntimeError(
+                "PROJECT_RECORD_INVALID", "Project current task identity is invalid"
+            )
+        try:
+            task = self.tasks.get_task(task_id, audience)
+        except StudyTaskError as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+        public = self._public_project_task(task)
+        if public["state"] != workflow.get("operationState"):
+            raise StudyRuntimeError(
+                "PROJECT_TASK_STATE_MISMATCH",
+                "Project workflow and current task state do not match",
+            )
+        return public
+
+    @staticmethod
+    def _learning_contract_summary(project: Mapping[str, Any]) -> dict[str, Any]:
+        contract = project.get("learningContract")
+        if not isinstance(contract, Mapping):
+            raise StudyRuntimeError(
+                "PROJECT_RECORD_INVALID", "Project learning contract is invalid"
+            )
+        budget = contract.get("budget")
+        if not isinstance(budget, Mapping):
+            raise StudyRuntimeError(
+                "PROJECT_RECORD_INVALID", "Project learning budget is invalid"
+            )
+        return {
+            "contractRevision": int(contract.get("contractRevision") or 0),
+            "learnerLevel": contract.get("learnerLevel"),
+            "routes": list(contract.get("routes") or []),
+            "maxNewCards": int(budget.get("maxNewCards") or 0),
+            "targetDailyReviewMinutes": int(
+                budget.get("targetDailyReviewMinutes") or 0
+            ),
+            "promptLanguage": str(contract.get("promptLanguage") or ""),
+            "answerLanguage": str(contract.get("answerLanguage") or ""),
+            "evidencePolicy": str(contract.get("evidencePolicy") or ""),
+            "exclusionCount": len(contract.get("exclusions") or []),
+        }
+
+    def get_public_project(
+        self, *, project_id: str, audience: ArtifactAudienceBinding
+    ) -> dict[str, Any]:
+        try:
+            project = self.projects.get_project(project_id, audience)
+            current_task = self._current_project_task(project, audience)
+            artifacts: list[dict[str, Any]] = []
+            for artifact_ref in project.get("latestArtifactRefs", []):
+                if not isinstance(artifact_ref, Mapping):
+                    raise StudyRuntimeError(
+                        "PROJECT_RECORD_INVALID",
+                        "Project artifact reference is invalid",
+                    )
+                artifacts.append(
+                    {
+                        "artifactHandle": self.artifacts.issue_handle(
+                            artifact_ref, audience
+                        ),
+                        "payloadSchema": str(
+                            artifact_ref.get("payloadSchema") or ""
+                        ),
+                        "projectRevision": int(
+                            artifact_ref.get("projectRevision") or 0
+                        ),
+                        "artifactRevision": int(
+                            artifact_ref.get("artifactRevision") or 0
+                        ),
+                    }
+                )
+            return {
+                "schemaVersion": 1,
+                "projectId": project["projectId"],
+                "title": project["title"],
+                "projectRevision": project["projectRevision"],
+                "learningContract": project["learningContract"],
+                "inferredDefaults": project["inferredDefaults"],
+                "workflow": project["workflow"],
+                "currentTask": current_task,
+                "latestArtifacts": artifacts,
+                "createdAt": project["createdAt"],
+                "updatedAt": project["updatedAt"],
+            }
+        except (ProjectRegistryError, ArtifactRegistryError) as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
+    def list_public_projects(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        try:
+            page = self.projects.list_projects_page(
+                audience, cursor=cursor, limit=limit
+            )
+            items: list[dict[str, Any]] = []
+            for project in page["items"]:
+                task = self._current_project_task(project, audience)
+                items.append(
+                    {
+                        "projectId": project["projectId"],
+                        "title": project["title"],
+                        "projectRevision": project["projectRevision"],
+                        "learningContractSummary": self._learning_contract_summary(
+                            project
+                        ),
+                        "artifactStage": project["workflow"]["artifactStage"],
+                        "operationState": project["workflow"]["operationState"],
+                        "latestTask": task,
+                        "updatedAt": project["updatedAt"],
+                        "recoverable": bool(task and task["recoverable"]),
+                    }
+                )
+            return {
+                "schemaVersion": 1,
+                "totalProjects": page["totalProjects"],
+                "returnedProjects": len(items),
+                "items": items,
+                "nextCursor": page["nextCursor"],
+            }
         except ProjectRegistryError as error:
             raise StudyRuntimeError(error.code, error.message) from error
 

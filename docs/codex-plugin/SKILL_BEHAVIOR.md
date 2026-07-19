@@ -6,7 +6,7 @@
 
 实际 `SKILL.md` 已存在并由插件包测试/validator 检查；本文其余部分同时保留未来完整 Skill 设计。当前 Skill 必须先读 `system.get_capabilities`，只命令式调用当前 runtime 实际公开的工具。
 
-当前新项目主链为：capabilities → `system.list_profiles`（现有 profile 缺凭据时用 `system.open_local_settings` 受信窗口补齐并按 configurationSessionRef 轮询）→ source grant → project → register/inspect → `system.authorize_candidate_discovery({"preset":"hermes_grok_4_5"})` → `study.start_discovery`/task poll → candidate review/selection → deterministic CardPlan/validation → text cards → APKG export → prepare import → trusted confirmation → `anki.import_and_verify`/task poll。启动或发现中断后，先用 `study.list_recoverable_tasks` 取得候选发现任务，再以 `study.resume_task` 创建或复用认证后继任务。
+当前新项目主链为：capabilities → `system.list_profiles`（现有 profile 缺凭据时用 `system.open_local_settings` 受信窗口补齐并按 configurationSessionRef 轮询）→ source grant → project → register/inspect → `system.authorize_candidate_discovery({"preset":"hermes_grok_4_5"})` → `study.start_discovery`/task poll → candidate review/selection → deterministic CardPlan/validation → text cards → APKG export → prepare import → trusted confirmation → `anki.import_and_verify`/task poll。启动或发现中断后，先用 `study.list_projects`/`study.get_project` 找回项目及权威 WorkflowSnapshot，再用 `study.list_recoverable_tasks` 取得可恢复的候选发现任务，并以 `study.resume_task` 创建或复用认证后继任务。
 
 当前没有 `system.validate_profile`、`system.request_operation_confirmation`、`study.update_learning_contract`、`study.get_artifact` 或 `study.get_audit`，Skill 不得调用。当前本地设置只管理已存在 profile 的凭据，不能创建配置或由 Agent 注入 Provider/Base URL/model。公开恢复只适用于候选发现；导出和 Anki 写入不允许通过通用 resume 重放。固定 discovery preset 也不是通用模型设置接口。
 

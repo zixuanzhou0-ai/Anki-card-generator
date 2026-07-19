@@ -24,28 +24,29 @@ Treat the exposed tool list returned by the installed runtime as authoritative. 
 
 1. `system.get_capabilities`.
 2. `system.list_profiles`. When an existing selected profile reports `CREDENTIAL_REQUIRED`, call `system.open_local_settings` with its exact profile/capability, then poll only the returned `configurationSessionRef`. Never place a credential in tool arguments or conversation.
-3. `system.request_source_grant` for a local file or directory.
-4. `study.create_project`.
-5. `study.register_inputs`, `study.start_source_inspection`, and `study.get_source_inspection`.
-6. `system.authorize_candidate_discovery` with only the fixed `hermes_grok_4_5` preset; after approval call `study.start_discovery` and poll `study.get_task`.
-7. `study.list_candidates`, `study.get_candidate`, and `study.preview_evidence`.
-8. `study.set_selection`, `study.plan_cards`, `study.list_card_plans`, `study.edit_card_plan`, and `study.validate_card_plans`.
-9. `cards.generate`, then `cards.list`.
-10. `system.request_output_grant`, then `cards.export_apkg`; poll `study.get_task` and use `study.cancel_task` only on explicit cancellation.
-11. `anki.prepare_import`, `anki.request_import_confirmation`, then `anki.import_and_verify`; poll `study.get_task`.
-12. On startup or after an interrupted discovery, call `study.list_recoverable_tasks`; use `study.resume_task` only for a returned candidate-discovery task.
+3. On startup, call `study.list_projects`; use `study.get_project` for the selected project before deciding whether to resume or create new work.
+4. `system.request_source_grant` for a local file or directory.
+5. `study.create_project` for new work.
+6. `study.register_inputs`, `study.start_source_inspection`, and `study.get_source_inspection`.
+7. `system.authorize_candidate_discovery` with only the fixed `hermes_grok_4_5` preset; after approval call `study.start_discovery` and poll `study.get_task`.
+8. `study.list_candidates`, `study.get_candidate`, and `study.preview_evidence`.
+9. `study.set_selection`, `study.plan_cards`, `study.list_card_plans`, `study.edit_card_plan`, and `study.validate_card_plans`.
+10. `cards.generate`, then `cards.list`.
+11. `system.request_output_grant`, then `cards.export_apkg`; poll `study.get_task` and use `study.cancel_task` only on explicit cancellation.
+12. `anki.prepare_import`, `anki.request_import_confirmation`, then `anki.import_and_verify`; poll `study.get_task`.
+13. On startup or after an interrupted discovery, call `study.list_recoverable_tasks`; use `study.resume_task` only for a returned candidate-discovery task.
 
 Do not call tools that are not exposed by the installed plugin version.
 
 ## Planned but unavailable tools
 
-Do not call `system.request_network_grant`, `system.request_operation_confirmation`, `system.revoke_grant`, `system.validate_profile`, `study.list_projects`, `study.get_project`, `study.update_learning_contract`, `study.edit_candidate`, `study.get_artifact`, or `study.get_audit` until a future runtime exposes them. The current `system.open_local_settings` only manages credentials for an already configured profile; it does not let the Agent create a profile or inject provider/URL/model fields.
+Do not call `system.request_network_grant`, `system.request_operation_confirmation`, `system.revoke_grant`, `system.validate_profile`, `study.update_learning_contract`, `study.edit_candidate`, `study.get_artifact`, or `study.get_audit` until a future runtime exposes them. The current `system.open_local_settings` only manages credentials for an already configured profile; it does not let the Agent create a profile or inject provider/URL/model fields.
 
 ## Tasks and recovery
 
 - Treat `study.get_task` as authoritative; prose progress is not state.
 - Use `study.cancel_task` for explicit cancellation.
-- Use `study.list_recoverable_tasks` as the only public recovery inventory. `study.resume_task` currently accepts only returned failed, cancelled, or interrupted candidate-discovery tasks and creates or reuses an authenticated successor.
+- Use `study.list_projects` and `study.get_project` to recover the authoritative project/revision/stage view. Use `study.list_recoverable_tasks` as the only public task-resume inventory; `study.resume_task` currently accepts only returned failed, cancelled, or interrupted candidate-discovery tasks and creates or reuses an authenticated successor.
 - Export and Anki-import tasks have no public generic resume contract. Never use discovery recovery to replay either write boundary.
 - Retry the active or failed stage only when the returned task state and next action permit it.
 - For Anki import, `resumability=none`. If cancellation or failure crosses a possible write boundary, require `inspect_before_retry`; never blindly repeat the import.

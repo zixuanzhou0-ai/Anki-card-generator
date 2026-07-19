@@ -4,7 +4,7 @@
 
 ## CURRENT 能力边界速查（2026-07-19）
 
-- 当前可信开发态 stdio runtime 已公开 29 个工具，能够完成：脱敏 profile 列表与现有 profile 的受信本地凭据管理、本地支持文本授权与检查、固定 Hermes Grok 4.5 候选发现、候选发现安全恢复、候选选择、确定性文本 CardPlan 与卡片生成、APKG 导出、受信确认、真实 Anki 导入和数据级核验。
+- 当前可信开发态 stdio runtime 已公开 31 个工具，能够完成：脱敏 profile 列表与现有 profile 的受信本地凭据管理、项目分页找回与权威工作流快照、本地支持文本授权与检查、固定 Hermes Grok 4.5 候选发现、候选发现安全恢复、候选选择、确定性文本 CardPlan 与卡片生成、APKG 导出、受信确认、真实 Anki 导入和数据级核验。
 - 当前来源只包括本地文本、Markdown、代码、HTML、字幕文本及目录中的受支持成员。视频解码、YouTube/网络来源、PDF、Office、网页抓取、音频/播客转写和附件桥仍未实现。
 - 当前不生成模型扩写卡片、TTS 或媒体切片；CardPlan 只允许冻结证据足以确定性支持的文本/零媒体路线。
 - Anki 导入最高状态为 `anki_data_verified`。实际渲染、音视频播放、复习按键和重启持久性均为 `not_assessed`，不能写成“已在 Anki 完整核验”。

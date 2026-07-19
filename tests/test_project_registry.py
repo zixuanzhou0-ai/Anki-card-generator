@@ -73,6 +73,70 @@ def test_create_get_list_and_defaults_are_canonical(tmp_path: Path) -> None:
     ]
 
 
+def test_project_pages_are_authenticated_bounded_and_session_independent(
+    tmp_path: Path,
+) -> None:
+    store = registry(tmp_path)
+    bound = audience()
+    expected = {
+        create(store, bound, key=f"project-{index}")["projectId"]
+        for index in range(3)
+    }
+    first = store.list_projects_page(bound, limit=1)
+    second = store.list_projects_page(
+        audience(session_id="session-2"),
+        cursor=first["nextCursor"],
+        limit=1,
+    )
+    third = store.list_projects_page(
+        bound,
+        cursor=second["nextCursor"],
+        limit=1,
+    )
+
+    assert first["totalProjects"] == 3
+    assert {
+        first["items"][0]["projectId"],
+        second["items"][0]["projectId"],
+        third["items"][0]["projectId"],
+    } == expected
+    assert third["nextCursor"] is None
+    forged_cursor = first["nextCursor"][:-1] + (
+        "A" if first["nextCursor"][-1] != "A" else "B"
+    )
+    with pytest.raises(ProjectRegistryError) as tampered:
+        store.list_projects_page(bound, cursor=forged_cursor)
+    assert tampered.value.code == "PROJECT_CURSOR_INVALID"
+    with pytest.raises(ProjectRegistryError) as wrong_scope:
+        store.list_projects_page(
+            audience(plugin_id="other.plugin"), cursor=first["nextCursor"]
+        )
+    assert wrong_scope.value.code == "PROJECT_CURSOR_INVALID"
+
+
+def test_project_page_cursor_fails_closed_when_its_position_changes(
+    tmp_path: Path,
+) -> None:
+    store = registry(tmp_path)
+    bound = audience()
+    create(store, bound, key="first")
+    create(store, bound, key="second")
+    first_page = store.list_projects_page(bound, limit=1)
+    cursor_project = first_page["items"][0]
+    store.update_learning_contract(
+        audience=bound,
+        project_id=cursor_project["projectId"],
+        expected_project_revision=1,
+        expected_contract_revision=1,
+        operation_id="move-cursor-project",
+        operations=[{"op": "set_purpose", "purpose": "Changed after paging"}],
+    )
+
+    with pytest.raises(ProjectRegistryError) as captured:
+        store.list_projects_page(bound, cursor=first_page["nextCursor"])
+    assert captured.value.code == "PROJECT_CURSOR_STALE"
+
+
 def test_create_idempotency_returns_same_project_and_rejects_changed_input(
     tmp_path: Path,
 ) -> None:

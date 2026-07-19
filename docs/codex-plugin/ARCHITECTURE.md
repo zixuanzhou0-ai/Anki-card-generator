@@ -1,10 +1,12 @@
 # 目标架构
 
-> 基线日期：2026-07-19
+> 基线日期：2026-07-20
 
-## CURRENT 运行切片（2026-07-19）
+## CURRENT 运行切片（2026-07-20）
 
 当前可信调用链是：Codex/Skill → 可信 stdio MCP → Card Service 组合根 → 授权/Artifact/Task 运行时 → 受限 Worker/AnkiConnect。Card Service 是唯一权限与状态真相；Agent 不能直连 Worker、文件路径、Provider 凭据或 AnkiConnect。
+
+项目控制面现已开放 `study.list_projects` 与 `study.get_project`：前者使用绑定 service instance 与 owner/host/plugin scope 的认证 cursor 有界分页，后者返回唯一 WorkflowSnapshot、当前任务脱敏摘要和当前 session 的 opaque Artifact handles。重启后的 Agent 可以先找回项目与精确 revision/stage，再决定是否查询可恢复任务；两个只读工具都不返回路径、来源正文、内部 ArtifactRef 或认证材料。
 
 候选发现已经通过固定 `hermes_grok_4_5` 受信授权和异步 `study.start_discovery` 接线。服务冻结 inspection、项目 revision、候选预算、模型配置指纹、凭据 revision、授权与成本边界，并分别执行 proposer/reviewer 工作单元。公共调用方不能选择模型、endpoint、credential、prompt 或 source body。
 

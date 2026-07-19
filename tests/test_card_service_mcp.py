@@ -40,7 +40,11 @@ from card_service.mcp_inspection_tools import (
     GET_SOURCE_INSPECTION_TOOL_NAME,
     START_SOURCE_INSPECTION_TOOL_NAME,
 )
-from card_service.mcp_project_tools import CREATE_PROJECT_TOOL_NAME
+from card_service.mcp_project_tools import (
+    CREATE_PROJECT_TOOL_NAME,
+    GET_PROJECT_TOOL_NAME,
+    LIST_PROJECTS_TOOL_NAME,
+)
 from card_service.mcp_resource_tools import OUTPUT_GRANT_TOOL_NAME, SOURCE_GRANT_TOOL_NAME
 from card_service.mcp_selection_tools import SET_SELECTION_TOOL_NAME
 from card_service.mcp_system_tools import (
@@ -187,6 +191,8 @@ def test_mcp_bridge_reports_trusted_session_without_disclosing_identity() -> Non
         SOURCE_GRANT_TOOL_NAME,
         OUTPUT_GRANT_TOOL_NAME,
         CREATE_PROJECT_TOOL_NAME,
+        LIST_PROJECTS_TOOL_NAME,
+        GET_PROJECT_TOOL_NAME,
         REGISTER_INPUTS_TOOL_NAME,
         START_SOURCE_INSPECTION_TOOL_NAME,
         GET_SOURCE_INSPECTION_TOOL_NAME,
@@ -324,6 +330,8 @@ def test_real_mcp_stdio_process_reports_card_service_capabilities(tmp_path: Path
             SOURCE_GRANT_TOOL_NAME,
             OUTPUT_GRANT_TOOL_NAME,
             CREATE_PROJECT_TOOL_NAME,
+            LIST_PROJECTS_TOOL_NAME,
+            GET_PROJECT_TOOL_NAME,
             REGISTER_INPUTS_TOOL_NAME,
             START_SOURCE_INSPECTION_TOOL_NAME,
             GET_SOURCE_INSPECTION_TOOL_NAME,
@@ -363,6 +371,7 @@ def test_real_mcp_stdio_process_reports_card_service_capabilities(tmp_path: Path
         assert capabilities["studyRuntime"]["publicCardPlanValidation"] is True
         assert capabilities["studyRuntime"]["publicCardGeneration"] is True
         assert capabilities["studyRuntime"]["publicCardQueries"] is True
+        assert capabilities["studyRuntime"]["publicProjectQueries"] is True
         assert capabilities["studyRuntime"]["publicCandidateDiscovery"] is True
         assert capabilities["studyRuntime"]["candidateDiscoveryAuthorizationReady"] is False
         assert capabilities["studyRuntime"]["publicAnkiWrite"] is True

@@ -128,6 +128,28 @@ def test_register_file_freezes_source_without_disclosing_local_path(
     for forbidden in ("workspaceRelativePath", "stagingRef", "registryAuthRef"):
         assert forbidden not in encoded
 
+    public_project = runtime.get_public_project(
+        project_id=project["projectId"], audience=audience(session_id="session-2")
+    )
+    assert public_project["workflow"]["operationState"] == "succeeded"
+    assert public_project["currentTask"]["taskId"] == result["taskId"]
+    assert public_project["currentTask"]["state"] == "succeeded"
+    assert public_project["currentTask"]["recoverable"] is False
+    assert len(public_project["latestArtifacts"]) == 1
+    public_artifact = public_project["latestArtifacts"][0]
+    assert public_artifact["payloadSchema"] == "study.source-asset"
+    assert runtime.artifacts.resolve(
+        public_artifact["artifactHandle"], audience(session_id="session-2")
+    )["payloadSchema"] == "study.source-asset"
+    public_page = runtime.list_public_projects(
+        audience=audience(session_id="session-2"), limit=1
+    )
+    assert public_page["items"][0]["latestTask"]["state"] == "succeeded"
+    assert public_page["items"][0]["artifactStage"] == "sources_ready"
+    public_encoded = json.dumps(public_project, ensure_ascii=False, sort_keys=True)
+    for forbidden in ("registryAuthRef", "blobRef", "workspace", str(source)):
+        assert forbidden not in public_encoded
+
     envelope = runtime.artifacts.resolve(
         result["sources"][0]["sourceHandle"], audience()
     )

@@ -1246,6 +1246,7 @@ class CardService:
             "publicAnkiImportConfirmation": True,
             "publicAnkiWrite": True,
             "pathDisclosure": False,
+            "publicProjectQueries": True,
             "complete": False,
         }
 
@@ -1360,6 +1361,42 @@ class CardService:
                 error.message,
                 retryable=error.code.endswith("_CONFLICT"),
                 stage="request",
+            ) from error
+
+    def get_study_project(
+        self, *, audience: ArtifactAudienceBinding, project_id: str
+    ) -> dict[str, Any]:
+        try:
+            return self._ensure_study_runtime().get_public_project(
+                audience=audience, project_id=project_id
+            )
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=False,
+                stage="project_query",
+            ) from error
+
+    def list_study_projects(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        try:
+            return self._ensure_study_runtime().list_public_projects(
+                audience=audience,
+                cursor=cursor,
+                limit=limit,
+            )
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=False,
+                stage="project_query",
             ) from error
 
     def register_study_inputs(

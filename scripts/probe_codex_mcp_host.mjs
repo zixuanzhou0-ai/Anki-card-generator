@@ -20,6 +20,8 @@ const FULL_TOOLSET = [
   "system.request_source_grant",
   "system.request_output_grant",
   "study.create_project",
+  "study.list_projects",
+  "study.get_project",
   "study.register_inputs",
   "study.start_source_inspection",
   "study.get_source_inspection",
@@ -365,7 +367,7 @@ async function main() {
     notify("initialized");
 
     const started = await call("thread/start", {
-      cwd: ROOT,
+      cwd: runRoot,
       ephemeral: true,
       approvalPolicy: "never",
       sandbox: "read-only",
@@ -463,6 +465,37 @@ async function main() {
         projectRevision: createdProject.projectRevision,
         artifactStage: createdProject.workflow.artifactStage,
       };
+      const listed = await call("mcpServer/tool/call", {
+        threadId,
+        server: SERVER,
+        tool: "study.list_projects",
+        arguments: { limit: 1 },
+      });
+      const listedProjects = listed?.structuredContent;
+      if (
+        listed?.isError === true ||
+        listedProjects?.totalProjects !== 1 ||
+        listedProjects?.returnedProjects !== 1 ||
+        listedProjects?.items?.[0]?.projectId !== project.projectId
+      ) {
+        throw new Error("Trusted Codex host could not list the isolated Study project.");
+      }
+      const loaded = await call("mcpServer/tool/call", {
+        threadId,
+        server: SERVER,
+        tool: "study.get_project",
+        arguments: { projectId: project.projectId },
+      });
+      const loadedProject = loaded?.structuredContent;
+      if (
+        loaded?.isError === true ||
+        loadedProject?.projectId !== project.projectId ||
+        loadedProject?.workflow?.artifactStage !== "empty" ||
+        loadedProject?.currentTask !== null ||
+        !Array.isArray(loadedProject?.latestArtifacts)
+      ) {
+        throw new Error("Trusted Codex host could not reload the Study workflow snapshot.");
+      }
       trace("trusted Study project created");
     }
 
