@@ -23,6 +23,12 @@ from .mcp_inspection_tools import (
     call_inspection_tool,
     inspection_tool_definitions,
 )
+from .mcp_selection_tools import (
+    SELECTION_TOOL_NAMES,
+    McpSelectionToolInputError,
+    call_selection_tool,
+    selection_tool_definitions,
+)
 from .mcp_project_tools import (
     PROJECT_TOOL_NAMES,
     McpProjectToolInputError,
@@ -127,6 +133,7 @@ def _tool_definitions(
         definitions.extend(input_tool_definitions())
         definitions.extend(inspection_tool_definitions())
         definitions.extend(candidate_tool_definitions())
+        definitions.extend(selection_tool_definitions())
     return definitions
 
 
@@ -213,8 +220,9 @@ def _handle_request(
                     "opaque source and output grants through native pickers and create a local "
                     "Study project, freeze selected InputRefs with study.register_inputs, then "
                     "run deterministic source inspection. Existing authenticated candidate discoveries "
-                    "can be listed and reviewed with bounded evidence replay. Starting candidate discovery, "
-                    "generation, export, import, credentials, and raw Worker commands remain unavailable."
+                    "can be listed, reviewed with bounded evidence replay, and saved as a reliable local "
+                    "portfolio. Starting candidate discovery, generation, export, import, credentials, "
+                    "and raw Worker commands remain unavailable."
                 ),
             },
         )
@@ -299,6 +307,23 @@ def _handle_request(
             except Exception:
                 return _response(request_id, result=_tool_error())
             return _response(request_id, result=result)
+        if tool_name in SELECTION_TOOL_NAMES:
+            if audience_session is None:
+                return _rpc_error(request_id, -32602, "Unknown tool")
+            try:
+                result = call_selection_tool(
+                    service,
+                    tool_name=str(tool_name),
+                    arguments=arguments,
+                    audience_session=audience_session,
+                )
+            except McpSelectionToolInputError:
+                return _rpc_error(request_id, -32602, "Invalid selection tool arguments")
+            except CardServiceError as error:
+                return _response(request_id, result=_tool_error(error))
+            except Exception:
+                return _response(request_id, result=_tool_error())
+            return _response(request_id, result=result)
         if tool_name in CANDIDATE_TOOL_NAMES:
             if audience_session is None:
                 return _rpc_error(request_id, -32602, "Unknown tool")
@@ -351,8 +376,9 @@ def _handle_request(
                         "type": "text",
                         "text": (
                             "The local Card Service capability snapshot is available. "
-                            "Deterministic source inspection and authenticated candidate review are "
-                            "available. Starting candidate discovery, generation, and Anki delivery "
+                            "Deterministic source inspection, authenticated candidate review, and local "
+                            "portfolio selection are available. Starting candidate discovery, generation, "
+                            "and Anki delivery "
                             "remain disabled at this milestone."
                         ),
                     }

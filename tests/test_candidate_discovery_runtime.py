@@ -649,3 +649,295 @@ def test_evidence_preview_rechecks_disclosure_policy(
             evidence_id=detail["evidence"][0]["evidenceId"],
         )
     assert captured.value.code == "EVIDENCE_PREVIEW_REDACTED"
+
+
+def test_selection_add_is_idempotent_and_projects_selected_state(
+    tmp_path: Path,
+) -> None:
+    model = FakeDiscoveryModel(proposal_count=2)
+    runtime, project, inspected, source = environment(tmp_path, model)
+    discovered = discover(runtime, project, inspected)
+    listed = runtime.list_candidates(
+        audience=audience(), discovery_handle=discovered["discoveryHandle"]
+    )
+    candidate = listed["items"][0]
+
+    selected = runtime.set_selection(
+        audience=audience(),
+        project_id=project["projectId"],
+        expected_project_revision=discovered["projectRevision"],
+        idempotency_key="selection-add-1",
+        discovery_handle=discovered["discoveryHandle"],
+        operation="add",
+        candidate_handles=[candidate["candidateHandle"]],
+        budget={"maxNewCards": 2, "targetDailyReviewMinutes": 10},
+    )
+    repeated = runtime.set_selection(
+        audience=audience(),
+        project_id=project["projectId"],
+        expected_project_revision=discovered["projectRevision"],
+        idempotency_key="selection-add-1",
+        discovery_handle=discovered["discoveryHandle"],
+        operation="add",
+        candidate_handles=[candidate["candidateHandle"]],
+        budget={"maxNewCards": 2, "targetDailyReviewMinutes": 10},
+    )
+
+    assert selected["projectRevision"] == discovered["projectRevision"] + 1
+    assert selected["artifactStage"] == "selection_ready"
+    assert selected["selectedCount"] == 1
+    assert selected["nextAction"] == "plan_cards"
+    assert repeated["projectRevision"] == selected["projectRevision"]
+    assert repeated["selectedCount"] == 1
+    assert model.proposal_calls == 1
+    assert model.review_calls == 1
+    projected = runtime.list_candidates(
+        audience=audience(),
+        discovery_handle=discovered["discoveryHandle"],
+        filters={"selectionState": ["selected"]},
+    )
+    assert [item["candidateId"] for item in projected["items"]] == [
+        candidate["candidateId"]
+    ]
+    task = runtime.tasks.get_task(selected["taskId"], audience())
+    assert task["state"] == "succeeded"
+    selection = runtime.artifacts.resolve(selected["selectionHandle"], audience())
+    assert selection["payloadSchema"] == "study.portfolio-selection"
+    assert len(selection["payload"]["candidateRefs"]) == 1
+    serialized = json.dumps(selection, ensure_ascii=False, sort_keys=True)
+    assert str(source) not in serialized
+    assert SOURCE_TEXT not in serialized
+
+
+def test_accept_recommended_builds_a_bounded_coverage_portfolio(tmp_path: Path) -> None:
+    model = FakeDiscoveryModel(proposal_count=4)
+    runtime, project, inspected, _source = environment(tmp_path, model)
+    discovered = discover(runtime, project, inspected, maximum=8)
+
+    selected = runtime.set_selection(
+        audience=audience(),
+        project_id=project["projectId"],
+        expected_project_revision=discovered["projectRevision"],
+        idempotency_key="selection-auto-1",
+        discovery_handle=discovered["discoveryHandle"],
+        operation="accept_recommended",
+        budget={"maxNewCards": 2},
+    )
+
+    assert selected["selectedCount"] == 2
+    assert selected["budget"] == {"maxNewCards": 2}
+    assert selected["coverage"] == [
+        {
+            "objectiveGroup": "production",
+            "selectedCount": 2,
+            "availableCount": 4,
+            "reasonCode": "ROUTE_REPRESENTED",
+        }
+    ]
+    assert "SELECTION_BUDGET_LIMIT_REACHED" in selected["issueCodes"]
+    assert selected["estimatedReviewDebt"]["confidence"] == "low"
+    assert model.proposal_calls == 1
+    assert model.review_calls == 1
+
+
+def test_selection_warns_when_conservative_review_debt_exceeds_target(
+    tmp_path: Path,
+) -> None:
+    runtime, project, inspected, _source = environment(
+        tmp_path, FakeDiscoveryModel(proposal_count=12)
+    )
+    discovered = discover(runtime, project, inspected, maximum=20)
+
+    selected = runtime.set_selection(
+        audience=audience(),
+        project_id=project["projectId"],
+        expected_project_revision=discovered["projectRevision"],
+        idempotency_key="selection-review-budget-risk",
+        discovery_handle=discovered["discoveryHandle"],
+        operation="accept_recommended",
+        budget={"maxNewCards": 12, "targetDailyReviewMinutes": 1},
+    )
+
+    assert selected["selectedCount"] == 12
+    assert selected["estimatedReviewDebt"]["expectedDailyMinutesAtDay7"] > 1
+    assert "SELECTION_REVIEW_BUDGET_RISK" in selected["redundancyWarnings"]
+    assert "SELECTION_REVIEW_BUDGET_RISK" in selected["issueCodes"]
+
+
+def test_selection_remove_publishes_a_new_selection_with_prior_parent(
+    tmp_path: Path,
+) -> None:
+    runtime, project, inspected, _source = environment(
+        tmp_path, FakeDiscoveryModel(proposal_count=3)
+    )
+    discovered = discover(runtime, project, inspected)
+    listed = runtime.list_candidates(
+        audience=audience(), discovery_handle=discovered["discoveryHandle"]
+    )
+    first = runtime.set_selection(
+        audience=audience(),
+        project_id=project["projectId"],
+        expected_project_revision=discovered["projectRevision"],
+        idempotency_key="selection-add-two",
+        discovery_handle=discovered["discoveryHandle"],
+        operation="add",
+        candidate_handles=[
+            listed["items"][0]["candidateHandle"],
+            listed["items"][1]["candidateHandle"],
+        ],
+        budget={"maxNewCards": 3},
+    )
+    second = runtime.set_selection(
+        audience=audience(),
+        project_id=project["projectId"],
+        expected_project_revision=first["projectRevision"],
+        idempotency_key="selection-remove-one",
+        discovery_handle=discovered["discoveryHandle"],
+        operation="remove",
+        candidate_handles=[listed["items"][0]["candidateHandle"]],
+        budget={"maxNewCards": 3},
+    )
+
+    assert second["selectedCount"] == 1
+    first_ref, first_envelope = runtime.artifacts.resolve_with_ref(
+        first["selectionHandle"], audience()
+    )
+    _second_ref, second_envelope = runtime.artifacts.resolve_with_ref(
+        second["selectionHandle"], audience()
+    )
+    assert first_ref in second_envelope["parents"]
+    assert (
+        first_envelope["payload"]["selectionId"]
+        != second_envelope["payload"]["selectionId"]
+    )
+    projected = runtime.list_candidates(
+        audience=audience(),
+        discovery_handle=discovered["discoveryHandle"],
+        filters={"selectionState": ["selected"]},
+    )
+    assert projected["returnedCandidates"] == 1
+    assert projected["items"][0]["candidateId"] == listed["items"][1]["candidateId"]
+
+
+def test_selection_rejects_hard_blocked_and_contract_over_budget(
+    tmp_path: Path,
+) -> None:
+    class HardBlockedModel(FakeDiscoveryModel):
+        def review(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+            self.review_calls += 1
+            return {
+                "schema": "study.candidate-discovery.reviews",
+                "schemaVersion": 1,
+                "reviews": [
+                    {
+                        "reviewKey": item["reviewKey"],
+                        "semanticEvidence": "verified",
+                        "conflict": "conflict",
+                        "learnerFit": "new",
+                        "reasonCodes": ["UNRESOLVED_CONFLICT"],
+                    }
+                    for item in request["proposals"]
+                ],
+            }
+
+    runtime, project, inspected, _source = environment(tmp_path, HardBlockedModel())
+    discovered = discover(runtime, project, inspected)
+    listed = runtime.list_candidates(
+        audience=audience(), discovery_handle=discovered["discoveryHandle"]
+    )
+    assert listed["items"][0]["eligibility"] == "hard_blocked"
+
+    with pytest.raises(StudyRuntimeError) as blocked:
+        runtime.set_selection(
+            audience=audience(),
+            project_id=project["projectId"],
+            expected_project_revision=discovered["projectRevision"],
+            idempotency_key="selection-blocked",
+            discovery_handle=discovered["discoveryHandle"],
+            operation="add",
+            candidate_handles=[listed["items"][0]["candidateHandle"]],
+        )
+    assert blocked.value.code == "SELECTION_CANDIDATE_HARD_BLOCKED"
+
+    with pytest.raises(StudyRuntimeError) as over_budget:
+        runtime.set_selection(
+            audience=audience(),
+            project_id=project["projectId"],
+            expected_project_revision=discovered["projectRevision"],
+            idempotency_key="selection-over-budget",
+            discovery_handle=discovered["discoveryHandle"],
+            operation="accept_recommended",
+            budget={"maxNewCards": 21},
+        )
+    assert over_budget.value.code == "SELECTION_BUDGET_EXCEEDED"
+
+
+def test_selection_does_not_reuse_invalidated_state_and_rejects_alias_duplicates(
+    tmp_path: Path,
+) -> None:
+    runtime, project, inspected, _source = environment(
+        tmp_path, FakeDiscoveryModel(proposal_count=2)
+    )
+    discovered = discover(runtime, project, inspected)
+    listed = runtime.list_candidates(
+        audience=audience(), discovery_handle=discovered["discoveryHandle"]
+    )
+    first_candidate_ref, _ = runtime.artifacts.resolve_with_ref(
+        listed["items"][0]["candidateHandle"], audience()
+    )
+    alias_handle = runtime.artifacts.issue_handle(first_candidate_ref, audience())
+    with pytest.raises(StudyRuntimeError) as duplicate:
+        runtime.set_selection(
+            audience=audience(),
+            project_id=project["projectId"],
+            expected_project_revision=discovered["projectRevision"],
+            idempotency_key="selection-alias-duplicate",
+            discovery_handle=discovered["discoveryHandle"],
+            operation="add",
+            candidate_handles=[
+                listed["items"][0]["candidateHandle"],
+                alias_handle,
+            ],
+        )
+    assert duplicate.value.code == "CANDIDATE_QUERY_INVALID"
+
+    first = runtime.set_selection(
+        audience=audience(),
+        project_id=project["projectId"],
+        expected_project_revision=discovered["projectRevision"],
+        idempotency_key="selection-before-budget-change",
+        discovery_handle=discovered["discoveryHandle"],
+        operation="add",
+        candidate_handles=[listed["items"][0]["candidateHandle"]],
+    )
+    changed = runtime.projects.update_learning_contract(
+        audience=audience(),
+        project_id=project["projectId"],
+        expected_project_revision=first["projectRevision"],
+        expected_contract_revision=1,
+        operation_id="selection-budget-change",
+        operations=[{"op": "set_budget", "maxNewCards": 1}],
+    )
+    assert changed["invalidatedStages"][0] == "selection"
+    after_change = runtime.list_candidates(
+        audience=audience(), discovery_handle=discovered["discoveryHandle"]
+    )
+    assert {item["selectionState"] for item in after_change["items"]} == {"unselected"}
+
+    second = runtime.set_selection(
+        audience=audience(),
+        project_id=project["projectId"],
+        expected_project_revision=changed["projectRevision"],
+        idempotency_key="selection-after-budget-change",
+        discovery_handle=discovered["discoveryHandle"],
+        operation="add",
+        candidate_handles=[listed["items"][1]["candidateHandle"]],
+        budget={"maxNewCards": 1},
+    )
+    assert second["selectedCount"] == 1
+    selected = runtime.list_candidates(
+        audience=audience(),
+        discovery_handle=discovered["discoveryHandle"],
+        filters={"selectionState": ["selected"]},
+    )
+    assert selected["items"][0]["candidateId"] == listed["items"][1]["candidateId"]

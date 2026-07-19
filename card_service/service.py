@@ -16,7 +16,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import parse_qsl, urlsplit
 
 from workers.acg.secret_scrub import is_runtime_secret_key, is_sensitive_url_query_key
@@ -914,6 +914,7 @@ class CardService:
             "publicInputRegistration": True,
             "publicSourceInspection": True,
             "publicCandidateQueries": True,
+            "publicCandidateSelection": True,
             "pathDisclosure": False,
             "complete": False,
         }
@@ -1092,6 +1093,37 @@ class CardService:
                 error.message,
                 retryable=False,
                 stage="source_inspection",
+            ) from error
+
+    def set_study_selection(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_id: str,
+        expected_project_revision: int,
+        idempotency_key: str,
+        discovery_handle: str,
+        operation: str,
+        candidate_handles: Sequence[str] | None = None,
+        budget: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return self._ensure_study_runtime().set_selection(
+                audience=audience,
+                project_id=project_id,
+                expected_project_revision=expected_project_revision,
+                idempotency_key=idempotency_key,
+                discovery_handle=discovery_handle,
+                operation=operation,
+                candidate_handles=candidate_handles,
+                budget=budget,
+            )
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=False,
+                stage="selection",
             ) from error
 
     def list_study_candidates(

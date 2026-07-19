@@ -123,6 +123,7 @@ def test_candidate_tools_call_only_the_trusted_service_boundary() -> None:
             "filter": {
                 "eligibility": ["recommended"],
                 "route": ["production"],
+                "selectionState": ["selected"],
                 "sourceHandles": [SOURCE_HANDLE],
                 "query": "shape",
             },
@@ -165,6 +166,7 @@ def test_candidate_tools_call_only_the_trusted_service_boundary() -> None:
                 "filters": {
                     "eligibility": ["recommended"],
                     "route": ["production"],
+                    "selectionState": ["selected"],
                     "sourceHandles": [SOURCE_HANDLE],
                     "query": "shape",
                 },

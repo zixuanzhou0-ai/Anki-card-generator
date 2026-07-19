@@ -38,6 +38,7 @@ _ROUTES = (
     "contrast",
 )
 _SORTS = ("recommended", "source_order", "review_cost")
+_SELECTION_STATES = ("selected", "unselected")
 
 
 class McpCandidateToolInputError(ValueError):
@@ -193,6 +194,16 @@ def candidate_tool_definitions() -> list[dict[str, Any]]:
                                 "maxItems": len(_ROUTES),
                                 "uniqueItems": True,
                             },
+                            "selectionState": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string",
+                                    "enum": list(_SELECTION_STATES),
+                                },
+                                "minItems": 1,
+                                "maxItems": len(_SELECTION_STATES),
+                                "uniqueItems": True,
+                            },
                             "sourceHandles": {
                                 "type": "array",
                                 "items": _handle_schema(),
@@ -297,10 +308,14 @@ def _list_arguments(
     filters = arguments.get("filter")
     if filters is not None:
         if not isinstance(filters, dict) or not set(filters).issubset(
-            {"eligibility", "route", "sourceHandles", "query"}
+            {"eligibility", "route", "selectionState", "sourceHandles", "query"}
         ):
             raise McpCandidateToolInputError("candidate filter fields are invalid")
-        for key, allowed in (("eligibility", _ELIGIBILITY), ("route", _ROUTES)):
+        for key, allowed in (
+            ("eligibility", _ELIGIBILITY),
+            ("route", _ROUTES),
+            ("selectionState", _SELECTION_STATES),
+        ):
             value = filters.get(key)
             if value is not None and (
                 not isinstance(value, list)

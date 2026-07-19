@@ -42,6 +42,7 @@ _LANGUAGE_ROUTES = frozenset(
     }
 )
 _SORTS = frozenset({"recommended", "source_order", "review_cost"})
+_SELECTION_STATES = frozenset({"selected", "unselected"})
 _HANDLE_RE = re.compile(r"^study_[A-Za-z0-9_-]{43}$")
 _CURSOR_RE = re.compile(r"^study_cursor_[A-Za-z0-9_-]{80,1800}$")
 _MAX_LIMIT = 100
@@ -357,8 +358,79 @@ class CandidateQueryRuntime:
             _fail("CANDIDATE_DISCOVERY_CORRUPT", "candidate target is invalid")
         return {key: str(unit[key]) for key in required}
 
+    def _selected_candidate_ids(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project: Mapping[str, Any],
+        discovery_ref: Mapping[str, Any],
+        rows: Sequence[Mapping[str, Any]],
+    ) -> set[str]:
+        stage = project.get("workflow", {}).get("artifactStage")
+        if stage not in ARTIFACT_STAGES or ARTIFACT_STAGES.index(
+            stage
+        ) < ARTIFACT_STAGES.index("selection_ready"):
+            return set()
+        selection_refs = [
+            value
+            for value in project.get("latestArtifactRefs", [])
+            if isinstance(value, Mapping)
+            and value.get("payloadSchema") == "study.portfolio-selection"
+        ]
+        if not selection_refs:
+            _fail("CANDIDATE_SELECTION_CORRUPT", "project selection is missing")
+        highest = max(int(value.get("projectRevision", 0)) for value in selection_refs)
+        current = [
+            dict(value)
+            for value in selection_refs
+            if value.get("projectRevision") == highest
+        ]
+        if len(current) != 1:
+            _fail("CANDIDATE_SELECTION_CORRUPT", "project selection is ambiguous")
+        try:
+            selection = self._artifacts.verify_ref(current[0], audience)
+        except ArtifactRegistryError as error:
+            raise CandidateQueryError(error.code, error.message) from error
+        payload = selection.get("payload")
+        entities = (
+            payload.get("candidateRefs") if isinstance(payload, Mapping) else None
+        )
+        if (
+            selection.get("payloadSchema") != "study.portfolio-selection"
+            or not isinstance(payload, Mapping)
+            or payload.get("discoveryRef") != dict(discovery_ref)
+            or not isinstance(entities, list)
+        ):
+            _fail("CANDIDATE_SELECTION_CORRUPT", "selection graph is invalid")
+        members = {
+            (_ref_identity(row["candidateRef"]), row["candidateId"]) for row in rows
+        }
+        selected: set[str] = set()
+        for entity in entities:
+            artifact_ref = (
+                entity.get("artifactRef") if isinstance(entity, Mapping) else None
+            )
+            candidate_id = (
+                entity.get("entityId") if isinstance(entity, Mapping) else None
+            )
+            if (
+                not isinstance(artifact_ref, Mapping)
+                or not isinstance(candidate_id, str)
+                or (_ref_identity(artifact_ref), candidate_id) not in members
+                or candidate_id in selected
+            ):
+                _fail(
+                    "CANDIDATE_SELECTION_CORRUPT",
+                    "selection contains a stale candidate",
+                )
+            selected.add(candidate_id)
+        return selected
+
     def _row_projection(
-        self, row: Mapping[str, Any], audience: ArtifactAudienceBinding
+        self,
+        row: Mapping[str, Any],
+        audience: ArtifactAudienceBinding,
+        selected_ids: set[str] | None = None,
     ) -> dict[str, Any]:
         target = self._target(row)
         source = self._source_summary(row, audience)
@@ -388,7 +460,11 @@ class CandidateQueryRuntime:
                 for key in ("sourceId", "displayName", "sourceType", "sourceHandle")
             },
             "eligibility": row["eligibility"],
-            "selectionState": "unselected",
+            "selectionState": (
+                "selected"
+                if selected_ids is not None and row["candidateId"] in selected_ids
+                else "unselected"
+            ),
             "locked": False,
             "route": route,
             "reviewCostSeconds": review_cost,
@@ -417,13 +493,14 @@ class CandidateQueryRuntime:
         if value is None:
             return {}
         if not isinstance(value, Mapping) or not set(value).issubset(
-            {"eligibility", "route", "sourceHandles", "query"}
+            {"eligibility", "route", "selectionState", "sourceHandles", "query"}
         ):
             _fail("CANDIDATE_QUERY_INVALID", "candidate filter fields are invalid")
         result: dict[str, Any] = {}
         for key, allowed, maximum in (
             ("eligibility", _ELIGIBILITY, len(_ELIGIBILITY)),
             ("route", _LANGUAGE_ROUTES, len(_LANGUAGE_ROUTES)),
+            ("selectionState", _SELECTION_STATES, len(_SELECTION_STATES)),
         ):
             raw = value.get(key)
             if raw is None:
@@ -477,8 +554,14 @@ class CandidateQueryRuntime:
         ):
             _fail("CANDIDATE_QUERY_INVALID", "candidate limit is invalid")
         normalized_filter = self._normalize_filter(filters)
-        discovery_ref, discovery, _project = self._discovery(discovery_handle, audience)
+        discovery_ref, discovery, project = self._discovery(discovery_handle, audience)
         rows = self._members(discovery, audience)
+        selected_ids = self._selected_candidate_ids(
+            audience=audience,
+            project=project,
+            discovery_ref=discovery_ref,
+            rows=rows,
+        )
 
         source_id_filter: set[str] | None = None
         if "sourceHandles" in normalized_filter:
@@ -511,6 +594,14 @@ class CandidateQueryRuntime:
             if (
                 "eligibility" in normalized_filter
                 and row["eligibility"] not in normalized_filter["eligibility"]
+            ):
+                continue
+            selection_state = (
+                "selected" if row["candidateId"] in selected_ids else "unselected"
+            )
+            if (
+                "selectionState" in normalized_filter
+                and selection_state not in normalized_filter["selectionState"]
             ):
                 continue
             route = row["candidate"]["payload"].get("objective", {}).get("route")
@@ -624,8 +715,53 @@ class CandidateQueryRuntime:
             "discoveryHandle": discovery_handle,
             "totalCandidates": len(filtered),
             "returnedCandidates": len(page),
-            "items": [self._row_projection(row, audience) for row in page],
+            "items": [
+                self._row_projection(row, audience, selected_ids) for row in page
+            ],
             "nextCursor": next_cursor,
+        }
+
+    def resolve_selection_graph(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        discovery_handle: str,
+        candidate_handles: Sequence[str] = (),
+    ) -> dict[str, Any]:
+        discovery_ref, discovery, project = self._discovery(discovery_handle, audience)
+        rows = self._members(discovery, audience)
+        by_identity = {_ref_identity(row["candidateRef"]): row for row in rows}
+        requested_rows = []
+        requested_identities: set[tuple[str, int, str]] = set()
+        for handle in candidate_handles:
+            if not isinstance(handle, str) or not _HANDLE_RE.fullmatch(handle):
+                _fail("CANDIDATE_QUERY_INVALID", "candidateHandle is invalid")
+            try:
+                candidate_ref, candidate = self._artifacts.resolve_with_ref(
+                    handle, audience
+                )
+            except ArtifactRegistryError as error:
+                raise CandidateQueryError(error.code, error.message) from error
+            identity = _ref_identity(candidate_ref)
+            row = by_identity.get(identity)
+            if identity in requested_identities:
+                _fail(
+                    "CANDIDATE_QUERY_INVALID",
+                    "candidateHandles resolves the same candidate more than once",
+                )
+            if row is None or row["candidate"] != candidate:
+                _fail(
+                    "CANDIDATE_NOT_IN_DISCOVERY",
+                    "candidate is not part of this discovery",
+                )
+            requested_identities.add(identity)
+            requested_rows.append(row)
+        return {
+            "discoveryRef": discovery_ref,
+            "discovery": discovery,
+            "project": project,
+            "rows": rows,
+            "requestedRows": requested_rows,
         }
 
     def _member_from_handle(
@@ -634,14 +770,12 @@ class CandidateQueryRuntime:
         audience: ArtifactAudienceBinding,
         discovery_handle: str,
         candidate_handle: str,
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
         if not isinstance(candidate_handle, str) or not _HANDLE_RE.fullmatch(
             candidate_handle
         ):
             _fail("CANDIDATE_QUERY_INVALID", "candidateHandle is invalid")
-        _discovery_ref, discovery, _project = self._discovery(
-            discovery_handle, audience
-        )
+        discovery_ref, discovery, project = self._discovery(discovery_handle, audience)
         try:
             candidate_ref, candidate = self._artifacts.resolve_with_ref(
                 candidate_handle, audience
@@ -658,7 +792,7 @@ class CandidateQueryRuntime:
             _fail(
                 "CANDIDATE_NOT_IN_DISCOVERY", "candidate is not part of this discovery"
             )
-        return matched[0], discovery
+        return matched[0], discovery, discovery_ref, project
 
     def get_candidate(
         self,
@@ -667,12 +801,18 @@ class CandidateQueryRuntime:
         discovery_handle: str,
         candidate_handle: str,
     ) -> dict[str, Any]:
-        row, _discovery = self._member_from_handle(
+        row, discovery, discovery_ref, project = self._member_from_handle(
             audience=audience,
             discovery_handle=discovery_handle,
             candidate_handle=candidate_handle,
         )
-        summary = self._row_projection(row, audience)
+        selected_ids = self._selected_candidate_ids(
+            audience=audience,
+            project=project,
+            discovery_ref=discovery_ref,
+            rows=self._members(discovery, audience),
+        )
+        summary = self._row_projection(row, audience, selected_ids)
         candidate_payload = row["candidate"]["payload"]
         gate_payload = row["gate"]["payload"]
         evidence = candidate_payload.get("evidenceAnchors", [])
@@ -768,7 +908,7 @@ class CandidateQueryRuntime:
             or not 0 <= context_characters <= _MAX_CONTEXT
         ):
             _fail("CANDIDATE_QUERY_INVALID", "contextCharacters is invalid")
-        row, _discovery = self._member_from_handle(
+        row, _discovery, _discovery_ref, _project = self._member_from_handle(
             audience=audience,
             discovery_handle=discovery_handle,
             candidate_handle=candidate_handle,

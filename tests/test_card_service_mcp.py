@@ -19,6 +19,7 @@ from card_service.mcp_inspection_tools import (
 )
 from card_service.mcp_project_tools import CREATE_PROJECT_TOOL_NAME
 from card_service.mcp_resource_tools import OUTPUT_GRANT_TOOL_NAME, SOURCE_GRANT_TOOL_NAME
+from card_service.mcp_selection_tools import SET_SELECTION_TOOL_NAME
 from card_service.mcp_stdio import CAPABILITY_TOOL_NAME, MCP_PROTOCOL_VERSION, serve
 from card_service.service import CardServiceError
 from card_service.trusted_mcp_audience import create_development_mcp_audience
@@ -161,6 +162,7 @@ def test_mcp_bridge_reports_trusted_session_without_disclosing_identity() -> Non
         LIST_CANDIDATES_TOOL_NAME,
         GET_CANDIDATE_TOOL_NAME,
         PREVIEW_EVIDENCE_TOOL_NAME,
+        SET_SELECTION_TOOL_NAME,
     ]
 
 
@@ -279,6 +281,7 @@ def test_real_mcp_stdio_process_reports_card_service_capabilities(tmp_path: Path
             LIST_CANDIDATES_TOOL_NAME,
             GET_CANDIDATE_TOOL_NAME,
             PREVIEW_EVIDENCE_TOOL_NAME,
+            SET_SELECTION_TOOL_NAME,
         ]
         called = rpc(
             {

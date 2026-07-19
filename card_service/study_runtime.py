@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from .artifact_registry import (
     ArtifactAudienceBinding,
@@ -21,6 +21,10 @@ from .candidate_discovery_runtime import (
     CandidateDiscoveryRuntimeError,
 )
 from .candidate_queries import CandidateQueryError, CandidateQueryRuntime
+from .candidate_selection import (
+    CandidateSelectionError,
+    CandidateSelectionRuntime,
+)
 from .credentials import CredentialStore, CredentialStoreError
 from .project_registry import ProjectRegistry, ProjectRegistryError
 from .resource_runtime import ServiceResourceRuntime
@@ -141,6 +145,13 @@ class StudyRuntime:
                 projects=self.projects,
                 cursor_key=candidate_query_key,
             )
+            self.candidate_selection = CandidateSelectionRuntime(
+                service_instance_id=self.service_instance_id,
+                artifacts=self.artifacts,
+                projects=self.projects,
+                tasks=self.tasks,
+                candidate_queries=self.candidate_queries,
+            )
             discovery_configured = (
                 candidate_discovery_model is not None
                 or candidate_discovery_model_provider is not None
@@ -167,6 +178,7 @@ class StudyRuntime:
             SourceInspectionError,
             CandidateDiscoveryRuntimeError,
             CandidateQueryError,
+            CandidateSelectionError,
             OSError,
         ) as error:
             raise StudyRuntimeError(
@@ -188,6 +200,7 @@ class StudyRuntime:
             "candidateDiscoveryRuntime": self.candidate_discovery is not None,
             "publicCandidateDiscovery": False,
             "publicCandidateQueries": True,
+            "publicCandidateSelection": True,
             "publicProjectTools": True,
             "publicInputRegistration": True,
             "publicSourceInspection": True,
@@ -402,6 +415,37 @@ class StudyRuntime:
                 context_characters=context_characters,
             )
         except (
+            CandidateQueryError,
+            ArtifactRegistryError,
+            ProjectRegistryError,
+        ) as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
+    def set_selection(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_id: str,
+        expected_project_revision: int,
+        idempotency_key: str,
+        discovery_handle: str,
+        operation: str,
+        candidate_handles: Sequence[str] | None = None,
+        budget: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return self.candidate_selection.set_selection(
+                audience=audience,
+                project_id=project_id,
+                expected_project_revision=expected_project_revision,
+                idempotency_key=idempotency_key,
+                discovery_handle=discovery_handle,
+                operation=operation,
+                candidate_handles=candidate_handles,
+                budget=budget,
+            )
+        except (
+            CandidateSelectionError,
             CandidateQueryError,
             ArtifactRegistryError,
             ProjectRegistryError,

@@ -17,7 +17,7 @@ MCP 工具服务于用户意图，而不是暴露内部 Worker。工具层必须
 
 官方工具设计参考：[Describe tools](https://developers.openai.com/apps-sdk/build/mcp-server#step-2--describe-tools)。
 
-当前桥实现协议握手、动态工具发现、零参数只读能力快照，以及可信会话中的本地 source/output opaque grant、幂等项目/素材登记、有界确定性素材检查和现有认证 Discovery 的候选列表/详情/证据预览。没有原生 launcher audience 时只公开 `system.get_capabilities`；可信 audience 由父 PID、固定 launcher 可执行文件、当前 OS 用户 SID 摘要和每进程随机 nonce 派生，工具参数不能自报。桥仍不接受任意路径、URL、调用方构造的 Artifact 或 OperationIntent，也不公开启动候选发现、候选选择、模型生成、导出、Anki 写入、凭据、原始 Worker 或 Shell；除明确标为 CURRENT 的工具外，下文仍是后续里程碑的目标合同。
+当前桥实现协议握手、动态工具发现、零参数只读能力快照，以及可信会话中的本地 source/output opaque grant、幂等项目/素材登记、有界确定性素材检查、现有认证 Discovery 的候选列表/详情/证据预览和本地组合选择。没有原生 launcher audience 时只公开 `system.get_capabilities`；可信 audience 由父 PID、固定 launcher 可执行文件、当前 OS 用户 SID 摘要和每进程随机 nonce 派生，工具参数不能自报。桥仍不接受任意路径、URL、调用方构造的 Artifact 或 OperationIntent，也不公开启动候选发现、候选编辑、模型生成、导出、Anki 写入、凭据、原始 Worker 或 Shell；除明确标为 CURRENT 的工具外，下文仍是后续里程碑的目标合同。
 
 ## 2. 公共请求约定
 
@@ -507,6 +507,7 @@ CURRENT 输入：
     eligibility?: LearningCandidate["eligibility"][];
     route?: LearningRoute[];
     sourceHandles?: string[];
+    selectionState?: ("selected" | "unselected")[];
     query?: string;
   };
   sort?: "recommended" | "source_order" | "review_cost";
@@ -524,7 +525,7 @@ CURRENT 输入：
 - 服务端门禁 pass/review/fail 计数、证据数量和是否安全抑制。
 - 下一页不透明 cursor；服务端上限为 100 项。
 
-CURRENT cursor 由 Card Service 认证并同时绑定 service instance、Discovery 摘要、规范化筛选条件、排序和末项 candidateId；篡改、跨查询复用、跨服务复用或候选集合变化都会拒绝。当前尚无 SelectionArtifact，所以 `selectionState` 只会是 `unselected`，selectionState 筛选在 `study.set_selection` 实现前不进入公共 schema。
+CURRENT cursor 由 Card Service 认证并同时绑定 service instance、Discovery 摘要、规范化筛选条件、排序和末项 candidateId；篡改、跨查询复用、跨服务复用或候选集合变化都会拒绝。`selectionState` 由同一项目当前最新且仍绑定该 Discovery 的认证 SelectionArtifact 派生；候选预算或上游输入使项目退回 `candidates_ready` 后，旧 SelectionArtifact 不再投影为 selected。
 
 ### 7.2 study.get_candidate
 
@@ -572,16 +573,33 @@ CURRENT 实现不会重新打开远程来源，固定返回 `snapshotBacked=true
 
 ### 7.5 study.set_selection
 
-输入 candidate artifact handles（精确绑定 project/artifact revision）、预算和策略：
+CURRENT 输入：
 
-- replace。
-- add。
-- remove。
-- accept_recommended。
+~~~ts
+{
+  context: {
+    projectId: string;
+    expectedProjectRevision: number;
+    idempotencyKey: string;
+    locale?: string;
+  };
+  discoveryHandle: string;
+  operation: "add" | "remove" | "accept_recommended";
+  candidateHandles?: string[];
+  budget?: {
+    maxNewCards?: number;
+    targetDailyReviewMinutes?: number;
+  };
+}
+~~~
 
-输出 PortfolioSelection、覆盖摘要、重复警告和 ReviewDebtEstimate。任何 security/conflict/evidence gate 为 fail 或 eligibility=hard_blocked 的候选都必须拒绝；selectionState 不能覆盖 eligibility。
+`add` 和 `remove` 必须提交至少一个 candidateHandle；`accept_recommended` 禁止同时提交 candidateHandles。所有 handle 都必须属于同一 audience/session、当前项目最新 Discovery 和精确候选集合；重复 handle、两个别名解析到同一候选、跨 Discovery、过期项目 revision 或失效选择一律拒绝。公共 schema 不接受 ArtifactRef、路径、Provider、模型、授权、凭据、OperationIntent 或 Worker 参数。
 
-选择阶段只保存组合并显示 50+、复习负担和预算风险警告，不创建 OperationIntent，也不发起模型/TTS 调用。真正的批量、成本和数据出域确认统一延迟到 study.plan_cards 或 cards.generate：届时 Service 已能冻结精确 profile、DisclosureManifest、CostBudget、批次和调用上限，避免选择本身被误当成高影响执行。
+显式 `add` 可以纳入 `needs_review` 候选，但必须返回 `SELECTION_NEEDS_REVIEW_INCLUDED`；`hard_blocked`、`excluded`、`duplicate` 以及 evidence/conflict/security hard gate 失败永远不能被 selectionState 覆盖。`accept_recommended` 只考虑 recommended 候选，并用 `portfolio-coverage-v1` 的确定性覆盖优先算法综合迁移价值、路线覆盖、来源覆盖、饱和度、语义重复与预计回答成本；它不是简单 Top-N，稳定 candidateId 仅作最终平局裁决。
+
+输出 audience/session 绑定的 selectionHandle、selectedCount、实际预算、逐路线 selected/available 覆盖摘要、结构化警告和 `review-debt-conservative-v1` 的低置信度复习债务估算。超过 `targetDailyReviewMinutes` 只产生 `SELECTION_REVIEW_BUDGET_RISK`，不会静默删卡；超过 Learning Contract 的 maxNewCards 则失败关闭。每次 add/remove/自动组合都会发布新的认证 `study.portfolio-selection`，把当前 Discovery 和仍有效的前一选择作为父项，并把项目推进或保持在 `selection_ready`。
+
+选择阶段只写本地认证状态和一个快速可重放 StudyTask，不创建 OperationIntent，也不发起模型、TTS、网络或 Anki 调用。重复的相同 idempotencyKey/输入返回原结果；相同 key 携带不同操作摘要必须拒绝。真正的批量、成本和数据出域确认统一延迟到 `study.plan_cards` 或 `cards.generate`。
 
 ## 8. 卡片计划
 
