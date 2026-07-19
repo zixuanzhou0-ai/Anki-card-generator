@@ -241,6 +241,10 @@ Registry 的公开 profile 永不返回 SecretRef、秘密或原始 operationId�
 可信会话现在公开 `system.request_source_grant` 与 `system.request_output_grant`。两个工具使用封闭 schema，只接受调用方幂等 `grantRequestId` 以及 source 的 file/directory 枚举；不接受 path、URL、audience、attestation、权限或 replace。Service 固定授权范围和上限，打开真实本地 picker，并把私有加密响应转换为仅含 opaque resource ref、显示名、资源 revision 摘要、约束和有效期的结果。未建立可信 audience 时，`tools/list` 只返回 `system.get_capabilities`，资源工具调用返回 Unknown tool。公开响应不含 raw path、sessionRef、密文、attestation、私有 receipt 或 staging locator。
 
 该切片的 audience/MCP/资源/无头服务定向回归为 `74 passed`，运行时/安装包/原生 launcher 扩大聚类为 `159 passed, 1 skipped`，正式 Python 全集为 `1265 passed, 1 skipped`；原生 launcher Rust 单测为 `14 passed`。这仍不表示 M2 或 M3 已完成：新 opaque ref 尚未经 `study.register_inputs` 绑定到 StudyTask、Source Adapter 或 Worker 调度，输出 ref 尚未绑定 APKG 发布，宿主 attachment adapter、URL 输入、网络 staging、逐子项公共 ref、Anki ImportApproval 和生成/导出/导入工具仍未开放。跨进程锁仍串行化整个本地复制阶段；picker 等待期间的 stdio 调用也尚未升级为可取消长任务。
+随后完成的任务来源绑定切片要求 public InputRef 的 source revision 已存在于 StudyTask input fingerprint，且 task/audience/session/service 与 `read_source` 授权完全一致；绑定只能在任务启动前创建，Worker 读取前会再次复核认证 receipt、grant 与暂存字节，并只获得 workspace-relative locator。该切片新增 11 项专测，正式 Python 全集为 `1276 passed, 1 skipped`。
+
+CURRENT 又新增统一 `StudyRuntime` composition root 与首个项目写工具 `study.create_project`：Project/Artifact/Task/Source Binding 使用同一 service instance、同一 OS 保护主凭据派生的域隔离密钥；工具只在可信 audience 中出现，RequestContext 与 Learning Contract 为封闭 schema，相同 idempotencyKey 精确幂等，无模型、网络、来源读取或 Anki 副作用。下一出口是 `study.register_inputs` 的 SourceAsset 发布和项目 revision 原子提交；当前不能把“项目已创建”描述为“已经读取素材”。
+
 
 Artifact Registry、StudyTask、Project Registry、AuthorizationLedger、CredentialStore、ServiceProfileRegistry、profile verification、legacy projection 与 local/network resource ledger 仍未作为同一事务边界接入 Card Service 公共 MCP surface，Learning Contract 尚未发布为 canonical Artifact ref。正式 service key rotation、完整应用数据 ACL、Codex 宿主进程身份证明、精细 scope relation proof、完整 Broker reservation 与授权联合事务、受信设置事务、`system.validate_profile` 公共任务和 Anki 证据链仍在后续切片。公共 MCP 在这些边界完成前仍不能接受任意 ArtifactRef 对象或开放生成、APKG 导出与 Anki 写操作。
 

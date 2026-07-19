@@ -42,6 +42,7 @@ from .runtime_manifest import (
 )
 from .runtime_package import ManagedRuntimePackage, RuntimePackageError
 from .resource_runtime import ServiceResourceRuntime, ServiceResourceRuntimeError
+from .study_runtime import StudyRuntime, StudyRuntimeError
 from .runtime_trust import (
     RuntimePackageTrustPolicy,
     RuntimeTrustError,
@@ -779,6 +780,8 @@ class CardService:
         self._credential_backend = credential_backend
         self._resource_gesture_verifier = resource_gesture_verifier
         self._resource_runtime: ServiceResourceRuntime | None = None
+        self._study_runtime: StudyRuntime | None = None
+        self._study_runtime_lock = threading.RLock()
         self._local_picker_requests: dict[str, dict[str, Any]] = {}
         self._completed_local_picker_grants: dict[str, dict[str, Any]] = {}
         self._local_picker_request_index: dict[tuple[str, str, str, str, str], dict[str, str]] = {}
@@ -886,6 +889,78 @@ class CardService:
         """Internal trusted-adapter composition hook; it is not an MCP tool."""
 
         return {**self._ensure_resource_runtime().capabilities(), "initialized": True}
+
+    def _study_runtime_capabilities(self) -> dict[str, Any]:
+        with self._study_runtime_lock:
+            runtime = self._study_runtime
+        if runtime is not None:
+            return {**runtime.capabilities(), "initialized": True}
+        return {
+            "schemaVersion": 1,
+            "initialized": False,
+            "credentialProtectionRequired": True,
+            "projectRegistry": True,
+            "artifactRegistry": True,
+            "studyTaskCoordinator": True,
+            "taskSourceBinding": True,
+            "sourceAssetPublication": False,
+            "publicProjectTools": True,
+            "publicInputRegistration": False,
+            "pathDisclosure": False,
+            "complete": False,
+        }
+
+    def _ensure_study_runtime(self) -> StudyRuntime:
+        with self._study_runtime_lock:
+            if self._study_runtime is not None:
+                return self._study_runtime
+            try:
+                credential_store = CredentialStore(
+                    state_dir=self.store.root / "trusted-surfaces" / "credentials",
+                    backend=self._credential_backend,
+                )
+                runtime = StudyRuntime(
+                    state_dir=self.store.root / "study-runtime",
+                    credential_store=credential_store,
+                    resource_runtime=self._ensure_resource_runtime(),
+                )
+            except (CredentialStoreError, StudyRuntimeError, OSError) as error:
+                raise CardServiceError(
+                    getattr(error, "code", "STUDY_RUNTIME_UNAVAILABLE"),
+                    "Card Service Study runtime is unavailable",
+                    retryable=False,
+                    stage="request",
+                ) from error
+            self._study_runtime = runtime
+            return runtime
+
+    def initialize_study_runtime(self) -> dict[str, Any]:
+        """Internal composition hook used by the trusted MCP project adapter."""
+
+        return {**self._ensure_study_runtime().capabilities(), "initialized": True}
+
+    def create_study_project(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        idempotency_key: str,
+        learning_contract: Mapping[str, Any],
+        title: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return self._ensure_study_runtime().create_project(
+                audience=audience,
+                idempotency_key=idempotency_key,
+                learning_contract=learning_contract,
+                title=title,
+            )
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=error.code.endswith("_CONFLICT"),
+                stage="request",
+            ) from error
 
     @staticmethod
     def public_local_resource_constraints(kind: str) -> dict[str, Any]:
@@ -1184,6 +1259,7 @@ class CardService:
             },
             "trustedSurfaces": self.trusted_surfaces.capabilities(),
             "localResourceRuntime": self._resource_runtime_capabilities(),
+            "studyRuntime": self._study_runtime_capabilities(),
         }
 
     @staticmethod

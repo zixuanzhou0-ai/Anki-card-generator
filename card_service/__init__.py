@@ -48,6 +48,7 @@ from .task_source_binding import (
     TaskSourceBindingError,
     TaskSourceBindingRuntime,
 )
+from .study_runtime import StudyRuntime, StudyRuntimeError
 from .project_registry import ProjectRegistry, ProjectRegistryError
 from .service_profiles import (
     ServiceProfileVerificationError,
@@ -89,6 +90,8 @@ __all__ = [
     "ServiceResourceRuntimeError",
     "TaskSourceBindingError",
     "TaskSourceBindingRuntime",
+    "StudyRuntime",
+    "StudyRuntimeError",
     "ServiceProfileVerificationError",
     "ServiceProfileVerificationRegistry",
     "ServiceProfileRegistry",

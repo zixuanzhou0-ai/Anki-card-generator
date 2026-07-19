@@ -1,6 +1,6 @@
 # MCP 工具参考
 
-> 状态：CURRENT 最小桥 + PROPOSED 完整工具契约；可信会话已实现 `system.get_capabilities`、`system.request_source_grant` 与 `system.request_output_grant`
+> 状态：CURRENT 最小桥 + PROPOSED 完整工具契约；可信会话已实现 `system.get_capabilities`、`system.request_source_grant`、`system.request_output_grant` 与 `study.create_project`
 > 日期：2026-07-18
 > 工具名和 schema 在实现前仍可调整；一旦 V1 发布即按版本策略维护。
 
@@ -17,7 +17,7 @@ MCP 工具服务于用户意图，而不是暴露内部 Worker。工具层必须
 
 官方工具设计参考：[Describe tools](https://developers.openai.com/apps-sdk/build/mcp-server#step-2--describe-tools)。
 
-当前桥实现协议握手、动态工具发现、零参数只读能力快照，以及可信会话中的本地 source/output opaque grant。没有原生 launcher audience 时只公开 `system.get_capabilities`；可信 audience 由父 PID、固定 launcher 可执行文件、当前 OS 用户 SID 摘要和每进程随机 nonce 派生，工具参数不能自报。桥仍不接受任意路径、URL、Artifact 或 OperationIntent，也不公开生成、导出、Anki 写入、凭据、原始 Worker 或 Shell；下文其余工具仍是后续里程碑的目标合同。
+当前桥实现协议握手、动态工具发现、零参数只读能力快照，以及可信会话中的本地 source/output opaque grant 和幂等 `study.create_project`。没有原生 launcher audience 时只公开 `system.get_capabilities`；可信 audience 由父 PID、固定 launcher 可执行文件、当前 OS 用户 SID 摘要和每进程随机 nonce 派生，工具参数不能自报。桥仍不接受任意路径、URL、Artifact 或 OperationIntent，也不公开输入登记、生成、导出、Anki 写入、凭据、原始 Worker 或 Shell；下文其余工具仍是后续里程碑的目标合同。
 
 ## 2. 公共请求约定
 
@@ -314,7 +314,7 @@ prepare request
 
 ### 5.1 study.create_project
 
-> CURRENT 内部状态：认证 Project Registry 已实现创建幂等、长期项目 scope 与双修订初始快照；本 MCP 工具尚未注册，Learning Contract Artifact ref 尚未接线。
+> CURRENT：本工具已在可信 stdio audience 下注册，使用封闭 RequestContext/Learning Contract schema 调用认证 Project Registry；相同 idempotencyKey 精确幂等，冲突失败关闭，无可信 audience 时工具不可见。当前 learningContractRef 是项目 scope 内的版本化 contract identity，独立 Learning Contract Artifact/handle 尚未发布。
 
 输入：
 

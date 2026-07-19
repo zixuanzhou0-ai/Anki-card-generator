@@ -5,6 +5,12 @@ import re
 import sys
 from typing import Any, TextIO
 
+from .mcp_project_tools import (
+    PROJECT_TOOL_NAMES,
+    McpProjectToolInputError,
+    call_project_tool,
+    project_tool_definitions,
+)
 from .mcp_resource_tools import (
     RESOURCE_GRANT_TOOL_NAMES,
     McpResourceToolInputError,
@@ -99,6 +105,7 @@ def _tool_definitions(
     definitions = [_tool_definition()]
     if audience_session is not None:
         definitions.extend(resource_tool_definitions())
+        definitions.extend(project_tool_definitions())
     return definitions
 
 
@@ -182,8 +189,9 @@ def _handle_request(
                 },
                 "instructions": (
                     "Start with system.get_capabilities. Trusted launcher sessions may request "
-                    "opaque source and output grants through native pickers. Generation, export, "
-                    "import, credentials, and raw Worker commands remain unavailable."
+                    "opaque source and output grants through native pickers and create a local "
+                    "Study project. Input registration, generation, export, import, credentials, "
+                    "and raw Worker commands remain unavailable."
                 ),
             },
         )
@@ -212,6 +220,23 @@ def _handle_request(
                 )
             except McpResourceToolInputError:
                 return _rpc_error(request_id, -32602, "Invalid resource tool arguments")
+            except CardServiceError as error:
+                return _response(request_id, result=_tool_error(error))
+            except Exception:
+                return _response(request_id, result=_tool_error())
+            return _response(request_id, result=result)
+        if tool_name in PROJECT_TOOL_NAMES:
+            if audience_session is None:
+                return _rpc_error(request_id, -32602, "Unknown tool")
+            try:
+                result = call_project_tool(
+                    service,
+                    tool_name=str(tool_name),
+                    arguments=arguments,
+                    audience_session=audience_session,
+                )
+            except McpProjectToolInputError:
+                return _rpc_error(request_id, -32602, "Invalid project tool arguments")
             except CardServiceError as error:
                 return _response(request_id, result=_tool_error(error))
             except Exception:
