@@ -442,6 +442,8 @@ CURRENT 输入只接受一个认证 `inspectionHandle`。工具只读取已经�
 
 工具描述必须明确会调用模型并可能访问外部网络。模型只能看到本次任务所需的最小来源片段。每个候选同时生成 versioned GateEvaluationSet；eligibility 由 Service 根据当前规则集派生，模型或调用方不能直接指定。
 
+CURRENT 实现边界：内部 CandidateDiscoveryRuntime 已能冻结模型、授权、egress、成本与输入身份，并以可恢复任务原子提交 `candidates_ready`；公共工具尚未注册。上面的 MCP 输入不能携带 authorizationRecordDigest、constraintsDigest、exactScopeDigest、credentialRevision 或 egress manifest 等内部证明；正式公开时必须由 Service 根据 `modelProfileRef` 与已确认的 OperationIntent 自行解析，并以当前 `inspectionHandle` 取代可移植性不足的裸来源引用。
+
 ### 6.2 study.get_task
 
 输入 taskId。输出完整 StudyTaskSnapshot，包括单调递增的 taskRevision。任何后续变更必须回传 expectedRevision 与 operationId；revision 冲突不得覆盖较新状态，同 operationId 仅在输入摘要完全一致时幂等返回：

@@ -576,6 +576,7 @@ class CandidateArtifactPublisher:
         input_fingerprint: str,
         inspection_ref: Mapping[str, Any],
         candidates: Sequence[Mapping[str, Any]],
+        issue_refs: Sequence[str] = (),
     ) -> dict[str, Any]:
         if not isinstance(candidates, Sequence) or isinstance(candidates, (str, bytes)):
             raise CandidateArtifactError(
@@ -724,9 +725,20 @@ class CandidateArtifactPublisher:
             "discovery_"
             + hashlib.sha256(canonical_json_bytes(identity)).hexdigest()[:40]
         )
+        if not isinstance(issue_refs, Sequence) or isinstance(issue_refs, (str, bytes)):
+            raise CandidateArtifactError(
+                "CANDIDATE_ARTIFACT_INVALID", "discovery issue refs are invalid"
+            )
         issues = []
+        for issue in issue_refs:
+            if not isinstance(issue, str) or not issue or len(issue) > 160:
+                raise CandidateArtifactError(
+                    "CANDIDATE_ARTIFACT_INVALID", "discovery issue ref is invalid"
+                )
+            issues.append(issue)
         if counts["recommended"] == 0:
             issues.append("DISCOVERY_NO_RECOMMENDED_CANDIDATES")
+        issues = sorted(set(issues))
         completeness = _completeness("complete", len(candidate_refs))
         payload = {
             "discoveryId": discovery_id,

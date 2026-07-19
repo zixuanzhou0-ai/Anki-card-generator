@@ -11,6 +11,12 @@ from .artifact_registry import (
     ArtifactRegistry,
     ArtifactRegistryError,
 )
+from .candidate_discovery import CandidateDiscoveryModel
+from .candidate_discovery_runtime import (
+    CandidateDiscoveryAuthorization,
+    CandidateDiscoveryRuntime,
+    CandidateDiscoveryRuntimeError,
+)
 from .credentials import CredentialStore, CredentialStoreError
 from .project_registry import ProjectRegistry, ProjectRegistryError
 from .resource_runtime import ServiceResourceRuntime
@@ -50,6 +56,7 @@ class StudyRuntime:
         resource_runtime: ServiceResourceRuntime,
         workspace_factory: WorkspaceFactory | None = None,
         workspace_releaser: WorkspaceReleaser | None = None,
+        candidate_discovery_model: CandidateDiscoveryModel | None = None,
     ) -> None:
         root = Path(state_dir).expanduser()
         if not root.is_absolute():
@@ -118,6 +125,17 @@ class StudyRuntime:
                 projects=self.projects,
                 tasks=self.tasks,
             )
+            self.candidate_discovery = (
+                CandidateDiscoveryRuntime(
+                    service_instance_id=self.service_instance_id,
+                    artifacts=self.artifacts,
+                    projects=self.projects,
+                    tasks=self.tasks,
+                    model=candidate_discovery_model,
+                )
+                if candidate_discovery_model is not None
+                else None
+            )
         except (
             CredentialStoreError,
             ArtifactRegistryError,
@@ -126,6 +144,7 @@ class StudyRuntime:
             TaskSourceBindingError,
             SourceRegistrationError,
             SourceInspectionError,
+            CandidateDiscoveryRuntimeError,
             OSError,
         ) as error:
             raise StudyRuntimeError(
@@ -144,6 +163,8 @@ class StudyRuntime:
             "taskSourceBinding": True,
             "sourceAssetPublication": True,
             "sourceInspection": True,
+            "candidateDiscoveryRuntime": self.candidate_discovery is not None,
+            "publicCandidateDiscovery": False,
             "publicProjectTools": True,
             "publicInputRegistration": True,
             "publicSourceInspection": True,
@@ -230,6 +251,40 @@ class StudyRuntime:
             )
         except (
             SourceInspectionError,
+            ArtifactRegistryError,
+            ProjectRegistryError,
+            StudyTaskError,
+        ) as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
+    def start_candidate_discovery(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_id: str,
+        expected_project_revision: int,
+        idempotency_key: str,
+        inspection_handle: str,
+        candidate_budget: Mapping[str, Any],
+        authorization: CandidateDiscoveryAuthorization,
+    ) -> dict[str, Any]:
+        if self.candidate_discovery is None:
+            raise StudyRuntimeError(
+                "DISCOVERY_MODEL_UNAVAILABLE",
+                "Candidate discovery has no service-bound model adapter",
+            )
+        try:
+            return self.candidate_discovery.start_discovery(
+                audience=audience,
+                project_id=project_id,
+                expected_project_revision=expected_project_revision,
+                idempotency_key=idempotency_key,
+                inspection_handle=inspection_handle,
+                candidate_budget=candidate_budget,
+                authorization=authorization,
+            )
+        except (
+            CandidateDiscoveryRuntimeError,
             ArtifactRegistryError,
             ProjectRegistryError,
             StudyTaskError,

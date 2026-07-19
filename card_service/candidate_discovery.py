@@ -772,6 +772,7 @@ class CandidateDiscoveryEngine:
         inspection_ref: Mapping[str, Any],
         learning_contract: Mapping[str, Any],
         evaluated_at: str,
+        maximum_proposals: int | None = None,
     ) -> dict[str, Any]:
         if (
             not isinstance(project_revision, int)
@@ -803,13 +804,23 @@ class CandidateDiscoveryEngine:
             inspection_payload=inspection["payload"],
             inspection_parents=inspection["parents"],
         )
-        budget = learning_contract.get("budget")
-        max_new_cards = (
-            budget.get("maxNewCards", 20) if isinstance(budget, Mapping) else 20
-        )
-        if isinstance(max_new_cards, bool) or not isinstance(max_new_cards, int):
-            max_new_cards = 20
-        maximum_proposals = min(_MAX_PROPOSALS, max(8, max_new_cards * 4))
+        if maximum_proposals is None:
+            budget = learning_contract.get("budget")
+            nested_maximum = (
+                budget.get("maxNewCards") if isinstance(budget, Mapping) else None
+            )
+            max_new_cards = learning_contract.get("maxNewCards", nested_maximum)
+            if isinstance(max_new_cards, bool) or not isinstance(max_new_cards, int):
+                max_new_cards = 20
+            maximum_proposals = min(_MAX_PROPOSALS, max(8, max_new_cards * 4))
+        elif (
+            isinstance(maximum_proposals, bool)
+            or not isinstance(maximum_proposals, int)
+            or not 1 <= maximum_proposals <= _MAX_PROPOSALS
+        ):
+            raise CandidateDiscoveryError(
+                "DISCOVERY_INPUT_INVALID", "maximum proposal budget is invalid"
+            )
         proposal_request = self._proposal_request(
             contexts=contexts,
             learning_contract=learning_contract,
@@ -1007,6 +1018,7 @@ class CandidateDiscoveryEngine:
                 input_fingerprint=input_fingerprint,
                 inspection_ref=inspection_ref,
                 candidates=publications,
+                issue_refs=[*issues, *review_issues],
             )
         except CandidateArtifactError as error:
             raise CandidateDiscoveryError(error.code, error.message) from error

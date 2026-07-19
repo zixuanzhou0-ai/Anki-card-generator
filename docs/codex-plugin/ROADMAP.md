@@ -255,6 +255,8 @@ CURRENT 又新增统一 `StudyRuntime` composition root 与首个项目写工具
 
 内部候选发现引擎现已进一步实现两个权限分离的模型角色：高召回提案者只能在已认证、已披露的来源窗口中指出目标形式和精确 span，独立学习复核者只能对安全提案及其有界上下文判断语义支持、冲突与 learner fit；两者都不能提交 eligibility、scores、GateResult、重复判定或用户锁。这里的“独立”指角色、提示词、输入 schema 与输出 schema 分离，尚不强制不同模型供应商。敏感节点在发送给模型前即被剔除，越界 span 失败关闭，安全失败提案只留下摘要；ProposalBatch 与 ReviewBatch 都成为候选图的认证父 Artifact。复核缺失会确定性降级为 `needs_review`，不会伪造成功。新增 10 项专测后正式 `tests` 全集为 `1363 passed, 1 skipped`。该引擎目前仍是 Card Service 内部内核；真实 Service Broker/OperationIntent/Approval 接线、可恢复 StudyTask 与项目提交、公共 `study.start_discovery`/查询/选择工具和质量基准仍未完成。
 
+内部候选任务运行时现已把当前 Inspection、Learning Contract 修订、候选预算、模型 profile/configurationFingerprint/credentialRevision/实现版本、egress、OperationIntent、授权记录/约束/精确 scope/撤销 epoch 和成本预算全部冻结进 WorkReuseManifest、CapabilityBinding、AuthorizationBinding 与 TaskInputFingerprint。发现运行于可恢复 StudyTask，认证结果完成后再把项目从 `sources_ready` 原子推进到 `candidates_ready`；如果模型和 Artifact 已完成但项目提交中断，精确重试只重做项目提交，不重复模型调用。当前检查点粒度仍是整个 discovery 工作单元，失败任务必须显式 resume，提案/复核之间的更细粒度检查点尚未实现。7 项新增运行时测试、109 项扩展聚类以及正式 `tests` 全集 `1370 passed, 1 skipped` 已通过。该入口仍是 Card Service 内部接口：授权证明不能由 MCP 调用方自造，真实 Service Broker/Approval 解析器和公共 `study.start_discovery` 仍须接线。
+
 Artifact Registry、StudyTask、Project Registry、AuthorizationLedger、CredentialStore、ServiceProfileRegistry、profile verification、legacy projection 与 local/network resource ledger 仍未作为同一事务边界接入 Card Service 公共 MCP surface，Learning Contract 尚未发布为 canonical Artifact ref。正式 service key rotation、完整应用数据 ACL、Codex 宿主进程身份证明、精细 scope relation proof、完整 Broker reservation 与授权联合事务、受信设置事务、`system.validate_profile` 公共任务和 Anki 证据链仍在后续切片。公共 MCP 在这些边界完成前仍不能接受任意 ArtifactRef 对象或开放生成、APKG 导出与 Anki 写操作。
 
 ### 出口

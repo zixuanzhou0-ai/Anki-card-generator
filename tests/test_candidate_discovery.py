@@ -362,6 +362,8 @@ def test_missing_independent_review_degrades_to_needs_review(tmp_path: Path) -> 
     assert "DISCOVERY_REVIEW_INCOMPLETE" in result["issueCodes"]
     review_batch = artifacts.verify_ref(result["reviewBatchRef"], bound)
     assert review_batch["payload"]["reviews"][0]["reviewerReturned"] is False
+    discovery = artifacts.verify_ref(result["discoveryRef"], bound)
+    assert "DISCOVERY_REVIEW_INCOMPLETE" in discovery["issueRefs"]
 
 
 def test_sensitive_source_node_is_not_disclosed_to_model_or_json_artifacts(
