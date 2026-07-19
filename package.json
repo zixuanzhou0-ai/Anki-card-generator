@@ -17,6 +17,7 @@
     "test:ui": "npm run build && node scripts/run_ui_smoke.mjs",
     "test:worker": "python -m unittest discover -s tests -p \"test_*.py\"",
     "test:mcp-host": "node scripts/probe_codex_mcp_host.mjs",
+    "test:mcp-host:trusted": "node scripts/probe_codex_mcp_host.mjs --trusted",
     "smoke:release": "powershell -ExecutionPolicy Bypass -File scripts/smoke_release.ps1",
     "release:init": "node scripts/init_video_release_run.mjs",
     "release:preflight": "node scripts/preflight_video_release_case.mjs",

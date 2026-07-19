@@ -11,9 +11,44 @@ const PROBE_ROOT = path.join(ROOT, ".tmp", "codex-mcp-host-probe");
 const WORKER = path.join(ROOT, "tests", "fixtures", "card_service", "fake_worker.py");
 const SERVER = "anki-study-m1";
 const TOOL = "system.get_capabilities";
+const TRUSTED_FLAG = "--trusted";
+const FULL_TOOLSET = [
+  TOOL,
+  "system.authorize_candidate_discovery",
+  "system.request_source_grant",
+  "system.request_output_grant",
+  "study.create_project",
+  "study.register_inputs",
+  "study.start_source_inspection",
+  "study.get_source_inspection",
+  "study.start_discovery",
+  "study.list_candidates",
+  "study.get_candidate",
+  "study.preview_evidence",
+  "study.set_selection",
+  "study.plan_cards",
+  "study.list_card_plans",
+  "study.edit_card_plan",
+  "study.validate_card_plans",
+  "cards.generate",
+  "cards.list",
+  "cards.export_apkg",
+  "study.get_task",
+  "study.cancel_task",
+  "study.list_recoverable_tasks",
+  "study.resume_task",
+  "anki.prepare_import",
+  "anki.request_import_confirmation",
+  "anki.import_and_verify",
+];
 const DEVELOPMENT_REQUEST_TIMEOUT_MS = 30_000;
 const PACKAGED_REQUEST_TIMEOUT_MS = 120_000;
 const TRACE_ENABLED = process.env.ANKI_STUDY_PROBE_TRACE === "1";
+const cliArguments = new Set(process.argv.slice(2));
+if ([...cliArguments].some((value) => value !== TRUSTED_FLAG)) {
+  throw new Error(`Unknown MCP host probe argument: ${[...cliArguments].join(" ")}`);
+}
+const TRUSTED_DEVELOPMENT = cliArguments.has(TRUSTED_FLAG);
 
 
 function trace(message) {
@@ -145,6 +180,7 @@ async function main() {
   }
   const launcherMode = Boolean(requestedLauncher);
   const packaged = launcherMode || Boolean(requestedRuntime && requestedTrust);
+  const fullToolProbe = packaged || TRUSTED_DEVELOPMENT;
   trace(launcherMode ? "mode=launcher" : packaged ? "mode=packaged" : "mode=development");
   const requestTimeoutMs = requestTimeout(packaged);
   const runtimePackage = requestedRuntime ? path.resolve(requestedRuntime) : null;
@@ -200,6 +236,7 @@ async function main() {
         "--state-dir",
         stateDir,
         "--development-unpackaged-runtime",
+        ...(TRUSTED_DEVELOPMENT ? ["--development-trusted-mcp-session"] : []),
         "--worker",
         WORKER,
         "--python",
@@ -352,8 +389,16 @@ async function main() {
       throw new Error("Codex did not register the read-only Card Service capability tool.");
     }
     trace("MCP tool registered");
-    if (Object.keys(registered.tools).some((name) => name !== TOOL)) {
-      throw new Error("Codex registered an MCP tool outside the M1 read-only allowlist.");
+    const registeredTools = Object.keys(registered.tools);
+    const expectedTools = fullToolProbe ? FULL_TOOLSET : [TOOL];
+    if (
+      registeredTools.length !== expectedTools.length ||
+      expectedTools.some((name) => !registeredTools.includes(name))
+    ) {
+      throw new Error(
+        `Codex registered an unexpected MCP toolset. Expected ${expectedTools.join(", ")}; ` +
+          `received ${registeredTools.join(", ")}.`,
+      );
     }
 
     const called = await call("mcpServer/tool/call", {
@@ -380,6 +425,43 @@ async function main() {
       throw new Error("Packaged Codex host did not verify the signed runtime and exact DACL.");
     }
 
+    let project = null;
+    if (fullToolProbe) {
+      const created = await call("mcpServer/tool/call", {
+        threadId,
+        server: SERVER,
+        tool: "study.create_project",
+        arguments: {
+          context: {
+            idempotencyKey: "codex-host-probe-project-v1",
+            locale: "zh-CN",
+          },
+          title: "Codex host probe",
+          learningContract: {
+            purpose: "Verify the trusted Codex Study tool surface.",
+            targetBehavior: "Create one isolated local study project without reading a source.",
+            maxNewCards: 1,
+            evidencePolicy: "automatic",
+          },
+        },
+      });
+      const createdProject = created?.structuredContent;
+      if (
+        created?.isError === true ||
+        typeof createdProject?.projectId !== "string" ||
+        createdProject?.projectRevision !== 1 ||
+        createdProject?.workflow?.artifactStage !== "empty"
+      ) {
+        throw new Error("Trusted Codex host could not create an isolated Study project.");
+      }
+      project = {
+        projectId: createdProject.projectId,
+        projectRevision: createdProject.projectRevision,
+        artifactStage: createdProject.workflow.artifactStage,
+      };
+      trace("trusted Study project created");
+    }
+
     process.stdout.write(
       `${JSON.stringify(
         {
@@ -388,7 +470,9 @@ async function main() {
             ? "pinned-launcher-packaged-runtime"
             : packaged
               ? "signed-packaged-runtime"
-              : "development-unpackaged-runtime",
+              : TRUSTED_DEVELOPMENT
+                ? "development-trusted-session"
+                : "development-unpackaged-runtime",
           codexHost: {
             userAgent: initialized?.userAgent || null,
             platformFamily: initialized?.platformFamily || null,
@@ -399,7 +483,7 @@ async function main() {
             advertisedName: registered.serverInfo?.name || null,
             advertisedVersion: registered.serverInfo?.version || null,
             authStatus: registered.authStatus,
-            tools: Object.keys(registered.tools),
+            tools: registeredTools,
           },
           capability: {
             service: structured.cardService.service,
@@ -412,6 +496,7 @@ async function main() {
             runtimePackageDacl:
               structured.cardService.processIsolation?.runtimePackageDacl ?? false,
           },
+          project,
         },
         null,
         2,

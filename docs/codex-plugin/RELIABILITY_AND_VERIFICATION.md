@@ -1,5 +1,21 @@
 # 可靠性与核验
 
+> 基线日期：2026-07-19
+
+## CURRENT R8a 导入与数据核验证据链（2026-07-19）
+
+当前公共链为 `anki.prepare_import` → `anki.request_import_confirmation` → `anki.import_and_verify` → `study.get_task`。执行工具只接收已确认的 `importIntentId` 与幂等上下文，不接受 APKG 路径、Anki 目标、媒体目录或任意验证规则。
+
+状态必须按事实分层：
+
+- 写入前失败：无 receipt，项目保持 `apkg_ready`。
+- 写入完成且数据检查通过：receipt + VerificationArtifact，项目推进到 `anki_data_verified`。
+- 写入完成但数据检查失败：保留 receipt，项目为 `imported_unverified`。
+- 取消/中断可能跨越写边界：任务为 `interrupted`，只允许 `inspect_before_retry`，禁止盲目重放。
+- 同一 import intent 重试幂等，改变 idempotency key 不能触发第二次导入。
+
+当前数据检查不等于 Anki runtime 体验核验。渲染、翻面、音视频播放、reviewer 交互和真实重启均为 `not_assessed`；R8b trusted runtime verifier 仍是 PROPOSED。下文早期“尚未写入/下一阶段”段落是历史快照。
+
 > 状态：PROPOSED 可靠性合同；引用 CURRENT 内核能力
 > 日期：2026-07-17
 > “生成”“导出”“导入”“核验”是四个不同事实。
@@ -135,7 +151,7 @@ R8b 真实渲染、播放与复习核验通过
 - review：需要用户/专家判断，默认不自动导出。
 - fail：禁止生成。
 
-CURRENT 内部 R4 子集使用 `deterministic-language-card-plan-v1` 和 `card-plan-validation-v1`：从当前认证 SelectionArtifact 再验证候选图，为 `production`、`chunk_collocation`、`reading_recognition` 发布逐项计划、计划集合和验证 Artifact。八项记录覆盖 evidence、scoring boundary、answer leakage、duplicate、conflict、template、media generatability 与 user lock preservation；任一非 passed 项进入 blocked 集合。初始媒体策略固定全关、用户锁为空，因而相应 pass 只证明受限输入；翻译、语用/语法推断及媒体路线 fail closed。CURRENT 可信 MCP 已开放受限的 `study.plan_cards`、只读 `study.list_card_plans`、`study.edit_card_plan` 与 `study.validate_card_plans`：规划前再次验证精确当前 Selection，查询前再次验证 PlanSet/Validation 当前性、成员覆盖和八项记录完整性；认证 cursor 防止篡改与跨集合复用，公共投影删除全部内部 refs、路径、授权和 input fingerprint。Agent 编辑不能提交 provenance/evidence/lock，服务保留原证据和用户锁、记录权威 taskId，并对新 revision 重放全部门禁；新语义证据不足为 needs_review，评分边界破坏或未接线媒体为 failed。独立重验发布新的认证 set/validation revision，中断恢复按 Artifact identity 比较，旧幂等结果不能覆盖更新 revision。本轮恢复、失效、schema 与全链合同进入正式 Python `tests` 全集后为 1448 passed、1 skipped；受信用户锁通道尚未开放。随后 CURRENT R5 受限切片开放 `cards.generate` 与 `cards.list`：仅当当前 PlanSet 的全部八项检查为 passed、题面/答案为文本且媒体策略全关时，服务才确定性发布逐卡 CardArtifact、逐项 ReliabilityManifest、空 MediaLedger、SanitizedLegacyProjectArtifact 和唯一 ProjectArtifact，并推进到 `cards_ready`。公开列表重新验证 ProjectArtifact 当前性、父图和 cardIds 对账，认证 cursor 防篡改并拒绝解码后字节相同的非规范 Base64URL 表示；输出不含路径、EvidenceRef、ArtifactRef、授权、模型数据或 input fingerprint。任务 work unit 完成、task success 与项目 commit 边界均可精确恢复且不重复发布；真实 Legacy Worker 已从该投影成功导出 APKG。首次正式全集捕获并修复三类查询游标的非规范 Base64URL 等价编码问题；修复后正式 Python `tests` 全集为 1469 passed、1 skipped。模型/TTS/媒体生成与 Anki 写入仍保持关闭；CURRENT 公共 APKG 导出已按第 18 节的认证 PackageArtifact 与任务可见性合同开放。
+CURRENT 内部 R4 子集使用 `deterministic-language-card-plan-v1` 和 `card-plan-validation-v1`：从当前认证 SelectionArtifact 再验证候选图，为 `production`、`chunk_collocation`、`reading_recognition` 发布逐项计划、计划集合和验证 Artifact。八项记录覆盖 evidence、scoring boundary、answer leakage、duplicate、conflict、template、media generatability 与 user lock preservation；任一非 passed 项进入 blocked 集合。初始媒体策略固定全关、用户锁为空，因而相应 pass 只证明受限输入；翻译、语用/语法推断及媒体路线 fail closed。CURRENT 可信 MCP 已开放受限的 `study.plan_cards`、只读 `study.list_card_plans`、`study.edit_card_plan` 与 `study.validate_card_plans`：规划前再次验证精确当前 Selection，查询前再次验证 PlanSet/Validation 当前性、成员覆盖和八项记录完整性；认证 cursor 防止篡改与跨集合复用，公共投影删除全部内部 refs、路径、授权和 input fingerprint。Agent 编辑不能提交 provenance/evidence/lock，服务保留原证据和用户锁、记录权威 taskId，并对新 revision 重放全部门禁；新语义证据不足为 needs_review，评分边界破坏或未接线媒体为 failed。独立重验发布新的认证 set/validation revision，中断恢复按 Artifact identity 比较，旧幂等结果不能覆盖更新 revision。本轮恢复、失效、schema 与全链合同进入正式 Python `tests` 全集后为 1448 passed、1 skipped；受信用户锁通道尚未开放。随后 CURRENT R5 受限切片开放 `cards.generate` 与 `cards.list`：仅当当前 PlanSet 的全部八项检查为 passed、题面/答案为文本且媒体策略全关时，服务才确定性发布逐卡 CardArtifact、逐项 ReliabilityManifest、空 MediaLedger、SanitizedLegacyProjectArtifact 和唯一 ProjectArtifact，并推进到 `cards_ready`。公开列表重新验证 ProjectArtifact 当前性、父图和 cardIds 对账，认证 cursor 防篡改并拒绝解码后字节相同的非规范 Base64URL 表示；输出不含路径、EvidenceRef、ArtifactRef、授权、模型数据或 input fingerprint。任务 work unit 完成、task success 与项目 commit 边界均可精确恢复且不重复发布；真实 Legacy Worker 已从该投影成功导出 APKG。首次正式全集捕获并修复三类查询游标的非规范 Base64URL 等价编码问题；修复后正式 Python `tests` 全集为 1469 passed、1 skipped。模型/TTS/媒体生成仍保持关闭；CURRENT 公共 APKG 导出与受信 Anki 数据写入/核验已经开放。R8b runtime verifier 仍保持关闭。
 
 ## 8. R5：生成与媒体
 
@@ -394,4 +410,4 @@ type VerificationCertificate = {
 
 服务发布认证 `study.anki-verification-contract` 与 `study.anki-import-plan`，冻结 11 项数据检查、Package/CardIdentity/MediaInventory/template 摘要、脱敏 target identity、固定重复/写入/恢复策略，并将项目以同一 `apkg_ready` 阶段推进一个 revision。精确幂等重试返回首次保存的同一 ImportPlan handle，不重复探测目标；跨 audience、旧包、离线或畸形响应均失败关闭。
 
-该状态仍是“尚未写入”：公开结果固定为 `runtimeVerification=not_assessed` 与 `confirmationRequired=true`。它不创建批准、不导入 APKG、不预置媒体、不声明 data_verified 或 fully_verified。受信用户确认、一次性批准消费、写边界恢复和导入后数据/运行时核验属于下一阶段。
+该 prepare 状态本身仍是“尚未写入”：公开结果固定为 `runtimeVerification=not_assessed` 与 `confirmationRequired=true`。后续 CURRENT `anki.request_import_confirmation` 和 `anki.import_and_verify` 可以消费受信批准、执行写入并完成数据核验；runtime 渲染/播放/reviewer/重启核验仍属于下一阶段。

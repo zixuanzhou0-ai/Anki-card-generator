@@ -1,4 +1,4 @@
 interface:
   display_name: "Anki Study Agent"
-  short_description: "Create evidence-backed, verified Anki study tasks"
-  default_prompt: "Use $anki-study-agent to turn this source into evidence-backed, verified Anki cards."
+  short_description: "Create evidence-backed cards with a trusted local runtime"
+  default_prompt: "Use $anki-study-agent to check the local Card Service, create evidence-backed cards from this supported source, and report data verification separately from runtime verification."

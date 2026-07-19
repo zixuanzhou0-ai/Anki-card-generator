@@ -1,6 +1,14 @@
 # 插件包、安装与分发参考
 
-> 状态：CURRENT IMPLEMENTING；被动插件、签名 packaged runtime、原生 pinned launcher 和非安装型离线候选包已通过真实 Codex 宿主探针，但尚未声明可安装 MCP/App
+## CURRENT 源插件、开发 runtime 与正式发行边界（2026-07-19）
+
+仓库内 `plugins/anki-study-agent` 是版本 `0.1.0` 的被动 Skill 插件源：manifest 只声明 `./skills/`，没有 `mcpServers`、Apps 或 hooks。它可以接受 plugin/skill validator 检查，但本身不会注册本地 runtime。
+
+与它配套的开发态可信 stdio Card Service 当前公开 27 个工具，已包括固定 Hermes 候选发现、候选发现安全恢复和 Anki 数据级 import-and-verify。该开发能力不改变发行结论：源插件未绑定正式 `.mcp.json`，当前 launcher 仍无正式发布者签名，候选固定 `installable=false`，没有 App resource，也没有通过独立正式安装验收。不得称其为已签名、正式可安装或可发布插件。
+
+Anki 当前最高状态为 `anki_data_verified`；插件侧通用渲染/播放/reviewer/重启 verifier 未实现。下文“唯一只读工具”的实物探针数字属于较早候选，不描述当前开发 runtime 的工具数量。
+
+> 状态：CURRENT IMPLEMENTING；被动插件源与开发态 runtime 可验证，但没有正式发布者签名、可安装 MCP/App 或发布声明
 > 日期：2026-07-18
 > 实施时必须重新用当时的官方验证器核验清单字段。
 
@@ -54,55 +62,41 @@ plugins/
 
 V1 不使用 hooks。当前生成规范与验证器对 hooks 字段存在差异，实施时以实际官方 schema/validator 为准。
 
-## 2. 建议 manifest
+## 2. CURRENT 被动 manifest
 
-以下为设计示例，不可直接当作已验证发行文件：
+仓库中的实际源 manifest 是被动 Skill 包，不包含 `mcpServers`、Apps 或 hooks：
 
 ~~~json
 {
   "name": "anki-study-agent",
   "version": "0.1.0",
-  "description": "Turn authorized sources into evidence-backed, verified Anki study tasks.",
+  "description": "Orchestrate a registered local Card Service to create evidence-backed Anki study tasks.",
   "author": {
-    "name": "Project maintainer",
+    "name": "zixuanzhou0-ai",
     "url": "https://github.com/zixuanzhou0-ai"
   },
   "homepage": "https://github.com/zixuanzhou0-ai/Anki-card-generator",
   "repository": "https://github.com/zixuanzhou0-ai/Anki-card-generator",
-  "license": "SEE-LICENSE-IN-REPOSITORY",
   "keywords": ["anki", "learning", "flashcards", "codex"],
   "skills": "./skills/",
-  "mcpServers": "./.mcp.json",
-
   "interface": {
     "displayName": "Anki Study Agent",
-    "shortDescription": "Create evidence-backed Anki cards from your sources.",
-    "longDescription": "Discover learning objectives, generate media-rich cards, export APKG, and verify them in Anki.",
-    "developerName": "Project maintainer",
+    "shortDescription": "Create evidence-backed Anki cards with a trusted local runtime.",
+    "longDescription": "Inspect authorized local text sources, discover learning objectives with the fixed Hermes Grok 4.5 authorization preset, generate validated text cards, export APKG, and verify imported Anki data. Runtime rendering, playback, and restart verification are not yet provided.",
+    "developerName": "zixuanzhou0-ai",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],
-    "websiteURL": "https://github.com/zixuanzhou0-ai/Anki-card-generator",
-    "privacyPolicyURL": "https://example.invalid/privacy",
-    "termsOfServiceURL": "https://example.invalid/terms",
     "defaultPrompt": [
-      "把这个附件中值得长期记住的内容做成卡片。",
-      "从这个视频选出 10 个值得主动表达的英语词块。",
-      "继续上次中断的制卡任务。"
+      "先检查本地 Card Service，再把这个受支持的素材做成可验证卡片。",
+      "从这个字幕或文本中选出 10 个值得主动表达的英语词块。",
+      "继续轮询上次返回的制卡任务，并准确报告当前阶段。"
     ],
-    "brandColor": "#245B85",
-    "composerIcon": "./assets/icon.png",
-    "logo": "./assets/logo.png"
+    "brandColor": "#245B85"
   }
 }
 ~~~
 
-注意：
-
-- example.invalid 是占位提醒；正式包必须替换为真实 HTTPS 隐私与条款页面。
-- license 必须在开源发布前明确，不能长期保留模糊值。
-- assets 引用必须真实存在。
-- 本项目首版最多提供三条简短 default prompt；实施时以官方 validator 的实际限制为准。
-- M3 核心示例故意不声明 apps。只有 .app.json、MCP App resource 和目标 Codex 宿主兼容实验全部通过后，M4 manifest 才增加 apps 字段。
+这份 manifest 只有在本地 Card Service 已由可信开发环境单独注册时才能完成工具链。不得手工加入 `.mcp.json` 把被动源包伪装成正式安装包。正式 MCP 声明必须由未来的签名安装候选生成，并同时通过外层发布者签名、原生预检和独立安装验收。
 
 ## 3. 本地 MCP
 
@@ -382,7 +376,7 @@ V1 本地 stdio 设计不应为了公开目录而过早引入云服务。先证�
 这个完成项不能外推为插件包已经可用：
 
 - 当前已有仓库内被动插件/Skill 包，以及经过真实 Codex app-server 注册与调用验证的开发态只读 stdio MCP；仍没有离开仓库可启动、经过安装与宿主验证的正式插件包，也没有 App resource。
-- M1 Headless Card Service 已完成受限任务、AppContainer/DACL、认证 broker IPC、签名运行包及本地媒体策略的若干切片，但完整 M1 出口尚未满足；M2 Artifact/授权边界和插件侧通用 Anki runtime evidence 适配器仍未实现。M0 交付的仍只是受精确合同约束的 Anki 26.05 媒体快捷键桥。
+- Headless Card Service 已实现认证 Artifact/opaque handle、固定 Hermes 候选发现、文本卡片、APKG 与受信 Anki 数据导入切片；插件侧通用 Anki runtime evidence 适配器仍未实现。M0 的 Anki 26.05 媒体快捷键桥只是历史实物证据，不能替代当前缺失的 runtime verifier。
 - 非 NFC、Windows 保留设备名（含 `CLOCK$`）、规范化冲突与 APKG archive 资源上限已通过；有界流式读取覆盖 APKG archive/package/verifier 与标准 Windows Anki direct-first 媒体路径。非标准/portable profile 的 AnkiConnect inline 兼容路径仍整文件/Base64，但原始单文件上限为 8 MiB；8 MiB 不是进程峰值。
 - M0 的 Computer Use、GUI 翻面/媒体播放和 20 张连续复习出口已经通过；完整边界见 [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md)。
 - 被动 Skill 不等于运行时可用；M1–M3 的 Headless Service 出口、认证 Artifact/授权边界、stdio MCP、宿主注册和可安装包出口满足前，不得声明 Codex 插件已经复用完整 APKG → 真实 Anki 发布闭环。

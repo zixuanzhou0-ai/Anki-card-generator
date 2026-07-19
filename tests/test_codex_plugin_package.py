@@ -1,8 +1,23 @@
 from __future__ import annotations
 
 import json
+import re
 import unittest
 from pathlib import Path
+
+from card_service.mcp_anki_tools import ANKI_TOOL_NAMES
+from card_service.mcp_candidate_tools import CANDIDATE_TOOL_NAMES
+from card_service.mcp_card_plan_tools import CARD_PLAN_TOOL_NAMES
+from card_service.mcp_card_tools import CARD_TOOL_NAMES
+from card_service.mcp_input_tools import INPUT_TOOL_NAMES
+from card_service.mcp_inspection_tools import INSPECTION_TOOL_NAMES
+from card_service.mcp_package_tools import PACKAGE_TOOL_NAMES
+from card_service.mcp_project_tools import PROJECT_TOOL_NAMES
+from card_service.mcp_resource_tools import RESOURCE_GRANT_TOOL_NAMES
+from card_service.mcp_selection_tools import SELECTION_TOOL_NAMES
+from card_service.mcp_stdio import CAPABILITY_TOOL_NAME
+from card_service.mcp_system_tools import SYSTEM_TOOL_NAMES
+from card_service.mcp_task_tools import TASK_TOOL_NAMES
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,6 +63,37 @@ class CodexPluginPackageTests(unittest.TestCase):
             reference_text = (SKILL / "references" / reference).read_text(encoding="utf-8")
             self.assertGreater(len(reference_text.strip()), 200)
             self.assertNotIn("[TODO:", reference_text)
+
+    def test_current_skill_workflow_names_only_real_public_tools(self) -> None:
+        workflow = (SKILL / "references" / "workflow-contract.md").read_text(encoding="utf-8")
+        current_workflow = workflow.split("## Current public tool workflow", 1)[1].split(
+            "## Planned but unavailable tools", 1
+        )[0]
+        named_tools = set(
+            re.findall(r"`((?:system|study|cards|anki)\.[a-z0-9_]+)`", current_workflow)
+        )
+        public_tools = {
+            CAPABILITY_TOOL_NAME,
+            *RESOURCE_GRANT_TOOL_NAMES,
+            *SYSTEM_TOOL_NAMES,
+            *PROJECT_TOOL_NAMES,
+            *INPUT_TOOL_NAMES,
+            *INSPECTION_TOOL_NAMES,
+            *CANDIDATE_TOOL_NAMES,
+            *SELECTION_TOOL_NAMES,
+            *CARD_PLAN_TOOL_NAMES,
+            *CARD_TOOL_NAMES,
+            *PACKAGE_TOOL_NAMES,
+            *TASK_TOOL_NAMES,
+            *ANKI_TOOL_NAMES,
+        }
+        self.assertEqual(named_tools, public_tools)
+
+        skill_text = (SKILL / "SKILL.md").read_text(encoding="utf-8")
+        skill_named_tools = set(
+            re.findall(r"`((?:system|study|cards|anki)\.[a-z0-9_]+)`", skill_text)
+        )
+        self.assertLessEqual(skill_named_tools, public_tools)
 
     def test_skill_metadata_requires_explicit_skill_name_in_default_prompt(self) -> None:
         metadata = (SKILL / "agents" / "openai.yaml").read_text(encoding="utf-8")

@@ -1,7 +1,19 @@
 # Skill 行为规范
 
-> 状态：PROPOSED；后续用于生成 SKILL.md 和行为测试  
-> 日期：2026-07-16  
+> 基线日期：2026-07-19
+
+## CURRENT Skill 编排边界（2026-07-19）
+
+实际 `SKILL.md` 已存在并由插件包测试/validator 检查；本文其余部分同时保留未来完整 Skill 设计。当前 Skill 必须先读 `system.get_capabilities`，只命令式调用当前 runtime 实际公开的工具。
+
+当前新项目主链为：source grant → project → register/inspect → `system.authorize_candidate_discovery({"preset":"hermes_grok_4_5"})` → `study.start_discovery`/task poll → candidate review/selection → deterministic CardPlan/validation → text cards → APKG export → prepare import → trusted confirmation → `anki.import_and_verify`/task poll。启动或发现中断后，先用 `study.list_recoverable_tasks` 取得候选发现任务，再以 `study.resume_task` 创建或复用认证后继任务。
+
+当前没有 `system.list_profiles`、`system.request_operation_confirmation`、`study.update_learning_contract`、`study.get_artifact` 或 `study.get_audit`，Skill 不得调用。公开恢复只适用于候选发现；导出和 Anki 写入不允许通过通用 resume 重放。固定 discovery preset 也不是通用模型设置接口。
+
+完成措辞最高只能是：“Anki 数据已核验；运行时渲染、播放和重启复习未评估。” 只有未来 trusted runtime verifier 给出认证证据后，才能称“已在 Anki 完整核验”。
+
+> 状态：CURRENT 核心 Skill + PROPOSED 扩展行为；实际 `SKILL.md` 已生成并受测试约束
+> 日期：2026-07-16
 > Skill 是编排与解释层，不是可靠性逻辑或权限执行层。
 
 ## 1. 角色

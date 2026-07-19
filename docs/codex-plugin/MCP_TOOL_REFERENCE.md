@@ -1,6 +1,18 @@
 # MCP 工具参考
 
-> 状态：CURRENT 最小桥 + PROPOSED 完整工具契约；可信会话已实现 `system.get_capabilities`、本地 source/output grant、项目与素材登记/检查、候选查询与选择、CardPlan 创建/审阅/编辑/重验、受限确定性 `cards.generate`/`cards.list`、异步 `cards.export_apkg`、`study.get_task`/`study.cancel_task` 与Anki 写入前只读边界 `anki.prepare_import`
+> 基线日期：2026-07-19
+
+## CURRENT 公共工具清单与能力上限（2026-07-19）
+
+截至 2026-07-19，可信开发态 Card Service stdio runtime 共公开 27 个工具：`system.get_capabilities`、`system.request_source_grant`、`system.request_output_grant`、`system.authorize_candidate_discovery`、`study.create_project`、`study.register_inputs`、`study.start_source_inspection`、`study.get_source_inspection`、`study.start_discovery`、`study.get_task`、`study.cancel_task`、`study.list_recoverable_tasks`、`study.resume_task`、`study.list_candidates`、`study.get_candidate`、`study.preview_evidence`、`study.set_selection`、`study.plan_cards`、`study.list_card_plans`、`study.edit_card_plan`、`study.validate_card_plans`、`cards.generate`、`cards.list`、`cards.export_apkg`、`anki.prepare_import`、`anki.request_import_confirmation`、`anki.import_and_verify`。
+
+当前候选发现授权工具只接受 `{"preset":"hermes_grok_4_5"}`。授权成功后，`study.start_discovery` 只接受 RequestContext、`inspectionHandle` 和 1–256 的 `candidateBudget`；Service 从当前可信授权派生模型身份、endpoint、凭据与 disclosure，调用方无权注入这些字段。
+
+`anki.import_and_verify` 只接受 `context.idempotencyKey` 与已确认的 `importIntentId`。成功写入后执行 deck/note/card/field/media 的数据级核验并最多推进到 `anki_data_verified`。写入成功但数据核验失败时保留 receipt 并置为 `imported_unverified`；写入前失败保持 `apkg_ready` 且不创建 receipt；跨越不确定写边界的取消/中断必须 `inspect_before_retry`。同一 import intent 即使换 idempotency key 也不得重复导入。运行时渲染、媒体播放、reviewer 操作与重启核验不在当前工具集中。
+
+下文总表同时保留 PROPOSED V1 工具设计；只有本节列出的 25 个名字可被当前 Skill 命令式调用。
+
+> 状态：CURRENT 25 工具开发态 runtime + PROPOSED 扩展工具契约；正式签名插件尚未发布
 > 日期：2026-07-19
 > 工具名和 schema 在实现前仍可调整；一旦 V1 发布即按版本策略维护。
 
@@ -143,6 +155,7 @@ list_projects、get_project、get_artifact、任务和预览工具都先校验�
 | 工具 | readOnlyHint | destructiveHint | idempotentHint | openWorldHint |
 |---|---:|---:|---:|---:|
 | system.get_capabilities | true | false | true | false |
+| system.authorize_candidate_discovery | false | false | false | true |
 | system.list_profiles | true | false | true | false |
 | system.open_local_settings | false | false | false | false |
 | system.request_source_grant | false | false | false | false |
@@ -161,7 +174,7 @@ list_projects、get_project、get_artifact、任务和预览工具都先校验�
 | study.start_discovery | false | false | true | true |
 | study.get_task | true | false | true | false |
 | study.list_recoverable_tasks | true | false | true | false |
-| study.cancel_task | false | true | true | false |
+| study.cancel_task | false | false | true | false |
 | study.resume_task | false | false | true | true |
 | study.list_candidates | true | false | true | false |
 | study.get_candidate | true | false | true | false |
@@ -188,6 +201,7 @@ destructiveHint 表示工具可能终止任务、撤销授权或持久修改外�
 | 工具 | 作用 | 副作用 | 确认 |
 |---|---|---|---|
 | system.get_capabilities | 读取环境、模型、TTS 与 Anki 能力快照 | 只读 | 无 |
+| system.authorize_candidate_discovery | CURRENT：打开固定 Hermes Grok 4.5 候选发现授权窗口 | 本地授权状态 | 必须用户动作 |
 | system.list_profiles | 读取脱敏后的模型/TTS/AnkiConnect profile | 只读 | 无 |
 | system.open_local_settings | 打开受信本地配置窗口 | 启动本地 UI，不提交秘密给模型 | 必须用户动作 |
 | system.request_source_grant | 打开受信文件/目录选择器并签发受限输入引用 | 本地授权状态 | 必须用户动作 |
@@ -205,9 +219,9 @@ destructiveHint 表示工具可能终止任务、撤销授权或持久修改外�
 | study.get_source_inspection | 读取已有来源检查产物 | 只读 | 无 |
 | study.start_discovery | 发现语义单元和学习候选 | 模型调用、本地写入 | 超出已批准成本/数量时 |
 | study.get_task | 查询权威任务 | 只读 | 无 |
-| study.list_recoverable_tasks | 列出中断任务 | 只读 | 无 |
+| study.list_recoverable_tasks | CURRENT：列出可安全恢复的候选发现任务 | 只读 | 无 |
 | study.cancel_task | 请求安全取消 | 终止本地任务 | 明确用户动作，但无需二次确认 |
-| study.resume_task | 从安全检查点继续 | 模型/媒体调用 | 原授权失效或扩大范围时 |
+| study.resume_task | CURRENT：为候选发现创建或复用认证后继任务 | 模型调用、本地写入 | 必须存在当前固定模型授权 |
 | study.list_candidates | 分页读取候选 | 只读 | 无 |
 | study.get_candidate | 候选、证据和关系详情 | 只读 | 无 |
 | study.preview_evidence | 预览受控证据片段 | 读取认证本地快照 | 无 |
@@ -233,7 +247,7 @@ destructiveHint 表示工具可能终止任务、撤销授权或持久修改外�
 
 成功必须同时满足：Worker 只在 task workspace 写入；Card Service 独立重验完整 APKG 合同、SQLite note/card、模板与 CSS 摘要；APKG 字节进入内容寻址 Blob；目标目录使用同目录 `.partial`、flush/fsync 与 no-replace 版本化发布；PackageArtifact、CardIdentitySet、PackageMediaManifest、CardMediaRoleInventory 和 APKG file Artifact 已认证发布；项目已单调提交到 `apkg_ready` 或更后阶段。任一提交窗口未闭合时不得公开 `succeeded`。重复同一幂等请求不会重新调用 Worker，也不会覆盖或重复创建最终文件。
 
-当前这条公开路线只承诺已经实现的文本、零媒体 CardArtifact 投影；模型/TTS/媒体生成仍按现有门禁失败关闭。APKG 成功不等于已导入 Anki；CURRENT `anki.prepare_import` 会创建认证计划与当前 audience/session 绑定的 `importIntentId`，并明确返回 `runtimeVerification=not_assessed`；`anki.request_import_confirmation` 已通过受信本地窗口与一次性内部批准账本接线，真正写入的 `anki.import_and_verify` 仍是下一阶段。
+当前这条公开路线只承诺已经实现的文本、零媒体 CardArtifact 投影；模型/TTS/媒体生成仍按现有门禁失败关闭。APKG 成功不等于已导入 Anki；CURRENT `anki.prepare_import` 创建认证计划，`anki.request_import_confirmation` 建立当前 session 的一次性批准，`anki.import_and_verify` 才执行幂等写入与数据核验。即使数据核验通过，`runtimeVerification` 仍为 `not_assessed`。
 ## 4.1 系统与本地配置
 
 ### system.get_capabilities
@@ -245,6 +259,20 @@ host 部分至少分别报告：pluginManifestLoaded、stdioServiceLaunch、tool
 只读检查不能自动安装、修改配置或发起模型/TTS 网络请求。历史验证不等于当前 ready；宿主版本或插件安装实例变化后 host capability 记录立即 stale。
 
 工作流只能读取当前 action 明确选择的 profile 条目；latestVerification 必须匹配同一 capability/profileRef/fingerprint/credentialRevision，且按单调 sequence 取最新。最新 failed 覆盖旧 passed，其他 profile 的 ready 或 aggregate some_ready 不能替它解锁。
+
+### system.authorize_candidate_discovery
+
+> CURRENT：固定 Hermes Grok 4.5 的受信候选发现授权。
+
+输入必须精确为：
+
+~~~json
+{"preset":"hermes_grok_4_5"}
+~~~
+
+工具不接受 URL、Provider、model、credential、prompt、source body、authorization token 或调用方预算。Card Service 固定使用 `model.hermes-grok-4.5`、字面 loopback `http://127.0.0.1:8317/v1` 与 `grok-4.5`，并在 digest-pinned 本地窗口取得真实用户决定。
+
+输出只包含 `approved/declined/cancelled/failed/timed_out` 状态、`capabilityAvailable` 与非秘密授权摘要；不返回凭据、内部 intent、文件路径或可转移 bearer。只有 `approved` 且 capability available 才能继续 `study.start_discovery`。
 
 ### system.list_profiles
 
@@ -419,90 +447,52 @@ CURRENT 输入只接受一个认证 `inspectionHandle`。工具只读取已经�
 
 ### 6.1 study.start_discovery
 
-输入：
+> CURRENT：已注册的异步候选发现入口。
+
+调用前必须先通过 `system.authorize_candidate_discovery` 取得当前固定 Hermes 授权。输入是封闭对象：
 
 ~~~ts
 {
-  context: RequestContext & {
+  context: {
     projectId: string;
     expectedProjectRevision: number;
+    idempotencyKey: string;
   };
   inspectionHandle: string;
   candidateBudget: {
-    target: number;
-    maximum: number;
+    target: number;   // 1..256
+    maximum: number;  // target..256
   };
 }
 ~~~
 
-输出立即返回：
+Service 从当前可信授权、audience、项目 revision、inspection 与候选预算派生模型 profile/configuration、credential revision、disclosure、egress、OperationIntent、exact scope 与成本摘要。调用方不能提交 Provider、Base URL、model、credential、prompt、source body、authorization token 或这些 Service-owned 字段。
 
-~~~ts
-{
-  taskId: string;
-  state: "queued" | "running";
-  estimatedPhases: string[];
-  inputFingerprint: InputFingerprint;
-}
-~~~
-
-工具描述必须明确会调用模型并可能访问外部网络。模型只能看到本次任务所需的最小来源片段。每个候选同时生成 versioned GateEvaluationSet；eligibility 由 Service 根据当前规则集派生，模型或调用方不能直接指定。
-
-CURRENT 实现边界：内部 CandidateDiscoveryRuntime 已能冻结模型、授权、egress、成本与输入身份，并以可恢复任务原子提交 `candidates_ready`；任务级 Service Broker 适配器已经支持 OpenAI-compatible、Anthropic 与 Gemini，并由 Card Service 从当前可信 Broker、audience、project revision、`inspectionHandle` 与候选预算派生全部非秘密授权摘要。`study.start_discovery` 仍未注册，因为当前内部方法会同步等待 proposer/reviewer；正式 MCP 必须先提供异步 start/poll/cancel/resume，不能阻塞 stdio。只读的 `study.list_candidates`、`study.get_candidate`、`study.preview_evidence`、`study.set_selection`、`study.plan_cards`、`study.list_card_plans`、`study.edit_card_plan` 与 `study.validate_card_plans` 已注册，它们只能读取已经存在的认证 Discovery。未来 discovery 公共输入只保留 RequestContext、当前 `inspectionHandle` 和 candidateBudget，不接受 sourceRefs、learningContractRef、modelProfileRef、authorizationRecordDigest、constraintsDigest、exactScopeDigest、credentialRevision 或 egress manifest；模型方案由已批准的 Service-owned method binding 唯一确定。
+工具立即返回 `intent=discover_candidates` 的任务快照；状态为 queued/running/cancelling/succeeded/failed/cancelled/interrupted，`resumability=resume_remaining`。用 `study.get_task` 轮询。模型只能读取认证 inspection 中完成本次任务所需的有界证据；候选 eligibility 与门禁由 Service 派生，模型不能自报。
 
 ### 6.2 study.get_task
 
-输入 taskId。输出完整 StudyTaskSnapshot，包括单调递增的 taskRevision。任何后续变更必须回传 expectedRevision 与 operationId；revision 冲突不得覆盖较新状态，同 operationId 仅在输入摘要完全一致时幂等返回：
+> CURRENT：输入精确为 `{"taskId": "..."}`。
 
-- phasePercent 与单调 overallPercent。
-- 完成/总条目、完成/总批次。
-- 最后活动时间。
-- cancellable、resumability 和 checkpointHandle。
-- task 的 inputFingerprint、workReuseDigest，以及每个 completed/active/pending work unit 的 workReuseDigest 与 preserved artifact handles。
-- 结构化 failure、issue 和 requiredAction。
-- 按 actionId 类型化的终态 resultHandles；export 只能在 succeeded 返回 PackageArtifact，Anki 导入/核验只能在终态返回 VerificationArtifact。
-
-不得只在完成后返回结果。
+返回公开任务快照：`schemaVersion`、`taskId`、`intent`、`state`、`cancellable`、`resumability`、`progress`、`nextAction`，以及终态时可选的 `result` 或 `error`。公开结果不包含 Worker 输出、路径、credential、内部 ArtifactRef 或 input fingerprint。
 
 ### 6.3 study.list_recoverable_tasks
 
-输入可选 projectId。返回 interrupted/failed/cancelled 且具有安全恢复语义的任务摘要、TaskInputManifestDigest、WorkReuseDigest、已保留产物、剩余工作单元和所需新授权。不会自动恢复或读取大型结果。
+> CURRENT：输入只能为空对象或 `{"limit": 1..100}`。返回当前 audience 下公开恢复运行时真正支持的 failed/cancelled/interrupted 候选发现任务；导出与 Anki import 不会出现在列表中。
+
+输出包含 `schemaVersion`、公开任务快照数组、`returnedTasks` 与 `nextAction`。任务仍经公开投影，不返回授权、路径、ArtifactRef、Provider、input fingerprint 或 Worker 状态。
 
 ### 6.4 study.cancel_task
 
-输入 taskId、mode：
+> CURRENT：输入精确为 `{"taskId": "..."}`。
 
-- safe：等待当前原子写入完成并保存检查点。
-- force：仅当 safe 超时后使用。若 Service 能证明最后一个原子写入边界和检查点完全一致，则终态为 cancelled；只要强制终止发生在未知写入边界、子进程状态不明或无法完成一致性证明，终态必须为 interrupted。调用方不能选择终态。
-- force 只能终止 taskId 独占的 child/job/process tree；不得杀死共享 Card Service、共享 Worker 池或其他项目任务。无法证明进程所有权时拒绝 force，并保留 cancelling/诊断。
-
-重复取消是幂等的。终态任务返回当前终态。
+请求当前任务安全取消并返回任务快照。重复请求幂等；取消必须保留最后可靠 Artifact 阶段。调用方不能选择 force mode 或伪造终态。
 
 ### 6.5 study.resume_task
 
-输入原 taskId、expected predecessor TaskInputManifestDigest 和 resumePolicy。
+> CURRENT：输入精确为 `{"taskId":"...","idempotencyKey":"..."}`。仅接受 `study.list_recoverable_tasks` 返回的候选发现任务。Service 重新验证项目 revision、原 inspection、预算、能力与当前固定 Hermes 授权，再创建或复用绑定 predecessor/rebase 的认证 successor；相同幂等键不会重复模型调用。
 
-resumePolicy：
-
-- remaining：复用完成工作单元。
-- restart_phase：重启失败阶段。
-- full_refresh：新任务，旧产物保留。
-
-恢复先区分两条路径：原 audience/授权仍有效且完整 TaskInputManifestDigest 不变时可原 taskId 继续；Codex/Card Service 重启、session/service instance 改变或授权过期时，旧授权绝不复用，Service 取得新验证/确认后创建 successor taskId。
-
-恢复授权按两段闭环：若来源 grant 已撤销/过期、精确 profile stale/failed 或 runtime capability 缺失，先返回 AUTHORIZATION_REQUIRED，并给固定 requiredAction（request_source_grant/validate_profile/open_settings 等），此时没有 operationIntentId。调用方解决后以同一语义 resume request 重试。只有前置能力齐备、但新的模型/TTS disclosure/egress/成本仍需用户批准时，才返回 CONFIRMATION_REQUIRED、requiredAction=confirm_operation、operationIntentId 和保持不变的 resume request digest；不得先创建 successor 或执行剩余工作。确认后调用方以相同 idempotencyKey、原 taskId、expected predecessor digest 与 operationIntentId 重试。
-
-successor 的 WorkReuseDigest 必须与 predecessor 完全相同；逐项复核来源/Artifact、CardPlan、Service/Worker/规则/模板、profile configurationFingerprint、生成/分区策略和已完成工作单元结果。StableCapabilityBinding 只含稳定字段，排除 checkedAt/snapshotRevision/暂态 state/issue 文本。新 credentialRevision 可在 profile 重新验证和授权后使用，但新 disclosure/egress 必须等价或更窄；Service 写入 SuccessorTaskRebase，双向记录旧/新授权审计和复用结果摘要。活动工作单元整单元重试。
-
-语义输入、profile 配置、组件兼容或 CardPlan 改变时，remaining 返回 INPUT_REVISION_MISMATCH 并要求 restart_phase/full_refresh；缺少 grant/profile/runtime 能力返回 AUTHORIZATION_REQUIRED；新的 disclosure/egress/费用批准返回 CONFIRMATION_REQUIRED。不得把新授权塞回旧 TaskInputManifest。export 从 ProjectArtifact 重启，不重跑模型/TTS。
-
-Anki 恢复在任何写动作前，用原 ImportPlan、APKG/package hash、CardId/note identity、目标 profile/collection 和创建媒体清单生成 AnkiRecoveryDecisionV1，且只有三条合法路径：
-
-- not_written：原 ImportPlan 仍有效时，Service 派生新的当前 session 绑定 recoveryImportIntentId，返回 CONFIRMATION_REQUIRED，requiredAction.action=confirm_anki_import 且 requiredAction.importIntentId=新值；用户调用 anki.request_import_confirmation 后，以同一 resume 幂等键重试。旧批准和原 importIntent 不能转移或复用。
-- written_identity_matched：创建 verification-only successor 和新的 TaskInputManifest/授权，只做数据与运行时核验；不得再次请求写批准或重复导入。
-- write_boundary_ambiguous：任务保持 interrupted/conflict，返回固定 resolve_anki_conflict 动作和证据引用；禁止自动重写。
-
-已消费 ImportApproval 永远不能跨 session 再批准；恢复 intent 引用同一仍有效 ImportPlan，但有新的 intent identity、audience 和审计链。
+导出和 Anki import 明确返回 `TASK_RESUME_UNSUPPORTED`。调用方不能提交 Provider、URL、模型、凭据、授权、预算、scope、input fingerprint 或 successor 身份。
 
 ## 7. 候选工具
 
@@ -709,7 +699,7 @@ Service 不采信 raw `ExportResult` 作为公共信任根，而是重新计算 
 
 终态 `succeeded` 的公开 result 只含 PackageArtifact handle、阶段/revision、APKG SHA/size、安全文件名、deckNames、note/card/media 数、deliveryState 和 `prepare_anki_import` 下一动作；不返回路径、BlobRef、内部 ArtifactRef、媒体目录、raw ExportResult 或 input fingerprint。PackageArtifact 已发布但项目 commit 中断时，精确重试只补项目提交，不重跑 Worker；项目后来推进到 Anki 阶段时原导出任务仍保持成功。
 
-CURRENT 仍只覆盖确定性文本/零媒体 ProjectArtifact；模型/TTS/媒体路线和 Anki 写入未开放。M0 的 V15/V14/V10、完整包合同、真实隔离 Anki 与 Computer Use 证据继续作为底层兼容基线，但不能外推为本插件已经完成 Codex→Anki 闭环。
+CURRENT 仍只覆盖确定性文本/零媒体 ProjectArtifact；通用模型扩写、TTS 与媒体路线未开放。Anki 数据写入与核验已由受信 import intent 闭合，但 runtime 渲染、播放、reviewer 和重启证据未开放。M0 的真实 GUI 证据不能外推为通用插件 runtime verifier。
 ## 10. Anki
 
 ### 10.1 anki.prepare_import
@@ -732,44 +722,32 @@ PROPOSED 扩展会在受信确认之前再冻结 RuntimeVerifierBinding、隔离
 
 ### 10.3 anki.import_and_verify
 
-> PROPOSED：尚未注册，真实 Anki 写入保持关闭。
+> CURRENT：已注册的唯一 Anki 写工具；只执行已确认 import intent 的幂等导入与数据级核验。
 
-这是 V1 唯一公开的 Anki 写工具。
-
-输入：
+输入是封闭对象：
 
 ~~~ts
 {
-  context: RequestContext;
+  context: {
+    idempotencyKey: string;
+  };
   importIntentId: string;
 }
 ~~~
 
-V1 duplicate policy 固定为 detect_and_report；update_matching 属于 DEFERRED，必须先定义用户字段、调度、Note Model 更新和回滚保护。
+调用方不能提交项目、APKG 路径、Anki 地址、profile、deck、媒体目录、duplicate policy、verification checks 或授权字段。Service 解析并原子消费与当前 audience/session、ImportPlan、APKG 和 Anki target 精确绑定的批准；重复同一 import intent（即使更换 idempotency key）返回同一任务/结果，不重复导入。
 
-工具立即返回 taskId，并由统一任务协调器执行。导入写入的不可中断临界区将 cancellable 设为 false；其他阶段可安全取消。进程中断或重试时先查询当前 Anki 状态与原 task/importIntent 结果，不能重复导入。
+工具立即返回任务快照，后续以 `study.get_task` 轮询。当前终态规则：
 
-终态行为：
+1. 导入或已存在且全部 required data checks 通过：发布 import receipt 与数据验证结果，项目推进到 `anki_data_verified`，`runtimeVerification=not_assessed`。
+2. 写入已经发生但数据检查失败或不完整：保留 receipt，项目为 `imported_unverified`。
+3. 写入前失败：不创建 receipt，项目保持 `apkg_ready`。
+4. 取消/中断可能跨越写边界：任务为 `interrupted`，下一动作 `inspect_before_retry`；不得盲目调用 import 或通用 `study.resume_task`。
+5. 不允许未知、缺失、重复的数据检查伪装成成功。
 
-1. 依据可信连接身份查询并原子消费 importIntentId 对应的内部批准状态。
-2. 检查 AnkiConnect key、Anki/AnkiConnect 版本、端点和精确 profile/collection identity。
-3. 重算 APKG、Note Model/template 和媒体清单哈希。
-4. 预置缺失媒体并检测同名异内容；记录本次创建媒体清单。
-5. 查询是否已经导入。
-6. 导入或报告 existing/conflict。
-7. 依据 RequiredAnkiCheckManifestV1 核验 note、card、deck、字段、模板和媒体；若导入失败，报告并在安全时清理本次创建的孤立媒体。
-8. 若 service.anki_runtime_verifier ready，Service 在跨进程 audit/environment boundary 中先创建 PreRunSourceStateSnapshot 与 trusted copy，再以当前 root-signed complete tombstone history 中永久且精确的 `(keyId,keyEpoch) → publicKeyRef/SHA-256` 签署无环 RuntimeVerificationRunBinding。render expectations 由 CardPlan/字段/模板派生且非空；每个 typed proof facts 由 launch-attested verifier key签名，Service 验签并重算 predicate。helper 与真实 isolated Anki 的 process/window restart 都需证明。零写依赖 all-connections hook + DB/WAL/SHM journal + media-tree journal 三传感器，而非单连接 hook。末次 observation 后，Service 构造固定成员/排序/JCS preimage 的 Typed FinalRuntimeEvidenceInputsManifest，完整绑定 observations/proofs、states/audits/environment、signed run-owned process lifecycle ledger、add-on focus actions、process launches 和新 barrier instance 内 11 条 typed final-check evidence；manifest 与 aggregate 一起进入签名并由三份最终证据复用；sensors/observer 持续 armed 到四个最终 Artifact 原子 commit。prepare/run/commit 任一时刻 trust sequence 前进都会使旧批准/run stale；普通 AnkiConnect 不能伪装这些证据。
+CURRENT 数据验证覆盖服务合同规定的 deck、note、card、字段、模板/模型身份与打包媒体证据，但不运行卡片 reviewer。正背面渲染、翻面、滚动、音视频播放、焦点行为和真实重启持续性均未评估。
 
-只有终态 Task result 才输出 VerificationArtifact。其 status 是判别联合，不允许独立拼接出矛盾状态：
-
-- not_imported/conflict：没有导入成功断言，runtimeExperience 必须 not_assessed。
-- imported_unverified：已导入或已存在，但数据检查未完成、部分或失败。
-- data_verified：全部 required data check ID 各出现一次且 passed；ArtifactStage=anki_data_verified，runtimeExperience 仍为 not_assessed。
-- runtime_failed：数据检查全部 passed，但至少一个 required runtime check 明确 failed；ArtifactStage 保持 anki_data_verified，输出 runtimeEvidenceRef 和 failedRuntimeCheckIds，提供重试核验/查看证据动作，不得伪写 not_assessed。
-- fully_verified：除固定 contract/identity/media/sample/tuple 外，还要求当前 trust snapshot 无回滚且公钥版本精确解析、Service-derived 非空 expectations、verifier-signed proofs、完整 signed run-owned process lifecycle ledger、add-on focus action attestations、真实 isolated-Anki window/process restart、三传感器跨进程零写、对称 typed focus preservation，以及可独立重算的 final-runtime manifest、barrier-bound final 11-check aggregate 与四 Artifact 原子提交；全部 observations 达到 sample_passed/full_passed 后才设置 ArtifactStage=anki_verified。
-- 未知、重复或缺失 required check ID、producer/binding/isolation 不匹配一律 fail closed；runtime verifier 不可用时返回 RUNTIME_EXPERIENCE_NOT_ASSESSED 说明，不得把结构核验写成真实播放/复习核验。
-
-重复 importIntentId 必须先读取原结果，不能重复写入。AnkiConnect 不可用时，手动打开 APKG 是用户在插件公共 MCP 之外执行的独立降级路径；插件只可提供受会话约束的文件定位/说明，不得代替用户打开或推断导入成功，状态只能保持 apkg_ready 或在外部证据不足时 imported_unverified，绝不能写成 anki_data_verified 或 anki_verified。
+R8b 的 RuntimeVerifierBinding、签名 proof、隔离 Anki、跨进程零写审计、运行时采样和 `anki_verified`/fully_verified 状态仍为 PROPOSED。只有未来 trusted runtime verifier 返回经过认证且完整的证据，才可称“已在 Anki 完成运行时核验”。
 
 ## 11. 产物与审计
 

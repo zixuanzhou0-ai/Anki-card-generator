@@ -1,5 +1,17 @@
 # 限制与已知风险
 
+> 基线日期：2026-07-19
+
+## CURRENT 能力边界速查（2026-07-19）
+
+- 当前可信开发态 stdio runtime 已公开 27 个工具，能够完成：本地支持文本授权与检查、固定 Hermes Grok 4.5 候选发现、候选发现安全恢复、候选选择、确定性文本 CardPlan 与卡片生成、APKG 导出、受信确认、真实 Anki 导入和数据级核验。
+- 当前来源只包括本地文本、Markdown、代码、HTML、字幕文本及目录中的受支持成员。视频解码、YouTube/网络来源、PDF、Office、网页抓取、音频/播客转写和附件桥仍未实现。
+- 当前不生成模型扩写卡片、TTS 或媒体切片；CardPlan 只允许冻结证据足以确定性支持的文本/零媒体路线。
+- Anki 导入最高状态为 `anki_data_verified`。实际渲染、音视频播放、复习按键和重启持久性均为 `not_assessed`，不能写成“已在 Anki 完整核验”。
+- 仓库内 manifest/Skill 是被动插件源；正式发布签名、MCP 声明、安装包和 App UI 尚未交付，不能宣称插件已正式可安装或可发布。
+
+下文历史里程碑快照中的“尚未开放”若与本节冲突，只说明当时状态，不代表当前代码。
+
 > 状态：CURRENT 与 PROPOSED 的诚实边界
 > 日期：2026-07-19
 > 这里的“计划”不能在产品页面写成“当前支持”。
@@ -8,8 +20,8 @@
 
 - 当前产品是 Windows Tauri 桌面应用。
 - 当前仓库已有 Card Service、最小 stdio MCP、原生固定 launcher、被动插件 manifest/SKILL.md、候选插件装配与完整设计文档，但尚无带正式发行签名、可安装 MCP 声明或 App UI 的发布包。
-- 当前 Worker 仍是一次性 JSON 协议；Agent 不能直连 Worker。可信 Card Service MCP 已公开受限项目/来源/候选/计划、确定性文本生成、异步 APKG 导出和任务查询/取消；不公开 raw Worker、Shell、模型/TTS/媒体生成或 Anki 写工具。
-- source/output grant 已绑定 StudyTask、来源快照/检查与认证 APKG 发布；但异步 discovery、模型/TTS/媒体生成、ImportPlan/确认/Anki 写入和正式插件安装仍缺失，因此还不能仅靠 Codex 完成端到端制卡。
+- 当前 Worker 仍是一次性 JSON 协议；Agent 不能直连 Worker。可信 Card Service MCP 已公开受限项目/来源/候选/计划、固定 Hermes 候选发现、确定性文本生成、异步 APKG 导出、任务查询/取消和受信确认后的 Anki 数据级导入核验；仍不公开 raw Worker、Shell、通用模型/TTS/媒体生成或 runtime verifier。
+- source/output grant 已绑定 StudyTask、来源快照/检查与认证 APKG 发布；异步 discovery、ImportPlan、确认和 Anki 数据写入/核验已经接线。模型扩写/TTS/媒体生成、R8b runtime verifier 和正式插件安装仍缺失。
 - 当前文档/知识卡能力是局部基础，不是通用 Study IR。
 - 当前真实强项是语言视频、媒体、APKG 和 Anki 数据一致性核验；完整运行时渲染/播放/重启复习仍需独立版本化 verifier 证明。
 
@@ -31,7 +43,7 @@
 - 非标准/portable profile 与非 Windows 仍依赖整文件 Base64 的 AnkiConnect inline 兼容路径，但原始单文件上限收紧到 8 MiB；8 MiB+1 会在任何媒体 API 调用前停止。8 MiB 是协议原始媒体上限，不代表 Worker/Anki 进程峰值。
 - timeout、意外后缀孤儿、部分预置和清理失败都会进入 ownership ledger；最终媒体 barrier 未闭合时禁止 `importPackage`，导入后补救失败也不能返回成功。
 
-M0 已完成，M1 Card Service/最小 MCP/固定 launcher 与若干 M2 内核切片已有实现和回归，但这些证据不等于插件已经发布：媒体快捷键 add-on 当前只声明支持 Anki 26.05；非标准 AnkiConnect 兼容路径仍有最多 8 MiB 原始媒体的整文件/Base64 放大，尚未形成 Worker 与 Anki 双进程 RSS 压力曲线。公共 APKG 路线已不再采信 raw `ExportResult`，而是建立认证 PackageArtifact 和内容寻址 APKG Blob；尚未开放的 `importPackage(path)` 写边界仍需 ImportPlan、批准账本、导入前重验和 AnkiRecoveryDecision 闭合 TOCTOU/崩溃恢复。正式发布密钥/AuthentiCode 正例、生产安装包、Skill/App UI、StudyTask/Worker 资源绑定和 Codex→APKG→Anki 端到端仍未完成。详见 [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md) 与 M1/M2 路线图证据。
+M0 基线、Card Service、可信 MCP、认证 Artifact/opaque handles 和 Anki 数据导入链已有实现与回归，但这些证据不等于插件已经发布。公共 APKG 路线使用认证 PackageArtifact 和内容寻址 Blob；ImportPlan、受信批准与 `anki.import_and_verify` 已闭合当前数据写入边界。仍缺少跨会话完整恢复、runtime rendering/playback/restart verifier、正式发布密钥/Authenticode 正例、生产安装包和 App UI。媒体快捷键 add-on 的历史 Anki 26.05 证据及非标准 AnkiConnect 的 8 MiB inline 限制也不能外推为通用插件 runtime 能力。
 
 ## 3. Codex 宿主
 

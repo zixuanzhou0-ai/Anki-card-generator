@@ -1,7 +1,7 @@
 {
   "name": "anki-study-agent",
   "version": "0.1.0",
-  "description": "Turn authorized sources into evidence-backed, verified Anki study tasks.",
+  "description": "Orchestrate a registered local Card Service to create evidence-backed Anki study tasks.",
   "author": {
     "name": "zixuanzhou0-ai",
     "url": "https://github.com/zixuanzhou0-ai"
@@ -12,15 +12,15 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Anki Study Agent",
-    "shortDescription": "Create evidence-backed Anki cards from your sources.",
-    "longDescription": "Discover learning objectives, generate media-rich cards, export APKG, and verify them in Anki.",
+    "shortDescription": "Create evidence-backed Anki cards with a trusted local runtime.",
+    "longDescription": "Inspect authorized local text sources, discover learning objectives with the fixed Hermes Grok 4.5 authorization preset, generate validated text cards, export APKG, and verify imported Anki data. Runtime rendering, playback, and restart verification are not yet provided.",
     "developerName": "zixuanzhou0-ai",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],
     "defaultPrompt": [
-      "把这个附件中值得长期记住的内容做成卡片。",
-      "从这个视频选出 10 个值得主动表达的英语词块。",
-      "继续上次中断的制卡任务。"
+      "先检查本地 Card Service，再把这个受支持的素材做成可验证卡片。",
+      "从这个字幕或文本中选出 10 个值得主动表达的英语词块。",
+      "继续轮询上次返回的制卡任务，并准确报告当前阶段。"
     ],
     "brandColor": "#245B85"
   }

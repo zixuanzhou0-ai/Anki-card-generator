@@ -145,3 +145,20 @@ APKG 纵向切片采用“Worker 产出不等于可信包”的结论。`cards.e
 跨磁盘交付不移动 Worker 临时文件：Service 在用户选择的目标目录创建同盘 `.partial`，完成 flush/fsync 后用 hard-link no-replace 发布确定性版本文件；同名竞态只接受字节完全相同，否则拒绝。任务终态与项目提交有独立可见性闸门：PackageArtifact 未成为当前项目的 latest artifact 时，调用方不能看到 succeeded；Worker 已完成但项目提交中断时，精确重试只补 commit，不重新导出。项目随后进入 imported/verified 阶段时，原导出任务仍保持成功。
 
 该切片的任务、取消、伪造 outputRef、幂等、跨磁盘式目标发布、完整包合同、无头服务、文档和 MCP 注册 83 项定向扩大回归通过；正式 Python `tests` 全集为 1480 passed、1 skipped。它只证明当前受限文本/零媒体路线的可信 APKG 交付，不等于模型/TTS/媒体路线、Anki 导入或运行时体验已经实现。下一复审对象固定为 ImportPlan、真实用户确认与 Anki 写边界恢复。
+
+## 4.3 CURRENT 实现对齐复审（2026-07-19）
+
+本次复审把设计文档、插件 Skill 与真实公共工具表重新对齐。当前新增并可用的纵向能力是：（1）固定 `hermes_grok_4_5` 的受信候选发现授权与异步 `study.start_discovery`；（2）ImportPlan/本地确认后的 `anki.import_and_verify` 数据级导入核验。
+
+裁决保持分层：真实成功最多称 `anki_data_verified`；卡片渲染、媒体播放、reviewer 交互和重启核验仍是 `not_assessed`。过去 M0 中通过 Computer Use 获得的 Anki 证据不能自动推广为插件 runtime verifier。被动 plugin source 与开发态 runtime 也不能推广为已签名、正式可安装或可发布插件。
+
+为防止文档再次漂移，插件包测试将“CURRENT public tool workflow”中的命令式工具名与代码导出的公共工具集合做集合相等检查；PROPOSED 工具必须放在明确的 unavailable/future 区域。
+## 4.4 CURRENT 候选发现恢复安全复审（2026-07-19）
+
+公共 MCP 现在增加 `study.list_recoverable_tasks` 与 `study.resume_task`，但恢复范围严格限定为候选发现。导出、Anki 导入及其他 intent 仍在模型或 Worker 绑定前 fail closed，不能由通用 resume 接口绕过各自的写入确认与恢复合同。
+
+恢复不搬运旧 session 授权。可信启动器的 host identity 由 owner、已验证 launcher 和 plugin 稳定派生，每次进程启动仍产生新的 session；项目与任务可在同一可信 host 下重新打开，旧 session 的 Artifact handle 仍因 session binding 不可重放。候选发现必须在新会话重新授权，并同时证明当前项目 revision、当前 InspectionArtifact、candidate budget、模型 profile/configuration 和远程 cost budget 与前序任务等价；修改 exact scope、扩大数量/费用或替换 inspection 均失败。
+
+进程崩溃遗留的 queued/running/cancelling 任务在确认不属于当前 StudyRuntime 活动线程后原子转为 interrupted。该判断同时用于恢复列表和直接 resume，因此不存在“必须先 list 才能解开孤儿 successor”的隐藏顺序。successor 创建按 lineage 使用线程锁和 Windows/Unix 文件锁串行化；两个协调器使用不同幂等键同时恢复同一 lineage 时只允许一个创建成功。恢复列表与 lineage 扫描都有 2048 条硬上限，单个损坏或不属于当前 scope 的记录被隔离，超过上限则明确失败，避免无界磁盘扫描。
+
+安全差异复审最初确认了六类风险：崩溃任务不转 interrupted、孤儿 successor 永久卡住、重新授权被旧 session 摘要拒绝、不同幂等键并发分叉、stale 项继续暴露、无界/损坏记录导致列表不可用。实现与反例测试现已逐项关闭；根任务额外发现并修复了直接 resume 的孤儿 successor 与 successor-lineage 扫描未复用上限两处缺口。相关根任务独立回归覆盖恢复/协调器 37 项、MCP/可信会话 26 项、候选运行时 13 项、Broker/候选工具 28 项、Artifact 句柄防重放 4 项和双协调器竞态 1 项。该结论只证明候选发现恢复切片，不表示关闭应用后任务继续后台运行，也不表示导出/Anki 跨会话恢复已经开放。

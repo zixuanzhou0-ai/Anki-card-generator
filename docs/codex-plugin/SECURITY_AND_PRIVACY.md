@@ -1,5 +1,17 @@
 # 安全与隐私
 
+> 基线日期：2026-07-19
+
+## CURRENT 权限与外部写入边界（2026-07-19）
+
+公共工具现在同时包含固定 Hermes 候选发现授权和 Anki 数据级导入。候选授权只接受 `hermes_grok_4_5` 预设；Service 固定 loopback origin/model 并持有 credential/authorization，MCP 调用方不能传 Provider、URL、模型、凭据、prompt、source body 或授权 token。
+
+Anki 写入只允许：认证 PackageArtifact → 认证 ImportPlan → digest-pinned 本地真实点击 → 一次性 `importIntentId` → `anki.import_and_verify`。执行请求不接受路径、target、deck、媒体目录或执行 bearer。相同 intent 幂等；写前失败无 receipt；写后数据核验失败保留 receipt；写边界不明时必须 `inspect_before_retry`。数据核验上限是 `anki_data_verified`，运行时渲染/播放/重启仍未证明。
+
+仍然 fail closed 的是 raw path/URL/credential/authorization 注入、网络来源、模型/TTS/媒体生成、runtime verifier 和未公开工具；不能继续笼统写成“所有 Anki 写入口均关闭”。正式签名安装边界仍未完成。
+
+候选发现恢复同样不接受旧 session bearer：`study.resume_task` 只为当前项目、当前 InspectionArtifact、原 candidate/cost budget 和稳定模型配置签发 successor。旧 session handle 不可重放；孤儿 active 任务会在确认不属于当前 Runtime 后转为 interrupted；同一 lineage 的 successor 由跨实例文件锁串行化。列表和 lineage 扫描均有硬上限并隔离损坏记录。导出、Anki 导入与其他 intent 的通用恢复仍未开放。
+
 > 状态：PROPOSED 威胁模型与发布门槛  
 > 日期：2026-07-16  
 > 当前桌面端已有部分保护；本插件边界尚未实现，不能直接复用“可信 Tauri 前端”的假设。
@@ -404,7 +416,7 @@ type ImportApprovalLedgerState = {
 - 原工具重试时重建并核对同一 OperationRequestManifestDigest、audience、intentDigest、profile/configurationFingerprint/credentialRevision、精确 disclosure/egress、资源/费用上限与当前撤销状态；任何变化都要求新 intent。随后生成的 TaskInputManifestDigest 包含 intentDigest。
 - 重启/新 session 后旧 audience 授权绝不搬迁或回填旧任务。若 WorkReuseDigest、稳定 capability、profile configuration 和已完成 Artifact 均一致，且新 disclosure/egress 等价或更窄，Service 可在重新验证/确认后创建 successor task 与新 TaskInputManifest；SuccessorTaskRebase 同时引用旧/新授权审计。范围扩大或语义/配置变化禁止 remaining 复用。
 
-CURRENT 内部实现已经覆盖 model/TTS OperationIntent、OperationApproval、task-bound InternalAuthorization、认证 SecretRef/credentialRevision、非秘密 Service Profile，以及 file/directory/output/network 资源授权账本。Task AuthorizationBinding 不包含内部 authorizationId；资源 ref 也只定位当前 audience/service 下的认证私有记录。所有批准/撤销写入默认失败关闭；开发态测试可注入精确 audience/target/action 绑定的 verifier，但 packaged Card Service 明确拒绝任意 verifier 注入。本地资源账本已接入 `TrustedSurfaceManager` 的真实 picker verifier；可信 stdio 会话已公开 source/output grant 两个最小工具。ImportApproval 也已通过独立的服务密钥认证账本和 digest-pinned 本地确认窗口接线，绑定当前 audience/session、ImportPlan、APKG 与 Anki target，且不向 MCP 返回执行 bearer；真正的 Anki 写任务、恢复 intent 与统一撤销管理器尚未接线。URL 输入、OperationApproval、统一跨 Registry 事务及其余公共 MCP 仍不完整，因此不能据此声称端到端授权已完成。
+CURRENT 内部实现已经覆盖 model/TTS OperationIntent、OperationApproval、task-bound InternalAuthorization、认证 SecretRef/credentialRevision、非秘密 Service Profile，以及 file/directory/output/network 资源授权账本。Task AuthorizationBinding 不包含内部 authorizationId；资源 ref 也只定位当前 audience/service 下的认证私有记录。所有批准/撤销写入默认失败关闭；开发态测试可注入精确 audience/target/action 绑定的 verifier，但 packaged Card Service 明确拒绝任意 verifier 注入。本地资源账本已接入 `TrustedSurfaceManager` 的真实 picker verifier；可信 stdio 会话已公开 source/output grant 两个最小工具。ImportApproval 已通过独立的服务密钥认证账本和 digest-pinned 本地确认窗口接线，绑定当前 audience/session、ImportPlan、APKG 与 Anki target，且不向 MCP 返回执行 bearer；`anki.import_and_verify` 已能消费该批准并执行幂等数据导入/核验，统一撤销管理器和完整恢复 UX 尚未接线。URL 输入、OperationApproval、统一跨 Registry 事务及其余公共 MCP 仍不完整，因此不能据此声称端到端授权已完成。
 
 CURRENT M2 的 legacy Project 投影边界坚持“先净化、后持久化”：递归遍历在内存中完成，API/TTS 配置、SecretRef/profile 注入和 secret-bearing 键被移除并记录非秘密 JSON pointer；高置信凭据值或显式 canary 即使藏在普通字段中也使整单失败。Project 顶层使用封闭 allowlist，嵌套 JSON 有节点、深度、字节与安全整数上限，任意调用方预置的 `$resourceSlot` marker 均视为伪造。
 
@@ -469,7 +481,7 @@ CURRENT M2 已完成上述文件、输入目录和输出目录的内部 grant le
 
 内部 `TaskResourceStager` 已实现文件与目录的任务级快照：独占打开、打开句柄身份重验、有界流复制、目录逐项 manifest、二次扫描、名称/深度/条目/总字节限制，以及 reparse/hardlink/竞态/篡改拒绝。私有 receipt 认证 source、task、audience、service、workspace 与 manifest；Worker 可见值只有 task-workspace 相对路径，不含 raw source path 或可转移 staging bearer。Windows hardening 对 task SID 仅开放 read/execute，失败清理不能静默留下可消费 partial。
 
-Card Service composition root 已在 packaged runtime 绑定唯一正式 hardener 和本地 picker verifier，并禁止任意 gesture verifier 注入；开发态只有显式测试构造可使用注入 verifier。可信 stdio 已把 source/output picker、opaque grant、`study.register_inputs`、task-local source staging、受限确定性 `cards.generate` 和认证 `cards.export_apkg` 接线；Worker 只接收 workspace-relative locator，APKG 只以内容寻址 Blob、PackageArtifact 与目标同盘 no-replace 发布对外。宿主 attachment attestation 与网络 staging 仍未完成；模型/TTS/媒体生成和 Anki 写入口继续 fail closed。
+Card Service composition root 已在 packaged runtime 绑定唯一正式 hardener 和本地 picker verifier，并禁止任意 gesture verifier 注入；开发态只有显式测试构造可使用注入 verifier。可信 stdio 已把 source/output picker、opaque grant、`study.register_inputs`、task-local source staging、受限确定性 `cards.generate` 和认证 `cards.export_apkg` 接线；Worker 只接收 workspace-relative locator，APKG 只以内容寻址 Blob、PackageArtifact 与目标同盘 no-replace 发布对外。宿主 attachment attestation 与网络 staging 仍未完成；通用模型/TTS/媒体生成和 Anki runtime verifier 继续 fail closed，受信 import intent 的数据级 Anki 写入口已经开放。
 
 
 ## 8. 网络与 SSRF
@@ -594,7 +606,7 @@ Windows launcher 的外层代码签名现有独立 fail-closed 验证器。它�
 
 正式 stdio 现由 `ServiceBrokerRuntime` 解析 Service-owned 启动授权：清单只能来自固定 state dir 的 `trusted-surfaces/authorizations`，必须是 canonical V1、最长 24 小时并精确绑定方法→能力→profile、configuration fingerprint、credential revision、intent ref 和硬预算。正常签发路径进一步把期限限制为最多 60 分钟、远程调用/请求/响应/成本限制在发行器硬上限内；账本按 operationIntentRef 在全部消费 task 间合计这些额度，不能通过创建新 task 重置预算。可信窗口以可滚动文本展示规范化 provider origin、model/voice、方法、来源和“本授权合计预算”，HMAC 验证真实点击后才由 Service 写入清单并内部热加载；热加载不仅检查固定目录和 canonical schema，还必须与签发时保留在 Service 内存中的 expected digest 相等，阻止签发后同目录替换。远程 credential revision 由 Service 从 OS 凭据元数据冻结，凭据在窗口打开后变化会使签发失败；Hermes 固定 revision 0。任务创建前复核清单期限和凭据版本，每次出站前再次复核期限；任务请求递归拒绝 profileRef、credentialRevision、operationIntentRef、budget、reservedCost、serviceBindings、brokerDescriptor 和 configurationFingerprint 等 Service-owned 字段。能力查询和 trusted-surface 结果只返回 digest、期限和数量，不返回路径、配置执行 token 或 secret。任务在创建时冻结 Broker factory，因此授权热切换不会扩大已排队任务的权限。该边界证明 Agent/Worker 不能绕过受信点击选择授权，CURRENT M2 已有独立 OperationIntent/Approval/Authorization 内核，但尚未接入这条 M1 trusted-surface 签发路径、资源授权或公共 MCP；真实公网凭据调用也未验证，因此还不能声明全部模型/TTS 出站边界完成。
 
-受信 UI 的用户手势响应现使用每会话 256-bit HMAC 密钥和 `study.trusted-surface-response.v1` 域隔离；密钥只在 digest-pinned 子进程启动后经 stdin 传递，session/response 文件和公开结果均不含密钥。Service 必须先校验 MAC，再校验 session/nonce，并在首次成功后从内存删除密钥；无 MAC、错误 MAC、改 nonce 或重复启动均 fail closed。这项响应认证现已被 Anki 专用 ImportApproval 持久账本消费：受信窗口产生的私有 attestation 会精确绑定 audience、importIntentId 与 decision，随后从内存清除；批准记录使用服务派生密钥认证并提供单次原子消费。OperationApproval、ImportApproval 撤销管理器、写边界恢复和实际 Anki 写任务仍未全部完成。
+受信 UI 的用户手势响应现使用每会话 256-bit HMAC 密钥和 `study.trusted-surface-response.v1` 域隔离；密钥只在 digest-pinned 子进程启动后经 stdin 传递，session/response 文件和公开结果均不含密钥。Service 必须先校验 MAC，再校验 session/nonce，并在首次成功后从内存删除密钥；无 MAC、错误 MAC、改 nonce 或重复启动均 fail closed。这项响应认证现已被 Anki 专用 ImportApproval 持久账本消费：受信窗口产生的私有 attestation 会精确绑定 audience、importIntentId 与 decision，随后从内存清除；批准记录使用服务派生密钥认证并提供单次原子消费。OperationApproval 与 ImportApproval 撤销管理器仍未全部完成；实际 Anki 数据写任务已经接线，不确定写边界由 `inspect_before_retry` 失败关闭，完整跨会话恢复和 runtime verifier 仍未完成。
 
 ## 12. Anki 持久写入
 

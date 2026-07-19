@@ -1,5 +1,16 @@
 # 实施路线图
 
+> 基线日期：2026-07-19
+
+## CURRENT 增量出口（2026-07-19）
+
+在下文带日期的历史切片之后，当前代码又关闭了两个纵向出口：
+
+1. 候选发现公共出口：新增 `system.authorize_candidate_discovery` 与 `study.start_discovery`。前者只批准固定 `hermes_grok_4_5`，后者异步启动并由 `study.get_task` 轮询；调用方无法注入 Provider、模型、endpoint、凭据、prompt、原始来源正文或服务端授权字段。
+2. Anki 数据闭环出口：`anki.import_and_verify` 已公开，使用已确认的 `importIntentId` 幂等执行导入并发布 receipt/data verification。成功上限为 `anki_data_verified`；写后核验失败为 `imported_unverified`；不确定写边界要求 `inspect_before_retry`。
+
+因此，“公共 start_discovery 尚未注册”“anki.import_and_verify 是下一出口”“Anki 写工具仍未开放”等句子只记录早期切片，已被本节取代。仍未完成的是：网络/附件/视频/PDF/Office/音频摄取，模型扩写/TTS/媒体生成，细粒度恢复工具，R8b runtime rendering/playback/restart verifier，正式发布签名与可安装插件/App UI。
+
 > 状态：CURRENT 实施跟踪 + PROPOSED 后续路线
 > 日期：2026-07-17
 > 顺序以风险消除和可验证产物为准，不以功能数量为准。

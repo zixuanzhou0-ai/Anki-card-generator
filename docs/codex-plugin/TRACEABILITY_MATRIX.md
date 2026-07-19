@@ -1,5 +1,18 @@
 # 可追溯矩阵
 
+> 基线日期：2026-07-19
+
+## CURRENT 可追溯增量（2026-07-19）
+
+| 要求 | 当前工具/实现 | 当前证明 | 剩余边界 |
+|---|---|---|---|
+| PR-201/PR-202 候选发现与可解释筛选 | `system.authorize_candidate_discovery`、`study.start_discovery`、`study.get_task`、candidate read tools | 固定 Hermes 授权、Service-owned scope/budget、异步任务、认证 Discovery/Candidate/evidence | 多来源适配、质量基准与更细恢复 |
+| PR-305 / SR-008 明确且幂等的 Anki 导入 | ImportPlan → `anki.request_import_confirmation` → `anki.import_and_verify` | import intent 精确绑定、一次批准消费、相同 intent 不重复导入、写边界状态机 | 撤销管理和更完整恢复 UX |
+| PR-306 / RR-801 数据核验不冒充运行时核验 | `anki.import_and_verify` 的 receipt + data verification | 成功为 `anki_data_verified`，失败为 `imported_unverified` 或保持 `apkg_ready` | RR-802 的渲染/播放/reviewer/restart verifier 尚未实现 |
+| PR-506 正式插件可安装性 | 被动 manifest/Skill + 开发态可信 stdio runtime | validator 与开发态测试 | 正式发布者签名、MCP 声明、安装验收、App UI |
+
+后续历史表格中的 “PROPOSED/下一阶段/尚未开放” 只在本节没有 CURRENT 覆盖时有效。不得把既有 M0 Computer Use 证据当作通用插件 runtime verifier，也不得把开发态 runtime 当作已签名发布物。
+
 > 状态：CURRENT M0/M1 与 M2 内部切片追踪 + PROPOSED 后续要求
 > 日期：2026-07-19
 > 目标：每个重要承诺都能追到领域契约、工具、测试和里程碑。
@@ -113,7 +126,7 @@ CURRENT M0 证据边界：最终自动化为 Vitest 830、正式 `pytest` 603、
 
 非 NFC、Windows 保留设备名（含 `CLOCK$`）、大小写/规范化冲突和 APKG archive 资源上限已通过；流式读取覆盖 APKG archive/package/verifier 与标准 Windows Anki direct-first 媒体路径。64 MiB direct 样本在禁止整文件读取、Base64 与 AnkiConnect 媒体动作时通过，Python `tracemalloc` 峰值增量低于 32 MiB。非标准/portable profile 的 AnkiConnect inline 路径仍整文件/Base64，但原始媒体硬限制为 8 MiB，且部分写入账本与最终媒体 barrier 已冻结。raw `ExportResult` 仍只是内部兼容输入，不认证来源；partial 后的 no-replace 原子发布及导入前 stat/SHA 只缩小、不能消除 TOCTOU。SR-007 的 M2 认证 Artifact 注册表、不透明引用和受控文件句柄完成前，不能把当前入口公开为 MCP 写工具。
 
-M0 已完成；M1 Card Service、最小 stdio MCP、固定原生 launcher 与若干 M2 内核/资源入口切片已实现。CURRENT 已开放严格受限的确定性文本 `cards.generate`/`cards.list`、异步 `cards.export_apkg`、任务查询/取消、只读 `anki.prepare_import` 与模型外 `anki.request_import_confirmation`，产出认证 ProjectArtifact/PackageArtifact/ImportPlan 和一次性 session-bound ImportApproval；但 Skill/App UI、生产签名安装包、模型/TTS/媒体生成、Anki 写入/核验工具和 Codex→Anki 端到端仍未完成。非标准 inline 兼容路径与双进程 RSS、Anki add-on 仅声明支持 26.05、合成媒体不证明真人学习效果仍是明确限制。RR-000/RR-601/RR-801 的证据不能外推为 RR-802 通用 runtime 或插件已经交付。
+CURRENT 已开放固定 Hermes 候选发现、确定性文本 `cards.generate`/`cards.list`、异步 `cards.export_apkg`、ImportPlan/受信确认与 `anki.import_and_verify`，产出认证 Discovery、ProjectArtifact、PackageArtifact、ImportPlan、receipt 和数据级 VerificationArtifact。尚未完成正式签名安装包、App UI、通用模型/TTS/媒体生成和 RR-802 runtime verifier。非标准 inline 限制、Anki 26.05 历史 add-on 证据和合成媒体也不能外推为通用 runtime 或学习效果证明。
 
 ## 5. UX 要求
 

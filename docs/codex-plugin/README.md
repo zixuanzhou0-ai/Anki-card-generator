@@ -1,9 +1,21 @@
 # Codex 学习制卡插件：设计文档总览
 
-> 文档状态：PROPOSED 插件设计基线 + CURRENT M0 实施跟踪
-> 基线日期：2026-07-17
+> 基线日期：2026-07-19
+
+## CURRENT 权威实现摘要（2026-07-19）
+
+截至 2026-07-19，可信开发态 Card Service stdio runtime 共公开 27 个工具：`system.get_capabilities`、`system.request_source_grant`、`system.request_output_grant`、`system.authorize_candidate_discovery`、`study.create_project`、`study.register_inputs`、`study.start_source_inspection`、`study.get_source_inspection`、`study.start_discovery`、`study.get_task`、`study.cancel_task`、`study.list_recoverable_tasks`、`study.resume_task`、`study.list_candidates`、`study.get_candidate`、`study.preview_evidence`、`study.set_selection`、`study.plan_cards`、`study.list_card_plans`、`study.edit_card_plan`、`study.validate_card_plans`、`cards.generate`、`cards.list`、`cards.export_apkg`、`anki.prepare_import`、`anki.request_import_confirmation`、`anki.import_and_verify`。
+
+当前候选发现只能通过 `system.authorize_candidate_discovery` 的固定 `hermes_grok_4_5` 预设授权，再由 `study.start_discovery` 启动异步任务；调用方不能选择 Provider、Base URL、模型、凭据、提示词或原始来源正文。当前输入面只支持经本地授权并成功检查的文本、Markdown、代码、HTML、字幕文本及其目录成员；视频/YouTube/PDF/Office/网页抓取/播客与媒体转写仍是路线图，不是当前插件能力。
+
+当前 Anki 闭环已能执行受信确认后的真实导入及数据级核验。最高可信状态是 `anki_data_verified`；真实卡片渲染、音视频播放、复习交互和重启持久性的 runtime verifier 尚未实现，必须报告 `runtimeVerification=not_assessed`。仓库内插件清单仍是被动 Skill 包，不声明 MCP/App；开发态 runtime 可用不等于已有正式签名、可安装、可发布的插件。
+
+下文带日期的 M0/M1 数字和“下一阶段”措辞属于历史实施快照；若与本段冲突，以本段、当前工具清单和代码测试为准。
+
+> 文档状态：CURRENT 开发态 runtime/Skill + PROPOSED 正式插件与扩展能力
+> 基线日期：2026-07-19
 > 适用对象：项目作者、插件实现者、安全与学习质量评审者
-> 重要说明：本目录的大部分内容仍描述后续插件；只有明确标为 CURRENT 的 M0 基线能力已经进入当前工作分支，不能据此宣称插件、MCP 或控制台已经可安装。
+> 重要说明：CURRENT 段落描述当前仓库代码；PROPOSED 与带日期的里程碑快照描述未来或历史。开发态 MCP 可用不等于插件已经正式签名、可安装或可发布。
 
 ## 1. 这套文档解决什么问题
 
@@ -95,7 +107,7 @@
 - 非 NFC 名称、Windows 保留设备名（含 `CLOCK$`）、大小写/规范化冲突及 APKG archive 资源上限已经完成 fail-closed 回归；APKG archive/package/verifier 与标准 Windows Anki direct path 均采用有界流式读取。64 MiB direct 样本在整文件读取、Base64 和 AnkiConnect 媒体动作被禁止时通过，Python `tracemalloc` 峰值增量低于 32 MiB；这不等于非标准兼容路径或双进程 RSS 已全部流式化/量化。
 - 在合同尚未对齐的先前尝试中，生产 preflight 与最终包门禁按设计 fail closed；隔离目标保持 0 note / 0 card / 0 media。该负例证明失败没有产生半写入，不能被改写成成功测试。
 
-M0 已经完成，但 Codex 插件尚未交付：仓库已有被动 plugin manifest/Skill、最小 stdio MCP、M1 Headless Card Service 多个受限切片、签名 runtime、原生 pinned launcher、完整被动候选，以及无私钥/无联网的 install candidate、public-key-only signing request 和 finalizer。真实 Codex `0.144.1` 已从隔离候选连续两次完成唯一只读工具调用；当前真实 launcher 仍为 `NotSigned`，也没有生产发布策略/HSM 签名，因此正式安装流程按设计失败关闭。M1 仍需生产签名身份、真实独立安装验收、完整桌面等价矩阵和插件侧通用 Anki runtime verifier；M2 Artifact 注册表/不透明引用/受控文件句柄也尚未实现。详见 [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md) 与 [M1 安装最终化验证报告](M1_INSTALL_FINALIZER_VERIFICATION_2026-07-18.md)。
+Codex 插件仍未正式交付：仓库已有被动 plugin manifest/Skill、开发态可信 stdio MCP、M1 Headless Card Service、认证 Artifact/opaque handle、固定 launcher、非安装型候选和 finalizer。开发态链已经覆盖候选发现、文本卡片、APKG 和 Anki 数据核验；历史 Codex `0.144.1` 实物探针只证明当时候选可启动。当前 launcher 仍为 `NotSigned`，没有生产发布策略/HSM 签名、正式独立安装验收、App UI 或插件侧 runtime verifier，因此正式安装流程继续失败关闭。详见 [M0 验证报告](M0_VERIFICATION_REPORT_2026-07-17.md) 与 [M1 安装最终化验证报告](M1_INSTALL_FINALIZER_VERIFICATION_2026-07-18.md)。
 
 ### 4.2 遗留文档冲突清单（只登记，不回写历史快照）
 
@@ -151,7 +163,7 @@ CURRENT，经本轮仓库检查确认：
 - 已有任务快照、单调进度、取消、结果引用和中断恢复基础。
 - 已有安全检查点、输入指纹、APKG 哈希和备份恢复。
 - 已有路径授权、私网 URL 阻断、AnkiConnect 回环限制、秘密存储和跨磁盘 Anki 导入修复。
-- Codex 公共链已经达到认证 PackageArtifact、只读 `anki.prepare_import` 与受信 `anki.request_import_confirmation`：可冻结当前 Anki 目标的 ImportPlan，并用模型外真实点击建立当前 session 的一次性批准；真实写入和导入后核验仍未开放。
+- Codex 公共链已经达到认证 PackageArtifact、`anki.prepare_import`、受信 `anki.request_import_confirmation` 与 `anki.import_and_verify`：可在模型外真实点击后幂等导入并完成 Anki 数据级核验；runtime 渲染、播放、reviewer 与重启核验仍未开放。
 - 已有 APKG、媒体、TTS、卡片字段、AnkiConnect 数据核验与真实 Anki GUI 验收基础；M0 已加入精确 V15/V14/V10 Note Model 合同、V15 模型作用域 GUID、完整 APKG 包合同、partial 校验后 no-replace 原子发布、导入前整包 preflight、隔离真实 Anki 重复/重启/V14-V15 并存证据，以及受版本化 runtime contract 约束的最小媒体快捷键 add-on。Codex 插件侧的通用 runtime verifier 仍是 PROPOSED。
 
 需要重构而不是直接暴露：
