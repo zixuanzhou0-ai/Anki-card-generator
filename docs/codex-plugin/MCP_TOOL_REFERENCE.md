@@ -605,6 +605,8 @@ CURRENT 输入：
 
 ### 8.1 study.plan_cards
 
+> CURRENT 内部状态：Card Service 已组合同步的确定性 `CardPlanRuntime`，但 `study.plan_cards` **尚未注册为公共 MCP 工具**，能力快照固定 `cardPlanRuntime=true`、`publicCardPlanTools=false`。内部调用只接受当前项目 revision、幂等键和 audience/session 绑定的 selectionHandle；仅支持 `production`、`chunk_collocation`、`reading_recognition`，发布认证 plan/set/validation 并执行八类检查。显式翻译、语用/语法推断或媒体需求返回 `UNSUPPORTED_CARD_PLAN`。下述 route preferences、media policy、model profile 输入仍是 PROPOSED；公共版本不得把这些字段直接交给调用方扩大权限。
+
 输入 selectionRef、route preferences、media policy 和 model profile。服务必须按当前 project/artifact revision 重新验证候选资格，不能只相信保存选择时的状态。
 
 输出 taskId 或同步 CardPlan refs。小型确定性映射可同步；需模型重写时任务化。

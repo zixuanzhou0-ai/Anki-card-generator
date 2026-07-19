@@ -130,6 +130,8 @@ def environment(
     tmp_path: Path,
     model: FakeDiscoveryModel | None,
     provider: FakeDiscoveryModelProvider | None = None,
+    *,
+    routes: list[str] | None = None,
 ):
     backend = InMemoryCredentialBackend()
     credentials = (tmp_path / "credentials").resolve()
@@ -153,7 +155,7 @@ def environment(
         learning_contract={
             "purpose": "Learn reusable spoken English",
             "targetBehavior": "Recall and use the expression",
-            "routes": ["production", "reading_recognition"],
+            "routes": routes or ["production", "reading_recognition"],
             "maxNewCards": 20,
             "learnerLevel": "B1",
         },
@@ -941,3 +943,293 @@ def test_selection_does_not_reuse_invalidated_state_and_rejects_alias_duplicates
         filters={"selectionState": ["selected"]},
     )
     assert selected["items"][0]["candidateId"] == listed["items"][1]["candidateId"]
+
+
+def _selection_for_card_planning(
+    tmp_path: Path,
+    model: FakeDiscoveryModel,
+    *,
+    candidate_count: int = 1,
+) -> tuple[StudyRuntime, dict[str, Any], dict[str, Any], dict[str, Any], Path]:
+    runtime, project, inspected, source = environment(tmp_path, model)
+    discovered = discover(runtime, project, inspected, maximum=max(8, candidate_count))
+    listed = runtime.list_candidates(
+        audience=audience(), discovery_handle=discovered["discoveryHandle"]
+    )
+    selected = runtime.set_selection(
+        audience=audience(),
+        project_id=project["projectId"],
+        expected_project_revision=discovered["projectRevision"],
+        idempotency_key="selection-for-card-planning",
+        discovery_handle=discovered["discoveryHandle"],
+        operation="add",
+        candidate_handles=[
+            item["candidateHandle"] for item in listed["items"][:candidate_count]
+        ],
+        budget={"maxNewCards": candidate_count},
+    )
+    return runtime, project, discovered, selected, source
+
+
+def test_card_plan_runtime_publishes_idempotent_validated_plans(
+    tmp_path: Path,
+) -> None:
+    model = FakeDiscoveryModel(proposal_count=2)
+    runtime, project, _discovered, selected, source = _selection_for_card_planning(
+        tmp_path, model, candidate_count=2
+    )
+
+    planned = runtime.plan_cards(
+        audience=audience(),
+        project_id=project["projectId"],
+        expected_project_revision=selected["projectRevision"],
+        idempotency_key="plan-cards-1",
+        selection_handle=selected["selectionHandle"],
+    )
+    repeated = runtime.plan_cards(
+        audience=audience(),
+        project_id=project["projectId"],
+        expected_project_revision=selected["projectRevision"],
+        idempotency_key="plan-cards-1",
+        selection_handle=selected["selectionHandle"],
+    )
+
+    assert planned["projectRevision"] == selected["projectRevision"] + 1
+    stable_keys = set(planned) - {"planSetHandle", "validationHandle"}
+    assert {key: repeated[key] for key in stable_keys} == {
+        key: planned[key] for key in stable_keys
+    }
+    for key in ("planSetHandle", "validationHandle"):
+        first_ref, _ = runtime.artifacts.resolve_with_ref(planned[key], audience())
+        repeated_ref, _ = runtime.artifacts.resolve_with_ref(repeated[key], audience())
+        assert repeated_ref == first_ref
+    assert planned == {
+        **planned,
+        "artifactStage": "plans_ready",
+        "totalPlans": 2,
+        "eligiblePlans": 2,
+        "blockedPlans": 0,
+        "issueCodes": [],
+        "nextAction": "generate_cards",
+    }
+    task = runtime.tasks.get_task(planned["taskId"], audience())
+    assert task["state"] == "succeeded"
+    plan_set = runtime.artifacts.resolve(planned["planSetHandle"], audience())
+    validation = runtime.artifacts.resolve(planned["validationHandle"], audience())
+    assert plan_set["payloadSchema"] == "study.card-plan-set"
+    assert validation["payloadSchema"] == "study.card-plan-validation"
+    assert len(plan_set["payload"]["cardPlanRefs"]) == 2
+    assert len(validation["payload"]["records"]) == 16
+    assert all(
+        record["state"] == "passed" for record in validation["payload"]["records"]
+    )
+    for entity in plan_set["payload"]["cardPlanRefs"]:
+        plan = runtime.artifacts.verify_ref(entity["artifactRef"], audience())
+        assert plan["payloadSchema"] == "study.card-plan"
+        payload = plan["payload"]
+        assert payload["route"] == "production"
+        assert (
+            payload["expectedResponse"]["coreAnswer"].casefold()
+            not in payload["cue"]["content"].casefold()
+        )
+        assert payload["mediaPolicy"] == {
+            "sourceAudio": False,
+            "sourceVideo": False,
+            "sentenceTts": False,
+            "expressionTts": False,
+        }
+    serialized = json.dumps([plan_set, validation], ensure_ascii=False, sort_keys=True)
+    assert str(source) not in serialized
+    assert SOURCE_TEXT not in serialized
+
+
+def test_card_plan_answer_leakage_is_blocked_without_rewriting_the_cue(
+    tmp_path: Path,
+) -> None:
+    class LeakingCueModel(FakeDiscoveryModel):
+        def propose(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+            result = dict(super().propose(request))
+            result["proposals"][0][
+                "meaningOrFunction"
+            ] = "Use in good shape to describe healthy condition"
+            return result
+
+    runtime, project, _discovered, selected, _source = _selection_for_card_planning(
+        tmp_path, LeakingCueModel()
+    )
+    planned = runtime.plan_cards(
+        audience=audience(),
+        project_id=project["projectId"],
+        expected_project_revision=selected["projectRevision"],
+        idempotency_key="plan-leaking-cue",
+        selection_handle=selected["selectionHandle"],
+    )
+
+    assert planned["eligiblePlans"] == 0
+    assert planned["blockedPlans"] == 1
+    assert planned["nextAction"] == "review_card_plans"
+    validation = runtime.artifacts.resolve(planned["validationHandle"], audience())
+    leakage = [
+        record
+        for record in validation["payload"]["records"]
+        if record["checkId"] == "answer_leakage"
+    ]
+    assert [record["state"] for record in leakage] == ["failed"]
+
+
+def test_card_plan_preserves_explicit_needs_review_as_blocked(
+    tmp_path: Path,
+) -> None:
+    class ReviewRequiredModel(FakeDiscoveryModel):
+        def review(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+            self.review_calls += 1
+            return {
+                "schema": "study.candidate-discovery.reviews",
+                "schemaVersion": 1,
+                "reviews": [
+                    {
+                        "reviewKey": item["reviewKey"],
+                        "semanticEvidence": "review",
+                        "conflict": "clear",
+                        "learnerFit": "new",
+                        "reasonCodes": ["SEMANTIC_EVIDENCE_REQUIRES_REVIEW"],
+                    }
+                    for item in request["proposals"]
+                ],
+            }
+
+    runtime, project, _discovered, selected, _source = _selection_for_card_planning(
+        tmp_path, ReviewRequiredModel()
+    )
+    planned = runtime.plan_cards(
+        audience=audience(),
+        project_id=project["projectId"],
+        expected_project_revision=selected["projectRevision"],
+        idempotency_key="plan-needs-review",
+        selection_handle=selected["selectionHandle"],
+    )
+
+    assert planned["eligiblePlans"] == 0
+    assert planned["blockedPlans"] == 1
+    assert planned["issueCodes"] == ["CARD_PLAN_REVIEW_REQUIRED"]
+    validation = runtime.artifacts.resolve(planned["validationHandle"], audience())
+    evidence = [
+        record
+        for record in validation["payload"]["records"]
+        if record["checkId"] == "evidence_coverage"
+    ]
+    assert [record["state"] for record in evidence] == ["needs_review"]
+
+
+def test_card_plan_rejects_routes_that_require_missing_semantics(
+    tmp_path: Path,
+) -> None:
+    class PragmaticsModel(FakeDiscoveryModel):
+        def propose(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+            result = dict(super().propose(request))
+            result["proposals"][0]["route"] = "pragmatics_register"
+            return result
+
+    model = PragmaticsModel()
+    runtime, project, inspected, _source = environment(
+        tmp_path, model, routes=["pragmatics_register"]
+    )
+    discovered = discover(runtime, project, inspected)
+    listed = runtime.list_candidates(
+        audience=audience(), discovery_handle=discovered["discoveryHandle"]
+    )
+    selected = runtime.set_selection(
+        audience=audience(),
+        project_id=project["projectId"],
+        expected_project_revision=discovered["projectRevision"],
+        idempotency_key="select-pragmatics",
+        discovery_handle=discovered["discoveryHandle"],
+        operation="add",
+        candidate_handles=[listed["items"][0]["candidateHandle"]],
+    )
+
+    with pytest.raises(StudyRuntimeError) as captured:
+        runtime.plan_cards(
+            audience=audience(),
+            project_id=project["projectId"],
+            expected_project_revision=selected["projectRevision"],
+            idempotency_key="plan-pragmatics",
+            selection_handle=selected["selectionHandle"],
+        )
+    assert captured.value.code == "UNSUPPORTED_CARD_PLAN"
+    current = runtime.get_project(project["projectId"], audience())
+    assert current["workflow"]["artifactStage"] == "selection_ready"
+
+
+def test_card_plan_rejects_unavailable_translation_instead_of_guessing(
+    tmp_path: Path,
+) -> None:
+    runtime, project, _discovered, selected, _source = _selection_for_card_planning(
+        tmp_path, FakeDiscoveryModel()
+    )
+    changed = runtime.projects.update_learning_contract(
+        audience=audience(),
+        project_id=project["projectId"],
+        expected_project_revision=selected["projectRevision"],
+        expected_contract_revision=1,
+        operation_id="request-chinese-card-plan",
+        operations=[
+            {
+                "op": "set_languages",
+                "promptLanguage": "zh-CN",
+                "answerLanguage": "en",
+            }
+        ],
+    )
+
+    with pytest.raises(StudyRuntimeError) as captured:
+        runtime.plan_cards(
+            audience=audience(),
+            project_id=project["projectId"],
+            expected_project_revision=changed["projectRevision"],
+            idempotency_key="plan-requires-translation",
+            selection_handle=selected["selectionHandle"],
+        )
+    assert captured.value.code == "UNSUPPORTED_CARD_PLAN"
+    current = runtime.get_project(project["projectId"], audience())
+    assert current["workflow"]["artifactStage"] == "selection_ready"
+
+
+def test_card_plan_idempotency_does_not_return_an_invalidated_plan(
+    tmp_path: Path,
+) -> None:
+    runtime, project, _discovered, selected, _source = _selection_for_card_planning(
+        tmp_path, FakeDiscoveryModel()
+    )
+    planned = runtime.plan_cards(
+        audience=audience(),
+        project_id=project["projectId"],
+        expected_project_revision=selected["projectRevision"],
+        idempotency_key="plan-before-language-change",
+        selection_handle=selected["selectionHandle"],
+    )
+    changed = runtime.projects.update_learning_contract(
+        audience=audience(),
+        project_id=project["projectId"],
+        expected_project_revision=planned["projectRevision"],
+        expected_contract_revision=1,
+        operation_id="invalidate-existing-card-plan",
+        operations=[
+            {
+                "op": "set_languages",
+                "promptLanguage": "English",
+                "answerLanguage": "English",
+            }
+        ],
+    )
+    assert changed["invalidatedStages"][0] == "planning"
+
+    with pytest.raises(StudyRuntimeError) as captured:
+        runtime.plan_cards(
+            audience=audience(),
+            project_id=project["projectId"],
+            expected_project_revision=selected["projectRevision"],
+            idempotency_key="plan-before-language-change",
+            selection_handle=selected["selectionHandle"],
+        )
+    assert captured.value.code == "CARD_PLAN_NOT_CURRENT"

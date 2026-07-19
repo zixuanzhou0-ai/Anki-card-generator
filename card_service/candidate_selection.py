@@ -467,6 +467,103 @@ class CandidateSelectionRuntime:
             "nextAction": "plan_cards",
         }
 
+    def resolve_current_selection_graph(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        selection_handle: str,
+    ) -> dict[str, Any]:
+        """Resolve the exact current selection for a downstream deterministic stage."""
+        if not isinstance(selection_handle, str) or not _HANDLE_RE.fullmatch(
+            selection_handle
+        ):
+            _fail("SELECTION_REQUEST_INVALID", "selectionHandle is invalid")
+        try:
+            selection_ref, selection = self._artifacts.resolve_with_ref(
+                selection_handle, audience
+            )
+            project = self._projects.get_project(selection["projectId"], audience)
+        except (ArtifactRegistryError, ProjectRegistryError) as error:
+            raise CandidateSelectionError(error.code, error.message) from error
+        stage = project.get("workflow", {}).get("artifactStage")
+        if stage not in {
+            "selection_ready",
+            "plans_ready",
+            "cards_ready",
+            "apkg_ready",
+            "imported_unverified",
+            "anki_data_verified",
+            "anki_verified",
+        }:
+            _fail("SELECTION_NOT_CURRENT", "selection is no longer current")
+        current_refs = [
+            value
+            for value in project.get("latestArtifactRefs", [])
+            if isinstance(value, Mapping)
+            and value.get("payloadSchema") == "study.portfolio-selection"
+        ]
+        if not current_refs:
+            _fail("SELECTION_GRAPH_CORRUPT", "current selection is missing")
+        highest = max(int(value.get("projectRevision", 0)) for value in current_refs)
+        current = [
+            dict(value)
+            for value in current_refs
+            if value.get("projectRevision") == highest
+        ]
+        if len(current) != 1 or _ref_identity(current[0]) != _ref_identity(
+            selection_ref
+        ):
+            _fail("SELECTION_NOT_CURRENT", "selection handle is stale")
+        payload = selection.get("payload")
+        discovery_ref = (
+            payload.get("discoveryRef") if isinstance(payload, Mapping) else None
+        )
+        candidate_refs = (
+            payload.get("candidateRefs") if isinstance(payload, Mapping) else None
+        )
+        if (
+            selection.get("payloadSchema") != "study.portfolio-selection"
+            or not isinstance(discovery_ref, Mapping)
+            or not isinstance(candidate_refs, list)
+            or not candidate_refs
+        ):
+            _fail("SELECTION_GRAPH_CORRUPT", "selection graph is invalid")
+        expected: list[tuple[tuple[str, int, str], str]] = []
+        candidate_handles: list[str] = []
+        for entity in candidate_refs:
+            artifact_ref = (
+                entity.get("artifactRef") if isinstance(entity, Mapping) else None
+            )
+            candidate_id = (
+                entity.get("entityId") if isinstance(entity, Mapping) else None
+            )
+            if not isinstance(artifact_ref, Mapping) or not isinstance(
+                candidate_id, str
+            ):
+                _fail("SELECTION_GRAPH_CORRUPT", "selected candidate is invalid")
+            expected.append((_ref_identity(artifact_ref), candidate_id))
+            candidate_handles.append(
+                self._artifacts.issue_handle(artifact_ref, audience)
+            )
+        graph = self._queries.resolve_selection_graph(
+            audience=audience,
+            discovery_handle=self._artifacts.issue_handle(discovery_ref, audience),
+            candidate_handles=candidate_handles,
+        )
+        actual = [
+            (_ref_identity(row["candidateRef"]), row["candidateId"])
+            for row in graph["requestedRows"]
+        ]
+        if actual != expected or graph["project"]["projectId"] != project["projectId"]:
+            _fail("SELECTION_GRAPH_CORRUPT", "selected candidate graph is stale")
+        return {
+            "selectionRef": selection_ref,
+            "selection": selection,
+            "project": project,
+            "discoveryRef": dict(discovery_ref),
+            "rows": graph["requestedRows"],
+        }
+
     def set_selection(
         self,
         *,

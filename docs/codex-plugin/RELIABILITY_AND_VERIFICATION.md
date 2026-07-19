@@ -135,6 +135,8 @@ R8b 真实渲染、播放与复习核验通过
 - review：需要用户/专家判断，默认不自动导出。
 - fail：禁止生成。
 
+CURRENT 内部 R4 子集使用 `deterministic-language-card-plan-v1` 和 `card-plan-validation-v1`：从当前认证 SelectionArtifact 再验证候选图，为 `production`、`chunk_collocation`、`reading_recognition` 发布逐项计划、计划集合和验证 Artifact。八项记录覆盖 evidence、scoring boundary、answer leakage、duplicate、conflict、template、media generatability 与 user lock preservation；任一非 passed 项进入 blocked 集合。当前媒体策略固定全关，用户锁为空，因而相应 pass 只证明受限输入，不证明媒体或锁定编辑能力。翻译、语用/语法推断及媒体路线 fail closed；公共计划工具与生成尚未开放。
+
 ## 8. R5：生成与媒体
 
 逐目标对账：

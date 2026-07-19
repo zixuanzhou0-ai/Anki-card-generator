@@ -102,6 +102,8 @@ Service Broker 适配器只支持固定的 OpenAI-compatible、Anthropic 与 Gem
 
 选择切片随后以“用户决定组合，服务证明组合仍合法”为边界开放 `study.set_selection`。工具只能 add/remove 当前 Discovery 的精确 opaque candidate handles，或执行只纳入 recommended 的确定性 `accept_recommended`；算法优先路线/来源覆盖，并对饱和、重复形式和 review cost 扣分，拒绝将简单 Top-N 包装成个性化。所有候选在写入前再次验证 exact ArtifactRef、eligibility 和 evidence/conflict/security hard gates；needs_review 只能显式加入并留下 issue，旧 SelectionArtifact 在上游失效后不会投影。结果进入认证父图和快速幂等 StudyTask，ReviewDebt 超过用户日目标只告警，不擅自删除用户选择。该工具固定 `openWorldHint=false`，不触发模型、TTS、网络、Anki 或 OperationIntent。选择/MCP/文档组合回归 46 项、正式 Python `tests` 全集 1416 passed、1 skipped。
 
+CardPlan 内核评审继续坚持“不支持就阻塞，不把缺失推断伪装成卡片”。内部 `deterministic-language-card-plan-v1` 只处理三条可以直接从冻结 Objective 与 Evidence 恢复题面、核心答案和单一评分边界的路线；非英语翻译、语用/语法变形和媒体语义都返回 typed blocker。每个计划、计划集合和验证记录形成认证父图；八类检查由服务端产生，模型与调用方不能自报 pass。`needs_review`、答案泄露和验证失败保留可追溯计划但阻止进入生成；配置变化后旧幂等调用不能复活失效计划。媒体全关和空用户锁只证明当前受限切片，不可宣称媒体可用或锁定编辑已实现。该切片 6 项定向测试、31 项 CardPlan/文档组合回归与正式 Python `tests` 全集 1422 passed、1 skipped 通过；公共 `study.plan_cards`、列表、编辑、独立验证与 card generation 仍保持关闭。
+
 ## 5. 仍未消除的不确定性
 
 - M0 的 verifier fail-open 已由精确 V15/V14/V10 合同关闭；最终自动化、V15 20/20/52 离线媒体合同、E→C 单卡、V15 重复/重启、V14/V15 并存与 Computer Use 真实 GUI 20 张连续复习已有证据。合成视频和静音 TTS 仍不能提供真人语义、听感或长期学习效果证据。

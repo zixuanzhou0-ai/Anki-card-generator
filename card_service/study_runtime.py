@@ -15,6 +15,7 @@ from .candidate_discovery import (
     CandidateDiscoveryModel,
     CandidateDiscoveryModelProvider,
 )
+from .card_plan_runtime import CardPlanRuntime, CardPlanRuntimeError
 from .candidate_discovery_runtime import (
     CandidateDiscoveryAuthorization,
     CandidateDiscoveryRuntime,
@@ -152,6 +153,13 @@ class StudyRuntime:
                 tasks=self.tasks,
                 candidate_queries=self.candidate_queries,
             )
+            self.card_plans = CardPlanRuntime(
+                service_instance_id=self.service_instance_id,
+                artifacts=self.artifacts,
+                projects=self.projects,
+                tasks=self.tasks,
+                candidate_selection=self.candidate_selection,
+            )
             discovery_configured = (
                 candidate_discovery_model is not None
                 or candidate_discovery_model_provider is not None
@@ -179,6 +187,7 @@ class StudyRuntime:
             CandidateDiscoveryRuntimeError,
             CandidateQueryError,
             CandidateSelectionError,
+            CardPlanRuntimeError,
             OSError,
         ) as error:
             raise StudyRuntimeError(
@@ -201,6 +210,8 @@ class StudyRuntime:
             "publicCandidateDiscovery": False,
             "publicCandidateQueries": True,
             "publicCandidateSelection": True,
+            "cardPlanRuntime": True,
+            "publicCardPlanTools": False,
             "publicProjectTools": True,
             "publicInputRegistration": True,
             "publicSourceInspection": True,
@@ -447,6 +458,31 @@ class StudyRuntime:
         except (
             CandidateSelectionError,
             CandidateQueryError,
+            ArtifactRegistryError,
+            ProjectRegistryError,
+        ) as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
+    def plan_cards(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_id: str,
+        expected_project_revision: int,
+        idempotency_key: str,
+        selection_handle: str,
+    ) -> dict[str, Any]:
+        try:
+            return self.card_plans.plan_cards(
+                audience=audience,
+                project_id=project_id,
+                expected_project_revision=expected_project_revision,
+                idempotency_key=idempotency_key,
+                selection_handle=selection_handle,
+            )
+        except (
+            CardPlanRuntimeError,
+            CandidateSelectionError,
             ArtifactRegistryError,
             ProjectRegistryError,
         ) as error:
