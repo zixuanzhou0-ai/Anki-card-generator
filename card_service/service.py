@@ -29,6 +29,7 @@ from .anki_target_probe import LocalAnkiConnectTargetProbe
 from .artifact_registry import ArtifactAudienceBinding, ArtifactRegistryError
 from .broker_configuration import BrokerConfigurationError, ServiceBrokerRuntime
 from .candidate_discovery_broker import (
+    CANDIDATE_DISCOVERY_BROKER_METHOD,
     BrokerCandidateDiscoveryModelProvider,
     CandidateDiscoveryBrokerError,
 )
@@ -644,6 +645,7 @@ class CardService:
         broker_handler_factory: BrokerHandlerFactory | None = None,
         broker_method_blocker: BrokerMethodBlocker | None = None,
         broker_runtime_capabilities: dict[str, Any] | None = None,
+        broker_runtime: ServiceBrokerRuntime | None = None,
         credential_backend: CredentialBackend | None = None,
         trusted_surface_path: str | Path | None = None,
         use_restricted_launcher: bool | None = None,
@@ -807,7 +809,7 @@ class CardService:
         ] = {}
         self._anki_import_confirmation_lock = threading.RLock()
 
-        self._active_broker_runtime: ServiceBrokerRuntime | None = None
+        self._active_broker_runtime: ServiceBrokerRuntime | None = broker_runtime
         self._broker_runtime_lock = threading.RLock()
         self.use_restricted_launcher = os.name == "nt" if use_restricted_launcher is None else bool(use_restricted_launcher)
         if self.use_restricted_launcher and os.name != "nt":
@@ -913,8 +915,20 @@ class CardService:
     def _study_runtime_capabilities(self) -> dict[str, Any]:
         with self._study_runtime_lock:
             runtime = self._study_runtime
+        with self._broker_runtime_lock:
+            broker_runtime = self._active_broker_runtime
+        discovery_authorized = (
+            broker_runtime is not None
+            and broker_runtime.method_blocker(CANDIDATE_DISCOVERY_BROKER_METHOD) is None
+        )
         if runtime is not None:
-            return {**runtime.capabilities(), "initialized": True}
+            return {
+                **runtime.capabilities(),
+                "initialized": True,
+                "candidateDiscoveryRuntime": True,
+                "publicCandidateDiscovery": True,
+                "candidateDiscoveryAuthorizationReady": discovery_authorized,
+            }
         return {
             "schemaVersion": 1,
             "initialized": False,
@@ -925,6 +939,9 @@ class CardService:
             "taskSourceBinding": True,
             "sourceAssetPublication": True,
             "sourceInspection": True,
+            "candidateDiscoveryRuntime": True,
+            "publicCandidateDiscovery": True,
+            "candidateDiscoveryAuthorizationReady": discovery_authorized,
             "publicProjectTools": True,
             "publicInputRegistration": True,
             "publicSourceInspection": True,
@@ -944,7 +961,7 @@ class CardService:
             "publicAnkiImportPreparation": True,
             "ankiImportApprovalLedger": True,
             "publicAnkiImportConfirmation": True,
-            "publicAnkiWrite": False,
+            "publicAnkiWrite": True,
             "pathDisclosure": False,
             "complete": False,
         }
@@ -1666,6 +1683,77 @@ class CardService:
                 stage="discovery",
             ) from error
 
+    def start_study_candidate_discovery(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_id: str,
+        expected_project_revision: int,
+        idempotency_key: str,
+        inspection_handle: str,
+        candidate_budget: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        study = self._ensure_study_runtime()
+        with self._broker_runtime_lock:
+            broker_runtime = self._active_broker_runtime
+        if broker_runtime is None:
+            raise CardServiceError(
+                "AUTHORIZATION_REQUIRED",
+                "Candidate discovery requires a current trusted model authorization",
+                retryable=True,
+                stage="authorization",
+                fallbacks=("request_model_authorization",),
+            )
+        try:
+            provider = BrokerCandidateDiscoveryModelProvider(broker_runtime)
+            authorization = provider.authorization_for(
+                audience=audience,
+                service_instance_id=study.service_instance_id,
+                project_id=project_id,
+                project_revision=expected_project_revision,
+                inspection_handle=inspection_handle,
+                candidate_budget=candidate_budget,
+            )
+            return study.start_candidate_discovery_task(
+                audience=audience,
+                project_id=project_id,
+                expected_project_revision=expected_project_revision,
+                idempotency_key=idempotency_key,
+                inspection_handle=inspection_handle,
+                candidate_budget=candidate_budget,
+                authorization=authorization,
+                model_provider=provider,
+            )
+        except CandidateDiscoveryBrokerError as error:
+            code = (
+                "AUTHORIZATION_REQUIRED"
+                if error.code in {
+                    "DISCOVERY_BROKER_UNAVAILABLE",
+                    "BROKER_AUTHORIZATION_UNAVAILABLE",
+                    "BROKER_AUTHORIZATION_EXPIRED",
+                }
+                else error.code
+            )
+            raise CardServiceError(
+                code,
+                error.message,
+                retryable=code == "AUTHORIZATION_REQUIRED",
+                stage="authorization",
+                fallbacks=(
+                    ("request_model_authorization",)
+                    if code == "AUTHORIZATION_REQUIRED"
+                    else ()
+                ),
+            ) from error
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=error.code.endswith(
+                    ("_CONFLICT", "_UNAVAILABLE", "_REQUIRED", "_TIMEOUT")
+                ),
+                stage="discovery",
+            ) from error
     @staticmethod
     def public_local_resource_constraints(kind: str) -> dict[str, Any]:
         if kind == "file":

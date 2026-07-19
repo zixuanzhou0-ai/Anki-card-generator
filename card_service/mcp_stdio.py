@@ -71,6 +71,12 @@ from .mcp_resource_tools import (
     call_resource_tool,
     resource_tool_definitions,
 )
+from .mcp_system_tools import (
+    SYSTEM_TOOL_NAMES,
+    McpSystemToolInputError,
+    call_system_tool,
+    system_tool_definitions,
+)
 from .service import CardService, CardServiceError
 from .trusted_mcp_audience import (
     TrustedMcpAudienceError,
@@ -158,6 +164,7 @@ def _tool_definitions(
 ) -> list[dict[str, Any]]:
     definitions = [_tool_definition()]
     if audience_session is not None:
+        definitions.extend(system_tool_definitions())
         definitions.extend(resource_tool_definitions())
         definitions.extend(project_tool_definitions())
         definitions.extend(input_tool_definitions())
@@ -254,13 +261,15 @@ def _handle_request(
                     "Start with system.get_capabilities. Trusted launcher sessions may request "
                     "opaque source and output grants through native pickers and create a local "
                     "Study project, freeze selected InputRefs with study.register_inputs, then "
-                    "run deterministic source inspection. Existing authenticated candidate discoveries "
+                    "run deterministic source inspection. With a current trusted model authorization, "
+                    "candidate discovery starts asynchronously and can be polled or cancelled. Candidates "
                     "can be listed, reviewed with bounded evidence replay, and saved as a reliable local "
                     "portfolio, deterministically planned into supported CardPlans, "
                     "edited within a closed agent schema, and reviewed/revalidated with "
                     "all eight local validation states. Fully validated text plans can be converted into "
-                    "authenticated CardArtifacts. Verified APKG export, read-only Anki planning, trusted local import confirmation, and task polling/cancellation are available. Starting candidate discovery, Anki write/import execution, "
-                    "credentials, and raw Worker commands remain unavailable."
+                    "authenticated CardArtifacts. Verified APKG export, trusted local Anki confirmation, "
+                    "actual import with data verification, and task polling/cancellation are available. "
+                    "Credentials, raw Worker commands, and runtime rendering/playback verification remain unavailable."
                 ),
             },
         )
@@ -276,6 +285,23 @@ def _handle_request(
     if method == "tools/call":
         tool_name = params.get("name")
         arguments = params.get("arguments", {})
+        if tool_name in SYSTEM_TOOL_NAMES:
+            if audience_session is None:
+                return _rpc_error(request_id, -32602, "Unknown tool")
+            try:
+                result = call_system_tool(
+                    service,
+                    tool_name=str(tool_name),
+                    arguments=arguments,
+                    user_action_timeout_seconds=user_action_timeout_seconds,
+                )
+            except McpSystemToolInputError:
+                return _rpc_error(request_id, -32602, "Invalid system tool arguments")
+            except CardServiceError as error:
+                return _response(request_id, result=_tool_error(error))
+            except Exception:
+                return _response(request_id, result=_tool_error())
+            return _response(request_id, result=result)
         if tool_name in RESOURCE_GRANT_TOOL_NAMES:
             if audience_session is None:
                 return _rpc_error(request_id, -32602, "Unknown tool")
@@ -502,9 +528,10 @@ def _handle_request(
                         "type": "text",
                         "text": (
                             "The local Card Service capability snapshot is available. "
-                            "Deterministic source inspection, authenticated candidate review, and local "
-                            "portfolio selection, deterministic text-card generation, and verified APKG export are available. "
-                            "Starting candidate discovery and Anki import remain disabled at this milestone."
+                            "Deterministic source inspection, asynchronous authorized candidate discovery, "
+                            "candidate review and portfolio selection, deterministic text-card generation, "
+                            "verified APKG export, and explicit Anki import with data verification are available. "
+                            "Runtime rendering, playback, and restart-review verification remain separate."
                         ),
                     }
                 ],

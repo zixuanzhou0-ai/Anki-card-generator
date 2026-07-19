@@ -8,6 +8,7 @@ from card_service.mcp_candidate_tools import (
     GET_CANDIDATE_TOOL_NAME,
     LIST_CANDIDATES_TOOL_NAME,
     PREVIEW_EVIDENCE_TOOL_NAME,
+    START_DISCOVERY_TOOL_NAME,
     McpCandidateToolInputError,
     call_candidate_tool,
     candidate_tool_definitions,
@@ -25,6 +26,24 @@ EVIDENCE_ID = "evidence_" + "e" * 40
 class RecordingService:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
+
+    def start_study_candidate_discovery(self, **kwargs):
+        self.calls.append(("start", kwargs))
+        return {
+            "schemaVersion": 1,
+            "taskId": "task_discovery_1",
+            "intent": "discover_candidates",
+            "state": "running",
+            "cancellable": True,
+            "resumability": "resume_remaining",
+            "progress": {
+                "phase": "discovery",
+                "phasePercent": None,
+                "overallPercent": None,
+                "lastProgressAt": "2026-07-19T00:00:00Z",
+            },
+            "nextAction": "poll_task",
+        }
 
     def list_study_candidates(self, **kwargs):
         self.calls.append(("list", kwargs))
@@ -77,14 +96,21 @@ class RecordingService:
         }
 
 
-def test_candidate_tool_schemas_are_closed_and_read_only() -> None:
+def test_candidate_tool_schemas_are_closed_and_mark_remote_discovery() -> None:
     definitions = candidate_tool_definitions()
     assert [value["name"] for value in definitions] == [
+        START_DISCOVERY_TOOL_NAME,
         LIST_CANDIDATES_TOOL_NAME,
         GET_CANDIDATE_TOOL_NAME,
         PREVIEW_EVIDENCE_TOOL_NAME,
     ]
-    for definition in definitions:
+    assert definitions[0]["annotations"] == {
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    }
+    for definition in definitions[1:]:
         assert definition["inputSchema"]["additionalProperties"] is False
         assert definition["annotations"] == {
             "readOnlyHint": True,
@@ -92,7 +118,8 @@ def test_candidate_tool_schemas_are_closed_and_read_only() -> None:
             "idempotentHint": True,
             "openWorldHint": False,
         }
-    list_filter = definitions[0]["inputSchema"]["properties"]["filter"]
+    assert definitions[0]["inputSchema"]["additionalProperties"] is False
+    list_filter = definitions[1]["inputSchema"]["properties"]["filter"]
     assert list_filter["additionalProperties"] is False
     encoded_inputs = json.dumps(
         [value["inputSchema"] for value in definitions], sort_keys=True
@@ -115,6 +142,20 @@ def test_candidate_tools_call_only_the_trusted_service_boundary() -> None:
     service = RecordingService()
     session = create_development_mcp_audience()
 
+    started = call_candidate_tool(
+        service,  # type: ignore[arg-type]
+        tool_name=START_DISCOVERY_TOOL_NAME,
+        arguments={
+            "context": {
+                "projectId": "project_1",
+                "expectedProjectRevision": 3,
+                "idempotencyKey": "discover-1",
+            },
+            "inspectionHandle": DISCOVERY_HANDLE,
+            "candidateBudget": {"target": 8, "maximum": 16},
+        },
+        audience_session=session,
+    )
     listed = call_candidate_tool(
         service,  # type: ignore[arg-type]
         tool_name=LIST_CANDIDATES_TOOL_NAME,
@@ -154,10 +195,22 @@ def test_candidate_tools_call_only_the_trusted_service_boundary() -> None:
         audience_session=session,
     )
 
+    assert started["structuredContent"]["state"] == "running"
     assert listed["structuredContent"]["returnedCandidates"] == 1
     assert loaded["structuredContent"]["candidateHandle"] == CANDIDATE_HANDLE
     assert previewed["structuredContent"]["quote"] == "in good shape"
     assert service.calls == [
+        (
+            "start",
+            {
+                "audience": session.audience,
+                "project_id": "project_1",
+                "expected_project_revision": 3,
+                "idempotency_key": "discover-1",
+                "inspection_handle": DISCOVERY_HANDLE,
+                "candidate_budget": {"target": 8, "maximum": 16},
+            },
+        ),
         (
             "list",
             {
@@ -199,6 +252,44 @@ def test_candidate_tools_call_only_the_trusted_service_boundary() -> None:
 @pytest.mark.parametrize(
     "tool_name,arguments",
     [
+        (START_DISCOVERY_TOOL_NAME, {}),
+        (
+            START_DISCOVERY_TOOL_NAME,
+            {
+                "context": {
+                    "projectId": "project_1",
+                    "expectedProjectRevision": 3,
+                    "idempotencyKey": "discover-1",
+                },
+                "inspectionHandle": DISCOVERY_HANDLE,
+                "candidateBudget": {"target": 8, "maximum": 257},
+            },
+        ),
+        (
+            START_DISCOVERY_TOOL_NAME,
+            {
+                "context": {
+                    "projectId": "project_1",
+                    "expectedProjectRevision": 3,
+                    "idempotencyKey": "discover-1",
+                },
+                "inspectionHandle": DISCOVERY_HANDLE,
+                "candidateBudget": {"target": 17, "maximum": 16},
+            },
+        ),
+        (
+            START_DISCOVERY_TOOL_NAME,
+            {
+                "context": {
+                    "projectId": "project_1",
+                    "expectedProjectRevision": 3,
+                    "idempotencyKey": "discover-1",
+                },
+                "inspectionHandle": DISCOVERY_HANDLE,
+                "candidateBudget": {"target": 8, "maximum": 16},
+                "provider": "hermes",
+            },
+        ),
         (LIST_CANDIDATES_TOOL_NAME, {}),
         (
             LIST_CANDIDATES_TOOL_NAME,

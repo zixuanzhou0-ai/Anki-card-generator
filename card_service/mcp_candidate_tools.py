@@ -9,11 +9,17 @@ from .service import CardService
 from .trusted_mcp_audience import TrustedMcpAudienceSession
 
 
+START_DISCOVERY_TOOL_NAME = "study.start_discovery"
 LIST_CANDIDATES_TOOL_NAME = "study.list_candidates"
 GET_CANDIDATE_TOOL_NAME = "study.get_candidate"
 PREVIEW_EVIDENCE_TOOL_NAME = "study.preview_evidence"
 CANDIDATE_TOOL_NAMES = frozenset(
-    {LIST_CANDIDATES_TOOL_NAME, GET_CANDIDATE_TOOL_NAME, PREVIEW_EVIDENCE_TOOL_NAME}
+    {
+        START_DISCOVERY_TOOL_NAME,
+        LIST_CANDIDATES_TOOL_NAME,
+        GET_CANDIDATE_TOOL_NAME,
+        PREVIEW_EVIDENCE_TOOL_NAME,
+    }
 )
 
 _HANDLE_RE = re.compile(r"^study_[A-Za-z0-9_-]{43}$")
@@ -47,6 +53,46 @@ class McpCandidateToolInputError(ValueError):
 
 def _handle_schema() -> dict[str, Any]:
     return {"type": "string", "pattern": r"^study_[A-Za-z0-9_-]{43}$"}
+
+
+def _discovery_task_output_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "schemaVersion": {"type": "integer", "const": 1},
+            "taskId": {"type": "string"},
+            "intent": {"type": "string", "const": "discover_candidates"},
+            "state": {
+                "type": "string",
+                "enum": [
+                    "queued",
+                    "running",
+                    "cancelling",
+                    "succeeded",
+                    "failed",
+                    "cancelled",
+                    "interrupted",
+                ],
+            },
+            "cancellable": {"type": "boolean"},
+            "resumability": {"type": "string"},
+            "progress": {"type": "object"},
+            "result": {"type": "object"},
+            "error": {"type": "object"},
+            "nextAction": {"type": "string"},
+        },
+        "required": [
+            "schemaVersion",
+            "taskId",
+            "intent",
+            "state",
+            "cancellable",
+            "resumability",
+            "progress",
+            "nextAction",
+        ],
+        "additionalProperties": False,
+    }
 
 
 def _candidate_list_output_schema() -> dict[str, Any]:
@@ -165,6 +211,75 @@ def candidate_tool_definitions() -> list[dict[str, Any]]:
         "openWorldHint": False,
     }
     return [
+        {
+            "name": START_DISCOVERY_TOOL_NAME,
+            "title": "Discover evidence-backed learning candidates",
+            "description": (
+                "Start asynchronous candidate discovery over an authenticated source "
+                "inspection. The service binds the current trusted model authorization; "
+                "the caller cannot choose a provider, model, endpoint, credential, prompt, "
+                "source body, or authorization token."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "context": {
+                        "type": "object",
+                        "properties": {
+                            "projectId": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256,
+                                "pattern": r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$",
+                            },
+                            "expectedProjectRevision": {
+                                "type": "integer",
+                                "minimum": 1,
+                            },
+                            "idempotencyKey": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 160,
+                                "pattern": r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$",
+                            },
+                        },
+                        "required": [
+                            "projectId",
+                            "expectedProjectRevision",
+                            "idempotencyKey",
+                        ],
+                        "additionalProperties": False,
+                    },
+                    "inspectionHandle": _handle_schema(),
+                    "candidateBudget": {
+                        "type": "object",
+                        "properties": {
+                            "target": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 256,
+                            },
+                            "maximum": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 256,
+                            },
+                        },
+                        "required": ["target", "maximum"],
+                        "additionalProperties": False,
+                    },
+                },
+                "required": ["context", "inspectionHandle", "candidateBudget"],
+                "additionalProperties": False,
+            },
+            "outputSchema": _discovery_task_output_schema(),
+            "annotations": {
+                "readOnlyHint": False,
+                "destructiveHint": False,
+                "idempotentHint": True,
+                "openWorldHint": True,
+            },
+        },
         {
             "name": LIST_CANDIDATES_TOOL_NAME,
             "title": "List authenticated learning candidates",
@@ -293,6 +408,62 @@ def _handle(value: Any, label: str) -> str:
     return value
 
 
+def _start_arguments(
+    arguments: Any,
+) -> tuple[str, int, str, str, dict[str, int]]:
+    if not isinstance(arguments, dict) or set(arguments) != {
+        "context",
+        "inspectionHandle",
+        "candidateBudget",
+    }:
+        raise McpCandidateToolInputError("candidate discovery fields are invalid")
+    context = arguments.get("context")
+    if (
+        not isinstance(context, dict)
+        or set(context)
+        != {"projectId", "expectedProjectRevision", "idempotencyKey"}
+    ):
+        raise McpCandidateToolInputError("candidate discovery context is invalid")
+    project_id = context.get("projectId")
+    revision = context.get("expectedProjectRevision")
+    idempotency_key = context.get("idempotencyKey")
+    if not isinstance(project_id, str) or not _ID_RE.fullmatch(project_id):
+        raise McpCandidateToolInputError("projectId is invalid")
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+        raise McpCandidateToolInputError("expectedProjectRevision is invalid")
+    if (
+        not isinstance(idempotency_key, str)
+        or len(idempotency_key) > 160
+        or not _ID_RE.fullmatch(idempotency_key)
+    ):
+        raise McpCandidateToolInputError("idempotencyKey is invalid")
+    inspection_handle = _handle(
+        arguments.get("inspectionHandle"), "inspectionHandle"
+    )
+    budget = arguments.get("candidateBudget")
+    if not isinstance(budget, dict) or set(budget) != {"target", "maximum"}:
+        raise McpCandidateToolInputError("candidateBudget is invalid")
+    target = budget.get("target")
+    maximum = budget.get("maximum")
+    if (
+        isinstance(target, bool)
+        or not isinstance(target, int)
+        or isinstance(maximum, bool)
+        or not isinstance(maximum, int)
+        or target < 1
+        or maximum < target
+        or maximum > 256
+    ):
+        raise McpCandidateToolInputError("candidateBudget is invalid")
+    return (
+        project_id,
+        revision,
+        idempotency_key,
+        inspection_handle,
+        {"target": target, "maximum": maximum},
+    )
+
+
 def _list_arguments(
     arguments: Any,
 ) -> tuple[str, dict[str, Any] | None, str, str | None, int]:
@@ -407,7 +578,18 @@ def call_candidate_tool(
     arguments: Any,
     audience_session: TrustedMcpAudienceSession,
 ) -> dict[str, Any]:
-    if tool_name == LIST_CANDIDATES_TOOL_NAME:
+    if tool_name == START_DISCOVERY_TOOL_NAME:
+        project_id, revision, key, inspection, budget = _start_arguments(arguments)
+        structured = service.start_study_candidate_discovery(
+            audience=audience_session.audience,
+            project_id=project_id,
+            expected_project_revision=revision,
+            idempotency_key=key,
+            inspection_handle=inspection,
+            candidate_budget=budget,
+        )
+        text = "Candidate discovery started. Poll the returned task until it finishes."
+    elif tool_name == LIST_CANDIDATES_TOOL_NAME:
         discovery, filters, sort, cursor, limit = _list_arguments(arguments)
         structured = service.list_study_candidates(
             audience=audience_session.audience,
@@ -455,6 +637,7 @@ __all__ = [
     "LIST_CANDIDATES_TOOL_NAME",
     "McpCandidateToolInputError",
     "PREVIEW_EVIDENCE_TOOL_NAME",
+    "START_DISCOVERY_TOOL_NAME",
     "call_candidate_tool",
     "candidate_tool_definitions",
 ]

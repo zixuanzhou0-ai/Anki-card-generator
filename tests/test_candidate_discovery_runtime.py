@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+import time
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -114,6 +116,19 @@ class FakeDiscoveryModelProvider:
         return self.model
 
 
+class BlockingDiscoveryModel(FakeDiscoveryModel):
+    def __init__(self) -> None:
+        super().__init__()
+        self.proposal_started = threading.Event()
+        self.release_proposal = threading.Event()
+
+    def propose(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        self.proposal_started.set()
+        if not self.release_proposal.wait(10):
+            raise RuntimeError("test proposal was never released")
+        return super().propose(request)
+
+
 def authorization(*, suffix: str = "v1") -> CandidateDiscoveryAuthorization:
     return CandidateDiscoveryAuthorization(
         operation_intent_digest=digest("operation-intent-" + suffix),
@@ -216,6 +231,41 @@ def discover(
     )
 
 
+def start_async_discovery(
+    runtime: StudyRuntime,
+    project: Mapping[str, Any],
+    inspected: Mapping[str, Any],
+    provider: FakeDiscoveryModelProvider,
+    *,
+    key: str = "discover-async-1",
+) -> dict[str, Any]:
+    return runtime.start_candidate_discovery_task(
+        audience=audience(),
+        project_id=project["projectId"],
+        expected_project_revision=inspected["projectRevision"],
+        idempotency_key=key,
+        inspection_handle=inspected["inspectionHandle"],
+        candidate_budget={"target": 1, "maximum": 8},
+        authorization=authorization(),
+        model_provider=provider,
+    )
+
+
+def await_public_task(
+    runtime: StudyRuntime,
+    task_id: str,
+    *,
+    expected_states: set[str],
+    timeout: float = 10.0,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        task = runtime.get_study_task(audience=audience(), task_id=task_id)
+        if task["state"] in expected_states:
+            return task
+        time.sleep(0.02)
+    raise AssertionError(f"task {task_id} did not reach {sorted(expected_states)}")
+
 def task_record(runtime: StudyRuntime, task_id: str) -> dict[str, Any]:
     for path in (runtime.root / "tasks" / "tasks").rglob("*.json"):
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -226,6 +276,92 @@ def task_record(runtime: StudyRuntime, task_id: str) -> dict[str, Any]:
             return value
     raise AssertionError("task record not found")
 
+
+def test_public_discovery_start_returns_before_model_completion_and_polls_success(
+    tmp_path: Path,
+) -> None:
+    model = BlockingDiscoveryModel()
+    provider = FakeDiscoveryModelProvider(model)
+    runtime, project, inspected, _source = environment(tmp_path, None, provider)
+
+    started_at = time.monotonic()
+    started = start_async_discovery(runtime, project, inspected, provider)
+    elapsed = time.monotonic() - started_at
+
+    assert elapsed < 2.0
+    assert started["state"] in {"queued", "running"}
+    assert started["intent"] == "discover_candidates"
+    assert model.proposal_started.wait(2)
+    serialized = json.dumps(started, ensure_ascii=False, sort_keys=True)
+    for forbidden in (
+        "inputFingerprint",
+        "authorization",
+        "profileRef",
+        "configurationFingerprint",
+        "credentialRevision",
+    ):
+        assert forbidden not in serialized
+
+    model.release_proposal.set()
+    completed = await_public_task(
+        runtime,
+        started["taskId"],
+        expected_states={"succeeded"},
+    )
+
+    assert completed["progress"]["overallPercent"] == 100
+    assert completed["result"]["artifactStage"] == "candidates_ready"
+    assert completed["result"]["candidateCount"] == 1
+    assert model.proposal_calls == 1
+    assert model.review_calls == 1
+
+
+def test_duplicate_public_discovery_start_reuses_active_task_without_model_replay(
+    tmp_path: Path,
+) -> None:
+    model = BlockingDiscoveryModel()
+    provider = FakeDiscoveryModelProvider(model)
+    runtime, project, inspected, _source = environment(tmp_path, None, provider)
+
+    first = start_async_discovery(runtime, project, inspected, provider)
+    assert model.proposal_started.wait(2)
+    second = start_async_discovery(runtime, project, inspected, provider)
+
+    assert second["taskId"] == first["taskId"]
+    assert len(provider.bound_task_ids) == 1
+    model.release_proposal.set()
+    await_public_task(runtime, first["taskId"], expected_states={"succeeded"})
+    assert model.proposal_calls == 1
+    assert model.review_calls == 1
+
+
+def test_public_discovery_cancel_waits_for_remote_call_then_finishes_safely(
+    tmp_path: Path,
+) -> None:
+    model = BlockingDiscoveryModel()
+    provider = FakeDiscoveryModelProvider(model)
+    runtime, project, inspected, _source = environment(tmp_path, None, provider)
+
+    started = start_async_discovery(runtime, project, inspected, provider)
+    assert model.proposal_started.wait(2)
+    cancelling = runtime.cancel_study_task(
+        audience=audience(),
+        task_id=started["taskId"],
+    )
+
+    assert cancelling["state"] == "cancelling"
+    model.release_proposal.set()
+    cancelled = await_public_task(
+        runtime,
+        started["taskId"],
+        expected_states={"cancelled"},
+    )
+
+    assert cancelled["cancellable"] is False
+    assert model.proposal_calls == 1
+    assert model.review_calls == 0
+    current = runtime.get_project(project["projectId"], audience())
+    assert current["workflow"]["artifactStage"] == "sources_ready"
 
 def test_discovery_runtime_commits_candidates_and_binds_authorized_model_identity(
     tmp_path: Path,

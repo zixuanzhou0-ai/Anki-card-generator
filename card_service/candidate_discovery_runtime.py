@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from .artifact_registry import (
     ArtifactAudienceBinding,
@@ -478,6 +478,8 @@ class CandidateDiscoveryRuntime:
         inspection_handle: str,
         candidate_budget: Mapping[str, Any],
         authorization: CandidateDiscoveryAuthorization,
+        task_ready_callback: Callable[[str], bool | None] | None = None,
+        cancellation_requested: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         if not isinstance(idempotency_key, str) or not _IDEMPOTENCY_RE.fullmatch(
             idempotency_key
@@ -523,10 +525,13 @@ class CandidateDiscoveryRuntime:
         except ProjectRegistryError as error:
             raise CandidateDiscoveryRuntimeError(error.code, error.message) from error
         if prior is not None:
+            prior_task_id = str(prior["taskId"])
+            if task_ready_callback is not None:
+                task_ready_callback(prior_task_id)
             return self._public_result(
                 audience=audience,
                 committed=prior,
-                task_id=str(prior["taskId"]),
+                task_id=prior_task_id,
             )
         if project["projectRevision"] != expected_project_revision:
             raise CandidateDiscoveryRuntimeError(
@@ -590,6 +595,14 @@ class CandidateDiscoveryRuntime:
                 "TASK_RECOVERY_REQUIRED",
                 "Candidate discovery task requires explicit recovery",
             )
+        if (
+            task_ready_callback is not None
+            and task_ready_callback(task_id) is False
+        ):
+            raise CandidateDiscoveryRuntimeError(
+                "DISCOVERY_ALREADY_RUNNING",
+                "Candidate discovery is already running",
+            )
         try:
             if task["state"] != "succeeded":
                 if task["state"] == "queued":
@@ -632,6 +645,14 @@ class CandidateDiscoveryRuntime:
                         artifacts=self._artifacts,
                         model=bound_model,
                     )
+                    if (
+                        cancellation_requested is not None
+                        and cancellation_requested()
+                    ):
+                        raise CandidateDiscoveryError(
+                            "DISCOVERY_CANCELLED",
+                            "candidate discovery was cancelled safely",
+                        )
                     result = engine.discover(
                         audience=audience,
                         project_id=project_id,
@@ -641,7 +662,16 @@ class CandidateDiscoveryRuntime:
                         learning_contract=project["learningContract"],
                         evaluated_at=task["createdAt"],
                         maximum_proposals=budget["maximum"],
+                        cancellation_requested=cancellation_requested,
                     )
+                    if (
+                        cancellation_requested is not None
+                        and cancellation_requested()
+                    ):
+                        raise CandidateDiscoveryError(
+                            "DISCOVERY_CANCELLED",
+                            "candidate discovery was cancelled safely",
+                        )
                     task = self._tasks.get_task(task_id, audience)
                     task = self._tasks.complete_work_unit(
                         task_id,
@@ -659,6 +689,11 @@ class CandidateDiscoveryRuntime:
                         expected_revision=task["taskRevision"],
                         operation_id="succeed-" + operation_digest[:38],
                     )
+            if cancellation_requested is not None and cancellation_requested():
+                raise CandidateDiscoveryError(
+                    "DISCOVERY_CANCELLED",
+                    "candidate discovery was cancelled safely",
+                )
             final_task = self._tasks.get_task(task_id, audience)
             paired = []
             for handle in final_task["resultHandles"]:
@@ -692,7 +727,23 @@ class CandidateDiscoveryRuntime:
         ) as error:
             try:
                 current = self._tasks.get_task(task_id, audience)
-                if current["state"] == "running":
+                if getattr(error, "code", "") == "DISCOVERY_CANCELLED":
+                    if current["state"] == "running":
+                        current = self._tasks.request_cancel(
+                            task_id,
+                            audience,
+                            expected_revision=current["taskRevision"],
+                            operation_id="request-cancel-" + operation_digest[:32],
+                        )
+                    if current["state"] == "cancelling":
+                        self._tasks.finish_cancellation(
+                            task_id,
+                            audience,
+                            expected_revision=current["taskRevision"],
+                            operation_id="finish-cancel-" + operation_digest[:33],
+                            safe_checkpoint_proven=True,
+                        )
+                elif current["state"] == "running":
                     preserved = [
                         handle
                         for unit in current["workUnits"]

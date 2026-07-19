@@ -21,6 +21,7 @@ from card_service.mcp_candidate_tools import (
     GET_CANDIDATE_TOOL_NAME,
     LIST_CANDIDATES_TOOL_NAME,
     PREVIEW_EVIDENCE_TOOL_NAME,
+    START_DISCOVERY_TOOL_NAME,
 )
 from card_service.mcp_anki_tools import (
     IMPORT_AND_VERIFY_TOOL_NAME,
@@ -37,6 +38,7 @@ from card_service.mcp_inspection_tools import (
 from card_service.mcp_project_tools import CREATE_PROJECT_TOOL_NAME
 from card_service.mcp_resource_tools import OUTPUT_GRANT_TOOL_NAME, SOURCE_GRANT_TOOL_NAME
 from card_service.mcp_selection_tools import SET_SELECTION_TOOL_NAME
+from card_service.mcp_system_tools import AUTHORIZE_DISCOVERY_TOOL
 from card_service.mcp_stdio import CAPABILITY_TOOL_NAME, MCP_PROTOCOL_VERSION, serve
 from card_service.service import CardServiceError
 from card_service.trusted_mcp_audience import create_development_mcp_audience
@@ -170,12 +172,14 @@ def test_mcp_bridge_reports_trusted_session_without_disclosing_identity() -> Non
     assert "sessionId" not in serialized
     assert bridge["exposedTools"] == [
         CAPABILITY_TOOL_NAME,
+        AUTHORIZE_DISCOVERY_TOOL,
         SOURCE_GRANT_TOOL_NAME,
         OUTPUT_GRANT_TOOL_NAME,
         CREATE_PROJECT_TOOL_NAME,
         REGISTER_INPUTS_TOOL_NAME,
         START_SOURCE_INSPECTION_TOOL_NAME,
         GET_SOURCE_INSPECTION_TOOL_NAME,
+        START_DISCOVERY_TOOL_NAME,
         LIST_CANDIDATES_TOOL_NAME,
         GET_CANDIDATE_TOOL_NAME,
         PREVIEW_EVIDENCE_TOOL_NAME,
@@ -301,12 +305,14 @@ def test_real_mcp_stdio_process_reports_card_service_capabilities(tmp_path: Path
         listed = rpc({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
         assert [tool["name"] for tool in listed["result"]["tools"]] == [
             CAPABILITY_TOOL_NAME,
+            AUTHORIZE_DISCOVERY_TOOL,
             SOURCE_GRANT_TOOL_NAME,
             OUTPUT_GRANT_TOOL_NAME,
             CREATE_PROJECT_TOOL_NAME,
             REGISTER_INPUTS_TOOL_NAME,
             START_SOURCE_INSPECTION_TOOL_NAME,
             GET_SOURCE_INSPECTION_TOOL_NAME,
+            START_DISCOVERY_TOOL_NAME,
             LIST_CANDIDATES_TOOL_NAME,
             GET_CANDIDATE_TOOL_NAME,
             PREVIEW_EVIDENCE_TOOL_NAME,
@@ -322,7 +328,7 @@ def test_real_mcp_stdio_process_reports_card_service_capabilities(tmp_path: Path
             CANCEL_TASK_TOOL_NAME,
             PREPARE_IMPORT_TOOL_NAME,
             REQUEST_IMPORT_CONFIRMATION_TOOL_NAME,
-        IMPORT_AND_VERIFY_TOOL_NAME,
+            IMPORT_AND_VERIFY_TOOL_NAME,
         ]
         called = rpc(
             {
@@ -340,6 +346,9 @@ def test_real_mcp_stdio_process_reports_card_service_capabilities(tmp_path: Path
         assert capabilities["studyRuntime"]["publicCardPlanValidation"] is True
         assert capabilities["studyRuntime"]["publicCardGeneration"] is True
         assert capabilities["studyRuntime"]["publicCardQueries"] is True
+        assert capabilities["studyRuntime"]["publicCandidateDiscovery"] is True
+        assert capabilities["studyRuntime"]["candidateDiscoveryAuthorizationReady"] is False
+        assert capabilities["studyRuntime"]["publicAnkiWrite"] is True
         assert called["result"]["structuredContent"]["mcpBridge"]["transport"] == "stdio"
         assert called["result"]["structuredContent"]["mcpBridge"]["audienceBinding"]["available"] is True
         assert called["result"]["structuredContent"]["mcpBridge"]["audienceBinding"]["identifiersDisclosed"] is False

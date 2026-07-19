@@ -85,6 +85,7 @@ def create_service(arguments: argparse.Namespace, parser: argparse.ArgumentParse
         broker_handler_factory=(broker_runtime.handler_factory if broker_runtime is not None else None),
         broker_method_blocker=(broker_runtime.method_blocker if broker_runtime is not None else None),
         broker_runtime_capabilities=(broker_runtime.capabilities() if broker_runtime is not None else None),
+        broker_runtime=broker_runtime,
     )
 
 

@@ -8,7 +8,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 from urllib.parse import parse_qsl, urlsplit
 
 from .artifact_registry import (
@@ -781,6 +781,7 @@ class CandidateDiscoveryEngine:
         learning_contract: Mapping[str, Any],
         evaluated_at: str,
         maximum_proposals: int | None = None,
+        cancellation_requested: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         if (
             not isinstance(project_revision, int)
@@ -834,6 +835,7 @@ class CandidateDiscoveryEngine:
             learning_contract=learning_contract,
             maximum_proposals=maximum_proposals,
         )
+        self._raise_if_cancelled(cancellation_requested)
         if proposal_request["sources"]:
             try:
                 proposal_response = self._model.propose(_clone(proposal_request))
@@ -849,6 +851,7 @@ class CandidateDiscoveryEngine:
                 "schemaVersion": 1,
                 "proposals": [],
             }
+        self._raise_if_cancelled(cancellation_requested)
         proposals, collapsed = self._proposals(
             proposal_response, contexts=contexts, maximum_proposals=maximum_proposals
         )
@@ -895,6 +898,7 @@ class CandidateDiscoveryEngine:
             parents=[dict(inspection_ref)],
             issue_refs=issues,
         )
+        self._raise_if_cancelled(cancellation_requested)
         review_request = self._review_request(
             safe_proposals, contexts, learning_contract
         )
@@ -913,6 +917,7 @@ class CandidateDiscoveryEngine:
                 "schemaVersion": 1,
                 "reviews": [],
             }
+        self._raise_if_cancelled(cancellation_requested)
         expected_review_keys = {value["reviewKey"] for value in safe_proposals}
         reviews, incomplete = self._reviews(
             review_response, expected_keys=expected_review_keys
@@ -947,10 +952,12 @@ class CandidateDiscoveryEngine:
             parents=[proposal_batch.artifact_ref],
             issue_refs=review_issues,
         )
+        self._raise_if_cancelled(cancellation_requested)
         by_representation = {value["representationId"]: value for value in contexts}
         semantic_seen: set[tuple[str, str, str, str]] = set()
         publications = []
         for proposal in proposals:
+            self._raise_if_cancelled(cancellation_requested)
             unsafe = sensitive_disclosure_reason(
                 proposal["form"] + "\n" + proposal["meaningOrFunction"]
             )
@@ -1018,6 +1025,7 @@ class CandidateDiscoveryEngine:
                     getattr(error, "message", "candidate gate failed safely"),
                 ) from error
             publications.append(publication)
+        self._raise_if_cancelled(cancellation_requested)
         try:
             discovery = self._publisher.publish_discovery(
                 audience=audience,
@@ -1045,6 +1053,15 @@ class CandidateDiscoveryEngine:
                 set(issues + review_issues + list(discovery["issueCodes"]))
             ),
         }
+
+    @staticmethod
+    def _raise_if_cancelled(
+        cancellation_requested: Callable[[], bool] | None,
+    ) -> None:
+        if cancellation_requested is not None and cancellation_requested():
+            raise CandidateDiscoveryError(
+                "DISCOVERY_CANCELLED", "candidate discovery was cancelled safely"
+            )
 
 
 __all__ = [
