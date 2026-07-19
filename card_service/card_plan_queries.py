@@ -140,6 +140,11 @@ class CardPlanQueryRuntime:
             raise CardPlanQueryError(
                 "CARD_PLAN_CURSOR_INVALID", "card plan cursor is invalid"
             ) from error
+        canonical = base64.urlsafe_b64encode(decoded).rstrip(b"=").decode("ascii")
+        if not hmac.compare_digest(canonical, encoded):
+            _fail(
+                "CARD_PLAN_CURSOR_INVALID", "card plan cursor encoding is not canonical"
+            )
         if len(decoded) <= 32:
             _fail("CARD_PLAN_CURSOR_INVALID", "card plan cursor is invalid")
         raw, tag = decoded[:-32], decoded[-32:]

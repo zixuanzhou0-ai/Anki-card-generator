@@ -780,6 +780,48 @@ CardPlan 不是最终 Anki 字段。生成适配器将其映射到当前 Project
 
 CURRENT 内部实现采用 `deterministic-language-card-plan-v1`：只为当前认证 SelectionArtifact 中的 `production`、`chunk_collocation` 与 `reading_recognition` 候选构造 CardPlan，并发布逐计划 Artifact、CardPlanSet 与 `card-plan-validation-v1` 验证 Artifact。计划保存 selection/candidate/objective/evidence 的精确父引用，核心答案必须等于冻结评分边界；题面泄露、候选 `needs_review` 或任一验证非 pass 都进入 blocked 集合。媒体策略当前固定关闭，因此 `media_generatability=passed` 只表示“不要求媒体”，不能外推为音视频已经生成。初始计划仍以 `userLocks=[]` 发布；CURRENT Agent 编辑不能创建、延长或清除锁，只能原样保留未来受信通道形成的 UserLock，对应检查与字段级拒绝共同防止覆盖。显式非英语 prompt/answer、语用路线、真实语法变形及任何需要额外翻译/模型/媒体推断的组合都返回 `UNSUPPORTED_CARD_PLAN`。CURRENT 可信 MCP 已开放 `study.plan_cards`、`study.list_card_plans`、`study.edit_card_plan` 与 `study.validate_card_plans`。规划只接收封闭 RequestContext 和当前 selectionHandle；查询通过独立派生密钥认证的 cursor 分页，并只投影题面、核心答案、解释、证据数量、媒体策略、预计复习时间、八项 check 状态和 opaque handle。Agent 编辑只接受 cue、expectedResponse、feedback、mediaPolicy 四类互斥 operation，Service 强制保留 evidenceRefs/userLocks、记录 actor=agent/taskId、发布同 identity 新 revision 并重跑八项检查；无法确定性证明的新语义、破坏冻结评分边界或请求未实现媒体都会保留为 blocked，而不是伪装 pass。独立重验从当前认证 Selection/Candidate/Plan 图发布新 PlanSet/Validation revision，支持提交前中断恢复。四者都不接收/返回调用方构造的内部 ArtifactRef、来源路径、授权、模型资料或 inputFingerprint。用户锁定通道仍为 PROPOSED；当前同步规划和重验仅适用于无需新模型/媒体推断的受限映射。
 
+## 13.1 CardArtifact 与 ProjectArtifact
+
+~~~ts
+type CardArtifactPayload = {
+  cardId: string;
+  projectRevision: Revision;
+  cardPlanRef: EntityRef;
+  route: LearningObjective["route"];
+  front: { modality: "text"; prompt: string };
+  back: {
+    coreAnswer: string;
+    explanation: string;
+    examples: string[];
+    nonexamples: string[];
+  };
+  scoring: {
+    points: string[];
+    acceptedVariants: string[];
+    singleRecallTarget: true;
+  };
+  evidenceRefs: EntityRef[];
+  mediaRefs: ArtifactRef[];
+  verification: {
+    state: "verified" | "needs_review" | "hard_failed";
+    ruleSetVersion: string;
+    passedChecks: CardPlanCheckId[];
+  };
+  generation: {
+    mode: string;
+    policyVersion: string;
+    modelUsed: boolean;
+    ttsUsed: boolean;
+    mediaUsed: boolean;
+  };
+};
+~~~
+
+CURRENT `deterministic-card-artifact-v1` 只接受精确当前 PlanSet，重新解析 Validation、CardPlan、Candidate、Representation 与 SourceAsset 的认证父图。集合中所有计划必须 eligible、八项检查必须全部 `passed`，题面/答案必须为文本，四类媒体策略必须全关；任一 `needs_review`、`failed`、stale、跨 audience、父图缺失或媒体请求都阻塞整个生成动作。
+
+成功时逐计划发布不可变 `study.card`，再发布对账完整的 `study.reliability-manifest`、空 `study.media-ledger`、经 Service sanitizer 处理的 Legacy Worker 兼容投影，以及唯一 `study.project-artifact`。ProjectArtifact 的父集合必须包含 PlanSet、Validation、每个 CardPlan/Card、ReliabilityManifest、MediaLedger 与 SanitizedLegacyProjectArtifact；解析时重新核对 cardIds、父图和当前项目 latestArtifactRefs。公开 `cards.list` 只提供学习者投影，认证 cursor 绑定 service/audience/ProjectArtifact/offset，内部引用、路径、证据定位、授权与 input fingerprint 不进入结果。
+
+该 CURRENT 路线不调用模型、TTS、媒体、网络或 Anki。兼容投影已经通过真实 Legacy Worker APKG 导出，但公开 `cards.export_apkg` 尚未接线，因此 `cards_ready` 不能解释成 `apkg_ready` 或已导入 Anki。
 ## 14. 用户编辑
 
 ~~~ts

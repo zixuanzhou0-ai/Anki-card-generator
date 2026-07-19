@@ -920,6 +920,9 @@ class CardService:
             "publicCardPlanQueries": True,
             "publicCardPlanEditing": True,
             "publicCardPlanValidation": True,
+            "cardArtifactRuntime": True,
+            "publicCardGeneration": True,
+            "publicCardQueries": True,
             "pathDisclosure": False,
             "complete": False,
         }
@@ -1124,6 +1127,54 @@ class CardService:
                 error.message,
                 retryable=False,
                 stage="planning",
+            ) from error
+
+    def list_study_generated_cards(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_artifact_handle: str,
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        try:
+            return self._ensure_study_runtime().list_generated_cards(
+                audience=audience,
+                project_artifact_handle=project_artifact_handle,
+                cursor=cursor,
+                limit=limit,
+            )
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=False,
+                stage="card_query",
+            ) from error
+
+    def generate_study_cards(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_id: str,
+        expected_project_revision: int,
+        idempotency_key: str,
+        plan_set_handle: str,
+    ) -> dict[str, Any]:
+        try:
+            return self._ensure_study_runtime().generate_cards(
+                audience=audience,
+                project_id=project_id,
+                expected_project_revision=expected_project_revision,
+                idempotency_key=idempotency_key,
+                plan_set_handle=plan_set_handle,
+            )
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=False,
+                stage="card_generation",
             ) from error
 
     def list_study_card_plans(

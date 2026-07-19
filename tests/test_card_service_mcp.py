@@ -7,6 +7,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from card_service.mcp_card_tools import (
+    GENERATE_CARDS_TOOL_NAME,
+    LIST_CARDS_TOOL_NAME,
+)
 from card_service.mcp_card_plan_tools import (
     EDIT_CARD_PLAN_TOOL_NAME,
     LIST_CARD_PLANS_TOOL_NAME,
@@ -173,6 +177,8 @@ def test_mcp_bridge_reports_trusted_session_without_disclosing_identity() -> Non
         LIST_CARD_PLANS_TOOL_NAME,
         EDIT_CARD_PLAN_TOOL_NAME,
         VALIDATE_CARD_PLANS_TOOL_NAME,
+        GENERATE_CARDS_TOOL_NAME,
+        LIST_CARDS_TOOL_NAME,
     ]
 
 
@@ -296,6 +302,8 @@ def test_real_mcp_stdio_process_reports_card_service_capabilities(tmp_path: Path
             LIST_CARD_PLANS_TOOL_NAME,
             EDIT_CARD_PLAN_TOOL_NAME,
             VALIDATE_CARD_PLANS_TOOL_NAME,
+            GENERATE_CARDS_TOOL_NAME,
+            LIST_CARDS_TOOL_NAME,
         ]
         called = rpc(
             {
@@ -311,6 +319,8 @@ def test_real_mcp_stdio_process_reports_card_service_capabilities(tmp_path: Path
         assert capabilities["secretBearingRequests"] is False
         assert capabilities["studyRuntime"]["publicCardPlanEditing"] is True
         assert capabilities["studyRuntime"]["publicCardPlanValidation"] is True
+        assert capabilities["studyRuntime"]["publicCardGeneration"] is True
+        assert capabilities["studyRuntime"]["publicCardQueries"] is True
         assert called["result"]["structuredContent"]["mcpBridge"]["transport"] == "stdio"
         assert called["result"]["structuredContent"]["mcpBridge"]["audienceBinding"]["available"] is True
         assert called["result"]["structuredContent"]["mcpBridge"]["audienceBinding"]["identifiersDisclosed"] is False

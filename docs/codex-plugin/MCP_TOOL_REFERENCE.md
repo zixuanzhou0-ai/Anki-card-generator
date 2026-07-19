@@ -1,6 +1,6 @@
 # MCP 工具参考
 
-> 状态：CURRENT 最小桥 + PROPOSED 完整工具契约；可信会话已实现 `system.get_capabilities`、`system.request_source_grant`、`system.request_output_grant`、`study.create_project`、`study.register_inputs`、`study.start_source_inspection`、`study.get_source_inspection`、`study.list_candidates`、`study.get_candidate`、`study.preview_evidence`、`study.set_selection`、`study.plan_cards`、`study.list_card_plans`、`study.edit_card_plan` 与 `study.validate_card_plans`
+> 状态：CURRENT 最小桥 + PROPOSED 完整工具契约；可信会话已实现 `system.get_capabilities`、本地 source/output grant、项目与素材登记/检查、候选查询与选择、CardPlan 创建/审阅/编辑/重验，以及受限确定性 `cards.generate` 与 `cards.list`
 > 日期：2026-07-19
 > 工具名和 schema 在实现前仍可调整；一旦 V1 发布即按版本策略维护。
 
@@ -17,7 +17,7 @@ MCP 工具服务于用户意图，而不是暴露内部 Worker。工具层必须
 
 官方工具设计参考：[Describe tools](https://developers.openai.com/apps-sdk/build/mcp-server#step-2--describe-tools)。
 
-当前桥实现协议握手、动态工具发现、零参数只读能力快照，以及可信会话中的本地 source/output opaque grant、幂等项目/素材登记、有界确定性素材检查、现有认证 Discovery 的候选列表/详情/证据预览、本地组合选择，以及受限确定性 CardPlan 创建、分页复核、Agent 编辑与独立重验。没有原生 launcher audience 时只公开 `system.get_capabilities`；可信 audience 由父 PID、固定 launcher 可执行文件、当前 OS 用户 SID 摘要和每进程随机 nonce 派生，工具参数不能自报。桥仍不接受任意路径、URL、调用方构造的 Artifact 或 OperationIntent，也不公开启动候选发现、候选编辑、卡片生成、导出、Anki 写入、凭据、原始 Worker 或 Shell；除明确标为 CURRENT 的工具外，下文仍是后续里程碑的目标合同。
+当前桥实现协议握手、动态工具发现、零参数只读能力快照，以及可信会话中的本地 source/output opaque grant、幂等项目/素材登记、有界确定性素材检查、现有认证 Discovery 的候选列表/详情/证据预览、本地组合选择、受限确定性 CardPlan 创建/分页复核/Agent 编辑/独立重验，以及文本卡片的确定性生成与分页审阅。`cards.generate` 只接受当前 planSetHandle，要求全部八项门禁为 passed，发布不可变 CardArtifact、ReliabilityManifest、空 MediaLedger、SanitizedLegacyProjectArtifact 与 ProjectArtifact；它不调用模型、TTS、媒体、网络或 Anki。`cards.list` 只返回学习者可见题面、答案、解释、例句、评分边界和验证状态。没有原生 launcher audience 时只公开 `system.get_capabilities`；可信 audience 由父 PID、固定 launcher 可执行文件、当前 OS 用户 SID 摘要和每进程随机 nonce 派生，工具参数不能自报。桥仍不接受任意路径、URL、调用方构造的 Artifact 或 OperationIntent，也不公开启动候选发现、候选编辑、APKG 导出、Anki 写入、凭据、原始 Worker 或 Shell；除明确标为 CURRENT 的工具外，下文仍是后续里程碑的目标合同。
 
 ## 2. 公共请求约定
 
@@ -172,7 +172,8 @@ list_projects、get_project、get_artifact、任务和预览工具都先校验�
 | study.list_card_plans | true | false | true | false |
 | study.edit_card_plan | false | false | true | false |
 | study.validate_card_plans | false | false | true | false |
-| cards.generate | false | false | true | true |
+| cards.generate | false | false | true | false |
+| cards.list | true | false | true | false |
 | cards.export_apkg | false | false | true | false |
 | anki.prepare_import | false | false | true | true |
 | anki.request_import_confirmation | false | false | false | false |
@@ -216,7 +217,8 @@ destructiveHint 表示工具可能终止任务、撤销授权或持久修改外�
 | study.list_card_plans | 分页读取卡片计划 | 只读 | 无 |
 | study.edit_card_plan | 语义修改卡片计划；不创建或清除用户锁 | 本地写入 | 无 |
 | study.validate_card_plans | 执行门禁 | 本地写 CardPlanValidationArtifact | 无 |
-| cards.generate | 生成正文和媒体 | 模型/TTS/文件写入 | 超出数量/费用/新远程服务时 |
+| cards.generate | CURRENT：将全门禁通过的文本 CardPlan 确定性投影为 CardArtifact/ProjectArtifact | 本地认证 Artifact 写入；不调用模型/TTS/媒体/网络/Anki | 无 |
+| cards.list | 分页审阅当前 ProjectArtifact 中的已验证卡片 | 只读 | 无 |
 | cards.export_apkg | 生成 APKG | 文件写入 | 新目录、覆盖时 |
 | anki.prepare_import | 预检 APKG 并冻结 ImportPlan | 本地写 ImportPlan，不写 Anki | 无 |
 | anki.request_import_confirmation | 打开受信本地确认窗口并写入会话绑定的批准状态 | 本地授权状态 | 必须用户动作 |
@@ -656,35 +658,37 @@ CURRENT 输入只包含当前 selectionHandle；route preferences、media policy
 
 ### 9.1 cards.generate
 
-输入：
+> CURRENT：可信 stdio 已开放受限确定性实现。输入严格限定为 `{ context, planSetHandle }`；`context` 只含 projectId、expectedProjectRevision、idempotencyKey 和可选 locale。调用方不能提交 CardPlanRef、模型/TTS profile、批次策略、路径、媒体、授权或任意 ArtifactRef。
+
+服务重新解析精确当前 PlanSet → Validation → CardPlan → Candidate → Representation → SourceAsset 认证图，要求集合中每一项均 eligible，八项门禁均为 `passed`，题面/答案均为文本且四类媒体策略全关。任一 needs_review/failed、stale、跨 audience、父图缺失、媒体请求或不支持路线都失败关闭；不会把未验证计划静默降级成卡片。
+
+成功时为每个计划发布不可变 `study.card`，并发布逐卡对账的 `study.reliability-manifest`、空 `study.media-ledger`、经 sanitizer 处理的 Legacy Worker 兼容投影，以及唯一 `study.project-artifact`。项目从 `plans_ready` 原子推进到 `cards_ready`；任务在 work unit 完成、task success 或项目提交边界中断时，可以按同一输入恢复而不重复发布卡片。当前返回：
 
 ~~~ts
 {
-  context: RequestContext;
-  cardPlanRefs: string[];
-
-  modelProfileRef: string;
-  ttsProfileRef?: string;
-  batchPolicy: {
-    batchSize: number;
-    retryLimit: number;
-  };
+  schemaVersion: 1;
+  projectId: string;
+  projectRevision: number;
+  artifactStage: "cards_ready";
+  taskId: string;
+  projectArtifactHandle: string;
+  generatedCards: number;
+  verifiedCards: number;
+  needsReviewCards: 0;
+  hardFailedCards: 0;
+  mediaCount: 0;
+  generationMode: "deterministic_projection";
+  nextAction: "export_apkg";
 }
 ~~~
 
-generation policy 由 Service 依据当前 CardPlan、template compatibility 和已冻结规则确定，并进入 inputFingerprint；调用方不能用任意 generation profile 绕过门禁。
+当前实现不调用模型、TTS、媒体、网络或 Anki；需要新语义生成、翻译、媒体或 TTS 的计划仍由 CardPlan 门禁阻塞。真实 Worker 已验证该 SanitizedLegacyProjectArtifact 可以生成 APKG，但公共 `cards.export_apkg` 尚未开放，因此 `cards.generate` 成功不等于 APKG 已生成或已导入 Anki。
 
-执行前按当前 project/artifact revision 重查 Candidate GateEvaluationSet 与 CardPlanValidationArtifact；stale、hard_blocked 或 fail 项拒绝生成，selected 状态不能覆盖门禁。
+### 9.1.1 cards.list
 
-输出 taskId。任务结果包含：
+> CURRENT：输入为当前 `projectArtifactHandle`、可选 service 认证 cursor 与 1–100 的 limit。服务再次验证当前项目阶段、ProjectArtifact 父图、cardIds 对账与 sanitized legacy projection，只返回题面、核心答案、解释、例句/非例句、评分点、可接受变体、媒体角色和验证状态。内部 ArtifactRef、EvidenceRef、路径、来源文件名、授权、模型数据与 input fingerprint 不进入公共结果。cursor 绑定 service instance、audience、ProjectArtifact 身份与 offset；解码后必须重编码为逐字符相同的 canonical Base64URL，等价非规范编码、签名篡改、跨 session 或跨项目复用均拒绝。
 
-- ProjectArtifact ref。
-- 每个 CardPlan 的 verified/needs_review/hard_failed 对账。
-- 模型、TTS 和媒体审计。
-- 已保留批次和失败重试语义。
-
-模型 fallback 内容默认 needs_review 且不自动导出。
-
+PROPOSED 扩展：当 Broker、OperationIntent、TTS/媒体生成与细粒度异步任务全部接线后，`cards.generate` 可在同一封闭合同下支持模型与媒体；扩展不得放宽当前的 PlanSet/Validation 当前性和 fail-closed 规则。
 ### 9.2 cards.export_apkg
 
 输入 ProjectArtifact handle、enabled card IDs、outputResourceRef、file name policy 和 overwritePolicy。服务必须从认证注册表解析 handle，并按当前 revision 重新运行资格与可靠性门禁。

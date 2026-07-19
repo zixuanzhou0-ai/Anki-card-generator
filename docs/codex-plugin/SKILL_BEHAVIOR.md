@@ -80,7 +80,8 @@ system.get_capabilities
 → study.plan_cards（需要时走同一 OperationIntent 确认闭环）
 → study.list_card_plans（向用户展示计划预览）
 → study.validate_card_plans
-→ cards.generate（需要时走同一 OperationIntent 确认闭环）→ study.get_task
+→ cards.generate（CURRENT 确定性文本路线同步返回 ProjectArtifact；未来模型/媒体路线需要时走同一 OperationIntent 与 task 闭环）
+→ cards.list（向用户展示已验证卡片，确认题面、答案和反馈）
 → system.request_output_grant（仅缺少输出授权时）
 → cards.export_apkg → study.get_task
 → anki.prepare_import

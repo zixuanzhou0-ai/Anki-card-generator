@@ -15,6 +15,11 @@ from .candidate_discovery import (
     CandidateDiscoveryModel,
     CandidateDiscoveryModelProvider,
 )
+from .card_artifact_queries import CardArtifactQueryError, CardArtifactQueryRuntime
+from .card_artifact_runtime import (
+    CardArtifactRuntime,
+    CardArtifactRuntimeError,
+)
 from .card_plan_queries import CardPlanQueryError, CardPlanQueryRuntime
 from .card_plan_revision_runtime import (
     CardPlanRevisionError,
@@ -108,6 +113,9 @@ class StudyRuntime:
             card_plan_query_key = credential_store.derive_service_key(
                 "study-card-plan-query-v1", context=context
             )
+            card_artifact_query_key = credential_store.derive_service_key(
+                "study-card-artifact-query-v1", context=context
+            )
             self.artifacts = ArtifactRegistry(
                 self.root / "artifacts",
                 authentication_key=artifact_key,
@@ -182,6 +190,19 @@ class StudyRuntime:
                 candidate_selection=self.candidate_selection,
                 card_plan_queries=self.card_plan_queries,
             )
+            self.card_artifacts = CardArtifactRuntime(
+                service_instance_id=self.service_instance_id,
+                artifacts=self.artifacts,
+                projects=self.projects,
+                tasks=self.tasks,
+                card_plan_queries=self.card_plan_queries,
+            )
+            self.card_artifact_queries = CardArtifactQueryRuntime(
+                service_instance_id=self.service_instance_id,
+                artifacts=self.artifacts,
+                card_artifacts=self.card_artifacts,
+                cursor_key=card_artifact_query_key,
+            )
             discovery_configured = (
                 candidate_discovery_model is not None
                 or candidate_discovery_model_provider is not None
@@ -212,6 +233,8 @@ class StudyRuntime:
             CardPlanQueryError,
             CardPlanRevisionError,
             CardPlanRuntimeError,
+            CardArtifactQueryError,
+            CardArtifactRuntimeError,
             OSError,
         ) as error:
             raise StudyRuntimeError(
@@ -239,6 +262,9 @@ class StudyRuntime:
             "publicCardPlanQueries": True,
             "publicCardPlanEditing": True,
             "publicCardPlanValidation": True,
+            "cardArtifactRuntime": True,
+            "publicCardGeneration": True,
+            "publicCardQueries": True,
             "publicProjectTools": True,
             "publicInputRegistration": True,
             "publicSourceInspection": True,
@@ -561,6 +587,54 @@ class StudyRuntime:
             CardPlanRevisionError,
             ArtifactRegistryError,
             ProjectRegistryError,
+        ) as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
+    def list_generated_cards(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_artifact_handle: str,
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        try:
+            return self.card_artifact_queries.list_cards(
+                audience=audience,
+                project_artifact_handle=project_artifact_handle,
+                cursor=cursor,
+                limit=limit,
+            )
+        except (
+            CardArtifactQueryError,
+            CardArtifactRuntimeError,
+            ArtifactRegistryError,
+            ProjectRegistryError,
+        ) as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
+    def generate_cards(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_id: str,
+        expected_project_revision: int,
+        idempotency_key: str,
+        plan_set_handle: str,
+    ) -> dict[str, Any]:
+        try:
+            return self.card_artifacts.generate_cards(
+                audience=audience,
+                project_id=project_id,
+                expected_project_revision=expected_project_revision,
+                idempotency_key=idempotency_key,
+                plan_set_handle=plan_set_handle,
+            )
+        except (
+            CardArtifactRuntimeError,
+            ArtifactRegistryError,
+            ProjectRegistryError,
+            StudyTaskError,
         ) as error:
             raise StudyRuntimeError(error.code, error.message) from error
 
