@@ -4,7 +4,7 @@
 
 仓库内 `plugins/anki-study-agent` 是版本 `0.1.0` 的被动 Skill 插件源：manifest 只声明 `./skills/`，没有 `mcpServers`、Apps 或 hooks。它可以接受 plugin/skill validator 检查，但本身不会注册本地 runtime。
 
-与它配套的开发态可信 stdio Card Service 当前公开 31 个工具，已包括脱敏 profile 列表、现有 profile 的受信本地凭据窗口、项目分页找回与权威工作流快照、固定 Hermes 候选发现、候选发现安全恢复和 Anki 数据级 import-and-verify。该开发能力不改变发行结论：源插件未绑定正式 `.mcp.json`，当前 launcher 仍无正式发布者签名，候选固定 `installable=false`，没有 App resource，也没有通过独立正式安装验收。不得称其为已签名、正式可安装或可发布插件。
+与它配套的开发态可信 stdio Card Service 当前公开 33 个工具，已包括脱敏 profile 列表、现有 profile 的受信本地凭据窗口、项目分页找回与权威工作流快照、固定 Hermes 候选发现、候选发现安全恢复、Anki 数据级 import-and-verify，以及有界 Artifact/审计查询。该开发能力不改变发行结论：源插件未绑定正式 `.mcp.json`，当前 launcher 仍无正式发布者签名，候选固定 `installable=false`，没有 App resource，也没有通过独立正式安装验收。不得称其为已签名、正式可安装或可发布插件。
 
 Anki 当前最高状态为 `anki_data_verified`；插件侧通用渲染/播放/reviewer/重启 verifier 未实现。下文“唯一只读工具”的实物探针数字属于较早候选，不描述当前开发 runtime 的工具数量。
 

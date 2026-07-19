@@ -27,6 +27,7 @@ from .artifact_registry import (
     ArtifactRegistryError,
     canonical_json_bytes,
 )
+from .artifact_queries import ArtifactQueryError, ArtifactQueryRuntime
 from .candidate_discovery import (
     CandidateDiscoveryModel,
     CandidateDiscoveryModelProvider,
@@ -156,6 +157,7 @@ class StudyRuntime:
                 authentication_key=artifact_key,
                 service_instance_id=self.service_instance_id,
             )
+            self.artifact_queries = ArtifactQueryRuntime(artifacts=self.artifacts)
             self.projects = ProjectRegistry(
                 self.root / "projects",
                 authentication_key=project_key,
@@ -306,6 +308,7 @@ class StudyRuntime:
         except (
             CredentialStoreError,
             ArtifactRegistryError,
+            ArtifactQueryError,
             ProjectRegistryError,
             StudyTaskError,
             TaskSourceBindingError,
@@ -337,6 +340,8 @@ class StudyRuntime:
             "credentialProtectionRequired": True,
             "projectRegistry": True,
             "artifactRegistry": True,
+            "publicArtifactQueries": True,
+            "publicAuditQueries": True,
             "studyTaskCoordinator": True,
             "taskSourceBinding": True,
             "sourceAssetPublication": True,
@@ -403,6 +408,26 @@ class StudyRuntime:
         try:
             return self.projects.list_projects(audience)
         except ProjectRegistryError as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
+    def get_public_artifact(
+        self, *, audience: ArtifactAudienceBinding, artifact_handle: str
+    ) -> dict[str, Any]:
+        try:
+            return self.artifact_queries.get_artifact(
+                audience=audience, artifact_handle=artifact_handle
+            )
+        except (ArtifactQueryError, ArtifactRegistryError) as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
+    def get_public_audit(
+        self, *, audience: ArtifactAudienceBinding, artifact_handle: str
+    ) -> dict[str, Any]:
+        try:
+            return self.artifact_queries.get_audit(
+                audience=audience, artifact_handle=artifact_handle
+            )
+        except (ArtifactQueryError, ArtifactRegistryError) as error:
             raise StudyRuntimeError(error.code, error.message) from error
 
     @staticmethod

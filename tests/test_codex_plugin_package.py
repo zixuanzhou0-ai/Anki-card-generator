@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from card_service.mcp_anki_tools import ANKI_TOOL_NAMES
+from card_service.mcp_artifact_tools import ARTIFACT_TOOL_NAMES
 from card_service.mcp_candidate_tools import CANDIDATE_TOOL_NAMES
 from card_service.mcp_card_plan_tools import CARD_PLAN_TOOL_NAMES
 from card_service.mcp_card_tools import CARD_TOOL_NAMES
@@ -86,6 +87,7 @@ class CodexPluginPackageTests(unittest.TestCase):
             *PACKAGE_TOOL_NAMES,
             *TASK_TOOL_NAMES,
             *ANKI_TOOL_NAMES,
+            *ARTIFACT_TOOL_NAMES,
         }
         self.assertEqual(named_tools, public_tools)
 

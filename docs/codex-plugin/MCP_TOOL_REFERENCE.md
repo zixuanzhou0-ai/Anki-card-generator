@@ -1,19 +1,19 @@
 # MCP 工具参考
 
-> 基线日期：2026-07-19
+> 基线日期：2026-07-20
 
-## CURRENT 公共工具清单与能力上限（2026-07-19）
+## CURRENT 公共工具清单与能力上限（2026-07-20）
 
-截至 2026-07-20，可信开发态 Card Service stdio runtime 共公开 31 个工具：`system.get_capabilities`、`system.authorize_candidate_discovery`、`system.list_profiles`、`system.open_local_settings`、`system.request_source_grant`、`system.request_output_grant`、`study.create_project`、`study.list_projects`、`study.get_project`、`study.register_inputs`、`study.start_source_inspection`、`study.get_source_inspection`、`study.start_discovery`、`study.get_task`、`study.cancel_task`、`study.list_recoverable_tasks`、`study.resume_task`、`study.list_candidates`、`study.get_candidate`、`study.preview_evidence`、`study.set_selection`、`study.plan_cards`、`study.list_card_plans`、`study.edit_card_plan`、`study.validate_card_plans`、`cards.generate`、`cards.list`、`cards.export_apkg`、`anki.prepare_import`、`anki.request_import_confirmation`、`anki.import_and_verify`。
+截至 2026-07-20，可信开发态 Card Service stdio runtime 共公开 33 个工具：`system.get_capabilities`、`system.authorize_candidate_discovery`、`system.list_profiles`、`system.open_local_settings`、`system.request_source_grant`、`system.request_output_grant`、`study.create_project`、`study.list_projects`、`study.get_project`、`study.register_inputs`、`study.start_source_inspection`、`study.get_source_inspection`、`study.start_discovery`、`study.get_task`、`study.cancel_task`、`study.list_recoverable_tasks`、`study.resume_task`、`study.list_candidates`、`study.get_candidate`、`study.preview_evidence`、`study.set_selection`、`study.plan_cards`、`study.list_card_plans`、`study.edit_card_plan`、`study.validate_card_plans`、`cards.generate`、`cards.list`、`cards.export_apkg`、`anki.prepare_import`、`anki.request_import_confirmation`、`anki.import_and_verify`、`study.get_artifact`、`study.get_audit`。
 
 当前候选发现授权工具只接受 `{"preset":"hermes_grok_4_5"}`。授权成功后，`study.start_discovery` 只接受 RequestContext、`inspectionHandle` 和 1–256 的 `candidateBudget`；Service 从当前可信授权派生模型身份、endpoint、凭据与 disclosure，调用方无权注入这些字段。
 
 `anki.import_and_verify` 只接受 `context.idempotencyKey` 与已确认的 `importIntentId`。成功写入后执行 deck/note/card/field/media 的数据级核验并最多推进到 `anki_data_verified`。写入成功但数据核验失败时保留 receipt 并置为 `imported_unverified`；写入前失败保持 `apkg_ready` 且不创建 receipt；跨越不确定写边界的取消/中断必须 `inspect_before_retry`。同一 import intent 即使换 idempotency key 也不得重复导入。运行时渲染、媒体播放、reviewer 操作与重启核验不在当前工具集中。
 
-下文总表同时保留 PROPOSED V1 工具设计；只有本节列出的 31 个名字可被当前 Skill 命令式调用。
+下文总表同时保留 PROPOSED V1 工具设计；只有本节列出的 33 个名字可被当前 Skill 命令式调用。
 
-> 状态：CURRENT 29 工具开发态 runtime + PROPOSED 扩展工具契约；正式签名插件尚未发布
-> 日期：2026-07-19
+> 状态：CURRENT 33 工具开发态 runtime + PROPOSED 扩展工具契约；正式签名插件尚未发布
+> 日期：2026-07-20
 > 工具名和 schema 在实现前仍可调整；一旦 V1 发布即按版本策略维护。
 
 ## 1. 设计目标
@@ -753,15 +753,21 @@ R8b 的 RuntimeVerifierBinding、签名 proof、隔离 Anki、跨进程零写审
 
 ### 11.1 study.get_artifact
 
-只返回允许的小型 payload。大型内容返回：
+> CURRENT：只接受当前受信会话签发的 `{ artifactHandle }`；handle 同时绑定 OS owner、host、plugin、session、service instance 与项目 scope，跨会话或篡改失败关闭。
+
+返回认证 envelope 的 schema、revision、artifact/payload digest、创建时间、父/问题计数，以及严格 schema 白名单中的小型摘要。当前白名单包含 Anki 数据核验、导入 receipt、PackageArtifact、可靠性清单、CardPlanValidation、ProjectArtifact、媒体清单和来源检查摘要。未知 schema 固定返回 `contentKind=metadata_only` 与空 summary；不会把任意来源文本、卡片正文或提示注入内容放进通用控制面。
+
+大型或专用内容仍使用：
 
 - artifact metadata。
 - 可分页片段。
 - 受可信 OS/host/plugin/session、项目 scope、时限和权限约束的 opaque local resource handle；不可作为 bearer URL，也不可跨会话转移。
 
-不提供任意文件下载。
+CURRENT 不提供任意文件下载，不返回内部 ArtifactRef、registryAuthRef、本地路径、Blob 路径或 SanitizedLegacyPayload 的 projectProjection。
 
 ### 11.2 study.get_audit
+
+> CURRENT：使用同一个当前会话 ArtifactHandle 重新完成 Registry 认证、payload hash 和完整父链校验，再返回有界审计证书。
 
 返回指定阶段的审计证书：
 
@@ -771,6 +777,8 @@ R8b 的 RuntimeVerifierBinding、签名 proof、隔离 Anki、跨进程零写审
 - 产物哈希和父产物。
 - Anki 核验证据。
 - 已知限制。
+
+父项最多返回 256 个脱敏 `{ payloadSchema, projectRevision, artifactRevision, artifactDigest }`，并显式给出总数和是否截断；不返回父 ArtifactRef。Anki 数据核验若 `runtimeVerification != fully_verified`，证书必须明确说明 reviewer 渲染、播放、焦点和重启复习尚未完整核验。`integrityVerified=true` 只证明本地认证 Artifact 的完整性和父链，不等价于外部语义真值或 Anki runtime 通过。
 
 ## 12. 错误码
 

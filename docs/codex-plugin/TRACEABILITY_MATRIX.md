@@ -111,6 +111,7 @@
 |---|---|---|---|---|
 | RR-000 | P0 | CURRENT：verifier 精确区分 V15/V14/V10 与 V1xx 伪版本；10 个生产变体通过完整 APKG 合同并在 Anki 写入前复核 | release evidence + complete package report + import preflight | V15/V14/V10 positive + 10 variants + spoof/canonical/registry/template/archive-limit negative + CLI exit 1 + media/import zero-call |
 | RR-001 | R0 | 授权有效 | authorization ledger audit | scope/replay |
+| RR-002 | R0-R8 | CURRENT：公开产物/审计查询只接受当前受信会话的 opaque ArtifactHandle；已知 schema 只返回白名单摘要，未知 schema 只返回元数据 | authenticated Artifact envelope + bounded certificate | cross-session、任意 payload/路径/内部 ref 注入、父链截断、Anki runtime 未核验限制 |
 | RR-101 | R1 | 来源身份/完整性 | SourceArtifact | hash/partial |
 | RR-201 | R2 | 证据对齐 | SemanticArtifact | replay/span |
 | RR-301 | R3 | 候选门禁 | DiscoveryArtifact | expert benchmark |
@@ -129,7 +130,7 @@ CURRENT M0 证据边界：最终自动化为 Vitest 830、正式 `pytest` 603、
 
 非 NFC、Windows 保留设备名（含 `CLOCK$`）、大小写/规范化冲突和 APKG archive 资源上限已通过；流式读取覆盖 APKG archive/package/verifier 与标准 Windows Anki direct-first 媒体路径。64 MiB direct 样本在禁止整文件读取、Base64 与 AnkiConnect 媒体动作时通过，Python `tracemalloc` 峰值增量低于 32 MiB。非标准/portable profile 的 AnkiConnect inline 路径仍整文件/Base64，但原始媒体硬限制为 8 MiB，且部分写入账本与最终媒体 barrier 已冻结。raw `ExportResult` 仍只是内部兼容输入，不认证来源；partial 后的 no-replace 原子发布及导入前 stat/SHA 只缩小、不能消除 TOCTOU。SR-007 的 M2 认证 Artifact 注册表、不透明引用和受控文件句柄完成前，不能把当前入口公开为 MCP 写工具。
 
-CURRENT 已开放固定 Hermes 候选发现、确定性文本 `cards.generate`/`cards.list`、异步 `cards.export_apkg`、ImportPlan/受信确认与 `anki.import_and_verify`，产出认证 Discovery、ProjectArtifact、PackageArtifact、ImportPlan、receipt 和数据级 VerificationArtifact。尚未完成正式签名安装包、App UI、通用模型/TTS/媒体生成和 RR-802 runtime verifier。非标准 inline 限制、Anki 26.05 历史 add-on 证据和合成媒体也不能外推为通用 runtime 或学习效果证明。
+CURRENT 已开放固定 Hermes 候选发现、确定性文本 `cards.generate`/`cards.list`、异步 `cards.export_apkg`、ImportPlan/受信确认与 `anki.import_and_verify`，产出认证 Discovery、ProjectArtifact、PackageArtifact、ImportPlan、receipt 和数据级 VerificationArtifact；`study.get_artifact`/`study.get_audit` 只投影当前受信会话下的有界摘要与完整性证书。`integrityVerified=true` 仅证明本地认证 envelope、payload hash 与 lineage 通过，不证明外部语义正确；数据级 Anki 核验也不能升级为 reviewer 渲染、播放、焦点或重启复习已验证。尚未完成正式签名安装包、App UI、通用模型/TTS/媒体生成和 RR-802 runtime verifier。非标准 inline 限制、Anki 26.05 历史 add-on 证据和合成媒体也不能外推为通用 runtime 或学习效果证明。
 
 ## 5. UX 要求
 

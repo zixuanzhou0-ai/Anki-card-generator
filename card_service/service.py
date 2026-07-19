@@ -1215,6 +1215,8 @@ class CardService:
             "credentialProtectionRequired": True,
             "projectRegistry": True,
             "artifactRegistry": True,
+            "publicArtifactQueries": True,
+            "publicAuditQueries": True,
             "studyTaskCoordinator": True,
             "taskSourceBinding": True,
             "sourceAssetPublication": True,
@@ -1397,6 +1399,36 @@ class CardService:
                 error.message,
                 retryable=False,
                 stage="project_query",
+            ) from error
+
+    def get_study_artifact(
+        self, *, audience: ArtifactAudienceBinding, artifact_handle: str
+    ) -> dict[str, Any]:
+        try:
+            return self._ensure_study_runtime().get_public_artifact(
+                audience=audience, artifact_handle=artifact_handle
+            )
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=False,
+                stage="artifact_query",
+            ) from error
+
+    def get_study_audit(
+        self, *, audience: ArtifactAudienceBinding, artifact_handle: str
+    ) -> dict[str, Any]:
+        try:
+            return self._ensure_study_runtime().get_public_audit(
+                audience=audience, artifact_handle=artifact_handle
+            )
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=False,
+                stage="artifact_query",
             ) from error
 
     def register_study_inputs(

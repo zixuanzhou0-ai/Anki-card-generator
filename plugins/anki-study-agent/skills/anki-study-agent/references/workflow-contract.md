@@ -34,13 +34,16 @@ Treat the exposed tool list returned by the installed runtime as authoritative. 
 10. `cards.generate`, then `cards.list`.
 11. `system.request_output_grant`, then `cards.export_apkg`; poll `study.get_task` and use `study.cancel_task` only on explicit cancellation.
 12. `anki.prepare_import`, `anki.request_import_confirmation`, then `anki.import_and_verify`; poll `study.get_task`.
-13. On startup or after an interrupted discovery, call `study.list_recoverable_tasks`; use `study.resume_task` only for a returned candidate-discovery task.
+13. After generation, export, or Anki data verification, use `study.get_artifact` for the current authenticated artifact summary. Use `study.get_audit` only when the user requests evidence or when a completion claim needs its integrity, lineage, gate, and limitation certificate.
+14. On startup or after an interrupted discovery, call `study.list_recoverable_tasks`; use `study.resume_task` only for a returned candidate-discovery task.
 
 Do not call tools that are not exposed by the installed plugin version.
 
 ## Planned but unavailable tools
 
-Do not call `system.request_network_grant`, `system.request_operation_confirmation`, `system.revoke_grant`, `system.validate_profile`, `study.update_learning_contract`, `study.edit_candidate`, `study.get_artifact`, or `study.get_audit` until a future runtime exposes them. The current `system.open_local_settings` only manages credentials for an already configured profile; it does not let the Agent create a profile or inject provider/URL/model fields.
+Do not call `system.request_network_grant`, `system.request_operation_confirmation`, `system.revoke_grant`, `system.validate_profile`, `study.update_learning_contract`, or `study.edit_candidate` until a future runtime exposes them. The current `system.open_local_settings` only manages credentials for an already configured profile; it does not let the Agent create a profile or inject provider/URL/model fields.
+
+`study.get_artifact` and `study.get_audit` accept only a current-session opaque artifact handle. They never return arbitrary files, raw source/card payloads, local paths, internal ArtifactRefs, or a runtime-verification claim. Unknown schemas are metadata-only; use dedicated candidate/card review tools for content.
 
 ## Tasks and recovery
 

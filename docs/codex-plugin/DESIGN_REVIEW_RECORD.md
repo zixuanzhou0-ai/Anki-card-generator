@@ -162,3 +162,11 @@ APKG 纵向切片采用“Worker 产出不等于可信包”的结论。`cards.e
 进程崩溃遗留的 queued/running/cancelling 任务在确认不属于当前 StudyRuntime 活动线程后原子转为 interrupted。该判断同时用于恢复列表和直接 resume，因此不存在“必须先 list 才能解开孤儿 successor”的隐藏顺序。successor 创建按 lineage 使用线程锁和 Windows/Unix 文件锁串行化；两个协调器使用不同幂等键同时恢复同一 lineage 时只允许一个创建成功。恢复列表与 lineage 扫描都有 2048 条硬上限，单个损坏或不属于当前 scope 的记录被隔离，超过上限则明确失败，避免无界磁盘扫描。
 
 安全差异复审最初确认了六类风险：崩溃任务不转 interrupted、孤儿 successor 永久卡住、重新授权被旧 session 摘要拒绝、不同幂等键并发分叉、stale 项继续暴露、无界/损坏记录导致列表不可用。实现与反例测试现已逐项关闭；根任务额外发现并修复了直接 resume 的孤儿 successor 与 successor-lineage 扫描未复用上限两处缺口。相关根任务独立回归覆盖恢复/协调器 37 项、MCP/可信会话 26 项、候选运行时 13 项、Broker/候选工具 28 项、Artifact 句柄防重放 4 项和双协调器竞态 1 项。该结论只证明候选发现恢复切片，不表示关闭应用后任务继续后台运行，也不表示导出/Anki 跨会话恢复已经开放。
+
+## 4.5 CURRENT 有界 Artifact 与审计查询复审（2026-07-20）
+
+公共查询采用“先认证句柄，再按 schema 最小投影”的边界。`study.get_artifact` 与 `study.get_audit` 都只接受当前受信 launcher 会话中的 opaque ArtifactHandle，不接受 ArtifactRef、项目 ID、路径、文件名、URL、payload 或任意查询表达式。Artifact Registry 完成 audience/service/envelope 校验后，已知 schema 才进入固定白名单摘要；未知 schema 一律 metadata-only。来源正文、卡片正文、内部 artifactId/registryAuthRef、BlobRef、资源授权、私有 receipt 和本机路径均没有投影通道。
+
+审计查询把 producer、completeness、issue refs 和 parent lineage 限制为有界结构，父项最多 256 个并显式返回总数与截断状态。`integrityVerified=true` 的语义固定为“本地认证 envelope、payload hash 与 lineage 已验证”，不能解释为模型语义、教学质量或外部服务事实已验证。Anki VerificationArtifact 若没有 `runtimeVerification=fully_verified`，证书必须明确列出 reviewer 渲染、播放、焦点与重启复习尚未完整核验。该切片不扩大写权限，也不使内部授权 ID 成为 bearer；统一受信撤销管理器未完成前，`system.revoke_grant` 继续不公开。
+
+最终证据为：有界查询定向回归 25 项通过，前端 Vitest 830 项和 Worker 600 项通过，正式 Python `tests` 全集 `1607 passed, 1 skipped`；文档、插件包、Skill、真实 Codex trusted/untrusted host 工具枚举以及生产构建均通过。上述证据只覆盖开发态可信 runtime 和当前 33 个公共工具，不代表正式签名安装包、固定侧栏 App UI 或 Anki reviewer 运行时验证器已经交付。

@@ -28,6 +28,10 @@ from card_service.mcp_anki_tools import (
     PREPARE_IMPORT_TOOL_NAME,
     REQUEST_IMPORT_CONFIRMATION_TOOL_NAME,
 )
+from card_service.mcp_artifact_tools import (
+    GET_ARTIFACT_TOOL_NAME,
+    GET_AUDIT_TOOL_NAME,
+)
 from card_service.mcp_package_tools import EXPORT_APKG_TOOL_NAME
 from card_service.mcp_task_tools import (
     CANCEL_TASK_TOOL_NAME,
@@ -215,6 +219,8 @@ def test_mcp_bridge_reports_trusted_session_without_disclosing_identity() -> Non
         PREPARE_IMPORT_TOOL_NAME,
         REQUEST_IMPORT_CONFIRMATION_TOOL_NAME,
         IMPORT_AND_VERIFY_TOOL_NAME,
+        GET_ARTIFACT_TOOL_NAME,
+        GET_AUDIT_TOOL_NAME,
     ]
 
 
@@ -354,6 +360,8 @@ def test_real_mcp_stdio_process_reports_card_service_capabilities(tmp_path: Path
             PREPARE_IMPORT_TOOL_NAME,
             REQUEST_IMPORT_CONFIRMATION_TOOL_NAME,
             IMPORT_AND_VERIFY_TOOL_NAME,
+            GET_ARTIFACT_TOOL_NAME,
+            GET_AUDIT_TOOL_NAME,
         ]
         called = rpc(
             {
@@ -372,6 +380,8 @@ def test_real_mcp_stdio_process_reports_card_service_capabilities(tmp_path: Path
         assert capabilities["studyRuntime"]["publicCardGeneration"] is True
         assert capabilities["studyRuntime"]["publicCardQueries"] is True
         assert capabilities["studyRuntime"]["publicProjectQueries"] is True
+        assert capabilities["studyRuntime"]["publicArtifactQueries"] is True
+        assert capabilities["studyRuntime"]["publicAuditQueries"] is True
         assert capabilities["studyRuntime"]["publicCandidateDiscovery"] is True
         assert capabilities["studyRuntime"]["candidateDiscoveryAuthorizationReady"] is False
         assert capabilities["studyRuntime"]["publicAnkiWrite"] is True

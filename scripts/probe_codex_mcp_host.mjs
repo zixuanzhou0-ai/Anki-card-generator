@@ -44,6 +44,8 @@ const FULL_TOOLSET = [
   "anki.prepare_import",
   "anki.request_import_confirmation",
   "anki.import_and_verify",
+  "study.get_artifact",
+  "study.get_audit",
 ];
 const DEVELOPMENT_REQUEST_TIMEOUT_MS = 30_000;
 const PACKAGED_REQUEST_TIMEOUT_MS = 120_000;
