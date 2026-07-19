@@ -4,15 +4,15 @@
 
 ## CURRENT 公共工具清单与能力上限（2026-07-19）
 
-截至 2026-07-19，可信开发态 Card Service stdio runtime 共公开 27 个工具：`system.get_capabilities`、`system.request_source_grant`、`system.request_output_grant`、`system.authorize_candidate_discovery`、`study.create_project`、`study.register_inputs`、`study.start_source_inspection`、`study.get_source_inspection`、`study.start_discovery`、`study.get_task`、`study.cancel_task`、`study.list_recoverable_tasks`、`study.resume_task`、`study.list_candidates`、`study.get_candidate`、`study.preview_evidence`、`study.set_selection`、`study.plan_cards`、`study.list_card_plans`、`study.edit_card_plan`、`study.validate_card_plans`、`cards.generate`、`cards.list`、`cards.export_apkg`、`anki.prepare_import`、`anki.request_import_confirmation`、`anki.import_and_verify`。
+截至 2026-07-19，可信开发态 Card Service stdio runtime 共公开 29 个工具：`system.get_capabilities`、`system.authorize_candidate_discovery`、`system.list_profiles`、`system.open_local_settings`、`system.request_source_grant`、`system.request_output_grant`、`study.create_project`、`study.register_inputs`、`study.start_source_inspection`、`study.get_source_inspection`、`study.start_discovery`、`study.get_task`、`study.cancel_task`、`study.list_recoverable_tasks`、`study.resume_task`、`study.list_candidates`、`study.get_candidate`、`study.preview_evidence`、`study.set_selection`、`study.plan_cards`、`study.list_card_plans`、`study.edit_card_plan`、`study.validate_card_plans`、`cards.generate`、`cards.list`、`cards.export_apkg`、`anki.prepare_import`、`anki.request_import_confirmation`、`anki.import_and_verify`。
 
 当前候选发现授权工具只接受 `{"preset":"hermes_grok_4_5"}`。授权成功后，`study.start_discovery` 只接受 RequestContext、`inspectionHandle` 和 1–256 的 `candidateBudget`；Service 从当前可信授权派生模型身份、endpoint、凭据与 disclosure，调用方无权注入这些字段。
 
 `anki.import_and_verify` 只接受 `context.idempotencyKey` 与已确认的 `importIntentId`。成功写入后执行 deck/note/card/field/media 的数据级核验并最多推进到 `anki_data_verified`。写入成功但数据核验失败时保留 receipt 并置为 `imported_unverified`；写入前失败保持 `apkg_ready` 且不创建 receipt；跨越不确定写边界的取消/中断必须 `inspect_before_retry`。同一 import intent 即使换 idempotency key 也不得重复导入。运行时渲染、媒体播放、reviewer 操作与重启核验不在当前工具集中。
 
-下文总表同时保留 PROPOSED V1 工具设计；只有本节列出的 25 个名字可被当前 Skill 命令式调用。
+下文总表同时保留 PROPOSED V1 工具设计；只有本节列出的 29 个名字可被当前 Skill 命令式调用。
 
-> 状态：CURRENT 25 工具开发态 runtime + PROPOSED 扩展工具契约；正式签名插件尚未发布
+> 状态：CURRENT 29 工具开发态 runtime + PROPOSED 扩展工具契约；正式签名插件尚未发布
 > 日期：2026-07-19
 > 工具名和 schema 在实现前仍可调整；一旦 V1 发布即按版本策略维护。
 
@@ -276,11 +276,11 @@ host 部分至少分别报告：pluginManifestLoaded、stdioServiceLaunch、tool
 
 ### system.list_profiles
 
-只返回脱敏的 modelProfileRef、ttsProfileRef 和 AnkiConnect profileRef：provider、model/voice/目标、能力标签，以及与该 profile 当前 fingerprint/credentialRevision 精确匹配的 latest verification。多个 profile 各占一条；不得用“任意 profile ready”覆盖当前选择的失败。不得返回 API Key、OAuth Token、Cookie、认证头或包含秘密的 URL。卡片模板与生成策略由当前 Learning Contract、CardPlan 和服务端版本化规则确定，不要求调用方取得额外 generationProfileRef。
+CURRENT 只返回已经由受信适配器写入持久 Registry 的 model、TTS 和 AnkiConnect profile：provider、脱敏 endpoint origin、model/voice/目标，以及与该 profile 当前 fingerprint/credentialRevision 精确匹配的 latest verification。多个 profile 各占一条；不得用“任意 profile ready”覆盖当前选择的失败。不得返回 API Key、SecretRef、OAuth Token、Cookie、认证头或包含秘密的 URL。卡片模板与生成策略由当前 Learning Contract、CardPlan 和服务端版本化规则确定，不要求调用方取得额外 generationProfileRef。
 
 ### system.open_local_settings
 
-由真实用户动作打开 Card Service 提供的受信本地配置窗口。密钥在该窗口中直接写入 OS 凭据存储，不经过对话、MCP structuredContent 或 App UI tool arguments。输出只包含 configurationSessionRef 和完成/取消状态。凭据新增、替换、删除/清空、回滚，以及 OAuth 账户/token material 变化都由 Service 原子单调 bump credentialRevision；并发更新序列化，旧 revision 永不复用并立即使旧验证/批准 stale。
+CURRENT 由真实用户动作打开 Card Service 提供的受信本地凭据窗口，但只接受 `system.list_profiles` 已返回且 capability 完全匹配、确实需要秘密的现有 profile；不能用该工具创建 profile、注入 Provider/Base URL/model 或为无需凭据的 Hermes/Anki profile制造孤立 secret。首次调用返回 `configurationSessionRef/open`，后续只用该 ref 轮询。密钥在窗口中直接写入 OS 凭据存储，不经过对话、MCP structuredContent 或 App UI tool arguments；公共结果只包含 session 状态以及非秘密的 credentialRevision/state/exists，不返回 SecretRef。凭据新增、替换、删除/清空、回滚，以及 OAuth 账户/token material 变化都由 Service 原子单调 bump credentialRevision；并发更新序列化，旧 revision 永不复用并立即使旧验证/批准 stale。完整非敏感 profile 创建/编辑事务和 `system.validate_profile` 仍未公开。
 
 ### system.open_broker_authorization（M1 内部过渡接口）
 

@@ -551,8 +551,8 @@ M3 的本地/URL 视频链把 FFmpeg、ffprobe、yt-dlp 及任何辅助运行时
 - 配置验证记录绑定精确 capability/profileRef/configurationFingerprint/credentialRevision，展示 aggregate 永不解锁具体 profile。
 - 凭据账本在新增、替换、删除/清空、OAuth 账户或 token material 变化时原子单调递增 credentialRevision；旧 revision 永不复用，即使回滚到旧 secret 也生成新 revision。并发修改必须序列化，每次成功修改立即使旧验证、批准和能力绑定 stale。
 - CURRENT 内部实现进一步把 failed attempt 与 committed revision 分开：失败尝试烧掉 high-water 序列，后续成功不能复用；崩溃恢复只有在 HMAC material proof 精确匹配 intended 或 previous secret 时才提交或恢复，否则进入 uncertain 并阻止解析。直接在 OS backend 外部替换同名 secret 同样触发 uncertain。SecretRef 和 material proof 都使用独立域 HMAC，原始 secret、operationId 与 metadata authentication key 不进入磁盘记录；Hermes loopback 仅使用 revision 0，不创建 provider secret。
-- CURRENT `ServiceProfileRegistry` 只持久化封闭、规范化的非秘密配置；配置指纹为 canonical manifest 的 SHA-256，profile revision 通过 CAS 单调更新，原始 operationId 仅以 HMAC 摘要记录。每次 binding 解析都读取当前 `CredentialStore`，不把保存时快照当成当前凭据；外部替换或删除产生 `uncertain`，不能退化成普通 missing。记录的字段闭包、身份路径、操作历史、HMAC 与保存时凭据绑定都严格校验，认证旧备份不自动回滚当前状态。
-- ServiceProfileVerificationRegistry 的旧 `.bak` 仅用于审计，不能在当前账本损坏后恢复 ready；这避免 latest failed 被旧 passed 回滚。发布期间配置/凭据变化的结果固定为 stale_at_publish，同一精确绑定只按最大 sequence 判定状态。它已可从持久 Profile Registry 解析精确 binding，但公共设置、验证任务和执行授权仍未形成单一事务。
+- CURRENT `ServiceProfileRegistry` 已接入 Card Service，并只持久化封闭、规范化的非秘密配置；配置指纹为 canonical manifest 的 SHA-256，profile revision 通过 CAS 单调更新，原始 operationId 仅以 HMAC 摘要记录。每次 binding 解析都读取当前 `CredentialStore`，不把保存时快照当成当前凭据；外部替换或删除产生 `uncertain`，不能退化成普通 missing。`system.list_profiles` 只给出脱敏 origin 和精确 binding/verification；`system.open_local_settings` 仅为已经配置且需要 secret 的同能力 profile 打开受信窗口，拒绝孤立 secret、Agent 控制的 URL/model 和无需凭据的 profile。记录的字段闭包、身份路径、操作历史、HMAC 与保存时凭据绑定都严格校验，认证旧备份不自动回滚当前状态。
+- ServiceProfileVerificationRegistry 的旧 `.bak` 仅用于审计，不能在当前账本损坏后恢复 ready；这避免 latest failed 被旧 passed 回滚。发布期间配置/凭据变化的结果固定为 stale_at_publish，同一精确绑定只按最大 sequence 判定状态。它已可从持久 Profile Registry 解析精确 binding 并由公开列表读取；但完整 profile 设置、验证任务和执行授权仍未形成单一事务。
 - 服务错误正文先脱敏再返回。
 - broker 不提供 raw HTTP、任意 URL/header/prompt 透传；Worker 直连公网、越过 broker、跨 task descriptor 或扩大 Artifact/locator 一律阻断。
 

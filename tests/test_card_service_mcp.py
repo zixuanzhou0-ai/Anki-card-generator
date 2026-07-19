@@ -43,7 +43,11 @@ from card_service.mcp_inspection_tools import (
 from card_service.mcp_project_tools import CREATE_PROJECT_TOOL_NAME
 from card_service.mcp_resource_tools import OUTPUT_GRANT_TOOL_NAME, SOURCE_GRANT_TOOL_NAME
 from card_service.mcp_selection_tools import SET_SELECTION_TOOL_NAME
-from card_service.mcp_system_tools import AUTHORIZE_DISCOVERY_TOOL
+from card_service.mcp_system_tools import (
+    AUTHORIZE_DISCOVERY_TOOL,
+    LIST_PROFILES_TOOL,
+    OPEN_LOCAL_SETTINGS_TOOL,
+)
 from card_service.mcp_stdio import CAPABILITY_TOOL_NAME, MCP_PROTOCOL_VERSION, serve
 from card_service.service import CardServiceError
 from card_service.trusted_mcp_audience import create_development_mcp_audience
@@ -178,6 +182,8 @@ def test_mcp_bridge_reports_trusted_session_without_disclosing_identity() -> Non
     assert bridge["exposedTools"] == [
         CAPABILITY_TOOL_NAME,
         AUTHORIZE_DISCOVERY_TOOL,
+        LIST_PROFILES_TOOL,
+        OPEN_LOCAL_SETTINGS_TOOL,
         SOURCE_GRANT_TOOL_NAME,
         OUTPUT_GRANT_TOOL_NAME,
         CREATE_PROJECT_TOOL_NAME,
@@ -313,6 +319,8 @@ def test_real_mcp_stdio_process_reports_card_service_capabilities(tmp_path: Path
         assert [tool["name"] for tool in listed["result"]["tools"]] == [
             CAPABILITY_TOOL_NAME,
             AUTHORIZE_DISCOVERY_TOOL,
+            LIST_PROFILES_TOOL,
+            OPEN_LOCAL_SETTINGS_TOOL,
             SOURCE_GRANT_TOOL_NAME,
             OUTPUT_GRANT_TOOL_NAME,
             CREATE_PROJECT_TOOL_NAME,

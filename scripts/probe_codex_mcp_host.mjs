@@ -15,6 +15,8 @@ const TRUSTED_FLAG = "--trusted";
 const FULL_TOOLSET = [
   TOOL,
   "system.authorize_candidate_discovery",
+  "system.list_profiles",
+  "system.open_local_settings",
   "system.request_source_grant",
   "system.request_output_grant",
   "study.create_project",
@@ -205,7 +207,9 @@ async function main() {
     }
   }
   mkdirSync(PROBE_ROOT, { recursive: true });
-  const runRoot = packaged ? mkdtempSync(path.join(PROBE_ROOT, "packaged-run-")) : PROBE_ROOT;
+  const runRoot = mkdtempSync(
+    path.join(PROBE_ROOT, packaged ? "packaged-run-" : "development-run-"),
+  );
   const codeHome = path.join(runRoot, "codex-home");
   const stateDir = path.join(runRoot, "card-service-state");
   const localAppData = path.join(runRoot, "local-app-data");

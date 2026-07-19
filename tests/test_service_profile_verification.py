@@ -115,6 +115,17 @@ def test_missing_or_uncertain_credentials_fail_closed(tmp_path: Path) -> None:
     assert snapshot["reasonCode"] == "CREDENTIAL_STATE_UNCERTAIN"
 
 
+def test_registry_normalized_missing_credential_is_actionable_not_uncertain(
+    tmp_path: Path,
+) -> None:
+    bindings = MutableBindings()
+    bindings.set(credential_state="missing", secret_exists=False)
+    registry = make_registry(tmp_path, bindings)
+    snapshot = registry.profile_snapshot("model", "model.primary")
+    assert snapshot["state"] == "action_required"
+    assert snapshot["reasonCode"] == "CREDENTIAL_REQUIRED"
+
+
 def test_exact_pass_is_ready_and_public_record_has_no_operation_id(tmp_path: Path) -> None:
     bindings = MutableBindings()
     bindings.set()

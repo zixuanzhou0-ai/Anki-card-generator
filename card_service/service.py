@@ -39,7 +39,12 @@ from .candidate_discovery_broker import (
     CandidateDiscoveryBrokerError,
 )
 from .broker_ipc import BROKER_REQUEST_PREFIX, BROKER_RESPONSE_PREFIX, TaskBrokerChannel
-from .credentials import CredentialBackend, CredentialStore, CredentialStoreError
+from .credentials import (
+    PROFILE_REF_PATTERN,
+    CredentialBackend,
+    CredentialStore,
+    CredentialStoreError,
+)
 from .hermes_proxy import HermesProxyError, HermesProxyManager
 from .local_resource_registry import (
     MAX_DEPTH,
@@ -59,6 +64,14 @@ from .runtime_manifest import (
 )
 from .runtime_package import ManagedRuntimePackage, RuntimePackageError
 from .resource_runtime import ServiceResourceRuntime, ServiceResourceRuntimeError
+from .service_profile_registry import (
+    ServiceProfileRegistry,
+    ServiceProfileRegistryError,
+)
+from .service_profiles import (
+    ServiceProfileVerificationError,
+    ServiceProfileVerificationRegistry,
+)
 from .study_runtime import StudyRuntime, StudyRuntimeError
 from .runtime_trust import (
     RuntimePackageTrustPolicy,
@@ -810,6 +823,11 @@ class CardService:
         self._resource_runtime: ServiceResourceRuntime | None = None
         self._study_runtime: StudyRuntime | None = None
         self._study_runtime_lock = threading.RLock()
+        self._service_profile_registry: ServiceProfileRegistry | None = None
+        self._service_profile_verifications: ServiceProfileVerificationRegistry | None = None
+        self._service_profile_runtime_lock = threading.RLock()
+        self._local_settings_sessions: dict[str, tuple[str, str]] = {}
+        self._local_settings_lock = threading.RLock()
         self._local_picker_requests: dict[str, dict[str, Any]] = {}
         self._completed_local_picker_grants: dict[str, dict[str, Any]] = {}
         self._local_picker_request_index: dict[tuple[str, str, str, str, str], dict[str, str]] = {}
@@ -863,6 +881,245 @@ class CardService:
         self._workspace_budget_lock = threading.RLock()
         self._workspace_reservations: set[str] = set()
         self._recover_orphaned_tasks()
+
+    def _ensure_service_profile_runtime(
+        self,
+    ) -> tuple[ServiceProfileRegistry, ServiceProfileVerificationRegistry]:
+        with self._service_profile_runtime_lock:
+            if (
+                self._service_profile_registry is not None
+                and self._service_profile_verifications is not None
+            ):
+                return (
+                    self._service_profile_registry,
+                    self._service_profile_verifications,
+                )
+            try:
+                credential_store = CredentialStore(
+                    state_dir=self.store.root / "trusted-surfaces" / "credentials",
+                    backend=self._credential_backend,
+                )
+                profile_registry = ServiceProfileRegistry(
+                    (self.store.root / "service-profiles").resolve(),
+                    authentication_key=credential_store.derive_service_key(
+                        "service-profile-registry-v1",
+                        context=b"codex-study-card-service",
+                    ),
+                    credential_store=credential_store,
+                )
+                verifications = ServiceProfileVerificationRegistry(
+                    (self.store.root / "service-profile-verifications").resolve(),
+                    authentication_key=credential_store.derive_service_key(
+                        "service-profile-verification-v1",
+                        context=b"codex-study-card-service",
+                    ),
+                    binding_resolver=profile_registry.resolve_binding,
+                )
+            except (
+                CredentialStoreError,
+                ServiceProfileRegistryError,
+                ServiceProfileVerificationError,
+                OSError,
+            ) as error:
+                raise CardServiceError(
+                    getattr(error, "code", "SERVICE_PROFILE_RUNTIME_UNAVAILABLE"),
+                    "Card Service profile storage is unavailable",
+                    retryable=False,
+                    stage="settings",
+                ) from error
+            self._service_profile_registry = profile_registry
+            self._service_profile_verifications = verifications
+            return profile_registry, verifications
+
+    def save_service_profile(
+        self,
+        configuration: Mapping[str, Any],
+        *,
+        expected_revision: int,
+        operation_id: str,
+    ) -> dict[str, Any]:
+        """Trusted-adapter composition hook; this is intentionally not an MCP tool."""
+
+        registry, _ = self._ensure_service_profile_runtime()
+        try:
+            return registry.save_profile(
+                configuration,
+                expected_revision=expected_revision,
+                operation_id=operation_id,
+            )
+        except ServiceProfileRegistryError as error:
+            raise CardServiceError(
+                error.code,
+                str(error),
+                retryable=False,
+                stage="settings",
+            ) from error
+
+    @staticmethod
+    def _public_service_profile(
+        profile: Mapping[str, Any],
+        verification: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        configuration = profile["configuration"]
+        endpoint = urlsplit(str(configuration["baseUrl"]))
+        result: dict[str, Any] = {
+            "schemaVersion": 1,
+            "profileRef": profile["profileRef"],
+            "capability": profile["capability"],
+            "profileRevision": profile["profileRevision"],
+            "configurationFingerprint": profile["configurationFingerprint"],
+            "provider": configuration["provider"],
+            "endpointOrigin": f"{endpoint.scheme}://{endpoint.netloc}",
+            "credentialRevision": profile["credentialRevision"],
+            "credentialState": profile["credentialState"],
+            "secretRequired": profile["secretRequired"],
+            "secretExists": profile["secretExists"],
+            "state": verification["state"],
+        }
+        if configuration.get("model"):
+            result["model"] = configuration["model"]
+        if configuration.get("voice"):
+            result["voice"] = configuration["voice"]
+        if configuration.get("apiVersion") is not None:
+            result["apiVersion"] = configuration["apiVersion"]
+        if verification.get("reasonCode") is not None:
+            result["reasonCode"] = verification["reasonCode"]
+        if verification.get("latestVerification") is not None:
+            result["latestVerification"] = verification["latestVerification"]
+        return result
+
+    def list_service_profiles(self) -> dict[str, Any]:
+        registry, verifications = self._ensure_service_profile_runtime()
+        try:
+            profiles = registry.list_profiles()
+            return {
+                "schemaVersion": 1,
+                "profiles": [
+                    self._public_service_profile(
+                        profile,
+                        verifications.profile_snapshot(
+                            str(profile["capability"]),
+                            str(profile["profileRef"]),
+                        ),
+                    )
+                    for profile in profiles
+                ],
+            }
+        except (
+            ServiceProfileRegistryError,
+            ServiceProfileVerificationError,
+        ) as error:
+            raise CardServiceError(
+                error.code,
+                str(error),
+                retryable=False,
+                stage="settings",
+            ) from error
+
+    def open_local_settings(self, *, profile_ref: str, capability: str) -> dict[str, Any]:
+        if not PROFILE_REF_PATTERN.fullmatch(profile_ref):
+            raise CardServiceError(
+                "INVALID_PROFILE_REF",
+                "Invalid local settings profile reference",
+                retryable=False,
+                stage="settings",
+            )
+        if capability not in {"model", "tts", "anki_connect"}:
+            raise CardServiceError(
+                "INVALID_CAPABILITY",
+                "Invalid local settings capability",
+                retryable=False,
+                stage="settings",
+            )
+        registry, _ = self._ensure_service_profile_runtime()
+        try:
+            binding = registry.resolve_binding(capability, profile_ref)
+            if binding is None:
+                raise CardServiceError(
+                    "SERVICE_PROFILE_NOT_CONFIGURED",
+                    "The requested service profile is not configured for this capability",
+                    retryable=False,
+                    stage="settings",
+                )
+            if not binding["secretRequired"]:
+                raise CardServiceError(
+                    "SERVICE_PROFILE_CREDENTIAL_NOT_REQUIRED",
+                    "The requested service profile does not use a local credential",
+                    retryable=False,
+                    stage="settings",
+                )
+            session = self.trusted_surfaces.create_local_settings_session(
+                profile_ref=profile_ref,
+                capability=capability,
+            )
+            launched = self.trusted_surfaces.launch(str(session["sessionRef"]))
+        except ServiceProfileRegistryError as error:
+            raise CardServiceError(
+                error.code,
+                str(error),
+                retryable=False,
+                stage="settings",
+            ) from error
+        except TrustedSurfaceError as error:
+            raise CardServiceError(error.code, str(error)) from error
+        configuration_session_ref = str(launched["sessionRef"])
+        with self._local_settings_lock:
+            self._local_settings_sessions[configuration_session_ref] = (
+                capability,
+                profile_ref,
+            )
+        return {
+            "schemaVersion": 1,
+            "configurationSessionRef": configuration_session_ref,
+            "state": "open",
+        }
+
+    def get_local_settings(self, configuration_session_ref: str) -> dict[str, Any]:
+        with self._local_settings_lock:
+            binding = self._local_settings_sessions.get(configuration_session_ref)
+        if binding is None:
+            raise CardServiceError(
+                "LOCAL_SETTINGS_SESSION_NOT_FOUND",
+                "The local settings session is unavailable",
+                retryable=False,
+                stage="settings",
+            )
+        capability, profile_ref = binding
+        try:
+            session = self.trusted_surfaces.get_session(configuration_session_ref)
+            state = str(session.get("state") or "failed")
+            result: dict[str, Any] = {
+                "schemaVersion": 1,
+                "configurationSessionRef": configuration_session_ref,
+                "state": state if state in {"open", "created", "completed", "cancelled", "failed"} else "failed",
+            }
+            if result["state"] == "completed":
+                registry, _ = self._ensure_service_profile_runtime()
+                current = registry.resolve_binding(capability, profile_ref)
+                if current is None:
+                    raise CardServiceError(
+                        "SERVICE_PROFILE_NOT_CONFIGURED",
+                        "The service profile changed while settings were open",
+                        retryable=False,
+                        stage="settings",
+                    )
+                result.update(
+                    credentialRevision=current["credentialRevision"],
+                    credentialState=current["credentialState"],
+                    secretExists=current["secretExists"],
+                )
+            if result["state"] == "failed" and isinstance(session.get("errorCode"), str):
+                result["errorCode"] = session["errorCode"]
+            return result
+        except ServiceProfileRegistryError as error:
+            raise CardServiceError(
+                error.code,
+                str(error),
+                retryable=False,
+                stage="settings",
+            ) from error
+        except TrustedSurfaceError as error:
+            raise CardServiceError(error.code, str(error)) from error
 
     def _resource_runtime_capabilities(self) -> dict[str, Any]:
         with self._resource_runtime_lock:
@@ -2151,9 +2408,11 @@ class CardService:
             "taskMethods": ["task.get", "task.cancel", "task.list_recoverable", "task.read_result"],
             "systemMethods": [
                 "system.get_capabilities",
+                "system.list_profiles",
                 "system.request_source_grant",
                 "system.request_output_grant",
                 "system.open_local_settings",
+                "system.get_local_settings",
                 "system.open_broker_authorization",
                 "system.get_trusted_surface",
             ],
@@ -2225,6 +2484,14 @@ class CardService:
                 "complete": False,
             },
             "trustedSurfaces": self.trusted_surfaces.capabilities(),
+            "serviceProfiles": {
+                "persistentRegistry": True,
+                "verificationLedger": True,
+                "publicListProfiles": True,
+                "trustedCredentialSettings": True,
+                "publicProfileValidation": False,
+                "complete": False,
+            },
             "localResourceRuntime": self._resource_runtime_capabilities(),
             "studyRuntime": self._study_runtime_capabilities(),
         }
@@ -2532,6 +2799,8 @@ class CardService:
         values = dict(params or {})
         if method == "system.get_capabilities":
             return self.capabilities()
+        if method == "system.list_profiles":
+            return self.list_service_profiles()
         if method == "task.get":
             return self.get_task(str(values.get("taskId") or ""))
         if method == "task.cancel":
@@ -2541,14 +2810,14 @@ class CardService:
         if method == "task.read_result":
             return self.read_result(str(values.get("taskId") or ""))
         if method == "system.open_local_settings":
-            try:
-                session = self.trusted_surfaces.create_local_settings_session(
-                    profile_ref=str(values.get("profileRef") or ""),
-                    capability=str(values.get("capability") or ""),
-                )
-                return self.trusted_surfaces.launch(str(session["sessionRef"]))
-            except TrustedSurfaceError as error:
-                raise CardServiceError(error.code, str(error)) from error
+            return self.open_local_settings(
+                profile_ref=str(values.get("profileRef") or ""),
+                capability=str(values.get("capability") or ""),
+            )
+        if method == "system.get_local_settings":
+            return self.get_local_settings(
+                str(values.get("configurationSessionRef") or "")
+            )
         if method == "system.open_broker_authorization":
             try:
                 session = self.trusted_surfaces.create_broker_authorization_session(values)

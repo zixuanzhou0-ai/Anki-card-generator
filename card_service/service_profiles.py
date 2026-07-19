@@ -508,10 +508,12 @@ class ServiceProfileVerificationRegistry:
                 and record.get("publishState") == "current"
             ]
             latest = max(exact, key=lambda item: int(item["sequence"])) if exact else None
-            if current["credentialState"] != "committed":
+            if current["credentialState"] == "uncertain":
                 state, reason = "blocked", "CREDENTIAL_STATE_UNCERTAIN"
             elif current["secretRequired"] and not current["secretExists"]:
                 state, reason = "action_required", "CREDENTIAL_REQUIRED"
+            elif current["credentialState"] != "committed":
+                state, reason = "blocked", "CREDENTIAL_STATE_INVALID"
             elif latest is None:
                 state = "stale" if records else "unknown"
                 reason = "VERIFICATION_BINDING_CHANGED" if records else "VERIFICATION_REQUIRED"

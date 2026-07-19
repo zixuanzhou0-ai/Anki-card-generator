@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -9,7 +10,9 @@ import pytest
 
 from card_service.mcp_system_tools import (
     AUTHORIZE_DISCOVERY_TOOL,
+    LIST_PROFILES_TOOL,
     McpSystemToolInputError,
+    OPEN_LOCAL_SETTINGS_TOOL,
     call_system_tool,
     system_tool_definitions,
 )
@@ -200,3 +203,147 @@ def test_fixed_authorization_hot_loads_candidate_discovery_broker(tmp_path: Path
     capabilities = service.capabilities()["studyRuntime"]
     assert capabilities["publicCandidateDiscovery"] is True
     assert capabilities["candidateDiscoveryAuthorizationReady"] is True
+
+
+def _remote_model_profile() -> dict[str, Any]:
+    return {
+        "profileRef": "model.primary",
+        "capability": "model",
+        "provider": "openai",
+        "baseUrl": "https://api.openai.com/v1",
+        "model": "gpt-5.6",
+        "voice": "",
+        "timeoutSeconds": 120,
+        "maximumResponseBytes": 512 * 1024,
+        "authMode": "bearer",
+    }
+
+
+def _profile_service(tmp_path: Path) -> CardService:
+    service = CardService(
+        state_dir=(tmp_path / "state").resolve(),
+        worker_path=FAKE_WORKER.resolve(),
+        python_path=Path(sys.executable).resolve(),
+        method_policies={},
+        credential_backend=InMemoryCredentialBackend(),
+        trusted_surface_path=FAKE_SURFACE.resolve(),
+        use_restricted_launcher=False,
+        hermes_proxy_manager=StubHermesProxyManager(),  # type: ignore[arg-type]
+    )
+    service.save_service_profile(
+        _remote_model_profile(),
+        expected_revision=0,
+        operation_id="trusted-settings-seed",
+    )
+    return service
+
+
+def test_profile_tools_have_closed_non_secret_contracts() -> None:
+    definitions = {item["name"]: item for item in system_tool_definitions()}
+    assert set(definitions) == {
+        AUTHORIZE_DISCOVERY_TOOL,
+        LIST_PROFILES_TOOL,
+        OPEN_LOCAL_SETTINGS_TOOL,
+    }
+    assert definitions[LIST_PROFILES_TOOL]["inputSchema"] == {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": False,
+    }
+    assert definitions[LIST_PROFILES_TOOL]["annotations"] == {
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    }
+    encoded = json.dumps(definitions[OPEN_LOCAL_SETTINGS_TOOL], sort_keys=True).casefold()
+    for forbidden in ("apikey", "oauth", "cookie", "authorization", "baseurl"):
+        assert forbidden not in encoded
+
+
+def test_list_profiles_returns_exact_binding_without_secrets(tmp_path: Path) -> None:
+    service = _profile_service(tmp_path)
+    result = call_system_tool(
+        service,
+        tool_name=LIST_PROFILES_TOOL,
+        arguments={},
+        user_action_timeout_seconds=0,
+    )
+    profiles = result["structuredContent"]["profiles"]
+    assert profiles == [
+        {
+            "schemaVersion": 1,
+            "profileRef": "model.primary",
+            "capability": "model",
+            "profileRevision": 1,
+            "configurationFingerprint": profiles[0]["configurationFingerprint"],
+            "provider": "openai",
+            "endpointOrigin": "https://api.openai.com",
+            "credentialRevision": 0,
+            "credentialState": "missing",
+            "secretRequired": True,
+            "secretExists": False,
+            "state": "action_required",
+            "model": "gpt-5.6",
+            "reasonCode": "CREDENTIAL_REQUIRED",
+        }
+    ]
+    encoded = json.dumps(result, sort_keys=True).casefold()
+    for forbidden in ("secretref", "apikey", "oauth", "cookie", "authorization"):
+        assert forbidden not in encoded
+
+
+def test_local_settings_opens_only_existing_secret_profile_and_polls_safely(
+    tmp_path: Path,
+) -> None:
+    service = _profile_service(tmp_path)
+    opened = call_system_tool(
+        service,
+        tool_name=OPEN_LOCAL_SETTINGS_TOOL,
+        arguments={"profileRef": "model.primary", "capability": "model"},
+        user_action_timeout_seconds=0,
+    )["structuredContent"]
+    assert opened["state"] == "open"
+    session_ref = opened["configurationSessionRef"]
+    deadline = time.monotonic() + 5
+    while True:
+        polled = call_system_tool(
+            service,
+            tool_name=OPEN_LOCAL_SETTINGS_TOOL,
+            arguments={"configurationSessionRef": session_ref},
+            user_action_timeout_seconds=0,
+        )["structuredContent"]
+        if polled["state"] not in {"open", "created"}:
+            break
+        if time.monotonic() >= deadline:
+            raise AssertionError("trusted settings fixture did not finish")
+        time.sleep(0.02)
+    assert polled == {
+        "schemaVersion": 1,
+        "configurationSessionRef": session_ref,
+        "state": "completed",
+        "credentialRevision": 0,
+        "credentialState": "missing",
+        "secretExists": False,
+    }
+    encoded = json.dumps(polled, sort_keys=True).casefold()
+    assert "secretref" not in encoded
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {},
+        {"profileRef": "model.primary"},
+        {"profileRef": "model.primary", "capability": "model", "apiKey": "x"},
+        {"configurationSessionRef": "x", "profileRef": "model.primary"},
+    ],
+)
+def test_local_settings_rejects_open_ended_arguments(arguments: dict[str, Any]) -> None:
+    with pytest.raises(McpSystemToolInputError):
+        call_system_tool(
+            StubService({"state": "completed"}),  # type: ignore[arg-type]
+            tool_name=OPEN_LOCAL_SETTINGS_TOOL,
+            arguments=arguments,
+            user_action_timeout_seconds=0,
+        )

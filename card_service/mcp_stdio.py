@@ -269,7 +269,9 @@ def _handle_request(
                     "all eight local validation states. Fully validated text plans can be converted into "
                     "authenticated CardArtifacts. Verified APKG export, trusted local Anki confirmation, "
                     "actual import with data verification, and task polling/cancellation are available. "
-                    "Credentials, raw Worker commands, and runtime rendering/playback verification remain unavailable."
+                    "Trusted local credential settings are available for existing profiles; profile creation, "
+                    "remote profile validation, raw Worker commands, and runtime rendering/playback verification "
+                    "remain unavailable."
                 ),
             },
         )

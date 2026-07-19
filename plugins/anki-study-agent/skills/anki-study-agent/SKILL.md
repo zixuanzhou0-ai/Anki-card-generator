@@ -11,8 +11,9 @@ Create cards as verifiable memory-retrieval tasks, not saved summaries. Preserve
 
 1. Inspect the available tools for `system.get_capabilities` and the `study.*`, `cards.*`, and `anki.*` namespaces.
 2. Call `system.get_capabilities` before starting a workflow when it is available, and treat its exposed-tool list as authoritative.
-3. If the Card Service tools are unavailable, say that the local plugin runtime is not registered. Do not claim that an APKG, media file, import, or verification exists.
-4. Stop at the last proven stage when a required tool is absent. Do not call a planned tool, reconstruct a hidden handle, or replace the Card Service with shell commands or direct provider calls.
+3. When `system.list_profiles` is exposed, read the exact selected profile state. If an existing profile reports `CREDENTIAL_REQUIRED`, use `system.open_local_settings` to open the trusted local window and poll only its returned `configurationSessionRef`; never ask for or accept the credential in conversation.
+4. If the Card Service tools are unavailable, say that the local plugin runtime is not registered. Do not claim that an APKG, media file, import, or verification exists.
+5. Stop at the last proven stage when a required tool is absent. Do not call a planned tool, reconstruct a hidden handle, or replace the Card Service with shell commands or direct provider calls.
 
 ## Build the learning contract
 
