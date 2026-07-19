@@ -520,6 +520,80 @@ class StudyTaskCoordinator:
             record, _, _ = self._load_task(task_id)
             return self._public_snapshot(record, audience)
 
+    def authorize_local_source_binding(
+        self,
+        task_id: str,
+        audience: ArtifactAudienceBinding,
+        *,
+        expected_input_fingerprint: str,
+        source_revision_digest: str,
+        require_prestart: bool,
+    ) -> dict[str, Any]:
+        """Authorize the private resource-to-task bridge without exposing manifests.
+
+        A local grant is not task input merely because it is valid.  The exact
+        source revision must already be committed by the task input manifest,
+        the task must belong to the current session/service audience, and the
+        authorization bundle must contain ``read_source``.  Only a minimal
+        internal summary leaves this method.
+        """
+
+        expected_input = _require_digest(
+            expected_input_fingerprint, "expectedInputFingerprint"
+        )
+        source_revision = _require_digest(
+            source_revision_digest, "sourceRevisionDigest"
+        )
+        if not isinstance(require_prestart, bool):
+            raise StudyTaskError(
+                "TASK_SCHEMA_INVALID", "requirePrestart must be a boolean"
+            )
+        with self._transaction():
+            record, _, _ = self._load_task(task_id)
+            self._authorize_scope(record, audience)
+            current_audience = _sha(
+                canonical_json_bytes(audience.audience(self._service_instance_id))
+            )
+            if record.get("createdAudienceDigest") != current_audience:
+                raise StudyTaskError(
+                    "TASK_REAUTHORIZATION_REQUIRED",
+                    "This task belongs to an earlier session or service instance",
+                )
+            task = record["task"]
+            if task.get("inputFingerprint") != expected_input:
+                raise StudyTaskError(
+                    "TASK_INPUT_MISMATCH", "Task input fingerprint changed"
+                )
+            allowed_states = {"queued"} if require_prestart else {"queued", "running"}
+            if task.get("state") not in allowed_states:
+                raise StudyTaskError(
+                    "TASK_STATE_CONFLICT",
+                    "Local source bindings are unavailable in this task state",
+                )
+            subject = record.get("taskInputManifest", {}).get("subject", {})
+            source_digests = subject.get("sourceSnapshotDigests", [])
+            if source_revision not in source_digests:
+                raise StudyTaskError(
+                    "TASK_INPUT_MISMATCH",
+                    "Local source revision is not bound by the task input manifest",
+                )
+            bindings = record.get("authorizationBinding", {}).get("bindings", [])
+            if not any(
+                isinstance(binding, Mapping) and binding.get("action") == "read_source"
+                for binding in bindings
+            ):
+                raise StudyTaskError(
+                    "TASK_AUTHORIZATION_MISSING",
+                    "Task authorization does not permit source reads",
+                )
+            return {
+                "taskId": task["taskId"],
+                "taskRevision": task["taskRevision"],
+                "state": task["state"],
+                "inputFingerprint": task["inputFingerprint"],
+                "scopeId": record["scopeId"],
+            }
+
     def _write_checkpoint(self, record: Mapping[str, Any], task_raw: bytes) -> None:
         task = record["task"]
         checkpoint = self._authenticate("study.task.checkpoint.v1", {

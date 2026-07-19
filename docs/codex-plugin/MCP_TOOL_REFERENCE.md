@@ -375,7 +375,7 @@ Service 先对整个 ChangeSet 做 schema/长度/预算/路线约束校验，再
 
 输入包含 projectId、InputRef 数组和 snapshotPolicy。授权不会作为模型可提交的 bearer 传入；Card Service 使用当前可信连接身份和内部授权账本校验每个 InputRef。
 
-CURRENT 内部 stager 已能把经过验证的本地 ref 转换为 task-local 相对 locator，但本 `study.register_inputs` 公共工具尚未接线。公共响应不得包含 source path、私有 receipt、resolution proof、stagingRef 或绝对 task path。
+CURRENT 内部 binding/stager 已能验证 StudyTask input fingerprint 中的精确 source revision，把当前 audience 的本地 ref 转换为该任务独占的稳定快照，并在 Worker 请求前重新验证私有 receipt；本 `study.register_inputs` 公共工具和 SourceAsset 发布仍未接线。公共响应不得包含 source path、私有 receipt、resolution proof、stagingRef、worker locator 或绝对 task path。
 
 snapshotPolicy：
 

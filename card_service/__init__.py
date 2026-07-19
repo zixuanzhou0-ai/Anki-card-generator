@@ -44,6 +44,10 @@ from .resource_runtime import (
     ServiceResourceRuntime,
     ServiceResourceRuntimeError,
 )
+from .task_source_binding import (
+    TaskSourceBindingError,
+    TaskSourceBindingRuntime,
+)
 from .project_registry import ProjectRegistry, ProjectRegistryError
 from .service_profiles import (
     ServiceProfileVerificationError,
@@ -83,6 +87,8 @@ __all__ = [
     "TaskResourceStager",
     "ServiceResourceRuntime",
     "ServiceResourceRuntimeError",
+    "TaskSourceBindingError",
+    "TaskSourceBindingRuntime",
     "ServiceProfileVerificationError",
     "ServiceProfileVerificationRegistry",
     "ServiceProfileRegistry",
