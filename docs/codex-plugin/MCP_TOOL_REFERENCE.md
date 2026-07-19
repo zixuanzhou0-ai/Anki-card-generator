@@ -1,6 +1,6 @@
 # MCP 工具参考
 
-> 状态：CURRENT 最小桥 + PROPOSED 完整工具契约；可信会话已实现 `system.get_capabilities`、`system.request_source_grant`、`system.request_output_grant` 与 `study.create_project`
+> 状态：CURRENT 最小桥 + PROPOSED 完整工具契约；可信会话已实现 `system.get_capabilities`、`system.request_source_grant`、`system.request_output_grant`、`study.create_project` 与 `study.register_inputs`
 > 日期：2026-07-18
 > 工具名和 schema 在实现前仍可调整；一旦 V1 发布即按版本策略维护。
 
@@ -17,7 +17,7 @@ MCP 工具服务于用户意图，而不是暴露内部 Worker。工具层必须
 
 官方工具设计参考：[Describe tools](https://developers.openai.com/apps-sdk/build/mcp-server#step-2--describe-tools)。
 
-当前桥实现协议握手、动态工具发现、零参数只读能力快照，以及可信会话中的本地 source/output opaque grant 和幂等 `study.create_project`。没有原生 launcher audience 时只公开 `system.get_capabilities`；可信 audience 由父 PID、固定 launcher 可执行文件、当前 OS 用户 SID 摘要和每进程随机 nonce 派生，工具参数不能自报。桥仍不接受任意路径、URL、Artifact 或 OperationIntent，也不公开输入登记、生成、导出、Anki 写入、凭据、原始 Worker 或 Shell；下文其余工具仍是后续里程碑的目标合同。
+当前桥实现协议握手、动态工具发现、零参数只读能力快照，以及可信会话中的本地 source/output opaque grant、幂等 `study.create_project` 和 `study.register_inputs`。没有原生 launcher audience 时只公开 `system.get_capabilities`；可信 audience 由父 PID、固定 launcher 可执行文件、当前 OS 用户 SID 摘要和每进程随机 nonce 派生，工具参数不能自报。桥仍不接受任意路径、URL、调用方构造的 Artifact 或 OperationIntent，也不公开素材检查、候选发现、生成、导出、Anki 写入、凭据、原始 Worker 或 Shell；下文其余工具仍是后续里程碑的目标合同。
 
 ## 2. 公共请求约定
 
@@ -266,7 +266,7 @@ CURRENT 输入是封闭对象 `{ grantRequestId, selectionKind }`，其中 `sele
 
 CURRENT 输入是封闭对象 `{ grantRequestId }`。Service 固定打开输出目录 picker，返回 `outputRef`，其约束只包含 `create` 与 `versioned`，默认不含 `replace`；调用方不能通过参数扩大权限。返回值仅含 outputResourceRef、显示名、resourceRevisionDigest、constraints 和 expiresAt。覆盖仍需要未来独立确认与授权合同。
 
-CURRENT M2 已实现 file/directory/output grant 的认证账本、opaque ref、逐次消费、撤销和 task staging：已消费的 file/directory grant 可被复制成带认证 receipt 的 task-local snapshot，Worker locator 只含 workspace-relative path。公开工具只完成“真实选择 → opaque ref”，尚未把 ref 绑定到 `study.register_inputs`、StudyTask/Worker 调度或 APKG 发布。
+CURRENT M2 已实现 file/directory/output grant 的认证账本、opaque ref、逐次消费、撤销和 task staging：已消费的 file/directory grant 可被复制成带认证 receipt 的 task-local snapshot，Worker locator 只含 workspace-relative path。file/directory ref 已可通过可信 `study.register_inputs` 绑定到 StudyTask、稳定 Blob/目录 manifest、`study.source-asset` 与项目 `sources_ready` 阶段；output ref 尚未绑定 APKG 发布。
 
 两个工具都只在可信 stdio audience 中注册；无 audience 时调用得到 Unknown tool。picker 等待超时会返回 `awaiting_user`，使用相同 `grantRequestId` 可继续轮询。`cancelled` 与 `failed` 是显式终态；公开失败只返回固定错误码，不回显路径或私有异常。
 
@@ -373,9 +373,11 @@ Service 先对整个 ChangeSet 做 schema/长度/预算/路线约束校验，再
 
 ### 5.5 study.register_inputs
 
-输入包含 projectId、InputRef 数组和 snapshotPolicy。授权不会作为模型可提交的 bearer 传入；Card Service 使用当前可信连接身份和内部授权账本校验每个 InputRef。
+CURRENT 输入是封闭对象：`context` 只接受 projectId、expectedRevision、idempotencyKey 和 locale；`inputs` 接受 1–64 个 kind=file|directory 的 opaque InputRef；`snapshotPolicy` 接受 require_stable|allow_conditional|draft_only。schema 不含 path、URL、audience、自定义权限、receipt 或 Worker locator。授权不会作为模型可提交的 bearer 传入；Card Service 使用当前可信连接身份和内部授权账本校验每个 InputRef。
 
-CURRENT 内部 binding/stager 已能验证 StudyTask input fingerprint 中的精确 source revision，把当前 audience 的本地 ref 转换为该任务独占的稳定快照，并在 Worker 请求前重新验证私有 receipt；本 `study.register_inputs` 公共工具和 SourceAsset 发布仍未接线。公共响应不得包含 source path、私有 receipt、resolution proof、stagingRef、worker locator 或绝对 task path。
+Service 为本次登记创建可恢复 StudyTask，将来源绑定到任务指纹，复制到任务专属 staging，并把文件流式写入内容寻址 Blob；目录逐文件写入 Blob，再发布 canonical directory manifest。随后发布认证 `study.source-asset`，并以 expectedRevision 把项目原子推进到 `sources_ready`。精确重试会重新签发当前会话 handle；若崩溃发生在 Artifact 发布后、项目提交前，恢复会复用认证 Artifact 并完成项目提交。
+
+CURRENT 公开结果仅返回项目/任务状态、SourceAsset opaque handle、内容摘要、大小、支持级别和警告；不得包含 source path、InputRef、私有 receipt、resolution proof、registry ref、stagingRef、worker locator 或绝对 task path。单文件当前硬限制为 2 GiB，超限时在发布 SourceAsset 前显式失败，不产生半成品成功状态。
 
 snapshotPolicy：
 
@@ -383,7 +385,7 @@ snapshotPolicy：
 - allow_conditional：允许 B 级来源，但必须返回警告。
 - draft_only：model_relayed 内容只生成草稿。
 
-输出包含 SourceAsset refs、完整性、支持级别、未处理项和是否需要进一步授权。
+登记只证明“获得了稳定字节快照”，不证明内容已经解析、完整或适合制卡。文件/目录在 source inspection 完成前固定为 B 级 conditional；未知类型为 C 级 unsupported。当前调用同步等待登记完成，公共任务轮询/取消仍待统一任务工具开放。
 
 禁止：
 

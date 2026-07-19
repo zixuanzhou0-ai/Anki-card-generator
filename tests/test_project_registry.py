@@ -487,3 +487,108 @@ def test_public_project_never_exposes_authentication_or_operation_ledger(
     assert "authTag" not in encoded
     assert "authKeyId" not in encoded
     assert "operationId" not in encoded
+
+
+def artifact_ref(project_id: str, *, artifact_id: str, project_revision: int) -> dict:
+    return {
+        "artifactId": artifact_id,
+        "projectId": project_id,
+        "projectRevision": project_revision,
+        "artifactRevision": 1,
+        "payloadSchema": "study.source-asset",
+        "payloadSchemaVersion": 1,
+        "artifactDigest": hashlib.sha256(artifact_id.encode("utf-8")).hexdigest(),
+        "registryAuthRef": f"auth-{artifact_id}",
+    }
+
+
+def test_artifact_commit_advances_one_stage_and_is_exactly_idempotent(tmp_path: Path) -> None:
+    store = registry(tmp_path)
+    bound = audience()
+    project = create(store, bound)
+    operation_digest = hashlib.sha256(b"register-inputs-1").hexdigest()
+    ref = artifact_ref(project["projectId"], artifact_id="source-1", project_revision=1)
+    handle = "study_" + "a" * 43
+
+    result = store.commit_artifact_stage(
+        audience=bound,
+        project_id=project["projectId"],
+        expected_project_revision=1,
+        operation_id="register-1",
+        operation_digest=operation_digest,
+        task_id="task-register-1",
+        artifact_stage="sources_ready",
+        artifact_refs=[ref],
+        artifact_handles=[handle],
+    )
+    assert result["projectRevision"] == 2
+    assert result["artifactStage"] == "sources_ready"
+    assert result["artifactHandles"] == [handle]
+    current = store.get_project(project["projectId"], bound)
+    assert current["workflow"]["productStep"] == "source"
+    assert current["workflow"]["primaryActionId"] == "inspect_source"
+    assert current["workflow"]["currentTaskId"] == "task-register-1"
+    assert current["latestArtifactRefs"] == [ref]
+
+    repeated = store.commit_artifact_stage(
+        audience=bound,
+        project_id=project["projectId"],
+        expected_project_revision=1,
+        operation_id="register-1",
+        operation_digest=operation_digest,
+        task_id="task-register-1",
+        artifact_stage="sources_ready",
+        artifact_refs=[ref],
+        artifact_handles=[handle],
+    )
+    assert repeated == result
+    assert store.get_operation_result(
+        audience=bound,
+        project_id=project["projectId"],
+        operation_id="register-1",
+        operation_digest=operation_digest,
+    ) == result
+
+    with pytest.raises(ProjectRegistryError) as conflict:
+        store.get_operation_result(
+            audience=bound,
+            project_id=project["projectId"],
+            operation_id="register-1",
+            operation_digest=hashlib.sha256(b"different").hexdigest(),
+        )
+    assert conflict.value.code == "PROJECT_IDEMPOTENCY_CONFLICT"
+
+
+def test_artifact_commit_rejects_stage_skip_scope_and_revision_mismatch(tmp_path: Path) -> None:
+    store = registry(tmp_path)
+    bound = audience()
+    project = create(store, bound)
+    operation_digest = hashlib.sha256(b"invalid-register").hexdigest()
+    ref = artifact_ref(project["projectId"], artifact_id="source-1", project_revision=1)
+    base = {
+        "audience": bound,
+        "project_id": project["projectId"],
+        "expected_project_revision": 1,
+        "operation_id": "register-invalid",
+        "operation_digest": operation_digest,
+        "task_id": "task-register-invalid",
+        "artifact_refs": [ref],
+        "artifact_handles": ["study_" + "b" * 43],
+    }
+    with pytest.raises(ProjectRegistryError) as skipped:
+        store.commit_artifact_stage(**base, artifact_stage="candidates_ready")
+    assert skipped.value.code == "PROJECT_ARTIFACT_STAGE_CONFLICT"
+
+    wrong_scope = {**ref, "projectId": "other-project"}
+    with pytest.raises(ProjectRegistryError) as scoped:
+        store.commit_artifact_stage(
+            **{**base, "artifact_refs": [wrong_scope]}, artifact_stage="sources_ready"
+        )
+    assert scoped.value.code == "PROJECT_ARTIFACT_SCOPE_MISMATCH"
+
+    wrong_revision = {**ref, "projectRevision": 2}
+    with pytest.raises(ProjectRegistryError) as revised:
+        store.commit_artifact_stage(
+            **{**base, "artifact_refs": [wrong_revision]}, artifact_stage="sources_ready"
+        )
+    assert revised.value.code == "PROJECT_ARTIFACT_REVISION_MISMATCH"

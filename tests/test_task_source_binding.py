@@ -400,6 +400,20 @@ def test_binding_cannot_cross_session_or_task_state(tmp_path: Path) -> None:
     assert late.value.code == "TASK_STATE_CONFLICT"
 
 
+def test_existing_binding_can_be_rehydrated_after_task_start(tmp_path: Path) -> None:
+    values = setup_runtime(tmp_path)
+    current_audience, _, _, tasks, task, _, _, _ = values
+    first = bind(values)
+    tasks.start_task(
+        task["taskId"],
+        current_audience,
+        expected_revision=task["taskRevision"],
+        operation_id="start-recovery",
+    )
+
+    assert bind(values) == first
+
+
 def test_worker_resolution_rejects_another_audience_and_tampered_private_record(
     tmp_path: Path,
 ) -> None:

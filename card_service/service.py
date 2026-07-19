@@ -56,6 +56,7 @@ from .windows_sandbox_acl import (
     harden_task_writable_path,
     harden_staged_path,
     runtime_sandbox_sid,
+    task_sandbox_sid,
     verify_runtime_tree_dacl,
 )
 
@@ -903,12 +904,63 @@ class CardService:
             "artifactRegistry": True,
             "studyTaskCoordinator": True,
             "taskSourceBinding": True,
-            "sourceAssetPublication": False,
+            "sourceAssetPublication": True,
             "publicProjectTools": True,
-            "publicInputRegistration": False,
+            "publicInputRegistration": True,
             "pathDisclosure": False,
             "complete": False,
         }
+
+    def _create_study_task_workspace(self, task_id: str) -> tuple[Path, str | None]:
+        with self._workspace_budget_lock:
+            root = self._sandboxes_root()
+            expected = root / task_id
+            if expected.exists():
+                self._workspace_reservations.add(task_id)
+                try:
+                    self._enforce_workspace_capacity()
+                    _assert_no_reparse_components(expected)
+                    workspace = expected.resolve(strict=True)
+                    if workspace.parent != root or not workspace.is_dir():
+                        raise CardServiceError(
+                            "TASK_WORKSPACE_REPARSE_BLOCKED",
+                            "Recovered Study workspace escaped its root",
+                        )
+                    _task_workspace_usage(
+                        workspace,
+                        byte_limit=self.task_workspace_limit_bytes,
+                        entry_limit=self.task_workspace_entry_limit,
+                    )
+                    sandbox_id = (
+                        task_sandbox_sid(task_id) if self.runtime_package_dacl else None
+                    )
+                    return workspace, sandbox_id
+                except Exception:
+                    self._workspace_reservations.discard(task_id)
+                    raise
+            root = self._enforce_workspace_capacity(proposed_task_id=task_id)
+            try:
+                if self.runtime_package_dacl:
+                    workspace, sandbox_id = create_task_workspace(root, task_id)
+                else:
+                    workspace = (root / task_id).resolve()
+                    if workspace.parent != root:
+                        raise OSError("Study task workspace escaped its root")
+                    workspace.mkdir(mode=0o700, exist_ok=False)
+                    sandbox_id = None
+                _task_workspace_usage(
+                    workspace,
+                    byte_limit=self.task_workspace_limit_bytes,
+                    entry_limit=self.task_workspace_entry_limit,
+                )
+            except WindowsSandboxAclError as error:
+                _remove_empty_task_workspace(expected)
+                raise CardServiceError(error.code, str(error)) from error
+            except (CardServiceError, OSError):
+                _remove_empty_task_workspace(expected)
+                raise
+            self._workspace_reservations.add(task_id)
+            return workspace, sandbox_id
 
     def _ensure_study_runtime(self) -> StudyRuntime:
         with self._study_runtime_lock:
@@ -923,6 +975,8 @@ class CardService:
                     state_dir=self.store.root / "study-runtime",
                     credential_store=credential_store,
                     resource_runtime=self._ensure_resource_runtime(),
+                    workspace_factory=self._create_study_task_workspace,
+                    workspace_releaser=self._release_workspace_reservation,
                 )
             except (CredentialStoreError, StudyRuntimeError, OSError) as error:
                 raise CardServiceError(
@@ -960,6 +1014,33 @@ class CardService:
                 error.message,
                 retryable=error.code.endswith("_CONFLICT"),
                 stage="request",
+            ) from error
+
+    def register_study_inputs(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_id: str,
+        expected_project_revision: int,
+        idempotency_key: str,
+        input_refs: list[Mapping[str, Any]],
+        snapshot_policy: str = "require_stable",
+    ) -> dict[str, Any]:
+        try:
+            return self._ensure_study_runtime().register_inputs(
+                audience=audience,
+                project_id=project_id,
+                expected_project_revision=expected_project_revision,
+                idempotency_key=idempotency_key,
+                input_refs=input_refs,
+                snapshot_policy=snapshot_policy,
+            )
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=error.code.endswith(("_CONFLICT", "_UNAVAILABLE", "_REQUIRED")),
+                stage="source_registration",
             ) from error
 
     @staticmethod

@@ -14,6 +14,12 @@ from .artifact_registry import (
 from .credentials import CredentialStore, CredentialStoreError
 from .project_registry import ProjectRegistry, ProjectRegistryError
 from .resource_runtime import ServiceResourceRuntime
+from .source_registration import (
+    SourceRegistrationError,
+    SourceRegistrationRuntime,
+    WorkspaceFactory,
+    WorkspaceReleaser,
+)
 from .task_coordinator import StudyTaskCoordinator, StudyTaskError
 from .task_source_binding import TaskSourceBindingError, TaskSourceBindingRuntime
 
@@ -41,6 +47,8 @@ class StudyRuntime:
         state_dir: str | Path,
         credential_store: CredentialStore,
         resource_runtime: ServiceResourceRuntime,
+        workspace_factory: WorkspaceFactory | None = None,
+        workspace_releaser: WorkspaceReleaser | None = None,
     ) -> None:
         root = Path(state_dir).expanduser()
         if not root.is_absolute():
@@ -92,12 +100,24 @@ class StudyRuntime:
                 resource_runtime=resource_runtime,
                 task_coordinator=self.tasks,
             )
+            self.source_registration = SourceRegistrationRuntime(
+                root=self.root / "source-registration",
+                service_instance_id=self.service_instance_id,
+                resources=resource_runtime,
+                artifacts=self.artifacts,
+                projects=self.projects,
+                tasks=self.tasks,
+                source_bindings=self.source_bindings,
+                workspace_factory=workspace_factory,
+                workspace_releaser=workspace_releaser,
+            )
         except (
             CredentialStoreError,
             ArtifactRegistryError,
             ProjectRegistryError,
             StudyTaskError,
             TaskSourceBindingError,
+            SourceRegistrationError,
             OSError,
         ) as error:
             raise StudyRuntimeError(
@@ -114,9 +134,9 @@ class StudyRuntime:
             "artifactRegistry": True,
             "studyTaskCoordinator": True,
             "taskSourceBinding": True,
-            "sourceAssetPublication": False,
+            "sourceAssetPublication": True,
             "publicProjectTools": True,
-            "publicInputRegistration": False,
+            "publicInputRegistration": True,
             "pathDisclosure": False,
             "complete": False,
         }
@@ -151,4 +171,32 @@ class StudyRuntime:
         try:
             return self.projects.list_projects(audience)
         except ProjectRegistryError as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
+    def register_inputs(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_id: str,
+        expected_project_revision: int,
+        idempotency_key: str,
+        input_refs: list[Mapping[str, Any]],
+        snapshot_policy: str = "require_stable",
+    ) -> dict[str, Any]:
+        try:
+            return self.source_registration.register_inputs(
+                audience=audience,
+                project_id=project_id,
+                expected_project_revision=expected_project_revision,
+                idempotency_key=idempotency_key,
+                input_refs=input_refs,
+                snapshot_policy=snapshot_policy,
+            )
+        except (
+            SourceRegistrationError,
+            ArtifactRegistryError,
+            ProjectRegistryError,
+            StudyTaskError,
+            TaskSourceBindingError,
+        ) as error:
             raise StudyRuntimeError(error.code, error.message) from error

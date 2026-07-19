@@ -17,6 +17,7 @@ WORKFLOW_ACTIONS = frozenset(
         "request_network_grant",
         "open_settings",
         "validate_profile",
+        "register_inputs",
         "confirm_operation",
         "inspect_source",
         "discover_candidates",

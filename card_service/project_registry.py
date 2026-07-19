@@ -79,6 +79,15 @@ def _require_id(value: Any, label: str) -> str:
     return value
 
 
+def _require_digest(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise ProjectRegistryError(
+            "PROJECT_SCHEMA_INVALID",
+            f"{label} must be a lowercase SHA-256 digest",
+        )
+    return value
+
+
 def _require_revision(value: Any, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1 or value > MAX_SAFE_INTEGER:
         raise ProjectRegistryError("PROJECT_SCHEMA_INVALID", f"{label} must be a positive safe integer")
@@ -576,6 +585,217 @@ class ProjectRegistry:
             reverse=True,
         )
         return projects
+
+    @staticmethod
+    def _artifact_refs(
+        values: Sequence[Mapping[str, Any]], project_id: str
+    ) -> list[dict[str, Any]]:
+        if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+            raise ProjectRegistryError(
+                "PROJECT_ARTIFACT_INVALID", "artifactRefs must be a list"
+            )
+        if not values or len(values) > 512:
+            raise ProjectRegistryError(
+                "PROJECT_ARTIFACT_INVALID", "artifactRefs count is invalid"
+            )
+        required = {
+            "artifactId",
+            "projectId",
+            "projectRevision",
+            "artifactRevision",
+            "payloadSchema",
+            "payloadSchemaVersion",
+            "artifactDigest",
+            "registryAuthRef",
+        }
+        normalized: list[dict[str, Any]] = []
+        for value in values:
+            if not isinstance(value, Mapping) or set(value) != required:
+                raise ProjectRegistryError(
+                    "PROJECT_ARTIFACT_INVALID", "artifact reference fields are invalid"
+                )
+            item = dict(value)
+            _require_id(item["artifactId"], "artifactId")
+            if _require_id(item["projectId"], "artifactProjectId") != project_id:
+                raise ProjectRegistryError(
+                    "PROJECT_ARTIFACT_SCOPE_MISMATCH",
+                    "artifact belongs to another project",
+                )
+            _require_revision(item["projectRevision"], "artifactProjectRevision")
+            _require_revision(item["artifactRevision"], "artifactRevision")
+            _require_id(item["payloadSchema"], "payloadSchema")
+            _require_revision(item["payloadSchemaVersion"], "payloadSchemaVersion")
+            _require_digest(item["artifactDigest"], "artifactDigest")
+            _require_id(item["registryAuthRef"], "registryAuthRef")
+            normalized.append(item)
+        normalized.sort(
+            key=lambda item: (
+                item["artifactId"].encode("utf-8"),
+                item["artifactRevision"],
+                item["artifactDigest"],
+            )
+        )
+        identities = [
+            (item["artifactId"], item["artifactRevision"], item["artifactDigest"])
+            for item in normalized
+        ]
+        if len(identities) != len(set(identities)):
+            raise ProjectRegistryError(
+                "PROJECT_ARTIFACT_INVALID", "artifactRefs contain a duplicate"
+            )
+        return normalized
+
+    def get_operation_result(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_id: str,
+        operation_id: str,
+        operation_digest: str,
+    ) -> dict[str, Any] | None:
+        project_id = _require_id(project_id, "projectId")
+        operation_id = _require_id(operation_id, "operationId")
+        operation_digest = _require_digest(operation_digest, "operationDigest")
+        with self._transaction():
+            record, _ = self._load(project_id)
+            self._authorize(record, audience)
+            for previous in record.get("operations", []):
+                if previous.get("operationId") != operation_id:
+                    continue
+                if previous.get("operationDigest") != operation_digest:
+                    raise ProjectRegistryError(
+                        "PROJECT_IDEMPOTENCY_CONFLICT",
+                        "operationId was already used with different input",
+                    )
+                return json.loads(json.dumps(previous["result"], ensure_ascii=False))
+            return None
+
+    def commit_artifact_stage(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_id: str,
+        expected_project_revision: int,
+        operation_id: str,
+        operation_digest: str,
+        task_id: str,
+        artifact_stage: str,
+        artifact_refs: Sequence[Mapping[str, Any]],
+        artifact_handles: Sequence[str],
+    ) -> dict[str, Any]:
+        project_id = _require_id(project_id, "projectId")
+        expected_revision = _require_revision(
+            expected_project_revision, "expectedProjectRevision"
+        )
+        operation_id = _require_id(operation_id, "operationId")
+        operation_digest = _require_digest(operation_digest, "operationDigest")
+        task_id = _require_id(task_id, "taskId")
+        if artifact_stage not in ARTIFACT_STAGES or artifact_stage == "empty":
+            raise ProjectRegistryError(
+                "PROJECT_ARTIFACT_STAGE_INVALID", "artifactStage is invalid"
+            )
+        refs = self._artifact_refs(artifact_refs, project_id)
+        if (
+            not isinstance(artifact_handles, Sequence)
+            or isinstance(artifact_handles, (str, bytes))
+            or len(artifact_handles) != len(refs)
+            or any(
+                not isinstance(handle, str)
+                or not re.fullmatch(r"study_[A-Za-z0-9_-]{43}", handle)
+                for handle in artifact_handles
+            )
+        ):
+            raise ProjectRegistryError(
+                "PROJECT_ARTIFACT_INVALID", "artifact handles are invalid"
+            )
+        handles = list(artifact_handles)
+        with self._transaction():
+            record, previous_raw = self._load(project_id)
+            self._authorize(record, audience)
+            for previous in record.get("operations", []):
+                if previous.get("operationId") != operation_id:
+                    continue
+                if previous.get("operationDigest") != operation_digest:
+                    raise ProjectRegistryError(
+                        "PROJECT_IDEMPOTENCY_CONFLICT",
+                        "operationId was already used with different input",
+                    )
+                return json.loads(json.dumps(previous["result"], ensure_ascii=False))
+            project = record["project"]
+            if project["projectRevision"] != expected_revision:
+                raise ProjectRegistryError(
+                    "PROJECT_REVISION_CONFLICT",
+                    "Project revision changed before artifact commit",
+                )
+            if any(ref["projectRevision"] != expected_revision for ref in refs):
+                raise ProjectRegistryError(
+                    "PROJECT_ARTIFACT_REVISION_MISMATCH",
+                    "Artifact project revision does not match the commit base",
+                )
+            current_stage = project["workflow"]["artifactStage"]
+            current_index = ARTIFACT_STAGES.index(current_stage)
+            target_index = ARTIFACT_STAGES.index(artifact_stage)
+            if target_index < current_index or target_index > current_index + 1:
+                raise ProjectRegistryError(
+                    "PROJECT_ARTIFACT_STAGE_CONFLICT",
+                    "Artifact stage cannot regress or skip a reliability stage",
+                )
+            unsigned = json.loads(json.dumps(record, ensure_ascii=False))
+            unsigned.pop("authKeyId", None)
+            unsigned.pop("authTag", None)
+            updated = unsigned["project"]
+            updated["projectRevision"] += 1
+            updated["updatedAt"] = _now()
+            by_artifact = {
+                item["artifactId"]: item for item in updated["latestArtifactRefs"]
+            }
+            for ref in refs:
+                by_artifact[ref["artifactId"]] = ref
+            updated["latestArtifactRefs"] = sorted(
+                by_artifact.values(), key=lambda item: item["artifactId"].encode("utf-8")
+            )
+            workflow = updated["workflow"]
+            old_task_id = workflow.get("currentTaskId")
+            if old_task_id is not None and old_task_id != task_id:
+                workflow["lastAcknowledgedTaskId"] = old_task_id
+                workflow["terminalOutcomeAcknowledgedAt"] = updated["updatedAt"]
+            workflow.update(
+                {
+                    "projectRevision": updated["projectRevision"],
+                    "artifactStage": artifact_stage,
+                    "operationState": "succeeded",
+                    "currentTaskId": task_id,
+                }
+            )
+            workflow["productStep"], workflow["primaryActionId"] = _workflow_for_stage(
+                artifact_stage
+            )
+            result = {
+                "projectId": project_id,
+                "projectRevision": updated["projectRevision"],
+                "artifactStage": artifact_stage,
+                "taskId": task_id,
+                "artifactRefs": refs,
+                "artifactHandles": handles,
+            }
+            if len(unsigned["operations"]) >= MAX_OPERATIONS:
+                raise ProjectRegistryError(
+                    "PROJECT_OPERATION_LIMIT", "Project idempotency ledger is full"
+                )
+            unsigned["operations"].append(
+                {
+                    "operationId": operation_id,
+                    "operationDigest": operation_digest,
+                    "result": result,
+                    "recordedAt": updated["updatedAt"],
+                }
+            )
+            _validate_persistable(updated)
+            _validate_persistable(result)
+            updated_record = self._authenticate(unsigned)
+            raw = canonical_json_bytes(updated_record)
+            self._replace(self._project_path(project_id), raw, previous_raw)
+            return json.loads(json.dumps(result, ensure_ascii=False))
 
     @staticmethod
     def _normalize_change_set(

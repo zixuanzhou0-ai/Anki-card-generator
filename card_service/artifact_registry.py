@@ -266,6 +266,42 @@ def _safe_read(path: Path, *, maximum_bytes: int) -> bytes:
     return data
 
 
+def _safe_file_digest(path: Path, *, maximum_bytes: int) -> tuple[int, str]:
+    try:
+        info = path.lstat()
+    except FileNotFoundError as error:
+        raise ArtifactRegistryError("ARTIFACT_NOT_FOUND", "Artifact Blob was not found") from error
+    attributes = getattr(info, "st_file_attributes", 0)
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or stat.S_ISLNK(info.st_mode)
+        or attributes & 0x400
+        or info.st_nlink != 1
+    ):
+        raise ArtifactRegistryError("ARTIFACT_STORAGE_UNSAFE", "Artifact Blob is not a private regular file")
+    if info.st_size < 0 or info.st_size > maximum_bytes:
+        raise ArtifactRegistryError("ARTIFACT_BLOB_TOO_LARGE", "Artifact Blob exceeds its size limit")
+    digest = hashlib.sha256()
+    total = 0
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                total += len(chunk)
+                if total > maximum_bytes:
+                    raise ArtifactRegistryError("ARTIFACT_BLOB_TOO_LARGE", "Artifact Blob exceeds its size limit")
+                digest.update(chunk)
+    except OSError as error:
+        raise ArtifactRegistryError("ARTIFACT_BLOB_UNAVAILABLE", "Artifact Blob could not be read") from error
+    after = path.lstat()
+    if (
+        total != info.st_size
+        or (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        != (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+    ):
+        raise ArtifactRegistryError("ARTIFACT_CHANGED", "Artifact Blob changed while being read")
+    return total, digest.hexdigest()
+
+
 class ArtifactRegistry:
     def __init__(self, root: Path, *, authentication_key: bytes, service_instance_id: str, key_id: str = "artifact-registry-v1") -> None:
         if not isinstance(authentication_key, bytes) or len(authentication_key) < 32:
@@ -539,6 +575,124 @@ class ArtifactRegistry:
             handle = self.issue_handle(artifact_ref, audience)
             return ArtifactPublication(handle=handle, artifact_ref=artifact_ref, envelope=envelope)
 
+    def publish_idempotent(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_id: str,
+        project_revision: int,
+        artifact_id: str,
+        artifact_revision: int,
+        payload_schema: str,
+        payload_schema_version: int,
+        payload: Any,
+        producer: Mapping[str, Any],
+        parents: Sequence[Mapping[str, Any]],
+        input_fingerprint: str,
+        completeness: Mapping[str, Any],
+        issue_refs: Sequence[str],
+    ) -> ArtifactPublication:
+        """Publish once, or safely reissue a handle for the identical artifact.
+
+        The immutable artifact identity is deterministic for recoverable Study
+        operations. If a process stopped after writing the envelope but before
+        its authenticated Registry record, an exact retry repairs only that
+        record. A semantic mismatch fails closed instead of adopting the file.
+        """
+
+        arguments = {
+            "audience": audience,
+            "project_id": project_id,
+            "project_revision": project_revision,
+            "artifact_id": artifact_id,
+            "artifact_revision": artifact_revision,
+            "payload_schema": payload_schema,
+            "payload_schema_version": payload_schema_version,
+            "payload": payload,
+            "producer": producer,
+            "parents": parents,
+            "input_fingerprint": input_fingerprint,
+            "completeness": completeness,
+            "issue_refs": issue_refs,
+        }
+        try:
+            return self.publish(**arguments)
+        except ArtifactRegistryError as error:
+            if error.code != "ARTIFACT_ALREADY_EXISTS":
+                raise
+        with self._lock:
+            self._validate_audience(audience)
+            envelope = self._json(
+                self._artifact_path(project_id, artifact_id, artifact_revision),
+                _MAX_ARTIFACT_BYTES,
+            )
+            semantic = {
+                "payloadSchema": payload_schema,
+                "payloadSchemaVersion": payload_schema_version,
+                "artifactId": artifact_id,
+                "projectId": project_id,
+                "projectRevision": project_revision,
+                "artifactRevision": artifact_revision,
+                "producer": dict(producer),
+                "parents": [dict(parent) for parent in parents],
+                "inputFingerprint": input_fingerprint,
+                "completeness": dict(completeness),
+                "issueRefs": list(issue_refs),
+                "payload": payload,
+            }
+            if any(envelope.get(name) != value for name, value in semantic.items()):
+                raise ArtifactRegistryError(
+                    "ARTIFACT_IDEMPOTENCY_CONFLICT",
+                    "Immutable artifact identity was reused with different content",
+                )
+            if envelope.get("payloadSha256") != _sha256(canonical_json_bytes(payload)):
+                raise ArtifactRegistryError(
+                    "ARTIFACT_PAYLOAD_MISMATCH", "Existing artifact payload failed verification"
+                )
+            unsigned_envelope = dict(envelope)
+            unsigned_envelope.pop("artifactDigest", None)
+            unsigned_envelope.pop("registryAuthRef", None)
+            if envelope.get("artifactDigest") != _sha256(canonical_json_bytes(unsigned_envelope)):
+                raise ArtifactRegistryError(
+                    "ARTIFACT_DIGEST_MISMATCH", "Existing artifact envelope failed verification"
+                )
+            registry_auth_ref = envelope.get("registryAuthRef")
+            _validate_id("registryAuthRef", registry_auth_ref)
+            artifact_ref = {
+                "artifactId": artifact_id,
+                "projectId": project_id,
+                "projectRevision": project_revision,
+                "artifactRevision": artifact_revision,
+                "payloadSchema": payload_schema,
+                "payloadSchemaVersion": payload_schema_version,
+                "artifactDigest": envelope["artifactDigest"],
+                "registryAuthRef": registry_auth_ref,
+            }
+            record_path = self._record_path(registry_auth_ref)
+            if not record_path.exists():
+                unsigned_record = {
+                    "schema": "study.artifact.registry-record",
+                    "schemaVersion": 1,
+                    "registryAuthRef": registry_auth_ref,
+                    "artifactId": artifact_id,
+                    "projectId": project_id,
+                    "projectOwnerDigest": audience.owner_digest,
+                    "artifactDigest": envelope["artifactDigest"],
+                    "createdByServiceInstanceId": self._service_instance_id,
+                    "keyId": self._key_id,
+                    "projectScopeDigest": _sha256(canonical_json_bytes(audience.project_scope(project_id))),
+                    "createdAt": envelope["createdAt"],
+                }
+                record = {**unsigned_record, "authTag": self._mac("study.artifact.registry-record.v1", unsigned_record)}
+                try:
+                    self._publish(record_path, canonical_json_bytes(record))
+                except ArtifactRegistryError as record_error:
+                    if record_error.code != "ARTIFACT_ALREADY_EXISTS":
+                        raise
+            verified = self._verify_artifact_ref(artifact_ref, audience)
+            handle = self.issue_handle(artifact_ref, audience)
+            return ArtifactPublication(handle=handle, artifact_ref=artifact_ref, envelope=verified)
+
     def issue_handle(self, artifact_ref: Mapping[str, Any], audience: ArtifactAudienceBinding) -> str:
         with self._lock:
             self._validate_audience(audience)
@@ -644,6 +798,125 @@ class ArtifactRegistry:
                 if error.code != "ARTIFACT_ALREADY_EXISTS" or self._read(path, maximum_bytes=_MAX_BLOB_BYTES) != data:
                     raise
         return {"blobId": f"sha256:{digest}", "sha256": digest, "sizeBytes": len(data), "mediaType": media_type}
+
+    def put_blob_path(
+        self,
+        source_path: Path,
+        *,
+        media_type: str,
+        maximum_bytes: int = _MAX_BLOB_BYTES,
+    ) -> dict[str, Any]:
+        """Stream one verified regular file into the content-addressed Blob store."""
+
+        if not isinstance(media_type, str) or not _MEDIA_TYPE_RE.fullmatch(media_type):
+            raise ArtifactRegistryError("ARTIFACT_BLOB_INVALID", "Blob media type is invalid")
+        if (
+            isinstance(maximum_bytes, bool)
+            or not isinstance(maximum_bytes, int)
+            or maximum_bytes < 0
+            or maximum_bytes > _MAX_BLOB_BYTES
+        ):
+            raise ArtifactRegistryError("ARTIFACT_BLOB_INVALID", "Blob size limit is invalid")
+        path = Path(source_path)
+        if not path.is_absolute():
+            raise ArtifactRegistryError("ARTIFACT_BLOB_INVALID", "Blob source must be absolute")
+        try:
+            before = path.lstat()
+        except OSError as error:
+            raise ArtifactRegistryError("ARTIFACT_BLOB_UNAVAILABLE", "Blob source is unavailable") from error
+        attributes = getattr(before, "st_file_attributes", 0)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or stat.S_ISLNK(before.st_mode)
+            or attributes & 0x400
+            or before.st_nlink != 1
+        ):
+            raise ArtifactRegistryError("ARTIFACT_BLOB_UNSAFE", "Blob source is not a unique regular file")
+        if before.st_size < 0 or before.st_size > maximum_bytes:
+            raise ArtifactRegistryError("ARTIFACT_BLOB_TOO_LARGE", "Blob exceeds its size limit")
+        incoming = self._root / "blobs" / f".incoming-{secrets.token_hex(24)}.partial"
+        self._ensure_storage_parent(incoming.parent)
+        source_descriptor: int | None = None
+        output_descriptor: int | None = None
+        digest_builder = hashlib.sha256()
+        total = 0
+        stream_completed = False
+        try:
+            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOINHERIT", 0)
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            source_descriptor = os.open(path, flags)
+            opened = os.fstat(source_descriptor)
+            if (opened.st_dev, opened.st_ino, opened.st_size) != (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+            ):
+                raise ArtifactRegistryError("ARTIFACT_BLOB_CHANGED", "Blob source changed before reading")
+            output_descriptor = os.open(
+                incoming,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOINHERIT", 0),
+                0o600,
+            )
+            while True:
+                chunk = os.read(source_descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > maximum_bytes:
+                    raise ArtifactRegistryError("ARTIFACT_BLOB_TOO_LARGE", "Blob exceeds its size limit")
+                digest_builder.update(chunk)
+                offset = 0
+                while offset < len(chunk):
+                    written = os.write(output_descriptor, chunk[offset:])
+                    if written <= 0:
+                        raise ArtifactRegistryError("ARTIFACT_BLOB_WRITE_FAILED", "Blob write stalled")
+                    offset += written
+            os.fsync(output_descriptor)
+            after_fd = os.fstat(source_descriptor)
+            after_path = path.lstat()
+            identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            if identity != (after_fd.st_dev, after_fd.st_ino, after_fd.st_size, after_fd.st_mtime_ns) or identity != (
+                after_path.st_dev,
+                after_path.st_ino,
+                after_path.st_size,
+                after_path.st_mtime_ns,
+            ):
+                raise ArtifactRegistryError("ARTIFACT_BLOB_CHANGED", "Blob source changed while reading")
+            stream_completed = True
+        except OSError as error:
+            raise ArtifactRegistryError("ARTIFACT_BLOB_UNAVAILABLE", "Blob source could not be read safely") from error
+        finally:
+            try:
+                if source_descriptor is not None:
+                    os.close(source_descriptor)
+            finally:
+                try:
+                    if output_descriptor is not None:
+                        os.close(output_descriptor)
+                finally:
+                    if not stream_completed:
+                        try:
+                            incoming.unlink()
+                        except FileNotFoundError:
+                            pass
+        digest = digest_builder.hexdigest()
+        destination = self._blob_path(digest)
+        try:
+            with self._lock:
+                self._ensure_storage_parent(destination.parent)
+                try:
+                    os.link(incoming, destination)
+                except FileExistsError:
+                    existing_size, existing_digest = _safe_file_digest(destination, maximum_bytes=maximum_bytes)
+                    if existing_size != total or existing_digest != digest:
+                        raise ArtifactRegistryError("ARTIFACT_BLOB_MISMATCH", "Existing Blob failed verification")
+        finally:
+            try:
+                incoming.unlink()
+            except FileNotFoundError:
+                pass
+        return {"blobId": f"sha256:{digest}", "sha256": digest, "sizeBytes": total, "mediaType": media_type}
 
     def read_blob(self, blob_ref: Mapping[str, Any]) -> bytes:
         digest = blob_ref.get("sha256")

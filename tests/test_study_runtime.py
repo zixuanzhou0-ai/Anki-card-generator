@@ -64,7 +64,8 @@ def test_study_runtime_composes_all_registries_under_one_service_identity(
     assert capabilities["artifactRegistry"] is True
     assert capabilities["studyTaskCoordinator"] is True
     assert capabilities["taskSourceBinding"] is True
-    assert capabilities["sourceAssetPublication"] is False
+    assert capabilities["sourceAssetPublication"] is True
+    assert capabilities["publicInputRegistration"] is True
     assert capabilities["pathDisclosure"] is False
     assert len(backend.values) == 1
     serialized = json.dumps(capabilities, sort_keys=True)

@@ -450,16 +450,6 @@ class TaskSourceBindingRuntime:
         kind, resource_ref, display_name, revision, constraints, expires_at = (
             self._parse_input_ref(input_ref)
         )
-        try:
-            self._tasks.authorize_local_source_binding(
-                task_id,
-                audience,
-                expected_input_fingerprint=input_fingerprint,
-                source_revision_digest=revision,
-                require_prestart=True,
-            )
-        except StudyTaskError as error:
-            raise TaskSourceBindingError(error.code, error.message) from error
         audience_digest = self._audience_digest(audience)
         binding_ref = self._binding_ref(
             audience_digest=audience_digest,
@@ -491,7 +481,27 @@ class TaskSourceBindingRuntime:
                         "TASK_SOURCE_IDEMPOTENCY_CONFLICT",
                         "registrationId was reused for a different source binding",
                     )
+                try:
+                    self._tasks.authorize_local_source_binding(
+                        task_id,
+                        audience,
+                        expected_input_fingerprint=input_fingerprint,
+                        source_revision_digest=revision,
+                        require_prestart=False,
+                    )
+                except StudyTaskError as error:
+                    raise TaskSourceBindingError(error.code, error.message) from error
                 return self._public(existing)
+        try:
+            self._tasks.authorize_local_source_binding(
+                task_id,
+                audience,
+                expected_input_fingerprint=input_fingerprint,
+                source_revision_digest=revision,
+                require_prestart=True,
+            )
+        except StudyTaskError as error:
+            raise TaskSourceBindingError(error.code, error.message) from error
         try:
             summary = self._resources.local_registry.inspect(resource_ref, audience)
         except Exception as error:

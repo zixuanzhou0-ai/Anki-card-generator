@@ -249,6 +249,83 @@ def test_completeness_invariant_and_blob_integrity(tmp_path: Path) -> None:
     assert tampered.value.code == "ARTIFACT_BLOB_MISMATCH"
 
 
+def test_blob_path_streams_deduplicates_and_enforces_limits(tmp_path: Path, monkeypatch) -> None:
+    store = registry(tmp_path / "registry")
+    source = (tmp_path / "source.bin").resolve()
+    source.write_bytes((b"streamed-source-" * 65536) + b"end")
+
+    original_read_bytes = Path.read_bytes
+
+    def forbid_source_read_bytes(path: Path) -> bytes:
+        if path == source:
+            raise AssertionError("streaming Blob ingestion must not call Path.read_bytes")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", forbid_source_read_bytes)
+    first = store.put_blob_path(
+        source,
+        media_type="application/octet-stream",
+        maximum_bytes=source.stat().st_size,
+    )
+    second = store.put_blob_path(
+        source,
+        media_type="application/octet-stream",
+        maximum_bytes=source.stat().st_size,
+    )
+    assert second == first
+    assert first["sizeBytes"] == source.stat().st_size
+    assert first["sha256"] == hashlib.sha256(original_read_bytes(source)).hexdigest()
+
+    with pytest.raises(ArtifactRegistryError) as too_large:
+        store.put_blob_path(
+            source,
+            media_type="application/octet-stream",
+            maximum_bytes=source.stat().st_size - 1,
+        )
+    assert too_large.value.code == "ARTIFACT_BLOB_TOO_LARGE"
+
+
+def test_idempotent_publish_reissues_handle_and_repairs_missing_record(
+    tmp_path: Path,
+) -> None:
+    store = registry(tmp_path / "registry")
+    arguments = {
+        "audience": audience(),
+        "project_id": "project-1",
+        "project_revision": 1,
+        "artifact_id": "source-stable-1",
+        "artifact_revision": 1,
+        "payload_schema": "study.source-asset",
+        "payload_schema_version": 1,
+        "payload": {"sourceId": "source-stable-1", "status": "ready"},
+        "producer": {"component": "source-registration", "version": "1.0.0"},
+        "parents": [],
+        "input_fingerprint": INPUT_FINGERPRINT,
+        "completeness": {
+            "state": "complete",
+            "omittedLocators": [],
+            "reasonCodes": [],
+        },
+        "issue_refs": [],
+    }
+    first = store.publish_idempotent(**arguments)
+    repeated = store.publish_idempotent(**arguments)
+    assert repeated.envelope == first.envelope
+    assert repeated.handle != first.handle
+    assert store.resolve(repeated.handle, audience()) == first.envelope
+
+    record_path = store._record_path(first.artifact_ref["registryAuthRef"])
+    record_path.unlink()
+    repaired = store.publish_idempotent(**arguments)
+    assert store.resolve(repaired.handle, audience()) == first.envelope
+
+    with pytest.raises(ArtifactRegistryError) as conflict:
+        store.publish_idempotent(
+            **{**arguments, "payload": {"sourceId": "source-stable-1", "status": "blocked"}}
+        )
+    assert conflict.value.code == "ARTIFACT_IDEMPOTENCY_CONFLICT"
+
+
 def test_wrong_registry_key_cannot_read_authenticated_records(tmp_path: Path) -> None:
     first = registry(tmp_path / "registry")
     publication = publish(first)
