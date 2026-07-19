@@ -285,6 +285,37 @@ def test_blob_path_streams_deduplicates_and_enforces_limits(tmp_path: Path, monk
     assert too_large.value.code == "ARTIFACT_BLOB_TOO_LARGE"
 
 
+def test_blob_path_preserves_windows_newlines_and_prefix_reader_verifies_full_blob(
+    tmp_path: Path,
+) -> None:
+    store = registry(tmp_path / "registry")
+    source = (tmp_path / "windows-newlines.txt").resolve()
+    original = b"first line\r\nsecond line\nthird line\r\n"
+    source.write_bytes(original)
+
+    blob = store.put_blob_path(source, media_type="text/plain")
+
+    assert blob["sizeBytes"] == len(original)
+    assert blob["sha256"] == hashlib.sha256(original).hexdigest()
+    assert store.read_blob(blob) == original
+    prefix, truncated = store.read_blob_prefix(blob, maximum_prefix_bytes=12)
+    assert prefix == original[:12]
+    assert truncated is True
+    complete, truncated = store.read_blob_prefix(
+        blob, maximum_prefix_bytes=len(original)
+    )
+    assert complete == original
+    assert truncated is False
+
+    store._blob_path(blob["sha256"]).write_bytes(b"tampered")
+    with pytest.raises(ArtifactRegistryError) as corrupted:
+        store.read_blob_prefix(blob, maximum_prefix_bytes=4)
+    assert corrupted.value.code in {
+        "ARTIFACT_STORAGE_UNSAFE",
+        "ARTIFACT_BLOB_MISMATCH",
+    }
+
+
 def test_idempotent_publish_reissues_handle_and_repairs_missing_record(
     tmp_path: Path,
 ) -> None:

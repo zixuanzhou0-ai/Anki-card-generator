@@ -1,6 +1,6 @@
 # MCP 工具参考
 
-> 状态：CURRENT 最小桥 + PROPOSED 完整工具契约；可信会话已实现 `system.get_capabilities`、`system.request_source_grant`、`system.request_output_grant`、`study.create_project` 与 `study.register_inputs`
+> 状态：CURRENT 最小桥 + PROPOSED 完整工具契约；可信会话已实现 `system.get_capabilities`、`system.request_source_grant`、`system.request_output_grant`、`study.create_project`、`study.register_inputs`、`study.start_source_inspection` 与 `study.get_source_inspection`
 > 日期：2026-07-18
 > 工具名和 schema 在实现前仍可调整；一旦 V1 发布即按版本策略维护。
 
@@ -17,7 +17,7 @@ MCP 工具服务于用户意图，而不是暴露内部 Worker。工具层必须
 
 官方工具设计参考：[Describe tools](https://developers.openai.com/apps-sdk/build/mcp-server#step-2--describe-tools)。
 
-当前桥实现协议握手、动态工具发现、零参数只读能力快照，以及可信会话中的本地 source/output opaque grant、幂等 `study.create_project` 和 `study.register_inputs`。没有原生 launcher audience 时只公开 `system.get_capabilities`；可信 audience 由父 PID、固定 launcher 可执行文件、当前 OS 用户 SID 摘要和每进程随机 nonce 派生，工具参数不能自报。桥仍不接受任意路径、URL、调用方构造的 Artifact 或 OperationIntent，也不公开素材检查、候选发现、生成、导出、Anki 写入、凭据、原始 Worker 或 Shell；下文其余工具仍是后续里程碑的目标合同。
+当前桥实现协议握手、动态工具发现、零参数只读能力快照，以及可信会话中的本地 source/output opaque grant、幂等项目/素材登记与有界确定性素材检查。没有原生 launcher audience 时只公开 `system.get_capabilities`；可信 audience 由父 PID、固定 launcher 可执行文件、当前 OS 用户 SID 摘要和每进程随机 nonce 派生，工具参数不能自报。桥仍不接受任意路径、URL、调用方构造的 Artifact 或 OperationIntent，也不公开候选发现、模型生成、导出、Anki 写入、凭据、原始 Worker 或 Shell；下文其余工具仍是后续里程碑的目标合同。
 
 ## 2. 公共请求约定
 
@@ -395,19 +395,15 @@ snapshotPolicy：
 
 ### 5.6 study.start_source_inspection
 
-返回：
+CURRENT 输入为封闭对象：`context` 只接受 projectId、expectedProjectRevision、idempotencyKey 和可选 locale；`sourceHandles` 接受 1–64 个当前项目的认证 SourceAsset handle。schema 不接受路径、URL、source text、audience、解析器参数、模型 profile 或网络能力。
 
-- 每个来源的 identity、revision、representation。
-- 读取覆盖率。
-- 页/文件/时间段遗漏。
-- 可用证据定位器。
-- 推荐学习路线和阻塞项。
+Card Service 创建可恢复 StudyTask，逐来源验证认证 Blob，再发布 `study.source-representation`、`study.source-inspection` 与汇总 `study.inspection`。纯文本、Markdown、代码、HTML 和 SRT/VTT/ASS/SSA 走无模型、无网络的确定性解析；HTML 的 script/style/noscript/template 内容不会进入可见文本，字幕保留 cue 时间。受限目录只解析 manifest 中已快照且受支持的成员。PDF、Office、图片、音视频等尚无本安全解析器的来源显式返回 C 级 `SOURCE_PARSER_NOT_AVAILABLE`，超过同步上限的来源返回 `SOURCE_ASYNC_INSPECTION_REQUIRED`，不会无限同步读取或伪造成功。
 
-该工具会创建 InspectionArtifact，readOnlyHint=false。若解析耗时则返回 TaskRef；完成后使用 study.get_source_inspection 读取结果。
+公开结果仅返回项目 revision、taskId、inspectionHandle、每个来源的 identity 摘要、支持级别、覆盖计数、推荐路线和 issue code；不返回来源正文、BlobRef、SourceAsset 内部 ref、原始路径、目录成员名、InputRef、staging receipt 或私有任务记录。至少一个来源形成可用表示时项目保持 `sources_ready` 并把主动作推进为 `discover_candidates`；全部阻塞时主动作是 `resolve_issue`。当前工具为有界同步调用，公共 task poll/cancel 与大型异步解析器仍待统一任务工具开放。
 
 ### 5.7 study.get_source_inspection
 
-输入 sourceInspectionRef 或 projectId + source revision，只读取已存在的 InspectionArtifact、覆盖率、遗漏和阻塞；readOnlyHint=true，不启动解析。
+CURRENT 输入只接受一个认证 `inspectionHandle`。工具只读取已经存在的 `study.inspection` 及其来源检查 Artifact，返回与 start 相同的脱敏结果；readOnlyHint=true，不启动解析、不调用模型或网络，也不能借 handle 越过 project/audience/session scope。
 
 ## 6. 发现任务
 

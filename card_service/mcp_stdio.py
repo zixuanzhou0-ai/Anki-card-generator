@@ -11,6 +11,12 @@ from .mcp_input_tools import (
     call_input_tool,
     input_tool_definitions,
 )
+from .mcp_inspection_tools import (
+    INSPECTION_TOOL_NAMES,
+    McpInspectionToolInputError,
+    call_inspection_tool,
+    inspection_tool_definitions,
+)
 from .mcp_project_tools import (
     PROJECT_TOOL_NAMES,
     McpProjectToolInputError,
@@ -113,6 +119,7 @@ def _tool_definitions(
         definitions.extend(resource_tool_definitions())
         definitions.extend(project_tool_definitions())
         definitions.extend(input_tool_definitions())
+        definitions.extend(inspection_tool_definitions())
     return definitions
 
 
@@ -197,9 +204,9 @@ def _handle_request(
                 "instructions": (
                     "Start with system.get_capabilities. Trusted launcher sessions may request "
                     "opaque source and output grants through native pickers and create a local "
-                    "Study project, then freeze selected InputRefs with study.register_inputs. "
-                    "Inspection, generation, export, import, credentials, and raw Worker commands "
-                    "remain unavailable."
+                    "Study project, freeze selected InputRefs with study.register_inputs, then "
+                    "run deterministic source inspection. Candidate discovery, generation, export, "
+                    "import, credentials, and raw Worker commands remain unavailable."
                 ),
             },
         )
@@ -267,6 +274,23 @@ def _handle_request(
             except Exception:
                 return _response(request_id, result=_tool_error())
             return _response(request_id, result=result)
+        if tool_name in INSPECTION_TOOL_NAMES:
+            if audience_session is None:
+                return _rpc_error(request_id, -32602, "Unknown tool")
+            try:
+                result = call_inspection_tool(
+                    service,
+                    tool_name=str(tool_name),
+                    arguments=arguments,
+                    audience_session=audience_session,
+                )
+            except McpInspectionToolInputError:
+                return _rpc_error(request_id, -32602, "Invalid inspection tool arguments")
+            except CardServiceError as error:
+                return _response(request_id, result=_tool_error(error))
+            except Exception:
+                return _response(request_id, result=_tool_error())
+            return _response(request_id, result=result)
         if tool_name != CAPABILITY_TOOL_NAME:
             return _rpc_error(request_id, -32602, "Unknown tool")
         if not isinstance(arguments, dict) or arguments:
@@ -302,7 +326,8 @@ def _handle_request(
                         "type": "text",
                         "text": (
                             "The local Card Service capability snapshot is available. "
-                            "Generation and Anki delivery tools remain disabled at this milestone."
+                            "Deterministic source inspection is available. Candidate discovery, "
+                            "generation, and Anki delivery remain disabled at this milestone."
                         ),
                     }
                 ],

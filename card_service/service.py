@@ -905,8 +905,10 @@ class CardService:
             "studyTaskCoordinator": True,
             "taskSourceBinding": True,
             "sourceAssetPublication": True,
+            "sourceInspection": True,
             "publicProjectTools": True,
             "publicInputRegistration": True,
+            "publicSourceInspection": True,
             "pathDisclosure": False,
             "complete": False,
         }
@@ -1041,6 +1043,50 @@ class CardService:
                 error.message,
                 retryable=error.code.endswith(("_CONFLICT", "_UNAVAILABLE", "_REQUIRED")),
                 stage="source_registration",
+            ) from error
+
+    def inspect_study_sources(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_id: str,
+        expected_project_revision: int,
+        idempotency_key: str,
+        source_handles: list[str],
+    ) -> dict[str, Any]:
+        try:
+            return self._ensure_study_runtime().start_source_inspection(
+                audience=audience,
+                project_id=project_id,
+                expected_project_revision=expected_project_revision,
+                idempotency_key=idempotency_key,
+                source_handles=source_handles,
+            )
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=error.code.endswith(("_CONFLICT", "_UNAVAILABLE", "_REQUIRED")),
+                stage="source_inspection",
+            ) from error
+
+    def get_study_source_inspection(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        inspection_handle: str,
+    ) -> dict[str, Any]:
+        try:
+            return self._ensure_study_runtime().get_source_inspection(
+                audience=audience,
+                inspection_handle=inspection_handle,
+            )
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=False,
+                stage="source_inspection",
             ) from error
 
     @staticmethod

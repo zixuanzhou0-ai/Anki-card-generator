@@ -14,6 +14,7 @@ from .artifact_registry import (
 from .credentials import CredentialStore, CredentialStoreError
 from .project_registry import ProjectRegistry, ProjectRegistryError
 from .resource_runtime import ServiceResourceRuntime
+from .source_inspection import SourceInspectionError, SourceInspectionRuntime
 from .source_registration import (
     SourceRegistrationError,
     SourceRegistrationRuntime,
@@ -111,6 +112,12 @@ class StudyRuntime:
                 workspace_factory=workspace_factory,
                 workspace_releaser=workspace_releaser,
             )
+            self.source_inspection = SourceInspectionRuntime(
+                service_instance_id=self.service_instance_id,
+                artifacts=self.artifacts,
+                projects=self.projects,
+                tasks=self.tasks,
+            )
         except (
             CredentialStoreError,
             ArtifactRegistryError,
@@ -118,6 +125,7 @@ class StudyRuntime:
             StudyTaskError,
             TaskSourceBindingError,
             SourceRegistrationError,
+            SourceInspectionError,
             OSError,
         ) as error:
             raise StudyRuntimeError(
@@ -135,8 +143,10 @@ class StudyRuntime:
             "studyTaskCoordinator": True,
             "taskSourceBinding": True,
             "sourceAssetPublication": True,
+            "sourceInspection": True,
             "publicProjectTools": True,
             "publicInputRegistration": True,
+            "publicSourceInspection": True,
             "pathDisclosure": False,
             "complete": False,
         }
@@ -199,4 +209,43 @@ class StudyRuntime:
             StudyTaskError,
             TaskSourceBindingError,
         ) as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
+    def start_source_inspection(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_id: str,
+        expected_project_revision: int,
+        idempotency_key: str,
+        source_handles: list[str],
+    ) -> dict[str, Any]:
+        try:
+            return self.source_inspection.start_inspection(
+                audience=audience,
+                project_id=project_id,
+                expected_project_revision=expected_project_revision,
+                idempotency_key=idempotency_key,
+                source_handles=source_handles,
+            )
+        except (
+            SourceInspectionError,
+            ArtifactRegistryError,
+            ProjectRegistryError,
+            StudyTaskError,
+        ) as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
+    def get_source_inspection(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        inspection_handle: str,
+    ) -> dict[str, Any]:
+        try:
+            return self.source_inspection.get_inspection(
+                audience=audience,
+                inspection_handle=inspection_handle,
+            )
+        except (SourceInspectionError, ArtifactRegistryError) as error:
             raise StudyRuntimeError(error.code, error.message) from error

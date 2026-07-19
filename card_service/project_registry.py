@@ -682,6 +682,7 @@ class ProjectRegistry:
         artifact_stage: str,
         artifact_refs: Sequence[Mapping[str, Any]],
         artifact_handles: Sequence[str],
+        primary_action_id: str | None = None,
     ) -> dict[str, Any]:
         project_id = _require_id(project_id, "projectId")
         expected_revision = _require_revision(
@@ -693,6 +694,19 @@ class ProjectRegistry:
         if artifact_stage not in ARTIFACT_STAGES or artifact_stage == "empty":
             raise ProjectRegistryError(
                 "PROJECT_ARTIFACT_STAGE_INVALID", "artifactStage is invalid"
+            )
+        default_step, default_action = _workflow_for_stage(artifact_stage)
+        if primary_action_id is None:
+            product_step, primary_action = default_step, default_action
+        elif artifact_stage == "sources_ready" and primary_action_id in {
+            "discover_candidates",
+            "resolve_issue",
+        }:
+            product_step, primary_action = "source", primary_action_id
+        else:
+            raise ProjectRegistryError(
+                "PROJECT_ARTIFACT_STAGE_INVALID",
+                "primaryActionId is invalid for the artifact stage",
             )
         refs = self._artifact_refs(artifact_refs, project_id)
         if (
@@ -767,9 +781,8 @@ class ProjectRegistry:
                     "currentTaskId": task_id,
                 }
             )
-            workflow["productStep"], workflow["primaryActionId"] = _workflow_for_stage(
-                artifact_stage
-            )
+            workflow["productStep"] = product_step
+            workflow["primaryActionId"] = primary_action
             result = {
                 "projectId": project_id,
                 "projectRevision": updated["projectRevision"],

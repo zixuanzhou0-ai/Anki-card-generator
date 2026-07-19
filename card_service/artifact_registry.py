@@ -855,7 +855,11 @@ class ArtifactRegistry:
                 raise ArtifactRegistryError("ARTIFACT_BLOB_CHANGED", "Blob source changed before reading")
             output_descriptor = os.open(
                 incoming,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOINHERIT", 0),
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_BINARY", 0)
+                | getattr(os, "O_NOINHERIT", 0),
                 0o600,
             )
             while True:
@@ -928,3 +932,85 @@ class ArtifactRegistry:
         if len(data) != size or _sha256(data) != digest or blob_ref.get("blobId") != f"sha256:{digest}":
             raise ArtifactRegistryError("ARTIFACT_BLOB_MISMATCH", "Blob integrity verification failed")
         return data
+
+    def read_blob_prefix(
+        self,
+        blob_ref: Mapping[str, Any],
+        *,
+        maximum_prefix_bytes: int,
+    ) -> tuple[bytes, bool]:
+        """Verify a Blob by streaming it while retaining only a bounded prefix."""
+
+        digest = blob_ref.get("sha256")
+        size = blob_ref.get("sizeBytes")
+        _validate_digest("blob.sha256", digest)
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0 or size > _MAX_BLOB_BYTES:
+            raise ArtifactRegistryError("ARTIFACT_BLOB_INVALID", "Blob size is invalid")
+        if (
+            isinstance(maximum_prefix_bytes, bool)
+            or not isinstance(maximum_prefix_bytes, int)
+            or maximum_prefix_bytes < 0
+            or maximum_prefix_bytes > _MAX_BLOB_BYTES
+        ):
+            raise ArtifactRegistryError(
+                "ARTIFACT_BLOB_INVALID", "Blob prefix limit is invalid"
+            )
+        if blob_ref.get("blobId") != f"sha256:{digest}":
+            raise ArtifactRegistryError(
+                "ARTIFACT_BLOB_MISMATCH", "Blob identity is invalid"
+            )
+        path = self._blob_path(digest)
+        try:
+            before = path.lstat()
+        except OSError as error:
+            raise ArtifactRegistryError(
+                "ARTIFACT_NOT_FOUND", "Blob registry entry was not found"
+            ) from error
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or stat.S_ISLNK(before.st_mode)
+            or getattr(before, "st_file_attributes", 0) & 0x400
+            or before.st_nlink != 1
+            or before.st_size != size
+        ):
+            raise ArtifactRegistryError(
+                "ARTIFACT_STORAGE_UNSAFE", "Blob registry entry is unsafe"
+            )
+        builder = hashlib.sha256()
+        retained = bytearray()
+        total = 0
+        try:
+            with path.open("rb") as source:
+                while True:
+                    chunk = source.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > _MAX_BLOB_BYTES:
+                        raise ArtifactRegistryError(
+                            "ARTIFACT_BLOB_TOO_LARGE", "Blob exceeds its size limit"
+                        )
+                    builder.update(chunk)
+                    remaining = maximum_prefix_bytes - len(retained)
+                    if remaining > 0:
+                        retained.extend(chunk[:remaining])
+        except OSError as error:
+            raise ArtifactRegistryError(
+                "ARTIFACT_BLOB_UNAVAILABLE", "Blob could not be read safely"
+            ) from error
+        try:
+            after = path.lstat()
+        except OSError as error:
+            raise ArtifactRegistryError(
+                "ARTIFACT_BLOB_CHANGED", "Blob changed while being read"
+            ) from error
+        identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+        if identity != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+            raise ArtifactRegistryError(
+                "ARTIFACT_BLOB_CHANGED", "Blob changed while being read"
+            )
+        if total != size or builder.hexdigest() != digest:
+            raise ArtifactRegistryError(
+                "ARTIFACT_BLOB_MISMATCH", "Blob integrity verification failed"
+            )
+        return bytes(retained), size > maximum_prefix_bytes

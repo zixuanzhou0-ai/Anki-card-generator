@@ -9,6 +9,10 @@ from typing import Any
 
 from card_service.mcp_stdio import CAPABILITY_TOOL_NAME, MCP_PROTOCOL_VERSION, serve
 from card_service.mcp_input_tools import REGISTER_INPUTS_TOOL_NAME
+from card_service.mcp_inspection_tools import (
+    GET_SOURCE_INSPECTION_TOOL_NAME,
+    START_SOURCE_INSPECTION_TOOL_NAME,
+)
 from card_service.mcp_project_tools import CREATE_PROJECT_TOOL_NAME
 from card_service.mcp_resource_tools import OUTPUT_GRANT_TOOL_NAME, SOURCE_GRANT_TOOL_NAME
 from card_service.trusted_mcp_audience import create_development_mcp_audience
@@ -147,6 +151,8 @@ def test_mcp_bridge_reports_trusted_session_without_disclosing_identity() -> Non
         OUTPUT_GRANT_TOOL_NAME,
         CREATE_PROJECT_TOOL_NAME,
         REGISTER_INPUTS_TOOL_NAME,
+        START_SOURCE_INSPECTION_TOOL_NAME,
+        GET_SOURCE_INSPECTION_TOOL_NAME,
     ]
 
 
@@ -260,6 +266,8 @@ def test_real_mcp_stdio_process_reports_card_service_capabilities(tmp_path: Path
             OUTPUT_GRANT_TOOL_NAME,
             CREATE_PROJECT_TOOL_NAME,
             REGISTER_INPUTS_TOOL_NAME,
+            START_SOURCE_INSPECTION_TOOL_NAME,
+            GET_SOURCE_INSPECTION_TOOL_NAME,
         ]
         called = rpc(
             {

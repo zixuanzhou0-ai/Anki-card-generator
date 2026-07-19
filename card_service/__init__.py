@@ -44,6 +44,7 @@ from .resource_runtime import (
     ServiceResourceRuntime,
     ServiceResourceRuntimeError,
 )
+from .source_inspection import SourceInspectionError, SourceInspectionRuntime
 from .source_registration import (
     SourceRegistrationError,
     SourceRegistrationRuntime,
@@ -92,6 +93,8 @@ __all__ = [
     "TaskResourceStager",
     "ServiceResourceRuntime",
     "ServiceResourceRuntimeError",
+    "SourceInspectionError",
+    "SourceInspectionRuntime",
     "SourceRegistrationError",
     "SourceRegistrationRuntime",
     "TaskSourceBindingError",

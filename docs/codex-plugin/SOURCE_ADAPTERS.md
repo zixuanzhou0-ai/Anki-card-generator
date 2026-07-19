@@ -136,7 +136,7 @@ Agent 不能直接提交任意绝对路径。用户通过宿主附件或本地�
 - 规范路径仍在授权根。
 - 文件身份和元数据未发生未解释变化。
 - 没有 symlink、junction、reparse point、UNC、设备路径、ADS 或保留名逃逸。
-CURRENT M2 内部 `LocalResourceGrantRegistry` 已实现 file/directory/output ref 的上述根授权、短期 audience/service 绑定、动作与资源上限、逐次身份重验、幂等消费和撤销，并由 Card Service 的惰性 `ServiceResourceRuntime` 统一拥有。真实本地 picker 已通过加密私有响应和短期精确 attestation 接到 adapter；可信 stdio 会话现在可用 `system.request_source_grant`/`system.request_output_grant` 取得这些 opaque ref。`study.register_inputs` 已把 file/directory ref 绑定到可恢复 StudyTask、task-local snapshot、内容寻址 Blob/目录 manifest、认证 `study.source-asset` 和项目 `sources_ready` 提交。宿主附件、网络来源、source inspection、candidate discovery 与 APKG 输出绑定尚未接线，因此“已登记素材”仍不等于“已理解素材”或“可以开始生成”。
+CURRENT M2 内部 `LocalResourceGrantRegistry` 已实现 file/directory/output ref 的上述根授权、短期 audience/service 绑定、动作与资源上限、逐次身份重验、幂等消费和撤销，并由 Card Service 的惰性 `ServiceResourceRuntime` 统一拥有。真实本地 picker 已通过加密私有响应和短期精确 attestation 接到 adapter；可信 stdio 会话现在可用 `system.request_source_grant`/`system.request_output_grant` 取得这些 opaque ref。`study.register_inputs` 已把 file/directory ref 绑定到可恢复 StudyTask、task-local snapshot、内容寻址 Blob/目录 manifest、认证 `study.source-asset` 和项目 `sources_ready` 提交。`study.start_source_inspection` 现可对纯文本、Markdown、代码、HTML、字幕以及目录内受支持成员生成确定性表示与明确覆盖率；未知/PDF/Office/音视频等尚无安全解析器时保持 C 级阻塞。宿主附件、网络来源、candidate discovery 与 APKG 输出绑定尚未接线，因此“已检查素材”仍不等于“已经筛出适合学习的知识点”。
 
 
 ### 5.2 目录
@@ -151,7 +151,7 @@ CURRENT M2 内部 `LocalResourceGrantRegistry` 已实现 file/directory/output r
 所有子项逐项校验，不因根目录安全就信任内部 reparse point。
 CURRENT M2 内部 `TaskResourceStager` 已实现目录逐项安全打开/复制、稳定排序 manifest、二次扫描与 task-bound 受限 staging。它逐项拒绝 symlink/junction/reparse、hardlink、非 NFC/大小写冲突、保留名和资源上限越界；Worker 只读取 workspace-relative locator。
 
-CURRENT `study.register_inputs` 已在 staging 完成后把排序的逐文件内容摘要发布为 canonical directory manifest，并以该 manifest 发布 SourceAsset；所以成功结果可以证明当次已接受后代的稳定字节快照。它仍不是完整 Directory Inspection：每项 include/exclude/skip reason、格式探测、解析覆盖率、嵌套压缩包策略和面向用户的完整性说明尚待 source inspection；不能把 `sources_ready` 描述成“目录内容已经全部理解”。
+CURRENT `study.register_inputs` 已在 staging 完成后把排序的逐文件内容摘要发布为 canonical directory manifest，并以该 manifest 发布 SourceAsset；所以成功结果可以证明当次已接受后代的稳定字节快照。CURRENT source inspection 会逐项验证 manifest Blob，解析已支持的文本成员，公开 processed/expected、omitted count 与 reason code；不支持成员、文件/文本/节点上限都会形成显式 partial 或 blocked。它仍不是完整通用 Directory Inspection：include/exclude/skip 的原始授权决策、嵌套压缩包、PDF/Office/媒体解析和逐成员公共预览尚未开放；项目保持 `sources_ready` 只表示来源与检查产物可靠存在，不表示候选知识点已经发现。
 
 
 ## 6. 视频、字幕与音频
