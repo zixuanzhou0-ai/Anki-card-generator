@@ -86,7 +86,11 @@ def _private_payload_aad(*, session_ref: str, request_nonce: str, surface: str) 
         raise ValueError("Trusted surface session reference is invalid")
     if len(request_nonce) != 64:
         raise ValueError("Trusted surface request nonce is invalid")
-    if surface not in {"local_resource_picker", "authorization_manager"}:
+    if surface not in {
+        "local_resource_picker",
+        "network_resource_input",
+        "authorization_manager",
+    }:
         raise ValueError("Trusted surface private payload kind is invalid")
     return canonical_response_bytes(
         {

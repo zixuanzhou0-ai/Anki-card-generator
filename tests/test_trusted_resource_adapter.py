@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import sys
 import time
 from pathlib import Path
@@ -24,6 +25,18 @@ def audience() -> ArtifactAudienceBinding:
         plugin_id="speakright.study",
         session_id="trusted-picker-session",
     )
+
+
+def public_resolver(_host: str, _port: int, **_kwargs: object):
+    return [
+        (
+            socket.AF_INET,
+            socket.SOCK_STREAM,
+            socket.IPPROTO_TCP,
+            "",
+            ("93.184.216.34", 443),
+        )
+    ]
 
 
 def test_card_service_turns_trusted_picker_result_into_opaque_grant(
@@ -117,6 +130,127 @@ def test_card_service_rejects_non_json_picker_constraints_before_launch(
         assert failure.value.code == "RESOURCE_CONSTRAINT_INVALID"
 
     assert not list(service.trusted_surfaces.sessions_dir.glob("*.json"))
+
+
+def test_card_service_turns_trusted_url_input_into_opaque_network_grant(
+    tmp_path: Path,
+) -> None:
+    service = CardService(
+        state_dir=(tmp_path / "service-state").resolve(),
+        python_path=Path(sys.executable).resolve(),
+        trusted_surface_path=FAKE_SURFACE.resolve(),
+        credential_backend=InMemoryCredentialBackend(),
+        use_restricted_launcher=False,
+        network_resource_resolver=public_resolver,
+    )
+    opened = service.request_network_resource_grant(
+        audience=audience(),
+        grant_request_id="trusted-network-1",
+        source_kind="web",
+    )
+    assert opened["state"] == "open"
+    deadline = time.monotonic() + 5
+    result: dict[str, object] = {}
+    while time.monotonic() < deadline:
+        result = service.request_network_resource_grant(
+            audience=audience(),
+            grant_request_id="trusted-network-1",
+            source_kind="web",
+        )
+        if result.get("state") not in {"created", "open"}:
+            break
+        time.sleep(0.02)
+    assert result["state"] == "selected"
+    grant = result["networkGrant"]
+    assert isinstance(grant, dict)
+    assert str(grant["networkResourceRef"]).startswith("network_")
+    assert grant["displayOrigin"] == "https://example.com"
+    assert grant["sourceKind"] == "web"
+    assert grant["sensitiveQuery"] is True
+    assert grant["remainingUses"] == 8
+    serialized = json.dumps(result, ensure_ascii=False, sort_keys=True)
+    assert "surface-canary" not in serialized
+    assert "/study" not in serialized
+    assert "privatePayload" not in serialized
+    persisted = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in service.store.root.rglob("*.json")
+    )
+    assert "surface-canary" not in persisted
+    assert "/study" not in persisted
+    assert service.trusted_surfaces.selected_network_resource(
+        str(opened["sessionRef"])
+    ) is None
+    assert "system.request_network_grant" in service.capabilities()["systemMethods"]
+    assert service.request_network_resource_grant(
+        audience=audience(),
+        grant_request_id="trusted-network-1",
+        source_kind="web",
+    ) == result
+    with pytest.raises(CardServiceError) as conflict:
+        service.request_network_resource_grant(
+            audience=audience(),
+            grant_request_id="trusted-network-1",
+            source_kind="podcast",
+        )
+    assert conflict.value.code == "NETWORK_GRANT_REQUEST_CONFLICT"
+
+
+def test_network_grant_is_revocable_through_the_trusted_manager(
+    tmp_path: Path,
+) -> None:
+    service = CardService(
+        state_dir=(tmp_path / "service-state").resolve(),
+        python_path=Path(sys.executable).resolve(),
+        trusted_surface_path=FAKE_SURFACE.resolve(),
+        credential_backend=InMemoryCredentialBackend(),
+        use_restricted_launcher=False,
+        network_resource_resolver=public_resolver,
+    )
+    opened = service.request_network_resource_grant(
+        audience=audience(),
+        grant_request_id="network-revoke-source",
+        source_kind="web",
+    )
+    deadline = time.monotonic() + 5
+    grant_result: dict[str, object] = {}
+    while time.monotonic() < deadline:
+        grant_result = service.request_network_resource_grant(
+            audience=audience(),
+            grant_request_id="network-revoke-source",
+            source_kind="web",
+        )
+        if grant_result.get("state") not in {"created", "open"}:
+            break
+        time.sleep(0.02)
+    grant = grant_result["networkGrant"]
+    assert isinstance(grant, dict)
+
+    manager = service.request_authorization_revocation(audience=audience())
+    session_ref = str(manager["authorizationSessionRef"])
+    manager_request = (
+        service.trusted_surfaces.sessions_dir / f"{session_ref}.json"
+    ).read_text(encoding="utf-8")
+    assert str(grant["networkResourceRef"]) not in manager_request
+    assert "surface-canary" not in manager_request
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        manager = service.request_authorization_revocation(
+            audience=audience(), authorization_session_ref=session_ref
+        )
+        if manager.get("state") not in {"open", "created", "processing"}:
+            break
+        time.sleep(0.02)
+    assert manager["state"] == "completed"
+    assert manager["revokedCount"] == 1
+    assert manager["results"] == [
+        {"kind": "network_resource", "disposition": "revoked"}
+    ]
+    inspected = service._ensure_network_resource_registry().inspect(
+        str(grant["networkResourceRef"]), audience()
+    )
+    assert inspected["state"] == "revoked"
+    assert str(grant["networkResourceRef"]) not in json.dumps(manager)
 
 
 def test_public_resource_request_is_idempotent_and_scope_is_service_owned(

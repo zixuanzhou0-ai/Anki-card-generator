@@ -279,7 +279,7 @@ type InputRef =
 InputRef 不携带永久原始绝对路径或 raw URL。fileResourceRef、directoryResourceRef 和 networkResourceRef 由本地服务通过受信授权流程签发；MCP 后续调用只能缩小范围，不能替换 URL path/query 或扩大目录。
 CURRENT M2 内部实现已能签发 `fileResourceRef`、`directoryResourceRef`、`outputResourceRef` 和 `networkResourceRef`。本地 raw path 只留在认证私有账本；网络 raw/signed URL 只留在当前 Service 进程的短期 locator 内存，持久记录只保存不可逆 request/query 摘要和脱敏 origin。所有 ref 绑定 owner/host/plugin/session/service instance、资源 revision/策略、动作、硬上限、期限、次数和撤销 epoch。
 
-本地 file/directory ref 现可在再次授权验证后绑定到尚未启动的 StudyTask：Task input manifest 必须已经承诺完全相同的 source revision，当前 audience/service/session 必须与任务创建身份一致，内部 receipt 绑定 workspace identity 与逐项 manifest，对 Worker 只暴露相对 task locator。可信选择器已把它们作为公开 grant 结果返回；公共 `study.register_inputs` 已发布认证 SourceAsset，`study.start_source_inspection` 已对受支持文本/字幕/目录成员发布确定性表示和 InspectionArtifact。内部 candidate discovery、认证候选图、三个只读候选/证据查询与本地认证 SelectionArtifact 写入已完成；公共异步 discovery 启动、宿主附件、网络 staging 与统一 Card Service 跨 Registry 事务仍未完成。Service 重启后的 network ref 仍必须重新授权。
+本地 file/directory ref 现可在再次授权验证后绑定到尚未启动的 StudyTask：Task input manifest 必须已经承诺完全相同的 source revision，当前 audience/service/session 必须与任务创建身份一致，内部 receipt 绑定 workspace identity 与逐项 manifest，对 Worker 只暴露相对 task locator。网络 InputRef 也已通过受信本地 URL 表面与公开 `system.request_network_grant` 接线；公共 `study.register_inputs` 对网页执行匿名固定 IP HTTPS 快照，对 YouTube public_video 只获取规范化视频 ID 对应的字幕快照，随后发布认证 SourceAsset。`study.start_source_inspection` 已对受支持文本、HTML、字幕和目录成员发布确定性表示；播客、完整视频/音频、PDF/Office 解析和宿主附件仍未完成。Service 重启后的 network ref 仍必须重新授权。
 
 
 ## 5.1 Learning Contract 与偏好层

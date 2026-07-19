@@ -60,6 +60,10 @@ from .local_resource_registry import (
     MAX_OUTPUT_BYTES,
     MAX_OUTPUT_FILES,
 )
+from .network_resource_registry import (
+    NetworkResourceGrantRegistry,
+    NetworkResourceRegistryError,
+)
 from .process_isolation import ProcessIsolationError, TaskOwnedProcessGroup
 from .package_artifact_runtime import PackageExportCancelled
 from .runtime_manifest import (
@@ -684,6 +688,7 @@ class CardService:
         trusted_surface_path: str | Path | None = None,
         use_restricted_launcher: bool | None = None,
         resource_gesture_verifier: Callable[[str, str, str, str], bool] | None = None,
+        network_resource_resolver: Callable[..., Any] | None = None,
         anki_connect_url: str = ANKI_CONNECT_URL,
         hermes_proxy_manager: HermesProxyManager | None = None,
         profile_validation_transports: Mapping[str, ProviderTransport] | None = None,
@@ -699,10 +704,13 @@ class CardService:
                 "RUNTIME_TRUST_POLICY_CONFLICT",
                 "Runtime trust policy is only valid with a packaged runtime",
             )
-        if runtime_package is not None and resource_gesture_verifier is not None:
+        if runtime_package is not None and (
+            resource_gesture_verifier is not None
+            or network_resource_resolver is not None
+        ):
             raise CardServiceError(
                 "RESOURCE_GESTURE_VERIFIER_INJECTION_FORBIDDEN",
-                "Packaged runtime resource gestures must come from the trusted local surface",
+                "Packaged runtime resource trust dependencies must use production defaults",
             )
 
         if runtime_package is not None:
@@ -839,7 +847,9 @@ class CardService:
             profile_validation_transports or {}
         )
         self._resource_gesture_verifier = resource_gesture_verifier
+        self._network_resource_resolver = network_resource_resolver
         self._resource_runtime: ServiceResourceRuntime | None = None
+        self._network_resource_registry: NetworkResourceGrantRegistry | None = None
         self._study_runtime: StudyRuntime | None = None
         self._study_runtime_lock = threading.RLock()
         self._service_profile_registry: ServiceProfileRegistry | None = None
@@ -857,6 +867,11 @@ class CardService:
         self._local_picker_requests: dict[str, dict[str, Any]] = {}
         self._completed_local_picker_grants: dict[str, dict[str, Any]] = {}
         self._local_picker_request_index: dict[tuple[str, str, str, str, str], dict[str, str]] = {}
+        self._network_resource_requests: dict[str, dict[str, Any]] = {}
+        self._completed_network_resource_grants: dict[str, dict[str, Any]] = {}
+        self._network_resource_request_index: dict[
+            tuple[str, str, str, str, str], dict[str, str]
+        ] = {}
         self._resource_runtime_lock = threading.RLock()
         self._anki_import_confirmation_requests: dict[
             tuple[str, str, str, str, str], str
@@ -1246,6 +1261,47 @@ class CardService:
 
         return {**self._ensure_resource_runtime().capabilities(), "initialized": True}
 
+    def _ensure_network_resource_registry(self) -> NetworkResourceGrantRegistry:
+        with self._resource_runtime_lock:
+            if self._network_resource_registry is not None:
+                return self._network_resource_registry
+            try:
+                credential_store = CredentialStore(
+                    state_dir=self.store.root / "trusted-surfaces" / "credentials",
+                    backend=self._credential_backend,
+                )
+                resource_runtime = self._ensure_resource_runtime()
+                kwargs: dict[str, Any] = {}
+                if self._network_resource_resolver is not None:
+                    kwargs["resolver"] = self._network_resource_resolver
+                registry = NetworkResourceGrantRegistry(
+                    (self.store.root / "network-resource-runtime").resolve(),
+                    authentication_key=credential_store.derive_service_key(
+                        "network-resource-registry-v1",
+                        context=b"codex-study-card-service",
+                    ),
+                    service_instance_id=resource_runtime.service_instance_id,
+                    gesture_verifier=(
+                        self._resource_gesture_verifier
+                        or self.trusted_surfaces.verify_resource_gesture
+                    ),
+                    **kwargs,
+                )
+            except (
+                CredentialStoreError,
+                NetworkResourceRegistryError,
+                ServiceResourceRuntimeError,
+                OSError,
+            ) as error:
+                raise CardServiceError(
+                    getattr(error, "code", "NETWORK_RESOURCE_RUNTIME_UNAVAILABLE"),
+                    "Card Service network resource runtime is unavailable",
+                    retryable=False,
+                    stage="resource_authorization",
+                ) from error
+            self._network_resource_registry = registry
+            return registry
+
     def _study_runtime_capabilities(self) -> dict[str, Any]:
         with self._study_runtime_lock:
             runtime = self._study_runtime
@@ -1380,6 +1436,7 @@ class CardService:
                     state_dir=self.store.root / "study-runtime",
                     credential_store=credential_store,
                     resource_runtime=self._ensure_resource_runtime(),
+                    network_resource_registry=self._ensure_network_resource_registry(),
                     workspace_factory=self._create_study_task_workspace,
                     workspace_releaser=self._release_workspace_reservation,
                     package_export_executor=self._execute_study_apkg_export,
@@ -3098,6 +3155,185 @@ class CardService:
                 return opened
         return self.complete_local_resource_picker(session_ref)
 
+    @staticmethod
+    def _network_resource_scope_summary(source_kind: str, max_uses: int) -> str:
+        label = {
+            "public_video": "一个公开视频",
+            "web": "一个网页",
+            "podcast": "一个播客资源",
+            "other": "一个 HTTPS 资源",
+        }.get(source_kind)
+        if label is None:
+            raise CardServiceError(
+                "NETWORK_SOURCE_KIND_INVALID", "Unsupported network source kind"
+            )
+        return (
+            f"读取{label}；只允许公网 HTTPS（443）匿名 GET，"
+            f"不携带浏览器凭据或环境代理；授权最多使用 {max_uses} 次。"
+        )
+
+    def open_network_resource_input(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        grant_request_id: str,
+        source_kind: str,
+        max_uses: int = 8,
+    ) -> dict[str, Any]:
+        """Open a trusted URL entry surface; raw URLs never enter MCP."""
+
+        if not isinstance(audience, ArtifactAudienceBinding):
+            raise CardServiceError(
+                "NETWORK_AUDIENCE_INVALID", "Trusted network audience is invalid"
+            )
+        if not _RESOURCE_GRANT_REQUEST_RE.fullmatch(grant_request_id):
+            raise CardServiceError(
+                "NETWORK_GRANT_REQUEST_INVALID",
+                "Network grant request identifier is invalid",
+            )
+        if source_kind not in {"public_video", "web", "podcast", "other"}:
+            raise CardServiceError(
+                "NETWORK_SOURCE_KIND_INVALID", "Unsupported network source kind"
+            )
+        try:
+            session = self.trusted_surfaces.create_network_resource_session(
+                source_kind=source_kind,
+                scope_summary=self._network_resource_scope_summary(
+                    source_kind, max_uses
+                ),
+            )
+        except TrustedSurfaceError as error:
+            raise CardServiceError(error.code, str(error)) from error
+        session_ref = str(session["sessionRef"])
+        with self._resource_runtime_lock:
+            self._network_resource_requests[session_ref] = {
+                "audience": audience,
+                "grantRequestId": grant_request_id,
+                "sourceKind": source_kind,
+                "maxUses": max_uses,
+            }
+        try:
+            return self.trusted_surfaces.launch(session_ref)
+        except TrustedSurfaceError as error:
+            with self._resource_runtime_lock:
+                self._network_resource_requests.pop(session_ref, None)
+            raise CardServiceError(error.code, str(error)) from error
+
+    def complete_network_resource_input(self, session_ref: str) -> dict[str, Any]:
+        """Finalize one trusted URL into an opaque, audience-bound grant."""
+
+        with self._resource_runtime_lock:
+            completed = self._completed_network_resource_grants.get(session_ref)
+        if completed is not None:
+            return json.loads(json.dumps(completed, ensure_ascii=False))
+        try:
+            result = self.trusted_surfaces.get_session(session_ref)
+        except TrustedSurfaceError as error:
+            raise CardServiceError(error.code, str(error)) from error
+        state = str(result.get("state") or "failed")
+        if state != "selected":
+            if state in {"cancelled", "declined", "failed"}:
+                self.trusted_surfaces.complete_network_resource_selection(
+                    session_ref
+                )
+                with self._resource_runtime_lock:
+                    pending = self._network_resource_requests.pop(
+                        session_ref, None
+                    )
+                    if pending is not None:
+                        self._completed_network_resource_grants[session_ref] = (
+                            dict(result)
+                        )
+            return result
+        with self._resource_runtime_lock:
+            pending = self._network_resource_requests.get(session_ref)
+        selection = self.trusted_surfaces.selected_network_resource(session_ref)
+        if (
+            pending is None
+            or selection is None
+            or selection.source_kind != pending["sourceKind"]
+        ):
+            raise CardServiceError(
+                "NETWORK_SELECTION_STATE_INVALID",
+                "Trusted network resource input state is unavailable",
+            )
+        try:
+            grant = self._ensure_network_resource_registry().issue_grant(
+                audience=pending["audience"],
+                grant_request_id=str(pending["grantRequestId"]),
+                raw_url=selection.raw_url,
+                source_kind=selection.source_kind,
+                attestation_ref=selection.attestation_ref,
+                max_uses=int(pending["maxUses"]),
+            )
+        except NetworkResourceRegistryError as error:
+            finalized = {
+                "schemaVersion": 1,
+                "sessionRef": session_ref,
+                "state": "failed",
+                "errorCode": error.code,
+            }
+        else:
+            finalized = {**result, "networkGrant": grant}
+        self.trusted_surfaces.complete_network_resource_selection(session_ref)
+        with self._resource_runtime_lock:
+            self._network_resource_requests.pop(session_ref, None)
+            self._completed_network_resource_grants[session_ref] = finalized
+        return json.loads(json.dumps(finalized, ensure_ascii=False))
+
+    def request_network_resource_grant(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        grant_request_id: str,
+        source_kind: str,
+    ) -> dict[str, Any]:
+        """Idempotently open or poll one trusted network resource request."""
+
+        if not _RESOURCE_GRANT_REQUEST_RE.fullmatch(grant_request_id):
+            raise CardServiceError(
+                "NETWORK_GRANT_REQUEST_INVALID",
+                "Network grant request identifier is invalid",
+            )
+        if source_kind not in {"public_video", "web", "podcast", "other"}:
+            raise CardServiceError(
+                "NETWORK_SOURCE_KIND_INVALID", "Unsupported network source kind"
+            )
+        max_uses = 8
+        fingerprint = hashlib.sha256(
+            canonical_json_bytes(
+                {
+                    "sourceKind": source_kind,
+                    "maxUses": max_uses,
+                    "policy": "anonymous-public-https-v1",
+                }
+            )
+        ).hexdigest()
+        key = self._local_picker_request_key(audience, grant_request_id)
+        with self._resource_runtime_lock:
+            indexed = self._network_resource_request_index.get(key)
+            if indexed is not None:
+                if indexed["fingerprint"] != fingerprint:
+                    raise CardServiceError(
+                        "NETWORK_GRANT_REQUEST_CONFLICT",
+                        "Network grant request identifier was reused with different scope",
+                    )
+                session_ref = indexed["sessionRef"]
+            else:
+                opened = self.open_network_resource_input(
+                    audience=audience,
+                    grant_request_id=grant_request_id,
+                    source_kind=source_kind,
+                    max_uses=max_uses,
+                )
+                session_ref = str(opened["sessionRef"])
+                self._network_resource_request_index[key] = {
+                    "sessionRef": session_ref,
+                    "fingerprint": fingerprint,
+                }
+                return opened
+        return self.complete_network_resource_input(session_ref)
+
     def _broker_blocker(self, method: str, policy: MethodPolicy) -> str | None:
         with self._broker_runtime_lock:
             if not policy.requires_broker:
@@ -3168,6 +3404,7 @@ class CardService:
                 "system.list_profiles",
                 "system.request_source_grant",
                 "system.request_output_grant",
+                "system.request_network_grant",
                 "system.revoke_grant",
                 "system.open_local_settings",
                 "system.get_local_settings",
@@ -3810,6 +4047,11 @@ class CardService:
                 include_terminal=False,
                 maximum=257,
             )
+            network_grants = self._ensure_network_resource_registry().list_grants(
+                audience,
+                include_terminal=False,
+                maximum=257,
+            )
             import_approvals = self._ensure_study_runtime().list_anki_import_approvals(
                 audience=audience,
                 include_terminal=False,
@@ -3823,6 +4065,7 @@ class CardService:
             )
         except (
             ServiceResourceRuntimeError,
+            NetworkResourceRegistryError,
             StudyRuntimeError,
             AuthorizationLedgerError,
         ) as error:
@@ -3847,6 +4090,28 @@ class CardService:
                     "state": "active",
                     "locator": {
                         "resourceRef": str(grant["resourceRef"]),
+                        "revocationEpoch": int(grant["revocationEpoch"]),
+                    },
+                }
+            )
+        for grant in network_grants:
+            items.append(
+                {
+                    "kind": "network_resource",
+                    "title": (
+                        "网络资源 · "
+                        + str(grant.get("displayOrigin") or "已授权来源")[:120]
+                    ),
+                    "detail": (
+                        f"类型：{str(grant.get('sourceKind') or 'HTTPS')}；"
+                        f"剩余 {int(grant.get('remainingUses') or 0)} 次；"
+                        f"有效期至 {str(grant.get('expiresAt') or '未知')}"
+                    )[:500],
+                    "state": "active",
+                    "locator": {
+                        "networkResourceRef": str(
+                            grant["networkResourceRef"]
+                        ),
                         "revocationEpoch": int(grant["revocationEpoch"]),
                     },
                 }
@@ -3915,6 +4180,7 @@ class CardService:
             )
         if (
             len(local_grants) > 256
+            or len(network_grants) > 256
             or len(import_approvals) > 256
             or len(operation_approvals) > 256
             or len(items) > 256
@@ -3934,6 +4200,8 @@ class CardService:
         if error_code in {
             "RESOURCE_ALREADY_REVOKED",
             "RESOURCE_REVOKED",
+            "NETWORK_ALREADY_REVOKED",
+            "NETWORK_RESOURCE_REVOKED",
             "IMPORT_APPROVAL_ALREADY_REVOKED",
             "IMPORT_APPROVAL_REVOKED",
             "OPERATION_APPROVAL_REVOKED",
@@ -3941,6 +4209,7 @@ class CardService:
             return "already_revoked"
         if error_code in {
             "RESOURCE_NOT_FOUND",
+            "NETWORK_RESOURCE_NOT_FOUND",
             "IMPORT_INTENT_NOT_FOUND",
             "IMPORT_APPROVAL_NOT_FOUND",
             "OPERATION_INTENT_NOT_FOUND",
@@ -4127,6 +4396,17 @@ class CardService:
                             attestation_ref=selection.attestation_ref,
                         )
                         disposition = "revoked"
+                    elif selection.kind == "network_resource":
+                        self._ensure_network_resource_registry().revoke(
+                            str(selection.locator["networkResourceRef"]),
+                            audience,
+                            revocation_id=f"revoke-{session_ref}-{index}",
+                            expected_revocation_epoch=int(
+                                selection.locator["revocationEpoch"]
+                            ),
+                            attestation_ref=selection.attestation_ref,
+                        )
+                        disposition = "revoked"
                     elif selection.kind == "anki_import":
                         self._ensure_study_runtime().revoke_anki_import_approval(
                             audience=audience,
@@ -4170,6 +4450,7 @@ class CardService:
                         disposition = "revoked"
                 except (
                     ServiceResourceRuntimeError,
+                    NetworkResourceRegistryError,
                     StudyRuntimeError,
                     AuthorizationLedgerError,
                 ) as error:

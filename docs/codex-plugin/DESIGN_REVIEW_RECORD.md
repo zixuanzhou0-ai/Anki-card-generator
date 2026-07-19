@@ -51,7 +51,7 @@ Hermes 本地封装席的结论是 `needs-contract-hardening`，置信度 0.74�
 | 意见 | 文档处理 | 代码状态 |
 |---|---|---|
 | verifier 精确接受 V14、拒绝 V1xx 伪版本 | 已列为 M0 P0 和 release gate | CURRENT M0 子项已实现；完整里程碑仍在验收 |
-| M3 tools-only 工具合同 | 已冻结 37 个工具、schema、注解、错误、幂等和任务语义（新增版本化 study.update_learning_contract） | 待实现 |
+| M3 tools-only 工具合同 | 原始评审冻结 37 工具目标；CURRENT 开发 runtime 现有 37 个已实现工具，但 `study.update_learning_contract` 仍未公开，因此下一公共工具必须伴随合同版本与清单更新，不能沿用旧总数 | 分阶段实现 |
 | 目标 Codex 宿主/stdio 预检 | 已加入 host capability、M3 阻断与 APKG-only 降级 | 待实测 |
 | Anki 确认不可旁路 | ImportPlan → session-bound importIntentId → digest-pinned 模型外批准 → 服务端一次性账本 | CURRENT（写任务待实现） |
 | 学习硬门禁可机器审计 | 已加入 GateEvaluationSet、规则版本、revision 与 stale 语义 | CURRENT `candidate-gates-language-v1` 内核、认证 CandidateProposal → GateEvaluation → Discovery 图、角色/schema 分离的提案-复核引擎、冻结模型/授权/成本身份的内部可恢复任务与原子项目提交、任务级 Service Broker/授权摘要派生、公共 list/detail/evidence 投影与认证 coverage-first SelectionArtifact；异步公共 discovery、候选编辑、逐角色检查点与 benchmark 待实现 |
@@ -186,3 +186,11 @@ APKG 纵向切片采用“Worker 产出不等于可信包”的结论。`cards.e
 真实桌面验收使用 Computer Use 检查受信确认窗口：范围、披露、一次调用上限、未知费用和“不可用于生成卡片”均在首屏可读；窗口默认聚焦安全的“拒绝”，Enter 可以执行聚焦按钮，Escape 取消。最终键盘拒绝结果持久化为 `declined`，未生成批准或远程副作用。真实 Codex host 探针确认可信会话枚举 36 项，不可信会话仍只暴露 `system.get_capabilities`。
 
 最终证据为：授权/profile/受信窗口/MCP/插件文档定向回归 159 项通过，正式 Python `tests` 全集 `1638 passed, 1 skipped`，前端 Vitest 830 项、Worker 600 项、Rust 31 项通过且 1 项按设计忽略；plugin validator、Skill validator、可信/不可信 Codex host、`npm run check:full`、release smoke 与 `npm run tauri:build` 全部通过。Tauri 生成 MSI 与 NSIS 两种安装包。上述结论仍只证明开发态 runtime 和构建产物，不代表正式发布者签名、Marketplace 安装验收、固定 Codex 右栏 App UI 或 Anki reviewer runtime verifier 已交付。
+
+## 4.8 CURRENT 受信网络来源复审（2026-07-20）
+
+可信开发态 stdio runtime 新增 `system.request_network_grant`，总工具数从 36 增至 37。公开 schema 只有 grantRequestId、`kind=trusted_entry` 和 sourceKind；raw URL、origin、path、query、header、cookie 与凭据没有输入通道。真实用户只在独立本地窗口输入完整 HTTPS 地址，AES-GCM 私有响应精确绑定 session/nonce/surface；Service 签发的公开 InputRef 只含 opaque networkResourceRef、脱敏 origin、允许公开的 adapter/identity、布尔分类、固定 constraints 与期限。raw URL 不落盘，Service 重启后旧 ref 必须重新授权。
+
+`study.register_inputs` 已对该 InputRef 逐字段重验同 audience/service/session 的认证记录。web 适配器只做固定 IP + TLS hostname 的匿名 HTTPS GET，拒绝 ambient proxy/Cookie/Authorization、压缩响应、跨 origin 重定向、非 2xx 与超过 32 MiB 的登记快照；YouTube public_video 只向字幕适配器传规范化 videoId 对应的 canonical URL，跟踪 query 不传播。podcast/other、完整视频/音频、动态登录网页与 PDF 解析均显式失败关闭。统一授权管理器已经能以 URL-free 摘要撤销 network grant。
+
+自动化定向回归 98 项通过，正式 Python `tests` 全集为 `1653 passed, 1 skipped`。Computer Use 在真实 Windows Tk 受信窗口验证了：默认安全焦点为“取消”、HTTP 输入不能授权、HTTPS 查询参数显示敏感处理提示、授权与 Escape 取消均可达；完成后的持久结果只有 sourceKind、urlDisclosure=false 与手势状态，测试 URL 的 path/query canary 未落盘。插件与 Skill 官方本地验证器均通过。真实 Codex `0.144.1` app-server 的隔离开发探针确认可信会话枚举全部 37 个工具并可调用能力/项目接口，不可信会话仍只枚举 `system.get_capabilities`；协议版本为 `2025-11-25`，genericShell/secretBearingRequests 均为 false。该证据证明开发态 host 注册、本地受信表面及受控适配器合同，不证明真实公网长期可用性、正式安装布局、完整视频/音频或已签名发布包。

@@ -35,6 +35,7 @@ MAX_QUERY_CHARS = 8 * 1024
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_USES = 256
 MAX_REDIRECTS = 5
+MAX_LIST_RECORDS = 2_048
 MAX_LIFETIME = timedelta(hours=24)
 MAX_SAFE_INTEGER = 9_007_199_254_740_991
 
@@ -582,7 +583,9 @@ class _PinnedHttpsConnection(http.client.HTTPSConnection):
 class PinnedNetworkFetcher:
     """HTTPS GET transport that never consults ambient proxies, cookies, or credentials."""
 
-    _PUBLIC_HEADERS = frozenset({"content-type", "content-length", "etag", "last-modified"})
+    _PUBLIC_HEADERS = frozenset(
+        {"content-type", "content-length", "content-encoding", "etag", "last-modified"}
+    )
 
     def __init__(
         self,
@@ -1423,6 +1426,91 @@ class NetworkResourceGrantRegistry:
                 now,
                 locator_available=record["grantId"] in self._locators,
             )
+
+    def list_grants(
+        self,
+        audience: ArtifactAudienceBinding,
+        *,
+        include_terminal: bool = False,
+        maximum: int = 256,
+    ) -> list[dict[str, Any]]:
+        """Return bounded, authenticated, URL-free summaries for one audience."""
+
+        limit = _require_integer(
+            maximum, "maximum", minimum=1, maximum=MAX_LIST_RECORDS
+        )
+        if not isinstance(include_terminal, bool):
+            raise NetworkResourceRegistryError(
+                "NETWORK_REQUEST_INVALID", "includeTerminal is invalid"
+            )
+        audience_digest = self._audience_digest(audience)
+        now = self._now()
+        with self._transaction():
+            paths: list[Path] = []
+            shards = sorted(self._records_root.iterdir(), key=lambda item: item.name)
+            if len(shards) > 256:
+                raise NetworkResourceRegistryError(
+                    "NETWORK_LIST_LIMIT_EXCEEDED",
+                    "network registry contains too many storage shards",
+                )
+            for shard in shards:
+                info = shard.lstat()
+                attributes = getattr(info, "st_file_attributes", 0)
+                if (
+                    not stat.S_ISDIR(info.st_mode)
+                    or stat.S_ISLNK(info.st_mode)
+                    or attributes & 0x400
+                    or not re.fullmatch(r"[0-9a-f]{2}", shard.name)
+                ):
+                    raise NetworkResourceRegistryError(
+                        "NETWORK_STORAGE_UNSAFE",
+                        "network registry contains an unsafe storage shard",
+                    )
+                for path in sorted(shard.iterdir(), key=lambda item: item.name):
+                    if re.fullmatch(r"[0-9a-f]{64}\.json", path.name):
+                        paths.append(path)
+                    elif re.fullmatch(r"[0-9a-f]{64}\.json\.bak", path.name):
+                        continue
+                    elif re.fullmatch(
+                        r"\.[0-9a-f]{64}\.json(?:\.bak)?\.[0-9a-f]{24}\.partial",
+                        path.name,
+                    ):
+                        continue
+                    else:
+                        raise NetworkResourceRegistryError(
+                            "NETWORK_STORAGE_UNSAFE",
+                            "network registry contains an unexpected record",
+                        )
+                    if len(paths) > MAX_LIST_RECORDS:
+                        raise NetworkResourceRegistryError(
+                            "NETWORK_LIST_LIMIT_EXCEEDED",
+                            "network registry exceeds the bounded management limit",
+                        )
+            summaries: list[dict[str, Any]] = []
+            for path in paths:
+                record = self._validate_record(
+                    self._decode_json(self._safe_read(path))
+                )
+                if record["audienceDigest"] != audience_digest:
+                    continue
+                network_ref = self._derive_ref(record["grantId"])
+                self._load_binding(network_ref, audience_digest)
+                summary = _public_summary(
+                    record,
+                    network_ref,
+                    now,
+                    locator_available=record["grantId"] in self._locators,
+                )
+                if include_terminal or summary["state"] == "active":
+                    summaries.append(summary)
+            summaries.sort(
+                key=lambda item: (
+                    str(item["expiresAt"]),
+                    str(item["networkResourceRef"]),
+                ),
+                reverse=True,
+            )
+            return summaries[:limit]
 
     def consume(
         self,

@@ -1,15 +1,18 @@
 # 实施路线图
 
-> 基线日期：2026-07-19
+> 基线日期：2026-07-20
 
 ## CURRENT 增量出口（2026-07-19）
 
-在下文带日期的历史切片之后，当前代码又关闭了两个纵向出口：
+在下文带日期的历史切片之后，当前代码又关闭了三个纵向出口：
 
 1. 候选发现公共出口：新增 `system.authorize_candidate_discovery` 与 `study.start_discovery`。前者只批准固定 `hermes_grok_4_5`，后者异步启动并由 `study.get_task` 轮询；调用方无法注入 Provider、模型、endpoint、凭据、prompt、原始来源正文或服务端授权字段。
 2. Anki 数据闭环出口：`anki.import_and_verify` 已公开，使用已确认的 `importIntentId` 幂等执行导入并发布 receipt/data verification。成功上限为 `anki_data_verified`；写后核验失败为 `imported_unverified`；不确定写边界要求 `inspect_before_retry`。
+3. 受信网络来源出口：`system.request_network_grant` 只打开本地受信 URL 输入窗口，raw URL 不进入 MCP；`study.register_inputs` 已能对静态网页做匿名固定 IP HTTPS 快照，并把 YouTube public_video 缩成规范化 videoId 后获取字幕快照。网络授权可由统一管理器撤销，Service 重启后旧 ref 要求重新授权。
 
-因此，“公共 start_discovery 尚未注册”“anki.import_and_verify 是下一出口”“Anki 写工具仍未开放”等句子只记录早期切片，已被本节取代。仍未完成的是：网络/附件/视频/PDF/Office/音频摄取，模型扩写/TTS/媒体生成，细粒度恢复工具，R8b runtime rendering/playback/restart verifier，正式发布签名与可安装插件/App UI。
+该网络切片的定向回归为 98 项通过，正式 Python `tests` 全集为 `1653 passed, 1 skipped`；Computer Use 已验证真实受信窗口的默认安全焦点、无效地址阻断、敏感查询提示、授权/取消和 URL-free 持久结果。真实 Codex `0.144.1` app-server 已验证可信 37 工具/不可信 1 工具的实际枚举。真实公网长期可用性、正式安装布局与完整媒体 acquisition 仍属于后续验收，不能从本切片提前推导。
+
+因此，“公共 start_discovery 尚未注册”“anki.import_and_verify 是下一出口”“Anki 写工具仍未开放”“生产受信 URL 输入尚未接线”等句子只记录早期切片，已被本节取代。仍未完成的是：宿主附件、完整视频/音频/播客 acquisition、PDF/Office 解析、动态或登录网页、模型扩写/TTS/媒体生成、非发现任务恢复、R8b runtime rendering/playback/restart verifier，以及正式发布签名与可安装插件/App UI。
 
 > 状态：CURRENT 实施跟踪 + PROPOSED 后续路线
 > 日期：2026-07-17

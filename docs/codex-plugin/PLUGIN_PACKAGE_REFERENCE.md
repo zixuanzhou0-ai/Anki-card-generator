@@ -1,10 +1,10 @@
 # 插件包、安装与分发参考
 
-## CURRENT 源插件、开发 runtime 与正式发行边界（2026-07-19）
+## CURRENT 源插件、开发 runtime 与正式发行边界（2026-07-20）
 
 仓库内 `plugins/anki-study-agent` 是版本 `0.1.0` 的被动 Skill 插件源：manifest 只声明 `./skills/`，没有 `mcpServers`、Apps 或 hooks。它可以接受 plugin/skill validator 检查，但本身不会注册本地 runtime。
 
-与它配套的开发态可信 stdio Card Service 当前公开 36 个工具，已包括脱敏 profile 列表、现有 profile 的受信本地凭据窗口、精确 profile 验证与受信操作确认、受信本地授权查看/撤销、项目分页找回与权威工作流快照、固定 Hermes 候选发现、候选发现安全恢复、Anki 数据级 import-and-verify，以及有界 Artifact/审计查询。该开发能力不改变发行结论：源插件未绑定正式 `.mcp.json`，当前 launcher 仍无正式发布者签名，候选固定 `installable=false`，没有 App resource，也没有通过独立正式安装验收。不得称其为已签名、正式可安装或可发布插件。
+与它配套的开发态可信 stdio Card Service 当前公开 37 个工具，已包括脱敏 profile 列表、现有 profile 的受信本地凭据窗口、精确 profile 验证与受信操作确认、受信本地/网络资源授权查看与撤销、匿名静态网页/YouTube 字幕登记、项目分页找回与权威工作流快照、固定 Hermes 候选发现、候选发现安全恢复、Anki 数据级 import-and-verify，以及有界 Artifact/审计查询。该开发能力不改变发行结论：源插件未绑定正式 `.mcp.json`，当前 launcher 仍无正式发布者签名，候选固定 `installable=false`，没有 App resource，也没有通过独立正式安装验收。不得称其为已签名、正式可安装或可发布插件。
 
 Anki 当前最高状态为 `anki_data_verified`；插件侧通用渲染/播放/reviewer/重启 verifier 未实现。下文“唯一只读工具”的实物探针数字属于较早候选，不描述当前开发 runtime 的工具数量。
 
@@ -198,7 +198,7 @@ M1 媒体运行时在该签名包内进一步要求：
 - 托管 FFmpeg 在启动前以受限 FFprobe 证据冻结输入总字节、流数、时长、码率、分辨率、像素、帧率/帧数、采样率、声道和逻辑解码量；原始 PCM 根据显式格式/采样率/声道及文件大小计算，不允许用缺失容器元数据绕过。输入探测中变化或证据未知即拒绝；输出固定 512 MiB `-fs` 上限，触顶半成品删除。命令合同严格限制为一个本地普通文件输入和一个新的最终输出；多输入/多输出、循环/实时参数、未知选项、任意滤镜和显式输出格式在启动前拒绝，滤镜只允许产品固定缩放与音量表达式。非零退出、超时、空输出或成功但未产出文件都会清理本次创建的普通文件并 fail closed。每个任务另有独立 cwd；Service 对其实施不跟随 link/reparse 的总逻辑字节和条目预算，默认 2 GiB/20,000 项、硬上限 8 GiB/100,000 项，最终成功前再次复核。Service 级准入在同一进程内原子计算 retained actual + active worst-case headroom + proposed task，默认总上限 8 GiB/100,000 项；准入、运行中每秒复核和成功接纳使用 4 GiB 卷剩余空间缓冲，容量证据不足或跌破缓冲线时 fail closed。能力摘要固定报告 `aggregateWorkspaceBudgetScope=service_process`、`volumeFreeSpaceReserveEnforcement=admission_and_periodic` 与 `externalWriterHardQuota=false`；它不声称跨多个 Service 进程原子，也不声称限制任意外部写入者。正式 packaged DACL 模式将该目录同时作为唯一受权写边界；开发模式的目录预算不等同于文件系统隔离。终态工作区在 M2 Artifact 引用/保留合同完成前不会自动递归删除，因此真实占用持续计入总预算。小于 1 MiB 的真实极宽、高帧率、稀疏超长时轴、逻辑解码量大于 16 TiB 和 33 流容器已经证明预检在解码前拒绝；其中两类真实探测在 AppContainer + Job + DACL 内完成。命令语法不接受循环/playlist/concat，后续仍需更广泛的 codec parser 崩溃/fuzz corpus、跨进程协调与 M2 输入 staging。
 - yt-dlp 强制 `--ignore-config`、禁用插件目录、exec、playlist 和 playlist 元数据，并固定受信 FFmpeg 目录；正式托管模式即使请求显式要求也拒绝 remote components。
 - Service 已增加窄范围 `source.youtube_subtitles`：正式启动授权按方法绑定该能力，Worker 只提交任务已授权的 YouTube video ID、字幕语言和 VTT 格式；Service 固定 watch/timedtext host/path，解析全部 DNS 地址并拒绝非公网答案，连接固定公网 IP并保留 TLS hostname 校验，不跟随重定向，限制响应字节/超时，且不把 signed caption query 交给 Worker 或持久化账本。
-- 托管 Worker 直接运行联网 yt-dlp 会在子进程启动前 fail closed。当前只交付无视频/原声音频的字幕-only 学习点抽取；完整 URL 视频/音频 acquisition、M2 opaque networkResourceRef 和逐操作批准账本仍未交付，不能把插件视频 URL 制卡描述为已完成。
+- 托管 Worker 直接运行联网 yt-dlp 会在子进程启动前 fail closed。CURRENT 已交付受信 URL 输入、opaque networkResourceRef、静态匿名网页快照和 YouTube 字幕快照；完整 URL 视频/原声音频 acquisition、播客转写、任意公开视频、登录网页和媒体卡仍未交付，不能把“可从 YouTube 字幕制文本卡”描述成“已支持完整视频制卡”。
 
 M1 Provider Egress 的当前内层边界为：
 
@@ -210,7 +210,7 @@ M1 Provider Egress 的当前内层边界为：
 - CURRENT 固定 Hermes candidate discovery 使用 `127.0.0.1:8645/v1`；真实用户批准后 Service 才复核 OAuth/health，并在需要时用固定参数启动代理。`capabilityAvailable=true` 只表示本地代理当前通过，不把 xAI 公网连通性或一次模型成功永久缓存为 ready。
 - Legacy Worker 的 OpenAI-compatible、Anthropic 和 Gemini 模型入口已接入该通道；受管请求递归拒绝 URL/Header/secret/profile/credential/intent/budget，批次和内部重试使用确定性的独立 work unit。Gemini Vertex 在 Service-owned OAuth egress 完成前 fail closed。
 - 正式 stdio 支持 `--broker-authorization-manifest`，但只接受固定 Card Service state dir 下 `trusted-surfaces/authorizations` 的稳定普通文件，不接受工作区或调用方任意路径。清单必须是 canonical `study.card-service.broker-authorization` V1，短期有效并绑定方法、能力、profile configuration fingerprint、credential revision、intent ref 和硬预算；任何未知字段、过期/超长期限、能力错配、陈旧凭据或任务自报授权字段都 fail closed。Service 能力摘要只公开清单 digest/期限/计数。正常 tools-only 路径不要求调用方提供该内部路径：`system.open_broker_authorization` 启动受信确认窗口，真实点击通过 HMAC 验证后由 Service 在固定目录签发并热加载，调用方只收到脱敏摘要。
-- 真实受限 Legacy Worker 已通过认证 stdio 完成无 Worker API Key/Base URL 的卡片生成，以及无 Worker API Key/Base URL/model/voice 的 TTS 测试；Service 重建模型或声音请求、注入认证、验证音频证据并结算 ledger。当前默认传输仍只对临时 Hermes-style loopback 做过真实 POST；公网 provider 未使用真实用户凭据验证，M2 逐操作批准/撤销/消费账本尚未完成，因此 `modelTtsBroker.complete` 仍为 false。
+- 真实受限 Legacy Worker 已通过认证 stdio 完成无 Worker API Key/Base URL 的卡片生成，以及无 Worker API Key/Base URL/model/voice 的 TTS 测试；Service 重建模型或声音请求、注入认证、验证音频证据并结算 ledger。当前默认传输仍只对临时 Hermes-style loopback 做过真实 POST；公网 provider 未使用真实用户凭据验证。profile-validation 的逐操作确认与统一撤销已实现，但学习任务的通用 OperationApproval 尚未闭合，因此 `modelTtsBroker.complete` 仍为 false。
 
 ## 3.1 受信本地设置与确认表面
 

@@ -8,7 +8,7 @@
 
 Anki 写入只允许：认证 PackageArtifact → 认证 ImportPlan → digest-pinned 本地真实点击 → 一次性 `importIntentId` → `anki.import_and_verify`。执行请求不接受路径、target、deck、媒体目录或执行 bearer。相同 intent 幂等；写前失败无 receipt；写后数据核验失败保留 receipt；写边界不明时必须 `inspect_before_retry`。数据核验上限是 `anki_data_verified`，运行时渲染/播放/重启仍未证明。
 
-仍然 fail closed 的是 raw path/URL/credential/authorization 注入、网络来源、模型/TTS/媒体生成、runtime verifier 和未公开工具；不能继续笼统写成“所有 Anki 写入口均关闭”。正式签名安装边界仍未完成。
+仍然 fail closed 的是 raw path/URL/credential/authorization 注入、未接线的网络/媒体来源、模型扩写/TTS/媒体生成、runtime verifier 和未公开工具。CURRENT 网络边界仅开放受信本地 URL 输入、静态匿名网页快照与 YouTube 字幕快照；不能据此声称支持登录网页、完整视频/音频、播客或任意 URL。不能继续笼统写成“所有 Anki 写入口均关闭”。正式签名安装边界仍未完成。
 
 候选发现恢复同样不接受旧 session bearer：`study.resume_task` 只为当前项目、当前 InspectionArtifact、原 candidate/cost budget 和稳定模型配置签发 successor。旧 session handle 不可重放；孤儿 active 任务会在确认不属于当前 Runtime 后转为 interrupted；同一 lineage 的 successor 由跨实例文件锁串行化。列表和 lineage 扫描均有硬上限并隔离损坏记录。导出、Anki 导入与其他 intent 的通用恢复仍未开放。
 
@@ -416,7 +416,7 @@ type ImportApprovalLedgerState = {
 - 原工具重试时重建并核对同一 OperationRequestManifestDigest、audience、intentDigest、profile/configurationFingerprint/credentialRevision、精确 disclosure/egress、资源/费用上限与当前撤销状态；任何变化都要求新 intent。随后生成的 TaskInputManifestDigest 包含 intentDigest。
 - 重启/新 session 后旧 audience 授权绝不搬迁或回填旧任务。若 WorkReuseDigest、稳定 capability、profile configuration 和已完成 Artifact 均一致，且新 disclosure/egress 等价或更窄，Service 可在重新验证/确认后创建 successor task 与新 TaskInputManifest；SuccessorTaskRebase 同时引用旧/新授权审计。范围扩大或语义/配置变化禁止 remaining 复用。
 
-CURRENT 内部实现已经覆盖 model/TTS OperationIntent、OperationApproval、task-bound InternalAuthorization、认证 SecretRef/credentialRevision、非秘密 Service Profile，以及 file/directory/output/network 资源授权账本。Task AuthorizationBinding 不包含内部 authorizationId；资源 ref 也只定位当前 audience/service 下的认证私有记录。所有批准/撤销写入默认失败关闭；开发态测试可注入精确 audience/target/action 绑定的 verifier，但 packaged Card Service 明确拒绝任意 verifier 注入。本地资源账本已接入 `TrustedSurfaceManager` 的真实 picker verifier；可信 stdio 会话已公开 source/output grant。ImportApproval 已通过独立的服务密钥认证账本和 digest-pinned 本地确认窗口接线，绑定当前 audience/session、ImportPlan、APKG 与 Anki target，且不向 MCP 返回执行 bearer；`anki.import_and_verify` 已能消费该批准并执行幂等数据导入/核验。资源授权和 ImportApproval 的内部枚举均有 2048 条扫描硬上限、认证记录重验和精确 audience 隔离；ImportApproval 撤销/消费共享原子事务，活动 Broker profile 采用一次性批量 ledger 撤销。统一受信授权管理 UI、对应短期精确 attestation 和公共 `system.revoke_grant` 已接线：公共 schema 不含 resourceRef/importIntentId/profileRef/authorizationId/ledger key/路径/URL，私有 locator 不写进窗口请求或 MCP，选择密文绑定 session、nonce 和 surface；Broker 撤销还绑定旧清单 digest，避免窗口陈旧时误撤销新授权。URL 输入、通用 OperationApproval、network grant 的公共入口、统一跨 Registry 事务及其余公共 MCP 仍不完整，因此不能据此声称端到端授权已全部完成。
+CURRENT 内部实现已经覆盖 model/TTS OperationIntent、OperationApproval、task-bound InternalAuthorization、认证 SecretRef/credentialRevision、非秘密 Service Profile，以及 file/directory/output/network 资源授权账本。Task AuthorizationBinding 不包含内部 authorizationId；资源 ref 也只定位当前 audience/service 下的认证私有记录。所有批准/撤销写入默认失败关闭；开发态测试可注入精确 audience/target/action 绑定的 verifier，但 packaged Card Service 明确拒绝任意 verifier 注入。本地资源账本已接入 `TrustedSurfaceManager` 的真实 picker verifier；可信 stdio 会话已公开 source/output/network grant。network input 使用单独的 AES-GCM 私有响应，raw URL 在授权后只保留于当前 Service 内存；统一授权管理器可列出 URL-free 摘要并撤销 network grant。ImportApproval 已通过独立的服务密钥认证账本和 digest-pinned 本地确认窗口接线，绑定当前 audience/session、ImportPlan、APKG 与 Anki target，且不向 MCP 返回执行 bearer；`anki.import_and_verify` 已能消费该批准并执行幂等数据导入/核验。资源授权和 ImportApproval 的内部枚举均有 2048 条扫描硬上限、认证记录重验和精确 audience 隔离；ImportApproval 撤销/消费共享原子事务，活动 Broker profile 采用一次性批量 ledger 撤销。公共 `system.revoke_grant` 的 schema 不含 resourceRef/importIntentId/profileRef/authorizationId/ledger key/路径/URL，私有 locator 不写进窗口请求或 MCP，选择密文绑定 session、nonce 和 surface。统一跨 Registry 原子事务、学习任务通用 OperationApproval 和其余未公开能力仍不完整，因此不能据此声称端到端授权已全部完成。
 
 CURRENT M2 的 legacy Project 投影边界坚持“先净化、后持久化”：递归遍历在内存中完成，API/TTS 配置、SecretRef/profile 注入和 secret-bearing 键被移除并记录非秘密 JSON pointer；高置信凭据值或显式 canary 即使藏在普通字段中也使整单失败。Project 顶层使用封闭 allowlist，嵌套 JSON 有节点、深度、字节与安全整数上限，任意调用方预置的 `$resourceSlot` marker 均视为伪造。
 
@@ -509,7 +509,7 @@ CURRENT M2 已实现通用内部 `NetworkResourceGrantRegistry` 与固定地址 
 
 V1 通用入口只允许 HTTPS/443，拒绝 userinfo、fragment、非规范转义、反斜杠和调用方自报 header。YouTube URL 收敛为 video ID；其他带 query 的 URL 一律按敏感值分类。raw URL 不落盘，因此 Service 重启后旧 ref 只能检查为 `reauthorization_required`，不能继续访问或从摘要反推出 URL。33 项定向测试覆盖普通/签名 URL、YouTube 规范化、私网/混合 DNS、DNS rebinding、同源重定向、固定 IP 传输、header/cookie 剥离、响应限额、跨 audience/service、幂等、撤销、过期和 HMAC 篡改。
 
-当前 M1 的 `source.youtube_subtitles` 仍是已经接入任务执行链的窄路径；通用 network registry 尚未接入生产受信 URL 输入窗口、Source Adapter、yt-dlp staging 或公共 MCP。托管 Worker 的直接联网 yt-dlp 因此仍在启动前拒绝。本次测试使用可控 resolver/transport，不代表已完成真实公网可用性验收。
+CURRENT 已把通用 network registry 接入生产受信 URL 输入窗口、`system.request_network_grant`、`study.register_inputs` 和统一授权管理器。静态网页通过固定 IP + TLS hostname 的匿名 HTTPS GET 形成字节快照；YouTube 只把受信输入缩减为规范化 videoId，再由 `source.youtube_subtitles` 形成 VTT 快照。托管 Worker 的直接联网 yt-dlp 仍在启动前拒绝；完整视频/音频/播客 acquisition、登录态网页和任意网络适配器仍未开放。自动化使用可控 resolver/transport 证明安全合同，真实公网可用性必须由独立端到端验收证明，不能从这些单测推导。
 
 ## 9. 文档与媒体解析及资源隔离
 
@@ -672,7 +672,7 @@ Windows launcher 的外层代码签名现有独立 fail-closed 验证器。它�
 ## 15. 权限撤销
 
 - system.revoke_grant 只打开受信本地授权管理器；MCP 不接收或返回 authorizationId、ledger key、userGestureRef 或撤销 bearer。
-- CURRENT 受信 UI 只列出当前 audience 的文件/目录/output grant、未消费 Anki ImportApproval 与当前 Broker model/TTS/source authorization；network grant、通用 OperationApproval 与其他内部授权尚未接入该公共管理器。窗口默认零选择、撤销按钮禁用，二次确认默认“否”。
+- CURRENT 受信 UI 只列出当前 audience 的文件/目录/output/network grant、未消费 Anki ImportApproval、未消费 profile-validation OperationApproval 与当前 Broker model/TTS/source authorization；其他内部授权尚未接入该公共管理器。network 项只显示来源类别和脱敏 origin，不显示 raw path/query。窗口默认零选择、撤销按钮禁用，二次确认默认“否”。
 - 当前各资源 Registry 仍保持独立事务边界：本地资源和 Anki 撤销分别原子写入自己的认证账本，Anki consume/revoke 竞态只有一个赢家；Broker profile 在一个 ReservationLedger 写入中批量撤销。当前不宣称跨 Registry 全局事务。
 - 撤销后新的资源消费和新的 Broker 调用立即失败；已经发出的远程调用、已经读取的字节或已经进入非撤销安全点的运行中工作不保证被反向取消。
 - 已完成的远程调用、已写入 Anki 的内容和本地产物不会被伪装成已回滚；产物保留并记录撤销时间与影响。

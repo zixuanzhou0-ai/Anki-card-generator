@@ -26,6 +26,13 @@ def main() -> None:
         session = _create_operation_confirmation_session(manager)
     elif "--authorization-manager" in sys.argv[1:]:
         session = _create_authorization_manager_session(manager)
+    elif "--network-input" in sys.argv[1:]:
+        session = manager.create_network_resource_session(
+            source_kind="web",
+            scope_summary=(
+                "读取一个网页；仅允许公网 HTTPS（443）匿名 GET，不携带浏览器凭据或环境代理。"
+            ),
+        )
     elif "--picker" in sys.argv[1:]:
         session = manager.create_local_resource_session(
             kind="file",

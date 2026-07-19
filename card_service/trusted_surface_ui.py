@@ -5,6 +5,7 @@ import json
 import re
 import sys
 import tkinter as tk
+import urllib.parse
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any
@@ -26,6 +27,7 @@ def read_request(path: Path) -> dict[str, Any]:
         "local_settings",
         "consent",
         "local_resource_picker",
+        "network_resource_input",
         "authorization_manager",
     }:
         raise ValueError("Unknown trusted surface")
@@ -37,6 +39,10 @@ def read_request(path: Path) -> dict[str, Any]:
         "file", "directory", "output_directory"
     }:
         raise ValueError("Unknown local resource selection kind")
+    if value["surface"] == "network_resource_input" and value.get(
+        "sourceKind"
+    ) not in {"public_video", "web", "podcast", "other"}:
+        raise ValueError("Unknown network resource kind")
     if value["surface"] == "local_settings":
         expected_credentials = (path.parent.parent / "credentials").resolve()
         if Path(str(value.get("credentialStateDir") or "")) != expected_credentials:
@@ -63,7 +69,13 @@ def read_request(path: Path) -> dict[str, Any]:
                 or not re.fullmatch(r"authsel_[A-Za-z0-9_-]{32}", selection_ref)
                 or selection_ref in seen
                 or item.get("kind")
-                not in {"local_resource", "anki_import", "broker_authorization"}
+                not in {
+                    "local_resource",
+                    "network_resource",
+                    "anki_import",
+                    "broker_authorization",
+                    "operation_approval",
+                }
                 or item.get("state") not in {"active", "approved", "pending"}
                 or not isinstance(item.get("title"), str)
                 or not 1 <= len(item["title"].strip()) <= 160
@@ -287,6 +299,136 @@ def show_consent(request: dict[str, Any]) -> None:
     root.mainloop()
 
 
+def show_network_resource_input(request: dict[str, Any]) -> None:
+    root = tk.Tk()
+    root.title("Codex Study · 添加网络素材")
+    root.geometry("720x500")
+    root.minsize(620, 440)
+    frame = ttk.Frame(root, padding=24)
+    frame.pack(fill="both", expand=True)
+    ttk.Label(
+        frame,
+        text="添加网络学习素材",
+        font=("Microsoft YaHei UI", 18, "bold"),
+    ).pack(anchor="w")
+    kind_label = {
+        "public_video": "公开视频",
+        "web": "网页",
+        "podcast": "播客",
+        "other": "其他 HTTPS 资源",
+    }[str(request["sourceKind"])]
+    ttk.Label(
+        frame,
+        text=(
+            f"来源类型：{kind_label}\n"
+            "请在此本地窗口粘贴地址。完整地址不会进入 Codex 对话、MCP 参数或持久日志。"
+        ),
+        wraplength=660,
+        justify="left",
+    ).pack(anchor="w", pady=(10, 18))
+    ttk.Label(frame, text="HTTPS 地址").pack(anchor="w")
+    raw_url = tk.StringVar()
+    entry = ttk.Entry(frame, textvariable=raw_url, font=("Segoe UI", 11))
+    entry.pack(fill="x", pady=(6, 10), ipady=5)
+    preview = ttk.Label(
+        frame,
+        text="尚未输入地址。",
+        wraplength=660,
+        justify="left",
+    )
+    preview.pack(anchor="w", fill="x")
+    ttk.Label(
+        frame,
+        text=(
+            "仅支持公网 HTTPS（443）。不会携带浏览器 Cookie、Authorization、系统代理或"
+            "登录状态；带查询参数的地址会按敏感输入处理，且只保留在当前服务进程内存中。"
+        ),
+        wraplength=660,
+        justify="left",
+    ).pack(anchor="w", pady=(18, 14))
+    status = ttk.Label(frame, text="")
+    status.pack(anchor="w", fill="x")
+    authorize_button: ttk.Button
+    finished = False
+
+    def validate() -> tuple[bool, str]:
+        value = raw_url.get().strip()
+        if not value or len(value) > 16 * 1024 or any(
+            ord(character) < 0x20 or character.isspace() for character in value
+        ):
+            return False, "请输入完整、无空格的 HTTPS 地址。"
+        try:
+            parsed = urllib.parse.urlsplit(value)
+            port = parsed.port
+        except ValueError:
+            return False, "地址格式无效。"
+        if (
+            parsed.scheme.casefold() != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or port not in {None, 443}
+            or bool(parsed.fragment)
+        ):
+            return False, "仅允许不含账号、密码或片段的公网 HTTPS（443）地址。"
+        host = parsed.hostname.rstrip(".").casefold()
+        query_notice = "；检测到查询参数，将按敏感输入处理" if parsed.query else ""
+        return True, f"将授权访问：https://{host}{query_notice}。"
+
+    def refresh(*_args: object) -> None:
+        valid, message = validate()
+        preview.configure(text=message)
+        authorize_button.configure(state="normal" if valid else "disabled")
+
+    def finish(state: str) -> None:
+        nonlocal finished
+        if finished:
+            return
+        if state == "selected":
+            valid, message = validate()
+            if not valid:
+                status.configure(text=message)
+                entry.focus_set()
+                return
+        finished = True
+        extra: dict[str, Any] = {"userGestureRecorded": state == "selected"}
+        if state == "selected":
+            response_key = decode_response_key(
+                str(request.get("responseAuthKey") or "")
+            )
+            extra["privatePayload"] = seal_private_payload(
+                {"schemaVersion": 1, "rawUrl": raw_url.get().strip()},
+                response_key,
+                session_ref=str(request["sessionRef"]),
+                request_nonce=str(request["requestNonce"]),
+                surface="network_resource_input",
+            )
+        write_response(request, state, **extra)
+        raw_url.set("")
+        root.destroy()
+
+    buttons = ttk.Frame(frame)
+    buttons.pack(fill="x", side="bottom")
+    cancel_button = ttk.Button(
+        buttons, text="取消", command=lambda: finish("cancelled")
+    )
+    cancel_button.pack(side="right")
+    authorize_button = ttk.Button(
+        buttons,
+        text="授权此地址",
+        command=lambda: finish("selected"),
+        state="disabled",
+    )
+    authorize_button.pack(side="right", padx=(0, 10))
+    raw_url.trace_add("write", refresh)
+    cancel_button.bind("<Return>", lambda _event: finish("cancelled"))
+    authorize_button.bind("<Return>", lambda _event: finish("selected"))
+    root.bind("<Escape>", lambda _event: finish("cancelled"))
+    root.protocol("WM_DELETE_WINDOW", lambda: finish("cancelled"))
+    root.after_idle(cancel_button.focus_set)
+    root.mainloop()
+
+
 def show_authorization_manager(request: dict[str, Any]) -> None:
     root = tk.Tk()
     root.title("Codex Study · 授权管理")
@@ -329,6 +471,7 @@ def show_authorization_manager(request: dict[str, Any]) -> None:
     table.configure(yscrollcommand=scrollbar.set)
     kind_labels = {
         "local_resource": "本地资源",
+        "network_resource": "网络资源",
         "anki_import": "Anki 导入",
         "broker_authorization": "远程服务",
         "operation_approval": "操作批准",
@@ -441,6 +584,7 @@ def main() -> None:
             "local_settings",
             "consent",
             "local_resource_picker",
+            "network_resource_input",
             "authorization_manager",
         ),
     )
@@ -455,6 +599,8 @@ def main() -> None:
         show_consent(request)
     elif arguments.surface == "authorization_manager":
         show_authorization_manager(request)
+    elif arguments.surface == "network_resource_input":
+        show_network_resource_input(request)
     else:
         show_local_resource_picker(request)
 

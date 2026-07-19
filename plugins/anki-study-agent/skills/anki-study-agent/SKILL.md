@@ -1,6 +1,6 @@
 ---
 name: anki-study-agent
-description: Use a registered local Anki Card Service to turn authorized, currently supported text, Markdown, code, HTML, subtitle files, or bounded directories into evidence-backed Anki cards. Use when Codex needs to inspect a supported source, authorize fixed Hermes Grok 4.5 candidate discovery, safely resume interrupted discovery, select language-learning candidates, generate validated text cards, export APKG, or explicitly import and data-verify a deck in Anki. Treat video extraction, YouTube/network input, PDF/Office parsing, media generation, export/import task resumption, and runtime rendering/playback/restart verification as unavailable unless the installed tool capability explicitly exposes them.
+description: Use a registered local Anki Card Service to turn authorized text, Markdown, code, HTML, subtitle files, bounded directories, static HTTPS webpages, or YouTube subtitle snapshots into evidence-backed Anki cards. Use when Codex needs to inspect a supported source, authorize fixed Hermes Grok 4.5 candidate discovery, safely resume interrupted discovery, select language-learning candidates, generate validated text cards, export APKG, or explicitly import and data-verify a deck in Anki. Treat full video/audio acquisition, podcasts, PDF/Office parsing, media generation, export/import task resumption, and runtime rendering/playback/restart verification as unavailable unless the installed tool capability explicitly exposes them.
 ---
 
 # Anki Study Agent
@@ -27,7 +27,7 @@ Read [learning-contract.md](references/learning-contract.md) when selecting obje
 
 ## Run the workflow
 
-1. Obtain only grants exposed by the current trusted local surface. The current public source path is local file or directory selection; never pass raw local paths, credentials, cookies, signed URLs, or unrestricted origins as model text.
+1. Obtain only grants exposed by the current trusted local surface. Use local selection for files/directories and `system.request_network_grant` for a static webpage or YouTube subtitle source; the complete URL must be entered only in the trusted local window. Never pass raw local paths, URLs, credentials, cookies, signed queries, or unrestricted origins as model text or tool arguments.
 2. Register inputs and inspect source integrity before discovery. Stop with the inspection result when the source is unsupported or incomplete.
 3. When discovery tools are exposed, request the fixed Hermes Grok 4.5 discovery authorization through the trusted local surface, start discovery, and poll the authoritative task. Do not invent a custom provider, endpoint, credential, prompt, or budget.
 4. List candidates with evidence and reason codes. Apply hard gates before ranking.
@@ -50,7 +50,7 @@ Read [workflow-contract.md](references/workflow-contract.md) for stage vocabular
 - Never treat model confidence, successful HTML rendering, or an APKG file as Anki verification.
 - Do not hide blocked, stale, partial, cancelled, interrupted, or needs-repair states.
 - Preserve completed artifacts and retry only when the returned task contract permits it. Public list/resume is limited to candidate discovery; an interrupted export or Anki write requires its own inspection before any retry.
-- Require trusted local confirmation for new source scope, data egress, cost expansion, batch expansion, and Anki import.
+- Require trusted local confirmation for new source scope, data egress, cost expansion, batch expansion, and Anki import. A network grant is not proof that a parser exists: stop on podcast/other/full-media adapter errors rather than silently substituting a web fetch.
 - Never expose secrets, sensitive paths, OAuth material, cookies, or signed media queries in prompts, logs, snapshots, or results.
 
 Read [source-and-safety.md](references/source-and-safety.md) before handling local files, URLs, provider calls, media tools, or Anki writes.

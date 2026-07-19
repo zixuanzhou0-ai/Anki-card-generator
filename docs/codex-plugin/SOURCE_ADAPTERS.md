@@ -136,7 +136,7 @@ Agent 不能直接提交任意绝对路径。用户通过宿主附件或本地�
 - 规范路径仍在授权根。
 - 文件身份和元数据未发生未解释变化。
 - 没有 symlink、junction、reparse point、UNC、设备路径、ADS 或保留名逃逸。
-CURRENT M2 内部 `LocalResourceGrantRegistry` 已实现 file/directory/output ref 的上述根授权、短期 audience/service 绑定、动作与资源上限、逐次身份重验、幂等消费和撤销，并由 Card Service 的惰性 `ServiceResourceRuntime` 统一拥有。真实本地 picker 已通过加密私有响应和短期精确 attestation 接到 adapter；可信 stdio 会话现在可用 `system.request_source_grant`/`system.request_output_grant` 取得这些 opaque ref。`study.register_inputs` 已把 file/directory ref 绑定到可恢复 StudyTask、task-local snapshot、内容寻址 Blob/目录 manifest、认证 `study.source-asset` 和项目 `sources_ready` 提交。`study.start_source_inspection` 现可对纯文本、Markdown、代码、HTML、字幕以及目录内受支持成员生成确定性表示与明确覆盖率；未知/PDF/Office/音视频等尚无安全解析器时保持 C 级阻塞。对已经形成认证表示的本地来源，内部双角色 candidate discovery 与公开 `study.list_candidates`/`study.get_candidate`/`study.preview_evidence` 已接线，可在最新 Discovery 上读取门禁派生的候选并从本地快照有界重放证据；公共 `study.start_discovery` 仍等待异步任务合同。宿主附件、生产受信 URL 输入和网络来源 staging 尚未接线；CURRENT APKG outputRef 已绑定认证、版本化 no-replace 发布，但这仍不等于“Codex 可读的任意素材都能直接制卡”。
+CURRENT M2 内部 `LocalResourceGrantRegistry` 已实现 file/directory/output ref 的上述根授权、短期 audience/service 绑定、动作与资源上限、逐次身份重验、幂等消费和撤销，并由 Card Service 的惰性 `ServiceResourceRuntime` 统一拥有。真实本地 picker 已通过加密私有响应和短期精确 attestation 接到 adapter；可信 stdio 会话现在可用 `system.request_source_grant`/`system.request_output_grant` 取得这些 opaque ref。`study.register_inputs` 已把 file/directory ref 绑定到可恢复 StudyTask、task-local snapshot、内容寻址 Blob/目录 manifest、认证 `study.source-asset` 和项目 `sources_ready` 提交。`study.start_source_inspection` 现可对纯文本、Markdown、代码、HTML、字幕以及目录内受支持成员生成确定性表示与明确覆盖率；未知/PDF/Office/音视频等尚无安全解析器时保持 C 级阻塞。对已经形成认证表示的来源，公共异步 `study.start_discovery` 与候选查询已接线。生产受信 URL 输入、网页快照和 YouTube 字幕登记也已接线，详见第 6–7 节；宿主 attachmentRef、完整视频/音频 acquisition、PDF/Office 解析仍未接线。CURRENT APKG outputRef 已绑定认证、版本化 no-replace 发布，但这仍不等于“Codex 可读的任意素材都能直接制卡”。
 
 
 ### 5.2 目录
@@ -194,7 +194,7 @@ CURRENT `study.register_inputs` 已在 staging 完成后把排序的逐文件内
 - 下载器和运行时来自受信路径/哈希。
 - Artifact 只保存脱敏 canonical source identity：origin、受控 path display、适配器明确允许的公共身份参数或 query digest/redaction、final origin/redirect digests、内容 hash 和 observedAt。raw URL、signed query、token、userinfo、fragment 与认证 header 只可短期存在于内部授权/网络代理内，禁止进入 Artifact、MCP、日志或截图。
 
-CURRENT M2 内部 `NetworkResourceGrantRegistry` 已实现上述授权与代理内核：HTTPS/443 封闭入口、raw URL 仅进程内、认证 opaque ref、全部地址公网判定、消费/重定向重解析、固定 IP + TLS hostname、无环境代理/Cookie/ambient auth、限时限字节、幂等、过期和撤销。它尚未接入生产受信 URL 输入表面、具体 Source Adapter 或 yt-dlp staging；真实网页/视频快照与 EvidenceAnchor 仍属于后续适配器工作。
+CURRENT M2 已把该内核接入生产 `network_resource_input` 受信窗口、`system.request_network_grant`、统一授权管理器和 `study.register_inputs`。窗口以 session/nonce/surface 绑定的 AES-256-GCM 私有响应把 raw URL 交回 Service，随后立即清除；MCP 请求、结果、Artifact 和持久账本不含 raw path/query。网页适配器支持最多 32 MiB 的匿名公网 HTTPS 快照，只接受 identity 编码、2xx 和同 origin 受控重定向；HTML/文本/Markdown 可进入现有确定性检查。YouTube public_video 被缩减为规范化 videoId，只获取字幕 VTT 快照；不下载视频或原声。podcast/other、任意公开视频、登录页面、完整媒体 acquisition 与 yt-dlp staging 当前仍以明确错误失败关闭。
 
 ## 7. 网页
 
@@ -207,6 +207,8 @@ CURRENT M2 内部 `NetworkResourceGrantRegistry` 已实现上述授权与代理�
 - 被过滤的脚本/样式/隐藏区域说明。
 
 动态、登录后或个性化页面如果无法稳定快照，降为 B。来源中的“指令”永远只作为内容。
+
+CURRENT 实现覆盖静态匿名 HTTPS 快照及 HTML/文本/Markdown 的确定性检查。它不是浏览器：不执行 JavaScript、不带登录状态、不处理 Cookie、不接受压缩传输，也不声称抓取动态渲染后的页面。PDF 响应可以被可靠登记为字节快照，但检查阶段仍因没有安全 PDF 解析器而显式阻塞。
 
 ## 8. PDF 与复杂文档
 
@@ -311,4 +313,3 @@ CURRENT M2 内部 `NetworkResourceGrantRegistry` 已实现上述授权与代理�
 - 从来源到至少一张真实 Anki 卡的端到端核验。
 
 路线顺序见 [路线图](ROADMAP.md)。
-

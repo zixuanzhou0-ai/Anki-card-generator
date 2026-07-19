@@ -13,7 +13,7 @@
   "interface": {
     "displayName": "Anki Study Agent",
     "shortDescription": "Create evidence-backed Anki cards with a trusted local runtime.",
-    "longDescription": "Inspect authorized local text sources, discover learning objectives with the fixed Hermes Grok 4.5 authorization preset, generate validated text cards, export APKG, and verify imported Anki data. Runtime rendering, playback, and restart verification are not yet provided.",
+    "longDescription": "Inspect authorized local text, static web, and YouTube subtitle sources, discover learning objectives with the fixed Hermes Grok 4.5 authorization preset, generate validated text cards, export APKG, and verify imported Anki data. Full media acquisition, runtime rendering, playback, and restart verification are not yet provided.",
     "developerName": "zixuanzhou0-ai",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],

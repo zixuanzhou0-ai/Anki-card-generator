@@ -61,6 +61,8 @@ from .package_artifact_runtime import (
     PackageExportExecutor,
 )
 from .resource_runtime import ServiceResourceRuntime
+from .network_resource_registry import NetworkResourceGrantRegistry, PinnedNetworkFetcher
+from .source_acquisition import YouTubeSubtitleAcquirer
 from .source_inspection import SourceInspectionError, SourceInspectionRuntime
 from .source_registration import (
     SourceRegistrationError,
@@ -95,6 +97,9 @@ class StudyRuntime:
         state_dir: str | Path,
         credential_store: CredentialStore,
         resource_runtime: ServiceResourceRuntime,
+        network_resource_registry: NetworkResourceGrantRegistry | None = None,
+        network_fetcher: PinnedNetworkFetcher | None = None,
+        youtube_subtitle_acquirer: YouTubeSubtitleAcquirer | None = None,
         workspace_factory: WorkspaceFactory | None = None,
         workspace_releaser: WorkspaceReleaser | None = None,
         candidate_discovery_model: CandidateDiscoveryModel | None = None,
@@ -193,6 +198,9 @@ class StudyRuntime:
                 projects=self.projects,
                 tasks=self.tasks,
                 source_bindings=self.source_bindings,
+                network_resources=network_resource_registry,
+                network_fetcher=network_fetcher,
+                youtube_subtitle_acquirer=youtube_subtitle_acquirer,
                 workspace_factory=workspace_factory,
                 workspace_releaser=workspace_releaser,
             )

@@ -89,6 +89,29 @@ def main() -> None:
             },
             response_key,
         )
+    elif surface == "network_resource_input":
+        raw_url = {
+            "public_video": "https://youtu.be/dQw4w9WgXcQ?si=surface-canary",
+            "web": "https://example.com/study?sig=surface-canary",
+            "podcast": "https://example.com/episode.mp3?sig=surface-canary",
+            "other": "https://example.com/resource?sig=surface-canary",
+        }[request["sourceKind"]]
+        response = sign(
+            {
+                "schemaVersion": 1,
+                "sessionRef": request["sessionRef"],
+                "requestNonce": request["requestNonce"],
+                "state": "selected",
+                "userGestureRecorded": True,
+                "privatePayload": seal_private(
+                    request,
+                    response_key,
+                    surface="network_resource_input",
+                    payload={"schemaVersion": 1, "rawUrl": raw_url},
+                ),
+            },
+            response_key,
+        )
     elif surface == "authorization_manager":
         selected_refs = [
             item["selectionRef"]

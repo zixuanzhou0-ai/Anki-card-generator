@@ -7,6 +7,7 @@ import pytest
 
 from card_service.mcp_resource_tools import (
     McpResourceToolInputError,
+    NETWORK_GRANT_TOOL_NAME,
     OUTPUT_GRANT_TOOL_NAME,
     SOURCE_GRANT_TOOL_NAME,
     call_resource_tool,
@@ -49,17 +50,86 @@ class ResourceService:
             },
         }
 
+    def request_network_resource_grant(self, **values: Any) -> dict[str, Any]:
+        self.calls.append(values)
+        if self.state != "selected":
+            return {"schemaVersion": 1, "sessionRef": "private", "state": self.state}
+        return {
+            "schemaVersion": 1,
+            "sessionRef": "private",
+            "state": "selected",
+            "networkSelection": {
+                "sourceKind": values["source_kind"],
+                "urlDisclosure": False,
+            },
+            "networkGrant": {
+                "schema": "study.network-resource.summary",
+                "schemaVersion": 1,
+                "networkResourceRef": "network_" + "n" * 43,
+                "sourceKind": values["source_kind"],
+                "adapter": "youtube" if values["source_kind"] == "public_video" else "generic_https",
+                "displayOrigin": "https://www.youtube.com" if values["source_kind"] == "public_video" else "https://example.com",
+                "publicIdentity": "dQw4w9WgXcQ" if values["source_kind"] == "public_video" else None,
+                "queryPresent": values["source_kind"] == "public_video",
+                "sensitiveQuery": False,
+                "constraints": {
+                    "actions": ["fetch"],
+                    "methods": ["GET"],
+                    "maxResponseBytes": 1024,
+                    "timeoutSeconds": 30,
+                    "redirectPolicy": "none",
+                    "maxRedirects": 0,
+                },
+                "resourceRevisionDigest": "c" * 64,
+                "expiresAt": "2026-07-19T00:00:00Z",
+                "state": "active",
+                "revocationEpoch": 0,
+                "remainingUses": 8,
+            },
+        }
+
 
 def test_resource_tool_schemas_have_no_path_url_audience_or_replace_inputs() -> None:
     definitions = resource_tool_definitions()
     assert [item["name"] for item in definitions] == [
         SOURCE_GRANT_TOOL_NAME,
         OUTPUT_GRANT_TOOL_NAME,
+        NETWORK_GRANT_TOOL_NAME,
     ]
     serialized = json.dumps(definitions, sort_keys=True).lower()
     for forbidden in ("path\"", "url\"", "audience", "raw", "replace\""):
         assert forbidden not in serialized
     assert all(item["inputSchema"]["additionalProperties"] is False for item in definitions)
+
+
+def test_network_tool_accepts_only_trusted_entry_and_returns_url_free_ref() -> None:
+    service = ResourceService("public_video")
+    audience = create_development_mcp_audience()
+    result = call_resource_tool(
+        service,  # type: ignore[arg-type]
+        tool_name=NETWORK_GRANT_TOOL_NAME,
+        arguments={
+            "grantRequestId": "network-1",
+            "kind": "trusted_entry",
+            "sourceKind": "public_video",
+        },
+        audience_session=audience,
+        user_action_timeout_seconds=0,
+    )
+    input_ref = result["structuredContent"]["inputRef"]
+    assert input_ref["kind"] == "url"
+    assert input_ref["networkResourceRef"] == "network_" + "n" * 43
+    assert input_ref["displayOrigin"] == "https://www.youtube.com"
+    serialized = json.dumps(result, sort_keys=True).casefold()
+    for forbidden in ("watch?v=", "surface-canary", "sessionref", "attestation"):
+        assert forbidden not in serialized
+    assert service.calls == [
+        {
+            "audience": audience.audience,
+            "grant_request_id": "network-1",
+            "source_kind": "public_video",
+        }
+    ]
 
 
 def test_source_tool_returns_only_opaque_input_ref() -> None:
@@ -119,6 +189,8 @@ def test_waiting_and_cancelled_states_disclose_no_private_session() -> None:
         (SOURCE_GRANT_TOOL_NAME, {"grantRequestId": "../x", "selectionKind": "file"}),
         (SOURCE_GRANT_TOOL_NAME, {"grantRequestId": "x", "selectionKind": "network"}),
         (OUTPUT_GRANT_TOOL_NAME, {"grantRequestId": "x", "replace": True}),
+        (NETWORK_GRANT_TOOL_NAME, {"grantRequestId": "x", "kind": "trusted_entry", "sourceKind": "web", "url": "https://example.com"}),
+        (NETWORK_GRANT_TOOL_NAME, {"grantRequestId": "x", "kind": "public_url", "sourceKind": "web"}),
     ],
 )
 def test_resource_tool_rejects_scope_injection(tool_name: str, arguments: dict[str, Any]) -> None:

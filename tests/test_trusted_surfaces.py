@@ -45,6 +45,38 @@ def test_settings_session_contains_no_secret_and_returns_no_path(tmp_path: Path)
     assert "api_key" not in json.dumps(request).lower()
 
 
+def test_network_input_keeps_raw_url_out_of_public_and_persistent_plaintext(
+    tmp_path: Path,
+) -> None:
+    surfaces = manager(tmp_path)
+    session = surfaces.create_network_resource_session(
+        source_kind="web",
+        scope_summary="读取一个公网 HTTPS 网页；不携带浏览器凭据。",
+    )
+    request_path = surfaces.sessions_dir / f"{session['sessionRef']}.json"
+    assert "surface-canary" not in request_path.read_text(encoding="utf-8")
+    surfaces.launch(str(session["sessionRef"]))
+    public = wait_session(surfaces, str(session["sessionRef"]))
+    assert public == {
+        "schemaVersion": 1,
+        "sessionRef": session["sessionRef"],
+        "state": "selected",
+        "userGestureRecorded": True,
+        "networkSelection": {
+            "sourceKind": "web",
+            "urlDisclosure": False,
+        },
+    }
+    selection = surfaces.selected_network_resource(str(session["sessionRef"]))
+    assert selection is not None
+    assert selection.raw_url == "https://example.com/study?sig=surface-canary"
+    assert "surface-canary" not in json.dumps(public)
+    response_path = surfaces.responses_dir / f"{session['sessionRef']}.json"
+    assert not response_path.exists()
+    surfaces.complete_network_resource_selection(str(session["sessionRef"]))
+    assert surfaces.selected_network_resource(str(session["sessionRef"])) is None
+
+
 def test_real_trusted_surface_writer_authenticates_response_without_persisting_key(tmp_path: Path) -> None:
     key = new_response_key()
     response_path = (tmp_path / "response.json").resolve()

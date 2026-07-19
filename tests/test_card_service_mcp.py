@@ -49,7 +49,11 @@ from card_service.mcp_project_tools import (
     GET_PROJECT_TOOL_NAME,
     LIST_PROJECTS_TOOL_NAME,
 )
-from card_service.mcp_resource_tools import OUTPUT_GRANT_TOOL_NAME, SOURCE_GRANT_TOOL_NAME
+from card_service.mcp_resource_tools import (
+    NETWORK_GRANT_TOOL_NAME,
+    OUTPUT_GRANT_TOOL_NAME,
+    SOURCE_GRANT_TOOL_NAME,
+)
 from card_service.mcp_selection_tools import SET_SELECTION_TOOL_NAME
 from card_service.mcp_system_tools import (
     AUTHORIZE_DISCOVERY_TOOL,
@@ -200,6 +204,7 @@ def test_mcp_bridge_reports_trusted_session_without_disclosing_identity() -> Non
         REQUEST_OPERATION_CONFIRMATION_TOOL,
         SOURCE_GRANT_TOOL_NAME,
         OUTPUT_GRANT_TOOL_NAME,
+        NETWORK_GRANT_TOOL_NAME,
         CREATE_PROJECT_TOOL_NAME,
         LIST_PROJECTS_TOOL_NAME,
         GET_PROJECT_TOOL_NAME,
@@ -344,6 +349,7 @@ def test_real_mcp_stdio_process_reports_card_service_capabilities(tmp_path: Path
             REQUEST_OPERATION_CONFIRMATION_TOOL,
             SOURCE_GRANT_TOOL_NAME,
             OUTPUT_GRANT_TOOL_NAME,
+            NETWORK_GRANT_TOOL_NAME,
             CREATE_PROJECT_TOOL_NAME,
             LIST_PROJECTS_TOOL_NAME,
             GET_PROJECT_TOOL_NAME,

@@ -266,9 +266,12 @@ def _handle_request(
                 },
                 "instructions": (
                     "Start with system.get_capabilities. Trusted launcher sessions may request "
-                    "opaque source and output grants through native pickers and create a local "
+                    "opaque local source, trusted network source, and output grants through native "
+                    "surfaces and create a local "
                     "Study project, freeze selected InputRefs with study.register_inputs, then "
-                    "run deterministic source inspection. With a current trusted model authorization, "
+                    "run deterministic source inspection. Current network support is limited to anonymous "
+                    "static web snapshots and YouTube subtitle snapshots; raw URLs are entered only in the "
+                    "trusted local window. With a current trusted model authorization, "
                     "candidate discovery starts asynchronously and can be polled or cancelled. Candidates "
                     "can be listed, reviewed with bounded evidence replay, and saved as a reliable local "
                     "portfolio, deterministically planned into supported CardPlans, "
@@ -279,7 +282,8 @@ def _handle_request(
                     "Trusted local credential settings are available for existing profiles. Only when the user "
                     "explicitly asks to manage permissions, system.revoke_grant opens a trusted local manager "
                     "where the user chooses targets; completed effects are not rolled back. Profile creation, "
-                    "remote profile validation, raw Worker commands, and runtime rendering/playback verification "
+                    "remote profile creation, arbitrary network/media acquisition, raw Worker commands, and "
+                    "runtime rendering/playback verification "
                     "remain unavailable."
                 ),
             },

@@ -14,6 +14,7 @@ INPUT_TOOL_NAMES = frozenset({REGISTER_INPUTS_TOOL_NAME})
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
 _PROJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 _RESOURCE_REF_RE = re.compile(r"^resource_[A-Za-z0-9_-]{43}$")
+_NETWORK_REF_RE = re.compile(r"^network_[A-Za-z0-9_-]{43}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -84,14 +85,88 @@ def _input_ref_schema(kind: str) -> dict[str, Any]:
     }
 
 
+def _network_input_ref_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "schemaVersion": {"type": "integer", "const": 1},
+            "kind": {"type": "string", "const": "url"},
+            "networkResourceRef": {
+                "type": "string",
+                "pattern": r"^network_[A-Za-z0-9_-]{43}$",
+            },
+            "displayOrigin": {"type": "string", "minLength": 9, "maxLength": 300},
+            "sourceKind": {
+                "type": "string",
+                "enum": ["public_video", "web", "podcast", "other"],
+            },
+            "adapter": {
+                "type": "string",
+                "enum": ["youtube", "generic_https"],
+            },
+            "publicIdentity": {
+                "anyOf": [
+                    {"type": "string", "minLength": 1, "maxLength": 300},
+                    {"type": "null"},
+                ]
+            },
+            "queryPresent": {"type": "boolean"},
+            "sensitiveQuery": {"type": "boolean"},
+            "resourceRevisionDigest": {
+                "type": "string",
+                "pattern": r"^[0-9a-f]{64}$",
+            },
+            "constraints": {
+                "type": "object",
+                "properties": {
+                    "actions": {"type": "array", "const": ["fetch"]},
+                    "methods": {"type": "array", "const": ["GET"]},
+                    "maxResponseBytes": {"type": "integer", "minimum": 1},
+                    "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 60},
+                    "redirectPolicy": {
+                        "type": "string",
+                        "enum": ["none", "same_origin"],
+                    },
+                    "maxRedirects": {"type": "integer", "minimum": 0, "maximum": 5},
+                },
+                "required": [
+                    "actions",
+                    "methods",
+                    "maxResponseBytes",
+                    "timeoutSeconds",
+                    "redirectPolicy",
+                    "maxRedirects",
+                ],
+                "additionalProperties": False,
+            },
+            "expiresAt": {"type": "string", "minLength": 1, "maxLength": 64},
+        },
+        "required": [
+            "schemaVersion",
+            "kind",
+            "networkResourceRef",
+            "displayOrigin",
+            "sourceKind",
+            "adapter",
+            "publicIdentity",
+            "queryPresent",
+            "sensitiveQuery",
+            "resourceRevisionDigest",
+            "constraints",
+            "expiresAt",
+        ],
+        "additionalProperties": False,
+    }
+
+
 def input_tool_definitions() -> list[dict[str, Any]]:
     return [
         {
             "name": REGISTER_INPUTS_TOOL_NAME,
             "title": "Register trusted study sources",
             "description": (
-                "Freeze one or more opaque local InputRefs into authenticated, "
-                "content-addressed SourceAssets. Absolute paths are never accepted or returned."
+                "Freeze one or more opaque trusted InputRefs into authenticated, "
+                "content-addressed SourceAssets. Complete paths and network addresses are never accepted or returned."
             ),
             "inputSchema": {
                 "type": "object",
@@ -132,6 +207,7 @@ def input_tool_definitions() -> list[dict[str, Any]]:
                             "oneOf": [
                                 _input_ref_schema("file"),
                                 _input_ref_schema("directory"),
+                                _network_input_ref_schema(),
                             ]
                         },
                         "minItems": 1,
@@ -172,16 +248,88 @@ def input_tool_definitions() -> list[dict[str, Any]]:
                 "readOnlyHint": False,
                 "destructiveHint": False,
                 "idempotentHint": True,
-                "openWorldHint": False,
+                "openWorldHint": True,
             },
         }
     ]
 
 
 def _validated_input_ref(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict) or value.get("kind") not in {"file", "directory"}:
+    if not isinstance(value, dict) or value.get("kind") not in {
+        "file",
+        "directory",
+        "url",
+    }:
         raise McpInputToolInputError("InputRef is invalid")
     kind = value["kind"]
+    if kind == "url":
+        expected = {
+            "schemaVersion",
+            "kind",
+            "networkResourceRef",
+            "displayOrigin",
+            "sourceKind",
+            "adapter",
+            "publicIdentity",
+            "queryPresent",
+            "sensitiveQuery",
+            "resourceRevisionDigest",
+            "constraints",
+            "expiresAt",
+        }
+        constraints = value.get("constraints")
+        if (
+            set(value) != expected
+            or value.get("schemaVersion") != 1
+            or not isinstance(value.get("networkResourceRef"), str)
+            or _NETWORK_REF_RE.fullmatch(value["networkResourceRef"]) is None
+            or not isinstance(value.get("displayOrigin"), str)
+            or not 9 <= len(value["displayOrigin"]) <= 300
+            or not value["displayOrigin"].startswith("https://")
+            or value.get("sourceKind")
+            not in {"public_video", "web", "podcast", "other"}
+            or value.get("adapter") not in {"youtube", "generic_https"}
+            or (
+                value.get("publicIdentity") is not None
+                and (
+                    not isinstance(value["publicIdentity"], str)
+                    or not 1 <= len(value["publicIdentity"]) <= 300
+                )
+            )
+            or not isinstance(value.get("queryPresent"), bool)
+            or not isinstance(value.get("sensitiveQuery"), bool)
+            or not isinstance(value.get("resourceRevisionDigest"), str)
+            or _SHA256_RE.fullmatch(value["resourceRevisionDigest"]) is None
+            or not isinstance(constraints, dict)
+            or set(constraints)
+            != {
+                "actions",
+                "methods",
+                "maxResponseBytes",
+                "timeoutSeconds",
+                "redirectPolicy",
+                "maxRedirects",
+            }
+            or constraints.get("actions") != ["fetch"]
+            or constraints.get("methods") != ["GET"]
+            or constraints.get("redirectPolicy") not in {"none", "same_origin"}
+            or any(
+                isinstance(constraints.get(name), bool)
+                or not isinstance(constraints.get(name), int)
+                for name in (
+                    "maxResponseBytes",
+                    "timeoutSeconds",
+                    "maxRedirects",
+                )
+            )
+            or constraints["maxResponseBytes"] < 1
+            or not 1 <= constraints["timeoutSeconds"] <= 60
+            or not 0 <= constraints["maxRedirects"] <= 5
+            or not isinstance(value.get("expiresAt"), str)
+            or not 1 <= len(value["expiresAt"]) <= 64
+        ):
+            raise McpInputToolInputError("Network InputRef is invalid")
+        return dict(value)
     reference = "fileResourceRef" if kind == "file" else "directoryResourceRef"
     expected = {
         "schemaVersion",

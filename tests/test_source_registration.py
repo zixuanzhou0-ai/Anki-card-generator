@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import base64
 import json
+import socket
 from pathlib import Path
 
 import pytest
@@ -9,6 +11,11 @@ import pytest
 from card_service.artifact_registry import ArtifactAudienceBinding
 from card_service.credentials import CredentialStore, InMemoryCredentialBackend
 from card_service.project_registry import ProjectRegistryError
+from card_service.network_resource_registry import (
+    NetworkFetchResponse,
+    NetworkResourceGrantRegistry,
+    PinnedNetworkFetcher,
+)
 from card_service.resource_runtime import ServiceResourceRuntime
 from card_service.service import CardService
 from card_service.study_runtime import StudyRuntime, StudyRuntimeError
@@ -53,6 +60,131 @@ def environment(tmp_path: Path):
         title="Trusted sources",
     )
     return resources, runtime, project
+
+
+def public_resolver(_host: str, _port: int, **_kwargs: object):
+    return [
+        (
+            socket.AF_INET,
+            socket.SOCK_STREAM,
+            socket.IPPROTO_TCP,
+            "",
+            ("93.184.216.34", 443),
+        )
+    ]
+
+
+class StaticPinnedFetcher(PinnedNetworkFetcher):
+    def __init__(
+        self,
+        body: bytes,
+        media_type: str = "text/html; charset=utf-8",
+        *,
+        content_encoding: str = "identity",
+    ) -> None:
+        self.body = body
+        self.media_type = media_type
+        self.content_encoding = content_encoding
+        self.calls = 0
+
+    def fetch(self, _resource, *, maximum_bytes=None, timeout_seconds=None):
+        self.calls += 1
+        assert maximum_bytes is not None and maximum_bytes >= len(self.body)
+        assert timeout_seconds is not None and timeout_seconds <= 60
+        return NetworkFetchResponse(
+            status=200,
+            headers={
+                "content-type": self.media_type,
+                "content-encoding": self.content_encoding,
+            },
+            body=self.body,
+            peer_ip="93.184.216.34",
+            redirect_location=None,
+        )
+
+
+class StaticYouTubeAcquirer:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def acquire(self, source_url: str, language: str):
+        self.calls.append((source_url, language))
+        body = b"WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nSpacing improves recall.\n"
+        return (
+            {
+                "schemaVersion": 1,
+                "sourceKind": "youtube_subtitles",
+                "videoId": "dQw4w9WgXcQ",
+                "title": "Memory lesson",
+                "languageCode": "en",
+                "captionKind": "manual",
+                "mimeType": "text/vtt",
+                "contentBase64": base64.b64encode(body).decode("ascii"),
+                "byteLength": len(body),
+                "sha256": hashlib.sha256(body).hexdigest(),
+            },
+            len(body),
+        )
+
+
+def network_environment(tmp_path: Path, body: bytes):
+    backend = InMemoryCredentialBackend()
+    credentials = (tmp_path / "credentials").resolve()
+    credential_store = CredentialStore(state_dir=credentials, backend=backend)
+    resources = ServiceResourceRuntime(
+        state_dir=(tmp_path / "resources").resolve(),
+        credential_store=credential_store,
+        gesture_verifier=lambda *_args: True,
+        harden_callback=None,
+        require_hardening=False,
+    )
+    network = NetworkResourceGrantRegistry(
+        (tmp_path / "network").resolve(),
+        authentication_key=b"source-registration-network-key-32",
+        service_instance_id=resources.service_instance_id,
+        gesture_verifier=lambda *_args: True,
+        resolver=public_resolver,
+    )
+    fetcher = StaticPinnedFetcher(body)
+    runtime = StudyRuntime(
+        state_dir=(tmp_path / "study").resolve(),
+        credential_store=credential_store,
+        resource_runtime=resources,
+        network_resource_registry=network,
+        network_fetcher=fetcher,
+    )
+    project = runtime.create_project(
+        audience=audience(),
+        idempotency_key="network-project-1",
+        learning_contract={
+            "purpose": "Learn the document",
+            "targetBehavior": "Recall its key ideas",
+        },
+        title="Trusted web source",
+    )
+    grant = network.issue_grant(
+        audience=audience(),
+        grant_request_id="web-source-1",
+        raw_url="https://example.com/private/article?sig=network-canary",
+        source_kind="web",
+        attestation_ref="trusted-network-gesture",
+        max_uses=8,
+    )
+    ref = {
+        "schemaVersion": 1,
+        "kind": "url",
+        "networkResourceRef": grant["networkResourceRef"],
+        "displayOrigin": grant["displayOrigin"],
+        "sourceKind": grant["sourceKind"],
+        "adapter": grant["adapter"],
+        "publicIdentity": grant["publicIdentity"],
+        "queryPresent": grant["queryPresent"],
+        "sensitiveQuery": grant["sensitiveQuery"],
+        "resourceRevisionDigest": grant["resourceRevisionDigest"],
+        "constraints": grant["constraints"],
+        "expiresAt": grant["expiresAt"],
+    }
+    return network, runtime, project, ref, fetcher
 
 
 def input_ref(
@@ -164,6 +296,187 @@ def test_register_file_freezes_source_without_disclosing_local_path(
         path.read_bytes() for path in (tmp_path / "study").rglob("*") if path.is_file()
     )
     assert str(source).encode("utf-8") not in persisted
+
+
+def test_register_and_inspect_web_source_without_disclosing_complete_url(
+    tmp_path: Path,
+) -> None:
+    body = (
+        b"<html><body><h1>Spacing effect</h1><p>Retrieval strengthens memory.</p>"
+        b"<script>secret()</script></body></html>"
+    )
+    _network, runtime, project, ref, fetcher = network_environment(tmp_path, body)
+    registered = register(runtime, project, ref, key="register-web-1")
+    assert fetcher.calls == 1
+    source = registered["sources"][0]
+    assert source["inputKind"] == "url"
+    assert source["sourceType"] == "html"
+    assert source["displayName"].startswith("https://example.com")
+    serialized = json.dumps(registered, ensure_ascii=False, sort_keys=True)
+    assert "/private/article" not in serialized
+    assert "network-canary" not in serialized
+    assert ref["networkResourceRef"] not in serialized
+    envelope = runtime.artifacts.resolve(source["sourceHandle"], audience())
+    assert runtime.artifacts.read_blob(
+        envelope["payload"]["representations"][0]["blobRef"]
+    ) == body
+
+    inspected = runtime.start_source_inspection(
+        audience=audience(),
+        project_id=project["projectId"],
+        expected_project_revision=registered["projectRevision"],
+        idempotency_key="inspect-web-1",
+        source_handles=[source["sourceHandle"]],
+    )
+    assert inspected["sources"][0]["sourceType"] == "html"
+    assert inspected["sources"][0]["supportTier"] == "B"
+    persisted = b"\n".join(
+        path.read_bytes()
+        for root in (tmp_path / "study", tmp_path / "network")
+        for path in root.rglob("*")
+        if path.is_file()
+    )
+    assert b"/private/article" not in persisted
+    assert b"network-canary" not in persisted
+
+
+def test_network_registration_rejects_cross_session_input_ref(tmp_path: Path) -> None:
+    _network, runtime, project, ref, fetcher = network_environment(
+        tmp_path, b"<html><body>session scoped</body></html>"
+    )
+    with pytest.raises(StudyRuntimeError) as mismatch:
+        runtime.register_inputs(
+            audience=audience(session_id="different-session"),
+            project_id=project["projectId"],
+            expected_project_revision=project["projectRevision"],
+            idempotency_key="register-cross-session",
+            input_refs=[ref],
+        )
+    assert mismatch.value.code in {"PROJECT_AUDIENCE_MISMATCH", "NETWORK_AUDIENCE_MISMATCH"}
+    assert fetcher.calls == 0
+
+
+def test_network_registration_rejects_compressed_response(tmp_path: Path) -> None:
+    _network, runtime, project, ref, fetcher = network_environment(
+        tmp_path, b"compressed-response"
+    )
+    fetcher.content_encoding = "gzip"
+    with pytest.raises(StudyRuntimeError) as blocked:
+        register(runtime, project, ref, key="register-compressed")
+    assert blocked.value.code == "SOURCE_NETWORK_ENCODING_BLOCKED"
+    assert fetcher.calls == 1
+
+
+@pytest.mark.parametrize("source_kind", ["podcast", "other"])
+def test_unimplemented_network_adapters_fail_before_fetch(
+    tmp_path: Path, source_kind: str
+) -> None:
+    network, runtime, project, ref, fetcher = network_environment(
+        tmp_path, b"unsupported"
+    )
+    grant = network.issue_grant(
+        audience=audience(),
+        grant_request_id=f"{source_kind}-source",
+        raw_url="https://media.example/lesson",
+        source_kind=source_kind,
+        attestation_ref=f"{source_kind}-gesture",
+        max_uses=8,
+    )
+    unsupported_ref = {
+        **ref,
+        "networkResourceRef": grant["networkResourceRef"],
+        "displayOrigin": grant["displayOrigin"],
+        "sourceKind": grant["sourceKind"],
+        "adapter": grant["adapter"],
+        "publicIdentity": grant["publicIdentity"],
+        "queryPresent": grant["queryPresent"],
+        "sensitiveQuery": grant["sensitiveQuery"],
+        "resourceRevisionDigest": grant["resourceRevisionDigest"],
+        "constraints": grant["constraints"],
+        "expiresAt": grant["expiresAt"],
+    }
+    with pytest.raises(StudyRuntimeError) as unavailable:
+        register(
+            runtime,
+            project,
+            unsupported_ref,
+            key=f"register-{source_kind}",
+        )
+    assert unavailable.value.code == "SOURCE_NETWORK_ADAPTER_NOT_AVAILABLE"
+    assert fetcher.calls == 0
+
+
+def test_register_youtube_grant_uses_only_canonical_video_identity(
+    tmp_path: Path,
+) -> None:
+    backend = InMemoryCredentialBackend()
+    credentials = (tmp_path / "credentials").resolve()
+    credential_store = CredentialStore(state_dir=credentials, backend=backend)
+    resources = ServiceResourceRuntime(
+        state_dir=(tmp_path / "resources").resolve(),
+        credential_store=credential_store,
+        gesture_verifier=lambda *_args: True,
+        harden_callback=None,
+        require_hardening=False,
+    )
+    network = NetworkResourceGrantRegistry(
+        (tmp_path / "network").resolve(),
+        authentication_key=b"youtube-registration-network-key",
+        service_instance_id=resources.service_instance_id,
+        gesture_verifier=lambda *_args: True,
+        resolver=public_resolver,
+    )
+    acquirer = StaticYouTubeAcquirer()
+    runtime = StudyRuntime(
+        state_dir=(tmp_path / "study").resolve(),
+        credential_store=credential_store,
+        resource_runtime=resources,
+        network_resource_registry=network,
+        youtube_subtitle_acquirer=acquirer,  # type: ignore[arg-type]
+    )
+    project = runtime.create_project(
+        audience=audience(),
+        idempotency_key="youtube-project",
+        learning_contract={
+            "purpose": "Learn spoken English",
+            "targetBehavior": "Recall useful expressions",
+            "promptLanguage": "English",
+        },
+        title="YouTube lesson",
+    )
+    grant = network.issue_grant(
+        audience=audience(),
+        grant_request_id="youtube-source",
+        raw_url="https://youtu.be/dQw4w9WgXcQ?si=youtube-tracking-canary",
+        source_kind="public_video",
+        attestation_ref="youtube-gesture",
+        max_uses=8,
+    )
+    ref = {
+        "schemaVersion": 1,
+        "kind": "url",
+        "networkResourceRef": grant["networkResourceRef"],
+        "displayOrigin": grant["displayOrigin"],
+        "sourceKind": grant["sourceKind"],
+        "adapter": grant["adapter"],
+        "publicIdentity": grant["publicIdentity"],
+        "queryPresent": grant["queryPresent"],
+        "sensitiveQuery": grant["sensitiveQuery"],
+        "resourceRevisionDigest": grant["resourceRevisionDigest"],
+        "constraints": grant["constraints"],
+        "expiresAt": grant["expiresAt"],
+    }
+    registered = register(runtime, project, ref, key="register-youtube")
+    assert acquirer.calls == [
+        ("https://www.youtube.com/watch?v=dQw4w9WgXcQ", "English")
+    ]
+    assert registered["sources"][0]["sourceType"] == "subtitle"
+    assert "youtube-tracking-canary" not in json.dumps(registered)
+    envelope = runtime.artifacts.resolve(
+        registered["sources"][0]["sourceHandle"], audience()
+    )
+    assert envelope["payload"]["provenance"]["adapter"] == "youtube_subtitles"
+    assert envelope["payload"]["provenance"]["publicIdentity"] == "dQw4w9WgXcQ"
 
 
 def test_register_directory_publishes_content_addressed_manifest(

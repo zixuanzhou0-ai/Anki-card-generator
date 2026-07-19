@@ -85,14 +85,53 @@ def test_register_inputs_schema_is_closed_and_cannot_accept_paths_or_audience() 
     ]
     assert all(item["additionalProperties"] is False for item in alternatives)
     encoded = json.dumps(definition, sort_keys=True).casefold()
-    for forbidden in ('"path"', '"url"', "ownerdigest", "sessionid", "apikey"):
+    for forbidden in ('"path":', '"url":', "ownerdigest", "sessionid", "apikey"):
         assert forbidden not in encoded
     assert definition["annotations"] == {
         "readOnlyHint": False,
         "destructiveHint": False,
         "idempotentHint": True,
-        "openWorldHint": False,
+        "openWorldHint": True,
     }
+
+
+def test_register_inputs_accepts_only_opaque_network_input_ref() -> None:
+    value = arguments(
+        inputRefs=[
+            {
+                "schemaVersion": 1,
+                "kind": "url",
+                "networkResourceRef": "network_" + "n" * 43,
+                "displayOrigin": "https://example.com",
+                "sourceKind": "web",
+                "adapter": "generic_https",
+                "publicIdentity": None,
+                "queryPresent": True,
+                "sensitiveQuery": True,
+                "resourceRevisionDigest": "c" * 64,
+                "constraints": {
+                    "actions": ["fetch"],
+                    "methods": ["GET"],
+                    "maxResponseBytes": 1024,
+                    "timeoutSeconds": 30,
+                    "redirectPolicy": "same_origin",
+                    "maxRedirects": 2,
+                },
+                "expiresAt": "2026-07-20T12:00:00.000Z",
+            }
+        ]
+    )
+    service = RecordingService()
+    result = call_input_tool(
+        service,  # type: ignore[arg-type]
+        tool_name=REGISTER_INPUTS_TOOL_NAME,
+        arguments=value,
+        audience_session=create_development_mcp_audience(),
+    )
+    assert result["structuredContent"]["artifactStage"] == "sources_ready"
+    serialized = json.dumps(service.calls[0]["input_refs"], sort_keys=True)
+    assert "https://example.com" in serialized
+    assert "/private" not in serialized
 
 
 def test_register_inputs_calls_only_the_trusted_service_boundary() -> None:
@@ -137,6 +176,33 @@ def test_register_inputs_calls_only_the_trusted_service_boundary() -> None:
             ],
         },
         {**arguments(), "snapshotPolicy": "trust_model_output"},
+        {
+            **arguments(),
+            "inputRefs": [
+                {
+                    "schemaVersion": 1,
+                    "kind": "url",
+                    "networkResourceRef": "network_" + "n" * 43,
+                    "displayOrigin": "https://example.com",
+                    "sourceKind": "web",
+                    "adapter": "generic_https",
+                    "publicIdentity": None,
+                    "queryPresent": False,
+                    "sensitiveQuery": False,
+                    "resourceRevisionDigest": "c" * 64,
+                    "constraints": {
+                        "actions": ["fetch"],
+                        "methods": ["GET"],
+                        "maxResponseBytes": 1024,
+                        "timeoutSeconds": 30,
+                        "redirectPolicy": "same_origin",
+                        "maxRedirects": 2,
+                    },
+                    "expiresAt": "2026-07-20T12:00:00.000Z",
+                    "rawUrl": "https://example.com/private",
+                }
+            ],
+        },
     ],
 )
 def test_register_inputs_rejects_scope_or_path_injection(invalid: dict) -> None:

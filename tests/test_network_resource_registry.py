@@ -180,6 +180,34 @@ def test_signed_url_is_memory_only_and_public_summary_is_redacted(tmp_path: Path
     assert binding.display_origin == "https://media.example"
 
 
+def test_list_grants_is_audience_bound_bounded_and_url_free(tmp_path: Path) -> None:
+    registry = make_registry(tmp_path, gestures=Gestures())
+    first = issue_web(
+        registry,
+        "https://example.com/private/page?sig=list-canary",
+        request_id="list-first",
+        max_uses=2,
+    )
+    issue_web(
+        registry,
+        "https://media.example/episode.mp3?token=other-canary",
+        request_id="list-second",
+        max_uses=2,
+    )
+    summaries = registry.list_grants(audience(), maximum=10)
+    assert len(summaries) == 2
+    assert first["networkResourceRef"] in {
+        item["networkResourceRef"] for item in summaries
+    }
+    encoded = json.dumps(summaries, ensure_ascii=False)
+    assert "/private/page" not in encoded
+    assert "list-canary" not in encoded
+    assert "other-canary" not in encoded
+    assert registry.list_grants(
+        audience(session="other-session"), maximum=10
+    ) == []
+
+
 def test_youtube_is_reduced_to_public_video_identity_without_tracking_query(tmp_path: Path) -> None:
     registry = make_registry(tmp_path, gestures=Gestures())
     raw = f"https://youtu.be/{VIDEO_ID}?si=tracking-canary"

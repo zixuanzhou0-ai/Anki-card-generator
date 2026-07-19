@@ -56,6 +56,15 @@ class TrustedLocalResourceSelection:
 
 
 @dataclass(frozen=True)
+class TrustedNetworkResourceSelection:
+    session_ref: str
+    source_kind: str
+    raw_url: str
+    attestation_ref: str
+    selected_at: int
+
+
+@dataclass(frozen=True)
 class TrustedImportConsentDecision:
     session_ref: str
     import_intent_id: str
@@ -125,6 +134,9 @@ class TrustedSurfaceManager:
         self._credential_backend = credential_backend
         self._authorization_issuer: BrokerAuthorizationIssuer | None = None
         self._local_resource_selections: dict[str, TrustedLocalResourceSelection] = {}
+        self._network_resource_selections: dict[
+            str, TrustedNetworkResourceSelection
+        ] = {}
         self._resource_attestations: dict[str, dict[str, Any]] = {}
         self._import_consent_decisions: dict[str, TrustedImportConsentDecision] = {}
         self._import_consent_attestations: dict[str, dict[str, Any]] = {}
@@ -152,6 +164,9 @@ class TrustedSurfaceManager:
             "localResourcePickerResponseEncryptedAtRest": True,
             "localResourceAttestation": True,
             "localResourcePathDisclosure": False,
+            "networkResourceInput": True,
+            "networkResourceInputResponseEncryptedAtRest": True,
+            "networkResourceUrlDisclosure": False,
             "localSettings": True,
             "consentWindow": True,
             "ankiImportConsentAttestation": True,
@@ -290,6 +305,24 @@ class TrustedSurfaceManager:
             "local_resource_picker", selectionKind=kind, scopeSummary=summary
         )
 
+    def create_network_resource_session(
+        self, *, source_kind: str, scope_summary: str
+    ) -> dict[str, Any]:
+        if source_kind not in {"public_video", "web", "podcast", "other"}:
+            raise TrustedSurfaceError(
+                "INVALID_NETWORK_SOURCE_KIND", "Invalid network source kind"
+            )
+        summary = str(scope_summary or "").strip()
+        if not summary or len(summary) > 1_000:
+            raise TrustedSurfaceError(
+                "INVALID_NETWORK_SCOPE", "Invalid network resource scope summary"
+            )
+        return self._create_session(
+            "network_resource_input",
+            sourceKind=source_kind,
+            scopeSummary=summary,
+        )
+
     def create_authorization_manager_session(
         self,
         *,
@@ -323,6 +356,7 @@ class TrustedSurfaceManager:
             kind = str(item["kind"])
             if kind not in {
                 "local_resource",
+                "network_resource",
                 "anki_import",
                 "broker_authorization",
                 "operation_approval",
@@ -437,6 +471,7 @@ class TrustedSurfaceManager:
                 "local_settings",
                 "consent",
                 "local_resource_picker",
+                "network_resource_input",
                 "authorization_manager",
             }
             or not isinstance(request.get("requestNonce"), str)
@@ -624,6 +659,87 @@ class TrustedSurfaceManager:
             },
         }
 
+    def _finalize_network_resource_response(
+        self,
+        request: dict[str, Any],
+        response: dict[str, Any],
+        response_key: bytes,
+    ) -> dict[str, Any]:
+        session_ref = str(request["sessionRef"])
+        if response.get("state") == "cancelled":
+            return {
+                "schemaVersion": 1,
+                "sessionRef": session_ref,
+                "state": "cancelled",
+                "userGestureRecorded": False,
+            }
+        if response.get("state") != "selected" or response.get(
+            "userGestureRecorded"
+        ) is not True:
+            raise TrustedSurfaceError(
+                "SESSION_RESPONSE_INVALID",
+                "Trusted network resource input was not user approved",
+            )
+        try:
+            private = open_private_payload(
+                response.get("privatePayload") or {},
+                response_key,
+                session_ref=session_ref,
+                request_nonce=str(request["requestNonce"]),
+                surface="network_resource_input",
+            )
+        except (TypeError, ValueError) as error:
+            raise TrustedSurfaceError(
+                "SESSION_RESPONSE_INVALID",
+                "Trusted network resource payload is invalid",
+            ) from error
+        if set(private) != {"schemaVersion", "rawUrl"} or private.get(
+            "schemaVersion"
+        ) != 1:
+            raise TrustedSurfaceError(
+                "SESSION_RESPONSE_INVALID",
+                "Trusted network resource payload is invalid",
+            )
+        raw_url = private.get("rawUrl")
+        if (
+            not isinstance(raw_url, str)
+            or not raw_url.strip()
+            or len(raw_url) > 16 * 1024
+            or any(ord(character) < 0x20 for character in raw_url)
+        ):
+            raise TrustedSurfaceError(
+                "SESSION_RESPONSE_INVALID",
+                "Trusted network resource URL is invalid",
+            )
+        selected_at = int(time.time() * 1000)
+        attestation_ref = "network-attestation-" + secrets.token_urlsafe(24)
+        selection = TrustedNetworkResourceSelection(
+            session_ref=session_ref,
+            source_kind=str(request["sourceKind"]),
+            raw_url=raw_url.strip(),
+            attestation_ref=attestation_ref,
+            selected_at=selected_at,
+        )
+        with self._lock:
+            self._network_resource_selections[session_ref] = selection
+            self._resource_attestations[attestation_ref] = {
+                "sessionRef": session_ref,
+                "action": "approve_network_resource",
+                "audienceDigest": None,
+                "requestDigest": None,
+                "expiresAt": selected_at + RESOURCE_ATTESTATION_LIFETIME_MS,
+            }
+        return {
+            "schemaVersion": 1,
+            "sessionRef": session_ref,
+            "state": "selected",
+            "userGestureRecorded": True,
+            "networkSelection": {
+                "sourceKind": selection.source_kind,
+                "urlDisclosure": False,
+            },
+        }
+
     def _finalize_authorization_manager_response(
         self,
         request: dict[str, Any],
@@ -710,6 +826,23 @@ class TrustedSurfaceManager:
                         "Trusted resource revocation binding is invalid",
                     )
                 action = "revoke_local_resource"
+            elif kind == "network_resource":
+                if (
+                    set(locator) != {"networkResourceRef", "revocationEpoch"}
+                    or not isinstance(locator.get("networkResourceRef"), str)
+                    or re.fullmatch(
+                        r"network_[A-Za-z0-9_-]{43}",
+                        locator["networkResourceRef"],
+                    )
+                    is None
+                    or isinstance(locator.get("revocationEpoch"), bool)
+                    or not isinstance(locator.get("revocationEpoch"), int)
+                ):
+                    raise TrustedSurfaceError(
+                        "SESSION_RESPONSE_INVALID",
+                        "Trusted network revocation binding is invalid",
+                    )
+                action = "revoke_network_resource"
             elif kind == "anki_import":
                 if set(locator) != {"importIntentId"} or not IMPORT_INTENT_RE.fullmatch(
                     str(locator.get("importIntentId") or "")
@@ -772,7 +905,7 @@ class TrustedSurfaceManager:
             )
             selections.append(selection)
             with self._lock:
-                if kind == "local_resource":
+                if kind in {"local_resource", "network_resource"}:
                     self._resource_attestations[attestation_ref] = {
                         "sessionRef": session_ref,
                         "action": action,
@@ -828,6 +961,12 @@ class TrustedSurfaceManager:
         with self._lock:
             return self._local_resource_selections.get(session_ref)
 
+    def selected_network_resource(
+        self, session_ref: str
+    ) -> TrustedNetworkResourceSelection | None:
+        with self._lock:
+            return self._network_resource_selections.get(session_ref)
+
     def verify_resource_gesture(
         self, audience_digest: str, request_digest: str, attestation_ref: str, action: str
     ) -> bool:
@@ -843,6 +982,7 @@ class TrustedSurfaceManager:
             if int(pending["expiresAt"]) <= int(time.time() * 1000):
                 session_ref = str(pending["sessionRef"])
                 self._local_resource_selections.pop(session_ref, None)
+                self._network_resource_selections.pop(session_ref, None)
                 self._resource_attestations.pop(attestation_ref, None)
                 return False
             if pending["audienceDigest"] is None:
@@ -859,6 +999,12 @@ class TrustedSurfaceManager:
     def complete_resource_selection(self, session_ref: str) -> None:
         with self._lock:
             selection = self._local_resource_selections.pop(session_ref, None)
+            if selection is not None:
+                self._resource_attestations.pop(selection.attestation_ref, None)
+
+    def complete_network_resource_selection(self, session_ref: str) -> None:
+        with self._lock:
+            selection = self._network_resource_selections.pop(session_ref, None)
             if selection is not None:
                 self._resource_attestations.pop(selection.attestation_ref, None)
 
@@ -1022,7 +1168,8 @@ class TrustedSurfaceManager:
         if verified is not None:
             allowed = {
                 "schemaVersion", "sessionRef", "state", "credential", "userGestureRecorded",
-                "authorization", "resourceSelection", "authorizationRevocation", "errorCode",
+                "authorization", "resourceSelection", "networkSelection",
+                "authorizationRevocation", "errorCode",
             }
             return {key: value for key, value in verified.items() if key in allowed}
         response_path = self.responses_dir / f"{session_ref}.json"
@@ -1053,6 +1200,14 @@ class TrustedSurfaceManager:
                 pass
         elif request.get("surface") == "authorization_manager":
             finalized = self._finalize_authorization_manager_response(
+                request, response, response_key
+            )
+            try:
+                response_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        elif request.get("surface") == "network_resource_input":
+            finalized = self._finalize_network_resource_response(
                 request, response, response_key
             )
             try:
@@ -1157,6 +1312,7 @@ class TrustedSurfaceManager:
             self._response_keys.pop(session_ref, None)
         allowed = {
             "schemaVersion", "sessionRef", "state", "credential", "userGestureRecorded",
-            "authorization", "resourceSelection", "authorizationRevocation", "errorCode",
+            "authorization", "resourceSelection", "networkSelection",
+            "authorizationRevocation", "errorCode",
         }
         return {key: value for key, value in finalized.items() if key in allowed}

@@ -4,15 +4,15 @@
 
 ## CURRENT 公共工具清单与能力上限（2026-07-20）
 
-截至 2026-07-20，可信开发态 Card Service stdio runtime 共公开 36 个工具：`system.get_capabilities`、`system.authorize_candidate_discovery`、`system.list_profiles`、`system.open_local_settings`、`system.revoke_grant`、`system.validate_profile`、`system.request_operation_confirmation`、`system.request_source_grant`、`system.request_output_grant`、`study.create_project`、`study.list_projects`、`study.get_project`、`study.register_inputs`、`study.start_source_inspection`、`study.get_source_inspection`、`study.start_discovery`、`study.get_task`、`study.cancel_task`、`study.list_recoverable_tasks`、`study.resume_task`、`study.list_candidates`、`study.get_candidate`、`study.preview_evidence`、`study.set_selection`、`study.plan_cards`、`study.list_card_plans`、`study.edit_card_plan`、`study.validate_card_plans`、`cards.generate`、`cards.list`、`cards.export_apkg`、`anki.prepare_import`、`anki.request_import_confirmation`、`anki.import_and_verify`、`study.get_artifact`、`study.get_audit`。
+截至 2026-07-20，可信开发态 Card Service stdio runtime 共公开 37 个工具：`system.get_capabilities`、`system.authorize_candidate_discovery`、`system.list_profiles`、`system.open_local_settings`、`system.revoke_grant`、`system.validate_profile`、`system.request_operation_confirmation`、`system.request_source_grant`、`system.request_output_grant`、`system.request_network_grant`、`study.create_project`、`study.list_projects`、`study.get_project`、`study.register_inputs`、`study.start_source_inspection`、`study.get_source_inspection`、`study.start_discovery`、`study.get_task`、`study.cancel_task`、`study.list_recoverable_tasks`、`study.resume_task`、`study.list_candidates`、`study.get_candidate`、`study.preview_evidence`、`study.set_selection`、`study.plan_cards`、`study.list_card_plans`、`study.edit_card_plan`、`study.validate_card_plans`、`cards.generate`、`cards.list`、`cards.export_apkg`、`anki.prepare_import`、`anki.request_import_confirmation`、`anki.import_and_verify`、`study.get_artifact`、`study.get_audit`。
 
 当前候选发现授权工具只接受 `{"preset":"hermes_grok_4_5"}`。授权成功后，`study.start_discovery` 只接受 RequestContext、`inspectionHandle` 和 1–256 的 `candidateBudget`；Service 从当前可信授权派生模型身份、endpoint、凭据与 disclosure，调用方无权注入这些字段。
 
 `anki.import_and_verify` 只接受 `context.idempotencyKey` 与已确认的 `importIntentId`。成功写入后执行 deck/note/card/field/media 的数据级核验并最多推进到 `anki_data_verified`。写入成功但数据核验失败时保留 receipt 并置为 `imported_unverified`；写入前失败保持 `apkg_ready` 且不创建 receipt；跨越不确定写边界的取消/中断必须 `inspect_before_retry`。同一 import intent 即使换 idempotency key 也不得重复导入。运行时渲染、媒体播放、reviewer 操作与重启核验不在当前工具集中。
 
-下文总表同时保留 PROPOSED V1 工具设计；只有本节列出的 36 个名字可被当前 Skill 命令式调用。
+下文总表同时保留 PROPOSED V1 工具设计；只有本节列出的 37 个名字可被当前 Skill 命令式调用。
 
-> 状态：CURRENT 36 工具开发态 runtime + PROPOSED 扩展工具契约；正式签名插件尚未发布
+> 状态：CURRENT 37 工具开发态 runtime + PROPOSED 扩展工具契约；正式签名插件尚未发布
 > 日期：2026-07-20
 > 工具名和 schema 在实现前仍可调整；一旦 V1 发布即按版本策略维护。
 
@@ -29,7 +29,7 @@ MCP 工具服务于用户意图，而不是暴露内部 Worker。工具层必须
 
 官方工具设计参考：[Describe tools](https://developers.openai.com/apps-sdk/build/mcp-server#step-2--describe-tools)。
 
-当前桥实现协议握手、动态工具发现、零参数只读能力快照，以及可信会话中的本地 source/output opaque grant、幂等项目/素材登记、有界确定性素材检查、现有认证 Discovery 的候选列表/详情/证据预览、本地组合选择、受限确定性 CardPlan 创建/分页复核/Agent 编辑/独立重验，以及文本卡片的确定性生成与分页审阅。`cards.generate` 只接受当前 planSetHandle，要求全部八项门禁为 passed，发布不可变 CardArtifact、ReliabilityManifest、空 MediaLedger、SanitizedLegacyProjectArtifact 与 ProjectArtifact；它不调用模型、TTS、媒体、网络或 Anki。`cards.list` 只返回学习者可见题面、答案、解释、例句、评分边界和验证状态。没有原生 launcher audience 时只公开 `system.get_capabilities`；可信 audience 由父 PID、固定 launcher 可执行文件、当前 OS 用户 SID 摘要和每进程随机 nonce 派生，工具参数不能自报。桥仍不接受任意路径、URL、调用方构造的 Artifact 或 OperationIntent，也不公开启动候选发现、候选编辑、Anki 写入、凭据、原始 Worker 或 Shell。CURRENT APKG 导出只接受当前 ProjectArtifact handle 与受信 outputRef，返回可轮询任务；除明确标为 CURRENT 的工具外，下文仍是后续里程碑的目标合同。
+当前桥实现协议握手、动态工具发现、零参数只读能力快照，以及可信会话中的本地 source/output grant、受信 network grant、幂等项目/素材登记、有界确定性素材检查、候选发现/查询/选择、受限确定性 CardPlan 创建/分页复核/Agent 编辑/独立重验，以及文本卡片的确定性生成与分页审阅。`cards.generate` 只接受当前 planSetHandle，要求全部八项门禁为 passed，发布不可变 CardArtifact、ReliabilityManifest、空 MediaLedger、SanitizedLegacyProjectArtifact 与 ProjectArtifact；它不调用模型、TTS、媒体、网络或 Anki。网络仅在登记阶段通过 Service-owned 适配器形成静态网页或 YouTube 字幕快照；raw URL 不进入桥参数。`cards.list` 只返回学习者可见题面、答案、解释、例句、评分边界和验证状态。没有原生 launcher audience 时只公开 `system.get_capabilities`；可信 audience 由父 PID、固定 launcher 可执行文件、当前 OS 用户 SID 摘要和每进程随机 nonce 派生，工具参数不能自报。桥仍不接受任意路径、raw URL、调用方构造的 Artifact/OperationIntent、任意 Provider/媒体参数、原始 Worker 或 Shell。CURRENT APKG 导出只接受当前 ProjectArtifact handle 与受信 outputRef，返回可轮询任务；除明确标为 CURRENT 的工具外，下文仍是后续里程碑的目标合同。
 
 ## 2. 公共请求约定
 
@@ -317,11 +317,13 @@ CURRENT M2 已实现 file/directory/output grant 的认证账本、opaque ref、
 
 ### system.request_network_grant
 
-输入固定为判别值 kind=trusted_entry，并包含 sourceKind=public_video/web/podcast/other；不接受 url、origin、path、query、header 或调用方自报的公开/敏感分类。工具只打开 Card Service 的受信本地 URL 输入表面；用户在该表面直接录入 raw URL，Service 在字符串进入 MCP 之前完成 userinfo/秘密模式扫描、规范化、DNS/重定向/公网策略检查和确认。MCP 只收到 networkResourceRef、脱敏 displayOrigin、adapter 类型和 canonical policy 摘要；后续 register_inputs 只接受 networkResourceRef。
+> CURRENT：可信 stdio audience 中已公开。
+
+输入是封闭对象 `{ grantRequestId, kind: "trusted_entry", sourceKind }`，其中 sourceKind 为 public_video/web/podcast/other；不接受 url、origin、path、query、header、cookie、credential 或调用方自报的公开/敏感分类。工具只打开 Card Service 的受信本地 URL 输入表面；用户在该表面直接录入 raw URL。Service 在任何公开 MCP 结果返回前完成 userinfo/秘密模式扫描、规范化、全部 A/AAAA 公网判定和固定策略签发；重定向在实际获取时逐跳重新验证。MCP 只收到 kind=url 的 opaque InputRef，其中包含 networkResourceRef、脱敏 displayOrigin、adapter、允许公开的 publicIdentity、query/sensitiveQuery 布尔值、资源 revision 摘要、封闭 constraints 与期限，不返回 raw path/query、受信窗口 session、密文或 attestation。
 
 如果用户已把 URL 粘贴到对话，Skill 不得把该值复制进工具参数。疑似 signed/token/auth/query 凭据时应说明对话记录可能已经暴露、建议撤销或轮换，然后要求在受信表面输入新值。此设计为所有 URL 增加一次本地输入动作，以换取“raw URL 从不进入 MCP request”的可验证边界。
 
-CURRENT M2 已实现该工具之后的内部 network grant/consume/redirect/revoke/fetch 合同与 33 项定向测试，但没有实现本 public MCP 工具或生产受信 URL 输入窗口。内部 registry 不能被 Agent 直接调用来绕过真实用户动作；Service 重启后因 raw URL 不落盘，旧 ref 返回 `reauthorization_required`。
+CURRENT `study.register_inputs` 已能消费该 InputRef。`web` 使用固定 IP + TLS hostname 的匿名 HTTPS GET，拒绝环境代理、Cookie、Authorization、跨 origin 重定向、压缩响应、非 2xx 和超过 32 MiB 的登记快照，并发布内容寻址 SourceAsset；HTML/文本/Markdown 可继续进入现有确定性检查。`public_video` 当前仅对 YouTube 提取规范化 videoId 后获取字幕快照，不下载视频、原声或调用通用 yt-dlp。`podcast` 与 `other` 可以由同一受信表面形成权限记录，但当前登记适配器会以 `SOURCE_NETWORK_ADAPTER_NOT_AVAILABLE` 显式失败；这不等于已支持播客或任意 URL。Service 重启后因 raw URL 不落盘，旧 ref 返回 `reauthorization_required`。
 
 ### system.request_operation_confirmation
 
@@ -339,7 +341,7 @@ OperationRequestManifest 的 subject 是 project_task 或 profile_validation。�
 
 首次调用输入必须是空对象 `{}`。Service 直接从当前受信 audience 的认证账本构建最多 256 项的脱敏清单，随后打开 digest-pinned 本地授权管理器。工具不接受 project/resource/operation/import/profile/ledger/authorization ID、路径、URL、手势引用或撤销 bearer。只有真实用户在本地窗口中的选择与二次确认会产生 AES-GCM 私有选择响应及短期精确 attestation。
 
-若窗口仍打开，输出 `authorizationSessionRef`、`state=open|created` 与 `availableCount`；正在应用选择时返回 `state=processing`，后续仅用同一 session ref 轮询。终态只返回 selected/revoked/already-consumed/already-revoked/not-found/failed 计数和逐类 disposition，不返回目标引用。窗口默认不选择任何项目，未选择时撤销按钮不可用，二次确认默认落在“否”，Escape 只会取消。当前覆盖本地 file/directory/output grant、未消费 Anki ImportApproval、当前 Broker model/TTS/source authorization，以及同一 audience 中尚未消费的 profile-validation OperationApproval；尚未公开的 network grant 不会被虚假列为已覆盖。
+若窗口仍打开，输出 `authorizationSessionRef`、`state=open|created` 与 `availableCount`；正在应用选择时返回 `state=processing`，后续仅用同一 session ref 轮询。终态只返回 selected/revoked/already-consumed/already-revoked/not-found/failed 计数和逐类 disposition，不返回目标引用。窗口默认不选择任何项目，未选择时撤销按钮不可用，二次确认默认落在“否”，Escape 只会取消。当前覆盖本地 file/directory/output grant、network grant、未消费 Anki ImportApproval、当前 Broker model/TTS/source authorization，以及同一 audience 中尚未消费的 profile-validation OperationApproval。
 
 本地资源与 Anki 撤销分别通过其认证账本原子写入，Anki consume/revoke 竞态只有一个赢家；Broker 撤销对当前授权全部 profile 做一次 ledger 写并先核对窗口打开时的不可变 authorization digest，旧窗口不能撤销后来替换的新授权。跨 Registry 不宣称全局原子事务，终态逐项报告结果。相同 UI session 重试幂等。撤销立即阻止后续使用，但已经完成的远程调用、读取、Artifact 或 Anki 写入不会被伪装成已回滚。
 
@@ -421,11 +423,11 @@ Service 先对整个 ChangeSet 做 schema/长度/预算/路线约束校验，再
 
 ### 5.5 study.register_inputs
 
-CURRENT 输入是封闭对象：`context` 只接受 projectId、expectedRevision、idempotencyKey 和 locale；`inputs` 接受 1–64 个 kind=file|directory 的 opaque InputRef；`snapshotPolicy` 接受 require_stable|allow_conditional|draft_only。schema 不含 path、URL、audience、自定义权限、receipt 或 Worker locator。授权不会作为模型可提交的 bearer 传入；Card Service 使用当前可信连接身份和内部授权账本校验每个 InputRef。
+CURRENT 输入是封闭对象：`context` 只接受 projectId、expectedRevision、idempotencyKey 和 locale；`inputs` 接受 1–64 个 kind=file|directory|url 的 opaque InputRef；`snapshotPolicy` 接受 require_stable|allow_conditional|draft_only。schema 不含 raw path、raw URL、audience、自定义权限、receipt 或 Worker locator。url 分支只能使用 `system.request_network_grant` 返回的精确字段，Service 会对照当前进程内、同 audience/service/session 的认证授权记录逐字段重验；复制、篡改、跨会话或服务重启后的 ref 都不能获得访问能力。授权不会作为模型可提交的 bearer 传入。
 
-Service 为本次登记创建可恢复 StudyTask，将来源绑定到任务指纹，复制到任务专属 staging，并把文件流式写入内容寻址 Blob；目录逐文件写入 Blob，再发布 canonical directory manifest。随后发布认证 `study.source-asset`，并以 expectedRevision 把项目原子推进到 `sources_ready`。精确重试会重新签发当前会话 handle；若崩溃发生在 Artifact 发布后、项目提交前，恢复会复用认证 Artifact 并完成项目提交。
+Service 为本次登记创建可恢复 StudyTask，将来源绑定到任务指纹。本地文件复制到任务专属 staging 并流式写入内容寻址 Blob；目录逐文件写入 Blob，再发布 canonical directory manifest。网络来源在消费授权后通过受控适配器形成内容寻址快照，不把 raw URL 交给 Worker。随后发布认证 `study.source-asset`，并以 expectedRevision 把项目原子推进到 `sources_ready`。精确重试会重新签发当前会话 handle；若崩溃发生在 Artifact 发布后、项目提交前，恢复会复用认证 Artifact 并完成项目提交。
 
-CURRENT 公开结果仅返回项目/任务状态、SourceAsset opaque handle、内容摘要、大小、支持级别和警告；不得包含 source path、InputRef、私有 receipt、resolution proof、registry ref、stagingRef、worker locator 或绝对 task path。单文件当前硬限制为 2 GiB，超限时在发布 SourceAsset 前显式失败，不产生半成品成功状态。
+CURRENT 公开结果仅返回项目/任务状态、SourceAsset opaque handle、显示名、来源类型、内容摘要、支持级别和状态；不得包含 source path、raw URL/query、InputRef、networkResourceRef、私有 receipt、resolution proof、registry ref、stagingRef、worker locator 或绝对 task path。本地单文件硬限制为 2 GiB；通用网页登记快照上限为 32 MiB。超限时在发布 SourceAsset 前显式失败，不产生半成品成功状态。
 
 snapshotPolicy：
 
@@ -433,7 +435,7 @@ snapshotPolicy：
 - allow_conditional：允许 B 级来源，但必须返回警告。
 - draft_only：model_relayed 内容只生成草稿。
 
-登记只证明“获得了稳定字节快照”，不证明内容已经解析、完整或适合制卡。文件/目录在 source inspection 完成前固定为 B 级 conditional；未知类型为 C 级 unsupported。当前调用同步等待登记完成，公共任务轮询/取消仍待统一任务工具开放。
+登记只证明“获得了稳定字节快照”，不证明内容已经解析、完整或适合制卡。文件、目录和网络快照在 source inspection 完成前固定为 B 级 conditional；未知类型、PDF、Office、音视频或尚未接线的网络适配器为 C 级 unsupported/显式阻塞。当前调用同步等待登记完成；公共 task poll/cancel 已用于已公开的异步任务，但登记本身仍是有界同步路径。
 
 禁止：
 
