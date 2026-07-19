@@ -12,8 +12,13 @@ from .trusted_mcp_audience import TrustedMcpAudienceSession
 
 PREPARE_IMPORT_TOOL_NAME = "anki.prepare_import"
 REQUEST_IMPORT_CONFIRMATION_TOOL_NAME = "anki.request_import_confirmation"
+IMPORT_AND_VERIFY_TOOL_NAME = "anki.import_and_verify"
 ANKI_TOOL_NAMES = frozenset(
-    {PREPARE_IMPORT_TOOL_NAME, REQUEST_IMPORT_CONFIRMATION_TOOL_NAME}
+    {
+        PREPARE_IMPORT_TOOL_NAME,
+        REQUEST_IMPORT_CONFIRMATION_TOOL_NAME,
+        IMPORT_AND_VERIFY_TOOL_NAME,
+    }
 )
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
 _PROJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
@@ -176,6 +181,70 @@ def anki_tool_definitions() -> list[dict[str, Any]]:
                 "openWorldHint": False,
             },
         },
+        {
+            "name": IMPORT_AND_VERIFY_TOOL_NAME,
+            "title": "Import into Anki and verify",
+            "description": (
+                "Consume one approved, session-bound import intent and start the "
+                "authenticated Anki import-and-data-verification task. The tool accepts "
+                "no path, AnkiConnect URL, approval boolean, token, or raw ExportResult."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "context": {
+                        "type": "object",
+                        "properties": {
+                            "idempotencyKey": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 160,
+                            }
+                        },
+                        "required": ["idempotencyKey"],
+                        "additionalProperties": False,
+                    },
+                    "importIntentId": {
+                        "type": "string",
+                        "pattern": r"^anki_intent_[0-9a-f]{48}$",
+                    },
+                },
+                "required": ["context", "importIntentId"],
+                "additionalProperties": False,
+            },
+            "outputSchema": {
+                "type": "object",
+                "properties": {
+                    "schemaVersion": {"type": "integer", "const": 1},
+                    "taskId": {"type": "string"},
+                    "intent": {"type": "string", "const": "import_and_verify"},
+                    "state": {"type": "string"},
+                    "cancellable": {"type": "boolean"},
+                    "resumability": {"type": "string"},
+                    "progress": {"type": "object"},
+                    "result": {"type": "object"},
+                    "error": {"type": "object"},
+                    "nextAction": {"type": "string"},
+                },
+                "required": [
+                    "schemaVersion",
+                    "taskId",
+                    "intent",
+                    "state",
+                    "cancellable",
+                    "resumability",
+                    "progress",
+                    "nextAction",
+                ],
+                "additionalProperties": False,
+            },
+            "annotations": {
+                "readOnlyHint": False,
+                "destructiveHint": True,
+                "idempotentHint": True,
+                "openWorldHint": True,
+            },
+        },
     ]
 
 
@@ -215,6 +284,23 @@ def _confirmation_argument(arguments: Any) -> str:
         raise McpAnkiToolInputError("importIntentId is invalid")
     return intent
 
+
+def _import_arguments(arguments: Any) -> tuple[str, str]:
+    if not isinstance(arguments, dict) or set(arguments) != {
+        "context",
+        "importIntentId",
+    }:
+        raise McpAnkiToolInputError("Anki import fields are invalid")
+    context = arguments.get("context")
+    if not isinstance(context, dict) or set(context) != {"idempotencyKey"}:
+        raise McpAnkiToolInputError("Anki import context is invalid")
+    key = context.get("idempotencyKey")
+    intent = arguments.get("importIntentId")
+    if not isinstance(key, str) or not _ID_RE.fullmatch(key):
+        raise McpAnkiToolInputError("idempotencyKey is invalid")
+    if not isinstance(intent, str) or not _IMPORT_INTENT_RE.fullmatch(intent):
+        raise McpAnkiToolInputError("importIntentId is invalid")
+    return key, intent
 
 def call_anki_tool(
     service: CardService,
@@ -274,12 +360,32 @@ def call_anki_tool(
             "content": [{"type": "text", "text": text}],
             "structuredContent": structured,
         }
+    if tool_name == IMPORT_AND_VERIFY_TOOL_NAME:
+        key, intent = _import_arguments(arguments)
+        structured = service.start_study_anki_import(
+            audience=audience_session.audience,
+            import_intent_id=intent,
+            idempotency_key=key,
+        )
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "Authenticated Anki import and data verification started. "
+                        "Poll the returned Study task for its terminal result."
+                    ),
+                }
+            ],
+            "structuredContent": structured,
+        }
     raise McpAnkiToolInputError("Unknown Anki tool")
 
 
 __all__ = [
     "ANKI_TOOL_NAMES",
     "McpAnkiToolInputError",
+    "IMPORT_AND_VERIFY_TOOL_NAME",
     "PREPARE_IMPORT_TOOL_NAME",
     "REQUEST_IMPORT_CONFIRMATION_TOOL_NAME",
     "anki_tool_definitions",

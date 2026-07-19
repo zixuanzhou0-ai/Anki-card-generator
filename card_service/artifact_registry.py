@@ -411,7 +411,15 @@ class ArtifactRegistry:
         if record.get("keyId") != self._key_id:
             raise ArtifactRegistryError("ARTIFACT_AUTH_INVALID", "Registry record uses an unavailable authentication key")
 
-    def _verify_artifact_ref(self, artifact_ref: Mapping[str, Any], audience: ArtifactAudienceBinding, *, expected_project_id: str | None = None, seen: set[tuple[str, int, str]] | None = None) -> dict[str, Any]:
+    def _verify_artifact_ref(
+        self,
+        artifact_ref: Mapping[str, Any],
+        audience: ArtifactAudienceBinding,
+        *,
+        expected_project_id: str | None = None,
+        seen: set[tuple[str, int, str]] | None = None,
+        verified: dict[tuple[str, int, str], dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         required = {"artifactId", "projectId", "projectRevision", "artifactRevision", "payloadSchema", "payloadSchemaVersion", "artifactDigest", "registryAuthRef"}
         if set(artifact_ref) != required:
             raise ArtifactRegistryError("ARTIFACT_REF_INVALID", "Artifact reference fields are invalid")
@@ -429,6 +437,9 @@ class ArtifactRegistry:
         active = seen if seen is not None else set()
         if key in active:
             raise ArtifactRegistryError("ARTIFACT_PARENT_CYCLE", "Artifact parent cycle was detected")
+        cache = verified if verified is not None else {}
+        if key in cache:
+            return cache[key]
         active.add(key)
         try:
             envelope = self._json(self._artifact_path(artifact_ref["projectId"], artifact_ref["artifactId"], artifact_ref["artifactRevision"]), _MAX_ARTIFACT_BYTES)
@@ -469,7 +480,14 @@ class ArtifactRegistry:
             for parent in envelope.get("parents", []):
                 if not isinstance(parent, Mapping):
                     raise ArtifactRegistryError("ARTIFACT_PARENT_INVALID", "Artifact parent reference is invalid")
-                self._verify_artifact_ref(parent, audience, expected_project_id=artifact_ref["projectId"], seen=active)
+                self._verify_artifact_ref(
+                    parent,
+                    audience,
+                    expected_project_id=artifact_ref["projectId"],
+                    seen=active,
+                    verified=cache,
+                )
+            cache[key] = envelope
             return envelope
         finally:
             active.remove(key)
@@ -493,8 +511,14 @@ class ArtifactRegistry:
             if len(set(issue_refs)) != len(issue_refs):
                 raise ArtifactRegistryError("ARTIFACT_ISSUES_INVALID", "Issue references must be unique")
             verified_parents: list[Mapping[str, Any]] = []
+            verified_cache: dict[tuple[str, int, str], dict[str, Any]] = {}
             for parent in parents:
-                self._verify_artifact_ref(parent, audience, expected_project_id=project_id)
+                self._verify_artifact_ref(
+                    parent,
+                    audience,
+                    expected_project_id=project_id,
+                    verified=verified_cache,
+                )
                 verified_parents.append(dict(parent))
             parent_keys = [self._ref_key(parent) for parent in verified_parents]
             if len(set(parent_keys)) != len(parent_keys):
@@ -1014,3 +1038,178 @@ class ArtifactRegistry:
                 "ARTIFACT_BLOB_MISMATCH", "Blob integrity verification failed"
             )
         return bytes(retained), size > maximum_prefix_bytes
+
+    def materialize_blob(
+        self,
+        blob_ref: Mapping[str, Any],
+        destination: str | Path,
+    ) -> dict[str, Any]:
+        """Stream a verified private Blob to a new, caller-owned regular file."""
+
+        digest = blob_ref.get("sha256")
+        size = blob_ref.get("sizeBytes")
+        _validate_digest("blob.sha256", digest)
+        if (
+            isinstance(size, bool)
+            or not isinstance(size, int)
+            or size < 0
+            or size > _MAX_BLOB_BYTES
+            or blob_ref.get("blobId") != f"sha256:{digest}"
+        ):
+            raise ArtifactRegistryError(
+                "ARTIFACT_BLOB_INVALID", "Blob identity is invalid"
+            )
+        target = Path(destination)
+        if not target.is_absolute():
+            raise ArtifactRegistryError(
+                "ARTIFACT_BLOB_DESTINATION_INVALID",
+                "Blob destination must be absolute",
+            )
+        try:
+            parent = target.parent.resolve(strict=True)
+            parent_info = parent.lstat()
+        except OSError as error:
+            raise ArtifactRegistryError(
+                "ARTIFACT_BLOB_DESTINATION_INVALID",
+                "Blob destination parent is unavailable",
+            ) from error
+        if (
+            not stat.S_ISDIR(parent_info.st_mode)
+            or stat.S_ISLNK(parent_info.st_mode)
+            or getattr(parent_info, "st_file_attributes", 0) & 0x400
+            or target.parent.absolute() != parent
+        ):
+            raise ArtifactRegistryError(
+                "ARTIFACT_BLOB_DESTINATION_INVALID",
+                "Blob destination parent is unsafe",
+            )
+        source_path = self._blob_path(digest)
+        try:
+            before = source_path.lstat()
+        except OSError as error:
+            raise ArtifactRegistryError(
+                "ARTIFACT_NOT_FOUND", "Blob registry entry was not found"
+            ) from error
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or stat.S_ISLNK(before.st_mode)
+            or getattr(before, "st_file_attributes", 0) & 0x400
+            or before.st_nlink != 1
+            or before.st_size != size
+        ):
+            raise ArtifactRegistryError(
+                "ARTIFACT_STORAGE_UNSAFE", "Blob registry entry is unsafe"
+            )
+        source_fd: int | None = None
+        target_fd: int | None = None
+        completed = False
+        target_created = False
+        total = 0
+        builder = hashlib.sha256()
+        try:
+            source_flags = (
+                os.O_RDONLY
+                | getattr(os, "O_BINARY", 0)
+                | getattr(os, "O_NOINHERIT", 0)
+            )
+            if hasattr(os, "O_NOFOLLOW"):
+                source_flags |= os.O_NOFOLLOW
+            source_fd = os.open(source_path, source_flags)
+            opened = os.fstat(source_fd)
+            if (opened.st_dev, opened.st_ino, opened.st_size) != (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+            ):
+                raise ArtifactRegistryError(
+                    "ARTIFACT_BLOB_CHANGED",
+                    "Blob changed before materialization",
+                )
+            target_fd = os.open(
+                target,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_BINARY", 0)
+                | getattr(os, "O_NOINHERIT", 0),
+                0o600,
+            )
+            target_created = True
+            while True:
+                chunk = os.read(source_fd, 1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > size:
+                    raise ArtifactRegistryError(
+                        "ARTIFACT_BLOB_CHANGED",
+                        "Blob grew during materialization",
+                    )
+                builder.update(chunk)
+                offset = 0
+                while offset < len(chunk):
+                    written = os.write(target_fd, chunk[offset:])
+                    if written <= 0:
+                        raise ArtifactRegistryError(
+                            "ARTIFACT_BLOB_WRITE_FAILED",
+                            "Blob materialization stalled",
+                        )
+                    offset += written
+            os.fsync(target_fd)
+            after = os.fstat(source_fd)
+            if (
+                total != size
+                or builder.hexdigest() != digest
+                or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+                != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+            ):
+                raise ArtifactRegistryError(
+                    "ARTIFACT_BLOB_MISMATCH",
+                    "Blob integrity changed during materialization",
+                )
+            completed = True
+        except FileExistsError as error:
+            raise ArtifactRegistryError(
+                "ARTIFACT_BLOB_DESTINATION_EXISTS",
+                "Blob destination already exists",
+            ) from error
+        except ArtifactRegistryError:
+            raise
+        except OSError as error:
+            raise ArtifactRegistryError(
+                "ARTIFACT_BLOB_WRITE_FAILED",
+                "Blob could not be materialized safely",
+            ) from error
+        finally:
+            if source_fd is not None:
+                os.close(source_fd)
+            if target_fd is not None:
+                os.close(target_fd)
+            if not completed and target_created:
+                try:
+                    target.unlink()
+                except FileNotFoundError:
+                    pass
+        try:
+            target_info = target.lstat()
+        except OSError as error:
+            raise ArtifactRegistryError(
+                "ARTIFACT_BLOB_WRITE_FAILED",
+                "Materialized Blob is unavailable",
+            ) from error
+        if (
+            not stat.S_ISREG(target_info.st_mode)
+            or stat.S_ISLNK(target_info.st_mode)
+            or getattr(target_info, "st_file_attributes", 0) & 0x400
+            or target_info.st_nlink != 1
+            or target_info.st_size != size
+        ):
+            try:
+                target.unlink()
+            except OSError:
+                pass
+            raise ArtifactRegistryError(
+                "ARTIFACT_BLOB_WRITE_FAILED",
+                "Materialized Blob failed final verification",
+            )
+        return {"sha256": digest, "sizeBytes": size, "path": str(target)}

@@ -14,6 +14,11 @@ from .anki_import_preparation import (
     AnkiImportPreparationError,
     AnkiImportPreparationRuntime,
 )
+from .anki_import_execution import (
+    AnkiImportExecutionError,
+    AnkiImportExecutionRuntime,
+    AnkiImportExecutor,
+)
 from .anki_target_probe import AnkiTargetInspector
 from .artifact_registry import (
     ArtifactAudienceBinding,
@@ -96,6 +101,7 @@ class StudyRuntime:
         ) = None,
         package_export_executor: PackageExportExecutor | None = None,
         anki_target_inspector: AnkiTargetInspector | None = None,
+        anki_import_executor: AnkiImportExecutor | None = None,
         anki_import_gesture_verifier: (
             Callable[[str, str, str, str], bool] | None
         ) = None,
@@ -262,6 +268,20 @@ class StudyRuntime:
                 and anki_target_inspector is not None
                 else None
             )
+            self.anki_import_execution = (
+                AnkiImportExecutionRuntime(
+                    service_instance_id=self.service_instance_id,
+                    artifacts=self.artifacts,
+                    projects=self.projects,
+                    tasks=self.tasks,
+                    preparation=self.anki_import_preparation,
+                    approvals=self.anki_import_approvals,
+                    executor=anki_import_executor,
+                )
+                if self.anki_import_preparation is not None
+                and anki_import_executor is not None
+                else None
+            )
             discovery_configured = (
                 candidate_discovery_model is not None
                 or candidate_discovery_model_provider is not None
@@ -297,6 +317,7 @@ class StudyRuntime:
             PackageArtifactRuntimeError,
             AnkiImportPreparationError,
             AnkiImportApprovalError,
+            AnkiImportExecutionError,
             OSError,
         ) as error:
             raise StudyRuntimeError(
@@ -336,7 +357,7 @@ class StudyRuntime:
                 self.anki_import_preparation is not None
                 and self._anki_import_gesture_verifier_available
             ),
-            "publicAnkiWrite": False,
+            "publicAnkiWrite": self.anki_import_execution is not None,
             "publicProjectTools": True,
             "publicInputRegistration": True,
             "publicSourceInspection": True,
@@ -879,30 +900,68 @@ class StudyRuntime:
         except AnkiImportApprovalError as error:
             raise StudyRuntimeError(error.code, error.message) from error
 
+    def start_anki_import(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        import_intent_id: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        if self.anki_import_execution is None:
+            raise StudyRuntimeError(
+                "ANKI_IMPORT_UNAVAILABLE",
+                "Authenticated Anki import execution is unavailable",
+            )
+        try:
+            return self.anki_import_execution.start(
+                audience=audience,
+                import_intent_id=import_intent_id,
+                idempotency_key=idempotency_key,
+            )
+        except AnkiImportExecutionError as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
     def get_study_task(
         self, *, audience: ArtifactAudienceBinding, task_id: str
     ) -> dict[str, Any]:
-        if self.package_artifacts is None:
-            raise StudyRuntimeError(
-                "TASK_RUNTIME_UNAVAILABLE", "Study task runtime is unavailable"
-            )
         try:
+            task = self.tasks.get_task(task_id, audience)
+            if task.get("intent") == "import_and_verify":
+                if self.anki_import_execution is None:
+                    raise StudyRuntimeError(
+                        "TASK_RUNTIME_UNAVAILABLE",
+                        "Anki import task runtime is unavailable",
+                    )
+                return self.anki_import_execution.get_task(task_id, audience)
+            if self.package_artifacts is None:
+                raise StudyRuntimeError(
+                    "TASK_RUNTIME_UNAVAILABLE",
+                    "Study task runtime is unavailable",
+                )
             return self.package_artifacts.get_task(task_id, audience)
-        except PackageArtifactRuntimeError as error:
+        except (StudyTaskError, PackageArtifactRuntimeError, AnkiImportExecutionError) as error:
             raise StudyRuntimeError(error.code, error.message) from error
 
     def cancel_study_task(
         self, *, audience: ArtifactAudienceBinding, task_id: str
     ) -> dict[str, Any]:
-        if self.package_artifacts is None:
-            raise StudyRuntimeError(
-                "TASK_RUNTIME_UNAVAILABLE", "Study task runtime is unavailable"
-            )
         try:
+            task = self.tasks.get_task(task_id, audience)
+            if task.get("intent") == "import_and_verify":
+                if self.anki_import_execution is None:
+                    raise StudyRuntimeError(
+                        "TASK_RUNTIME_UNAVAILABLE",
+                        "Anki import task runtime is unavailable",
+                    )
+                return self.anki_import_execution.cancel_task(task_id, audience)
+            if self.package_artifacts is None:
+                raise StudyRuntimeError(
+                    "TASK_RUNTIME_UNAVAILABLE",
+                    "Study task runtime is unavailable",
+                )
             return self.package_artifacts.cancel_task(task_id, audience)
-        except PackageArtifactRuntimeError as error:
+        except (StudyTaskError, PackageArtifactRuntimeError, AnkiImportExecutionError) as error:
             raise StudyRuntimeError(error.code, error.message) from error
-
     def plan_cards(
         self,
         *,

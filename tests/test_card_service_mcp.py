@@ -23,6 +23,7 @@ from card_service.mcp_candidate_tools import (
     PREVIEW_EVIDENCE_TOOL_NAME,
 )
 from card_service.mcp_anki_tools import (
+    IMPORT_AND_VERIFY_TOOL_NAME,
     PREPARE_IMPORT_TOOL_NAME,
     REQUEST_IMPORT_CONFIRMATION_TOOL_NAME,
 )
@@ -190,6 +191,7 @@ def test_mcp_bridge_reports_trusted_session_without_disclosing_identity() -> Non
         CANCEL_TASK_TOOL_NAME,
         PREPARE_IMPORT_TOOL_NAME,
         REQUEST_IMPORT_CONFIRMATION_TOOL_NAME,
+        IMPORT_AND_VERIFY_TOOL_NAME,
     ]
 
 
@@ -320,6 +322,7 @@ def test_real_mcp_stdio_process_reports_card_service_capabilities(tmp_path: Path
             CANCEL_TASK_TOOL_NAME,
             PREPARE_IMPORT_TOOL_NAME,
             REQUEST_IMPORT_CONFIRMATION_TOOL_NAME,
+        IMPORT_AND_VERIFY_TOOL_NAME,
         ]
         called = rpc(
             {

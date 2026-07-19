@@ -249,6 +249,14 @@ class AnkiImportPreparationRuntime:
         self._packages = packages
         self._target_inspector = target_inspector
 
+    def inspect_current_target(self) -> dict[str, Any]:
+        '''Return the same normalized target identity used by ImportPlan.'''
+
+        try:
+            return _target_snapshot(self._target_inspector())
+        except AnkiTargetProbeError as error:
+            raise AnkiImportPreparationError(error.code, error.message) from error
+
     def resolve_current_import_plan_ref(
         self,
         *,
@@ -482,10 +490,7 @@ class AnkiImportPreparationRuntime:
             raise AnkiImportPreparationError(
                 "IMPORT_PLAN_STAGE_CONFLICT", "Anki import planning is not current"
             )
-        try:
-            target = _target_snapshot(self._target_inspector())
-        except AnkiTargetProbeError as error:
-            raise AnkiImportPreparationError(error.code, error.message) from error
+        target = self.inspect_current_target()
         contract_core = {
             "schemaVersion": 1,
             "contractVersion": ANKI_DATA_VERIFICATION_CONTRACT_VERSION,

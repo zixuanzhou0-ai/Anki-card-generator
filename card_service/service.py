@@ -21,8 +21,12 @@ from urllib.parse import parse_qsl, urlsplit
 
 from workers.acg.secret_scrub import is_runtime_secret_key, is_sensitive_url_query_key
 
+from .anki_import_execution import (
+    AnkiImportExecutionError,
+    materialize_anki_worker_request,
+)
 from .anki_target_probe import LocalAnkiConnectTargetProbe
-from .artifact_registry import ArtifactAudienceBinding
+from .artifact_registry import ArtifactAudienceBinding, ArtifactRegistryError
 from .broker_configuration import BrokerConfigurationError, ServiceBrokerRuntime
 from .candidate_discovery_broker import (
     BrokerCandidateDiscoveryModelProvider,
@@ -143,6 +147,7 @@ METHOD_POLICIES: dict[str, MethodPolicy] = {
     "runtime.generate_legacy_project": MethodPolicy("generate", 420.0, requires_broker=True),
     "runtime.export_apkg": MethodPolicy("export", 600.0, requires_broker=True),
     "internal.export_study_apkg": MethodPolicy("export", 600.0),
+    "internal.verify_study_anki_import": MethodPolicy("verify_anki_import", 120.0),
     "runtime.verify_anki_import": MethodPolicy("verify_anki_import", 120.0),
 }
 
@@ -1012,6 +1017,7 @@ class CardService:
                     workspace_releaser=self._release_workspace_reservation,
                     package_export_executor=self._execute_study_apkg_export,
                     anki_target_inspector=LocalAnkiConnectTargetProbe(),
+                    anki_import_executor=self._execute_study_anki_import,
                     anki_import_gesture_verifier=(
                         self.trusted_surfaces.verify_import_consent_gesture
                     ),
@@ -1254,6 +1260,31 @@ class CardService:
                 fallbacks=("open_anki",) if error.code == "ANKI_OFFLINE" else (),
             ) from error
 
+    def start_study_anki_import(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        import_intent_id: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        try:
+            return self._ensure_study_runtime().start_anki_import(
+                audience=audience,
+                import_intent_id=import_intent_id,
+                idempotency_key=idempotency_key,
+            )
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=False,
+                stage="anki_import",
+                fallbacks=(
+                    ("confirm_anki_import",)
+                    if error.code.endswith(("_REQUIRED", "_EXPIRED"))
+                    else ()
+                ),
+            ) from error
     @staticmethod
     def _anki_import_confirmation_key(
         audience: ArtifactAudienceBinding, import_intent_id: str
@@ -2397,11 +2428,69 @@ class CardService:
             )
         return dict(result)
 
+    def _execute_study_anki_import(
+        self,
+        bundle: Mapping[str, Any],
+        progress: Callable[[Mapping[str, Any]], None],
+        cancel_event: threading.Event,
+    ) -> Mapping[str, Any]:
+        snapshot = self.start_task(
+            "internal.verify_study_anki_import",
+            {"bundle": copy.deepcopy(dict(bundle))},
+        )
+        task_id = str(snapshot["id"])
+        last_progress: tuple[Any, Any] | None = None
+        while snapshot.get("state") in ACTIVE_STATES:
+            if cancel_event.is_set():
+                snapshot = self.cancel_task(task_id)
+            raw_progress = snapshot.get("progress")
+            if isinstance(raw_progress, Mapping):
+                marker = (
+                    raw_progress.get("phase"),
+                    raw_progress.get("overallPercent"),
+                )
+                if marker != last_progress:
+                    progress(
+                        {
+                            "stage": raw_progress.get("phase"),
+                            "percent": raw_progress.get("overallPercent"),
+                            "message": raw_progress.get("message"),
+                        }
+                    )
+                    last_progress = marker
+            if snapshot.get("state") in ACTIVE_STATES:
+                time.sleep(0.05)
+                snapshot = self.get_task(task_id) or snapshot
+        if cancel_event.is_set() or snapshot.get("state") == "cancelled":
+            raise AnkiImportExecutionError(
+                "TASK_CANCELLED", "Anki import was cancelled"
+            )
+        if snapshot.get("state") != "succeeded":
+            failure = snapshot.get("error")
+            code = str(
+                failure.get("code")
+                if isinstance(failure, Mapping)
+                else "WORKER_EXITED"
+            )
+            if code in {"WORKER_TIMEOUT", "WORKER_EXITED"}:
+                code = "ANKI_OFFLINE"
+            raise AnkiImportExecutionError(
+                code, "Managed Anki import verification failed"
+            )
+        result = self.read_result(task_id)
+        if not isinstance(result, Mapping):
+            raise AnkiImportExecutionError(
+                "ANKI_VERIFY_FAILED",
+                "Managed Anki verification returned an invalid result",
+            )
+        return dict(result)
     def _worker_request(self, runtime: _RuntimeTask) -> dict[str, Any]:
         request = copy.deepcopy(runtime.request)
-        if str(runtime.snapshot.get("method") or "") not in {
+        method = str(runtime.snapshot.get("method") or "")
+        if method not in {
             "runtime.export_apkg",
             "internal.export_study_apkg",
+            "internal.verify_study_anki_import",
         }:
             return request
         workspace = runtime.sandbox_workspace
@@ -2412,6 +2501,28 @@ class CardService:
                 retryable=False,
                 stage="workspace",
             )
+        if method == "internal.verify_study_anki_import":
+            bundle = request.get("bundle")
+            if not isinstance(bundle, Mapping) or set(request) != {"bundle"}:
+                raise CardServiceError(
+                    "ANKI_IMPORT_BUNDLE_INVALID",
+                    "Authenticated Anki import bundle is invalid",
+                    retryable=False,
+                    stage="anki_import",
+                )
+            try:
+                return materialize_anki_worker_request(
+                    bundle,
+                    workspace,
+                    self._ensure_study_runtime().artifacts,
+                )
+            except (AnkiImportExecutionError, ArtifactRegistryError) as error:
+                raise CardServiceError(
+                    getattr(error, "code", "PACKAGE_VERIFY_FAILED"),
+                    "Authenticated APKG could not be prepared for Anki",
+                    retryable=False,
+                    stage="anki_import",
+                ) from error
         export_root = workspace / "exports"
         try:
             export_root.mkdir(mode=0o700, exist_ok=False)
