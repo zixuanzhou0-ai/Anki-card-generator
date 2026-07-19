@@ -14,6 +14,8 @@ AUTHORIZE_DISCOVERY_TOOL = "system.authorize_candidate_discovery"
 LIST_PROFILES_TOOL = "system.list_profiles"
 OPEN_LOCAL_SETTINGS_TOOL = "system.open_local_settings"
 REVOKE_GRANT_TOOL = "system.revoke_grant"
+VALIDATE_PROFILE_TOOL = "system.validate_profile"
+REQUEST_OPERATION_CONFIRMATION_TOOL = "system.request_operation_confirmation"
 _AUTHORIZATION_SESSION_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 )
@@ -23,6 +25,8 @@ SYSTEM_TOOL_NAMES = frozenset(
         LIST_PROFILES_TOOL,
         OPEN_LOCAL_SETTINGS_TOOL,
         REVOKE_GRANT_TOOL,
+        VALIDATE_PROFILE_TOOL,
+        REQUEST_OPERATION_CONFIRMATION_TOOL,
     }
 )
 
@@ -361,6 +365,7 @@ def system_tool_definitions() -> list[dict[str, Any]]:
                                         "local_resource",
                                         "anki_import",
                                         "broker_authorization",
+                                        "operation_approval",
                                     ],
                                 },
                                 "disposition": {
@@ -386,6 +391,128 @@ def system_tool_definitions() -> list[dict[str, Any]]:
             "annotations": {
                 "readOnlyHint": False,
                 "destructiveHint": True,
+                "idempotentHint": False,
+                "openWorldHint": False,
+            },
+        },
+        {
+            "name": VALIDATE_PROFILE_TOOL,
+            "title": "Validate Service Profile",
+            "description": (
+                "Validate one exact saved model, speech, or AnkiConnect profile binding. "
+                "Remote model/TTS validation first returns confirmation_required and cannot "
+                "send diagnostic data until the immutable operation intent is approved."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "profileRef": {"type": "string", "minLength": 1, "maxLength": 128},
+                    "capability": {
+                        "type": "string",
+                        "enum": ["model", "tts", "anki_connect"],
+                    },
+                    "expectedConfigurationFingerprint": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{64}$",
+                    },
+                    "credentialRevision": {"type": "integer", "minimum": 0},
+                    "idempotencyKey": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160,
+                    },
+                    "configurationSessionRef": {"type": "string"},
+                },
+                "required": [
+                    "profileRef",
+                    "capability",
+                    "expectedConfigurationFingerprint",
+                    "credentialRevision",
+                    "idempotencyKey",
+                ],
+                "additionalProperties": False,
+            },
+            "outputSchema": {
+                "type": "object",
+                "properties": {
+                    "schemaVersion": {"type": "integer", "const": 1},
+                    "profileRef": {"type": "string"},
+                    "capability": {"type": "string"},
+                    "configurationFingerprint": {"type": "string"},
+                    "credentialRevision": {"type": "integer", "minimum": 0},
+                    "state": {
+                        "type": "string",
+                        "enum": [
+                            "unknown", "ready", "stale", "action_required", "blocked",
+                            "confirmation_required", "declined", "expired", "revoked",
+                            "queued", "running", "cancelling", "succeeded", "failed",
+                            "cancelled", "interrupted"
+                        ],
+                    },
+                    "nextAction": {"type": "string"},
+                    "reasonCode": {"type": "string"},
+                    "verification": {"type": "object"},
+                    "operationIntentId": {"type": "string"},
+                    "intentDigest": {"type": "string"},
+                    "taskId": {"type": "string"},
+                    "intent": {"type": "string"},
+                    "cancellable": {"type": "boolean"},
+                    "resumability": {"type": "string"},
+                    "progress": {"type": "object"},
+                    "result": {"type": "object"},
+                    "error": {"type": "object"},
+                },
+                "required": ["schemaVersion", "state", "nextAction"],
+                "additionalProperties": False,
+            },
+            "annotations": {
+                "readOnlyHint": False,
+                "destructiveHint": False,
+                "idempotentHint": True,
+                "openWorldHint": True,
+            },
+        },
+        {
+            "name": REQUEST_OPERATION_CONFIRMATION_TOOL,
+            "title": "Confirm Operation Intent",
+            "description": (
+                "Open or poll a trusted local window for one immutable operation intent. "
+                "The intent identifier is only a locator and cannot approve itself."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "operationIntentId": {
+                        "type": "string",
+                        "pattern": "^intent_[0-9a-f]{48}$",
+                    }
+                },
+                "required": ["operationIntentId"],
+                "additionalProperties": False,
+            },
+            "outputSchema": {
+                "type": "object",
+                "properties": {
+                    "schemaVersion": {"type": "integer", "const": 1},
+                    "operationIntentId": {"type": "string"},
+                    "actionId": {"type": "string"},
+                    "state": {
+                        "type": "string",
+                        "enum": [
+                            "open", "pending", "approved", "declined", "cancelled",
+                            "failed", "consumed", "expired", "revoked"
+                        ],
+                    },
+                    "expiresAt": {"type": "string"},
+                },
+                "required": [
+                    "schemaVersion", "operationIntentId", "actionId", "state", "expiresAt"
+                ],
+                "additionalProperties": False,
+            },
+            "annotations": {
+                "readOnlyHint": False,
+                "destructiveHint": False,
                 "idempotentHint": False,
                 "openWorldHint": False,
             },
@@ -440,6 +567,69 @@ def call_system_tool(
             authorization_session_ref=session_ref,
         )
         return _revocation_tool_result(result)
+    if tool_name == VALIDATE_PROFILE_TOOL:
+        if audience_session is None or not isinstance(arguments, dict):
+            raise McpSystemToolInputError("invalid system tool arguments")
+        allowed = {
+            "profileRef",
+            "capability",
+            "expectedConfigurationFingerprint",
+            "credentialRevision",
+            "idempotencyKey",
+            "configurationSessionRef",
+        }
+        required = allowed - {"configurationSessionRef"}
+        if (
+            not required.issubset(arguments)
+            or not set(arguments).issubset(allowed)
+            or not isinstance(arguments.get("profileRef"), str)
+            or arguments.get("capability") not in {"model", "tts", "anki_connect"}
+            or not isinstance(arguments.get("expectedConfigurationFingerprint"), str)
+            or re.fullmatch(
+                r"[0-9a-f]{64}", arguments["expectedConfigurationFingerprint"]
+            )
+            is None
+            or isinstance(arguments.get("credentialRevision"), bool)
+            or not isinstance(arguments.get("credentialRevision"), int)
+            or int(arguments["credentialRevision"]) < 0
+            or not isinstance(arguments.get("idempotencyKey"), str)
+            or re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}", arguments["idempotencyKey"]
+            )
+            is None
+            or (
+                "configurationSessionRef" in arguments
+                and not isinstance(arguments["configurationSessionRef"], str)
+            )
+        ):
+            raise McpSystemToolInputError("invalid system tool arguments")
+        result = service.validate_service_profile(
+            audience=audience_session.audience,
+            profile_ref=arguments["profileRef"],
+            capability=arguments["capability"],
+            expected_configuration_fingerprint=arguments[
+                "expectedConfigurationFingerprint"
+            ],
+            credential_revision=arguments["credentialRevision"],
+            idempotency_key=arguments["idempotencyKey"],
+            configuration_session_ref=arguments.get("configurationSessionRef"),
+        )
+        return _profile_validation_tool_result(result)
+    if tool_name == REQUEST_OPERATION_CONFIRMATION_TOOL:
+        if (
+            audience_session is None
+            or not isinstance(arguments, dict)
+            or set(arguments) != {"operationIntentId"}
+            or not isinstance(arguments.get("operationIntentId"), str)
+            or re.fullmatch(r"intent_[0-9a-f]{48}", arguments["operationIntentId"])
+            is None
+        ):
+            raise McpSystemToolInputError("invalid system tool arguments")
+        result = service.request_operation_confirmation(
+            audience=audience_session.audience,
+            operation_intent_id=arguments["operationIntentId"],
+        )
+        return _operation_confirmation_tool_result(result)
     if tool_name != AUTHORIZE_DISCOVERY_TOOL:
         raise McpSystemToolInputError("unknown system tool")
     if not isinstance(arguments, dict) or arguments != {"preset": "hermes_grok_4_5"}:
@@ -552,12 +742,49 @@ def _revocation_tool_result(public: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _profile_validation_tool_result(public: dict[str, Any]) -> dict[str, Any]:
+    state = str(public.get("state") or "failed")
+    if state == "confirmation_required":
+        message = "Profile validation requires a trusted local operation confirmation."
+    elif state in {"queued", "running", "cancelling"}:
+        message = f"Profile validation task is {state}."
+    elif state == "ready":
+        message = "The exact service profile binding is verified and ready."
+    elif state == "succeeded":
+        message = "The profile validation task completed; inspect its verification result."
+    else:
+        message = f"Profile validation state: {state}."
+    return {
+        "content": [{"type": "text", "text": message}],
+        "structuredContent": public,
+    }
+
+
+def _operation_confirmation_tool_result(public: dict[str, Any]) -> dict[str, Any]:
+    state = str(public.get("state") or "failed")
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": (
+                    "The trusted local operation confirmation window is open."
+                    if state == "open"
+                    else f"Operation intent confirmation state: {state}."
+                ),
+            }
+        ],
+        "structuredContent": public,
+    }
+
+
 __all__ = [
     "AUTHORIZE_DISCOVERY_TOOL",
     "LIST_PROFILES_TOOL",
     "McpSystemToolInputError",
     "OPEN_LOCAL_SETTINGS_TOOL",
     "REVOKE_GRANT_TOOL",
+    "REQUEST_OPERATION_CONFIRMATION_TOOL",
+    "VALIDATE_PROFILE_TOOL",
     "SYSTEM_TOOL_NAMES",
     "call_system_tool",
     "system_tool_definitions",

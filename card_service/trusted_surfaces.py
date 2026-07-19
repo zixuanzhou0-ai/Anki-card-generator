@@ -36,6 +36,7 @@ IMPORT_CONSENT_ATTESTATION_LIFETIME_MS = 5 * 60 * 1_000
 AUTHORIZATION_REVOCATION_ATTESTATION_LIFETIME_MS = 5 * 60 * 1_000
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 IMPORT_INTENT_RE = re.compile(r"^anki_intent_[0-9a-f]{48}$")
+OPERATION_INTENT_RE = re.compile(r"^intent_[0-9a-f]{48}$")
 AUTHORIZATION_SELECTION_RE = re.compile(r"^authsel_[A-Za-z0-9_-]{32}$")
 
 
@@ -60,6 +61,15 @@ class TrustedImportConsentDecision:
     import_intent_id: str
     decision: str
     attestation_ref: str
+    decided_at: int
+
+
+@dataclass(frozen=True)
+class TrustedOperationConsentDecision:
+    session_ref: str
+    operation_intent_id: str
+    decision: str
+    attestation_digest: str
     decided_at: int
 
 
@@ -118,6 +128,10 @@ class TrustedSurfaceManager:
         self._resource_attestations: dict[str, dict[str, Any]] = {}
         self._import_consent_decisions: dict[str, TrustedImportConsentDecision] = {}
         self._import_consent_attestations: dict[str, dict[str, Any]] = {}
+        self._operation_consent_decisions: dict[
+            str, TrustedOperationConsentDecision
+        ] = {}
+        self._operation_consent_attestations: dict[str, dict[str, Any]] = {}
         self._authorization_manager_bindings: dict[
             str, dict[str, dict[str, Any]]
         ] = {}
@@ -141,6 +155,7 @@ class TrustedSurfaceManager:
             "localSettings": True,
             "consentWindow": True,
             "ankiImportConsentAttestation": True,
+            "operationConsentAttestation": True,
             "authorizationManager": True,
             "authorizationRevocationAttestation": True,
             "digestPinned": True,
@@ -214,6 +229,51 @@ class TrustedSurfaceManager:
             importPlanDigest=import_plan_digest,
         )
 
+    def create_operation_consent_session(
+        self,
+        *,
+        operation_intent_id: str,
+        audience_digest: str,
+        intent_digest: str,
+        action_id: str,
+        summary: str,
+    ) -> dict[str, Any]:
+        if not OPERATION_INTENT_RE.fullmatch(operation_intent_id):
+            raise TrustedSurfaceError(
+                "INVALID_OPERATION_INTENT", "Invalid operation intent"
+            )
+        if not SHA256_RE.fullmatch(audience_digest) or not SHA256_RE.fullmatch(
+            intent_digest
+        ):
+            raise TrustedSurfaceError(
+                "INVALID_OPERATION_CONSENT_BINDING",
+                "Invalid operation consent binding",
+            )
+        if (
+            not isinstance(action_id, str)
+            or re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", action_id) is None
+        ):
+            raise TrustedSurfaceError(
+                "INVALID_OPERATION_CONSENT_BINDING",
+                "Invalid operation consent action",
+            )
+        copy = str(summary or "").strip()
+        if not copy or len(copy) > 2_000:
+            raise TrustedSurfaceError(
+                "INVALID_CONSENT_COPY", "Consent summary is invalid"
+            )
+        return self._create_session(
+            "consent",
+            title="确认远程服务操作",
+            summary=copy,
+            purpose="operation",
+            confirmationKind="operation_intent",
+            operationIntentId=operation_intent_id,
+            audienceDigest=audience_digest,
+            intentDigest=intent_digest,
+            actionId=action_id,
+        )
+
     def create_local_resource_session(
         self, *, kind: str, scope_summary: str
     ) -> dict[str, Any]:
@@ -261,7 +321,12 @@ class TrustedSurfaceManager:
                     "Authorization manager item is invalid",
                 )
             kind = str(item["kind"])
-            if kind not in {"local_resource", "anki_import", "broker_authorization"}:
+            if kind not in {
+                "local_resource",
+                "anki_import",
+                "broker_authorization",
+                "operation_approval",
+            }:
                 raise TrustedSurfaceError(
                     "INVALID_AUTHORIZATION_ITEMS",
                     "Authorization manager item kind is invalid",
@@ -668,12 +733,35 @@ class TrustedSurfaceManager:
                         "Trusted broker revocation binding is invalid",
                     )
                 action = "revoke_broker_authorization"
+            elif kind == "operation_approval":
+                if (
+                    set(locator)
+                    != {"operationIntentId", "intentDigest", "audienceDigest"}
+                    or not OPERATION_INTENT_RE.fullmatch(
+                        str(locator.get("operationIntentId") or "")
+                    )
+                    or not SHA256_RE.fullmatch(
+                        str(locator.get("intentDigest") or "")
+                    )
+                    or not SHA256_RE.fullmatch(
+                        str(locator.get("audienceDigest") or "")
+                    )
+                ):
+                    raise TrustedSurfaceError(
+                        "SESSION_RESPONSE_INVALID",
+                        "Trusted operation approval binding is invalid",
+                    )
+                action = "revoke_operation"
             else:
                 raise TrustedSurfaceError(
                     "SESSION_RESPONSE_INVALID",
                     "Trusted authorization revocation kind is invalid",
                 )
-            attestation_ref = "revoke-attestation-" + secrets.token_urlsafe(24)
+            attestation_ref = (
+                secrets.token_hex(32)
+                if kind == "operation_approval"
+                else "revoke-attestation-" + secrets.token_urlsafe(24)
+            )
             selection = TrustedAuthorizationRevocationSelection(
                 session_ref=session_ref,
                 selection_ref=selection_ref,
@@ -690,6 +778,17 @@ class TrustedSurfaceManager:
                         "action": action,
                         "audienceDigest": audience_digest,
                         "requestDigest": None,
+                        "expiresAt": (
+                            selected_at
+                            + AUTHORIZATION_REVOCATION_ATTESTATION_LIFETIME_MS
+                        ),
+                    }
+                elif kind == "operation_approval":
+                    self._operation_consent_attestations[attestation_ref] = {
+                        "audienceDigest": locator["audienceDigest"],
+                        "operationIntentId": locator["operationIntentId"],
+                        "intentDigest": locator["intentDigest"],
+                        "action": action,
                         "expiresAt": (
                             selected_at
                             + AUTHORIZATION_REVOCATION_ATTESTATION_LIFETIME_MS
@@ -768,6 +867,48 @@ class TrustedSurfaceManager:
     ) -> TrustedImportConsentDecision | None:
         with self._lock:
             return self._import_consent_decisions.get(session_ref)
+
+    def operation_consent_decision(
+        self, session_ref: str
+    ) -> TrustedOperationConsentDecision | None:
+        with self._lock:
+            return self._operation_consent_decisions.get(session_ref)
+
+    def verify_operation_consent_gesture(
+        self,
+        gesture_digest: str,
+        audience_digest: str,
+        operation_intent_id: str,
+        action: str,
+    ) -> bool:
+        if (
+            not SHA256_RE.fullmatch(str(gesture_digest or ""))
+            or not SHA256_RE.fullmatch(str(audience_digest or ""))
+            or not OPERATION_INTENT_RE.fullmatch(str(operation_intent_id or ""))
+            or action
+            not in {"decide:approved", "decide:declined", "revoke_operation"}
+        ):
+            return False
+        with self._lock:
+            pending = self._operation_consent_attestations.get(gesture_digest)
+            if pending is None:
+                return False
+            if int(pending["expiresAt"]) <= int(time.time() * 1000):
+                self._operation_consent_attestations.pop(gesture_digest, None)
+                return False
+            return (
+                pending["audienceDigest"] == audience_digest
+                and pending["operationIntentId"] == operation_intent_id
+                and pending["action"] == action
+            )
+
+    def complete_operation_consent(self, session_ref: str) -> None:
+        with self._lock:
+            decision = self._operation_consent_decisions.pop(session_ref, None)
+            if decision is not None:
+                self._operation_consent_attestations.pop(
+                    decision.attestation_digest, None
+                )
 
     def verify_import_consent_gesture(
         self,
@@ -869,6 +1010,9 @@ class TrustedSurfaceManager:
                 self._authorization_revocation_attestations.pop(
                     selection.attestation_ref, None
                 )
+                self._operation_consent_attestations.pop(
+                    selection.attestation_ref, None
+                )
                 self._resource_attestations.pop(selection.attestation_ref, None)
 
     def get_session(self, session_ref: str) -> dict[str, Any]:
@@ -911,6 +1055,43 @@ class TrustedSurfaceManager:
             finalized = self._finalize_authorization_manager_response(
                 request, response, response_key
             )
+            try:
+                response_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        elif request.get("confirmationKind") == "operation_intent":
+            state = response.get("state")
+            if state in {"approved", "declined"}:
+                if response.get("userGestureRecorded") is not True:
+                    raise TrustedSurfaceError(
+                        "SESSION_RESPONSE_INVALID",
+                        "Trusted operation consent has no user gesture",
+                    )
+                decided_at = int(time.time() * 1000)
+                attestation_digest = secrets.token_hex(32)
+                decision = TrustedOperationConsentDecision(
+                    session_ref=session_ref,
+                    operation_intent_id=str(request["operationIntentId"]),
+                    decision=str(state),
+                    attestation_digest=attestation_digest,
+                    decided_at=decided_at,
+                )
+                with self._lock:
+                    self._operation_consent_decisions[session_ref] = decision
+                    self._operation_consent_attestations[attestation_digest] = {
+                        "audienceDigest": str(request["audienceDigest"]),
+                        "operationIntentId": decision.operation_intent_id,
+                        "intentDigest": str(request["intentDigest"]),
+                        "action": f"decide:{state}",
+                        "expiresAt": (
+                            decided_at + IMPORT_CONSENT_ATTESTATION_LIFETIME_MS
+                        ),
+                    }
+            elif state not in {"cancelled", "failed"}:
+                raise TrustedSurfaceError(
+                    "SESSION_RESPONSE_INVALID",
+                    "Trusted operation consent response is invalid",
+                )
             try:
                 response_path.unlink(missing_ok=True)
             except OSError:

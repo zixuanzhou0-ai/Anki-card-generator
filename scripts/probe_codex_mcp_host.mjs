@@ -18,6 +18,8 @@ const FULL_TOOLSET = [
   "system.list_profiles",
   "system.open_local_settings",
   "system.revoke_grant",
+  "system.validate_profile",
+  "system.request_operation_confirmation",
   "system.request_source_grant",
   "system.request_output_grant",
   "study.create_project",

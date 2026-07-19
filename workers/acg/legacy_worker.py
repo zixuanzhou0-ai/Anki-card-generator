@@ -2544,7 +2544,7 @@ def call_material_context(project: dict[str, Any], segments: list[dict[str, Any]
     model = api.get("model", "").strip()
     prompt = build_material_context_prompt(project, segments)
     try:
-        if provider in OPENAI_COMPATIBLE_PROVIDERS:
+        if provider in {"openai", "xai", "hermes", *OPENAI_COMPATIBLE_PROVIDERS}:
             token_budget = 3000 if is_deepseek_thinking_config(api) else 2200
             response = compatible_chat_completion(
                 api,
@@ -2564,7 +2564,7 @@ def call_material_context(project: dict[str, Any], segments: list[dict[str, Any]
                 work_unit_id="material-context",
             )
             payload = extract_json_object(chat_completion_content(response))
-        elif provider == "claude":
+        elif provider in {"claude", "anthropic"}:
             response = model_anthropic_messages(
                 api,
                 {
@@ -2978,9 +2978,9 @@ def api_key_header(config: dict[str, Any]) -> dict[str, str]:
 
 def managed_model_operation(config: dict[str, Any]) -> str | None:
     provider = str(config.get("provider") or "local").strip().lower()
-    if provider in OPENAI_COMPATIBLE_PROVIDERS:
+    if provider in {"openai", "xai", "hermes", *OPENAI_COMPATIBLE_PROVIDERS}:
         return "model.openai_chat"
-    if provider == "claude":
+    if provider in {"claude", "anthropic"}:
         return "model.anthropic_messages"
     if provider == "gemini":
         return "model.gemini_content"
@@ -3365,7 +3365,7 @@ def call_model(
     prompt = build_prompt(project, segments)
 
     try:
-        if provider in OPENAI_COMPATIBLE_PROVIDERS:
+        if provider in {"openai", "xai", "hermes", *OPENAI_COMPATIBLE_PROVIDERS}:
             token_budget = 2200 if is_mimo_config(api) else 8000 if is_deepseek_thinking_config(api) else 4000 if is_qwen_config(api) else 6000
             response = compatible_chat_completion(
                 api,
@@ -3387,7 +3387,7 @@ def call_model(
             content = chat_completion_content(response)
             return extract_json_object(content)
 
-        if provider == "claude":
+        if provider in {"claude", "anthropic"}:
             response = model_anthropic_messages(
                 api,
                 {
@@ -4931,7 +4931,7 @@ def handle_test_api(payload: dict[str, Any]) -> dict[str, Any]:
 
     prompt = api_test_prompt()
     try:
-        if provider in OPENAI_COMPATIBLE_PROVIDERS:
+        if provider in {"openai", "xai", "hermes", *OPENAI_COMPATIBLE_PROVIDERS}:
             response = compatible_chat_completion(
                 api,
                 [
@@ -4947,7 +4947,7 @@ def handle_test_api(payload: dict[str, Any]) -> dict[str, Any]:
             if content is None:
                 content = ""
 
-        elif provider == "claude":
+        elif provider in {"claude", "anthropic"}:
             response = model_anthropic_messages(
                 api,
                 {
@@ -6959,7 +6959,7 @@ def call_document_model(project: dict[str, Any], segments: list[dict[str, Any]])
 
     prompt = build_document_prompt(project, segments)
     try:
-        if provider in OPENAI_COMPATIBLE_PROVIDERS:
+        if provider in {"openai", "xai", "hermes", *OPENAI_COMPATIBLE_PROVIDERS}:
             token_budget = 2200 if is_mimo_config(api) else 7000 if is_deepseek_thinking_config(api) else 4000 if is_qwen_config(api) else 5000
             response = compatible_chat_completion(
                 api,
@@ -6981,7 +6981,7 @@ def call_document_model(project: dict[str, Any], segments: list[dict[str, Any]])
             content = chat_completion_content(response)
             return extract_json_object(content)
 
-        if provider == "claude":
+        if provider in {"claude", "anthropic"}:
             response = model_anthropic_messages(
                 api,
                 {

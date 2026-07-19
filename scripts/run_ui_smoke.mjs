@@ -33,7 +33,17 @@ async function closeServer() {
 }
 
 async function gotoApp(page) {
-  await page.goto(baseURL, { waitUntil: 'commit', timeout: 120_000 })
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await page.goto(baseURL, { waitUntil: 'commit', timeout: 120_000 })
+      break
+    } catch (error) {
+      const transientFirstNavigationAbort =
+        attempt === 0 && error instanceof Error && error.message.includes('net::ERR_ABORTED')
+      if (!transientFirstNavigationAbort) throw error
+      await page.waitForTimeout(100)
+    }
+  }
   await page.locator('.app-shell').waitFor({ state: 'visible', timeout: 120_000 })
 }
 

@@ -36,6 +36,8 @@ from .artifact_registry import (
     ArtifactRegistryError,
     canonical_json_bytes,
 )
+from .authorization_ledger import AuthorizationLedger, AuthorizationLedgerError
+from .broker import BrokerError
 from .broker_configuration import BrokerConfigurationError, ServiceBrokerRuntime
 from .candidate_discovery_broker import (
     CANDIDATE_DISCOVERY_BROKER_METHOD,
@@ -76,6 +78,13 @@ from .service_profiles import (
     ServiceProfileVerificationError,
     ServiceProfileVerificationRegistry,
 )
+from .profile_validation import (
+    ProfileValidationPlan,
+    build_profile_validation_plan,
+    make_profile_validation_broker_factory,
+    validate_anki_connect_profile,
+)
+from .provider_egress import ProviderTransport
 from .study_runtime import StudyRuntime, StudyRuntimeError
 from .runtime_trust import (
     RuntimePackageTrustPolicy,
@@ -120,6 +129,8 @@ BrokerOperationHandler = Callable[[str, dict[str, Any]], Any]
 BrokerHandlerFactory = Callable[[str, str, dict[str, Any]], BrokerOperationHandler]
 BrokerMethodBlocker = Callable[[str], str | None]
 _RESOURCE_GRANT_REQUEST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_VALIDATION_IDEMPOTENCY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
+_DEFAULT_BROKER_RUNTIME = object()
 
 SERVICE_OWNED_BROKER_REQUEST_KEYS = frozenset(
     {
@@ -675,6 +686,7 @@ class CardService:
         resource_gesture_verifier: Callable[[str, str, str, str], bool] | None = None,
         anki_connect_url: str = ANKI_CONNECT_URL,
         hermes_proxy_manager: HermesProxyManager | None = None,
+        profile_validation_transports: Mapping[str, ProviderTransport] | None = None,
     ) -> None:
         repository_root = Path(__file__).resolve().parent.parent
         self.runtime_package: ManagedRuntimePackage | None = None
@@ -823,6 +835,9 @@ class CardService:
         self.broker_runtime_capabilities = dict(broker_runtime_capabilities or {})
         self._credential_backend = credential_backend
         self.hermes_proxy_manager = hermes_proxy_manager or HermesProxyManager()
+        self._profile_validation_transports = dict(
+            profile_validation_transports or {}
+        )
         self._resource_gesture_verifier = resource_gesture_verifier
         self._resource_runtime: ServiceResourceRuntime | None = None
         self._study_runtime: StudyRuntime | None = None
@@ -830,6 +845,13 @@ class CardService:
         self._service_profile_registry: ServiceProfileRegistry | None = None
         self._service_profile_verifications: ServiceProfileVerificationRegistry | None = None
         self._service_profile_runtime_lock = threading.RLock()
+        self._authorization_ledger: AuthorizationLedger | None = None
+        self._authorization_ledger_lock = threading.RLock()
+        self._operation_confirmation_requests: dict[
+            tuple[str, str, str, str, str], str
+        ] = {}
+        self._operation_confirmation_lock = threading.RLock()
+        self._profile_validation_lock = threading.RLock()
         self._local_settings_sessions: dict[str, tuple[str, str]] = {}
         self._local_settings_lock = threading.RLock()
         self._local_picker_requests: dict[str, dict[str, Any]] = {}
@@ -937,6 +959,41 @@ class CardService:
             self._service_profile_registry = profile_registry
             self._service_profile_verifications = verifications
             return profile_registry, verifications
+
+    def _ensure_authorization_ledger(self) -> AuthorizationLedger:
+        with self._authorization_ledger_lock:
+            if self._authorization_ledger is not None:
+                return self._authorization_ledger
+            try:
+                credential_store = CredentialStore(
+                    state_dir=self.store.root / "trusted-surfaces" / "credentials",
+                    backend=self._credential_backend,
+                )
+                ledger = AuthorizationLedger(
+                    (self.store.root / "authorization-ledger").resolve(),
+                    authentication_key=credential_store.derive_service_key(
+                        "authorization-ledger-v1",
+                        context=b"codex-study-card-service",
+                    ),
+                    service_instance_id=self._ensure_resource_runtime().service_instance_id,
+                    gesture_attestation_verifier=(
+                        self.trusted_surfaces.verify_operation_consent_gesture
+                    ),
+                )
+            except (
+                AuthorizationLedgerError,
+                CredentialStoreError,
+                ServiceResourceRuntimeError,
+                OSError,
+            ) as error:
+                raise CardServiceError(
+                    getattr(error, "code", "AUTHORIZATION_RUNTIME_UNAVAILABLE"),
+                    "Card Service authorization storage is unavailable",
+                    retryable=False,
+                    stage="authorization",
+                ) from error
+            self._authorization_ledger = ledger
+            return ledger
 
     def save_service_profile(
         self,
@@ -1408,6 +1465,612 @@ class CardService:
                 stage="project_query",
             ) from error
 
+    @staticmethod
+    def _profile_validation_state(
+        profile: Mapping[str, Any], verification: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "schemaVersion": 1,
+            "profileRef": profile["profileRef"],
+            "capability": profile["capability"],
+            "configurationFingerprint": profile["configurationFingerprint"],
+            "credentialRevision": profile["credentialRevision"],
+            "state": verification["state"],
+            "nextAction": (
+                "none" if verification["state"] == "ready" else "validate_profile"
+            ),
+        }
+        if verification.get("reasonCode") is not None:
+            result["reasonCode"] = verification["reasonCode"]
+        if verification.get("latestVerification") is not None:
+            result["verification"] = verification["latestVerification"]
+        return result
+
+    def _resolve_profile_validation_binding(
+        self,
+        *,
+        profile_ref: str,
+        capability: str,
+        expected_configuration_fingerprint: str,
+        credential_revision: int,
+    ) -> tuple[
+        dict[str, Any],
+        ServiceProfileRegistry,
+        ServiceProfileVerificationRegistry,
+    ]:
+        if capability not in {"model", "tts", "anki_connect"}:
+            raise CardServiceError(
+                "INVALID_CAPABILITY", "Profile validation capability is invalid"
+            )
+        if not PROFILE_REF_PATTERN.fullmatch(profile_ref):
+            raise CardServiceError(
+                "INVALID_PROFILE_REF", "Profile validation reference is invalid"
+            )
+        if (
+            not isinstance(expected_configuration_fingerprint, str)
+            or re.fullmatch(r"[0-9a-f]{64}", expected_configuration_fingerprint)
+            is None
+            or isinstance(credential_revision, bool)
+            or not isinstance(credential_revision, int)
+            or credential_revision < 0
+        ):
+            raise CardServiceError(
+                "PROFILE_VALIDATION_BINDING_INVALID",
+                "Profile validation binding is invalid",
+            )
+        registry, verifications = self._ensure_service_profile_runtime()
+        try:
+            profile = registry.get_profile(profile_ref)
+        except ServiceProfileRegistryError as error:
+            raise CardServiceError(
+                error.code, str(error), retryable=False, stage="profile_validation"
+            ) from error
+        if not profile["active"] or profile["capability"] != capability:
+            raise CardServiceError(
+                "SERVICE_PROFILE_NOT_CONFIGURED",
+                "The requested profile is not active for this capability",
+                retryable=False,
+                stage="profile_validation",
+            )
+        if (
+            profile["configurationFingerprint"]
+            != expected_configuration_fingerprint
+            or int(profile["credentialRevision"]) != credential_revision
+        ):
+            raise CardServiceError(
+                "PROFILE_VALIDATION_BINDING_STALE",
+                "The profile configuration or credential revision changed",
+                retryable=True,
+                stage="profile_validation",
+            )
+        return profile, registry, verifications
+
+    def _record_profile_validation_result(
+        self, task_id: str
+    ) -> dict[str, Any] | None:
+        snapshot = self.get_task(task_id)
+        if not isinstance(snapshot, Mapping):
+            return None
+        context = snapshot.get("profileValidation")
+        if not isinstance(context, Mapping):
+            return None
+        existing = snapshot.get("profileValidationOutcome")
+        if isinstance(existing, Mapping):
+            return json.loads(json.dumps(existing, ensure_ascii=False))
+        state = str(snapshot.get("state") or "")
+        if state not in TERMINAL_STATES or state in {"cancelled", "interrupted"}:
+            return None
+        _, verifications = self._ensure_service_profile_runtime()
+        status = "failed"
+        error_code: str | None = "PROFILE_VALIDATION_FAILED"
+        retryable: bool | None = True
+        latency_ms: int | None = None
+        if state == "succeeded":
+            worker_result = self.read_result(task_id)
+            if isinstance(worker_result, Mapping):
+                raw_latency = worker_result.get("latency_ms")
+                if isinstance(raw_latency, int) and not isinstance(raw_latency, bool):
+                    latency_ms = max(0, min(raw_latency, 600_000))
+                if worker_result.get("ok") is True:
+                    status = "passed"
+                    error_code = None
+                    retryable = None
+                else:
+                    raw_code = str(
+                        worker_result.get("error_code")
+                        or "PROFILE_VALIDATION_FAILED"
+                    )
+                    error_code = (
+                        raw_code
+                        if re.fullmatch(r"[A-Za-z0-9._:-]{1,256}", raw_code)
+                        else "PROFILE_VALIDATION_FAILED"
+                    )
+                    retryable = bool(worker_result.get("retryable"))
+        else:
+            failure = snapshot.get("error")
+            if isinstance(failure, Mapping):
+                raw_code = str(failure.get("code") or "PROFILE_VALIDATION_FAILED")
+                error_code = (
+                    raw_code
+                    if re.fullmatch(r"[A-Za-z0-9._:-]{1,256}", raw_code)
+                    else "PROFILE_VALIDATION_FAILED"
+                )
+                retryable = bool(failure.get("retryable"))
+        try:
+            record = verifications.record_result(
+                operation_id=f"profile-validation-result:{task_id}",
+                capability=str(context["capability"]),
+                profile_ref=str(context["profileRef"]),
+                configuration_fingerprint=str(
+                    context["configurationFingerprint"]
+                ),
+                credential_revision=int(context["credentialRevision"]),
+                status=status,
+                error_code=error_code,
+                retryable=retryable,
+                latency_ms=latency_ms,
+            )
+        except ServiceProfileVerificationError as error:
+            raise CardServiceError(
+                error.code,
+                str(error),
+                retryable=False,
+                stage="profile_validation",
+            ) from error
+        outcome = {
+            "schemaVersion": 1,
+            "status": status,
+            "verification": record,
+        }
+        with self._tasks_lock:
+            runtime = self._tasks.get(task_id)
+        if runtime is not None:
+            with runtime.lock:
+                runtime.snapshot["profileValidationOutcome"] = outcome
+                self._persist_runtime(runtime)
+        else:
+            persisted = dict(snapshot)
+            persisted["profileValidationOutcome"] = outcome
+            self.store.write_task(task_id, persisted)
+        return json.loads(json.dumps(outcome, ensure_ascii=False))
+
+    def _watch_profile_validation(self, task_id: str) -> None:
+        def watch() -> None:
+            while True:
+                snapshot = self.get_task(task_id)
+                if not isinstance(snapshot, Mapping):
+                    return
+                if snapshot.get("state") in TERMINAL_STATES:
+                    try:
+                        self._record_profile_validation_result(task_id)
+                    except CardServiceError:
+                        pass
+                    return
+                time.sleep(0.1)
+
+        threading.Thread(
+            target=watch,
+            daemon=True,
+            name=f"profile-validation-{task_id}",
+        ).start()
+
+    def _public_profile_validation_task(
+        self, *, audience: ArtifactAudienceBinding, task_id: str
+    ) -> dict[str, Any]:
+        snapshot = self.get_task(task_id)
+        if not isinstance(snapshot, Mapping) or not isinstance(
+            snapshot.get("profileValidation"), Mapping
+        ):
+            raise CardServiceError(
+                "TASK_NOT_FOUND", "Profile validation task was not found"
+            )
+        context = snapshot["profileValidation"]
+        try:
+            self._ensure_authorization_ledger().get_operation_intent(
+                str(context["operationIntentId"]), audience
+            )
+        except AuthorizationLedgerError as error:
+            raise CardServiceError(
+                error.code, str(error), retryable=False, stage="task"
+            ) from error
+        if snapshot.get("state") in TERMINAL_STATES:
+            self._record_profile_validation_result(task_id)
+            snapshot = self.get_task(task_id) or snapshot
+        state = str(snapshot.get("state") or "failed")
+        public: dict[str, Any] = {
+            "schemaVersion": 1,
+            "taskId": task_id,
+            "intent": "validate_profile",
+            "state": state,
+            "cancellable": bool(snapshot.get("cancellable")),
+            "resumability": "none",
+            "progress": json.loads(
+                json.dumps(snapshot.get("progress") or {}, ensure_ascii=False)
+            ),
+            "nextAction": (
+                "get_task"
+                if state in ACTIVE_STATES
+                else "none"
+                if state == "succeeded"
+                else "validate_profile"
+            ),
+        }
+        outcome = snapshot.get("profileValidationOutcome")
+        if isinstance(outcome, Mapping):
+            public["result"] = json.loads(json.dumps(outcome, ensure_ascii=False))
+        failure = snapshot.get("error")
+        if isinstance(failure, Mapping):
+            public["error"] = json.loads(json.dumps(failure, ensure_ascii=False))
+        return public
+
+    def validate_service_profile(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        profile_ref: str,
+        capability: str,
+        expected_configuration_fingerprint: str,
+        credential_revision: int,
+        idempotency_key: str,
+        configuration_session_ref: str | None = None,
+    ) -> dict[str, Any]:
+        if not _VALIDATION_IDEMPOTENCY_RE.fullmatch(idempotency_key):
+            raise CardServiceError(
+                "PROFILE_VALIDATION_IDEMPOTENCY_INVALID",
+                "Profile validation idempotency key is invalid",
+            )
+        if configuration_session_ref is not None:
+            raise CardServiceError(
+                "PROFILE_DRAFT_VALIDATION_UNAVAILABLE",
+                "Unsaved profile draft validation is not available yet",
+                retryable=False,
+                stage="profile_validation",
+            )
+        profile, _, verifications = self._resolve_profile_validation_binding(
+            profile_ref=profile_ref,
+            capability=capability,
+            expected_configuration_fingerprint=expected_configuration_fingerprint,
+            credential_revision=credential_revision,
+        )
+        verification = verifications.profile_snapshot(capability, profile_ref)
+        if verification["state"] == "ready":
+            return self._profile_validation_state(profile, verification)
+        if profile["credentialState"] != "committed":
+            return self._profile_validation_state(profile, verification)
+        if profile["secretRequired"] and not profile["secretExists"]:
+            return self._profile_validation_state(profile, verification)
+        if capability == "anki_connect":
+            started = time.monotonic()
+            try:
+                credential_store = CredentialStore(
+                    state_dir=self.store.root / "trusted-surfaces" / "credentials",
+                    backend=self._credential_backend,
+                )
+                result = validate_anki_connect_profile(
+                    profile, credential_store=credential_store
+                )
+                record = verifications.record_result(
+                    operation_id=f"anki-profile-validation:{idempotency_key}",
+                    capability=capability,
+                    profile_ref=profile_ref,
+                    configuration_fingerprint=expected_configuration_fingerprint,
+                    credential_revision=credential_revision,
+                    status="passed",
+                    latency_ms=int(result["latencyMs"]),
+                )
+            except (CredentialStoreError, RuntimeError) as error:
+                code = str(error) if str(error).startswith("ANKI_") else "ANKI_OFFLINE"
+                record = verifications.record_result(
+                    operation_id=f"anki-profile-validation:{idempotency_key}",
+                    capability=capability,
+                    profile_ref=profile_ref,
+                    configuration_fingerprint=expected_configuration_fingerprint,
+                    credential_revision=credential_revision,
+                    status="failed",
+                    error_code=code,
+                    retryable=code == "ANKI_OFFLINE",
+                    latency_ms=max(0, int((time.monotonic() - started) * 1000)),
+                )
+            current = verifications.profile_snapshot(capability, profile_ref)
+            return {
+                **self._profile_validation_state(profile, current),
+                "verification": record,
+            }
+        plan = build_profile_validation_plan(
+            profile, configuration_session_ref=configuration_session_ref
+        )
+        ledger = self._ensure_authorization_ledger()
+        try:
+            intent = ledger.find_operation_intent(
+                audience=audience, idempotency_key=idempotency_key
+            )
+            if intent is None:
+                intent = ledger.create_operation_intent(
+                    audience=audience,
+                    idempotency_key=idempotency_key,
+                    operation_request_manifest=plan.operation_request_manifest,
+                    disclosure_manifest=plan.disclosure_manifest,
+                    cost_budget=plan.cost_budget,
+                )
+            else:
+                if (
+                    intent["subject"]
+                    != plan.operation_request_manifest["subject"]
+                    or intent["serviceBindings"]
+                    != plan.operation_request_manifest["serviceBindings"]
+                ):
+                    raise CardServiceError(
+                        "PROFILE_VALIDATION_IDEMPOTENCY_CONFLICT",
+                        "Profile validation idempotency key targets another binding",
+                    )
+        except AuthorizationLedgerError as error:
+            raise CardServiceError(
+                error.code,
+                str(error),
+                retryable=False,
+                stage="authorization",
+            ) from error
+        public = {
+            "schemaVersion": 1,
+            "profileRef": profile_ref,
+            "capability": capability,
+            "configurationFingerprint": expected_configuration_fingerprint,
+            "credentialRevision": credential_revision,
+            "operationIntentId": intent["operationIntentId"],
+            "intentDigest": intent["intentDigest"],
+        }
+        intent_state = str(intent["state"])
+        if intent_state == "pending":
+            return {
+                **public,
+                "state": "confirmation_required",
+                "nextAction": "request_operation_confirmation",
+            }
+        if intent_state in {"declined", "expired", "revoked"}:
+            return {
+                **public,
+                "state": intent_state,
+                "nextAction": "validate_profile",
+            }
+        if intent_state not in {"approved", "consumed"}:
+            raise CardServiceError(
+                "OPERATION_APPROVAL_STATE_INVALID",
+                "Profile validation approval state cannot start a task",
+            )
+        return self._start_remote_profile_validation(
+            audience=audience,
+            profile=profile,
+            profile_ref=profile_ref,
+            capability=capability,
+            expected_configuration_fingerprint=expected_configuration_fingerprint,
+            credential_revision=credential_revision,
+            intent=intent,
+            plan=plan,
+            ledger=ledger,
+        )
+
+    def _start_remote_profile_validation(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        profile: Mapping[str, Any],
+        profile_ref: str,
+        capability: str,
+        expected_configuration_fingerprint: str,
+        credential_revision: int,
+        intent: Mapping[str, Any],
+        plan: ProfileValidationPlan,
+        ledger: AuthorizationLedger,
+    ) -> dict[str, Any]:
+        task_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"codex-study:profile-validation:{intent['operationIntentId']}",
+            )
+        )
+        with self._profile_validation_lock:
+            existing_task = self.get_task(task_id)
+            if existing_task is not None:
+                return self._public_profile_validation_task(
+                    audience=audience, task_id=task_id
+                )
+            if profile["configuration"]["provider"] == "hermes":
+                self.ensure_candidate_discovery_provider()
+            try:
+                approval = ledger.consume_operation_approval(
+                    operation_intent_id=str(intent["operationIntentId"]),
+                    audience=audience,
+                    task_id=task_id,
+                    consumption_id=f"profile-validation:{task_id}",
+                    expected_intent_digest=str(intent["intentDigest"]),
+                    expected_operation_request_digest=str(
+                        intent["operationRequestManifestDigest"]
+                    ),
+                    current_service_bindings=[plan.current_service_binding],
+                )
+                broker_factory = make_profile_validation_broker_factory(
+                    state_dir=self.store.root,
+                    credential_backend=self._credential_backend,
+                    authorization_ledger=ledger,
+                    audience=audience,
+                    operation_intent_id=str(intent["operationIntentId"]),
+                    authorization_expires_at=str(intent["expiresAt"]),
+                    plan=plan,
+                    approval_consumption=approval,
+                    transport=self._profile_validation_transports.get(profile_ref),
+                )
+                started_task = self.start_task(
+                    plan.worker_method,
+                    dict(plan.worker_request),
+                    task_id_override=task_id,
+                    broker_handler_factory_override=broker_factory,
+                    broker_method_blocker_override=lambda _method: None,
+                    snapshot_extra={
+                        "profileValidation": {
+                            "schemaVersion": 1,
+                            "operationIntentId": intent["operationIntentId"],
+                            "capability": capability,
+                            "profileRef": profile_ref,
+                            "configurationFingerprint": expected_configuration_fingerprint,
+                            "credentialRevision": credential_revision,
+                        }
+                    },
+                )
+            except (
+                AuthorizationLedgerError,
+                BrokerError,
+                CredentialStoreError,
+            ) as error:
+                raise CardServiceError(
+                    getattr(error, "code", "PROFILE_VALIDATION_START_FAILED"),
+                    "Profile validation authorization could not start",
+                    retryable=True,
+                    stage="profile_validation",
+                ) from error
+            self._watch_profile_validation(str(started_task["id"]))
+            return self._public_profile_validation_task(
+                audience=audience, task_id=str(started_task["id"])
+            )
+
+    def request_operation_confirmation(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        operation_intent_id: str,
+    ) -> dict[str, Any]:
+        ledger = self._ensure_authorization_ledger()
+        try:
+            intent = ledger.get_operation_intent_context(
+                operation_intent_id, audience
+            )
+        except AuthorizationLedgerError as error:
+            raise CardServiceError(
+                error.code, str(error), retryable=False, stage="authorization"
+            ) from error
+        state = str(intent["state"])
+        if state != "pending":
+            return {
+                "schemaVersion": 1,
+                "operationIntentId": operation_intent_id,
+                "actionId": intent["actionId"],
+                "state": state,
+                "expiresAt": intent["expiresAt"],
+            }
+        subject = intent["subject"]
+        if subject.get("kind") != "profile_validation":
+            raise CardServiceError(
+                "OPERATION_CONFIRMATION_UNSUPPORTED",
+                "This operation intent is not supported by the current trusted surface",
+            )
+        profile, _, _ = self._resolve_profile_validation_binding(
+            profile_ref=str(subject["profileRef"]),
+            capability=str(intent["serviceBindings"][0]["capability"]),
+            expected_configuration_fingerprint=str(
+                subject["configurationFingerprint"]
+            ),
+            credential_revision=int(subject["credentialRevision"]),
+        )
+        plan = build_profile_validation_plan(profile)
+        try:
+            audience_digest = ledger.audience_digest(audience)
+        except AuthorizationLedgerError as error:
+            raise CardServiceError(
+                error.code, str(error), retryable=False, stage="authorization"
+            ) from error
+        key = (
+            audience.owner_digest,
+            audience.host_id,
+            audience.plugin_id,
+            audience.session_id,
+            operation_intent_id,
+        )
+        with self._operation_confirmation_lock:
+            session_ref = self._operation_confirmation_requests.get(key)
+            if session_ref is None:
+                try:
+                    session = self.trusted_surfaces.create_operation_consent_session(
+                        operation_intent_id=operation_intent_id,
+                        audience_digest=audience_digest,
+                        intent_digest=str(intent["intentDigest"]),
+                        action_id=str(intent["actionId"]),
+                        summary=plan.consent_summary,
+                    )
+                    session_ref = str(session["sessionRef"])
+                    self._operation_confirmation_requests[key] = session_ref
+                    self.trusted_surfaces.launch(session_ref)
+                except TrustedSurfaceError as error:
+                    self._operation_confirmation_requests.pop(key, None)
+                    raise CardServiceError(
+                        error.code,
+                        str(error),
+                        retryable=True,
+                        stage="authorization",
+                    ) from error
+                return {
+                    "schemaVersion": 1,
+                    "operationIntentId": operation_intent_id,
+                    "actionId": intent["actionId"],
+                    "state": "open",
+                    "expiresAt": intent["expiresAt"],
+                }
+        try:
+            surface = self.trusted_surfaces.get_session(session_ref)
+            surface_state = str(surface.get("state") or "failed")
+            if surface_state in {"created", "open"}:
+                return {
+                    "schemaVersion": 1,
+                    "operationIntentId": operation_intent_id,
+                    "actionId": intent["actionId"],
+                    "state": "open",
+                    "expiresAt": intent["expiresAt"],
+                }
+            if surface_state in {"approved", "declined"}:
+                decision = self.trusted_surfaces.operation_consent_decision(
+                    session_ref
+                )
+                if decision is None:
+                    raise CardServiceError(
+                        "TRUSTED_GESTURE_INVALID",
+                        "Trusted operation decision is unavailable",
+                    )
+                decided = ledger.record_operation_decision(
+                    operation_intent_id=operation_intent_id,
+                    audience=audience,
+                    decision=decision.decision,
+                    gesture_attestation_digest=decision.attestation_digest,
+                )
+                self.trusted_surfaces.complete_operation_consent(session_ref)
+                with self._operation_confirmation_lock:
+                    self._operation_confirmation_requests.pop(key, None)
+                return {
+                    "schemaVersion": 1,
+                    "operationIntentId": operation_intent_id,
+                    "actionId": decided["actionId"],
+                    "state": decided["state"],
+                    "expiresAt": decided["expiresAt"],
+                }
+            self.trusted_surfaces.complete_operation_consent(session_ref)
+            with self._operation_confirmation_lock:
+                self._operation_confirmation_requests.pop(key, None)
+            return {
+                "schemaVersion": 1,
+                "operationIntentId": operation_intent_id,
+                "actionId": intent["actionId"],
+                "state": (
+                    surface_state
+                    if surface_state in {"cancelled", "failed"}
+                    else "failed"
+                ),
+                "expiresAt": intent["expiresAt"],
+            }
+        except (TrustedSurfaceError, AuthorizationLedgerError) as error:
+            raise CardServiceError(
+                getattr(error, "code", "OPERATION_CONFIRMATION_FAILED"),
+                "Trusted operation confirmation failed",
+                retryable=True,
+                stage="authorization",
+            ) from error
+
     def get_study_artifact(
         self, *, audience: ArtifactAudienceBinding, artifact_handle: str
     ) -> dict[str, Any]:
@@ -1772,6 +2435,13 @@ class CardService:
     def get_public_study_task(
         self, *, audience: ArtifactAudienceBinding, task_id: str
     ) -> dict[str, Any]:
+        legacy = self.get_task(task_id)
+        if isinstance(legacy, Mapping) and isinstance(
+            legacy.get("profileValidation"), Mapping
+        ):
+            return self._public_profile_validation_task(
+                audience=audience, task_id=task_id
+            )
         try:
             return self._ensure_study_runtime().get_study_task(
                 audience=audience, task_id=task_id
@@ -1787,6 +2457,17 @@ class CardService:
     def cancel_public_study_task(
         self, *, audience: ArtifactAudienceBinding, task_id: str
     ) -> dict[str, Any]:
+        legacy = self.get_task(task_id)
+        if isinstance(legacy, Mapping) and isinstance(
+            legacy.get("profileValidation"), Mapping
+        ):
+            self._public_profile_validation_task(
+                audience=audience, task_id=task_id
+            )
+            self.cancel_task(task_id)
+            return self._public_profile_validation_task(
+                audience=audience, task_id=task_id
+            )
         try:
             return self._ensure_study_runtime().cancel_study_task(
                 audience=audience, task_id=task_id
@@ -2566,7 +3247,9 @@ class CardService:
                 "verificationLedger": True,
                 "publicListProfiles": True,
                 "trustedCredentialSettings": True,
-                "publicProfileValidation": False,
+                "publicProfileValidation": True,
+                "trustedOperationConfirmation": True,
+                "profileDraftValidation": False,
                 "complete": False,
             },
             "localResourceRuntime": self._resource_runtime_capabilities(),
@@ -2699,14 +3382,36 @@ class CardService:
         with self._workspace_budget_lock:
             self._workspace_reservations.discard(task_id)
 
-    def start_task(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    def start_task(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        task_id_override: str | None = None,
+        broker_handler_factory_override: BrokerHandlerFactory | None | object = _DEFAULT_BROKER_RUNTIME,
+        broker_method_blocker_override: BrokerMethodBlocker | None | object = _DEFAULT_BROKER_RUNTIME,
+        snapshot_extra: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
         policy = self.method_policies.get(method)
         if policy is None:
             raise CardServiceError("METHOD_NOT_ALLOWED", f"Card Service method is not allowed: {method}")
-        with self._broker_runtime_lock:
-            blocker = self._broker_blocker(method, policy)
-            task_broker_factory = self.broker_handler_factory
-            task_broker_blocker = self.broker_method_blocker
+        if broker_handler_factory_override is _DEFAULT_BROKER_RUNTIME:
+            with self._broker_runtime_lock:
+                blocker = self._broker_blocker(method, policy)
+                task_broker_factory = self.broker_handler_factory
+                task_broker_blocker = self.broker_method_blocker
+        else:
+            task_broker_factory = broker_handler_factory_override
+            task_broker_blocker = (
+                None
+                if broker_method_blocker_override is _DEFAULT_BROKER_RUNTIME
+                else broker_method_blocker_override
+            )
+            blocker = None
+            if policy.requires_broker and task_broker_factory is None:
+                blocker = "model_tts_broker_not_ready"
+            elif callable(task_broker_blocker):
+                blocker = task_broker_blocker(method)
         if blocker is not None:
             raise CardServiceError(
                 "BROKER_REQUIRED" if blocker == "model_tts_broker_not_ready" else "BROKER_AUTHORIZATION_UNAVAILABLE",
@@ -2726,7 +3431,17 @@ class CardService:
                     "SERVICE_OWNED_AUTHORIZATION_IN_REQUEST",
                     f"Broker authorization is owned by Card Service and cannot be supplied by a task ({service_owned_path})",
                 )
-        task_id = str(uuid.uuid4())
+        task_id = str(task_id_override or uuid.uuid4())
+        try:
+            uuid.UUID(task_id)
+        except (ValueError, AttributeError) as error:
+            raise CardServiceError(
+                "TASK_ID_INVALID", "Card Service task identifier is invalid"
+            ) from error
+        if self.get_task(task_id) is not None:
+            raise CardServiceError(
+                "TASK_ALREADY_EXISTS", "Card Service task identifier already exists"
+            )
         sandbox_workspace: Path | None = None
         task_sid: str | None = None
         with self._workspace_budget_lock:
@@ -2784,6 +3499,16 @@ class CardService:
             "resultRef": None,
             "error": None,
         }
+        if snapshot_extra is not None:
+            overlap = set(snapshot).intersection(snapshot_extra)
+            if overlap:
+                raise CardServiceError(
+                    "TASK_METADATA_INVALID",
+                    "Private task metadata overlaps the public task snapshot",
+                )
+            snapshot.update(
+                json.loads(json.dumps(dict(snapshot_extra), ensure_ascii=False))
+            )
         runtime = _RuntimeTask(
             snapshot=snapshot,
             request=request,
@@ -2878,6 +3603,22 @@ class CardService:
             return self.capabilities()
         if method == "system.list_profiles":
             return self.list_service_profiles()
+        if method == "system.validate_profile":
+            audience = values.pop("audience", None)
+            if not isinstance(audience, ArtifactAudienceBinding):
+                raise CardServiceError(
+                    "TRUSTED_AUDIENCE_REQUIRED",
+                    "Profile validation requires a trusted audience",
+                )
+            return self.validate_service_profile(audience=audience, **values)
+        if method == "system.request_operation_confirmation":
+            audience = values.pop("audience", None)
+            if not isinstance(audience, ArtifactAudienceBinding):
+                raise CardServiceError(
+                    "TRUSTED_AUDIENCE_REQUIRED",
+                    "Operation confirmation requires a trusted audience",
+                )
+            return self.request_operation_confirmation(audience=audience, **values)
         if method == "task.get":
             return self.get_task(str(values.get("taskId") or ""))
         if method == "task.cancel":
@@ -3074,7 +3815,17 @@ class CardService:
                 include_terminal=False,
                 maximum=257,
             )
-        except (ServiceResourceRuntimeError, StudyRuntimeError) as error:
+            operation_approvals = (
+                self._ensure_authorization_ledger().list_revocable_operation_approvals(
+                    audience=audience,
+                    limit=256,
+                )
+            )
+        except (
+            ServiceResourceRuntimeError,
+            StudyRuntimeError,
+            AuthorizationLedgerError,
+        ) as error:
             raise CardServiceError(
                 error.code,
                 "Authorization inventory is unavailable",
@@ -3118,6 +3869,32 @@ class CardService:
                     },
                 }
             )
+        for approval in operation_approvals:
+            subject_label = (
+                str(approval.get("profileRef") or "服务配置")
+                if approval.get("subjectKind") == "profile_validation"
+                else "学习任务"
+            )
+            items.append(
+                {
+                    "kind": "operation_approval",
+                    "title": f"待执行操作 · {str(approval['actionId'])[:120]}",
+                    "detail": (
+                        f"范围：{subject_label}；已批准但尚未消费；"
+                        f"有效期至 {str(approval['expiresAt'])}"
+                    )[:500],
+                    "state": "approved",
+                    "locator": {
+                        "operationIntentId": str(
+                            approval["operationIntentId"]
+                        ),
+                        "intentDigest": str(approval["intentDigest"]),
+                        "audienceDigest": self._ensure_authorization_ledger().audience_digest(
+                            audience
+                        ),
+                    },
+                }
+            )
         broker = self._active_broker_authorization_summary()
         if broker is not None and broker["state"] == "active":
             capabilities = "、".join(str(value) for value in broker["capabilities"])
@@ -3136,7 +3913,12 @@ class CardService:
                     },
                 }
             )
-        if len(local_grants) > 256 or len(import_approvals) > 256 or len(items) > 256:
+        if (
+            len(local_grants) > 256
+            or len(import_approvals) > 256
+            or len(operation_approvals) > 256
+            or len(items) > 256
+        ):
             raise CardServiceError(
                 "AUTHORIZATION_MANAGER_LIMIT_EXCEEDED",
                 "Authorization inventory exceeds the bounded management limit",
@@ -3147,19 +3929,21 @@ class CardService:
 
     @staticmethod
     def _authorization_disposition(error_code: str) -> str:
-        if error_code in {"IMPORT_APPROVAL_CONSUMED"}:
+        if error_code in {"IMPORT_APPROVAL_CONSUMED", "OPERATION_APPROVAL_CONSUMED"}:
             return "already_consumed"
         if error_code in {
             "RESOURCE_ALREADY_REVOKED",
             "RESOURCE_REVOKED",
             "IMPORT_APPROVAL_ALREADY_REVOKED",
             "IMPORT_APPROVAL_REVOKED",
+            "OPERATION_APPROVAL_REVOKED",
         }:
             return "already_revoked"
         if error_code in {
             "RESOURCE_NOT_FOUND",
             "IMPORT_INTENT_NOT_FOUND",
             "IMPORT_APPROVAL_NOT_FOUND",
+            "OPERATION_INTENT_NOT_FOUND",
         }:
             return "not_found"
         return "failed"
@@ -3375,7 +4159,20 @@ class CardService:
                             if revoked["state"] == "revoked"
                             else "not_found"
                         )
-                except (ServiceResourceRuntimeError, StudyRuntimeError) as error:
+                    elif selection.kind == "operation_approval":
+                        self._ensure_authorization_ledger().revoke_operation_approval(
+                            operation_intent_id=str(
+                                selection.locator["operationIntentId"]
+                            ),
+                            audience=audience,
+                            revocation_attestation_digest=selection.attestation_ref,
+                        )
+                        disposition = "revoked"
+                except (
+                    ServiceResourceRuntimeError,
+                    StudyRuntimeError,
+                    AuthorizationLedgerError,
+                ) as error:
                     disposition = self._authorization_disposition(error.code)
                 except CardServiceError as error:
                     disposition = self._authorization_disposition(error.code)

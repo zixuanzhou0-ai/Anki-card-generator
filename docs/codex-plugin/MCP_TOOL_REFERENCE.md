@@ -4,15 +4,15 @@
 
 ## CURRENT 公共工具清单与能力上限（2026-07-20）
 
-截至 2026-07-20，可信开发态 Card Service stdio runtime 共公开 34 个工具：`system.get_capabilities`、`system.authorize_candidate_discovery`、`system.list_profiles`、`system.open_local_settings`、`system.revoke_grant`、`system.request_source_grant`、`system.request_output_grant`、`study.create_project`、`study.list_projects`、`study.get_project`、`study.register_inputs`、`study.start_source_inspection`、`study.get_source_inspection`、`study.start_discovery`、`study.get_task`、`study.cancel_task`、`study.list_recoverable_tasks`、`study.resume_task`、`study.list_candidates`、`study.get_candidate`、`study.preview_evidence`、`study.set_selection`、`study.plan_cards`、`study.list_card_plans`、`study.edit_card_plan`、`study.validate_card_plans`、`cards.generate`、`cards.list`、`cards.export_apkg`、`anki.prepare_import`、`anki.request_import_confirmation`、`anki.import_and_verify`、`study.get_artifact`、`study.get_audit`。
+截至 2026-07-20，可信开发态 Card Service stdio runtime 共公开 36 个工具：`system.get_capabilities`、`system.authorize_candidate_discovery`、`system.list_profiles`、`system.open_local_settings`、`system.revoke_grant`、`system.validate_profile`、`system.request_operation_confirmation`、`system.request_source_grant`、`system.request_output_grant`、`study.create_project`、`study.list_projects`、`study.get_project`、`study.register_inputs`、`study.start_source_inspection`、`study.get_source_inspection`、`study.start_discovery`、`study.get_task`、`study.cancel_task`、`study.list_recoverable_tasks`、`study.resume_task`、`study.list_candidates`、`study.get_candidate`、`study.preview_evidence`、`study.set_selection`、`study.plan_cards`、`study.list_card_plans`、`study.edit_card_plan`、`study.validate_card_plans`、`cards.generate`、`cards.list`、`cards.export_apkg`、`anki.prepare_import`、`anki.request_import_confirmation`、`anki.import_and_verify`、`study.get_artifact`、`study.get_audit`。
 
 当前候选发现授权工具只接受 `{"preset":"hermes_grok_4_5"}`。授权成功后，`study.start_discovery` 只接受 RequestContext、`inspectionHandle` 和 1–256 的 `candidateBudget`；Service 从当前可信授权派生模型身份、endpoint、凭据与 disclosure，调用方无权注入这些字段。
 
 `anki.import_and_verify` 只接受 `context.idempotencyKey` 与已确认的 `importIntentId`。成功写入后执行 deck/note/card/field/media 的数据级核验并最多推进到 `anki_data_verified`。写入成功但数据核验失败时保留 receipt 并置为 `imported_unverified`；写入前失败保持 `apkg_ready` 且不创建 receipt；跨越不确定写边界的取消/中断必须 `inspect_before_retry`。同一 import intent 即使换 idempotency key 也不得重复导入。运行时渲染、媒体播放、reviewer 操作与重启核验不在当前工具集中。
 
-下文总表同时保留 PROPOSED V1 工具设计；只有本节列出的 33 个名字可被当前 Skill 命令式调用。
+下文总表同时保留 PROPOSED V1 工具设计；只有本节列出的 36 个名字可被当前 Skill 命令式调用。
 
-> 状态：CURRENT 33 工具开发态 runtime + PROPOSED 扩展工具契约；正式签名插件尚未发布
+> 状态：CURRENT 36 工具开发态 runtime + PROPOSED 扩展工具契约；正式签名插件尚未发布
 > 日期：2026-07-20
 > 工具名和 schema 在实现前仍可调整；一旦 V1 发布即按版本策略维护。
 
@@ -280,7 +280,7 @@ CURRENT 只返回已经由受信适配器写入持久 Registry 的 model、TTS �
 
 ### system.open_local_settings
 
-CURRENT 由真实用户动作打开 Card Service 提供的受信本地凭据窗口，但只接受 `system.list_profiles` 已返回且 capability 完全匹配、确实需要秘密的现有 profile；不能用该工具创建 profile、注入 Provider/Base URL/model 或为无需凭据的 Hermes/Anki profile制造孤立 secret。首次调用返回 `configurationSessionRef/open`，后续只用该 ref 轮询。密钥在窗口中直接写入 OS 凭据存储，不经过对话、MCP structuredContent 或 App UI tool arguments；公共结果只包含 session 状态以及非秘密的 credentialRevision/state/exists，不返回 SecretRef。凭据新增、替换、删除/清空、回滚，以及 OAuth 账户/token material 变化都由 Service 原子单调 bump credentialRevision；并发更新序列化，旧 revision 永不复用并立即使旧验证/批准 stale。完整非敏感 profile 创建/编辑事务和 `system.validate_profile` 仍未公开。
+CURRENT 由真实用户动作打开 Card Service 提供的受信本地凭据窗口，但只接受 `system.list_profiles` 已返回且 capability 完全匹配、确实需要秘密的现有 profile；不能用该工具创建 profile、注入 Provider/Base URL/model 或为无需凭据的 Hermes/Anki profile 制造孤立 secret。首次调用返回 `configurationSessionRef/open`，后续只用该 ref 轮询。密钥在窗口中直接写入 OS 凭据存储，不经过对话、MCP structuredContent 或 App UI tool arguments；公共结果只包含 session 状态以及非秘密的 credentialRevision/state/exists，不返回 SecretRef。凭据新增、替换、删除/清空、回滚，以及 OAuth 账户/token material 变化都由 Service 原子单调 bump credentialRevision；并发更新序列化，旧 revision 永不复用并立即使旧验证/批准 stale。`system.validate_profile` 已能验证精确的已保存绑定；完整非敏感 profile 创建/编辑事务仍未公开。
 
 ### system.open_broker_authorization（M1 内部过渡接口）
 
@@ -292,7 +292,13 @@ CURRENT 由真实用户动作打开 Card Service 提供的受信本地凭据窗�
 
 ### system.validate_profile
 
-输入 profileRef、能力类型、预期 configurationFingerprint、credentialRevision，以及仅在验证未提交设置草稿时需要的可选 configurationSessionRef；输出 taskId 或短验证结果。已保存 profile 的自动复检和 7 天后重验不要求先打开设置窗口。测试开始后 profile 发生变化时，旧结果标记 stale。首次访问新远程服务先创建 kind=profile_validation 的 OperationRequestManifest，不需要也不得伪造 projectId/revision；数据域确认完成后才发起网络请求。
+CURRENT 输入精确的 `profileRef`、能力类型、预期 `configurationFingerprint`、`credentialRevision`、稳定 `idempotencyKey`，以及仅为 schema 兼容而保留的可选 `configurationSessionRef`。当前实现只验证已经保存的绑定；传入草稿 session 会以 `PROFILE_DRAFT_VALIDATION_UNAVAILABLE` 失败关闭，不会把该工具变成 profile 编辑器。
+
+model/TTS 首次调用只创建 `kind=profile_validation` 的不可变 OperationIntent 并返回 `confirmation_required`；此时网络调用数必须为零。调用方用 `system.request_operation_confirmation` 打开受信本地窗口，批准后以同一幂等键重试，Service 才会原子消费一次 OperationApproval、建立 task-owned Broker 并最多发送一次诊断请求。诊断 disclosure 固定为空学习数据/空文件内容的小型摘要，未知价格必须明确显示，并以一次远程调用、请求/响应字节、token 或 TTS 字符/媒体项的硬上限约束。OperationIntent 精确绑定 capability、profile、configuration fingerprint、credential revision、egress、请求参数策略、披露和预算；任一变化都会使批准失效。
+
+远程验证返回 TaskSnapshot。任务 `succeeded` 仅表示验证流程已经完成，调用方仍必须检查 `result.verification.status`；连接错误会记录 latest failed，而不是伪造 ready。同一幂等键的终态重试返回同一结果且不再次访问服务；新一次尝试必须使用新的幂等键，远程 profile 也必须取得新的批准。取消或中断绝不发布 ready。Service 重启会改变受信 audience/service instance；旧会话不能查询或重放旧批准，必须从新会话重新建立验证意图。
+
+AnkiConnect profile 只允许 Registry 中规范化后的字面 loopback 绑定，直接执行有响应上限的本机 `version` 探测，不使用代理，也不需要远程操作确认。测试开始后 profile 或凭据发生变化时，旧结果不能写入新绑定；最新明确失败覆盖旧成功。
 
 ### system.request_source_grant
 
@@ -319,13 +325,13 @@ CURRENT M2 已实现该工具之后的内部 network grant/consume/redirect/revo
 
 ### system.request_operation_confirmation
 
-> CURRENT 内部状态：model/TTS OperationIntent/Approval/InternalAuthorization 账本内核已实现摘要、受众、一次性批准消费、task 绑定、共享调用预算与撤销 epoch；受信窗口 attestation 生产适配器和本 MCP 工具尚未接线，默认 verifier 缺失时批准失败关闭。
+> CURRENT：受信本地确认窗口和 MCP 工具已接线，但当前公开的 OperationIntent 生产者只包括 `system.validate_profile` 的 model/TTS 诊断。候选发现、CardPlan、批量生成和恢复仍使用各自现有受限合同，尚未改接这个通用入口。
 
-当 system.validate_profile、study.start_discovery、study.plan_cards、cards.generate 或需要重新授权的 study.resume_task 将首次向新服务发送数据，或超过 Learning Contract 已批准的模型/TTS 调用、卡片数量、媒体数量、费用/时间上限时，Service 必须先创建 OperationRequestManifestV1，再由其摘要创建不可变 OperationIntent，并返回 CONFIRMATION_REQUIRED + operationIntentId；此时不得启动远程调用。
+CURRENT 在 `system.validate_profile` 首次向 model/TTS 服务发送诊断请求前创建 OperationRequestManifestV1，再由其摘要创建不可变 OperationIntent，并返回 `confirmation_required` + `operationIntentId`；此时不得启动远程调用。把同一机制扩展到 `study.start_discovery`、`study.plan_cards`、`cards.generate`、高风险批量和 `study.resume_task` 是后续工作，不得因本文的完整 V1 目标而误报为现状。
 
 OperationRequestManifest 的 subject 是 project_task 或 profile_validation。前者绑定项目/学习合同/输入 Artifact/来源修订；后者始终绑定 profileRef、configurationFingerprint 与 credentialRevision，只有验证未提交设置草稿时才额外绑定 configurationSessionRef，不要求项目。每条 DisclosureEntryV1 把一个 capability/profile/origin/model-or-voice 目标与一个数据类别、精确来源修订/locator 集和该目标自己的请求字节、输入/输出 token、TTS 字符/秒数上限绑定；不能跨 target 交换片段。ProfileConfigurationManifest/EgressManifest 与 AudienceBindingManifest 都使用固定 JCS preimage。CostBudgetV1 绑定整数最小货币单位、计价快照版本、调用/卡片/媒体上限；价格未知时明确显示 unknown，并以硬资源上限约束。
 
-该工具只能由真实用户动作打开受信本地确认窗口。确认后 Service 写入内部 call_model/call_tts 授权记录；只返回 operationIntentId 与 approved/declined/expired/revoked 状态，不返回授权字符串。调用方随后以相同 idempotencyKey 和 operationIntentId 重试原工具；Service 重建并比对 OperationRequestManifestDigest 与 intentDigest，完全一致后才创建单向绑定 intentDigest 的 TaskInputManifest。任何 subject、来源/locator、profile、凭据、egress、字节/token/字符/时长、数量、计价或批量变化都会使批准失效并要求新 intent。
+该工具只接受 Service 返回的 `operationIntentId`，不能接收对话同意、预算覆盖、URL、profile、凭据、授权字符串或内部 locator。首次调用打开 digest-pinned 受信本地窗口，后续以同一 `operationIntentId` 轮询；只有真实用户点击产生的签名手势才能写入一次性 OperationApproval。公共结果只返回 `open|approved|declined|expired|revoked|failed` 及非秘密摘要，不返回手势、attestation、approval ID 或 bearer。批准后调用方以原 `system.validate_profile` 参数和同一 idempotencyKey 重试；Service 重建并比对 manifest/intent 后才创建单向 task 绑定。当前确认只授权该一次 profile 诊断，不能复用于学习任务。
 
 ### system.revoke_grant
 
@@ -333,7 +339,7 @@ OperationRequestManifest 的 subject 是 project_task 或 profile_validation。�
 
 首次调用输入必须是空对象 `{}`。Service 直接从当前受信 audience 的认证账本构建最多 256 项的脱敏清单，随后打开 digest-pinned 本地授权管理器。工具不接受 project/resource/operation/import/profile/ledger/authorization ID、路径、URL、手势引用或撤销 bearer。只有真实用户在本地窗口中的选择与二次确认会产生 AES-GCM 私有选择响应及短期精确 attestation。
 
-若窗口仍打开，输出 `authorizationSessionRef`、`state=open|created` 与 `availableCount`；正在应用选择时返回 `state=processing`，后续仅用同一 session ref 轮询。终态只返回 selected/revoked/already-consumed/already-revoked/not-found/failed 计数和逐类 disposition，不返回目标引用。窗口默认不选择任何项目，未选择时撤销按钮不可用，二次确认默认落在“否”，Escape 只会取消。当前覆盖本地 file/directory/output grant、未消费 Anki ImportApproval 与当前 Broker model/TTS/source authorization；尚未公开的 network grant 和通用 OperationApproval 不会被虚假列为已覆盖。
+若窗口仍打开，输出 `authorizationSessionRef`、`state=open|created` 与 `availableCount`；正在应用选择时返回 `state=processing`，后续仅用同一 session ref 轮询。终态只返回 selected/revoked/already-consumed/already-revoked/not-found/failed 计数和逐类 disposition，不返回目标引用。窗口默认不选择任何项目，未选择时撤销按钮不可用，二次确认默认落在“否”，Escape 只会取消。当前覆盖本地 file/directory/output grant、未消费 Anki ImportApproval、当前 Broker model/TTS/source authorization，以及同一 audience 中尚未消费的 profile-validation OperationApproval；尚未公开的 network grant 不会被虚假列为已覆盖。
 
 本地资源与 Anki 撤销分别通过其认证账本原子写入，Anki consume/revoke 竞态只有一个赢家；Broker 撤销对当前授权全部 profile 做一次 ledger 写并先核对窗口打开时的不可变 authorization digest，旧窗口不能撤销后来替换的新授权。跨 Registry 不宣称全局原子事务，终态逐项报告结果。相同 UI session 重试幂等。撤销立即阻止后续使用，但已经完成的远程调用、读取、Artifact 或 Anki 写入不会被伪装成已回滚。
 

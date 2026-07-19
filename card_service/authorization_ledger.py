@@ -885,6 +885,21 @@ class AuthorizationLedger:
             )
         )
 
+    def audience_digest(self, audience: ArtifactAudienceBinding) -> str:
+        """Return the exact audience digest used by operation records.
+
+        Other trusted ledgers intentionally use their own domain-separated
+        audience manifests.  Callers that mint a gesture for an operation
+        approval therefore must obtain this digest from this ledger instead
+        of reconstructing it from a generic artifact audience.
+        """
+
+        if not isinstance(audience, ArtifactAudienceBinding):
+            raise AuthorizationLedgerError(
+                "AUTHORIZATION_AUDIENCE_INVALID", "authorization audience is invalid"
+            )
+        return self._audience_digest(audience)
+
     def _verify_gesture(
         self,
         *,
@@ -1107,6 +1122,100 @@ class AuthorizationLedger:
             record, _ = self._load(operation_intent_id)
             self._authorize(record, audience)
             return self._public(record, now)
+
+    def get_operation_intent_context(
+        self, operation_intent_id: str, audience: ArtifactAudienceBinding
+    ) -> dict[str, Any]:
+        with self._transaction():
+            record, _ = self._load(operation_intent_id)
+            self._authorize(record, audience)
+            request = record["operationRequestManifest"]
+            return {
+                **self._public(record, self._now()),
+                "subject": json.loads(
+                    json.dumps(request["subject"], ensure_ascii=False)
+                ),
+                "serviceBindings": json.loads(
+                    json.dumps(request["serviceBindings"], ensure_ascii=False)
+                ),
+            }
+
+    def find_operation_intent(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        idempotency_key: str,
+    ) -> dict[str, Any] | None:
+        """Resolve an idempotent intent without recomputing time-varying input.
+
+        This is an internal composition API.  It returns the normalized subject
+        and service bindings needed to prove that a retried public request still
+        targets the exact profile configuration originally shown to the user.
+        """
+
+        audience_digest = self._audience_digest(audience)
+        operation_intent_id = self._derive_intent_id(
+            audience_digest, idempotency_key
+        )
+        path = self._intent_path(operation_intent_id)
+        with self._transaction():
+            if not path.is_file():
+                return None
+            record, _ = self._load(operation_intent_id)
+            self._authorize(record, audience)
+            public = self._public(record, self._now())
+            request = record["operationRequestManifest"]
+            return {
+                **public,
+                "subject": json.loads(
+                    json.dumps(request["subject"], ensure_ascii=False)
+                ),
+                "serviceBindings": json.loads(
+                    json.dumps(request["serviceBindings"], ensure_ascii=False)
+                ),
+            }
+
+    def list_revocable_operation_approvals(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        limit: int = 256,
+    ) -> list[dict[str, Any]]:
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 256:
+            raise AuthorizationLedgerError(
+                "AUTHORIZATION_SCHEMA_INVALID", "approval list limit is invalid"
+            )
+        audience_digest = self._audience_digest(audience)
+        now = self._now()
+        approvals: list[dict[str, Any]] = []
+        with self._transaction():
+            for path in sorted(self._intents_root.glob("*/*.json")):
+                record = self._decode(self._safe_read(path))
+                if record.get("audienceDigest") != audience_digest:
+                    continue
+                public = self._public(record, now)
+                if public["state"] != "approved":
+                    continue
+                subject = record["operationRequestManifest"]["subject"]
+                approvals.append(
+                    {
+                        "operationIntentId": public["operationIntentId"],
+                        "intentDigest": public["intentDigest"],
+                        "actionId": public["actionId"],
+                        "subjectKind": subject["kind"],
+                        "profileRef": subject.get("profileRef"),
+                        "expiresAt": public["expiresAt"],
+                    }
+                )
+                if len(approvals) >= limit:
+                    break
+        approvals.sort(
+            key=lambda item: (
+                str(item["expiresAt"]).encode("utf-8"),
+                str(item["operationIntentId"]).encode("utf-8"),
+            )
+        )
+        return approvals
 
     def record_operation_decision(
         self,
@@ -1686,8 +1795,13 @@ class AuthorizationLedger:
                 raise AuthorizationLedgerError(
                     "OPERATION_APPROVAL_TERMINAL", "operation approval is revoked"
                 )
+            if isinstance(approval, Mapping) and approval.get("state") == "consumed":
+                raise AuthorizationLedgerError(
+                    "OPERATION_APPROVAL_CONSUMED",
+                    "operation approval is consumed",
+                )
             if isinstance(approval, Mapping) and approval.get("state") in {
-                "declined", "consumed", "expired"
+                "declined", "expired"
             }:
                 raise AuthorizationLedgerError(
                     "OPERATION_APPROVAL_TERMINAL",

@@ -659,6 +659,114 @@ def test_approved_operation_can_be_revoked_before_task_creation(
     assert captured.value.code == "OPERATION_APPROVAL_REQUIRED"
 
 
+def test_find_and_list_only_return_same_audience_unconsumed_approvals(
+    tmp_path: Path,
+) -> None:
+    clock = Clock()
+    store = ledger(tmp_path, clock)
+    approved, _, _, _ = create_intent(store, clock, key="approved-intent")
+    store.record_operation_decision(
+        operation_intent_id=approved["operationIntentId"],
+        audience=audience(),
+        decision="approved",
+        gesture_attestation_digest=DIGESTS[10],
+    )
+    pending, _, _, _ = create_intent(store, clock, key="pending-intent")
+    foreign, _, _, _ = create_intent(
+        store,
+        clock,
+        key="foreign-intent",
+        bound=audience(session_id="session-2"),
+    )
+    store.record_operation_decision(
+        operation_intent_id=foreign["operationIntentId"],
+        audience=audience(session_id="session-2"),
+        decision="approved",
+        gesture_attestation_digest=DIGESTS[11],
+    )
+
+    found = store.find_operation_intent(
+        audience=audience(), idempotency_key="approved-intent"
+    )
+    assert found is not None
+    assert found["operationIntentId"] == approved["operationIntentId"]
+    assert found["subject"]["kind"] == "project_task"
+    assert found["serviceBindings"] == [binding()]
+    assert store.find_operation_intent(
+        audience=audience(), idempotency_key="missing-intent"
+    ) is None
+
+    listed = store.list_revocable_operation_approvals(audience=audience())
+    assert [item["operationIntentId"] for item in listed] == [
+        approved["operationIntentId"]
+    ]
+    encoded = json.dumps(listed)
+    assert pending["operationIntentId"] not in encoded
+    assert foreign["operationIntentId"] not in encoded
+    assert "userGestureRef" not in encoded
+    assert "authorizationId" not in encoded
+
+
+def test_concurrent_operation_revoke_and_consume_have_exactly_one_winner(
+    tmp_path: Path,
+) -> None:
+    clock = Clock()
+    consuming_store = ledger(tmp_path, clock)
+    revoking_store = ledger(tmp_path, clock)
+    created, bindings, _, _ = create_intent(consuming_store, clock)
+    consuming_store.record_operation_decision(
+        operation_intent_id=created["operationIntentId"],
+        audience=audience(),
+        decision="approved",
+        gesture_attestation_digest=DIGESTS[10],
+    )
+    barrier = threading.Barrier(3)
+    outcomes: list[str] = []
+
+    def consume() -> None:
+        barrier.wait()
+        try:
+            consuming_store.consume_operation_approval(
+                operation_intent_id=created["operationIntentId"],
+                audience=audience(),
+                task_id="task-race",
+                consumption_id="race-consumption",
+                expected_intent_digest=created["intentDigest"],
+                expected_operation_request_digest=created[
+                    "operationRequestManifestDigest"
+                ],
+                current_service_bindings=bindings,
+            )
+            outcomes.append("consumed")
+        except AuthorizationLedgerError as error:
+            outcomes.append(error.code)
+
+    def revoke() -> None:
+        barrier.wait()
+        try:
+            revoking_store.revoke_operation_approval(
+                operation_intent_id=created["operationIntentId"],
+                audience=audience(),
+                revocation_attestation_digest=DIGESTS[11],
+            )
+            outcomes.append("revoked")
+        except AuthorizationLedgerError as error:
+            outcomes.append(error.code)
+
+    threads = [threading.Thread(target=consume), threading.Thread(target=revoke)]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join()
+    assert len(outcomes) == 2
+    assert ("consumed" in outcomes) != ("revoked" in outcomes)
+    assert next(value for value in outcomes if value not in {"consumed", "revoked"}) in {
+        "OPERATION_APPROVAL_CONSUMED",
+        "OPERATION_APPROVAL_REQUIRED",
+    }
+
+
 def test_concurrent_approval_consumption_has_one_winner(tmp_path: Path) -> None:
     clock = Clock()
     first_store = ledger(tmp_path, clock)

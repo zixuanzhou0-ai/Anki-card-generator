@@ -30,6 +30,21 @@ def test_model_is_available_without_worker_secret_when_task_broker_authorizes_it
         ) is False
 
 
+@pytest.mark.parametrize(
+    ("provider", "operation"),
+    [
+        ("openai", "model.openai_chat"),
+        ("xai", "model.openai_chat"),
+        ("hermes", "model.openai_chat"),
+        ("anthropic", "model.anthropic_messages"),
+    ],
+)
+def test_managed_model_operation_accepts_service_profile_provider_names(
+    provider: str, operation: str
+) -> None:
+    assert legacy_worker.managed_model_operation({"provider": provider}) == operation
+
+
 def test_openai_compatible_managed_call_uses_broker_without_url_header_secret_or_stream() -> None:
     calls: list[tuple[str, dict[str, object], str]] = []
     result = {"choices": [{"message": {"content": "{}"}}]}

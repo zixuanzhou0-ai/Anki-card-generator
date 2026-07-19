@@ -262,15 +262,27 @@ def show_consent(request: dict[str, Any]) -> None:
 
     buttons = ttk.Frame(frame)
     buttons.pack(fill="x", side="bottom")
-    ttk.Button(buttons, text="拒绝", command=lambda: finish("declined")).pack(side="right")
+    decline_button = ttk.Button(
+        buttons, text="拒绝", command=lambda: finish("declined")
+    )
+    decline_button.pack(side="right")
     approve_label = (
         "授权并继续"
         if request.get("authorizationKind") == "broker_startup"
         else "确认导入"
         if request.get("confirmationKind") == "anki_import"
+        else "批准一次验证"
+        if request.get("confirmationKind") == "operation_intent"
         else "确认"
     )
-    ttk.Button(buttons, text=approve_label, command=lambda: finish("approved")).pack(side="right", padx=(0, 10))
+    approve_button = ttk.Button(
+        buttons, text=approve_label, command=lambda: finish("approved")
+    )
+    approve_button.pack(side="right", padx=(0, 10))
+    decline_button.bind("<Return>", lambda _event: finish("declined"))
+    approve_button.bind("<Return>", lambda _event: finish("approved"))
+    root.after_idle(decline_button.focus_set)
+    root.bind("<Escape>", lambda _event: finish("cancelled"))
     root.protocol("WM_DELETE_WINDOW", lambda: finish("cancelled"))
     root.mainloop()
 
@@ -319,6 +331,7 @@ def show_authorization_manager(request: dict[str, Any]) -> None:
         "local_resource": "本地资源",
         "anki_import": "Anki 导入",
         "broker_authorization": "远程服务",
+        "operation_approval": "操作批准",
     }
     state_labels = {"active": "使用中", "approved": "已批准", "pending": "待执行"}
     for item in request["authorizationItems"]:

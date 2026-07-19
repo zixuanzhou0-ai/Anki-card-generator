@@ -81,6 +81,54 @@ def test_digest_pinned_launcher_completes_over_private_response_file(tmp_path: P
     assert "responseMac" in response_text
 
 
+def test_operation_consent_attestation_is_bound_to_exact_audience_target_and_action(
+    tmp_path: Path,
+) -> None:
+    surfaces = manager(tmp_path)
+    audience_digest = "a" * 64
+    intent_digest = "b" * 64
+    operation_intent_id = "intent_" + "c" * 48
+    session = surfaces.create_operation_consent_session(
+        operation_intent_id=operation_intent_id,
+        audience_digest=audience_digest,
+        intent_digest=intent_digest,
+        action_id="validate_profile",
+        summary="仅发送固定诊断文本，执行一次模型连接验证。",
+    )
+    surfaces.launch(str(session["sessionRef"]))
+    public = wait_session(surfaces, str(session["sessionRef"]))
+    assert public["state"] == "approved"
+    assert operation_intent_id not in json.dumps(public)
+    decision = surfaces.operation_consent_decision(str(session["sessionRef"]))
+    assert decision is not None
+    assert decision.operation_intent_id == operation_intent_id
+    assert surfaces.verify_operation_consent_gesture(
+        decision.attestation_digest,
+        audience_digest,
+        operation_intent_id,
+        "decide:approved",
+    ) is True
+    assert surfaces.verify_operation_consent_gesture(
+        decision.attestation_digest,
+        "d" * 64,
+        operation_intent_id,
+        "decide:approved",
+    ) is False
+    assert surfaces.verify_operation_consent_gesture(
+        decision.attestation_digest,
+        audience_digest,
+        "intent_" + "e" * 48,
+        "decide:approved",
+    ) is False
+    surfaces.complete_operation_consent(str(session["sessionRef"]))
+    assert surfaces.verify_operation_consent_gesture(
+        decision.attestation_digest,
+        audience_digest,
+        operation_intent_id,
+        "decide:approved",
+    ) is False
+
+
 def test_one_trusted_surface_session_cannot_be_launched_twice(tmp_path: Path) -> None:
     surfaces = manager(tmp_path)
     session = surfaces.create_consent_session(title="确认", summary="执行本地测试。", purpose="operation")
@@ -241,6 +289,9 @@ def test_authorization_manager_keeps_private_targets_out_of_public_files_and_att
     import_intent_id = "anki_intent_" + "b" * 48
     resource_ref = "resource_" + "c" * 43
     authorization_digest = "sha256:" + "d" * 64
+    operation_intent_id = "intent_" + "e" * 48
+    operation_audience_digest = "f" * 64
+    operation_intent_digest = "1" * 64
     session = surfaces.create_authorization_manager_session(
         audience_digest=audience_digest,
         items=[
@@ -268,6 +319,17 @@ def test_authorization_manager_keeps_private_targets_out_of_public_files_and_att
                     "authorizationDigest": authorization_digest,
                 },
             },
+            {
+                "kind": "operation_approval",
+                "title": "待执行操作 · validate_profile",
+                "detail": "已批准但尚未消费",
+                "state": "approved",
+                "locator": {
+                    "operationIntentId": operation_intent_id,
+                    "intentDigest": operation_intent_digest,
+                    "audienceDigest": operation_audience_digest,
+                },
+            },
         ],
     )
     request_path = surfaces.sessions_dir / f"{session['sessionRef']}.json"
@@ -276,20 +338,26 @@ def test_authorization_manager_keeps_private_targets_out_of_public_files_and_att
     assert resource_ref not in serialized_request
     assert import_intent_id not in serialized_request
     assert authorization_digest not in serialized_request
+    assert operation_intent_id not in serialized_request
+    assert operation_intent_digest not in serialized_request
+    assert operation_audience_digest not in serialized_request
     assert "locator" not in serialized_request
-    assert len(request["authorizationItems"]) == 3
+    assert len(request["authorizationItems"]) == 4
 
     surfaces.launch(str(session["sessionRef"]))
     result = wait_session(surfaces, str(session["sessionRef"]))
     assert result["state"] == "approved"
     assert result["authorizationRevocation"] == {
-        "selectedCount": 3,
-        "availableCount": 3,
+        "selectedCount": 4,
+        "availableCount": 4,
     }
     serialized_result = json.dumps(result, ensure_ascii=False, sort_keys=True)
     assert resource_ref not in serialized_result
     assert import_intent_id not in serialized_result
     assert authorization_digest not in serialized_result
+    assert operation_intent_id not in serialized_result
+    assert operation_intent_digest not in serialized_result
+    assert operation_audience_digest not in serialized_result
     assert "privatePayload" not in serialized_result
     assert not (surfaces.responses_dir / f"{session['sessionRef']}.json").exists()
 
@@ -300,8 +368,9 @@ def test_authorization_manager_keeps_private_targets_out_of_public_files_and_att
         "local_resource",
         "anki_import",
         "broker_authorization",
+        "operation_approval",
     ]
-    local, anki, broker = selections
+    local, anki, broker, operation = selections
     assert local.locator == {"resourceRef": resource_ref, "revocationEpoch": 0}
     assert surfaces.verify_resource_gesture(
         audience_digest,
@@ -321,6 +390,18 @@ def test_authorization_manager_keeps_private_targets_out_of_public_files_and_att
         selection_ref=broker.selection_ref,
         action="revoke_broker_authorization",
     ) is True
+    assert surfaces.verify_operation_consent_gesture(
+        operation.attestation_ref,
+        operation_audience_digest,
+        operation_intent_id,
+        "revoke_operation",
+    ) is True
+    assert surfaces.verify_operation_consent_gesture(
+        operation.attestation_ref,
+        audience_digest,
+        operation_intent_id,
+        "revoke_operation",
+    ) is False
     surfaces.complete_authorization_manager(str(session["sessionRef"]))
     assert surfaces.authorization_revocation_selections(
         str(session["sessionRef"])
@@ -330,6 +411,12 @@ def test_authorization_manager_keeps_private_targets_out_of_public_files_and_att
         "e" * 64,
         local.attestation_ref,
         "revoke_local_resource",
+    ) is False
+    assert surfaces.verify_operation_consent_gesture(
+        operation.attestation_ref,
+        operation_audience_digest,
+        operation_intent_id,
+        "revoke_operation",
     ) is False
 
 

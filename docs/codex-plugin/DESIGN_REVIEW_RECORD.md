@@ -176,3 +176,13 @@ APKG 纵向切片采用“Worker 产出不等于可信包”的结论。`cards.e
 本轮先实现账本内核而不提前公开 MCP。资源授权和 Anki ImportApproval 的管理枚举都先验证持久记录、服务实例和精确 audience，扫描上限固定为 2048；列表只返回已有 pathless/secretless 摘要，其他会话记录不可见，账本备份与已知原子临时文件不被误判为未知权限。ImportApproval 新增独立 revocation 记录而不覆盖原批准审计，撤销前后都在文件锁内复查 consumption；并发消费与撤销只能得到“consumed + 对方已消费”或“revoked + 对方已撤销”两种终态，不存在双成功。
 
 活动 Broker 撤销对当前 authorization 中的 model、TTS 和 source profile 使用一次 ledger 写入；写入后 Service 清除活动 runtime。已经发送的远程调用不会被描述成回滚，后续 reservation 与安全点调用由 revoked profile 阻止。该内部账本切片的 64 项直接定向回归及覆盖授权、Broker、Anki、Study 与无头 Service 的 207 项扩大回归通过。后续切片已补独立受信授权管理窗口、随机 selection 映射、AES-GCM 私有响应和逐目标撤销 attestation；MCP 只能打开/轮询窗口，不能提交内部引用，陈旧 Broker 窗口也通过 authorization digest 比对失败关闭。
+
+## 4.7 CURRENT 精确 profile 验证与受信操作确认复审（2026-07-20）
+
+可信开发态 stdio runtime 现公开 `system.validate_profile` 与 `system.request_operation_confirmation`，总工具数从 34 增至 36。验证只接受 Registry 中 exact saved binding；model/TTS 首次调用只创建 `profile_validation` OperationIntent，网络调用数保持为零。真实用户在 digest-pinned 本地窗口批准后，调用方以同一幂等键重试，Service 才原子消费一次 OperationApproval、创建确定性 Task、建立 task-owned Broker 并最多发送一次固定诊断。诊断不披露学习素材、卡片正文或本机文件；未知价格仍由调用、请求/响应字节、token 或 TTS 资源硬上限约束。AnkiConnect 只允许已规范化的字面 loopback profile，执行有响应上限且不使用代理的本机版本探测。
+
+反例覆盖包括：未批准前零网络、配置或 credentialRevision 在批准后变化、最新失败覆盖旧成功、同幂等终态不重复调用、并发启动只有一个 task/一个远程调用、取消不发布 ready、Service 重启使旧 audience/批准失败关闭、OperationApproval 撤销与消费只能一个赢家，以及秘密不进入 task、结果或公共 MCP 响应。统一授权管理器只纳入同 audience 中未消费的 profile-validation OperationApproval；它不把已消费批准或未来 network grant 伪装成可撤销对象。当前通用确认入口仍未接到 discovery/generate/resume，未提交 profile draft 也仍不可验证。
+
+真实桌面验收使用 Computer Use 检查受信确认窗口：范围、披露、一次调用上限、未知费用和“不可用于生成卡片”均在首屏可读；窗口默认聚焦安全的“拒绝”，Enter 可以执行聚焦按钮，Escape 取消。最终键盘拒绝结果持久化为 `declined`，未生成批准或远程副作用。真实 Codex host 探针确认可信会话枚举 36 项，不可信会话仍只暴露 `system.get_capabilities`。
+
+最终证据为：授权/profile/受信窗口/MCP/插件文档定向回归 159 项通过，正式 Python `tests` 全集 `1638 passed, 1 skipped`，前端 Vitest 830 项、Worker 600 项、Rust 31 项通过且 1 项按设计忽略；plugin validator、Skill validator、可信/不可信 Codex host、`npm run check:full`、release smoke 与 `npm run tauri:build` 全部通过。Tauri 生成 MSI 与 NSIS 两种安装包。上述结论仍只证明开发态 runtime 和构建产物，不代表正式发布者签名、Marketplace 安装验收、固定 Codex 右栏 App UI 或 Anki reviewer runtime verifier 已交付。

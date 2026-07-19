@@ -55,7 +55,9 @@ from card_service.mcp_system_tools import (
     AUTHORIZE_DISCOVERY_TOOL,
     LIST_PROFILES_TOOL,
     OPEN_LOCAL_SETTINGS_TOOL,
+    REQUEST_OPERATION_CONFIRMATION_TOOL,
     REVOKE_GRANT_TOOL,
+    VALIDATE_PROFILE_TOOL,
 )
 from card_service.mcp_stdio import CAPABILITY_TOOL_NAME, MCP_PROTOCOL_VERSION, serve
 from card_service.service import CardServiceError
@@ -194,6 +196,8 @@ def test_mcp_bridge_reports_trusted_session_without_disclosing_identity() -> Non
         LIST_PROFILES_TOOL,
         OPEN_LOCAL_SETTINGS_TOOL,
         REVOKE_GRANT_TOOL,
+        VALIDATE_PROFILE_TOOL,
+        REQUEST_OPERATION_CONFIRMATION_TOOL,
         SOURCE_GRANT_TOOL_NAME,
         OUTPUT_GRANT_TOOL_NAME,
         CREATE_PROJECT_TOOL_NAME,
@@ -336,6 +340,8 @@ def test_real_mcp_stdio_process_reports_card_service_capabilities(tmp_path: Path
             LIST_PROFILES_TOOL,
             OPEN_LOCAL_SETTINGS_TOOL,
             REVOKE_GRANT_TOOL,
+            VALIDATE_PROFILE_TOOL,
+            REQUEST_OPERATION_CONFIRMATION_TOOL,
             SOURCE_GRANT_TOOL_NAME,
             OUTPUT_GRANT_TOOL_NAME,
             CREATE_PROJECT_TOOL_NAME,

@@ -22,7 +22,9 @@ def main() -> None:
         python_path=Path(sys.executable).resolve(),
         credential_backend=InMemoryCredentialBackend(),
     )
-    if "--authorization-manager" in sys.argv[1:]:
+    if "--operation-confirmation" in sys.argv[1:]:
+        session = _create_operation_confirmation_session(manager)
+    elif "--authorization-manager" in sys.argv[1:]:
         session = _create_authorization_manager_session(manager)
     elif "--picker" in sys.argv[1:]:
         session = manager.create_local_resource_session(
@@ -83,6 +85,25 @@ def _create_broker_session(manager: TrustedSurfaceManager) -> dict[str, object]:
                 "youtubeSubtitles": {"enabled": True, "timeoutSeconds": 30}
             },
         }
+    )
+
+
+def _create_operation_confirmation_session(
+    manager: TrustedSurfaceManager,
+) -> dict[str, object]:
+    return manager.create_operation_consent_session(
+        operation_intent_id="intent_" + "c" * 48,
+        audience_digest=hashlib.sha256(b"manual-operation-consent-audience").hexdigest(),
+        intent_digest=hashlib.sha256(b"manual-operation-consent-intent").hexdigest(),
+        action_id="validate_profile",
+        summary=(
+            "操作：验证模型连接\n"
+            "服务：Hermes Grok 4.5（本机代理）\n"
+            "将发送：固定诊断文本；不包含学习素材、卡片内容或本机文件\n"
+            "上限：1 次远程请求；请求最多 16 KiB；响应最多 64 KiB\n"
+            "费用：价格未知，仍受上述硬上限约束\n"
+            "有效范围：只批准这一次精确配置的连接验证；不能用于生成卡片"
+        ),
     )
 
 

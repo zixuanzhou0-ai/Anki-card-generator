@@ -23,7 +23,7 @@ Never infer a later state from an earlier artifact.
 Treat the exposed tool list returned by the installed runtime as authoritative. The current workflow uses only these public tools, in this order:
 
 1. `system.get_capabilities`.
-2. `system.list_profiles`. When an existing selected profile reports `CREDENTIAL_REQUIRED`, call `system.open_local_settings` with its exact profile/capability, then poll only the returned `configurationSessionRef`. Never place a credential in tool arguments or conversation.
+2. `system.list_profiles`. When an existing selected profile reports `CREDENTIAL_REQUIRED`, call `system.open_local_settings` with its exact profile/capability, then poll only the returned `configurationSessionRef`. Never place a credential in tool arguments or conversation. For an exact selected profile that is unknown, stale, or failed, call `system.validate_profile` with the returned configuration fingerprint and credential revision plus a stable idempotency key. Model/TTS validation first returns `confirmation_required`; call `system.request_operation_confirmation` with only its `operationIntentId`, poll the trusted local decision, then retry `system.validate_profile` with the same idempotency key. A declined, expired, revoked, cancelled, interrupted, or failed result is not ready. AnkiConnect loopback validation is bounded locally and does not use the remote-operation confirmation.
 3. Only when the user explicitly asks to manage or revoke permissions, call `system.revoke_grant` with `{}`. The user—not the Agent—selects items in the trusted local manager. Poll only the returned `authorizationSessionRef`; do not submit resource, import, profile, ledger, or authorization IDs. A completed result blocks future use but never means prior reads, remote calls, artifacts, or Anki writes were rolled back.
 4. On startup, call `study.list_projects`; use `study.get_project` for the selected project before deciding whether to resume or create new work.
 5. `system.request_source_grant` for a local file or directory.
@@ -42,7 +42,7 @@ Do not call tools that are not exposed by the installed plugin version.
 
 ## Planned but unavailable tools
 
-Do not call `system.request_network_grant`, `system.request_operation_confirmation`, `system.validate_profile`, `study.update_learning_contract`, or `study.edit_candidate` until a future runtime exposes them. The current `system.open_local_settings` only manages credentials for an already configured profile; it does not let the Agent create a profile or inject provider/URL/model fields.
+Do not call `system.request_network_grant`, `study.update_learning_contract`, or `study.edit_candidate` until a future runtime exposes them. The current `system.open_local_settings` only manages credentials for an already configured profile; it does not let the Agent create a profile or inject provider/URL/model fields. The current `system.validate_profile` likewise validates only an exact saved binding; it is not a profile editor, a general network client, or reusable authorization for later learning tasks.
 
 `study.get_artifact` and `study.get_audit` accept only a current-session opaque artifact handle. They never return arbitrary files, raw source/card payloads, local paths, internal ArtifactRefs, or a runtime-verification claim. Unknown schemas are metadata-only; use dedicated candidate/card review tools for content.
 

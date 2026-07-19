@@ -13,7 +13,9 @@ from card_service.mcp_system_tools import (
     LIST_PROFILES_TOOL,
     McpSystemToolInputError,
     OPEN_LOCAL_SETTINGS_TOOL,
+    REQUEST_OPERATION_CONFIRMATION_TOOL,
     REVOKE_GRANT_TOOL,
+    VALIDATE_PROFILE_TOOL,
     call_system_tool,
     system_tool_definitions,
 )
@@ -247,6 +249,8 @@ def test_profile_tools_have_closed_non_secret_contracts() -> None:
         LIST_PROFILES_TOOL,
         OPEN_LOCAL_SETTINGS_TOOL,
         REVOKE_GRANT_TOOL,
+        VALIDATE_PROFILE_TOOL,
+        REQUEST_OPERATION_CONFIRMATION_TOOL,
     }
     assert definitions[LIST_PROFILES_TOOL]["inputSchema"] == {
         "type": "object",
@@ -262,6 +266,21 @@ def test_profile_tools_have_closed_non_secret_contracts() -> None:
     encoded = json.dumps(definitions[OPEN_LOCAL_SETTINGS_TOOL], sort_keys=True).casefold()
     for forbidden in ("apikey", "oauth", "cookie", "authorization", "baseurl"):
         assert forbidden not in encoded
+    validate = definitions[VALIDATE_PROFILE_TOOL]
+    assert validate["annotations"] == {
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    }
+    confirmation = definitions[REQUEST_OPERATION_CONFIRMATION_TOOL]
+    assert confirmation["inputSchema"]["additionalProperties"] is False
+    assert confirmation["annotations"] == {
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    }
 
 
 def test_list_profiles_returns_exact_binding_without_secrets(tmp_path: Path) -> None:
