@@ -25,7 +25,12 @@ from .anki_import_execution import (
     AnkiImportExecutionError,
     materialize_anki_worker_request,
 )
-from .anki_target_probe import LocalAnkiConnectTargetProbe
+from .anki_target_probe import (
+    ANKI_CONNECT_URL,
+    AnkiTargetProbeError,
+    LocalAnkiConnectTargetProbe,
+    normalize_anki_connect_url,
+)
 from .artifact_registry import ArtifactAudienceBinding, ArtifactRegistryError
 from .broker_configuration import BrokerConfigurationError, ServiceBrokerRuntime
 from .candidate_discovery_broker import (
@@ -35,6 +40,7 @@ from .candidate_discovery_broker import (
 )
 from .broker_ipc import BROKER_REQUEST_PREFIX, BROKER_RESPONSE_PREFIX, TaskBrokerChannel
 from .credentials import CredentialBackend, CredentialStore, CredentialStoreError
+from .hermes_proxy import HermesProxyError, HermesProxyManager
 from .local_resource_registry import (
     MAX_DEPTH,
     MAX_DIRECTORY_BYTES,
@@ -650,6 +656,8 @@ class CardService:
         trusted_surface_path: str | Path | None = None,
         use_restricted_launcher: bool | None = None,
         resource_gesture_verifier: Callable[[str, str, str, str], bool] | None = None,
+        anki_connect_url: str = ANKI_CONNECT_URL,
+        hermes_proxy_manager: HermesProxyManager | None = None,
     ) -> None:
         repository_root = Path(__file__).resolve().parent.parent
         self.runtime_package: ManagedRuntimePackage | None = None
@@ -724,6 +732,10 @@ class CardService:
         if any(not value.is_dir() for value in directories):
             raise CardServiceError("INVALID_TOOL_PATH", "Managed tool directories must be existing absolute directories")
         self.managed_tool_directories = directories
+        try:
+            self.anki_connect_url = normalize_anki_connect_url(anki_connect_url)
+        except AnkiTargetProbeError as error:
+            raise CardServiceError(error.code, error.message) from error
         self.store = AtomicJsonStore(Path(state_dir))
         if self.runtime_package is not None and self.runtime_package.signature is not None:
             try:
@@ -793,6 +805,7 @@ class CardService:
         self.broker_method_blocker = broker_method_blocker
         self.broker_runtime_capabilities = dict(broker_runtime_capabilities or {})
         self._credential_backend = credential_backend
+        self.hermes_proxy_manager = hermes_proxy_manager or HermesProxyManager()
         self._resource_gesture_verifier = resource_gesture_verifier
         self._resource_runtime: ServiceResourceRuntime | None = None
         self._study_runtime: StudyRuntime | None = None
@@ -921,6 +934,13 @@ class CardService:
             broker_runtime is not None
             and broker_runtime.method_blocker(CANDIDATE_DISCOVERY_BROKER_METHOD) is None
         )
+        provider_status = self.hermes_proxy_manager.probe()
+        if (
+            discovery_authorized
+            and broker_runtime is not None
+            and self._candidate_discovery_uses_hermes(broker_runtime)
+        ):
+            discovery_authorized = provider_status["state"] == "ready"
         if runtime is not None:
             return {
                 **runtime.capabilities(),
@@ -930,6 +950,7 @@ class CardService:
                 "publicRecoverableTaskListing": True,
                 "publicCandidateDiscoveryRecovery": True,
                 "candidateDiscoveryAuthorizationReady": discovery_authorized,
+                "candidateDiscoveryProvider": provider_status,
             }
         return {
             "schemaVersion": 1,
@@ -946,6 +967,7 @@ class CardService:
             "publicRecoverableTaskListing": True,
             "publicCandidateDiscoveryRecovery": True,
             "candidateDiscoveryAuthorizationReady": discovery_authorized,
+            "candidateDiscoveryProvider": provider_status,
             "publicProjectTools": True,
             "publicInputRegistration": True,
             "publicSourceInspection": True,
@@ -1037,7 +1059,9 @@ class CardService:
                     workspace_factory=self._create_study_task_workspace,
                     workspace_releaser=self._release_workspace_reservation,
                     package_export_executor=self._execute_study_apkg_export,
-                    anki_target_inspector=LocalAnkiConnectTargetProbe(),
+                    anki_target_inspector=LocalAnkiConnectTargetProbe(
+                        endpoint=self.anki_connect_url
+                    ),
                     anki_import_executor=self._execute_study_anki_import,
                     anki_import_gesture_verifier=(
                         self.trusted_surfaces.verify_import_consent_gesture
@@ -1658,6 +1682,8 @@ class CardService:
                 retryable=True,
                 stage="authorization",
             )
+        if self._candidate_discovery_uses_hermes(broker_runtime):
+            self.ensure_candidate_discovery_provider()
         try:
             provider = BrokerCandidateDiscoveryModelProvider(broker_runtime)
             authorization = provider.authorization_for(
@@ -1723,6 +1749,8 @@ class CardService:
                 stage="authorization",
                 fallbacks=("request_model_authorization",),
             )
+        if self._candidate_discovery_uses_hermes(broker_runtime):
+            self.ensure_candidate_discovery_provider()
         try:
             provider = BrokerCandidateDiscoveryModelProvider(broker_runtime)
             authorization = provider.authorization_for(
@@ -1810,6 +1838,8 @@ class CardService:
                 stage="authorization",
                 fallbacks=("request_model_authorization",),
             )
+        if self._candidate_discovery_uses_hermes(broker_runtime):
+            self.ensure_candidate_discovery_provider()
         try:
             provider = BrokerCandidateDiscoveryModelProvider(broker_runtime)
             authorization = provider.authorization_for(
@@ -2062,7 +2092,47 @@ class CardService:
                 return "model_tts_broker_not_ready"
             if self.broker_method_blocker is None:
                 return None
-            return self.broker_method_blocker(method)
+            blocker = self.broker_method_blocker(method)
+            if blocker is not None:
+                return blocker
+            if (
+                method == CANDIDATE_DISCOVERY_BROKER_METHOD
+                and self._active_broker_runtime is not None
+                and self._candidate_discovery_uses_hermes(self._active_broker_runtime)
+                and self.hermes_proxy_manager.probe()["state"] != "ready"
+            ):
+                return "hermes_proxy_not_ready"
+            return None
+
+    @staticmethod
+    def _candidate_discovery_uses_hermes(
+        broker_runtime: ServiceBrokerRuntime,
+    ) -> bool:
+        bindings = broker_runtime.configuration.method_bindings.get(
+            CANDIDATE_DISCOVERY_BROKER_METHOD
+        )
+        if not isinstance(bindings, Mapping):
+            return False
+        profile_ref = bindings.get("model")
+        binding = broker_runtime.configuration.profiles.get(str(profile_ref or ""))
+        return binding is not None and binding.profile.provider == "hermes"
+
+    def ensure_candidate_discovery_provider(self) -> dict[str, Any]:
+        try:
+            return self.hermes_proxy_manager.ensure_ready()
+        except HermesProxyError as error:
+            fallbacks = (
+                ("authenticate_hermes",)
+                if error.code == "HERMES_OAUTH_REQUIRED"
+                else ("retry_model_preflight",)
+            )
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=error.retryable,
+                stage="model",
+                fallbacks=fallbacks,
+            ) from error
 
     def _method_availability(self, method: str, policy: MethodPolicy) -> dict[str, Any]:
         blocker = self._broker_blocker(method, policy)
@@ -2708,6 +2778,7 @@ class CardService:
                     bundle,
                     workspace,
                     self._ensure_study_runtime().artifacts,
+                    anki_connect_url=self.anki_connect_url,
                 )
             except (AnkiImportExecutionError, ArtifactRegistryError) as error:
                 raise CardServiceError(

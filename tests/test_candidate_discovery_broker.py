@@ -4,6 +4,7 @@ import json
 import time
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -222,6 +223,21 @@ def test_provider_json_failure_is_classified_as_invalid_model_output() -> None:
         "invalid provider response",
     )
     assert CandidateDiscoveryRuntime._failure_code(error) == "MODEL_OUTPUT_INVALID"
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "PROVIDER_UNAVAILABLE",
+        "PROVIDER_HTTP_ERROR",
+        "CREDENTIAL_UNAVAILABLE",
+        "BROKER_AUTHORIZATION_EXPIRED",
+        "DISCOVERY_MODEL_UNAVAILABLE",
+    ],
+)
+def test_provider_infrastructure_failure_is_classified_as_model_stale(code: str) -> None:
+    error = CandidateDiscoveryBrokerError(code, "provider unavailable")
+    assert CandidateDiscoveryRuntime._failure_code(error) == "MODEL_STALE"
 
 
 def test_adapter_rejects_tool_or_multi_part_provider_content() -> None:
@@ -450,6 +466,23 @@ class _RecordingStudyRuntime:
         }
 
 
+class _RecoveryStudyRuntime:
+    service_instance_id = "service-instance-card-service"
+
+    @staticmethod
+    def resolve_candidate_discovery_recovery_target(**_kwargs: Any) -> tuple[str, None]:
+        return "task-recovery-source", None
+
+    @staticmethod
+    def candidate_discovery_recovery_request(**_kwargs: Any) -> dict[str, Any]:
+        return {
+            "projectId": "project-1",
+            "expectedProjectRevision": 3,
+            "inspectionHandle": "study_" + "R" * 43,
+            "candidateBudget": {"target": 8, "maximum": 16},
+        }
+
+
 def _card_service_shell(
     study: _RecordingStudyRuntime,
     broker_runtime: ServiceBrokerRuntime | None,
@@ -523,6 +556,47 @@ def test_card_service_requires_trusted_broker_before_candidate_discovery() -> No
     assert caught.value.code == "AUTHORIZATION_REQUIRED"
     assert caught.value.stage == "authorization"
     assert study.calls == []
+
+
+def test_card_service_rechecks_hermes_before_recovering_discovery() -> None:
+    service = object.__new__(CardService)
+    service._study_runtime = _RecoveryStudyRuntime()
+    service._study_runtime_lock = threading.RLock()
+    service._broker_runtime_lock = threading.RLock()
+    hermes_binding = SimpleNamespace(profile=SimpleNamespace(provider="hermes"))
+    service._active_broker_runtime = SimpleNamespace(
+        configuration=SimpleNamespace(
+            method_bindings={"study.discover_candidates": {"model": "model.hermes"}},
+            profiles={"model.hermes": hermes_binding},
+        )
+    )
+    calls: list[str] = []
+
+    def fail_preflight() -> None:
+        calls.append("preflight")
+        raise CardServiceError(
+            "HERMES_PROXY_START_FAILED",
+            "Hermes local proxy could not be started.",
+            retryable=True,
+            stage="model",
+        )
+
+    service.ensure_candidate_discovery_provider = fail_preflight
+
+    with pytest.raises(CardServiceError) as caught:
+        service.resume_public_study_task(
+            audience=ArtifactAudienceBinding(
+                owner_digest="e" * 64,
+                host_id="codex-desktop",
+                plugin_id="speakright.study",
+                session_id="session-recovery-preflight",
+            ),
+            task_id="task-recovery-source",
+            idempotency_key="resume-hermes-preflight",
+        )
+
+    assert caught.value.code == "HERMES_PROXY_START_FAILED"
+    assert calls == ["preflight"]
 
 
 def test_provider_fails_closed_when_method_is_not_authorized(tmp_path: Path) -> None:

@@ -7,6 +7,7 @@ import json
 import time
 import unicodedata
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol
@@ -24,6 +25,36 @@ class AnkiTargetProbeError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+def normalize_anki_connect_url(endpoint: str) -> str:
+    """Normalize an explicit IPv4 loopback AnkiConnect endpoint."""
+
+    if not isinstance(endpoint, str) or not endpoint or len(endpoint) > 128:
+        raise AnkiTargetProbeError("ANKI_TARGET_INVALID", "Anki target is invalid")
+    try:
+        parsed = urllib.parse.urlsplit(endpoint)
+        port = parsed.port
+    except ValueError as error:
+        raise AnkiTargetProbeError(
+            "ANKI_TARGET_INVALID", "Anki target is invalid"
+        ) from error
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname != "127.0.0.1"
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is None
+        or not 1 <= port <= 65535
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise AnkiTargetProbeError(
+            "ANKI_TARGET_INVALID",
+            "Anki target must use an explicit IPv4 loopback port",
+        )
+    return f"http://127.0.0.1:{port}"
 
 
 class AnkiTargetInspector(Protocol):
@@ -53,7 +84,7 @@ class _Response:
 
 
 class LocalAnkiConnectTargetProbe:
-    """Probe the fixed loopback AnkiConnect endpoint without using environment proxies."""
+    """Probe one explicit loopback AnkiConnect endpoint without environment proxies."""
 
     def __init__(
         self,
@@ -61,17 +92,13 @@ class LocalAnkiConnectTargetProbe:
         endpoint: str = ANKI_CONNECT_URL,
         timeout_seconds: float = 5.0,
     ) -> None:
-        if endpoint != ANKI_CONNECT_URL:
-            raise AnkiTargetProbeError(
-                "ANKI_TARGET_INVALID",
-                "Anki target must use the fixed loopback endpoint",
-            )
+        normalized_endpoint = normalize_anki_connect_url(endpoint)
         if (
             not isinstance(timeout_seconds, (int, float))
             or not 0.1 <= float(timeout_seconds) <= 30
         ):
             raise AnkiTargetProbeError("ANKI_TARGET_INVALID", "Anki timeout is invalid")
-        self._endpoint = endpoint
+        self._endpoint = normalized_endpoint
         self._timeout_seconds = float(timeout_seconds)
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -158,7 +185,7 @@ class LocalAnkiConnectTargetProbe:
             key=lambda value: value.encode("utf-8"),
         )
         configuration = {
-            "endpoint": ANKI_CONNECT_URL,
+            "endpoint": self._endpoint,
             "apiVersion": ANKI_CONNECT_API_VERSION,
             "authentication": "none",
         }
@@ -187,4 +214,5 @@ __all__ = [
     "AnkiTargetInspector",
     "AnkiTargetProbeError",
     "LocalAnkiConnectTargetProbe",
+    "normalize_anki_connect_url",
 ]

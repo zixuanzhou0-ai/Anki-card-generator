@@ -35,6 +35,7 @@ from .anki_import_preparation import (
     AnkiImportPreparationError,
     AnkiImportPreparationRuntime,
 )
+from .anki_target_probe import ANKI_CONNECT_URL, normalize_anki_connect_url
 from .artifact_registry import (
     ArtifactAudienceBinding,
     ArtifactRegistry,
@@ -233,6 +234,8 @@ def materialize_anki_worker_request(
     bundle: Mapping[str, Any],
     workspace: Path,
     artifacts: ArtifactRegistry,
+    *,
+    anki_connect_url: str = ANKI_CONNECT_URL,
 ) -> dict[str, Any]:
     """Build a legacy Worker request only from authenticated, immutable inputs."""
 
@@ -659,7 +662,7 @@ def materialize_anki_worker_request(
     return {
         "export_result": export_result,
         "import_apkg": True,
-        "anki_connect_url": "http://127.0.0.1:8765",
+        "anki_connect_url": normalize_anki_connect_url(anki_connect_url),
         "wait_for_anki_seconds": 10,
     }
 

@@ -9,6 +9,7 @@ from card_service.anki_target_probe import (
     ANKI_CONNECT_URL,
     AnkiTargetProbeError,
     LocalAnkiConnectTargetProbe,
+    normalize_anki_connect_url,
 )
 
 
@@ -70,10 +71,42 @@ def test_probe_reads_only_fixed_loopback_and_returns_digests() -> None:
         assert timeout == 5.0
 
 
-def test_probe_rejects_non_loopback_configuration() -> None:
+def test_probe_accepts_a_configured_ipv4_loopback_port() -> None:
+    opener = _Opener(
+        [6, "Account 1", r"C:\private\collection.media", ["Default"]]
+    )
+    probe = LocalAnkiConnectTargetProbe(endpoint="http://127.0.0.1:8785/")
+    probe._opener = opener
+
+    probe()
+
+    assert {request.full_url for request, _timeout in opener.requests} == {
+        "http://127.0.0.1:8785"
+    }
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "http://192.0.2.1:8765",
+        "https://127.0.0.1:8765",
+        "http://localhost:8765",
+        "http://user@127.0.0.1:8765",
+        "http://127.0.0.1:8765/path",
+        "http://127.0.0.1:8765?query=1",
+        "http://127.0.0.1",
+    ],
+)
+def test_probe_rejects_non_loopback_or_ambiguous_configuration(endpoint: str) -> None:
     with pytest.raises(AnkiTargetProbeError) as captured:
-        LocalAnkiConnectTargetProbe(endpoint="http://192.0.2.1:8765")
+        LocalAnkiConnectTargetProbe(endpoint=endpoint)
     assert captured.value.code == "ANKI_TARGET_INVALID"
+
+
+def test_normalized_endpoint_is_canonical() -> None:
+    assert normalize_anki_connect_url("http://127.0.0.1:8785/") == (
+        "http://127.0.0.1:8785"
+    )
 
 
 @pytest.mark.parametrize(

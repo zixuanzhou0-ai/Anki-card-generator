@@ -1,13 +1,15 @@
 # 可追溯矩阵
 
-> 基线日期：2026-07-19
+> 基线日期：2026-07-20
 
-## CURRENT 可追溯增量（2026-07-19）
+## CURRENT 可追溯增量（2026-07-20）
 
 | 要求 | 当前工具/实现 | 当前证明 | 剩余边界 |
 |---|---|---|---|
 | PR-201/PR-202 候选发现与可解释筛选 | `system.authorize_candidate_discovery`、`study.start_discovery`、`study.get_task`、candidate read tools | 固定 Hermes 授权、Service-owned scope/budget、异步任务、认证 Discovery/Candidate/evidence | 多来源适配、质量基准与更细恢复 |
 | PR-305 / SR-008 明确且幂等的 Anki 导入 | ImportPlan → `anki.request_import_confirmation` → `anki.import_and_verify` | import intent 精确绑定、一次批准消费、相同 intent 不重复导入、写边界状态机 | 撤销管理和更完整恢复 UX |
+| PR-404 / PR-501 当前外部能力与恢复 | HermesProxyManager + discovery preflight + `study.resume_task` | 8645 固定代理、当前 OAuth/health、首次/异步/恢复三条预检、上游故障→可重试 `MODEL_STALE`；Computer Use 真实 picker/授权 | xAI 公网路由恢复后的完整正例 |
+| PR-305 / SR-012 Windows AnkiConnect 部署 | launcher `--anki-connect-url` + literal-loopback normalizer | 8765 默认、8785 隔离目标、非 loopback/hostname/query/userinfo 拒绝、Worker 与 probe 同端口 | 正式安装器端口发现与安装版复测 |
 | PR-306 / RR-801 数据核验不冒充运行时核验 | `anki.import_and_verify` 的 receipt + data verification | 成功为 `anki_data_verified`，失败为 `imported_unverified` 或保持 `apkg_ready` | RR-802 的渲染/播放/reviewer/restart verifier 尚未实现 |
 | PR-506 正式插件可安装性 | 被动 manifest/Skill + 开发态可信 stdio runtime | validator 与开发态测试 | 正式发布者签名、MCP 声明、安装验收、App UI |
 

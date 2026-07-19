@@ -80,3 +80,11 @@ def test_authenticated_package_is_reconstructed_for_worker_without_caller_paths(
         validate_apkg_package_contract(reconstructed["apkg_path"], reconstructed)["ok"]
         is True
     )
+
+    custom_request = materialize_anki_worker_request(
+        bundle,
+        (tmp_path / "custom-port-workspace").resolve(),
+        registry,
+        anki_connect_url="http://127.0.0.1:8785/",
+    )
+    assert custom_request["anki_connect_url"] == "http://127.0.0.1:8785"

@@ -220,6 +220,16 @@
 - 证据：V14/V15 同字段并存与重启 JSON 无差异；V15 重复导入不增卡；Computer Use 连续复习 20 张，表达/原声/慢读/视频的 Space/Return 暂停与继续、媒体互斥和背景 Space 翻面全部通过。
 - 边界：当前 runtime contract 只声明支持 Anki 26.05；其他版本必须新增精确合同和真实 GUI 证据，不能以范围匹配静默放宽。
 
+## D-031：外部本地服务必须做当前进程预检，端口由受控 launcher 固定
+
+- 状态：Accepted；CURRENT 开发态已实现 Hermes 与 AnkiConnect 两条路径。
+- Hermes：固定使用 `127.0.0.1:8645`、`provider=xai`、`model=grok-4.5`。受信批准后必须确认 `/health` 的 upstream 与 OAuth；未运行时由 Service 以固定参数启动。初次、异步和恢复 discovery 都重新预检，历史授权不等于当前可用。
+- AnkiConnect：默认 `127.0.0.1:8765`，但 Windows 排除端口范围可能使其不可绑定；launcher 可固定其他显式 IPv4 loopback 端口。MCP、项目与任务不能提交 endpoint。
+- 理由：端口属于部署环境而不是学习意图；把 8765 硬编码到导入 Worker 既不能解决 Windows 排除端口，也会把正确的跨磁盘导入错误归因于 APKG 目录。
+- 失败语义：Hermes 本地健康只证明 OAuth 可解析，不证明 xAI 公网可达。真实上游失败必须作为可恢复模型故障停止，不能发布候选或卡片。Anki 离线/端口错误在任何写入前停止。
+- 安全边界：只允许字面 `127.0.0.1`、显式端口、无 userinfo/query/fragment/path；禁用环境代理。该可配置端口不扩大到 LAN、自定义 hostname 或 MCP 参数。
+- 证据：2026-07-20 Computer Use 已完成真实 source picker 与 Hermes 授权；8645 健康/OAuth ready 后，真实 xAI upstream 仍超时并正确停止为 `MODEL_STALE`。隔离 AnkiConnect 8785 返回 version 6；53 项定向自动化通过。详见 `M1_REAL_SERVICE_RECOVERY_VERIFICATION_2026-07-20.md`。
+
 ## 待决事项
 
 以下到对应里程碑再定，不阻塞当前设计：

@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .anki_target_probe import ANKI_CONNECT_URL
 from .broker_configuration import BrokerConfigurationError, ServiceBrokerRuntime
 from .service import CardService, CardServiceError
 
@@ -51,6 +52,7 @@ def build_parser(description: str = "Codex Study local Card Service") -> argpars
     parser.add_argument("--worker", type=Path)
     parser.add_argument("--python", type=Path)
     parser.add_argument("--tool-dir", action="append", type=Path, default=[])
+    parser.add_argument("--anki-connect-url", default=ANKI_CONNECT_URL)
     return parser
 
 
@@ -86,6 +88,7 @@ def create_service(arguments: argparse.Namespace, parser: argparse.ArgumentParse
         broker_method_blocker=(broker_runtime.method_blocker if broker_runtime is not None else None),
         broker_runtime_capabilities=(broker_runtime.capabilities() if broker_runtime is not None else None),
         broker_runtime=broker_runtime,
+        anki_connect_url=arguments.anki_connect_url,
     )
 
 

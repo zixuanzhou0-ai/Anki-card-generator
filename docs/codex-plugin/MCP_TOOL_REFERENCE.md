@@ -270,7 +270,7 @@ host 部分至少分别报告：pluginManifestLoaded、stdioServiceLaunch、tool
 {"preset":"hermes_grok_4_5"}
 ~~~
 
-工具不接受 URL、Provider、model、credential、prompt、source body、authorization token 或调用方预算。Card Service 固定使用 `model.hermes-grok-4.5`、字面 loopback `http://127.0.0.1:8317/v1` 与 `grok-4.5`，并在 digest-pinned 本地窗口取得真实用户决定。
+工具不接受 URL、Provider、model、credential、prompt、source body、authorization token 或调用方预算。Card Service 固定使用 `model.hermes-grok-4.5`、字面 loopback `http://127.0.0.1:8645/v1` 与 `grok-4.5`，并在 digest-pinned 本地窗口取得真实用户决定。用户批准后，Service 会先复核 Hermes xAI OAuth 并在需要时以固定 host/port/provider 参数启动本地代理；只有本地 `/health` 同时报告 xAI/Grok upstream 与 authenticated 才返回 `capabilityAvailable=true`。这项本地预检不等于 xAI 公网推理已经成功；上游连接失败仍会在 discovery task 中以可重试的 `MODEL_STALE` 失败关闭。
 
 输出只包含 `approved/declined/cancelled/failed/timed_out` 状态、`capabilityAvailable` 与非秘密授权摘要；不返回凭据、内部 intent、文件路径或可转移 bearer。只有 `approved` 且 capability available 才能继续 `study.start_discovery`。
 
@@ -706,7 +706,7 @@ CURRENT 仍只覆盖确定性文本/零媒体 ProjectArtifact；通用模型扩�
 
 CURRENT 输入是封闭 `context { projectId, expectedProjectRevision, idempotencyKey }` 与 audience/session 绑定的 `packageArtifactHandle`。调用方不能传路径、Anki 地址、profile 名、目标目录、manifest、duplicate policy 或检查子集。Service 重新解析当前 PackageArtifact 与其 APKG file 父产物，流式复核内容寻址 Blob 的 SHA/size，并确认项目至少处于 `apkg_ready`。
 
-目标检查固定为不使用环境代理的 `http://127.0.0.1:8765`，只调用 `version`、`getActiveProfile`、`getMediaDirPath` 和 `deckNames`。原始 profile、媒体目录和 deck 名不会进入公共结果；持久计划只保留 profileRef、配置/collection/deck 摘要、AnkiConnect 版本和计数。随后服务发布认证 `study.anki-verification-contract` 与 `study.anki-import-plan`，固定 11 项数据检查、`detect_and_report` 重复策略、`explicit-confirmation-required` 写策略和 `inspect-before-any-retry` 恢复策略。项目保持 `apkg_ready`，只增加 revision 和当前计划引用。
+目标检查固定为禁用环境代理的显式 IPv4 loopback AnkiConnect endpoint；开发态 launcher 默认 `http://127.0.0.1:8765`，也可通过受控启动参数 `--anki-connect-url http://127.0.0.1:<port>` 指定其他本机端口。该参数拒绝 hostname、IPv6、userinfo、query、fragment、非 HTTP 和非 loopback 地址，不能由 MCP 调用方提交。Windows 把 8765 纳入排除端口范围时，可把隔离 AnkiConnect 与 Card Service 一起配置为 8785 等未占用端口，不能要求 APKG 位于 Anki 数据目录或同一磁盘。探测只调用 `version`、`getActiveProfile`、`getMediaDirPath` 和 `deckNames`。原始 profile、媒体目录和 deck 名不会进入公共结果；持久计划只保留 profileRef、配置/collection/deck 摘要、AnkiConnect 版本和计数。随后服务发布认证 `study.anki-verification-contract` 与 `study.anki-import-plan`，固定 11 项数据检查、`detect_and_report` 重复策略、`explicit-confirmation-required` 写策略和 `inspect-before-any-retry` 恢复策略。项目保持 `apkg_ready`，只增加 revision 和当前计划引用。
 
 公开结果只含 `importPlanHandle`、当前 session 的 `importIntentId` 与 pending 状态、APKG SHA/size/安全文件名、deck/note/card/media 计数、脱敏目标摘要、检查数、`runtimeVerification=not_assessed`、`confirmationRequired=true` 和下一动作。精确重试返回首次保存的同一句柄且不重复探测 Anki；跨插件句柄、旧 PackageArtifact、离线/畸形 AnkiConnect 响应均失败关闭。此工具不写 Anki，不代表已经导入、数据核验或真实复习核验。
 

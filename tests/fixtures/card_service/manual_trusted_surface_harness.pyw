@@ -48,7 +48,7 @@ def _create_broker_session(manager: TrustedSurfaceManager) -> dict[str, object]:
             "profileRef": f"model.hermes-{index}",
             "capability": "model",
             "provider": "hermes",
-            "baseUrl": "http://127.0.0.1:8317/v1",
+            "baseUrl": "http://127.0.0.1:8645/v1",
             "model": f"grok-4.5-visual-check-{index}",
             "voice": "",
             "timeoutSeconds": 120,

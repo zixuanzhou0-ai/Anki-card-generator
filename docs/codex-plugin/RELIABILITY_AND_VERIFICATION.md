@@ -406,7 +406,7 @@ type VerificationCertificate = {
 
 ## 19. CURRENT Anki 导入准备证明
 
-`anki.prepare_import` 只接受当前项目 revision 与 audience/session 绑定的 PackageArtifact opaque handle。Service 重新解析认证 PackageArtifact/APKG file 父链，流式重算内容寻址 Blob 的 SHA/size；随后仅通过固定 `127.0.0.1:8765`、禁用环境代理的 AnkiConnect 读取 version、当前 profile、媒体目录与 deck 清单。原始 profile、路径和 deck 名不进入公共响应。
+`anki.prepare_import` 只接受当前项目 revision 与 audience/session 绑定的 PackageArtifact opaque handle。Service 重新解析认证 PackageArtifact/APKG file 父链，流式重算内容寻址 Blob 的 SHA/size；随后仅通过 Service 启动时固定的显式 IPv4 loopback AnkiConnect endpoint、禁用环境代理地读取 version、当前 profile、媒体目录与 deck 清单。默认端口是 8765；若 Windows 排除端口范围或本机策略使其不可绑定，开发态 launcher 可与隔离 AnkiConnect 同时改用 8785 等可用端口。MCP 调用方不能提交或覆盖 endpoint。原始 profile、路径和 deck 名不进入公共响应。
 
 服务发布认证 `study.anki-verification-contract` 与 `study.anki-import-plan`，冻结 11 项数据检查、Package/CardIdentity/MediaInventory/template 摘要、脱敏 target identity、固定重复/写入/恢复策略，并将项目以同一 `apkg_ready` 阶段推进一个 revision。精确幂等重试返回首次保存的同一 ImportPlan handle，不重复探测目标；跨 audience、旧包、离线或畸形响应均失败关闭。
 

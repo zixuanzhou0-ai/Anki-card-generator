@@ -27,6 +27,11 @@ class StubService:
         self.terminal = terminal
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.polls = 0
+        self.provider_checks = 0
+
+    def ensure_candidate_discovery_provider(self) -> dict[str, Any]:
+        self.provider_checks += 1
+        return {"state": "ready"}
 
     def dispatch(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         self.calls.append((method, params))
@@ -38,6 +43,17 @@ class StubService:
                 return {"state": "open"}
             return dict(self.terminal)
         raise AssertionError(f"unexpected method: {method}")
+
+
+class StubHermesProxyManager:
+    def probe(self) -> dict[str, Any]:
+        return {"state": "ready"}
+
+    def ensure_ready(self) -> dict[str, Any]:
+        return {"state": "ready"}
+
+    def close(self) -> None:
+        return None
 
 
 def test_system_authorization_tool_is_a_closed_fixed_preset() -> None:
@@ -96,7 +112,7 @@ def test_system_authorization_tool_activates_only_fixed_hermes_scope() -> None:
             "profileRef": "model.hermes-grok-4.5",
             "capability": "model",
             "provider": "hermes",
-            "baseUrl": "http://127.0.0.1:8317/v1",
+            "baseUrl": "http://127.0.0.1:8645/v1",
             "model": "grok-4.5",
             "voice": "",
             "timeoutSeconds": 120,
@@ -170,6 +186,7 @@ def test_fixed_authorization_hot_loads_candidate_discovery_broker(tmp_path: Path
         credential_backend=InMemoryCredentialBackend(),
         trusted_surface_path=FAKE_SURFACE.resolve(),
         use_restricted_launcher=False,
+        hermes_proxy_manager=StubHermesProxyManager(),  # type: ignore[arg-type]
     )
 
     result = call_system_tool(

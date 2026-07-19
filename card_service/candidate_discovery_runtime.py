@@ -512,6 +512,14 @@ class CandidateDiscoveryRuntime:
             "DISCOVERY_PROVIDER_RESPONSE_INVALID",
         }:
             return "MODEL_OUTPUT_INVALID"
+        if code in {
+            "PROVIDER_UNAVAILABLE",
+            "PROVIDER_HTTP_ERROR",
+            "CREDENTIAL_UNAVAILABLE",
+            "BROKER_AUTHORIZATION_EXPIRED",
+            "DISCOVERY_MODEL_UNAVAILABLE",
+        }:
+            return "MODEL_STALE"
         if code.startswith("ARTIFACT_") or code.startswith("CANDIDATE_ARTIFACT"):
             return "ARTIFACT_CORRUPT"
         if code in {

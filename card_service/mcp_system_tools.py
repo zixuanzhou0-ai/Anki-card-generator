@@ -3,8 +3,9 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from .hermes_proxy import HERMES_PROXY_BASE_URL
 from .provider_egress import MAX_MODEL_RESPONSE_BYTES
-from .service import CardService
+from .service import CardService, CardServiceError
 
 
 AUTHORIZE_DISCOVERY_TOOL = "system.authorize_candidate_discovery"
@@ -29,7 +30,7 @@ def _hermes_discovery_draft() -> dict[str, Any]:
                 "profileRef": "model.hermes-grok-4.5",
                 "capability": "model",
                 "provider": "hermes",
-                "baseUrl": "http://127.0.0.1:8317/v1",
+                "baseUrl": HERMES_PROXY_BASE_URL,
                 "model": "grok-4.5",
                 "voice": "",
                 "timeoutSeconds": 120,
@@ -124,11 +125,16 @@ def call_system_tool(
                     if state in {"approved", "declined", "cancelled", "failed"}
                     else "failed"
                 ),
-                "capabilityAvailable": state == "approved",
+                "capabilityAvailable": False,
             }
             authorization = result.get("authorization")
             if state == "approved" and isinstance(authorization, dict):
                 public["authorization"] = dict(authorization)
+                try:
+                    service.ensure_candidate_discovery_provider()
+                    public["capabilityAvailable"] = True
+                except CardServiceError as error:
+                    public["errorCode"] = error.code
             if state == "failed" and isinstance(result.get("errorCode"), str):
                 public["errorCode"] = result["errorCode"]
             return _tool_result(public)
@@ -150,7 +156,7 @@ def _tool_result(public: dict[str, Any]) -> dict[str, Any]:
                 "type": "text",
                 "text": (
                     "Hermes candidate discovery is authorized for this Card Service session."
-                    if public["state"] == "approved"
+                    if public["state"] == "approved" and public["capabilityAvailable"]
                     else "Hermes candidate discovery authorization was not activated."
                 ),
             }

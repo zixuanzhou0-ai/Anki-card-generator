@@ -55,7 +55,7 @@ M0 基线、Card Service、可信 MCP、认证 Artifact/opaque handles 和 Anki 
 - M3 仍必须实测目标宿主的 manifest 加载、stdio Service 启动/重连和工具注册；不能因为官方支持 stdio 就推断每个具体 Codex 版本与工作区都可用。
 - 受信本地选择/确认表面若被宿主或系统策略阻止，插件只能 APKG-only，不能完成新的授权或 Anki 写入。
 - 当前 stdio audience 证明固定原生 launcher 的直接子进程与当前 OS 用户，不证明 launcher 的父进程一定是某个 Codex 发行版本；正式宿主 attestation 仍是发布门槛。
-- picker 工具在等待用户时占用当前 stdio 请求；超时后可用同一 `grantRequestId` 继续轮询，但 MCP 通知尚不能把该同步等待立即取消。Computer Use 已打开真实原生文件对话框，却因 owned dialog 的自动化进程归属限制未取得“自动点击选中并返回”的 GUI 闭环证据。
+- picker 工具在等待用户时占用当前 stdio 请求；超时后可用同一 `grantRequestId` 继续轮询，但 MCP 通知尚不能把该同步等待立即取消。2026-07-20 的 Computer Use 真机回归已在真实原生文件对话框中选中 `source.txt` 并返回授权；这只证明当前 Windows/Python 受信窗口路径，不替代其他 Codex 宿主和安装版验收。
 
 ## 4. 操作系统
 
@@ -99,11 +99,13 @@ M0 基线、Card Service、可信 MCP、认证 Artifact/opaque handles 和 Anki 
 - 模型输出可能无效或偏离目标。
 - TTS 音质和发音随服务/语音变化。
 - 本地 Hermes Grok 4.5 的具体可用性依赖本地代理/OAuth，不是插件永久保证。
+- `/health` 的 authenticated 只证明 Hermes 找到了 xAI OAuth，不证明 `api.x.ai` 当时可达。2026-07-20 的真实回归中，本地 8645 代理健康且 OAuth ready，但插件调用与 Hermes 官方 one-shot 都在 xAI 上游连接处超时；插件按设计返回可重试的 `MODEL_STALE`，没有生成候选或伪造成功。Hermes 当前代理实现是否遵循 Windows WinHTTP/环境代理由 Hermes 版本决定；仅配置系统代理不能被本插件当作已验证的公网连通性。
 
 ## 9. Anki
 
 - 导入是持久写入，必须由用户明确触发。
 - 不自动安装或更新 AnkiConnect。
+- AnkiConnect 默认端口 8765 可能落入 Windows 动态排除端口范围；开发态 Card Service 支持由 launcher 固定其他字面 IPv4 loopback 端口（真实隔离回归使用 8785）。这不是把 APKG 限制在 Anki 文件夹或同一磁盘，输出目录与 Anki profile 可以位于不同磁盘。
 - 不自动迁移已有 Note Model。
 - 重复/冲突策略只能在已知 CardId/hash 边界内确定。
 - 第三方 Anki 插件、定制模板或未来 Anki 版本可能影响行为。

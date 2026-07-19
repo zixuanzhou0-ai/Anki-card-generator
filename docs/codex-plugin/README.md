@@ -1,12 +1,12 @@
 # Codex 学习制卡插件：设计文档总览
 
-> 基线日期：2026-07-19
+> 基线日期：2026-07-20
 
-## CURRENT 权威实现摘要（2026-07-19）
+## CURRENT 权威实现摘要（2026-07-20）
 
 截至 2026-07-19，可信开发态 Card Service stdio runtime 共公开 27 个工具：`system.get_capabilities`、`system.request_source_grant`、`system.request_output_grant`、`system.authorize_candidate_discovery`、`study.create_project`、`study.register_inputs`、`study.start_source_inspection`、`study.get_source_inspection`、`study.start_discovery`、`study.get_task`、`study.cancel_task`、`study.list_recoverable_tasks`、`study.resume_task`、`study.list_candidates`、`study.get_candidate`、`study.preview_evidence`、`study.set_selection`、`study.plan_cards`、`study.list_card_plans`、`study.edit_card_plan`、`study.validate_card_plans`、`cards.generate`、`cards.list`、`cards.export_apkg`、`anki.prepare_import`、`anki.request_import_confirmation`、`anki.import_and_verify`。
 
-当前候选发现只能通过 `system.authorize_candidate_discovery` 的固定 `hermes_grok_4_5` 预设授权，再由 `study.start_discovery` 启动异步任务；调用方不能选择 Provider、Base URL、模型、凭据、提示词或原始来源正文。当前输入面只支持经本地授权并成功检查的文本、Markdown、代码、HTML、字幕文本及其目录成员；视频/YouTube/PDF/Office/网页抓取/播客与媒体转写仍是路线图，不是当前插件能力。
+当前候选发现只能通过 `system.authorize_candidate_discovery` 的固定 `hermes_grok_4_5` 预设授权，再由 `study.start_discovery` 启动异步任务；调用方不能选择 Provider、Base URL、模型、凭据、提示词或原始来源正文。批准后 Service 会在固定 `127.0.0.1:8645` 上复核/启动 Hermes xAI 代理；本地健康与 OAuth ready 仍不等于 xAI 公网推理可达。当前输入面只支持经本地授权并成功检查的文本、Markdown、代码、HTML、字幕文本及其目录成员；视频/YouTube/PDF/Office/网页抓取/播客与媒体转写仍是路线图，不是当前插件能力。
 
 当前 Anki 闭环已能执行受信确认后的真实导入及数据级核验。最高可信状态是 `anki_data_verified`；真实卡片渲染、音视频播放、复习交互和重启持久性的 runtime verifier 尚未实现，必须报告 `runtimeVerification=not_assessed`。仓库内插件清单仍是被动 Skill 包，不声明 MCP/App；开发态 runtime 可用不等于已有正式签名、可安装、可发布的插件。
 
@@ -153,6 +153,7 @@ Codex 插件仍未正式交付：仓库已有被动 plugin manifest/Skill、开�
 19. [可追溯矩阵](TRACEABILITY_MATRIX.md)：目标到接口、测试与里程碑的映射。
 20. [术语表](GLOSSARY.md)：跨文档统一语义。
 21. [设计评审记录](DESIGN_REVIEW_RECORD.md)：内部委员会、Gemini 与 Hermes/Grok 的终审结论、分歧和裁决。
+22. [真实服务与端口恢复验证报告](M1_REAL_SERVICE_RECOVERY_VERIFICATION_2026-07-20.md)：Hermes 自动预检、真实上游阻断证据、Windows AnkiConnect 排除端口与 8785 隔离回归。
 
 ## 6. 当前可复用资产
 

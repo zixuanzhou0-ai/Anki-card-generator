@@ -494,6 +494,8 @@ CURRENT 内部 `CredentialStore` 已把真实秘密限制在 OS credential backe
 
 CURRENT 内部 `ServiceProfileRegistry` 已持久化封闭、规范化且不含秘密的 model/TTS/AnkiConnect 配置。固定 provider 继续复用 Provider Egress 的 origin/模型/voice 约束，Hermes 和 AnkiConnect 只允许字面 loopback；configurationFingerprint 是 canonical 配置的纯 SHA-256。profileRevision 使用 expectedRevision CAS，operationId 只以 HMAC 摘要落盘；记录采用 canonical JSON、域隔离 HMAC、跨进程锁、no-replace 创建和审计备份，并严格校验字段闭包、身份路径、历史操作与保存时凭据绑定。公开快照不返回 SecretRef、秘密或原始 operationId；每次解析都从 `CredentialStore` 读取当前 credentialRevision/state，所以外部替换或删除保持 `uncertain` 并失败关闭。
 
+CURRENT 外部本地服务端点进一步分为两类：Hermes candidate discovery 固定为 `127.0.0.1:8645/v1`，批准、首次执行和恢复都复核/启动当前 xAI 代理；AnkiConnect 由受控 launcher 在 Service 启动时固定字面 `127.0.0.1:<port>`，默认 8765，可为 Windows 排除端口范围改用 8785 等未占用端口。两者都不能由 MCP、项目或任务参数覆盖；Anki probe 和真实导入 Worker 必须使用同一规范化 endpoint。
+
 CURRENT 内部 `ServiceProfileVerificationRegistry` 现可直接使用上述持久 Registry 作为受信 resolver，在结果发布时和能力读取时分别解析当前绑定；结果精确绑定 capability/profile/fingerprint/revision 与单调 sequence，支持 stale-at-publish、7 天过期和 latest-failure-wins。账本为 canonical JSON + 域隔离 HMAC + 跨进程锁；损坏时旧 `.bak` 只供审计，绝不恢复旧 ready。两者仍未接入统一任务协调器、受信设置事务或公共 `system.validate_profile`，aggregate 也不提供 gate API；Profile Registry 认证密钥的生产保护/轮换和应用数据 ACL 仍是后续边界。
 
 ## 9. 宿主适配
