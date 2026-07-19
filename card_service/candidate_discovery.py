@@ -190,7 +190,7 @@ def _text(value: Any, label: str, *, maximum: int) -> str:
     return normalized
 
 
-def _sensitive_reason(value: str) -> str | None:
+def sensitive_disclosure_reason(value: str) -> str | None:
     if any(pattern.search(value) for pattern in _SECRET_PATTERNS):
         return "DISCOVERY_SECRET_TEXT_OMITTED"
     if _WINDOWS_PATH_RE.search(value):
@@ -422,7 +422,7 @@ class CandidateDiscoveryEngine:
                             "content node bounds are invalid",
                         )
                     excerpt = text[start:end]
-                    reason = _sensitive_reason(excerpt)
+                    reason = sensitive_disclosure_reason(excerpt)
                     if reason is not None:
                         issues.append(reason)
                         continue
@@ -616,7 +616,9 @@ class CandidateDiscoveryEngine:
         by_representation = {value["representationId"]: value for value in contexts}
         review_items = []
         for value in proposals:
-            if _sensitive_reason(value["form"] + "\n" + value["meaningOrFunction"]):
+            if sensitive_disclosure_reason(
+                value["form"] + "\n" + value["meaningOrFunction"]
+            ):
                 continue
             source = by_representation[value["representationId"]]
             evidence = []
@@ -855,7 +857,7 @@ class CandidateDiscoveryEngine:
         safe_proposals = []
         suppressed_digests = []
         for proposal in proposals:
-            if _sensitive_reason(
+            if sensitive_disclosure_reason(
                 proposal["form"] + "\n" + proposal["meaningOrFunction"]
             ):
                 suppressed_digests.append(_digest(proposal))
@@ -949,7 +951,7 @@ class CandidateDiscoveryEngine:
         semantic_seen: set[tuple[str, str, str, str]] = set()
         publications = []
         for proposal in proposals:
-            unsafe = _sensitive_reason(
+            unsafe = sensitive_disclosure_reason(
                 proposal["form"] + "\n" + proposal["meaningOrFunction"]
             )
             review = reviews.get(proposal["reviewKey"])
@@ -1054,4 +1056,5 @@ __all__ = [
     "DISCOVERY_POLICY_VERSION",
     "PROPOSAL_ROLE_VERSION",
     "REVIEW_ROLE_VERSION",
+    "sensitive_disclosure_reason",
 ]

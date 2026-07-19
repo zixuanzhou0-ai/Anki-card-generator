@@ -20,6 +20,7 @@ from .candidate_discovery_runtime import (
     CandidateDiscoveryRuntime,
     CandidateDiscoveryRuntimeError,
 )
+from .candidate_queries import CandidateQueryError, CandidateQueryRuntime
 from .credentials import CredentialStore, CredentialStoreError
 from .project_registry import ProjectRegistry, ProjectRegistryError
 from .resource_runtime import ServiceResourceRuntime
@@ -91,6 +92,9 @@ class StudyRuntime:
             source_binding_key = credential_store.derive_service_key(
                 "study-task-source-binding-v1", context=context
             )
+            candidate_query_key = credential_store.derive_service_key(
+                "study-candidate-query-v1", context=context
+            )
             self.artifacts = ArtifactRegistry(
                 self.root / "artifacts",
                 authentication_key=artifact_key,
@@ -131,6 +135,12 @@ class StudyRuntime:
                 projects=self.projects,
                 tasks=self.tasks,
             )
+            self.candidate_queries = CandidateQueryRuntime(
+                service_instance_id=self.service_instance_id,
+                artifacts=self.artifacts,
+                projects=self.projects,
+                cursor_key=candidate_query_key,
+            )
             discovery_configured = (
                 candidate_discovery_model is not None
                 or candidate_discovery_model_provider is not None
@@ -156,6 +166,7 @@ class StudyRuntime:
             SourceRegistrationError,
             SourceInspectionError,
             CandidateDiscoveryRuntimeError,
+            CandidateQueryError,
             OSError,
         ) as error:
             raise StudyRuntimeError(
@@ -176,6 +187,7 @@ class StudyRuntime:
             "sourceInspection": True,
             "candidateDiscoveryRuntime": self.candidate_discovery is not None,
             "publicCandidateDiscovery": False,
+            "publicCandidateQueries": True,
             "publicProjectTools": True,
             "publicInputRegistration": True,
             "publicSourceInspection": True,
@@ -324,4 +336,74 @@ class StudyRuntime:
                 inspection_handle=inspection_handle,
             )
         except (SourceInspectionError, ArtifactRegistryError) as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
+    def list_candidates(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        discovery_handle: str,
+        filters: Mapping[str, Any] | None = None,
+        sort: str = "recommended",
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        try:
+            return self.candidate_queries.list_candidates(
+                audience=audience,
+                discovery_handle=discovery_handle,
+                filters=filters,
+                sort=sort,
+                cursor=cursor,
+                limit=limit,
+            )
+        except (
+            CandidateQueryError,
+            ArtifactRegistryError,
+            ProjectRegistryError,
+        ) as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
+    def get_candidate(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        discovery_handle: str,
+        candidate_handle: str,
+    ) -> dict[str, Any]:
+        try:
+            return self.candidate_queries.get_candidate(
+                audience=audience,
+                discovery_handle=discovery_handle,
+                candidate_handle=candidate_handle,
+            )
+        except (
+            CandidateQueryError,
+            ArtifactRegistryError,
+            ProjectRegistryError,
+        ) as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
+    def preview_candidate_evidence(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        discovery_handle: str,
+        candidate_handle: str,
+        evidence_id: str,
+        context_characters: int = 160,
+    ) -> dict[str, Any]:
+        try:
+            return self.candidate_queries.preview_evidence(
+                audience=audience,
+                discovery_handle=discovery_handle,
+                candidate_handle=candidate_handle,
+                evidence_id=evidence_id,
+                context_characters=context_characters,
+            )
+        except (
+            CandidateQueryError,
+            ArtifactRegistryError,
+            ProjectRegistryError,
+        ) as error:
             raise StudyRuntimeError(error.code, error.message) from error

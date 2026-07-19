@@ -439,3 +439,213 @@ def test_candidate_discovery_is_unavailable_without_a_service_bound_model(
     with pytest.raises(StudyRuntimeError) as captured:
         discover(runtime, project, inspected)
     assert captured.value.code == "DISCOVERY_MODEL_UNAVAILABLE"
+
+
+def test_candidate_queries_page_filter_and_bind_cursors(tmp_path: Path) -> None:
+    model = FakeDiscoveryModel(proposal_count=3)
+    runtime, project, inspected, source = environment(tmp_path, model)
+    discovered = discover(runtime, project, inspected, maximum=8)
+
+    first = runtime.list_candidates(
+        audience=audience(),
+        discovery_handle=discovered["discoveryHandle"],
+        filters={"eligibility": ["recommended"], "route": ["production"]},
+        limit=1,
+    )
+    assert first["totalCandidates"] == 3
+    assert first["returnedCandidates"] == 1
+    assert first["nextCursor"].startswith("study_cursor_")
+    assert first["items"][0]["target"]["form"] == FORM
+    assert first["items"][0]["selectionState"] == "unselected"
+    assert first["items"][0]["gateSummary"] == {"pass": 8, "review": 0, "fail": 0}
+
+    second = runtime.list_candidates(
+        audience=audience(),
+        discovery_handle=discovered["discoveryHandle"],
+        filters={"eligibility": ["recommended"], "route": ["production"]},
+        cursor=first["nextCursor"],
+        limit=1,
+    )
+    assert second["items"][0]["candidateId"] != first["items"][0]["candidateId"]
+
+    by_source = runtime.list_candidates(
+        audience=audience(),
+        discovery_handle=discovered["discoveryHandle"],
+        filters={"sourceHandles": [first["items"][0]["source"]["sourceHandle"]]},
+        sort="source_order",
+        limit=10,
+    )
+    assert by_source["returnedCandidates"] == 3
+
+    serialized = json.dumps(first, ensure_ascii=False, sort_keys=True)
+    assert SOURCE_TEXT not in serialized
+    assert str(source) not in serialized
+    for forbidden in ("artifactRef", "registryAuthRef", "plainTextBlobRef", "inputFingerprint"):
+        assert forbidden not in serialized
+
+    with pytest.raises(StudyRuntimeError) as mismatch:
+        runtime.list_candidates(
+            audience=audience(),
+            discovery_handle=discovered["discoveryHandle"],
+            filters={"query": FORM},
+            cursor=first["nextCursor"],
+            limit=1,
+        )
+    assert mismatch.value.code == "CANDIDATE_CURSOR_MISMATCH"
+
+
+def test_candidate_detail_and_evidence_preview_replay_authenticated_snapshot(
+    tmp_path: Path,
+) -> None:
+    runtime, project, inspected, source = environment(tmp_path, FakeDiscoveryModel())
+    discovered = discover(runtime, project, inspected)
+    listed = runtime.list_candidates(
+        audience=audience(),
+        discovery_handle=discovered["discoveryHandle"],
+    )
+    candidate_handle = listed["items"][0]["candidateHandle"]
+
+    detail = runtime.get_candidate(
+        audience=audience(),
+        discovery_handle=discovered["discoveryHandle"],
+        candidate_handle=candidate_handle,
+    )
+    assert detail["summary"]["eligibility"] == "recommended"
+    assert detail["objective"]["responseSpec"] == FORM
+    assert len(detail["gates"]) == 8
+    assert len(detail["evidence"]) == 1
+    evidence_id = detail["evidence"][0]["evidenceId"]
+
+    preview = runtime.preview_candidate_evidence(
+        audience=audience(),
+        discovery_handle=discovered["discoveryHandle"],
+        candidate_handle=candidate_handle,
+        evidence_id=evidence_id,
+        context_characters=12,
+    )
+    assert preview["quote"] == FORM
+    assert preview["snapshotBacked"] is True
+    assert preview["networkAccessed"] is False
+    assert len(preview["contextBefore"]) <= 12
+    assert len(preview["contextAfter"]) <= 12
+    assert preview["quoteSha256"] == hashlib.sha256(FORM.encode("utf-8")).hexdigest()
+    serialized = json.dumps(preview, ensure_ascii=False, sort_keys=True)
+    assert str(source) not in serialized
+    for forbidden in ("artifactRef", "registryAuthRef", "plainTextBlobRef"):
+        assert forbidden not in serialized
+
+
+def test_candidate_query_rejects_tampered_cursor_and_cross_session_handle(
+    tmp_path: Path,
+) -> None:
+    runtime, project, inspected, _source = environment(
+        tmp_path, FakeDiscoveryModel(proposal_count=2)
+    )
+    discovered = discover(runtime, project, inspected)
+    page = runtime.list_candidates(
+        audience=audience(),
+        discovery_handle=discovered["discoveryHandle"],
+        limit=1,
+    )
+    cursor = page["nextCursor"]
+    replacement = "A" if cursor[-1] != "A" else "B"
+    with pytest.raises(StudyRuntimeError) as tampered:
+        runtime.list_candidates(
+            audience=audience(),
+            discovery_handle=discovered["discoveryHandle"],
+            cursor=cursor[:-1] + replacement,
+            limit=1,
+        )
+    assert tampered.value.code == "CANDIDATE_CURSOR_INVALID"
+
+    with pytest.raises(StudyRuntimeError) as cross_session:
+        runtime.get_candidate(
+            audience=audience(session_id="session-2"),
+            discovery_handle=discovered["discoveryHandle"],
+            candidate_handle=page["items"][0]["candidateHandle"],
+        )
+    assert cross_session.value.code == "ARTIFACT_HANDLE_SCOPE_MISMATCH"
+
+
+def test_candidate_query_requires_candidate_membership_in_the_same_discovery(
+    tmp_path: Path,
+) -> None:
+    runtime_one, project_one, inspected_one, _ = environment(
+        tmp_path / "one", FakeDiscoveryModel()
+    )
+    discovery_one = discover(runtime_one, project_one, inspected_one)
+    candidate_one = runtime_one.list_candidates(
+        audience=audience(), discovery_handle=discovery_one["discoveryHandle"]
+    )["items"][0]["candidateHandle"]
+
+    runtime_two, project_two, inspected_two, _ = environment(
+        tmp_path / "two", FakeDiscoveryModel()
+    )
+    discovery_two = discover(runtime_two, project_two, inspected_two)
+    with pytest.raises(StudyRuntimeError) as captured:
+        runtime_two.get_candidate(
+            audience=audience(),
+            discovery_handle=discovery_two["discoveryHandle"],
+            candidate_handle=candidate_one,
+        )
+    assert captured.value.code in {
+        "ARTIFACT_HANDLE_INVALID",
+        "ARTIFACT_HANDLE_AUTH_INVALID",
+        "ARTIFACT_HANDLE_SCOPE_MISMATCH",
+        "ARTIFACT_NOT_FOUND",
+    }
+
+
+def test_candidate_query_rejects_discovery_invalidated_by_contract_change(
+    tmp_path: Path,
+) -> None:
+    runtime, project, inspected, _source = environment(tmp_path, FakeDiscoveryModel())
+    discovered = discover(runtime, project, inspected)
+
+    updated = runtime.projects.update_learning_contract(
+        audience=audience(),
+        project_id=project["projectId"],
+        expected_project_revision=discovered["projectRevision"],
+        expected_contract_revision=1,
+        operation_id="change-learning-purpose",
+        operations=[
+            {"op": "set_purpose", "purpose": "Learn formal written English"}
+        ],
+    )
+    assert updated["invalidatedStages"][0] == "discovery"
+
+    with pytest.raises(StudyRuntimeError) as captured:
+        runtime.list_candidates(
+            audience=audience(),
+            discovery_handle=discovered["discoveryHandle"],
+        )
+    assert captured.value.code == "CANDIDATE_DISCOVERY_STALE"
+
+
+def test_evidence_preview_rechecks_disclosure_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime, project, inspected, _source = environment(tmp_path, FakeDiscoveryModel())
+    discovered = discover(runtime, project, inspected)
+    listed = runtime.list_candidates(
+        audience=audience(), discovery_handle=discovered["discoveryHandle"]
+    )
+    candidate_handle = listed["items"][0]["candidateHandle"]
+    detail = runtime.get_candidate(
+        audience=audience(),
+        discovery_handle=discovered["discoveryHandle"],
+        candidate_handle=candidate_handle,
+    )
+    monkeypatch.setattr(
+        "card_service.candidate_queries.sensitive_disclosure_reason",
+        lambda _value: "DISCOVERY_SECRET_TEXT_OMITTED",
+    )
+
+    with pytest.raises(StudyRuntimeError) as captured:
+        runtime.preview_candidate_evidence(
+            audience=audience(),
+            discovery_handle=discovered["discoveryHandle"],
+            candidate_handle=candidate_handle,
+            evidence_id=detail["evidence"][0]["evidenceId"],
+        )
+    assert captured.value.code == "EVIDENCE_PREVIEW_REDACTED"

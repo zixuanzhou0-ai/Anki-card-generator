@@ -913,6 +913,7 @@ class CardService:
             "publicProjectTools": True,
             "publicInputRegistration": True,
             "publicSourceInspection": True,
+            "publicCandidateQueries": True,
             "pathDisclosure": False,
             "complete": False,
         }
@@ -1091,6 +1092,79 @@ class CardService:
                 error.message,
                 retryable=False,
                 stage="source_inspection",
+            ) from error
+
+    def list_study_candidates(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        discovery_handle: str,
+        filters: Mapping[str, Any] | None = None,
+        sort: str = "recommended",
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        try:
+            return self._ensure_study_runtime().list_candidates(
+                audience=audience,
+                discovery_handle=discovery_handle,
+                filters=filters,
+                sort=sort,
+                cursor=cursor,
+                limit=limit,
+            )
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=False,
+                stage="candidate_query",
+            ) from error
+
+    def get_study_candidate(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        discovery_handle: str,
+        candidate_handle: str,
+    ) -> dict[str, Any]:
+        try:
+            return self._ensure_study_runtime().get_candidate(
+                audience=audience,
+                discovery_handle=discovery_handle,
+                candidate_handle=candidate_handle,
+            )
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=False,
+                stage="candidate_query",
+            ) from error
+
+    def preview_study_candidate_evidence(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        discovery_handle: str,
+        candidate_handle: str,
+        evidence_id: str,
+        context_characters: int = 160,
+    ) -> dict[str, Any]:
+        try:
+            return self._ensure_study_runtime().preview_candidate_evidence(
+                audience=audience,
+                discovery_handle=discovery_handle,
+                candidate_handle=candidate_handle,
+                evidence_id=evidence_id,
+                context_characters=context_characters,
+            )
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=False,
+                stage="candidate_query",
             ) from error
 
     def discover_study_candidates(

@@ -1,6 +1,6 @@
 # MCP 工具参考
 
-> 状态：CURRENT 最小桥 + PROPOSED 完整工具契约；可信会话已实现 `system.get_capabilities`、`system.request_source_grant`、`system.request_output_grant`、`study.create_project`、`study.register_inputs`、`study.start_source_inspection` 与 `study.get_source_inspection`
+> 状态：CURRENT 最小桥 + PROPOSED 完整工具契约；可信会话已实现 `system.get_capabilities`、`system.request_source_grant`、`system.request_output_grant`、`study.create_project`、`study.register_inputs`、`study.start_source_inspection`、`study.get_source_inspection`、`study.list_candidates`、`study.get_candidate` 与 `study.preview_evidence`
 > 日期：2026-07-18
 > 工具名和 schema 在实现前仍可调整；一旦 V1 发布即按版本策略维护。
 
@@ -17,7 +17,7 @@ MCP 工具服务于用户意图，而不是暴露内部 Worker。工具层必须
 
 官方工具设计参考：[Describe tools](https://developers.openai.com/apps-sdk/build/mcp-server#step-2--describe-tools)。
 
-当前桥实现协议握手、动态工具发现、零参数只读能力快照，以及可信会话中的本地 source/output opaque grant、幂等项目/素材登记与有界确定性素材检查。没有原生 launcher audience 时只公开 `system.get_capabilities`；可信 audience 由父 PID、固定 launcher 可执行文件、当前 OS 用户 SID 摘要和每进程随机 nonce 派生，工具参数不能自报。桥仍不接受任意路径、URL、调用方构造的 Artifact 或 OperationIntent，也不公开候选发现、模型生成、导出、Anki 写入、凭据、原始 Worker 或 Shell；下文其余工具仍是后续里程碑的目标合同。
+当前桥实现协议握手、动态工具发现、零参数只读能力快照，以及可信会话中的本地 source/output opaque grant、幂等项目/素材登记、有界确定性素材检查和现有认证 Discovery 的候选列表/详情/证据预览。没有原生 launcher audience 时只公开 `system.get_capabilities`；可信 audience 由父 PID、固定 launcher 可执行文件、当前 OS 用户 SID 摘要和每进程随机 nonce 派生，工具参数不能自报。桥仍不接受任意路径、URL、调用方构造的 Artifact 或 OperationIntent，也不公开启动候选发现、候选选择、模型生成、导出、Anki 写入、凭据、原始 Worker 或 Shell；除明确标为 CURRENT 的工具外，下文仍是后续里程碑的目标合同。
 
 ## 2. 公共请求约定
 
@@ -165,7 +165,7 @@ list_projects、get_project、get_artifact、任务和预览工具都先校验�
 | study.resume_task | false | false | true | true |
 | study.list_candidates | true | false | true | false |
 | study.get_candidate | true | false | true | false |
-| study.preview_evidence | true | false | true | true |
+| study.preview_evidence | true | false | true | false |
 | study.edit_candidate | false | false | true | false |
 | study.set_selection | false | false | true | false |
 | study.plan_cards | false | false | true | true |
@@ -209,7 +209,7 @@ destructiveHint 表示工具可能终止任务、撤销授权或持久修改外�
 | study.resume_task | 从安全检查点继续 | 模型/媒体调用 | 原授权失效或扩大范围时 |
 | study.list_candidates | 分页读取候选 | 只读 | 无 |
 | study.get_candidate | 候选、证据和关系详情 | 只读 | 无 |
-| study.preview_evidence | 预览受控证据片段 | 读取来源 | 无 |
+| study.preview_evidence | 预览受控证据片段 | 读取认证本地快照 | 无 |
 | study.edit_candidate | 语义编辑、拆分等；锁定需受信用户事件 | 本地写入 | lock/unlock 必须真实用户动作 |
 | study.set_selection | 保存候选组合 | 本地写入 | 无 |
 | study.plan_cards | 生成 CardPlan | 模型可选、本地写入 | 超出预算时 |
@@ -438,7 +438,7 @@ CURRENT 输入只接受一个认证 `inspectionHandle`。工具只读取已经�
 
 工具描述必须明确会调用模型并可能访问外部网络。模型只能看到本次任务所需的最小来源片段。每个候选同时生成 versioned GateEvaluationSet；eligibility 由 Service 根据当前规则集派生，模型或调用方不能直接指定。
 
-CURRENT 实现边界：内部 CandidateDiscoveryRuntime 已能冻结模型、授权、egress、成本与输入身份，并以可恢复任务原子提交 `candidates_ready`；任务级 Service Broker 适配器已经支持 OpenAI-compatible、Anthropic 与 Gemini，并由 Card Service 从当前可信 Broker、audience、project revision、`inspectionHandle` 与候选预算派生全部非秘密授权摘要。公共工具仍未注册，因为当前内部方法会同步等待 proposer/reviewer；正式 MCP 必须先提供异步 start/poll/cancel/resume，不能阻塞 stdio。正式公开输入只保留 RequestContext、当前 `inspectionHandle` 和 candidateBudget，不接受 sourceRefs、learningContractRef、modelProfileRef、authorizationRecordDigest、constraintsDigest、exactScopeDigest、credentialRevision 或 egress manifest；模型方案由已批准的 Service-owned method binding 唯一确定。
+CURRENT 实现边界：内部 CandidateDiscoveryRuntime 已能冻结模型、授权、egress、成本与输入身份，并以可恢复任务原子提交 `candidates_ready`；任务级 Service Broker 适配器已经支持 OpenAI-compatible、Anthropic 与 Gemini，并由 Card Service 从当前可信 Broker、audience、project revision、`inspectionHandle` 与候选预算派生全部非秘密授权摘要。`study.start_discovery` 仍未注册，因为当前内部方法会同步等待 proposer/reviewer；正式 MCP 必须先提供异步 start/poll/cancel/resume，不能阻塞 stdio。只读的 `study.list_candidates`、`study.get_candidate` 与 `study.preview_evidence` 已注册，它们只能读取已经存在的认证 Discovery。未来 discovery 公共输入只保留 RequestContext、当前 `inspectionHandle` 和 candidateBudget，不接受 sourceRefs、learningContractRef、modelProfileRef、authorizationRecordDigest、constraintsDigest、exactScopeDigest、credentialRevision 或 egress manifest；模型方案由已批准的 Service-owned method binding 唯一确定。
 
 ### 6.2 study.get_task
 
@@ -498,17 +498,15 @@ Anki 恢复在任何写动作前，用原 ImportPlan、APKG/package hash、CardI
 
 ### 7.1 study.list_candidates
 
-输入：
+CURRENT 输入：
 
 ~~~ts
 {
-  context: RequestContext;
-  discoveryRef: string;
+  discoveryHandle: string;
   filter?: {
     eligibility?: LearningCandidate["eligibility"][];
-    selectionState?: ("selected" | "unselected")[];
     route?: LearningRoute[];
-    sourceRefs?: string[];
+    sourceHandles?: string[];
     query?: string;
   };
   sort?: "recommended" | "source_order" | "review_cost";
@@ -517,33 +515,53 @@ Anki 恢复在任何写动作前，用原 ImportPlan、APKG/package hash、CardI
 }
 ~~~
 
-LearningCandidate 与 LearningRoute 引用 [Study IR](STUDY_IR_REFERENCE.md) 的固定枚举；调用方提交未知值时 schema 拒绝，不能把来源或模型自由文本当作过滤控制值。
+`discoveryHandle`、`sourceHandles` 和返回的 `candidateHandle` 都是 audience/session 绑定的不透明句柄，不是内部 ArtifactRef。LearningCandidate 与 LearningRoute 引用 [Study IR](STUDY_IR_REFERENCE.md) 的固定枚举；未知值由闭合 schema 拒绝。
 
 输出分页摘要，不返回完整原文或所有诊断：
 
-- candidateId、目标摘要、来源摘要。
-- eligibility、selectionState、推荐理由、风险、预计复习成本。
-- 是否被选择和锁定。
+- candidateId、目标摘要和不含路径的来源摘要。
+- eligibility、selectionState、推荐理由、风险和预计复习成本。
+- 服务端门禁 pass/review/fail 计数、证据数量和是否安全抑制。
+- 下一页不透明 cursor；服务端上限为 100 项。
 
-limit 有服务端上限，避免对话上下文爆炸。
+CURRENT cursor 由 Card Service 认证并同时绑定 service instance、Discovery 摘要、规范化筛选条件、排序和末项 candidateId；篡改、跨查询复用、跨服务复用或候选集合变化都会拒绝。当前尚无 SelectionArtifact，所以 `selectionState` 只会是 `unselected`，selectionState 筛选在 `study.set_selection` 实现前不进入公共 schema。
 
 ### 7.2 study.get_candidate
 
-返回单一候选的：
+CURRENT 输入：
 
-- Objective。
-- GateResult 和分项评分。
-- EvidenceAnchor 摘要。
-- duplicate/conflict/prerequisite 关系。
-- 支持的 Card route。
-- 用户编辑历史。
+~~~ts
+{
+  discoveryHandle: string;
+  candidateHandle: string;
+}
+~~~
+
+Service 先验证 Discovery 是项目当前最新发现，再验证 candidateHandle 确实属于该 Discovery。返回单一候选的：
+
+- Objective、服务端派生的 eligibility、GateResult 和分项评分。
+- EvidenceAnchor 摘要和 quote digest，但不返回证据正文。
+- duplicate/conflict/prerequisite 关系、支持路线、风险和安全抑制状态。
+- 当前用户编辑历史与锁定投影；CURRENT 尚未实现编辑/锁定，因此分别为空和 false。
+
+响应不包含内部 ArtifactRef、RegistryAuthRef、BlobRef、InputFingerprint、模型提示词、授权记录或本机路径。
 
 ### 7.3 study.preview_evidence
 
-输入 evidenceId、上下文窗口大小。服务端限制最大字符、页数或媒体时长。
+CURRENT 输入：
 
-输出受控片段和定位器；本地绝对路径用 display name/opaque ref 替代。优先读取认证快照；若适配器必须重新打开远程来源，工具的 openWorldHint=true，并在读取前重验 networkResourceRef、重定向策略、撤销状态和 source revision。
+~~~ts
+{
+  discoveryHandle: string;
+  candidateHandle: string;
+  evidenceId: string;
+  contextCharacters?: number; // 0..480，默认 160
+}
+~~~
 
+Service 从认证内容寻址的本地 SourceRepresentation 快照重放 evidenceId，重新校验 node bounds 与 quote SHA-256，只返回目标 quote、同一 node 内有界前后文、无路径来源摘要和文本/字幕定位器。即使上游发现已经执行披露过滤，预览仍独立对完整 node 重跑密钥、本机路径和敏感 URL 检查；命中时返回 `EVIDENCE_PREVIEW_REDACTED`，不返回局部安全片段。
+
+CURRENT 实现不会重新打开远程来源，固定返回 `snapshotBacked=true`、`networkAccessed=false`，所以 `openWorldHint=false`。将来若增加远程回源，必须另建显式 open-world 工具或升级合同，并在读取前重验 networkResourceRef、重定向策略、撤销状态和 source revision。
 ### 7.4 study.edit_candidate
 
 只接受 [Study IR](STUDY_IR_REFERENCE.md) 中 CandidateEditOperation 的 Agent 可写子集；CardPlanEditOperation 在本工具 schema 中非法。普通 MCP 参数不含 provenance，Service 固定注入 actor=agent，并按当前 revision 解析全部 EntityRef。

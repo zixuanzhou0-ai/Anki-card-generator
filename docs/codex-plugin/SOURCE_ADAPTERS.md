@@ -136,7 +136,7 @@ Agent 不能直接提交任意绝对路径。用户通过宿主附件或本地�
 - 规范路径仍在授权根。
 - 文件身份和元数据未发生未解释变化。
 - 没有 symlink、junction、reparse point、UNC、设备路径、ADS 或保留名逃逸。
-CURRENT M2 内部 `LocalResourceGrantRegistry` 已实现 file/directory/output ref 的上述根授权、短期 audience/service 绑定、动作与资源上限、逐次身份重验、幂等消费和撤销，并由 Card Service 的惰性 `ServiceResourceRuntime` 统一拥有。真实本地 picker 已通过加密私有响应和短期精确 attestation 接到 adapter；可信 stdio 会话现在可用 `system.request_source_grant`/`system.request_output_grant` 取得这些 opaque ref。`study.register_inputs` 已把 file/directory ref 绑定到可恢复 StudyTask、task-local snapshot、内容寻址 Blob/目录 manifest、认证 `study.source-asset` 和项目 `sources_ready` 提交。`study.start_source_inspection` 现可对纯文本、Markdown、代码、HTML、字幕以及目录内受支持成员生成确定性表示与明确覆盖率；未知/PDF/Office/音视频等尚无安全解析器时保持 C 级阻塞。宿主附件、网络来源、candidate discovery 与 APKG 输出绑定尚未接线，因此“已检查素材”仍不等于“已经筛出适合学习的知识点”。
+CURRENT M2 内部 `LocalResourceGrantRegistry` 已实现 file/directory/output ref 的上述根授权、短期 audience/service 绑定、动作与资源上限、逐次身份重验、幂等消费和撤销，并由 Card Service 的惰性 `ServiceResourceRuntime` 统一拥有。真实本地 picker 已通过加密私有响应和短期精确 attestation 接到 adapter；可信 stdio 会话现在可用 `system.request_source_grant`/`system.request_output_grant` 取得这些 opaque ref。`study.register_inputs` 已把 file/directory ref 绑定到可恢复 StudyTask、task-local snapshot、内容寻址 Blob/目录 manifest、认证 `study.source-asset` 和项目 `sources_ready` 提交。`study.start_source_inspection` 现可对纯文本、Markdown、代码、HTML、字幕以及目录内受支持成员生成确定性表示与明确覆盖率；未知/PDF/Office/音视频等尚无安全解析器时保持 C 级阻塞。对已经形成认证表示的本地来源，内部双角色 candidate discovery 与公开 `study.list_candidates`/`study.get_candidate`/`study.preview_evidence` 已接线，可在最新 Discovery 上读取门禁派生的候选并从本地快照有界重放证据；公共 `study.start_discovery` 仍等待异步任务合同。宿主附件、生产受信 URL 输入、网络来源 staging 和 APKG 输出绑定尚未接线，因此当前能力不等于“Codex 可读的任意素材都能直接制卡”。
 
 
 ### 5.2 目录

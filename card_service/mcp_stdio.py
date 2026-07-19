@@ -5,6 +5,12 @@ import re
 import sys
 from typing import Any, TextIO
 
+from .mcp_candidate_tools import (
+    CANDIDATE_TOOL_NAMES,
+    McpCandidateToolInputError,
+    call_candidate_tool,
+    candidate_tool_definitions,
+)
 from .mcp_input_tools import (
     INPUT_TOOL_NAMES,
     McpInputToolInputError,
@@ -120,6 +126,7 @@ def _tool_definitions(
         definitions.extend(project_tool_definitions())
         definitions.extend(input_tool_definitions())
         definitions.extend(inspection_tool_definitions())
+        definitions.extend(candidate_tool_definitions())
     return definitions
 
 
@@ -205,8 +212,9 @@ def _handle_request(
                     "Start with system.get_capabilities. Trusted launcher sessions may request "
                     "opaque source and output grants through native pickers and create a local "
                     "Study project, freeze selected InputRefs with study.register_inputs, then "
-                    "run deterministic source inspection. Candidate discovery, generation, export, "
-                    "import, credentials, and raw Worker commands remain unavailable."
+                    "run deterministic source inspection. Existing authenticated candidate discoveries "
+                    "can be listed and reviewed with bounded evidence replay. Starting candidate discovery, "
+                    "generation, export, import, credentials, and raw Worker commands remain unavailable."
                 ),
             },
         )
@@ -291,6 +299,23 @@ def _handle_request(
             except Exception:
                 return _response(request_id, result=_tool_error())
             return _response(request_id, result=result)
+        if tool_name in CANDIDATE_TOOL_NAMES:
+            if audience_session is None:
+                return _rpc_error(request_id, -32602, "Unknown tool")
+            try:
+                result = call_candidate_tool(
+                    service,
+                    tool_name=str(tool_name),
+                    arguments=arguments,
+                    audience_session=audience_session,
+                )
+            except McpCandidateToolInputError:
+                return _rpc_error(request_id, -32602, "Invalid candidate tool arguments")
+            except CardServiceError as error:
+                return _response(request_id, result=_tool_error(error))
+            except Exception:
+                return _response(request_id, result=_tool_error())
+            return _response(request_id, result=result)
         if tool_name != CAPABILITY_TOOL_NAME:
             return _rpc_error(request_id, -32602, "Unknown tool")
         if not isinstance(arguments, dict) or arguments:
@@ -326,8 +351,9 @@ def _handle_request(
                         "type": "text",
                         "text": (
                             "The local Card Service capability snapshot is available. "
-                            "Deterministic source inspection is available. Candidate discovery, "
-                            "generation, and Anki delivery remain disabled at this milestone."
+                            "Deterministic source inspection and authenticated candidate review are "
+                            "available. Starting candidate discovery, generation, and Anki delivery "
+                            "remain disabled at this milestone."
                         ),
                     }
                 ],

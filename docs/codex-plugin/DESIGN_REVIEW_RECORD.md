@@ -54,7 +54,7 @@ Hermes 本地封装席的结论是 `needs-contract-hardening`，置信度 0.74�
 | M3 tools-only 工具合同 | 已冻结 37 个工具、schema、注解、错误、幂等和任务语义（新增版本化 study.update_learning_contract） | 待实现 |
 | 目标 Codex 宿主/stdio 预检 | 已加入 host capability、M3 阻断与 APKG-only 降级 | 待实测 |
 | Anki 确认不可旁路 | 已改为 ImportPlan → 模型外批准 → importIntentId | 待实现 |
-| 学习硬门禁可机器审计 | 已加入 GateEvaluationSet、规则版本、revision 与 stale 语义 | CURRENT `candidate-gates-language-v1` 内核、认证 CandidateProposal → GateEvaluation → Discovery 图、角色/schema 分离的提案-复核引擎、冻结模型/授权/成本身份的内部可恢复任务与原子项目提交，以及任务级 Service Broker/授权摘要派生；异步公共 discovery、逐角色检查点与 benchmark 待实现 |
+| 学习硬门禁可机器审计 | 已加入 GateEvaluationSet、规则版本、revision 与 stale 语义 | CURRENT `candidate-gates-language-v1` 内核、认证 CandidateProposal → GateEvaluation → Discovery 图、角色/schema 分离的提案-复核引擎、冻结模型/授权/成本身份的内部可恢复任务与原子项目提交、任务级 Service Broker/授权摘要派生，以及公共 list/detail/evidence 只读投影；异步公共 discovery、选择、逐角色检查点与 benchmark 待实现 |
 | Artifact 防篡改与 stale | 已加入 canonical preimage、认证注册表、EntityRef 与攻击测试 | CURRENT Registry、证据回放和候选单向图子项；完整跨 Registry 事务与全部领域 Artifact 待实现 |
 | M3 来源范围冻结 | 已固定本地视频/字幕与安全公开视频 URL；其他来源后移 | 待实现 |
 
@@ -96,6 +96,9 @@ M0 已完成：Computer Use 已在真实 Anki 26.05 中完成翻面、焦点、�
 内部双角色候选发现已接入现有 Service Broker，但仍保持“模型提案、服务裁决”：proposer/reviewer 的 prompt、输入/输出 schema 和 Broker workUnitId 分离；eligibility、scores、重复判定、GateResult、用户锁与项目状态仍只由确定性 Service 代码产生。任务在冻结模型 identity 后才生成 taskId，再由 provider 为该 task 绑定 handler；身份变化、授权过期、凭据修订变化、撤销、预算不足或非严格 JSON 均失败关闭。
 
 Service Broker 适配器只支持固定的 OpenAI-compatible、Anthropic 与 Gemini JSON 请求形状。调用方和模型都不能提交 Provider、Base URL、model、credentialRevision、OperationIntent、authorizationRecordDigest、scope、egress 或 CostBudget；Card Service 从当前可信短期 Broker 清单、可信 audience、project revision、inspectionHandle 和 candidateBudget 派生这些非秘密摘要。响应只接受一个 JSON 对象，Markdown fence、重复 key、tool block、多 choice/part、超限输入/输出均拒绝。该更新通过 51 项候选/Broker/Issuer 组合测试，正式 Python `tests` 全集为 1388 passed、1 skipped；但它尚未把公共 MCP 写成同步远程调用：必须先实现异步 start/poll/cancel/resume，才开放 `study.start_discovery`。
+
+候选查询评审采用“先证明当前图，再投影最小信息”的边界：`study.list_candidates` 只接收 Discovery opaque handle 和闭合筛选/排序，认证 cursor 同时绑定 service instance、Discovery digest、规范化 query 与末项；`study.get_candidate` 要求 candidateHandle 属于同一最新 Discovery；`study.preview_evidence` 只从内容寻址快照重放，并在返回 quote 前再次复核 node bounds、digest 和整 node 敏感披露策略。列表/详情不会返回来源正文，预览最多返回同一 node 内 480 字符前后文；三个工具均不接受 ArtifactRef、BlobRef、路径、Provider、授权或凭据，且固定 `openWorldHint=false`。
+该切片没有为了演示完整流程而同步开放远程发现。`study.start_discovery` 仍等待真正的异步 start/poll/cancel/resume；selectionState 暂时只有 unselected，不能在 SelectionArtifact 实现前伪造选择。候选/Artifact/MCP 定向回归共 67 项通过，覆盖游标篡改、跨查询、跨 session、跨 Discovery、旧 Discovery、证据 digest、内部 ref/路径泄漏和纵深敏感上下文阻断；正式 Python `tests` 全集为 1402 passed、1 skipped。
 
 ## 5. 仍未消除的不确定性
 

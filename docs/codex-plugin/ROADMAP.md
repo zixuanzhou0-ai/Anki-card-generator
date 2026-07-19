@@ -259,6 +259,8 @@ CURRENT 又新增统一 `StudyRuntime` composition root 与首个项目写工具
 
 受控模型接线切片现已新增任务级 `BrokerCandidateDiscoveryModelProvider`：proposer/reviewer 共用同一短期 Broker 授权和模型身份，但使用两个稳定且互异的 workUnitId；OpenAI-compatible、Anthropic 与 Gemini 请求均由 Service 重建，Provider/Base URL/model/credential 不由调用方或模型选择。模型只返回一个严格 JSON 对象；Markdown fence、重复 key、工具块、多候选/多文本段、超限 prompt/response 均失败关闭。Card Service 依据当前可信 Broker 清单、audience、project revision、inspectionHandle 与候选预算派生非秘密 OperationIntent/authorization/constraints/exact-scope/cost/egress 摘要，MCP 调用方不能提交这些字段。51 项候选/Broker/Issuer 组合测试已经通过，正式 Python `tests` 全集为 1388 passed、1 skipped。公共 `study.start_discovery` 仍未注册：当前调用会同步跨越远程模型阶段，必须先补真正的异步 start/poll/cancel/resume 合同，不能为了“看起来可用”而阻塞 stdio。
 
+候选只读公共切片现已开放 `study.list_candidates`、`study.get_candidate` 与 `study.preview_evidence`。三个工具只接受 audience/session 绑定的 Discovery/Candidate/Source opaque handle，不接受 ArtifactRef、路径、BlobRef、模型配置或授权字段。列表提供 eligibility/route/source/query 筛选、三种稳定排序和服务认证的 query-bound cursor，单页最多 100 项；详情返回 Objective、服务端派生门禁/评分和不含正文的证据摘要；证据预览只从认证本地快照重放同一 node 内最多 480 字符上下文，再独立执行敏感披露检查，绝不远程回源。过期 Discovery、跨发现候选、跨 session handle、游标篡改/跨查询复用和相邻敏感上下文均失败关闭。67 项候选/Artifact/MCP 定向测试及正式 Python `tests` 全集 1402 passed、1 skipped 已通过。`study.start_discovery` 仍因缺少异步 start/poll/cancel/resume 而关闭，`study.set_selection` 及 SelectionArtifact 是下一切片。
+
 Artifact Registry、StudyTask、Project Registry、AuthorizationLedger、CredentialStore、ServiceProfileRegistry、profile verification、legacy projection 与 local/network resource ledger 仍未作为同一事务边界接入 Card Service 公共 MCP surface，Learning Contract 尚未发布为 canonical Artifact ref。正式 service key rotation、完整应用数据 ACL、Codex 宿主进程身份证明、精细 scope relation proof、完整 Broker reservation 与授权联合事务、受信设置事务、`system.validate_profile` 公共任务和 Anki 证据链仍在后续切片。公共 MCP 在这些边界完成前仍不能接受任意 ArtifactRef 对象或开放生成、APKG 导出与 Anki 写操作。
 
 ### 出口
@@ -292,7 +294,7 @@ Artifact Registry、StudyTask、Project Registry、AuthorizationLedger、Credent
 - system.request_source_grant、system.request_output_grant、system.request_network_grant、system.request_operation_confirmation、system.revoke_grant。
 - study.list_projects、study.get_project、study.create_project、study.update_learning_contract、study.register_inputs、study.start_source_inspection、study.get_source_inspection。
 - study.start_discovery、study.get_task、study.list_recoverable_tasks、study.cancel_task、study.resume_task。
-- study.list_candidates、study.get_candidate、study.preview_evidence、study.edit_candidate、study.set_selection。
+- study.list_candidates、study.get_candidate、study.preview_evidence（CURRENT）；study.edit_candidate、study.set_selection（后续）。
 - study.plan_cards、study.list_card_plans、study.edit_card_plan、study.validate_card_plans、cards.generate、cards.export_apkg。
 - anki.prepare_import、anki.request_import_confirmation、anki.import_and_verify(importIntentId)。
 - study.get_artifact、study.get_audit。
