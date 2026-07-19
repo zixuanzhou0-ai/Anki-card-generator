@@ -207,6 +207,38 @@ class CandidateDiscoveryRuntime:
             )
         return {"target": target, "maximum": maximum}
 
+    @staticmethod
+    def recover_candidate_budget(
+        work_partition_policy_digest: str,
+    ) -> dict[str, int]:
+        if not isinstance(work_partition_policy_digest, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", work_partition_policy_digest
+        ):
+            raise CandidateDiscoveryRuntimeError(
+                "DISCOVERY_RECOVERY_INVALID",
+                "Candidate discovery recovery metadata is invalid",
+            )
+        matches: list[dict[str, int]] = []
+        for maximum in range(1, _MAX_CANDIDATES + 1):
+            for target in range(1, maximum + 1):
+                budget = {"target": target, "maximum": maximum}
+                digest = _digest(
+                    {
+                        "schema": "study.candidate-discovery.partition",
+                        "schemaVersion": 1,
+                        "phases": ["proposal", "review", "gate_publication"],
+                        "candidateBudget": budget,
+                    }
+                )
+                if digest == work_partition_policy_digest:
+                    matches.append(budget)
+        if len(matches) != 1:
+            raise CandidateDiscoveryRuntimeError(
+                "DISCOVERY_RECOVERY_INVALID",
+                "Candidate discovery budget could not be recovered safely",
+            )
+        return matches[0]
+
     def _resolve_inspection(
         self,
         *,
@@ -263,6 +295,27 @@ class CandidateDiscoveryRuntime:
                 "discoveryPolicyVersion": DISCOVERY_POLICY_VERSION,
                 "proposalRoleVersion": PROPOSAL_ROLE_VERSION,
                 "reviewRoleVersion": REVIEW_ROLE_VERSION,
+            }
+        )
+
+    def _recovery_authorization_scope_digest(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_id: str,
+        project_revision: int,
+        inspection_handle: str,
+        candidate_budget: Mapping[str, int],
+    ) -> str:
+        return _digest(
+            {
+                "schema": "study.candidate-discovery.exact-scope",
+                "schemaVersion": 1,
+                "audience": audience.audience(self._service_instance_id),
+                "projectId": project_id,
+                "projectRevision": project_revision,
+                "inspectionHandle": inspection_handle,
+                "candidateBudget": dict(candidate_budget),
             }
         )
 
@@ -480,12 +533,28 @@ class CandidateDiscoveryRuntime:
         authorization: CandidateDiscoveryAuthorization,
         task_ready_callback: Callable[[str], bool | None] | None = None,
         cancellation_requested: Callable[[], bool] | None = None,
+        predecessor_task_id: str | None = None,
+        resume_operation_id: str | None = None,
+        predecessor_authorization_audit_ref: str | None = None,
     ) -> dict[str, Any]:
         if not isinstance(idempotency_key, str) or not _IDEMPOTENCY_RE.fullmatch(
             idempotency_key
         ):
             raise CandidateDiscoveryRuntimeError(
                 "DISCOVERY_REQUEST_INVALID", "idempotencyKey is invalid"
+            )
+        recovery_values = (
+            predecessor_task_id,
+            resume_operation_id,
+            predecessor_authorization_audit_ref,
+        )
+        is_recovery = any(value is not None for value in recovery_values)
+        if is_recovery and not all(
+            isinstance(value, str) and bool(value) for value in recovery_values
+        ):
+            raise CandidateDiscoveryRuntimeError(
+                "DISCOVERY_RECOVERY_INVALID",
+                "Candidate discovery recovery binding is incomplete",
             )
         if (
             isinstance(expected_project_revision, bool)
@@ -501,6 +570,19 @@ class CandidateDiscoveryRuntime:
             project_id=project_id,
             inspection_handle=inspection_handle,
         )
+        if is_recovery:
+            expected_scope_digest = self._recovery_authorization_scope_digest(
+                audience=audience,
+                project_id=project_id,
+                project_revision=expected_project_revision,
+                inspection_handle=inspection_handle,
+                candidate_budget=budget,
+            )
+            if authorization.exact_scope_digest != expected_scope_digest:
+                raise CandidateDiscoveryRuntimeError(
+                    "DISCOVERY_RECOVERY_AUTH_SCOPE_MISMATCH",
+                    "Recovery authorization is not bound to the exact recovery scope",
+                )
         try:
             project = self._projects.get_project(project_id, audience)
         except ProjectRegistryError as error:
@@ -566,30 +648,77 @@ class CandidateDiscoveryRuntime:
             )
         except TaskManifestError as error:
             raise CandidateDiscoveryRuntimeError(error.code, error.message) from error
-        task_id = "task_discovery_" + operation_digest[:40]
         try:
-            task = self._tasks.create_task(
-                audience=audience,
-                work_reuse_manifest=work,
-                task_input_manifest=task_input,
-                capability_binding=capability,
-                authorization_binding=task_authorization,
-                work_units=[
-                    {
-                        "workUnitId": "candidate-discovery",
-                        "phase": "discovery",
-                    }
-                ],
-                _task_id=task_id,
-            )
-        except StudyTaskError as error:
-            if error.code != "TASK_ALREADY_EXISTS":
-                raise CandidateDiscoveryRuntimeError(error.code, error.message) from error
-            task = self._tasks.get_task(task_id, audience)
-            if task.get("inputFingerprint") != input_fingerprint:
-                raise CandidateDiscoveryRuntimeError(
-                    "TASK_INPUT_MISMATCH", "Recoverable discovery task input changed"
+            if is_recovery:
+                assert isinstance(predecessor_task_id, str)
+                assert isinstance(resume_operation_id, str)
+                assert isinstance(predecessor_authorization_audit_ref, str)
+                predecessor_record = self._tasks.get_recovery_record(
+                    predecessor_task_id, audience
                 )
+                if predecessor_record.get("workReuseManifest") != work:
+                    raise CandidateDiscoveryRuntimeError(
+                        "DISCOVERY_RECOVERY_SCOPE_CHANGED",
+                        "Recovery project, inspection, candidate budget, or service profile changed",
+                    )
+                predecessor_input = predecessor_record.get("taskInputManifest")
+                if (
+                    not isinstance(predecessor_input, Mapping)
+                    or predecessor_input.get("costBudgetDigest")
+                    != authorization.cost_budget_digest
+                ):
+                    raise CandidateDiscoveryRuntimeError(
+                        "DISCOVERY_RECOVERY_BUDGET_CHANGED",
+                        "Recovery authorization changed the remote cost budget",
+                    )
+                task = self._tasks.create_successor_task(
+                    predecessor_task_id,
+                    audience,
+                    operation_id=resume_operation_id,
+                    authorization_binding=task_authorization,
+                    capability_binding=capability,
+                    service_bindings=task_input["serviceBindings"],
+                    scope_relation="equivalent",
+                    predecessor_authorization_audit_ref=predecessor_authorization_audit_ref,
+                    successor_authorization_audit_ref=(
+                        "authorization-record:"
+                        + authorization.authorization_record_digest
+                    ),
+                    operation_intent_digest=task_input.get("operationIntentDigest"),
+                    cost_budget_digest=task_input.get("costBudgetDigest"),
+                    batch_policy_digest=task_input.get("batchPolicyDigest"),
+                    allow_reauthorization=True,
+                )
+                task_id = str(task["taskId"])
+                input_fingerprint = str(task["inputFingerprint"])
+            else:
+                task_id = "task_discovery_" + operation_digest[:40]
+                try:
+                    task = self._tasks.create_task(
+                        audience=audience,
+                        work_reuse_manifest=work,
+                        task_input_manifest=task_input,
+                        capability_binding=capability,
+                        authorization_binding=task_authorization,
+                        work_units=[
+                            {
+                                "workUnitId": "candidate-discovery",
+                                "phase": "discovery",
+                            }
+                        ],
+                        _task_id=task_id,
+                    )
+                except StudyTaskError as error:
+                    if error.code != "TASK_ALREADY_EXISTS":
+                        raise
+                    task = self._tasks.get_task(task_id, audience)
+                    if task.get("inputFingerprint") != input_fingerprint:
+                        raise CandidateDiscoveryRuntimeError(
+                            "TASK_INPUT_MISMATCH",
+                            "Recoverable discovery task input changed",
+                        ) from error
+        except StudyTaskError as error:
+            raise CandidateDiscoveryRuntimeError(error.code, error.message) from error
         if task["state"] not in {"queued", "running", "succeeded"}:
             raise CandidateDiscoveryRuntimeError(
                 "TASK_RECOVERY_REQUIRED",

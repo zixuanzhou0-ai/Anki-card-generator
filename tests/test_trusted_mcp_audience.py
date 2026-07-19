@@ -17,7 +17,7 @@ from card_service.trusted_mcp_audience import (
 )
 
 
-def test_mcp_session_identity_is_stable_for_one_proof_and_changes_with_nonce(
+def test_mcp_host_identity_is_stable_while_session_changes_with_nonce(
     tmp_path: Path,
 ) -> None:
     launcher = (tmp_path / "launcher.exe").resolve()
@@ -39,11 +39,35 @@ def test_mcp_session_identity_is_stable_for_one_proof_and_changes_with_nonce(
         nonce="c" * 64,
         mode="packaged_launcher",
     )
+    assert first.audience.host_id == changed.audience.host_id
+    assert first.audience.plugin_id == "anki-study-agent-plugin"
 
     assert first == repeated
     assert first.audience.session_id != changed.audience.session_id
-    assert first.audience.host_id != changed.audience.host_id
-    assert first.audience.plugin_id == "anki-study-agent-plugin"
+
+
+def test_mcp_host_identity_changes_with_owner_or_launcher(tmp_path: Path) -> None:
+    launcher = (tmp_path / "launcher.exe").resolve()
+    baseline = _derive_session(
+        owner_digest="a" * 64,
+        launcher=launcher,
+        nonce="b" * 64,
+        mode="packaged_launcher",
+    )
+    different_owner = _derive_session(
+        owner_digest="c" * 64,
+        launcher=launcher,
+        nonce="b" * 64,
+        mode="packaged_launcher",
+    )
+    different_launcher = _derive_session(
+        owner_digest="a" * 64,
+        launcher=(tmp_path / "other-launcher.exe").resolve(),
+        nonce="b" * 64,
+        mode="packaged_launcher",
+    )
+    assert baseline.audience.host_id != different_owner.audience.host_id
+    assert baseline.audience.host_id != different_launcher.audience.host_id
 
 
 def test_development_session_requires_explicit_factory_and_discloses_no_ids() -> None:

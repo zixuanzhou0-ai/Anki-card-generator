@@ -343,6 +343,8 @@ class StudyRuntime:
             "sourceInspection": True,
             "candidateDiscoveryRuntime": self.candidate_discovery is not None,
             "publicCandidateDiscovery": False,
+            "publicRecoverableTaskListing": True,
+            "publicCandidateDiscoveryRecovery": True,
             "publicCandidateQueries": True,
             "publicCandidateSelection": True,
             "cardPlanRuntime": True,
@@ -510,6 +512,9 @@ class StudyRuntime:
         candidate_budget: Mapping[str, Any],
         authorization: CandidateDiscoveryAuthorization,
         model_provider: CandidateDiscoveryModelProvider,
+        predecessor_task_id: str | None = None,
+        resume_operation_id: str | None = None,
+        predecessor_authorization_audit_ref: str | None = None,
     ) -> dict[str, Any]:
         try:
             discovery = CandidateDiscoveryRuntime(
@@ -549,6 +554,9 @@ class StudyRuntime:
                     authorization=authorization,
                     task_ready_callback=task_ready,
                     cancellation_requested=cancel_event.is_set,
+                    predecessor_task_id=predecessor_task_id,
+                    resume_operation_id=resume_operation_id,
+                    predecessor_authorization_audit_ref=predecessor_authorization_audit_ref,
                 )
             except Exception as error:
                 holder["error"] = error
@@ -739,12 +747,349 @@ class StudyRuntime:
                     )
             public["nextAction"] = (
                 "resume_task"
-                if public["state"] in {"failed", "interrupted"}
+                if public["resumability"] != "none"
                 else "resolve_issue"
             )
         else:
             public["nextAction"] = "poll_task"
         return public
+
+    def list_recoverable_study_tasks(
+        self, *, audience: ArtifactAudienceBinding, limit: int = 20
+    ) -> dict[str, Any]:
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise StudyRuntimeError(
+                "TASK_LIST_INVALID", "Recoverable task limit is invalid"
+            )
+        with self._active_discovery_lock:
+            active_task_ids = frozenset(self._active_discoveries)
+        try:
+            recoverable = self.tasks.list_recoverable_tasks(
+                audience,
+                limit=limit,
+                include_active=True,
+                exclude_task_ids=active_task_ids,
+                intent="discover_candidates",
+            )
+            discovery_tasks: list[dict[str, Any]] = []
+            for task in recoverable:
+                task_id = str(task["taskId"])
+                if task["state"] in {"queued", "running", "cancelling"}:
+                    with self._active_discovery_lock:
+                        if task_id in self._active_discoveries:
+                            continue
+                    try:
+                        task = self.tasks.interrupt_stale_task(
+                            task_id,
+                            audience,
+                            expected_revision=int(task["taskRevision"]),
+                            operation_id=(
+                                "interrupt-orphan-"
+                                + hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:32]
+                            ),
+                            allow_current_audience_orphan=True,
+                        )
+                    except StudyTaskError as error:
+                        if error.code in {
+                            "TASK_REVISION_CONFLICT",
+                            "TASK_STATE_CONFLICT",
+                        }:
+                            continue
+                        raise
+                try:
+                    self.candidate_discovery_recovery_request(
+                        audience=audience, task_id=task_id
+                    )
+                    discovery_tasks.append(
+                        self._public_discovery_task(task, audience)
+                    )
+                except StudyRuntimeError as error:
+                    if error.code in {
+                        "TASK_RECOVERY_STALE",
+                        "DISCOVERY_RECOVERY_INVALID",
+                        "TASK_NOT_RECOVERABLE",
+                        "TASK_RESUME_UNSUPPORTED",
+                    }:
+                        continue
+                    raise
+        except (
+            StudyTaskError,
+            ArtifactRegistryError,
+            ProjectRegistryError,
+        ) as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+        return {
+            "schemaVersion": 1,
+            "tasks": discovery_tasks,
+            "returnedTasks": len(discovery_tasks),
+            "nextAction": "resume_task" if discovery_tasks else "none",
+        }
+
+    def resolve_candidate_discovery_recovery_target(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        task_id: str,
+        idempotency_key: str,
+    ) -> tuple[str, dict[str, Any] | None]:
+        current_task_id = task_id
+        operation_id = "resume:" + idempotency_key
+        try:
+            for _ in range(64):
+                successor = self.tasks.get_successor_task(
+                    current_task_id, operation_id, audience
+                )
+                if successor is None:
+                    return current_task_id, None
+                if successor.get("intent") != "discover_candidates":
+                    raise StudyRuntimeError(
+                        "TASK_RESUME_UNSUPPORTED",
+                        "This task intent does not support public recovery",
+                    )
+                public = self._public_discovery_task(successor, audience)
+                persisted_state = str(successor.get("state"))
+                if persisted_state in {"queued", "running", "cancelling"}:
+                    successor_task_id = str(successor["taskId"])
+                    with self._active_discovery_lock:
+                        is_active_here = successor_task_id in self._active_discoveries
+                    if is_active_here:
+                        return current_task_id, public
+                    try:
+                        successor = self.tasks.interrupt_stale_task(
+                            successor_task_id,
+                            audience,
+                            expected_revision=int(successor["taskRevision"]),
+                            operation_id=(
+                                "interrupt-orphan-"
+                                + hashlib.sha256(
+                                    successor_task_id.encode("utf-8")
+                                ).hexdigest()[:32]
+                            ),
+                            allow_current_audience_orphan=True,
+                        )
+                    except StudyTaskError as error:
+                        if error.code in {
+                            "TASK_REVISION_CONFLICT",
+                            "TASK_STATE_CONFLICT",
+                        }:
+                            continue
+                        raise
+                    current_task_id = str(successor["taskId"])
+                    continue
+                if persisted_state == "succeeded":
+                    if public.get("state") == "succeeded":
+                        return current_task_id, public
+                    return current_task_id, None
+                if (
+                    persisted_state in {"failed", "cancelled", "interrupted"}
+                    and successor.get("resumability") != "none"
+                ):
+                    current_task_id = str(successor["taskId"])
+                    continue
+                return current_task_id, public
+        except (
+            StudyTaskError,
+            ArtifactRegistryError,
+            ProjectRegistryError,
+        ) as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+        raise StudyRuntimeError(
+            "TASK_LINEAGE_LIMIT",
+            "Candidate discovery recovery lineage is too deep",
+        )
+
+    def get_existing_recovery_successor(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        task_id: str,
+        idempotency_key: str,
+    ) -> dict[str, Any] | None:
+        _, existing = self.resolve_candidate_discovery_recovery_target(
+            audience=audience,
+            task_id=task_id,
+            idempotency_key=idempotency_key,
+        )
+        return existing
+
+    def candidate_discovery_recovery_request(
+        self, *, audience: ArtifactAudienceBinding, task_id: str
+    ) -> dict[str, Any]:
+        try:
+            record = self.tasks.get_recovery_record(task_id, audience)
+        except StudyTaskError as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+        task = record.get("task")
+        work = record.get("workReuseManifest")
+        if (
+            not isinstance(task, Mapping)
+            or not isinstance(work, Mapping)
+            or task.get("intent") != "discover_candidates"
+            or work.get("actionId") != "discover_candidates"
+        ):
+            raise StudyRuntimeError(
+                "TASK_RESUME_UNSUPPORTED",
+                "This task intent does not support public recovery",
+            )
+        if (
+            task.get("state") not in {"failed", "cancelled", "interrupted"}
+            or task.get("resumability") == "none"
+        ):
+            raise StudyRuntimeError(
+                "TASK_NOT_RECOVERABLE", "This task has no recoverable terminal state"
+            )
+        subject = work.get("subject")
+        if not isinstance(subject, Mapping):
+            raise StudyRuntimeError(
+                "DISCOVERY_RECOVERY_INVALID", "Recovery subject is invalid"
+            )
+        project_id = subject.get("projectId")
+        project_revision = subject.get("projectRevision")
+        input_artifacts = subject.get("inputArtifacts")
+        if (
+            not isinstance(project_id, str)
+            or isinstance(project_revision, bool)
+            or not isinstance(project_revision, int)
+            or not isinstance(input_artifacts, list)
+        ):
+            raise StudyRuntimeError(
+                "DISCOVERY_RECOVERY_INVALID", "Recovery subject is incomplete"
+            )
+        try:
+            project = self.projects.get_project(project_id, audience)
+        except ProjectRegistryError as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+        if (
+            project.get("projectRevision") != project_revision
+            or project.get("workflow", {}).get("artifactStage") != "sources_ready"
+        ):
+            raise StudyRuntimeError(
+                "TASK_RECOVERY_STALE",
+                "Project state changed after the recoverable discovery task",
+            )
+        input_identities = {
+            self._artifact_identity(value)
+            for value in input_artifacts
+            if isinstance(value, Mapping)
+        }
+        inspections = [
+            value
+            for value in project.get("latestArtifactRefs", [])
+            if isinstance(value, Mapping)
+            and value.get("payloadSchema") == "study.inspection"
+            and self._artifact_identity(value) in input_identities
+        ]
+        if len(inspections) != 1:
+            raise StudyRuntimeError(
+                "DISCOVERY_RECOVERY_INVALID",
+                "The original inspection is no longer current",
+            )
+        try:
+            budget = CandidateDiscoveryRuntime.recover_candidate_budget(
+                work.get("workPartitionPolicyDigest")
+            )
+        except CandidateDiscoveryRuntimeError as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+        authorization_binding = record.get("authorizationBinding")
+        bindings = (
+            authorization_binding.get("bindings")
+            if isinstance(authorization_binding, Mapping)
+            else None
+        )
+        if (
+            not isinstance(bindings, list)
+            or len(bindings) != 1
+            or not isinstance(bindings[0], Mapping)
+        ):
+            raise StudyRuntimeError(
+                "DISCOVERY_RECOVERY_INVALID",
+                "Recovery authorization binding is invalid",
+            )
+        authorization_digest = bindings[0].get("authorizationRecordDigest")
+        if (
+            not isinstance(authorization_digest, str)
+            or len(authorization_digest) != 64
+            or any(value not in "0123456789abcdef" for value in authorization_digest)
+        ):
+            raise StudyRuntimeError(
+                "DISCOVERY_RECOVERY_INVALID",
+                "Recovery authorization audit reference is invalid",
+            )
+        return {
+            "projectId": project_id,
+            "expectedProjectRevision": project_revision,
+            "inspectionHandle": self.artifacts.issue_handle(inspections[0], audience),
+            "candidateBudget": budget,
+            "predecessorAuthorizationAuditRef": (
+                "authorization-record:" + authorization_digest
+            ),
+        }
+
+    def resume_candidate_discovery_task(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        task_id: str,
+        idempotency_key: str,
+        authorization: CandidateDiscoveryAuthorization,
+        model_provider: CandidateDiscoveryModelProvider,
+        recovery_request: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        recovery_task_id, existing = self.resolve_candidate_discovery_recovery_target(
+            audience=audience,
+            task_id=task_id,
+            idempotency_key=idempotency_key,
+        )
+        if existing is not None:
+            return existing
+        current_request = self.candidate_discovery_recovery_request(
+            audience=audience, task_id=recovery_task_id
+        )
+        request = current_request
+        if recovery_request is not None:
+            request = dict(recovery_request)
+            stable_keys = (
+                "projectId",
+                "expectedProjectRevision",
+                "candidateBudget",
+                "predecessorAuthorizationAuditRef",
+            )
+            if any(request.get(key) != current_request.get(key) for key in stable_keys):
+                raise StudyRuntimeError(
+                    "DISCOVERY_RECOVERY_AUTH_SCOPE_MISMATCH",
+                    "Authorized recovery request no longer matches the recoverable task",
+                )
+            try:
+                authorized_ref, _ = self.artifacts.resolve_with_ref(
+                    str(request.get("inspectionHandle") or ""), audience
+                )
+                current_ref, _ = self.artifacts.resolve_with_ref(
+                    current_request["inspectionHandle"], audience
+                )
+            except ArtifactRegistryError as error:
+                raise StudyRuntimeError(error.code, error.message) from error
+            if self._artifact_identity(authorized_ref) != self._artifact_identity(
+                current_ref
+            ):
+                raise StudyRuntimeError(
+                    "DISCOVERY_RECOVERY_AUTH_SCOPE_MISMATCH",
+                    "Authorized recovery inspection no longer matches the recoverable task",
+                )
+        return self.start_candidate_discovery_task(
+            audience=audience,
+            project_id=request["projectId"],
+            expected_project_revision=request["expectedProjectRevision"],
+            idempotency_key=idempotency_key,
+            inspection_handle=request["inspectionHandle"],
+            candidate_budget=request["candidateBudget"],
+            authorization=authorization,
+            model_provider=model_provider,
+            predecessor_task_id=recovery_task_id,
+            resume_operation_id="resume:" + idempotency_key,
+            predecessor_authorization_audit_ref=request[
+                "predecessorAuthorizationAuditRef"
+            ],
+        )
 
     def get_source_inspection(
         self,

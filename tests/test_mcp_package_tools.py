@@ -11,10 +11,12 @@ from card_service.mcp_package_tools import (
     package_tool_definitions,
 )
 from card_service.mcp_task_tools import (
+    LIST_RECOVERABLE_TASKS_TOOL_NAME,
     CANCEL_TASK_TOOL_NAME,
     GET_TASK_TOOL_NAME,
     McpTaskToolInputError,
     call_task_tool,
+    RESUME_TASK_TOOL_NAME,
     task_tool_definitions,
 )
 from card_service.trusted_mcp_audience import create_development_mcp_audience
@@ -158,7 +160,12 @@ def test_package_export_rejects_open_ended_or_overwrite_inputs(mutation) -> None
 
 def test_task_tools_poll_and_cancel_without_private_task_fields() -> None:
     definitions = {value["name"]: value for value in task_tool_definitions()}
-    assert set(definitions) == {GET_TASK_TOOL_NAME, CANCEL_TASK_TOOL_NAME}
+    assert set(definitions) == {
+        GET_TASK_TOOL_NAME,
+        CANCEL_TASK_TOOL_NAME,
+        LIST_RECOVERABLE_TASKS_TOOL_NAME,
+        RESUME_TASK_TOOL_NAME,
+    }
     service = PackageService()
     session = create_development_mcp_audience()
     task_id = "task_package_export_" + "a" * 40

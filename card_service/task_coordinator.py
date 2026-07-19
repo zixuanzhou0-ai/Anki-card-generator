@@ -35,6 +35,7 @@ from .task_manifests import (
 
 MAX_RECORD_BYTES = 16 * 1024 * 1024
 MAX_OPERATIONS = 512
+MAX_RECOVERY_SCAN_RECORDS = 2048
 ID_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-")
 TASK_STATES = frozenset({"queued", "running", "cancelling", "succeeded", "failed", "cancelled", "interrupted"})
 ACTIVE_TASK_STATES = frozenset({"queued", "running", "cancelling"})
@@ -125,6 +126,7 @@ class StudyTaskCoordinator:
         self._root = _ensure_directory(Path(root).absolute())
         self._tasks_root = _ensure_directory(self._root / "tasks")
         self._checkpoints_root = _ensure_directory(self._root / "checkpoints")
+        self._lineage_locks_root = _ensure_directory(self._root / "lineage-locks")
         self._lock_path = self._root / "coordinator.lock"
         try:
             with self._lock_path.open("xb") as lock_file:
@@ -134,6 +136,8 @@ class StudyTaskCoordinator:
         except FileExistsError:
             pass
         self._thread_lock = threading.RLock()
+        self._lineage_thread_guard = threading.Lock()
+        self._lineage_thread_locks: dict[str, threading.RLock] = {}
 
     def _ensure_parent(self, path: Path) -> None:
         absolute = path.absolute()
@@ -154,6 +158,58 @@ class StudyTaskCoordinator:
             if not stat.S_ISREG(lock_info.st_mode) or stat.S_ISLNK(lock_info.st_mode) or lock_attributes & 0x400 or lock_info.st_nlink != 1:
                 raise StudyTaskError("TASK_STORAGE_UNSAFE", "Coordinator lock is not a private regular file")
             with self._lock_path.open("r+b") as lock_file:
+                lock_file.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+                    try:
+                        yield
+                    finally:
+                        lock_file.seek(0)
+                        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                    try:
+                        yield
+                    finally:
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    @contextmanager
+    def _successor_lineage_transaction(
+        self, lineage_task_id: str
+    ) -> Iterator[None]:
+        lineage = _require_id(lineage_task_id, "lineageTaskId")
+        identity = _sha(lineage.encode("utf-8"))
+        lock_path = self._lineage_locks_root / f"{identity}.lock"
+        self._ensure_parent(lock_path.parent)
+        try:
+            with lock_path.open("xb") as lock_file:
+                lock_file.write(b"\x00")
+                lock_file.flush()
+                os.fsync(lock_file.fileno())
+        except FileExistsError:
+            pass
+        with self._lineage_thread_guard:
+            thread_lock = self._lineage_thread_locks.setdefault(
+                identity, threading.RLock()
+            )
+        with thread_lock:
+            info = lock_path.lstat()
+            attributes = getattr(info, "st_file_attributes", 0)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or stat.S_ISLNK(info.st_mode)
+                or attributes & 0x400
+                or info.st_nlink != 1
+            ):
+                raise StudyTaskError(
+                    "TASK_STORAGE_UNSAFE",
+                    "Successor lineage lock is not a private regular file",
+                )
+            with lock_path.open("r+b") as lock_file:
                 lock_file.seek(0)
                 if os.name == "nt":
                     import msvcrt
@@ -519,6 +575,16 @@ class StudyTaskCoordinator:
         with self._transaction():
             record, _, _ = self._load_task(task_id)
             return self._public_snapshot(record, audience)
+
+    def get_recovery_record(
+        self, task_id: str, audience: ArtifactAudienceBinding
+    ) -> dict[str, Any]:
+        """Return an authenticated internal record for recovery planning only."""
+
+        with self._transaction():
+            record, _, _ = self._load_task(task_id)
+            self._authorize_scope(record, audience)
+            return json.loads(json.dumps(record, ensure_ascii=False))
 
     def authorize_local_source_binding(
         self,
@@ -1024,8 +1090,18 @@ class StudyTaskCoordinator:
         )
 
     def interrupt_stale_task(
-        self, task_id: str, audience: ArtifactAudienceBinding, *, expected_revision: int, operation_id: str
+        self,
+        task_id: str,
+        audience: ArtifactAudienceBinding,
+        *,
+        expected_revision: int,
+        operation_id: str,
+        allow_current_audience_orphan: bool = False,
     ) -> dict[str, Any]:
+        if not isinstance(allow_current_audience_orphan, bool):
+            raise StudyTaskError(
+                "TASK_SCHEMA_INVALID", "allowCurrentAudienceOrphan must be a boolean"
+            )
         def apply(task: dict[str, Any]) -> None:
             if task["state"] not in ACTIVE_TASK_STATES:
                 raise StudyTaskError("TASK_STATE_CONFLICT", "Only an active predecessor can be marked interrupted")
@@ -1047,7 +1123,10 @@ class StudyTaskCoordinator:
         with self._transaction():
             record, _, _ = self._load_task(task_id)
             current = _sha(canonical_json_bytes(audience.audience(self._service_instance_id)))
-            if record.get("createdAudienceDigest") == current:
+            if (
+                record.get("createdAudienceDigest") == current
+                and not allow_current_audience_orphan
+            ):
                 raise StudyTaskError("TASK_STATE_CONFLICT", "Current-session tasks cannot be marked stale")
         return self._mutate(
             task_id=task_id, audience=audience, expected_revision=expected_revision,
@@ -1056,27 +1135,91 @@ class StudyTaskCoordinator:
         )
 
     def list_recoverable_tasks(
-        self, audience: ArtifactAudienceBinding, *, scope_id: str | None = None
+        self,
+        audience: ArtifactAudienceBinding,
+        *,
+        scope_id: str | None = None,
+        limit: int = 100,
+        include_active: bool = False,
+        exclude_task_ids: frozenset[str] = frozenset(),
+        intent: str | None = None,
     ) -> list[dict[str, Any]]:
         if scope_id is not None:
             _require_id(scope_id, "scopeId")
-        snapshots: list[dict[str, Any]] = []
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise StudyTaskError("TASK_SCHEMA_INVALID", "Recoverable task limit is invalid")
+        if not isinstance(include_active, bool):
+            raise StudyTaskError("TASK_SCHEMA_INVALID", "includeActive must be a boolean")
+        if not isinstance(exclude_task_ids, frozenset) or len(exclude_task_ids) > 512:
+            raise StudyTaskError(
+                "TASK_SCHEMA_INVALID", "Excluded active task identifiers are invalid"
+            )
+        if intent is not None and intent not in WORKFLOW_ACTIONS:
+            raise StudyTaskError(
+                "TASK_SCHEMA_INVALID", "Recoverable task intent is invalid"
+            )
+        for task_id in exclude_task_ids:
+            _require_id(task_id, "excludedTaskId")
+        selected: list[dict[str, Any]] = []
+        isolated_codes = {
+            "TASK_AUTH_INVALID",
+            "TASK_NOT_FOUND",
+            "TASK_RECORD_CHANGED",
+            "TASK_RECORD_CORRUPT",
+            "TASK_RECORD_INVALID",
+            "TASK_RECORD_TOO_LARGE",
+            "TASK_SCOPE_MISMATCH",
+        }
         with self._transaction():
-            for path in sorted(self._tasks_root.glob("*/*.json"), key=lambda item: str(item).casefold()):
+            paths: list[Path] = []
+            for path in self._tasks_root.glob("*/*.json"):
+                paths.append(path)
+                if len(paths) > MAX_RECOVERY_SCAN_RECORDS:
+                    raise StudyTaskError(
+                        "TASK_LIST_SCAN_LIMIT",
+                        "Recoverable task storage exceeds the bounded scan limit",
+                    )
+            for path in paths:
                 try:
-                    record, _, _ = self._load_with_backup(path, domain="study.task.record.v1", schema="study.task.record")
+                    record, _, _ = self._load_with_backup(
+                        path,
+                        domain="study.task.record.v1",
+                        schema="study.task.record",
+                    )
                     self._authorize_scope(record, audience)
                 except StudyTaskError as error:
-                    if error.code == "TASK_SCOPE_MISMATCH":
+                    if error.code in isolated_codes:
                         continue
                     raise
                 task = record["task"]
+                if intent is not None and task["intent"] != intent:
+                    continue
                 if scope_id is not None and record["scopeId"] != scope_id:
                     continue
-                if task["state"] in {"failed", "cancelled", "interrupted"} and task["resumability"] != "none":
-                    snapshots.append(self._public_snapshot(record, audience))
-        snapshots.sort(key=lambda item: (item["updatedAt"], item["taskId"]), reverse=True)
-        return snapshots
+                if task["taskId"] in exclude_task_ids:
+                    continue
+                terminal = (
+                    task["state"] in {"failed", "cancelled", "interrupted"}
+                    and task["resumability"] != "none"
+                )
+                orphan_candidate = (
+                    include_active
+                    and task["state"] in ACTIVE_TASK_STATES
+                    and task["resumability"] != "none"
+                )
+                if not terminal and not orphan_candidate:
+                    continue
+                selected.append(record)
+                selected.sort(
+                    key=lambda item: (
+                        item["task"]["updatedAt"],
+                        item["task"]["taskId"],
+                    ),
+                    reverse=True,
+                )
+                if len(selected) > limit:
+                    selected.pop()
+        return [self._public_snapshot(record, audience) for record in selected]
 
     @staticmethod
     def _capabilities_compatible(previous: Mapping[str, Any], current: Mapping[str, Any]) -> bool:
@@ -1106,8 +1249,28 @@ class StudyTaskCoordinator:
 
     @staticmethod
     def _authorization_relation(
-        previous: Mapping[str, Any], current: Mapping[str, Any], relation: str
+        previous: Mapping[str, Any],
+        current: Mapping[str, Any],
+        relation: str,
+        *,
+        allow_reauthorization: bool,
     ) -> bool:
+        if allow_reauthorization:
+            old_actions = {
+                str(item.get("action"))
+                for item in previous.get("bindings", [])
+                if isinstance(item, Mapping)
+            }
+            new_actions = {
+                str(item.get("action"))
+                for item in current.get("bindings", [])
+                if isinstance(item, Mapping)
+            }
+            return (
+                new_actions == old_actions
+                if relation == "equivalent"
+                else bool(new_actions) and new_actions.issubset(old_actions)
+            )
         def scopes(binding: Mapping[str, Any]) -> set[tuple[str, str, str]]:
             return {
                 (item["action"], item["constraintsDigest"], item["exactScopeDigest"])
@@ -1122,6 +1285,113 @@ class StudyTaskCoordinator:
         message = b"study.task.successor-id.v1\x00" + predecessor_task_id.encode("utf-8") + b"\x00" + operation_id.encode("utf-8")
         raw = hmac.new(self._authentication_key, message, hashlib.sha256).digest()[:24]
         return "task_" + base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    def _task_lineage_root(
+        self, task_id: str, audience: ArtifactAudienceBinding
+    ) -> str:
+        current = _require_id(task_id, "taskId")
+        seen: set[str] = set()
+        with self._transaction():
+            while True:
+                if current in seen:
+                    raise StudyTaskError(
+                        "TASK_RECORD_INVALID", "Task predecessor lineage contains a cycle"
+                    )
+                seen.add(current)
+                record, _, _ = self._load_task(current)
+                self._authorize_scope(record, audience)
+                predecessor = record["task"].get("predecessorTaskId")
+                if predecessor is None:
+                    return current
+                current = _require_id(predecessor, "predecessorTaskId")
+
+    def _assert_lineage_successor_available(
+        self,
+        lineage_task_id: str,
+        proposed_successor_id: str,
+        audience: ArtifactAudienceBinding,
+    ) -> None:
+        records: dict[str, dict[str, Any]] = {}
+        isolated_codes = {
+            "TASK_AUTH_INVALID",
+            "TASK_NOT_FOUND",
+            "TASK_RECORD_CHANGED",
+            "TASK_RECORD_CORRUPT",
+            "TASK_RECORD_INVALID",
+            "TASK_RECORD_TOO_LARGE",
+            "TASK_SCOPE_MISMATCH",
+        }
+        with self._transaction():
+            paths: list[Path] = []
+            for path in self._tasks_root.glob("*/*.json"):
+                paths.append(path)
+                if len(paths) > MAX_RECOVERY_SCAN_RECORDS:
+                    raise StudyTaskError(
+                        "TASK_LIST_SCAN_LIMIT",
+                        "Successor lineage storage exceeds the bounded scan limit",
+                    )
+            for path in paths:
+                try:
+                    record, _, _ = self._load_with_backup(
+                        path,
+                        domain="study.task.record.v1",
+                        schema="study.task.record",
+                    )
+                    self._authorize_scope(record, audience)
+                except StudyTaskError as error:
+                    if error.code in isolated_codes:
+                        continue
+                    raise
+                task = record["task"]
+                records[str(task["taskId"])] = task
+
+        def root_for(task_id: str) -> str:
+            current = task_id
+            seen: set[str] = set()
+            while True:
+                if current in seen:
+                    raise StudyTaskError(
+                        "TASK_RECORD_INVALID", "Task predecessor lineage contains a cycle"
+                    )
+                seen.add(current)
+                task = records.get(current)
+                predecessor = (
+                    task.get("predecessorTaskId")
+                    if isinstance(task, Mapping)
+                    else None
+                )
+                if predecessor is None:
+                    return current
+                current = _require_id(predecessor, "predecessorTaskId")
+
+        for task_id, task in records.items():
+            if (
+                task_id == proposed_successor_id
+                or task.get("state") not in ACTIVE_TASK_STATES
+                or task.get("predecessorTaskId") is None
+            ):
+                continue
+            if root_for(task_id) == lineage_task_id:
+                raise StudyTaskError(
+                    "TASK_SUCCESSOR_ACTIVE",
+                    "This recovery lineage already has an active successor",
+                )
+
+    def get_successor_task(
+        self,
+        predecessor_task_id: str,
+        operation_id: str,
+        audience: ArtifactAudienceBinding,
+    ) -> dict[str, Any] | None:
+        _require_id(predecessor_task_id, "predecessorTaskId")
+        _require_id(operation_id, "operationId")
+        successor_id = self._successor_task_id(predecessor_task_id, operation_id)
+        try:
+            return self.get_task(successor_id, audience)
+        except StudyTaskError as error:
+            if error.code == "TASK_NOT_FOUND":
+                return None
+            raise
 
     def create_successor_task(
         self,
@@ -1138,9 +1408,55 @@ class StudyTaskCoordinator:
         operation_intent_digest: str | None = None,
         cost_budget_digest: str | None = None,
         batch_policy_digest: str | None = None,
+        allow_reauthorization: bool = False,
+    ) -> dict[str, Any]:
+        lineage_task_id = self._task_lineage_root(predecessor_task_id, audience)
+        proposed_successor_id = self._successor_task_id(
+            predecessor_task_id, operation_id
+        )
+        with self._successor_lineage_transaction(lineage_task_id):
+            self._assert_lineage_successor_available(
+                lineage_task_id, proposed_successor_id, audience
+            )
+            return self._create_successor_task_locked(
+                predecessor_task_id,
+                audience,
+                operation_id=operation_id,
+                authorization_binding=authorization_binding,
+                capability_binding=capability_binding,
+                service_bindings=service_bindings,
+                scope_relation=scope_relation,
+                predecessor_authorization_audit_ref=predecessor_authorization_audit_ref,
+                successor_authorization_audit_ref=successor_authorization_audit_ref,
+                operation_intent_digest=operation_intent_digest,
+                cost_budget_digest=cost_budget_digest,
+                batch_policy_digest=batch_policy_digest,
+                allow_reauthorization=allow_reauthorization,
+            )
+
+    def _create_successor_task_locked(
+        self,
+        predecessor_task_id: str,
+        audience: ArtifactAudienceBinding,
+        *,
+        operation_id: str,
+        authorization_binding: Mapping[str, Any],
+        capability_binding: Mapping[str, Any],
+        service_bindings: Sequence[Mapping[str, Any]],
+        scope_relation: str,
+        predecessor_authorization_audit_ref: str,
+        successor_authorization_audit_ref: str,
+        operation_intent_digest: str | None = None,
+        cost_budget_digest: str | None = None,
+        batch_policy_digest: str | None = None,
+        allow_reauthorization: bool = False,
     ) -> dict[str, Any]:
         _require_id(predecessor_task_id, "predecessorTaskId")
         _require_id(operation_id, "operationId")
+        if not isinstance(allow_reauthorization, bool):
+            raise StudyTaskError(
+                "TASK_SCHEMA_INVALID", "allowReauthorization must be a boolean"
+            )
         if scope_relation not in {"equivalent", "narrower"}:
             raise StudyTaskError("TASK_SUCCESSOR_INVALID", "Successor scope relation is invalid")
         try:
@@ -1164,7 +1480,12 @@ class StudyTaskCoordinator:
                 raise StudyTaskError("TASK_SUCCESSOR_INVALID", "Task does not permit recovery")
             if not self._capabilities_compatible(predecessor["capabilityBinding"], capability_binding):
                 raise StudyTaskError("TASK_CAPABILITY_INCOMPATIBLE", "Successor capabilities are not stable-compatible")
-            if not self._authorization_relation(predecessor["authorizationBinding"], authorization_binding, scope_relation):
+            if not self._authorization_relation(
+                predecessor["authorizationBinding"],
+                authorization_binding,
+                scope_relation,
+                allow_reauthorization=allow_reauthorization,
+            ):
                 raise StudyTaskError("TASK_AUTHORIZATION_SCOPE_EXPANDED", "Successor authorization is not equivalent or narrower")
             work_reuse = dict(predecessor["workReuseManifest"])
             work_digest = previous_task["workReuseDigest"]

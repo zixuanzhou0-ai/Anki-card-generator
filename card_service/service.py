@@ -927,6 +927,8 @@ class CardService:
                 "initialized": True,
                 "candidateDiscoveryRuntime": True,
                 "publicCandidateDiscovery": True,
+                "publicRecoverableTaskListing": True,
+                "publicCandidateDiscoveryRecovery": True,
                 "candidateDiscoveryAuthorizationReady": discovery_authorized,
             }
         return {
@@ -941,6 +943,8 @@ class CardService:
             "sourceInspection": True,
             "candidateDiscoveryRuntime": True,
             "publicCandidateDiscovery": True,
+            "publicRecoverableTaskListing": True,
+            "publicCandidateDiscoveryRecovery": True,
             "candidateDiscoveryAuthorizationReady": discovery_authorized,
             "publicProjectTools": True,
             "publicInputRegistration": True,
@@ -1438,6 +1442,21 @@ class CardService:
                 stage="cancellation",
             ) from error
 
+    def list_public_recoverable_study_tasks(
+        self, *, audience: ArtifactAudienceBinding, limit: int = 20
+    ) -> dict[str, Any]:
+        try:
+            return self._ensure_study_runtime().list_recoverable_study_tasks(
+                audience=audience, limit=limit
+            )
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=False,
+                stage="recovery",
+            ) from error
+
     def list_study_card_plans(
         self,
         *,
@@ -1754,6 +1773,92 @@ class CardService:
                 ),
                 stage="discovery",
             ) from error
+
+    def resume_public_study_task(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        task_id: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        study = self._ensure_study_runtime()
+        try:
+            recovery_task_id, existing = study.resolve_candidate_discovery_recovery_target(
+                audience=audience,
+                task_id=task_id,
+                idempotency_key=idempotency_key,
+            )
+            if existing is not None:
+                return existing
+            request = study.candidate_discovery_recovery_request(
+                audience=audience, task_id=recovery_task_id
+            )
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=False,
+                stage="recovery",
+            ) from error
+        with self._broker_runtime_lock:
+            broker_runtime = self._active_broker_runtime
+        if broker_runtime is None:
+            raise CardServiceError(
+                "AUTHORIZATION_REQUIRED",
+                "Candidate discovery recovery requires current model authorization",
+                retryable=True,
+                stage="authorization",
+                fallbacks=("request_model_authorization",),
+            )
+        try:
+            provider = BrokerCandidateDiscoveryModelProvider(broker_runtime)
+            authorization = provider.authorization_for(
+                audience=audience,
+                service_instance_id=study.service_instance_id,
+                project_id=request["projectId"],
+                project_revision=request["expectedProjectRevision"],
+                inspection_handle=request["inspectionHandle"],
+                candidate_budget=request["candidateBudget"],
+            )
+            return study.resume_candidate_discovery_task(
+                audience=audience,
+                task_id=recovery_task_id,
+                idempotency_key=idempotency_key,
+                authorization=authorization,
+                model_provider=provider,
+                recovery_request=request,
+            )
+        except CandidateDiscoveryBrokerError as error:
+            code = (
+                "AUTHORIZATION_REQUIRED"
+                if error.code in {
+                    "DISCOVERY_BROKER_UNAVAILABLE",
+                    "BROKER_AUTHORIZATION_UNAVAILABLE",
+                    "BROKER_AUTHORIZATION_EXPIRED",
+                }
+                else error.code
+            )
+            raise CardServiceError(
+                code,
+                error.message,
+                retryable=code == "AUTHORIZATION_REQUIRED",
+                stage="authorization",
+                fallbacks=(
+                    ("request_model_authorization",)
+                    if code == "AUTHORIZATION_REQUIRED"
+                    else ()
+                ),
+            ) from error
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=error.code.endswith(
+                    ("_CONFLICT", "_UNAVAILABLE", "_REQUIRED", "_TIMEOUT")
+                ),
+                stage="recovery",
+            ) from error
+
     @staticmethod
     def public_local_resource_constraints(kind: str) -> dict[str, Any]:
         if kind == "file":

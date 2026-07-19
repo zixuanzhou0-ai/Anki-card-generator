@@ -195,13 +195,20 @@ def _derive_session(
         os.path.normcase(str(launcher.absolute())).encode("utf-8", "strict")
     )
     nonce_bytes = bytes.fromhex(nonce)
-    host_id = "stdio-host-" + _sha(
-        b"study.mcp-host-instance.v1\x00"
+    host_digest = _sha(
+        b"study.mcp-host-instance.v2\x00"
+        + owner_digest.encode("ascii")
+        + b"\x00"
         + launcher_digest.encode("ascii")
-        + nonce_bytes
-    )[:48]
+        + b"\x00"
+        + PLUGIN_ID.encode("utf-8", "strict")
+    )
+    host_id = "stdio-host-" + host_digest[:48]
     session_id = "mcp-session-" + _sha(
-        b"study.mcp-session.v1\x00" + nonce_bytes
+        b"study.mcp-session.v2\x00"
+        + host_digest.encode("ascii")
+        + b"\x00"
+        + nonce_bytes
     )[:48]
     return TrustedMcpAudienceSession(
         audience=ArtifactAudienceBinding(

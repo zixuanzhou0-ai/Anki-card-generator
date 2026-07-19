@@ -6,6 +6,7 @@ import threading
 from pathlib import Path
 
 import pytest
+import card_service.task_coordinator as task_coordinator_module
 
 from card_service.artifact_registry import ArtifactAudienceBinding, ArtifactRegistry
 from card_service.task_coordinator import StudyTaskCoordinator, StudyTaskError
@@ -678,3 +679,143 @@ def test_successor_rejects_capability_change_and_authorization_expansion(tmp_pat
             predecessor_authorization_audit_ref="audit-old", successor_authorization_audit_ref="audit-new",
         )
     assert expanded_scope.value.code == "TASK_AUTHORIZATION_SCOPE_EXPANDED"
+
+def test_recoverable_listing_isolates_a_corrupt_record(tmp_path: Path) -> None:
+    audience, _, tasks = environment(tmp_path)
+    running = start(tasks, audience, create(tasks, audience))
+    failed = tasks.fail_task(
+        running["taskId"],
+        audience,
+        expected_revision=running["taskRevision"],
+        operation_id="fail-for-list",
+        code="MODEL_OUTPUT_INVALID",
+        stage="discovery",
+        retryable=True,
+        remote_cost_state="incurred",
+        retry_scope="phase",
+        authorization_state="valid",
+        preserved_artifact_handles=[],
+        required_action="retry",
+    )
+    corrupt_path = tasks._tasks_root / "corrupt-record" / "record.json"
+    corrupt_path.parent.mkdir(parents=True, exist_ok=True)
+    corrupt_path.write_bytes(b"not-json")
+
+    recoverable = tasks.list_recoverable_tasks(audience, limit=1)
+
+    assert [item["taskId"] for item in recoverable] == [failed["taskId"]]
+
+
+def test_recoverable_listing_fails_explicitly_at_scan_bound(
+    tmp_path: Path, monkeypatch
+) -> None:
+    audience, _, tasks = environment(tmp_path)
+    for name in ("one", "two"):
+        path = tasks._tasks_root / name / "record.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"not-json")
+    monkeypatch.setattr(task_coordinator_module, "MAX_RECOVERY_SCAN_RECORDS", 1)
+
+    with pytest.raises(StudyTaskError) as captured:
+        tasks.list_recoverable_tasks(audience)
+
+    assert captured.value.code == "TASK_LIST_SCAN_LIMIT"
+
+def test_successor_lineage_scan_is_bounded_and_isolates_corrupt_records(
+    tmp_path: Path, monkeypatch
+) -> None:
+    audience, _, tasks, predecessor, _ = interrupted_with_one_completed_unit(tmp_path)
+    corrupt_path = tasks._tasks_root / "corrupt-record" / "record.json"
+    corrupt_path.parent.mkdir(parents=True, exist_ok=True)
+    corrupt_path.write_bytes(b"not-json")
+    capability, authorization = successor_bindings(audience, "service-2")
+
+    successor = tasks.create_successor_task(
+        predecessor["taskId"],
+        audience,
+        operation_id="resume-with-corrupt-neighbor",
+        authorization_binding=authorization,
+        capability_binding=capability,
+        service_bindings=[],
+        scope_relation="equivalent",
+        predecessor_authorization_audit_ref="audit-old",
+        successor_authorization_audit_ref="audit-new",
+    )
+    assert successor["predecessorTaskId"] == predecessor["taskId"]
+
+    monkeypatch.setattr(task_coordinator_module, "MAX_RECOVERY_SCAN_RECORDS", 1)
+    with pytest.raises(StudyTaskError) as captured:
+        tasks.create_successor_task(
+            predecessor["taskId"],
+            audience,
+            operation_id="resume-over-scan-bound",
+            authorization_binding=authorization,
+            capability_binding=capability,
+            service_bindings=[],
+            scope_relation="equivalent",
+            predecessor_authorization_audit_ref="audit-old",
+            successor_authorization_audit_ref="audit-new",
+        )
+    assert captured.value.code == "TASK_LIST_SCAN_LIMIT"
+
+def test_concurrent_coordinators_allow_only_one_lineage_successor(
+    tmp_path: Path,
+) -> None:
+    audience, _, first_tasks, predecessor, _ = interrupted_with_one_completed_unit(
+        tmp_path
+    )
+    second_artifacts = ArtifactRegistry(
+        tmp_path / "artifacts",
+        authentication_key=KEY,
+        service_instance_id="service-2",
+    )
+    second_tasks = StudyTaskCoordinator(
+        tmp_path / "tasks",
+        authentication_key=KEY,
+        service_instance_id="service-2",
+        artifact_registry=second_artifacts,
+    )
+    capability, authorization = successor_bindings(audience, "service-2")
+    barrier = threading.Barrier(2)
+    outcomes: list[tuple[str, str]] = []
+    outcome_lock = threading.Lock()
+
+    def create_successor(coordinator: StudyTaskCoordinator, operation_id: str) -> None:
+        barrier.wait(timeout=5)
+        try:
+            created = coordinator.create_successor_task(
+                predecessor["taskId"],
+                audience,
+                operation_id=operation_id,
+                authorization_binding=authorization,
+                capability_binding=capability,
+                service_bindings=[],
+                scope_relation="equivalent",
+                predecessor_authorization_audit_ref="audit-old",
+                successor_authorization_audit_ref="audit-new",
+            )
+            outcome = ("created", created["taskId"])
+        except StudyTaskError as error:
+            outcome = ("error", error.code)
+        with outcome_lock:
+            outcomes.append(outcome)
+
+    threads = [
+        threading.Thread(
+            target=create_successor,
+            args=(first_tasks, "resume-concurrent-one"),
+        ),
+        threading.Thread(
+            target=create_successor,
+            args=(second_tasks, "resume-concurrent-two"),
+        ),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+
+    assert len(outcomes) == 2
+    assert [kind for kind, _ in outcomes].count("created") == 1
+    assert ("error", "TASK_SUCCESSOR_ACTIVE") in outcomes
