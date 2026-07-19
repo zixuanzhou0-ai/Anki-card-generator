@@ -265,7 +265,7 @@ host 部分至少分别报告：pluginManifestLoaded、stdioServiceLaunch、tool
 打开受信目录选择器，返回 outputResourceRef、显示名称、允许 create/versioned/replace 操作和有效期。默认不包含 replace；覆盖需要独立新确认。
 CURRENT M2 已实现 file/directory/output grant 的内部认证账本、opaque ref、逐次消费、撤销和 task staging：已消费的 file/directory grant 可被复制成带认证 receipt 的 task-local snapshot，Worker locator 只含 workspace-relative path。
 
-上述两个 public MCP 工具、受信选择器/宿主附件 adapter 和生产 Card Service composition 尚未接线。内部 ref/staging receipt 不得手工拼装、返回给 Agent，或由 Agent 参数直接签发；在生产 adapter 完成前，新授权按设计 fail closed。
+上述两个 public MCP 工具和宿主附件 adapter 尚未接线。真实本地 picker、加密响应、短期 attestation 与 Card Service 内部 grant composition 已实现，但不构成公共工具：内部 attestation/staging receipt 不得返回给 Agent，raw path 仍不得出现在 Agent 参数中；公共入口发布前，新授权从 MCP 继续 fail closed。
 
 
 ### system.request_network_grant

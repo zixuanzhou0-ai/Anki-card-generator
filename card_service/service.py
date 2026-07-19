@@ -16,11 +16,12 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 from urllib.parse import parse_qsl, urlsplit
 
 from workers.acg.secret_scrub import is_runtime_secret_key, is_sensitive_url_query_key
 
+from .artifact_registry import ArtifactAudienceBinding
 from .broker_configuration import BrokerConfigurationError, ServiceBrokerRuntime
 from .broker_ipc import BROKER_REQUEST_PREFIX, BROKER_RESPONSE_PREFIX, TaskBrokerChannel
 from .credentials import CredentialBackend, CredentialStore, CredentialStoreError
@@ -769,6 +770,8 @@ class CardService:
         self._credential_backend = credential_backend
         self._resource_gesture_verifier = resource_gesture_verifier
         self._resource_runtime: ServiceResourceRuntime | None = None
+        self._local_picker_requests: dict[str, dict[str, Any]] = {}
+        self._completed_local_picker_grants: dict[str, dict[str, Any]] = {}
         self._resource_runtime_lock = threading.RLock()
 
         self._active_broker_runtime: ServiceBrokerRuntime | None = None
@@ -824,7 +827,7 @@ class CardService:
             "credentialProtectionAvailable": (
                 self._credential_backend is not None or os.name == "nt"
             ),
-            "trustedGrantIssuance": self._resource_gesture_verifier is not None,
+            "trustedGrantIssuance": True,
             "taskStaging": True,
             "productionHardeningRequired": self.runtime_package is not None,
             "productionHardeningAvailable": (
@@ -852,8 +855,11 @@ class CardService:
                 runtime = ServiceResourceRuntime(
                     state_dir=self.store.root / "resource-runtime",
                     credential_store=credential_store,
-                    gesture_verifier=self._resource_gesture_verifier,
+                    gesture_verifier=(
+                        self._resource_gesture_verifier or self.trusted_surfaces.verify_resource_gesture
+                    ),
                     harden_callback=hardener,
+                    forbidden_roots=(self.store.root,),
                     require_hardening=self.runtime_package is not None,
                 )
             except (CredentialStoreError, ServiceResourceRuntimeError, OSError) as error:
@@ -870,6 +876,122 @@ class CardService:
         """Internal trusted-adapter composition hook; it is not an MCP tool."""
 
         return {**self._ensure_resource_runtime().capabilities(), "initialized": True}
+
+    @staticmethod
+    def _local_resource_scope_summary(
+        kind: str, constraints: Mapping[str, Any], max_uses: int
+    ) -> str:
+        if kind == "file":
+            maximum = constraints.get("maxBytes")
+            return f"读取所选文件，最多 {maximum} 字节；授权最多使用 {max_uses} 次。"
+        if kind == "directory":
+            return (
+                "读取所选文件夹；最多深度 "
+                f"{constraints.get('maxDepth')}，最多 {constraints.get('maxEntries')} 项，"
+                f"总计不超过 {constraints.get('maxTotalBytes')} 字节；授权最多使用 {max_uses} 次。"
+            )
+        return (
+            f"向所选输出文件夹创建最多 {constraints.get('maxFiles')} 个文件，"
+            f"总计不超过 {constraints.get('maxTotalBytes')} 字节；授权最多使用 {max_uses} 次。"
+        )
+
+    def open_local_resource_picker(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        grant_request_id: str,
+        kind: str,
+        constraints: Mapping[str, Any],
+        max_uses: int = 1,
+    ) -> dict[str, Any]:
+        """Internal trusted-adapter entry; raw paths never enter MCP parameters."""
+
+        if not isinstance(audience, ArtifactAudienceBinding):
+            raise CardServiceError(
+                "RESOURCE_AUDIENCE_INVALID", "Trusted resource audience is invalid"
+            )
+        if not isinstance(constraints, Mapping):
+            raise CardServiceError(
+                "RESOURCE_CONSTRAINT_INVALID", "Trusted resource constraints are invalid"
+            )
+        try:
+            frozen_constraints = json.loads(
+                json.dumps(
+                    dict(constraints), ensure_ascii=False, sort_keys=True, allow_nan=False
+                )
+            )
+        except (TypeError, ValueError) as error:
+            raise CardServiceError(
+                "RESOURCE_CONSTRAINT_INVALID", "Trusted resource constraints must be finite JSON values"
+            ) from error
+        try:
+            session = self.trusted_surfaces.create_local_resource_session(
+                kind=kind,
+                scope_summary=self._local_resource_scope_summary(
+                    kind, frozen_constraints, max_uses
+                ),
+            )
+        except TrustedSurfaceError as error:
+            raise CardServiceError(error.code, str(error)) from error
+        session_ref = str(session["sessionRef"])
+        with self._resource_runtime_lock:
+            self._local_picker_requests[session_ref] = {
+                "audience": audience,
+                "grantRequestId": grant_request_id,
+                "kind": kind,
+                "constraints": frozen_constraints,
+                "maxUses": max_uses,
+            }
+        try:
+            return self.trusted_surfaces.launch(session_ref)
+        except TrustedSurfaceError as error:
+            with self._resource_runtime_lock:
+                self._local_picker_requests.pop(session_ref, None)
+            raise CardServiceError(error.code, str(error)) from error
+
+    def complete_local_resource_picker(self, session_ref: str) -> dict[str, Any]:
+        """Finalize a trusted selection into an opaque local resource grant."""
+
+        with self._resource_runtime_lock:
+            completed = self._completed_local_picker_grants.get(session_ref)
+        if completed is not None:
+            return json.loads(json.dumps(completed, ensure_ascii=False))
+        try:
+            result = self.trusted_surfaces.get_session(session_ref)
+        except TrustedSurfaceError as error:
+            raise CardServiceError(error.code, str(error)) from error
+        if result.get("state") != "selected":
+            if result.get("state") in {"cancelled", "declined", "failed"}:
+                self.trusted_surfaces.complete_resource_selection(session_ref)
+                with self._resource_runtime_lock:
+                    self._local_picker_requests.pop(session_ref, None)
+            return result
+        with self._resource_runtime_lock:
+            pending = self._local_picker_requests.get(session_ref)
+        selection = self.trusted_surfaces.selected_local_resource(session_ref)
+        if pending is None or selection is None or selection.kind != pending["kind"]:
+            raise CardServiceError(
+                "RESOURCE_SELECTION_STATE_INVALID",
+                "Trusted local resource selection state is unavailable",
+            )
+        try:
+            grant = self._ensure_resource_runtime().issue_local_grant(
+                audience=pending["audience"],
+                grant_request_id=str(pending["grantRequestId"]),
+                raw_path=selection.path,
+                kind=selection.kind,
+                constraints=pending["constraints"],
+                attestation_ref=selection.attestation_ref,
+                max_uses=int(pending["maxUses"]),
+            )
+        except ServiceResourceRuntimeError as error:
+            raise CardServiceError(error.code, error.message) from error
+        finalized = {**result, "resourceGrant": grant}
+        self.trusted_surfaces.complete_resource_selection(session_ref)
+        with self._resource_runtime_lock:
+            self._local_picker_requests.pop(session_ref, None)
+            self._completed_local_picker_grants[session_ref] = finalized
+        return json.loads(json.dumps(finalized, ensure_ascii=False))
 
     def _broker_blocker(self, method: str, policy: MethodPolicy) -> str | None:
         with self._broker_runtime_lock:

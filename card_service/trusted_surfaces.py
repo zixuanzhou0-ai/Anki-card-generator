@@ -3,6 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import secrets
+import stat
 import subprocess
 import sys
 import threading
@@ -20,13 +23,31 @@ from .broker_authorization_issuer import (
 from .credentials import PROFILE_REF_PATTERN, CredentialBackend
 from .process_isolation import ProcessIsolationError, TaskOwnedProcessGroup
 from .storage import AtomicJsonStore
-from .trusted_surface_auth import encode_response_key, new_response_key, verify_response
+from .trusted_surface_auth import (
+    encode_response_key,
+    new_response_key,
+    open_private_payload,
+    verify_response,
+)
+
+
+RESOURCE_ATTESTATION_LIFETIME_MS = 5 * 60 * 1_000
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class TrustedSurfaceError(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+@dataclass(frozen=True)
+class TrustedLocalResourceSelection:
+    session_ref: str
+    kind: str
+    path: Path
+    attestation_ref: str
+    selected_at: int
 
 
 @dataclass
@@ -70,6 +91,8 @@ class TrustedSurfaceManager:
         self._verified_responses: dict[str, dict[str, Any]] = {}
         self._credential_backend = credential_backend
         self._authorization_issuer: BrokerAuthorizationIssuer | None = None
+        self._local_resource_selections: dict[str, TrustedLocalResourceSelection] = {}
+        self._resource_attestations: dict[str, dict[str, Any]] = {}
         self._issued_authorizations: dict[str, IssuedBrokerAuthorization] = {}
         self._lock = threading.RLock()
 
@@ -79,6 +102,10 @@ class TrustedSurfaceManager:
 
     def capabilities(self) -> dict[str, Any]:
         return {
+            "localResourcePicker": True,
+            "localResourcePickerResponseEncryptedAtRest": True,
+            "localResourceAttestation": True,
+            "localResourcePathDisclosure": False,
             "localSettings": True,
             "consentWindow": True,
             "digestPinned": True,
@@ -115,6 +142,22 @@ class TrustedSurfaceManager:
         if not title.strip() or not summary.strip() or len(title) > 120 or len(summary) > 2_000:
             raise TrustedSurfaceError("INVALID_CONSENT_COPY", "Consent title or summary is invalid")
         return self._create_session("consent", title=title.strip(), summary=summary.strip(), purpose=purpose)
+
+    def create_local_resource_session(
+        self, *, kind: str, scope_summary: str
+    ) -> dict[str, Any]:
+        if kind not in {"file", "directory", "output_directory"}:
+            raise TrustedSurfaceError(
+                "INVALID_RESOURCE_KIND", "Invalid local resource selection kind"
+            )
+        summary = str(scope_summary or "").strip()
+        if not summary or len(summary) > 1_000:
+            raise TrustedSurfaceError(
+                "INVALID_RESOURCE_SCOPE", "Invalid local resource scope summary"
+            )
+        return self._create_session(
+            "local_resource_picker", selectionKind=kind, scopeSummary=summary
+        )
 
     def _issuer(self) -> BrokerAuthorizationIssuer:
         with self._lock:
@@ -178,7 +221,7 @@ class TrustedSurfaceManager:
         if (
             not isinstance(request, dict)
             or request.get("sessionRef") != session_ref
-            or request.get("surface") not in {"local_settings", "consent"}
+            or request.get("surface") not in {"local_settings", "consent", "local_resource_picker"}
             or not isinstance(request.get("requestNonce"), str)
             or len(request["requestNonce"]) != 64
             or Path(str(request.get("responsePath") or "")) != expected_response
@@ -257,6 +300,149 @@ class TrustedSurfaceManager:
                 self._verified_responses[session_ref] = failure
                 self._response_keys.pop(session_ref, None)
 
+    def _finalize_local_resource_response(
+        self,
+        request: dict[str, Any],
+        response: dict[str, Any],
+        response_key: bytes,
+    ) -> dict[str, Any]:
+        session_ref = str(request["sessionRef"])
+        if response.get("state") == "cancelled":
+            return {
+                "schemaVersion": 1,
+                "sessionRef": session_ref,
+                "state": "cancelled",
+                "userGestureRecorded": False,
+            }
+        if response.get("state") != "selected" or response.get("userGestureRecorded") is not True:
+            raise TrustedSurfaceError(
+                "SESSION_RESPONSE_INVALID", "Trusted resource selection was not user approved"
+            )
+        try:
+            private = open_private_payload(
+                response.get("privatePayload") or {},
+                response_key,
+                session_ref=session_ref,
+                request_nonce=str(request["requestNonce"]),
+                surface="local_resource_picker",
+            )
+        except (TypeError, ValueError) as error:
+            raise TrustedSurfaceError(
+                "SESSION_RESPONSE_INVALID", "Trusted resource selection payload is invalid"
+            ) from error
+        if set(private) != {"schemaVersion", "selectedPath"} or private.get("schemaVersion") != 1:
+            raise TrustedSurfaceError(
+                "SESSION_RESPONSE_INVALID", "Trusted resource selection payload is invalid"
+            )
+        raw_path = private.get("selectedPath")
+        if not isinstance(raw_path, str) or not raw_path or "\x00" in raw_path:
+            raise TrustedSurfaceError(
+                "SESSION_RESPONSE_INVALID", "Trusted resource selection path is invalid"
+            )
+        selected = Path(raw_path).expanduser()
+        if not selected.is_absolute():
+            raise TrustedSurfaceError(
+                "SESSION_RESPONSE_INVALID", "Trusted resource selection path is invalid"
+            )
+        selected = Path(os.path.normpath(os.path.abspath(os.fspath(selected))))
+        try:
+            selected_info = selected.lstat()
+        except OSError as error:
+            raise TrustedSurfaceError(
+                "SESSION_RESPONSE_INVALID", "Trusted resource selection is unavailable"
+            ) from error
+        kind = str(request.get("selectionKind") or "")
+        is_reparse = bool(
+            getattr(selected_info, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        )
+        if stat.S_ISLNK(selected_info.st_mode) or is_reparse or (
+            kind == "file" and not stat.S_ISREG(selected_info.st_mode)
+        ) or (
+            kind in {"directory", "output_directory"}
+            and not stat.S_ISDIR(selected_info.st_mode)
+        ):
+            raise TrustedSurfaceError(
+                "SESSION_RESPONSE_INVALID", "Trusted resource selection type changed"
+            )
+        try:
+            selected.relative_to(self.root)
+        except ValueError:
+            pass
+        else:
+            raise TrustedSurfaceError(
+                "SESSION_RESPONSE_INVALID", "Trusted surface state cannot be selected"
+            )
+        attestation_ref = "resource-attestation-" + secrets.token_urlsafe(24)
+        selection = TrustedLocalResourceSelection(
+            session_ref=session_ref,
+            kind=kind,
+            path=selected,
+            attestation_ref=attestation_ref,
+            selected_at=int(time.time() * 1000),
+        )
+        with self._lock:
+            self._local_resource_selections[session_ref] = selection
+            self._resource_attestations[attestation_ref] = {
+                "sessionRef": session_ref,
+                "action": "approve_local_resource",
+                "audienceDigest": None,
+                "requestDigest": None,
+                "expiresAt": selection.selected_at + RESOURCE_ATTESTATION_LIFETIME_MS,
+            }
+        display_name = {
+            "file": "Selected file",
+            "directory": "Selected folder",
+            "output_directory": "Selected output folder",
+        }[kind]
+        return {
+            "schemaVersion": 1,
+            "sessionRef": session_ref,
+            "state": "selected",
+            "userGestureRecorded": True,
+            "resourceSelection": {
+                "kind": kind,
+                "displayName": display_name[:160],
+                "pathDisclosure": False,
+            },
+        }
+
+    def selected_local_resource(self, session_ref: str) -> TrustedLocalResourceSelection | None:
+        with self._lock:
+            return self._local_resource_selections.get(session_ref)
+
+    def verify_resource_gesture(
+        self, audience_digest: str, request_digest: str, attestation_ref: str, action: str
+    ) -> bool:
+        if (
+            not SHA256_RE.fullmatch(audience_digest)
+            or not SHA256_RE.fullmatch(request_digest)
+        ):
+            return False
+        with self._lock:
+            pending = self._resource_attestations.get(attestation_ref)
+            if pending is None or pending["action"] != action:
+                return False
+            if int(pending["expiresAt"]) <= int(time.time() * 1000):
+                session_ref = str(pending["sessionRef"])
+                self._local_resource_selections.pop(session_ref, None)
+                self._resource_attestations.pop(attestation_ref, None)
+                return False
+            if pending["audienceDigest"] is None and pending["requestDigest"] is None:
+                pending["audienceDigest"] = audience_digest
+                pending["requestDigest"] = request_digest
+                return True
+            return (
+                pending["audienceDigest"] == audience_digest
+                and pending["requestDigest"] == request_digest
+            )
+
+    def complete_resource_selection(self, session_ref: str) -> None:
+        with self._lock:
+            selection = self._local_resource_selections.pop(session_ref, None)
+            if selection is not None:
+                self._resource_attestations.pop(selection.attestation_ref, None)
+
     def get_session(self, session_ref: str) -> dict[str, Any]:
         _, request = self._load_request(session_ref)
         with self._lock:
@@ -264,7 +450,7 @@ class TrustedSurfaceManager:
         if verified is not None:
             allowed = {
                 "schemaVersion", "sessionRef", "state", "credential", "userGestureRecorded",
-                "authorization", "errorCode",
+                "authorization", "resourceSelection", "errorCode",
             }
             return {key: value for key, value in verified.items() if key in allowed}
         response_path = self.responses_dir / f"{session_ref}.json"
@@ -287,7 +473,13 @@ class TrustedSurfaceManager:
         if response.get("requestNonce") != request.get("requestNonce"):
             raise TrustedSurfaceError("SESSION_RESPONSE_INVALID", "Trusted surface response nonce mismatch")
         finalized = dict(response)
-        if request.get("authorizationKind") == "broker_startup":
+        if request.get("surface") == "local_resource_picker":
+            finalized = self._finalize_local_resource_response(request, response, response_key)
+            try:
+                response_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        elif request.get("authorizationKind") == "broker_startup":
             if response.get("state") == "approved" and response.get("userGestureRecorded") is True:
                 try:
                     issued = self._issuer().issue(
@@ -311,6 +503,6 @@ class TrustedSurfaceManager:
             self._response_keys.pop(session_ref, None)
         allowed = {
             "schemaVersion", "sessionRef", "state", "credential", "userGestureRecorded",
-            "authorization", "errorCode",
+            "authorization", "resourceSelection", "errorCode",
         }
         return {key: value for key, value in finalized.items() if key in allowed}

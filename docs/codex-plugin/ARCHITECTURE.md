@@ -416,7 +416,7 @@ CURRENT 的 src/app/workerTaskState.ts::TaskSnapshot 是桌面 Worker 叶子任�
 - 事件和轮询按 taskId 幂等合并。
 - authorizationRecordDigest 固定为 SHA-256(JCS(InternalAuthorizationRecord 去掉 signature 字段))；signature 必须在使用前按 keyId 独立验证。exactScopeDigest 固定为 SHA-256(JCS({ subject, action, intentId, taskId: taskId ?? null, resourceBindings, serviceBindings: serviceBindings ?? null }))。exactResourceRefs 先按 UTF-8 字节序稳定排序并拒绝重复；AuthorizationBindingManifestV1.bindings 再按 action、authorizationRecordDigest、exactScopeDigest、expectedRevocationEpoch 排序并拒绝重复，等价授权不得因数组顺序产生不同摘要。
 - authorizationBindingDigest 只对上述 canonical AuthorizationBindingManifestV1 做 JCS：绑定当前 audience/session/service instance、不可变授权记录/constraints、精确 scope 和 expected revocation epoch；明确排除 consumedUses、lastConsumedAt、当前时间和错误文本。每次执行/恢复仍在服务端原子读取 active/revoked/expired/consumed 状态，摘要不能代替账本。
-- CURRENT 内部 AuthorizationLedger 把 OperationIntent、一次性 OperationApproval 消费、task-bound InternalAuthorization、逐调用 usage 和共享 operation remote-call 上限保存在一个 HMAC 认证、文件锁串行化的原子记录中。Task manifest binding 与内部 authorizationId 分离；未配置受信手势 attestation verifier 时所有批准/撤销写入失败关闭。生产 trusted-surface 适配、资源/ImportApproval 与公共 MCP 尚未接线。
+- CURRENT 内部 AuthorizationLedger 把 OperationIntent、一次性 OperationApproval 消费、task-bound InternalAuthorization、逐调用 usage 和共享 operation remote-call 上限保存在一个 HMAC 认证、文件锁串行化的原子记录中。Task manifest binding 与内部 authorizationId 分离；未配置受信手势 attestation verifier 时所有批准/撤销写入失败关闭。本地资源 picker 的正式 verifier 已接入独立资源账本；Operation/ImportApproval、URL 输入和公共 MCP 尚未接线。
 - inputFingerprint 是 canonical TaskInputManifestDigest，不是调用方自报字符串；它描述一次具体执行实例，绑定当前 authorizationBindingDigest、operationIntentDigest、credentialRevision、egress、成本/批量和 successorRebaseDigest。subject 用 project_task/profile_validation 判别联合；profile_validation 仅在未提交草稿场景包含 configurationSessionRef。OperationRequestManifestDigest → intentDigest → TaskInputManifestDigest 单向构造，不形成摘要循环。
 - audienceDigest 固定为 SHA-256(JCS(AudienceBindingManifestV1))；其 preimage 含 canonical OS SID digest、host/plugin/service/session 五项，全部来自受信启动链路。任一实例或会话变化都会使旧授权不可重放。
 - configurationFingerprint 固定为 SHA-256(JCS(ProfileConfigurationManifestV1))；endpoint 在摘要前完成 scheme/IDN host/default port/path 规范化且禁止 query/userinfo/fragment，秘密值排除、credentialRevision 独立绑定。egressManifestDigest 同理绑定规范目标、method/content-type、redirect/proxy/DNS 与响应上限。
@@ -519,7 +519,8 @@ CURRENT 内部 `ServiceProfileVerificationRegistry` 现可直接使用上述持�
 - CURRENT M2 的内部 `TaskResourceStager` 会重新验证已消费 local grant 的 proof、audience、撤销 epoch、revision、约束和当前快照，再以独占句柄和有界流复制到 task workspace。目录复制产生排序、认证的逐项 manifest，并拒绝 reparse、hardlink、名称碰撞、资源越界和复制期变化；Worker 只得到 workspace-relative locator。
 - staging receipt 以域隔离 HMAC 绑定 source ref 摘要、task/audience/service、workspace identity、manifest 与暂存字节。Windows staged payload 对 task SID 只授予 read/execute；生产模式没有正式 hardener 就失败关闭。当前实现以跨进程锁串行化完整复制阶段，优先保证原子性与幂等，后续再优化大型目录吞吐。
 - CURRENT `ServiceResourceRuntime` 已由 Card Service 惰性拥有同一个 local grant registry 和 stager；packaged runtime 只绑定正式 `harden_staged_path`，并拒绝调用方注入 gesture verifier。能力快照不披露路径、key 或私有 receipt。
-- 该 composition root 仍不是完整事务边界：legacy 桥、StudyTask、Source Adapter、Worker 调度和公共 MCP 尚未接线，也未实现生产受信选择/URL 输入 attestation、网络资源 staging 或逐子项公共 ref。Artifact publish 失败可能留下已经净化的内容寻址孤儿 Blob；跨 Registry 原子事务和保留清理属于后续 M2。
+- CURRENT `TrustedSurfaceManager` 的 `local_resource_picker` 会在独立本地窗口取得真实选择，以 session/nonce/surface 绑定的 AES-256-GCM 私有响应把 raw path 交回 Service；公开响应只含固定安全标签。5 分钟 attestation 在首次使用时绑定精确 audience/request digest，完成或过期后清除路径。Card Service 内部 adapter 据此签发 opaque local resource ref，并拒绝服务状态根。
+- 该 composition root 仍不是完整事务边界：legacy 桥、StudyTask、Source Adapter、Worker 调度、宿主附件和公共 MCP 尚未接线，也未实现受信 URL 输入 attestation、网络资源 staging 或逐子项公共 ref。Artifact publish 失败可能留下已经净化的内容寻址孤儿 Blob；跨 Registry 原子事务和保留清理属于后续 M2。
 - 旧桌面项目可通过显式迁移器导入，不直接假设字段等价。
 
 ## 11. 进程与部署

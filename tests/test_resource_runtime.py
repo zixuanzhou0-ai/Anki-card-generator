@@ -281,6 +281,37 @@ def test_card_service_lazily_owns_one_resource_runtime_without_public_write_tool
         assert secret.encode("ascii") not in serialized_state
 
 
+def test_resource_runtime_never_authorizes_card_service_state(
+    tmp_path: Path,
+) -> None:
+    service_state = (tmp_path / "service-state").resolve()
+    source = service_state / "private-task-state.json"
+    source.parent.mkdir(parents=True)
+    source.write_text("private", encoding="utf-8")
+    runtime = ServiceResourceRuntime(
+        state_dir=(service_state / "resource-runtime").resolve(),
+        credential_store=CredentialStore(
+            state_dir=(service_state / "credentials").resolve(),
+            backend=InMemoryCredentialBackend(),
+        ),
+        gesture_verifier=lambda *_args: True,
+        harden_callback=None,
+        forbidden_roots=(service_state,),
+        require_hardening=False,
+    )
+
+    with pytest.raises(ServiceResourceRuntimeError) as failure:
+        runtime.issue_local_grant(
+            audience=audience(),
+            grant_request_id="forbidden-state",
+            raw_path=source,
+            kind="file",
+            constraints=constraints(source.stat().st_size),
+            attestation_ref="gesture-1",
+        )
+    assert failure.value.code == "RESOURCE_RUNTIME_PATH_FORBIDDEN"
+
+
 def test_packaged_card_service_rejects_injected_resource_gesture_verifier(
     tmp_path: Path,
 ) -> None:

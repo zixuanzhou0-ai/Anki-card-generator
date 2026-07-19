@@ -5,24 +5,32 @@ import json
 import sys
 import tkinter as tk
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
 from card_service.credentials import CredentialStore, CredentialStoreError
 from card_service.storage import AtomicJsonStore
-from card_service.trusted_surface_auth import decode_response_key, sign_response
+from card_service.trusted_surface_auth import (
+    decode_response_key,
+    seal_private_payload,
+    sign_response,
+)
 
 
 def read_request(path: Path) -> dict[str, Any]:
     value = json.loads(sys.stdin.read())
     if not isinstance(value, dict) or value.get("schemaVersion") != 1:
         raise ValueError("Invalid trusted surface request")
-    if value.get("surface") not in {"local_settings", "consent"}:
+    if value.get("surface") not in {"local_settings", "consent", "local_resource_picker"}:
         raise ValueError("Unknown trusted surface")
     session_ref = str(value.get("sessionRef") or "")
     expected_response = (path.parent.parent / "responses" / f"{session_ref}.json").resolve()
     if path.name != f"{session_ref}.json" or Path(str(value.get("responsePath") or "")) != expected_response:
         raise ValueError("Trusted surface request path mismatch")
+    if value["surface"] == "local_resource_picker" and value.get("selectionKind") not in {
+        "file", "directory", "output_directory"
+    }:
+        raise ValueError("Unknown local resource selection kind")
     if value["surface"] == "local_settings":
         expected_credentials = (path.parent.parent / "credentials").resolve()
         if Path(str(value.get("credentialStateDir") or "")) != expected_credentials:
@@ -109,6 +117,75 @@ def show_local_settings(request: dict[str, Any]) -> None:
     root.mainloop()
 
 
+def show_local_resource_picker(request: dict[str, Any]) -> None:
+    root = tk.Tk()
+    root.title("Codex Study · 选择本地资源")
+    root.geometry("620x360")
+    root.minsize(540, 320)
+    frame = ttk.Frame(root, padding=24)
+    frame.pack(fill="both", expand=True)
+    kind = str(request["selectionKind"])
+    kind_label = {
+        "file": "文件",
+        "directory": "输入文件夹",
+        "output_directory": "输出文件夹",
+    }[kind]
+    ttk.Label(
+        frame,
+        text=f"选择{kind_label}",
+        font=("Microsoft YaHei UI", 18, "bold"),
+    ).pack(anchor="w")
+    ttk.Label(
+        frame,
+        text=(
+            "只有你在这个本地窗口中选择的资源会被授权。完整路径不会进入对话、MCP、任务日志或响应文件。"
+        ),
+        wraplength=560,
+    ).pack(anchor="w", pady=(10, 18))
+    ttk.Label(
+        frame,
+        text=str(request.get("scopeSummary") or "本次授权仅用于当前制卡任务。"),
+        wraplength=560,
+    ).pack(anchor="w")
+    status = ttk.Label(frame, text="尚未选择。")
+    status.pack(anchor="w", pady=(18, 0))
+
+    def finish(state: str, selected_path: str | None = None) -> None:
+        extra: dict[str, Any] = {"userGestureRecorded": state == "selected"}
+        if state == "selected" and selected_path:
+            response_key = decode_response_key(str(request.get("responseAuthKey") or ""))
+            extra["privatePayload"] = seal_private_payload(
+                {"schemaVersion": 1, "selectedPath": selected_path},
+                response_key,
+                session_ref=str(request["sessionRef"]),
+                request_nonce=str(request["requestNonce"]),
+                surface="local_resource_picker",
+            )
+        write_response(request, state, **extra)
+        root.destroy()
+
+    def choose() -> None:
+        if kind == "file":
+            selected = filedialog.askopenfilename(parent=root, title="选择学习素材")
+        else:
+            selected = filedialog.askdirectory(
+                parent=root,
+                title="选择输入文件夹" if kind == "directory" else "选择输出文件夹",
+                mustexist=True,
+            )
+        if not selected:
+            status.configure(text="没有选择任何资源。")
+            return
+        finish("selected", selected)
+
+    buttons = ttk.Frame(frame)
+    buttons.pack(fill="x", side="bottom")
+    ttk.Button(buttons, text="取消", command=lambda: finish("cancelled")).pack(side="right")
+    ttk.Button(buttons, text=f"选择{kind_label}", command=choose).pack(side="right", padx=(0, 10))
+    root.protocol("WM_DELETE_WINDOW", lambda: finish("cancelled"))
+    root.mainloop()
+
+
 def show_consent(request: dict[str, Any]) -> None:
     root = tk.Tk()
     root.title("Codex Study · 本地确认")
@@ -157,7 +234,7 @@ def show_consent(request: dict[str, Any]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("surface", choices=("local_settings", "consent"))
+    parser.add_argument("surface", choices=("local_settings", "consent", "local_resource_picker"))
     parser.add_argument("request_path", type=Path)
     arguments = parser.parse_args()
     request = read_request(arguments.request_path.resolve(strict=True))
@@ -165,8 +242,10 @@ def main() -> None:
         raise SystemExit("trusted surface request kind mismatch")
     if arguments.surface == "local_settings":
         show_local_settings(request)
-    else:
+    elif arguments.surface == "consent":
         show_consent(request)
+    else:
+        show_local_resource_picker(request)
 
 
 if __name__ == "__main__":

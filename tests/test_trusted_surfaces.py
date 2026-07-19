@@ -156,6 +156,83 @@ def test_same_user_forged_approval_with_readable_nonce_but_no_private_mac_is_rej
     assert caught.value.code == "SESSION_RESPONSE_INVALID"
 
 
+def test_local_resource_picker_keeps_raw_path_out_of_request_response_and_public_result(
+    tmp_path: Path,
+) -> None:
+    surfaces = manager(tmp_path)
+    capabilities = surfaces.capabilities()
+    assert capabilities["localResourcePickerResponseEncryptedAtRest"] is True
+    assert "localResourcePathEncryptedAtRest" not in capabilities
+
+    audience_digest = "a" * 64
+    request_digest = "b" * 64
+    session = surfaces.create_local_resource_session(
+        kind="file",
+        scope_summary="读取一次所选文件，最多 16 MiB，用于当前素材分析。",
+    )
+    request_path = surfaces.sessions_dir / f"{session['sessionRef']}.json"
+    selected_path = (
+        request_path.parents[3] / f"trusted-picker-{session['sessionRef']}.txt"
+    ).resolve()
+    selected_path.write_text("trusted picker content", encoding="utf-8")
+    request_text = request_path.read_text(encoding="utf-8")
+    assert str(selected_path) not in request_text
+    assert "selectedPath" not in request_text
+
+    assert surfaces.launch(session["sessionRef"])["state"] == "open"
+    result = wait_session(surfaces, session["sessionRef"])
+    assert result == {
+        "schemaVersion": 1,
+        "sessionRef": session["sessionRef"],
+        "state": "selected",
+        "userGestureRecorded": True,
+        "resourceSelection": {
+            "kind": "file",
+            "displayName": "Selected file",
+            "pathDisclosure": False,
+        },
+    }
+    serialized = json.dumps(result, ensure_ascii=False, sort_keys=True)
+    assert str(selected_path) not in serialized
+    assert "privatePayload" not in serialized
+    assert "attestation" not in serialized.lower()
+    assert not (surfaces.responses_dir / f"{session['sessionRef']}.json").exists()
+
+    selection = surfaces.selected_local_resource(session["sessionRef"])
+    assert selection is not None
+    assert selection.path == selected_path
+    assert surfaces.verify_resource_gesture(
+        audience_digest, request_digest, selection.attestation_ref,
+        "approve_local_resource"
+    ) is True
+    assert surfaces.verify_resource_gesture(
+        audience_digest, request_digest, selection.attestation_ref,
+        "approve_local_resource"
+    ) is True
+    assert surfaces.verify_resource_gesture(
+        "c" * 64, request_digest, selection.attestation_ref,
+        "approve_local_resource"
+    ) is False
+    assert surfaces.verify_resource_gesture(
+        audience_digest, "d" * 64, selection.attestation_ref,
+        "approve_local_resource"
+    ) is False
+
+    with surfaces._lock:
+        surfaces._resource_attestations[selection.attestation_ref]["expiresAt"] = 0
+    assert surfaces.verify_resource_gesture(
+        audience_digest, request_digest, selection.attestation_ref,
+        "approve_local_resource"
+    ) is False
+
+    surfaces.complete_resource_selection(session["sessionRef"])
+    assert surfaces.selected_local_resource(session["sessionRef"]) is None
+    assert surfaces.verify_resource_gesture(
+        audience_digest, request_digest, selection.attestation_ref,
+        "approve_local_resource"
+    ) is False
+
+
 @pytest.mark.parametrize("profile_ref", ["", "../escape", "model primary", "x" * 129])
 def test_invalid_profile_refs_are_rejected(tmp_path: Path, profile_ref: str) -> None:
     with pytest.raises(TrustedSurfaceError) as caught:

@@ -6,6 +6,8 @@ import sys
 import base64
 import hashlib
 import hmac
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
 from pathlib import Path
 
 
@@ -21,16 +23,69 @@ def sign(value: dict[str, object], key: bytes) -> dict[str, object]:
     return {**value, "responseMac": mac}
 
 
+def seal_picker_path(request: dict[str, object], key: bytes, selected_path: Path) -> dict[str, object]:
+    aad = json.dumps(
+        {
+            "schema": "study.trusted-surface-private-payload-aad",
+            "schemaVersion": 1,
+            "sessionRef": request["sessionRef"],
+            "requestNonce": request["requestNonce"],
+            "surface": "local_resource_picker",
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    derived = hmac.new(
+        key, b"study.trusted-surface-private-payload-key.v1\x00" + aad, hashlib.sha256
+    ).digest()
+    nonce = os.urandom(12)
+    plaintext = json.dumps(
+        {"schemaVersion": 1, "selectedPath": str(selected_path)},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    ciphertext = AESGCM(derived).encrypt(nonce, plaintext, aad)
+    return {
+        "schemaVersion": 1,
+        "algorithm": "A256GCM",
+        "nonce": base64.urlsafe_b64encode(nonce).decode("ascii").rstrip("="),
+        "ciphertext": base64.urlsafe_b64encode(ciphertext).decode("ascii").rstrip("="),
+    }
+
+
 def main() -> None:
     surface, request_path = sys.argv[1:]
+    request_path = Path(request_path)
     request = json.loads(sys.stdin.read())
-    response = sign({
-        "schemaVersion": 1,
-        "sessionRef": request["sessionRef"],
-        "requestNonce": request["requestNonce"],
-        "state": "approved" if surface == "consent" else "completed",
-        "userGestureRecorded": surface == "consent",
-    }, decode_key(request["responseAuthKey"]))
+    response_key = decode_key(request["responseAuthKey"])
+    if surface == "local_resource_picker":
+        kind = request["selectionKind"]
+        selected = (
+            request_path.parents[3] / f"trusted-picker-{request['sessionRef']}.txt"
+            if kind == "file"
+            else request_path.parents[3] / f"trusted-picker-{request['sessionRef']}-dir"
+        )
+        response = sign(
+            {
+                "schemaVersion": 1,
+                "sessionRef": request["sessionRef"],
+                "requestNonce": request["requestNonce"],
+                "state": "selected",
+                "userGestureRecorded": True,
+                "privatePayload": seal_picker_path(request, response_key, selected),
+            },
+            response_key,
+        )
+    else:
+        response = sign({
+            "schemaVersion": 1,
+            "sessionRef": request["sessionRef"],
+            "requestNonce": request["requestNonce"],
+            "state": "approved" if surface == "consent" else "completed",
+            "userGestureRecorded": surface == "consent",
+        }, response_key)
     temporary = Path(request["responsePath"] + ".tmp")
     temporary.write_text(json.dumps(response), encoding="utf-8")
     os.replace(temporary, request["responsePath"])

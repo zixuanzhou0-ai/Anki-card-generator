@@ -136,7 +136,7 @@ Agent 不能直接提交任意绝对路径。用户通过宿主附件或本地�
 - 规范路径仍在授权根。
 - 文件身份和元数据未发生未解释变化。
 - 没有 symlink、junction、reparse point、UNC、设备路径、ADS 或保留名逃逸。
-CURRENT M2 内部 `LocalResourceGrantRegistry` 已实现 file/directory/output ref 的上述根授权、短期 audience/service 绑定、动作与资源上限、逐次身份重验、幂等消费和撤销，并由 Card Service 的惰性 `ServiceResourceRuntime` 统一拥有。生产本地选择器/宿主附件 adapter 尚未接线，因此 Agent 还不能通过公共工具自行签发这些 ref。
+CURRENT M2 内部 `LocalResourceGrantRegistry` 已实现 file/directory/output ref 的上述根授权、短期 audience/service 绑定、动作与资源上限、逐次身份重验、幂等消费和撤销，并由 Card Service 的惰性 `ServiceResourceRuntime` 统一拥有。真实本地 picker 已通过加密私有响应和短期精确 attestation 接到内部 adapter；宿主附件和公共 MCP 尚未接线，因此 Agent 仍不能通过公共工具自行签发这些 ref。
 
 
 ### 5.2 目录
@@ -151,7 +151,7 @@ CURRENT M2 内部 `LocalResourceGrantRegistry` 已实现 file/directory/output r
 所有子项逐项校验，不因根目录安全就信任内部 reparse point。
 CURRENT M2 内部 `TaskResourceStager` 已实现目录逐项安全打开/复制、稳定排序 manifest、二次扫描与 task-bound 受限 staging。它逐项拒绝 symlink/junction/reparse、hardlink、非 NFC/大小写冲突、保留名和资源上限越界；Worker 只读取 workspace-relative locator。
 
-这不是公共 DirectoryManifest adapter：Card Service composition root 只完成 grant/stager 组合；生产选择器 attestation、每项 opaque InputRef、include/exclude/skip reason、StudyTask/Worker locator 事务接线与 SourceAsset 发布仍未完成。根目录 grant 在完成 staging 前仍不能被描述成“全部后代已经冻结”。
+这不是公共 DirectoryManifest adapter：Card Service composition root 已完成 grant/stager/picker 组合；每项 opaque InputRef、include/exclude/skip reason、StudyTask/Worker locator 事务接线与 SourceAsset 发布仍未完成。根目录 grant 在完成 staging 前仍不能被描述成“全部后代已经冻结”。
 
 
 ## 6. 视频、字幕与音频

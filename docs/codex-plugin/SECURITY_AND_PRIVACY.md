@@ -404,13 +404,13 @@ type ImportApprovalLedgerState = {
 - 原工具重试时重建并核对同一 OperationRequestManifestDigest、audience、intentDigest、profile/configurationFingerprint/credentialRevision、精确 disclosure/egress、资源/费用上限与当前撤销状态；任何变化都要求新 intent。随后生成的 TaskInputManifestDigest 包含 intentDigest。
 - 重启/新 session 后旧 audience 授权绝不搬迁或回填旧任务。若 WorkReuseDigest、稳定 capability、profile configuration 和已完成 Artifact 均一致，且新 disclosure/egress 等价或更窄，Service 可在重新验证/确认后创建 successor task 与新 TaskInputManifest；SuccessorTaskRebase 同时引用旧/新授权审计。范围扩大或语义/配置变化禁止 remaining 复用。
 
-CURRENT 内部实现已经覆盖 model/TTS OperationIntent、OperationApproval、task-bound InternalAuthorization、认证 SecretRef/credentialRevision、非秘密 Service Profile，以及 file/directory/output/network 资源授权账本。Task AuthorizationBinding 不包含内部 authorizationId；资源 ref 也只定位当前 audience/service 下的认证私有记录。所有批准/撤销写入默认失败关闭；开发态测试可注入精确 audience/target/action 绑定的 verifier，但 packaged Card Service 明确拒绝任意 verifier 注入。正式 verifier 尚未与 `TrustedSurfaceManager`、本地选择器和 URL 输入窗口的生产响应适配器接线，ImportApproval、统一跨 Registry 事务及公共 MCP 也尚未实现，因此不能据此声称端到端授权已完成。
+CURRENT 内部实现已经覆盖 model/TTS OperationIntent、OperationApproval、task-bound InternalAuthorization、认证 SecretRef/credentialRevision、非秘密 Service Profile，以及 file/directory/output/network 资源授权账本。Task AuthorizationBinding 不包含内部 authorizationId；资源 ref 也只定位当前 audience/service 下的认证私有记录。所有批准/撤销写入默认失败关闭；开发态测试可注入精确 audience/target/action 绑定的 verifier，但 packaged Card Service 明确拒绝任意 verifier 注入。本地资源账本已接入 `TrustedSurfaceManager` 的真实 picker verifier；URL 输入、Operation/ImportApproval、统一跨 Registry 事务及公共 MCP 尚未接线，因此不能据此声称端到端授权已完成。
 
 CURRENT M2 的 legacy Project 投影边界坚持“先净化、后持久化”：递归遍历在内存中完成，API/TTS 配置、SecretRef/profile 注入和 secret-bearing 键被移除并记录非秘密 JSON pointer；高置信凭据值或显式 canary 即使藏在普通字段中也使整单失败。Project 顶层使用封闭 allowlist，嵌套 JSON 有节点、深度、字节与安全整数上限，任意调用方预置的 `$resourceSlot` marker 均视为伪造。
 
 raw URL/路径只有在 pointer、资源 kind、resource revision 和原值 SHA-256 与受信 `LegacyResourceBinding` 完全一致时才替换；缺绑定、错型、错值、重复身份或未消费绑定全部拒绝。持久 slot 不保存原值摘要，网络只保存 canonical request digest、query-redaction digest 和已去 userinfo/query/fragment 的 display origin。model/TTS 连接参数只存在于封闭 Service Profile Registry；legacy payload 只保存 profileRef + configurationFingerprint。内部解包还会复核 Blob/canonical JSON/schema digest、marker↔pointer、同项目父 Artifact 与撤销状态。
 
-当前 Project public summary 不返回 Project projection、BlobRef、internalResourceBindingId、profileRef 或 configurationFingerprint；本地资源 public summary 不返回 raw path、内部 grantId、attestation、useId 或认证标签。Card Service 已惰性拥有本地资源账本与 task stager，认证 key 从 OS-backed `CredentialStore` 域隔离派生且不落盘，但公共 MCP、生产选择器、StudyTask/Worker locator 绑定和完整应用数据 ACL 仍未接线；该组合不能代替跨 Registry 事务。发布 envelope 失败时可能遗留已经净化、内容寻址的孤儿 Blob，后续保留清理不得把它描述为 raw Project 泄漏，也不得在引用/事务合同完成前贸然删除。
+当前 Project public summary 不返回 Project projection、BlobRef、internalResourceBindingId、profileRef 或 configurationFingerprint；本地资源 public summary 不返回 raw path、内部 grantId、attestation、useId 或认证标签。Card Service 已惰性拥有本地资源账本、task stager 与真实 picker adapter；picker raw path 只以一次性 AES-GCM 密文短暂落入响应文件，认证解密后删除，公开结果不含路径。公共 MCP、宿主附件、StudyTask/Worker locator 绑定和完整应用数据 ACL 仍未接线；该组合不能代替跨 Registry 事务。发布 envelope 失败时可能遗留已经净化、内容寻址的孤儿 Blob，后续保留清理不得把它描述为 raw Project 泄漏，也不得在引用/事务合同完成前贸然删除。
 
 ### 5.1 stdio 身份、所有权与本地 ACL
 
@@ -468,7 +468,7 @@ CURRENT M2 已完成上述文件、输入目录和输出目录的内部 grant le
 
 内部 `TaskResourceStager` 已实现文件与目录的任务级快照：独占打开、打开句柄身份重验、有界流复制、目录逐项 manifest、二次扫描、名称/深度/条目/总字节限制，以及 reparse/hardlink/竞态/篡改拒绝。私有 receipt 认证 source、task、audience、service、workspace 与 manifest；Worker 可见值只有 task-workspace 相对路径，不含 raw source path 或可转移 staging bearer。Windows hardening 对 task SID 仅开放 read/execute，失败清理不能静默留下可消费 partial。
 
-该实现目前仍是内部安全原语：Card Service composition root 已在 packaged runtime 绑定唯一正式 hardener，并禁止任意 gesture verifier 注入；开发态只有显式测试构造可使用注入 verifier。trusted picker/attachment attestation、公共 `study.register_inputs`、StudyTask/Worker locator 绑定与网络 staging 仍未完成；这些接线完成前公共写入口继续 fail closed。
+该实现目前仍是内部安全原语：Card Service composition root 已在 packaged runtime 绑定唯一正式 hardener 和本地 picker verifier，并禁止任意 gesture verifier 注入；开发态只有显式测试构造可使用注入 verifier。宿主 attachment attestation、公共 `study.register_inputs`、StudyTask/Worker locator 绑定与网络 staging 仍未完成；这些接线完成前公共写入口继续 fail closed。
 
 
 ## 8. 网络与 SSRF

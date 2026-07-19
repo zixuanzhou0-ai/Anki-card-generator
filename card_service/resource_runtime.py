@@ -6,7 +6,7 @@ import re
 import secrets
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from .artifact_registry import ArtifactAudienceBinding
 from .credentials import CredentialStore, CredentialStoreError
@@ -38,6 +38,16 @@ def _require_request_id(value: str, label: str) -> str:
     return value
 
 
+def _path_is_within(candidate: Path, root: Path) -> bool:
+    try:
+        common = os.path.commonpath(
+            [os.path.normcase(str(candidate.absolute())), os.path.normcase(str(root.absolute()))]
+        )
+    except ValueError:
+        return False
+    return os.path.normcase(common) == os.path.normcase(str(root.absolute()))
+
+
 def _state_context(root: Path) -> bytes:
     normalized = os.path.normcase(str(root.absolute())).encode("utf-8")
     return hashlib.sha256(
@@ -59,6 +69,7 @@ class ServiceResourceRuntime:
         credential_store: CredentialStore,
         gesture_verifier: GestureVerifier | None,
         harden_callback: StagingHardener | None,
+        forbidden_roots: Sequence[str | Path] = (),
         require_hardening: bool,
     ) -> None:
         root = Path(state_dir).expanduser()
@@ -68,6 +79,18 @@ class ServiceResourceRuntime:
                 "resource runtime state directory must be absolute",
             )
         self.root = root.absolute()
+        normalized_forbidden: list[Path] = [self.root]
+        for value in forbidden_roots:
+            candidate = Path(value).expanduser()
+            if not candidate.is_absolute():
+                raise ServiceResourceRuntimeError(
+                    "RESOURCE_RUNTIME_STATE_INVALID",
+                    "forbidden resource roots must be absolute",
+                )
+            candidate = candidate.absolute()
+            if candidate not in normalized_forbidden:
+                normalized_forbidden.append(candidate)
+        self._forbidden_roots = tuple(normalized_forbidden)
         try:
             self.root.mkdir(parents=True, exist_ok=True)
             context = _state_context(self.root)
@@ -111,6 +134,7 @@ class ServiceResourceRuntime:
             "schemaVersion": 1,
             "serviceInstanceBound": True,
             "authenticationKeyPersistedInFiles": False,
+            "serviceStateSelectionBlocked": True,
             "trustedGrantIssuance": self._gesture_verifier is not None,
             "taskStaging": True,
             "productionHardeningRequired": self._hardening_required,
@@ -132,6 +156,14 @@ class ServiceResourceRuntime:
         max_uses: int = 1,
         expires_at: datetime | str | None = None,
     ) -> dict[str, Any]:
+        selected_path = Path(raw_path).expanduser()
+        if not selected_path.is_absolute() or any(
+            _path_is_within(selected_path, root) for root in self._forbidden_roots
+        ):
+            raise ServiceResourceRuntimeError(
+                "RESOURCE_RUNTIME_PATH_FORBIDDEN",
+                "Card Service state cannot be selected as a task resource",
+            )
         _require_request_id(grant_request_id, "grantRequestId")
         try:
             return self.local_registry.issue_grant(

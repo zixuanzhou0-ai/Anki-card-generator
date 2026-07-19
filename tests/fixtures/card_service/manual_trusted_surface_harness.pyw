@@ -21,6 +21,28 @@ def main() -> None:
         python_path=Path(sys.executable).resolve(),
         credential_backend=InMemoryCredentialBackend(),
     )
+    if "--picker" in sys.argv[1:]:
+        session = manager.create_local_resource_session(
+            kind="file",
+            scope_summary="读取所选文件一次，最多 16 MiB，仅用于受信选择器视觉验收。",
+        )
+    else:
+        session = _create_broker_session(manager)
+    manager.launch(str(session["sessionRef"]))
+    deadline = time.monotonic() + 120
+    result: dict[str, object] = {"state": "timeout"}
+    while time.monotonic() < deadline:
+        result = manager.get_session(str(session["sessionRef"]))
+        if result["state"] not in {"created", "open"}:
+            break
+        time.sleep(0.05)
+    (state_dir / "visual-result.json").write_text(
+        json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+
+
+def _create_broker_session(manager: TrustedSurfaceManager) -> dict[str, object]:
     profiles = [
         {
             "profileRef": f"model.hermes-{index}",
@@ -35,7 +57,7 @@ def main() -> None:
         }
         for index in range(1, 5)
     ]
-    session = manager.create_broker_authorization_session(
+    return manager.create_broker_authorization_session(
         {
             "lifetimeSeconds": 600,
             "budget": {
@@ -58,18 +80,6 @@ def main() -> None:
                 "youtubeSubtitles": {"enabled": True, "timeoutSeconds": 30}
             },
         }
-    )
-    manager.launch(str(session["sessionRef"]))
-    deadline = time.monotonic() + 120
-    result: dict[str, object] = {"state": "timeout"}
-    while time.monotonic() < deadline:
-        result = manager.get_session(str(session["sessionRef"]))
-        if result["state"] not in {"created", "open"}:
-            break
-        time.sleep(0.05)
-    (state_dir / "visual-result.json").write_text(
-        json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
-        encoding="utf-8",
     )
 
 
