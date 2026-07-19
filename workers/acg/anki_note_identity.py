@@ -6,7 +6,7 @@ from typing import Any
 
 import genanki
 
-from acg.anki_model_contracts import CONTRACTS_BY_MODEL_ID
+from .anki_model_contracts import CONTRACTS_BY_MODEL_ID
 
 
 LEGACY_NOTE_GUID_ALGORITHM = "genanki-guid-for-fields-v1"

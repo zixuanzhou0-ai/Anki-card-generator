@@ -22,6 +22,8 @@ from card_service.mcp_candidate_tools import (
     LIST_CANDIDATES_TOOL_NAME,
     PREVIEW_EVIDENCE_TOOL_NAME,
 )
+from card_service.mcp_package_tools import EXPORT_APKG_TOOL_NAME
+from card_service.mcp_task_tools import CANCEL_TASK_TOOL_NAME, GET_TASK_TOOL_NAME
 from card_service.mcp_input_tools import REGISTER_INPUTS_TOOL_NAME
 from card_service.mcp_inspection_tools import (
     GET_SOURCE_INSPECTION_TOOL_NAME,
@@ -179,6 +181,9 @@ def test_mcp_bridge_reports_trusted_session_without_disclosing_identity() -> Non
         VALIDATE_CARD_PLANS_TOOL_NAME,
         GENERATE_CARDS_TOOL_NAME,
         LIST_CARDS_TOOL_NAME,
+        EXPORT_APKG_TOOL_NAME,
+        GET_TASK_TOOL_NAME,
+        CANCEL_TASK_TOOL_NAME,
     ]
 
 
@@ -304,6 +309,9 @@ def test_real_mcp_stdio_process_reports_card_service_capabilities(tmp_path: Path
             VALIDATE_CARD_PLANS_TOOL_NAME,
             GENERATE_CARDS_TOOL_NAME,
             LIST_CARDS_TOOL_NAME,
+            EXPORT_APKG_TOOL_NAME,
+            GET_TASK_TOOL_NAME,
+            CANCEL_TASK_TOOL_NAME,
         ]
         called = rpc(
             {

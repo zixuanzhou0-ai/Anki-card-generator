@@ -469,7 +469,7 @@ CURRENT M2 已完成上述文件、输入目录和输出目录的内部 grant le
 
 内部 `TaskResourceStager` 已实现文件与目录的任务级快照：独占打开、打开句柄身份重验、有界流复制、目录逐项 manifest、二次扫描、名称/深度/条目/总字节限制，以及 reparse/hardlink/竞态/篡改拒绝。私有 receipt 认证 source、task、audience、service、workspace 与 manifest；Worker 可见值只有 task-workspace 相对路径，不含 raw source path 或可转移 staging bearer。Windows hardening 对 task SID 仅开放 read/execute，失败清理不能静默留下可消费 partial。
 
-Card Service composition root 已在 packaged runtime 绑定唯一正式 hardener 和本地 picker verifier，并禁止任意 gesture verifier 注入；开发态只有显式测试构造可使用注入 verifier。可信 stdio 仅把 source/output picker 与 opaque grant 签发公开；尚未公开 `study.register_inputs`，也未把 ref 绑定到 StudyTask/Worker locator 或 APKG 输出发布。宿主 attachment attestation 与网络 staging 仍未完成；这些接线完成前生成、导出和 Anki 写入口继续 fail closed。
+Card Service composition root 已在 packaged runtime 绑定唯一正式 hardener 和本地 picker verifier，并禁止任意 gesture verifier 注入；开发态只有显式测试构造可使用注入 verifier。可信 stdio 已把 source/output picker、opaque grant、`study.register_inputs`、task-local source staging、受限确定性 `cards.generate` 和认证 `cards.export_apkg` 接线；Worker 只接收 workspace-relative locator，APKG 只以内容寻址 Blob、PackageArtifact 与目标同盘 no-replace 发布对外。宿主 attachment attestation 与网络 staging 仍未完成；模型/TTS/媒体生成和 Anki 写入口继续 fail closed。
 
 
 ## 8. 网络与 SSRF

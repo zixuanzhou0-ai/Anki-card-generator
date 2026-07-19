@@ -821,7 +821,7 @@ CURRENT `deterministic-card-artifact-v1` 只接受精确当前 PlanSet，重新�
 
 成功时逐计划发布不可变 `study.card`，再发布对账完整的 `study.reliability-manifest`、空 `study.media-ledger`、经 Service sanitizer 处理的 Legacy Worker 兼容投影，以及唯一 `study.project-artifact`。ProjectArtifact 的父集合必须包含 PlanSet、Validation、每个 CardPlan/Card、ReliabilityManifest、MediaLedger 与 SanitizedLegacyProjectArtifact；解析时重新核对 cardIds、父图和当前项目 latestArtifactRefs。公开 `cards.list` 只提供学习者投影，认证 cursor 绑定 service/audience/ProjectArtifact/offset，内部引用、路径、证据定位、授权与 input fingerprint 不进入结果。
 
-该 CURRENT 路线不调用模型、TTS、媒体、网络或 Anki。兼容投影已经通过真实 Legacy Worker APKG 导出，但公开 `cards.export_apkg` 尚未接线，因此 `cards_ready` 不能解释成 `apkg_ready` 或已导入 Anki。
+该 CURRENT 路线不调用模型、TTS、媒体、网络或 Anki。`cards_ready` 只表示认证 ProjectArtifact 已生成；公开 `cards.export_apkg` 另行验证并发布 PackageArtifact 后才推进到 `apkg_ready`，两者都不能解释成已导入 Anki。
 ## 14. 用户编辑
 
 ~~~ts
@@ -3248,3 +3248,9 @@ profileBindingDigest = SHA-256(JCS({ capability, profileRef, configurationFinger
 - 最终 read barrier、FinalReverification 与 RuntimeEvidence 必须逐字节复用同一 Typed FinalRuntimeEvidenceInputsManifest。
 - 任一由本 run 触发且触及既有用户 Anki 的 focus change 都失败；谓词必须对称覆盖 from/to、Service 主进程/后代/代理和 add-on 动作。
 
+
+## 23. CURRENT PackageArtifact 实现映射
+
+当前实现把旧 Worker `ExportResult` 限制为内部、未认证输入，不能直接成为公共事实。Service 将其重新解析为 `study.apkg-file`、`study.card-identity-set`、`study.package-media-manifest`、`study.card-media-role-inventory` 和 `study.package-artifact` 五类认证产物。Worker `card_id` 是包/牌组作用域身份，`source_card_id` 才映射 ProjectArtifact 的 CardArtifact identity；两者都保留并由服务端验证，禁止混为一个 ID。
+
+PackageArtifact 固定绑定原 ProjectArtifact、ReliabilityManifest、APKG SHA/size、文件名、deck、note/card/media 数量、front/back/CSS 摘要、媒体清单 digest、CardIdentitySet digest 和投递状态。公开结果只返回 PackageArtifact handle 与有界摘要，不返回 APKG path、Worker export path、内部 ArtifactRef、BlobRef、input fingerprint、媒体目录或 registry authentication data。当前实现阶段为 `apkg_ready`；ImportPlan 与后续 AnkiVerificationArtifact 尚未开放。

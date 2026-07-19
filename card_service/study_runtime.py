@@ -38,6 +38,11 @@ from .candidate_selection import (
 )
 from .credentials import CredentialStore, CredentialStoreError
 from .project_registry import ProjectRegistry, ProjectRegistryError
+from .package_artifact_runtime import (
+    PackageArtifactRuntime,
+    PackageArtifactRuntimeError,
+    PackageExportExecutor,
+)
 from .resource_runtime import ServiceResourceRuntime
 from .source_inspection import SourceInspectionError, SourceInspectionRuntime
 from .source_registration import (
@@ -79,6 +84,7 @@ class StudyRuntime:
         candidate_discovery_model_provider: (
             CandidateDiscoveryModelProvider | None
         ) = None,
+        package_export_executor: PackageExportExecutor | None = None,
     ) -> None:
         root = Path(state_dir).expanduser()
         if not root.is_absolute():
@@ -92,6 +98,7 @@ class StudyRuntime:
             )
         self.root = root.absolute()
         self.root.mkdir(parents=True, exist_ok=True)
+        self.resources = resource_runtime
         self.service_instance_id = resource_runtime.service_instance_id
         try:
             context = _context(self.root)
@@ -203,6 +210,20 @@ class StudyRuntime:
                 card_artifacts=self.card_artifacts,
                 cursor_key=card_artifact_query_key,
             )
+            self.package_artifacts = (
+                PackageArtifactRuntime(
+                    root=self.root / "package-export",
+                    service_instance_id=self.service_instance_id,
+                    artifacts=self.artifacts,
+                    projects=self.projects,
+                    tasks=self.tasks,
+                    resources=resource_runtime,
+                    card_artifacts=self.card_artifacts,
+                    export_executor=package_export_executor,
+                )
+                if package_export_executor is not None
+                else None
+            )
             discovery_configured = (
                 candidate_discovery_model is not None
                 or candidate_discovery_model_provider is not None
@@ -235,6 +256,7 @@ class StudyRuntime:
             CardPlanRuntimeError,
             CardArtifactQueryError,
             CardArtifactRuntimeError,
+            PackageArtifactRuntimeError,
             OSError,
         ) as error:
             raise StudyRuntimeError(
@@ -265,6 +287,8 @@ class StudyRuntime:
             "cardArtifactRuntime": True,
             "publicCardGeneration": True,
             "publicCardQueries": True,
+            "packageArtifactRuntime": self.package_artifacts is not None,
+            "publicApkgExport": self.package_artifacts is not None,
             "publicProjectTools": True,
             "publicInputRegistration": True,
             "publicSourceInspection": True,
@@ -636,6 +660,56 @@ class StudyRuntime:
             ProjectRegistryError,
             StudyTaskError,
         ) as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
+    def start_apkg_export(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_id: str,
+        expected_project_revision: int,
+        idempotency_key: str,
+        project_artifact_handle: str,
+        output_ref: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        if self.package_artifacts is None:
+            raise StudyRuntimeError(
+                "PACKAGE_EXPORT_UNAVAILABLE", "APKG export executor is unavailable"
+            )
+        try:
+            return self.package_artifacts.start_export(
+                audience=audience,
+                project_id=project_id,
+                expected_project_revision=expected_project_revision,
+                idempotency_key=idempotency_key,
+                project_artifact_handle=project_artifact_handle,
+                output_ref=output_ref,
+            )
+        except PackageArtifactRuntimeError as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
+    def get_study_task(
+        self, *, audience: ArtifactAudienceBinding, task_id: str
+    ) -> dict[str, Any]:
+        if self.package_artifacts is None:
+            raise StudyRuntimeError(
+                "TASK_RUNTIME_UNAVAILABLE", "Study task runtime is unavailable"
+            )
+        try:
+            return self.package_artifacts.get_task(task_id, audience)
+        except PackageArtifactRuntimeError as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
+    def cancel_study_task(
+        self, *, audience: ArtifactAudienceBinding, task_id: str
+    ) -> dict[str, Any]:
+        if self.package_artifacts is None:
+            raise StudyRuntimeError(
+                "TASK_RUNTIME_UNAVAILABLE", "Study task runtime is unavailable"
+            )
+        try:
+            return self.package_artifacts.cancel_task(task_id, audience)
+        except PackageArtifactRuntimeError as error:
             raise StudyRuntimeError(error.code, error.message) from error
 
     def plan_cards(

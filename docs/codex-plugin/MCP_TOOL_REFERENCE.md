@@ -1,6 +1,6 @@
 # MCP 工具参考
 
-> 状态：CURRENT 最小桥 + PROPOSED 完整工具契约；可信会话已实现 `system.get_capabilities`、本地 source/output grant、项目与素材登记/检查、候选查询与选择、CardPlan 创建/审阅/编辑/重验，以及受限确定性 `cards.generate` 与 `cards.list`
+> 状态：CURRENT 最小桥 + PROPOSED 完整工具契约；可信会话已实现 `system.get_capabilities`、本地 source/output grant、项目与素材登记/检查、候选查询与选择、CardPlan 创建/审阅/编辑/重验、受限确定性 `cards.generate`/`cards.list`、异步 `cards.export_apkg` 与 `study.get_task`/`study.cancel_task`
 > 日期：2026-07-19
 > 工具名和 schema 在实现前仍可调整；一旦 V1 发布即按版本策略维护。
 
@@ -17,7 +17,7 @@ MCP 工具服务于用户意图，而不是暴露内部 Worker。工具层必须
 
 官方工具设计参考：[Describe tools](https://developers.openai.com/apps-sdk/build/mcp-server#step-2--describe-tools)。
 
-当前桥实现协议握手、动态工具发现、零参数只读能力快照，以及可信会话中的本地 source/output opaque grant、幂等项目/素材登记、有界确定性素材检查、现有认证 Discovery 的候选列表/详情/证据预览、本地组合选择、受限确定性 CardPlan 创建/分页复核/Agent 编辑/独立重验，以及文本卡片的确定性生成与分页审阅。`cards.generate` 只接受当前 planSetHandle，要求全部八项门禁为 passed，发布不可变 CardArtifact、ReliabilityManifest、空 MediaLedger、SanitizedLegacyProjectArtifact 与 ProjectArtifact；它不调用模型、TTS、媒体、网络或 Anki。`cards.list` 只返回学习者可见题面、答案、解释、例句、评分边界和验证状态。没有原生 launcher audience 时只公开 `system.get_capabilities`；可信 audience 由父 PID、固定 launcher 可执行文件、当前 OS 用户 SID 摘要和每进程随机 nonce 派生，工具参数不能自报。桥仍不接受任意路径、URL、调用方构造的 Artifact 或 OperationIntent，也不公开启动候选发现、候选编辑、APKG 导出、Anki 写入、凭据、原始 Worker 或 Shell；除明确标为 CURRENT 的工具外，下文仍是后续里程碑的目标合同。
+当前桥实现协议握手、动态工具发现、零参数只读能力快照，以及可信会话中的本地 source/output opaque grant、幂等项目/素材登记、有界确定性素材检查、现有认证 Discovery 的候选列表/详情/证据预览、本地组合选择、受限确定性 CardPlan 创建/分页复核/Agent 编辑/独立重验，以及文本卡片的确定性生成与分页审阅。`cards.generate` 只接受当前 planSetHandle，要求全部八项门禁为 passed，发布不可变 CardArtifact、ReliabilityManifest、空 MediaLedger、SanitizedLegacyProjectArtifact 与 ProjectArtifact；它不调用模型、TTS、媒体、网络或 Anki。`cards.list` 只返回学习者可见题面、答案、解释、例句、评分边界和验证状态。没有原生 launcher audience 时只公开 `system.get_capabilities`；可信 audience 由父 PID、固定 launcher 可执行文件、当前 OS 用户 SID 摘要和每进程随机 nonce 派生，工具参数不能自报。桥仍不接受任意路径、URL、调用方构造的 Artifact 或 OperationIntent，也不公开启动候选发现、候选编辑、Anki 写入、凭据、原始 Worker 或 Shell。CURRENT APKG 导出只接受当前 ProjectArtifact handle 与受信 outputRef，返回可轮询任务；除明确标为 CURRENT 的工具外，下文仍是后续里程碑的目标合同。
 
 ## 2. 公共请求约定
 
@@ -219,13 +219,21 @@ destructiveHint 表示工具可能终止任务、撤销授权或持久修改外�
 | study.validate_card_plans | 执行门禁 | 本地写 CardPlanValidationArtifact | 无 |
 | cards.generate | CURRENT：将全门禁通过的文本 CardPlan 确定性投影为 CardArtifact/ProjectArtifact | 本地认证 Artifact 写入；不调用模型/TTS/媒体/网络/Anki | 无 |
 | cards.list | 分页审阅当前 ProjectArtifact 中的已验证卡片 | 只读 | 无 |
-| cards.export_apkg | 生成 APKG | 文件写入 | 新目录、覆盖时 |
+| cards.export_apkg | CURRENT：从当前认证 ProjectArtifact 异步生成、独立复验并投递 APKG | 只在受信 outputRef 下创建版本化文件，不覆盖 | 新目录授权由受信选择器取得 |
 | anki.prepare_import | 预检 APKG 并冻结 ImportPlan | 本地写 ImportPlan，不写 Anki | 无 |
 | anki.request_import_confirmation | 打开受信本地确认窗口并写入会话绑定的批准状态 | 本地授权状态 | 必须用户动作 |
 | anki.import_and_verify | 按已批准的 importIntentId 导入并验证 | 修改 Anki | 服务端批准状态必须有效 |
 | study.get_artifact | 读取小型结构化产物或受可信会话约束的 opaque resource handle | 只读 | 无 |
 | study.get_audit | 获取审计/验证证书 | 只读 | 无 |
 
+
+## 4.0 CURRENT APKG 异步工具合同
+
+`cards.export_apkg` 只接受封闭 `RequestContext`、当前 `projectArtifactHandle` 和由受信本地选择器签发的精确 `outputRef`。它不接受路径、文件名、replace、媒体目录、Worker 参数或调用方 ArtifactRef；立即返回 `taskId`，由 `study.get_task` 轮询，`study.cancel_task` 请求安全取消。
+
+成功必须同时满足：Worker 只在 task workspace 写入；Card Service 独立重验完整 APKG 合同、SQLite note/card、模板与 CSS 摘要；APKG 字节进入内容寻址 Blob；目标目录使用同目录 `.partial`、flush/fsync 与 no-replace 版本化发布；PackageArtifact、CardIdentitySet、PackageMediaManifest、CardMediaRoleInventory 和 APKG file Artifact 已认证发布；项目已单调提交到 `apkg_ready` 或更后阶段。任一提交窗口未闭合时不得公开 `succeeded`。重复同一幂等请求不会重新调用 Worker，也不会覆盖或重复创建最终文件。
+
+当前这条公开路线只承诺已经实现的文本、零媒体 CardArtifact 投影；模型/TTS/媒体生成仍按现有门禁失败关闭。APKG 成功不等于已导入 Anki；`anki.prepare_import`、受信确认和 `anki.import_and_verify` 仍是下一阶段。
 ## 4.1 系统与本地配置
 
 ### system.get_capabilities
@@ -268,7 +276,7 @@ CURRENT 输入是封闭对象 `{ grantRequestId, selectionKind }`，其中 `sele
 
 CURRENT 输入是封闭对象 `{ grantRequestId }`。Service 固定打开输出目录 picker，返回 `outputRef`，其约束只包含 `create` 与 `versioned`，默认不含 `replace`；调用方不能通过参数扩大权限。返回值仅含 outputResourceRef、显示名、resourceRevisionDigest、constraints 和 expiresAt。覆盖仍需要未来独立确认与授权合同。
 
-CURRENT M2 已实现 file/directory/output grant 的认证账本、opaque ref、逐次消费、撤销和 task staging：已消费的 file/directory grant 可被复制成带认证 receipt 的 task-local snapshot，Worker locator 只含 workspace-relative path。file/directory ref 已可通过可信 `study.register_inputs` 绑定到 StudyTask、稳定 Blob/目录 manifest、`study.source-asset` 与项目 `sources_ready` 阶段；output ref 尚未绑定 APKG 发布。
+CURRENT M2 已实现 file/directory/output grant 的认证账本、opaque ref、逐次消费、撤销和 task staging：已消费的 file/directory grant 可被复制成带认证 receipt 的 task-local snapshot，Worker locator 只含 workspace-relative path。file/directory ref 已可通过可信 `study.register_inputs` 绑定到 StudyTask、稳定 Blob/目录 manifest、`study.source-asset` 与项目 `sources_ready` 阶段；output ref 已通过 `cards.export_apkg` 绑定到版本化 no-replace APKG 发布。
 
 两个工具都只在可信 stdio audience 中注册；无 audience 时调用得到 Unknown tool。picker 等待超时会返回 `awaiting_user`，使用相同 `grantRequestId` 可继续轮询。`cancelled` 与 `failed` 是显式终态；公开失败只返回固定错误码，不回显路径或私有异常。
 
@@ -682,7 +690,7 @@ CURRENT 输入只包含当前 selectionHandle；route preferences、media policy
 }
 ~~~
 
-当前实现不调用模型、TTS、媒体、网络或 Anki；需要新语义生成、翻译、媒体或 TTS 的计划仍由 CardPlan 门禁阻塞。真实 Worker 已验证该 SanitizedLegacyProjectArtifact 可以生成 APKG，但公共 `cards.export_apkg` 尚未开放，因此 `cards.generate` 成功不等于 APKG 已生成或已导入 Anki。
+当前实现不调用模型、TTS、媒体、网络或 Anki；需要新语义生成、翻译、媒体或 TTS 的计划仍由 CardPlan 门禁阻塞。`cards.generate` 成功只表示 ProjectArtifact 已达到 `cards_ready`；必须由独立的 `cards.export_apkg` 任务成功后才是 `apkg_ready`，仍不等于已导入 Anki。
 
 ### 9.1.1 cards.list
 
@@ -691,30 +699,17 @@ CURRENT 输入只包含当前 selectionHandle；route preferences、media policy
 PROPOSED 扩展：当 Broker、OperationIntent、TTS/媒体生成与细粒度异步任务全部接线后，`cards.generate` 可在同一封闭合同下支持模型与媒体；扩展不得放宽当前的 PlanSet/Validation 当前性和 fail-closed 规则。
 ### 9.2 cards.export_apkg
 
-输入 ProjectArtifact handle、enabled card IDs、outputResourceRef、file name policy 和 overwritePolicy。服务必须从认证注册表解析 handle，并按当前 revision 重新运行资格与可靠性门禁。
+> CURRENT：输入只允许封闭 RequestContext、当前 `projectArtifactHandle` 与受信选择器签发的完整 `outputRef`。不接受 enabled IDs、raw path、文件名策略、overwritePolicy、Worker 参数、媒体目录或调用方 ArtifactRef。
 
-overwritePolicy：
+服务先解析当前 ProjectArtifact，重新核对 `cards_ready` 阶段、project revision、CardArtifact/ReliabilityManifest/MediaLedger 父图和 output grant。工具立即返回 `taskId`；`study.get_task` 提供单调进度，`study.cancel_task` 请求安全取消。Worker 只写 task-owned workspace，不能直接写用户目录。
 
-- fail_if_exists（默认）。
-- create_versioned_name。
-- replace_existing（必须确认）。
+Service 不采信 raw `ExportResult` 作为公共信任根，而是重新计算 APKG SHA/size，执行完整包合同与 archive 限额，检查 `collection.anki2` 的 note/card、正反模板和 CSS 摘要，验证 Worker package card ID 与 ProjectArtifact source card ID 的映射，并重建媒体 manifest 与逐卡角色 inventory。成功后发布认证 `study.apkg-file`、`study.card-identity-set`、`study.package-media-manifest`、`study.card-media-role-inventory` 和 `study.package-artifact`。
 
-导出前必须重新执行 reliability blockers。工具立即返回 taskId；导出、哈希、manifest 与跨磁盘写入都进入统一任务协调器，可查询、可安全取消、可从 ProjectArtifact 重新开始导出，且不得重跑模型/TTS。取消时 partial APKG 被删除或标记不可见。
+目标文件名由项目标题和 APKG SHA 确定；写入目标目录中的同盘 `.partial`，flush/fsync 后以 hard-link no-replace 发布。存在同名文件时仅当 SHA 和大小完全相同才视为已有相同结果，否则失败，不覆盖。跨磁盘场景因此不会对 Worker 临时文件执行 rename。取消或失败不能公开 partial 或 `apkg_ready`。
 
-只有终态 succeeded 的 Task result 才包含：
+终态 `succeeded` 的公开 result 只含 PackageArtifact handle、阶段/revision、APKG SHA/size、安全文件名、deckNames、note/card/media 数、deliveryState 和 `prepare_anki_import` 下一动作；不返回路径、BlobRef、内部 ArtifactRef、媒体目录、raw ExportResult 或 input fingerprint。PackageArtifact 已发布但项目 commit 中断时，精确重试只补项目提交，不重跑 Worker；项目后来推进到 Anki 阶段时原导出任务仍保持成功。
 
-- PackageArtifact ref。
-- APKG opaque path ref、SHA-256、大小。
-- note/card/deck/media 数。
-- manifest refs。
-- 未导出项和原因。
-
-CURRENT 基础：M0 已用精确 V15/V14/V10 family/schema/Note Model ID/字段/模板/CSS/compatibility contract 替换 V1 + `startswith` 宽前缀；V15 使用模型作用域 GUID，完整 APKG 合同覆盖 10 个生产变体，导出只在唯一 `.partial` 校验通过后以 no-replace 语义原子发布。最终自动化为 Vitest 830、正式 `pytest` 603、独立 `unittest discover` 576（有重叠，不相加）、Rust 31 项通过与 1 项忽略、UI smoke 3、V15/V10 release smoke、`check:full` 与 Tauri build 通过。V15 20 卡包为 20/20/52；真实隔离 Anki 覆盖单卡、V15 重复/重启、V14/V15 同字段并存，Computer Use 覆盖 Anki 26.05 的 20 张连续复习、四类媒体与 Space/Enter 路由。合成视频与静音 TTS 不证明真人语义、听感或长期学习效果。
-
-非 NFC、Windows 保留设备名（含 `CLOCK$`）、规范化冲突与 APKG archive 资源上限已经通过；有界流式读取覆盖 APKG archive/package/verifier 与标准 Windows Anki direct-first 媒体路径。非标准/portable profile 的 AnkiConnect inline 兼容路径仍整文件/Base64，但原始单文件上限为 8 MiB；8 MiB 不是进程峰值。
-
-PROPOSED 边界：本 `cards.export_apkg` MCP 工具本身仍未实现。当前 raw `ExportResult` 只属于内部兼容接口，不认证来源，无法抵抗同时篡改 APKG 与结果的同权限本机攻击者；stat/SHA 和 no-replace 发布只缩小、不能消除 TOCTOU。M2 必须先以认证 Artifact 注册表和不透明 PackageArtifact ref 建立信任根，公共 MCP 不得接收 raw `ExportResult`。Computer Use 真实 GUI/媒体/连续复习、M1 Card Service、stdio MCP 和目标宿主注册完成前，不得标记 production ready。
-
+CURRENT 仍只覆盖确定性文本/零媒体 ProjectArtifact；模型/TTS/媒体路线和 Anki 写入未开放。M0 的 V15/V14/V10、完整包合同、真实隔离 Anki 与 Computer Use 证据继续作为底层兼容基线，但不能外推为本插件已经完成 Codex→Anki 闭环。
 ## 10. Anki
 
 ### 10.1 anki.prepare_import

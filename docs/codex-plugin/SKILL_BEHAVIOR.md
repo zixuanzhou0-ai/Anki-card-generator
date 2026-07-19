@@ -83,7 +83,7 @@ system.get_capabilities
 → cards.generate（CURRENT 确定性文本路线同步返回 ProjectArtifact；未来模型/媒体路线需要时走同一 OperationIntent 与 task 闭环）
 → cards.list（向用户展示已验证卡片，确认题面、答案和反馈）
 → system.request_output_grant（仅缺少输出授权时）
-→ cards.export_apkg → study.get_task
+→ cards.export_apkg → study.get_task（CURRENT；长任务可用 study.cancel_task 安全取消）
 → anki.prepare_import
 → anki.request_import_confirmation（受信本地 UI 的真实用户动作）
 → anki.import_and_verify(importIntentId) → study.get_task
@@ -141,6 +141,10 @@ system.get_capabilities
 - 不超过预算。
 - 用户没有要求逐项审核。
 
+
+### 6.1 CURRENT APKG 行为边界
+
+在卡片已通过审核后，Skill 先取得受信 outputRef，再调用 `cards.export_apkg`，并使用 `study.get_task` 轮询；不得重复发起相同导出以“催促”任务。运行中要用阶段和最后活动说明等待；用户要求停止时调用 `study.cancel_task`，并继续轮询到终态。只有任务返回 `succeeded` 且 result 指向认证 PackageArtifact 时，才可以说“APKG 已生成”。此时固定下一句话是“尚未导入 Anki”；不能把文件存在、Worker 完成或路径显示当作导入/核验成功。
 ## 7. 用户修正
 
 将“太简单”“改成产出”“这条不对”“不要这个主题”转换为语义编辑草稿。

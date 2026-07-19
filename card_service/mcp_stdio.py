@@ -11,6 +11,18 @@ from .mcp_card_tools import (
     call_card_tool,
     card_tool_definitions,
 )
+from .mcp_package_tools import (
+    PACKAGE_TOOL_NAMES,
+    McpPackageToolInputError,
+    call_package_tool,
+    package_tool_definitions,
+)
+from .mcp_task_tools import (
+    TASK_TOOL_NAMES,
+    McpTaskToolInputError,
+    call_task_tool,
+    task_tool_definitions,
+)
 from .mcp_card_plan_tools import (
     CARD_PLAN_TOOL_NAMES,
     McpCardPlanToolInputError,
@@ -148,6 +160,8 @@ def _tool_definitions(
         definitions.extend(selection_tool_definitions())
         definitions.extend(card_plan_tool_definitions())
         definitions.extend(card_tool_definitions())
+        definitions.extend(package_tool_definitions())
+        definitions.extend(task_tool_definitions())
     return definitions
 
 
@@ -238,7 +252,7 @@ def _handle_request(
                     "portfolio, deterministically planned into supported CardPlans, "
                     "edited within a closed agent schema, and reviewed/revalidated with "
                     "all eight local validation states. Fully validated text plans can be converted into "
-                    "authenticated CardArtifacts. Starting candidate discovery, APKG export, import, "
+                    "authenticated CardArtifacts. Verified APKG export plus task polling/cancellation are available. Starting candidate discovery, import, "
                     "credentials, and raw Worker commands remain unavailable."
                 ),
             },
@@ -377,6 +391,40 @@ def _handle_request(
             except Exception:
                 return _response(request_id, result=_tool_error())
             return _response(request_id, result=result)
+        if tool_name in PACKAGE_TOOL_NAMES:
+            if audience_session is None:
+                return _rpc_error(request_id, -32602, "Unknown tool")
+            try:
+                result = call_package_tool(
+                    service,
+                    tool_name=str(tool_name),
+                    arguments=arguments,
+                    audience_session=audience_session,
+                )
+            except McpPackageToolInputError:
+                return _rpc_error(request_id, -32602, "Invalid package tool arguments")
+            except CardServiceError as error:
+                return _response(request_id, result=_tool_error(error))
+            except Exception:
+                return _response(request_id, result=_tool_error())
+            return _response(request_id, result=result)
+        if tool_name in TASK_TOOL_NAMES:
+            if audience_session is None:
+                return _rpc_error(request_id, -32602, "Unknown tool")
+            try:
+                result = call_task_tool(
+                    service,
+                    tool_name=str(tool_name),
+                    arguments=arguments,
+                    audience_session=audience_session,
+                )
+            except McpTaskToolInputError:
+                return _rpc_error(request_id, -32602, "Invalid task tool arguments")
+            except CardServiceError as error:
+                return _response(request_id, result=_tool_error(error))
+            except Exception:
+                return _response(request_id, result=_tool_error())
+            return _response(request_id, result=result)
         if tool_name in CANDIDATE_TOOL_NAMES:
             if audience_session is None:
                 return _rpc_error(request_id, -32602, "Unknown tool")
@@ -430,8 +478,8 @@ def _handle_request(
                         "text": (
                             "The local Card Service capability snapshot is available. "
                             "Deterministic source inspection, authenticated candidate review, and local "
-                            "portfolio selection and deterministic text-card generation are available. "
-                            "Starting candidate discovery and Anki delivery remain disabled at this milestone."
+                            "portfolio selection, deterministic text-card generation, and verified APKG export are available. "
+                            "Starting candidate discovery and Anki import remain disabled at this milestone."
                         ),
                     }
                 ],

@@ -137,3 +137,11 @@ CardPlan 内核评审继续坚持“不支持就阻塞，不把缺失推断伪�
 ## 7. 评审证据边界
 
 顾问输出是设计意见，不是外部事实来源。官方能力事实仍以 OpenAI 官方文档为准；当前实现事实仍以仓库代码和真实测试为准。模型提出但无法映射到既有证据、合同或验收门禁的建议没有进入规范。
+
+### 4.3 CURRENT APKG 公共边界复审（2026-07-19）
+
+APKG 纵向切片采用“Worker 产出不等于可信包”的结论。`cards.export_apkg` 不能接收 raw path、文件名、replace、raw Project 或 Worker 参数，只能接收当前 ProjectArtifact opaque handle 与受信 outputRef，并立即返回可轮询 StudyTask。Card Service 在发布前独立执行完整 APKG 合同、ZIP/JSON 限额、collection SQLite note/card/模板/CSS 身份、CardId/sourceCardId 映射、媒体清单与文件 SHA；随后把 APKG 字节放入内容寻址 Blob，并发布 APKG file、CardIdentitySet、PackageMediaManifest、CardMediaRoleInventory 与 PackageArtifact 的认证父图。
+
+跨磁盘交付不移动 Worker 临时文件：Service 在用户选择的目标目录创建同盘 `.partial`，完成 flush/fsync 后用 hard-link no-replace 发布确定性版本文件；同名竞态只接受字节完全相同，否则拒绝。任务终态与项目提交有独立可见性闸门：PackageArtifact 未成为当前项目的 latest artifact 时，调用方不能看到 succeeded；Worker 已完成但项目提交中断时，精确重试只补 commit，不重新导出。项目随后进入 imported/verified 阶段时，原导出任务仍保持成功。
+
+该切片的任务、取消、伪造 outputRef、幂等、跨磁盘式目标发布、完整包合同、无头服务、文档和 MCP 注册 83 项定向扩大回归通过；正式 Python `tests` 全集为 1480 passed、1 skipped。它只证明当前受限文本/零媒体路线的可信 APKG 交付，不等于模型/TTS/媒体路线、Anki 导入或运行时体验已经实现。下一复审对象固定为 ImportPlan、真实用户确认与 Anki 写边界恢复。

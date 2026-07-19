@@ -11,8 +11,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from acg.anki_export import windows_basename_key, windows_safe_basename
-from acg.anki_model_contracts import (
+from .anki_export import windows_basename_key, windows_safe_basename
+from .anki_model_contracts import (
     COMPATIBILITY_CONTRACT_VERSION,
     CONTRACTS_BY_MODEL_ID,
     PRESENTATION_NOTE_FIELDS_SHA256,
@@ -21,8 +21,8 @@ from acg.anki_model_contracts import (
     note_model_field_names,
     validate_apkg_archive_structure,
 )
-from acg.anki_note_identity import note_guid_for_model
-from acg.media_refs import extract_media_references
+from .anki_note_identity import note_guid_for_model
+from .media_refs import extract_media_references
 
 
 NOTE_CONTENT_FINGERPRINT_SCHEMA_VERSION = 1

@@ -38,6 +38,7 @@ from .local_resource_registry import (
     MAX_OUTPUT_FILES,
 )
 from .process_isolation import ProcessIsolationError, TaskOwnedProcessGroup
+from .package_artifact_runtime import PackageExportCancelled
 from .runtime_manifest import (
     ManagedRuntimeManifest,
     RuntimeManifestError,
@@ -140,6 +141,7 @@ METHOD_POLICIES: dict[str, MethodPolicy] = {
     "runtime.generate_cards": MethodPolicy("generate_cards_from_learning_points", 420.0, requires_broker=True),
     "runtime.generate_legacy_project": MethodPolicy("generate", 420.0, requires_broker=True),
     "runtime.export_apkg": MethodPolicy("export", 600.0, requires_broker=True),
+    "internal.export_study_apkg": MethodPolicy("export", 600.0),
     "runtime.verify_anki_import": MethodPolicy("verify_anki_import", 120.0),
 }
 
@@ -993,6 +995,7 @@ class CardService:
                     resource_runtime=self._ensure_resource_runtime(),
                     workspace_factory=self._create_study_task_workspace,
                     workspace_releaser=self._release_workspace_reservation,
+                    package_export_executor=self._execute_study_apkg_export,
                 )
             except (CredentialStoreError, StudyRuntimeError, OSError) as error:
                 raise CardServiceError(
@@ -1175,6 +1178,65 @@ class CardService:
                 error.message,
                 retryable=False,
                 stage="card_generation",
+            ) from error
+
+    def start_study_apkg_export(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_id: str,
+        expected_project_revision: int,
+        idempotency_key: str,
+        project_artifact_handle: str,
+        output_ref: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            return self._ensure_study_runtime().start_apkg_export(
+                audience=audience,
+                project_id=project_id,
+                expected_project_revision=expected_project_revision,
+                idempotency_key=idempotency_key,
+                project_artifact_handle=project_artifact_handle,
+                output_ref=output_ref,
+            )
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=error.code.endswith(
+                    ("_CONFLICT", "_UNAVAILABLE", "_REQUIRED", "_WRITABLE")
+                ),
+                stage="export",
+            ) from error
+
+    def get_public_study_task(
+        self, *, audience: ArtifactAudienceBinding, task_id: str
+    ) -> dict[str, Any]:
+        try:
+            return self._ensure_study_runtime().get_study_task(
+                audience=audience, task_id=task_id
+            )
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=error.code.endswith(("_UNAVAILABLE", "_REQUIRED")),
+                stage="task",
+            ) from error
+
+    def cancel_public_study_task(
+        self, *, audience: ArtifactAudienceBinding, task_id: str
+    ) -> dict[str, Any]:
+        try:
+            return self._ensure_study_runtime().cancel_study_task(
+                audience=audience, task_id=task_id
+            )
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=False,
+                stage="cancellation",
             ) from error
 
     def list_study_card_plans(
@@ -2136,9 +2198,60 @@ class CardService:
             environment["TMPDIR"] = workspace_value
         return environment
 
+    def _execute_study_apkg_export(
+        self,
+        legacy_project: Mapping[str, Any],
+        progress: Callable[[Mapping[str, Any]], None],
+        cancel_event: threading.Event,
+    ) -> Mapping[str, Any]:
+        snapshot = self.start_task(
+            "internal.export_study_apkg", {"project": copy.deepcopy(dict(legacy_project))}
+        )
+        task_id = str(snapshot["id"])
+        last_progress: tuple[Any, Any] | None = None
+        while snapshot.get("state") in ACTIVE_STATES:
+            if cancel_event.is_set():
+                snapshot = self.cancel_task(task_id)
+            raw_progress = snapshot.get("progress")
+            if isinstance(raw_progress, Mapping):
+                marker = (
+                    raw_progress.get("phase"),
+                    raw_progress.get("overallPercent"),
+                )
+                if marker != last_progress:
+                    progress(dict(raw_progress))
+                    last_progress = marker
+            if snapshot.get("state") in ACTIVE_STATES:
+                time.sleep(0.05)
+                snapshot = self.get_task(task_id) or snapshot
+        if cancel_event.is_set() or snapshot.get("state") == "cancelled":
+            raise PackageExportCancelled("APKG export was cancelled")
+        if snapshot.get("state") != "succeeded":
+            failure = snapshot.get("error")
+            raise CardServiceError(
+                str(failure.get("code") if isinstance(failure, Mapping) else "WORKER_EXITED"),
+                "Managed APKG export failed",
+                retryable=bool(
+                    failure.get("retryable") if isinstance(failure, Mapping) else True
+                ),
+                stage="export",
+            )
+        result = self.read_result(task_id)
+        if not isinstance(result, Mapping):
+            raise CardServiceError(
+                "WORKER_INVALID_JSON",
+                "Managed APKG export returned an invalid result",
+                retryable=True,
+                stage="export",
+            )
+        return dict(result)
+
     def _worker_request(self, runtime: _RuntimeTask) -> dict[str, Any]:
         request = copy.deepcopy(runtime.request)
-        if str(runtime.snapshot.get("method") or "") != "runtime.export_apkg":
+        if str(runtime.snapshot.get("method") or "") not in {
+            "runtime.export_apkg",
+            "internal.export_study_apkg",
+        }:
             return request
         workspace = runtime.sandbox_workspace
         if workspace is None:
