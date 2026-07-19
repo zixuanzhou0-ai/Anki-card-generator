@@ -426,6 +426,7 @@ class CardPlanRuntime:
         expected_project_revision: int,
         idempotency_key: str,
         selection_handle: str,
+        maximum_plans: int = 1000,
     ) -> dict[str, Any]:
         if not isinstance(idempotency_key, str) or not _IDEMPOTENCY_RE.fullmatch(
             idempotency_key
@@ -441,6 +442,12 @@ class CardPlanRuntime:
             selection_handle
         ):
             _fail("CARD_PLAN_REQUEST_INVALID", "selectionHandle is invalid")
+        if (
+            isinstance(maximum_plans, bool)
+            or not isinstance(maximum_plans, int)
+            or not 1 <= maximum_plans <= 1000
+        ):
+            _fail("CARD_PLAN_REQUEST_INVALID", "maximum plan count is invalid")
         try:
             graph = self._selection.resolve_current_selection_graph(
                 audience=audience, selection_handle=selection_handle
@@ -513,6 +520,11 @@ class CardPlanRuntime:
             _fail("CARD_PLAN_STAGE_CONFLICT", "card planning is not current")
         if not rows:
             _fail("CARD_PLAN_SELECTION_EMPTY", "selection contains no candidates")
+        if len(rows) > maximum_plans:
+            _fail(
+                "CARD_PLAN_ASYNC_REQUIRED",
+                "selection is too large for synchronous deterministic planning",
+            )
         language_values = {
             _normalize(str(project["learningContract"].get(field, "auto")))
             for field in ("promptLanguage", "answerLanguage")

@@ -5,6 +5,12 @@ import re
 import sys
 from typing import Any, TextIO
 
+from .mcp_card_plan_tools import (
+    CARD_PLAN_TOOL_NAMES,
+    McpCardPlanToolInputError,
+    call_card_plan_tool,
+    card_plan_tool_definitions,
+)
 from .mcp_candidate_tools import (
     CANDIDATE_TOOL_NAMES,
     McpCandidateToolInputError,
@@ -134,6 +140,7 @@ def _tool_definitions(
         definitions.extend(inspection_tool_definitions())
         definitions.extend(candidate_tool_definitions())
         definitions.extend(selection_tool_definitions())
+        definitions.extend(card_plan_tool_definitions())
     return definitions
 
 
@@ -221,8 +228,9 @@ def _handle_request(
                     "Study project, freeze selected InputRefs with study.register_inputs, then "
                     "run deterministic source inspection. Existing authenticated candidate discoveries "
                     "can be listed, reviewed with bounded evidence replay, and saved as a reliable local "
-                    "portfolio. Starting candidate discovery, generation, export, import, credentials, "
-                    "and raw Worker commands remain unavailable."
+                    "portfolio, deterministically planned into supported CardPlans, and reviewed with "
+                    "all eight local validation states. Starting candidate discovery, card generation, "
+                    "export, import, credentials, and raw Worker commands remain unavailable."
                 ),
             },
         )
@@ -319,6 +327,25 @@ def _handle_request(
                 )
             except McpSelectionToolInputError:
                 return _rpc_error(request_id, -32602, "Invalid selection tool arguments")
+            except CardServiceError as error:
+                return _response(request_id, result=_tool_error(error))
+            except Exception:
+                return _response(request_id, result=_tool_error())
+            return _response(request_id, result=result)
+        if tool_name in CARD_PLAN_TOOL_NAMES:
+            if audience_session is None:
+                return _rpc_error(request_id, -32602, "Unknown tool")
+            try:
+                result = call_card_plan_tool(
+                    service,
+                    tool_name=str(tool_name),
+                    arguments=arguments,
+                    audience_session=audience_session,
+                )
+            except McpCardPlanToolInputError:
+                return _rpc_error(
+                    request_id, -32602, "Invalid card plan tool arguments"
+                )
             except CardServiceError as error:
                 return _response(request_id, result=_tool_error(error))
             except Exception:

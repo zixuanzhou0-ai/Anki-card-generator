@@ -15,6 +15,7 @@ from .candidate_discovery import (
     CandidateDiscoveryModel,
     CandidateDiscoveryModelProvider,
 )
+from .card_plan_queries import CardPlanQueryError, CardPlanQueryRuntime
 from .card_plan_runtime import CardPlanRuntime, CardPlanRuntimeError
 from .candidate_discovery_runtime import (
     CandidateDiscoveryAuthorization,
@@ -100,6 +101,9 @@ class StudyRuntime:
             candidate_query_key = credential_store.derive_service_key(
                 "study-candidate-query-v1", context=context
             )
+            card_plan_query_key = credential_store.derive_service_key(
+                "study-card-plan-query-v1", context=context
+            )
             self.artifacts = ArtifactRegistry(
                 self.root / "artifacts",
                 authentication_key=artifact_key,
@@ -160,6 +164,12 @@ class StudyRuntime:
                 tasks=self.tasks,
                 candidate_selection=self.candidate_selection,
             )
+            self.card_plan_queries = CardPlanQueryRuntime(
+                service_instance_id=self.service_instance_id,
+                artifacts=self.artifacts,
+                projects=self.projects,
+                cursor_key=card_plan_query_key,
+            )
             discovery_configured = (
                 candidate_discovery_model is not None
                 or candidate_discovery_model_provider is not None
@@ -187,6 +197,7 @@ class StudyRuntime:
             CandidateDiscoveryRuntimeError,
             CandidateQueryError,
             CandidateSelectionError,
+            CardPlanQueryError,
             CardPlanRuntimeError,
             OSError,
         ) as error:
@@ -211,7 +222,10 @@ class StudyRuntime:
             "publicCandidateQueries": True,
             "publicCandidateSelection": True,
             "cardPlanRuntime": True,
-            "publicCardPlanTools": False,
+            "publicCardPlanPlanning": True,
+            "publicCardPlanQueries": True,
+            "publicCardPlanEditing": False,
+            "publicCardPlanValidation": False,
             "publicProjectTools": True,
             "publicInputRegistration": True,
             "publicSourceInspection": True,
@@ -463,6 +477,28 @@ class StudyRuntime:
         ) as error:
             raise StudyRuntimeError(error.code, error.message) from error
 
+    def list_card_plans(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        plan_set_handle: str,
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        try:
+            return self.card_plan_queries.list_card_plans(
+                audience=audience,
+                plan_set_handle=plan_set_handle,
+                cursor=cursor,
+                limit=limit,
+            )
+        except (
+            CardPlanQueryError,
+            ArtifactRegistryError,
+            ProjectRegistryError,
+        ) as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
     def plan_cards(
         self,
         *,
@@ -471,6 +507,7 @@ class StudyRuntime:
         expected_project_revision: int,
         idempotency_key: str,
         selection_handle: str,
+        maximum_plans: int = 1000,
     ) -> dict[str, Any]:
         try:
             return self.card_plans.plan_cards(
@@ -479,6 +516,7 @@ class StudyRuntime:
                 expected_project_revision=expected_project_revision,
                 idempotency_key=idempotency_key,
                 selection_handle=selection_handle,
+                maximum_plans=maximum_plans,
             )
         except (
             CardPlanRuntimeError,

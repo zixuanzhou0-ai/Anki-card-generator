@@ -1233,3 +1233,154 @@ def test_card_plan_idempotency_does_not_return_an_invalidated_plan(
             selection_handle=selected["selectionHandle"],
         )
     assert captured.value.code == "CARD_PLAN_NOT_CURRENT"
+
+
+def test_card_plan_public_query_is_paginated_and_redacted(tmp_path: Path) -> None:
+    runtime, project, _discovered, selected, source = _selection_for_card_planning(
+        tmp_path, FakeDiscoveryModel(proposal_count=2), candidate_count=2
+    )
+    planned = runtime.plan_cards(
+        audience=audience(),
+        project_id=project["projectId"],
+        expected_project_revision=selected["projectRevision"],
+        idempotency_key="plan-for-public-query",
+        selection_handle=selected["selectionHandle"],
+    )
+
+    first = runtime.list_card_plans(
+        audience=audience(), plan_set_handle=planned["planSetHandle"], limit=1
+    )
+    second = runtime.list_card_plans(
+        audience=audience(),
+        plan_set_handle=planned["planSetHandle"],
+        cursor=first["nextCursor"],
+        limit=1,
+    )
+
+    assert first["totalPlans"] == 2
+    assert first["returnedPlans"] == 1
+    assert first["eligiblePlans"] == 2
+    assert first["blockedPlans"] == 0
+    assert first["nextCursor"].startswith("study_plan_cursor_")
+    assert second["returnedPlans"] == 1
+    assert second["nextCursor"] is None
+    assert {
+        first["items"][0]["cardPlanId"],
+        second["items"][0]["cardPlanId"],
+    } == {
+        entity["entityId"]
+        for entity in runtime.artifacts.resolve(planned["planSetHandle"], audience())[
+            "payload"
+        ]["cardPlanRefs"]
+    }
+    for item in first["items"] + second["items"]:
+        assert item["validationState"] == "eligible"
+        assert len(item["checks"]) == 8
+        assert all(check["state"] == "passed" for check in item["checks"])
+        assert item["feedback"]["evidenceCount"] == 1
+    serialized = json.dumps([first, second], ensure_ascii=False, sort_keys=True)
+    assert str(source) not in serialized
+    assert SOURCE_TEXT not in serialized
+    for forbidden in (
+        "artifactRef",
+        "registryAuthRef",
+        "plainTextBlobRef",
+        "inputFingerprint",
+        "selectionRef",
+        "candidateRef",
+        "objectiveRef",
+        "evidenceRefs",
+    ):
+        assert forbidden not in serialized
+
+
+def test_card_plan_public_query_rejects_tampered_cursor_and_cross_session_handle(
+    tmp_path: Path,
+) -> None:
+    runtime, project, _discovered, selected, _source = _selection_for_card_planning(
+        tmp_path, FakeDiscoveryModel(proposal_count=2), candidate_count=2
+    )
+    planned = runtime.plan_cards(
+        audience=audience(),
+        project_id=project["projectId"],
+        expected_project_revision=selected["projectRevision"],
+        idempotency_key="plan-for-cursor-security",
+        selection_handle=selected["selectionHandle"],
+    )
+    first = runtime.list_card_plans(
+        audience=audience(), plan_set_handle=planned["planSetHandle"], limit=1
+    )
+    cursor = first["nextCursor"]
+    replacement = "a" if cursor[-1] != "a" else "b"
+
+    with pytest.raises(StudyRuntimeError) as tampered:
+        runtime.list_card_plans(
+            audience=audience(),
+            plan_set_handle=planned["planSetHandle"],
+            cursor=cursor[:-1] + replacement,
+            limit=1,
+        )
+    assert tampered.value.code == "CARD_PLAN_CURSOR_INVALID"
+
+    with pytest.raises(StudyRuntimeError):
+        runtime.list_card_plans(
+            audience=audience(session_id="another-session"),
+            plan_set_handle=planned["planSetHandle"],
+        )
+
+
+def test_card_plan_public_query_rejects_invalidated_plan_set(tmp_path: Path) -> None:
+    runtime, project, _discovered, selected, _source = _selection_for_card_planning(
+        tmp_path, FakeDiscoveryModel()
+    )
+    planned = runtime.plan_cards(
+        audience=audience(),
+        project_id=project["projectId"],
+        expected_project_revision=selected["projectRevision"],
+        idempotency_key="plan-before-public-query-invalidation",
+        selection_handle=selected["selectionHandle"],
+    )
+    runtime.projects.update_learning_contract(
+        audience=audience(),
+        project_id=project["projectId"],
+        expected_project_revision=planned["projectRevision"],
+        expected_contract_revision=1,
+        operation_id="invalidate-public-plan-query",
+        operations=[
+            {
+                "op": "set_languages",
+                "promptLanguage": "English",
+                "answerLanguage": "English",
+            }
+        ],
+    )
+
+    with pytest.raises(StudyRuntimeError) as captured:
+        runtime.list_card_plans(
+            audience=audience(), plan_set_handle=planned["planSetHandle"]
+        )
+    assert captured.value.code == "CARD_PLAN_SET_STALE"
+
+
+def test_card_plan_synchronous_bound_fails_before_publication(tmp_path: Path) -> None:
+    runtime, project, _discovered, selected, _source = _selection_for_card_planning(
+        tmp_path, FakeDiscoveryModel(proposal_count=2), candidate_count=2
+    )
+
+    with pytest.raises(StudyRuntimeError) as captured:
+        runtime.plan_cards(
+            audience=audience(),
+            project_id=project["projectId"],
+            expected_project_revision=selected["projectRevision"],
+            idempotency_key="plan-over-sync-bound",
+            selection_handle=selected["selectionHandle"],
+            maximum_plans=1,
+        )
+    assert captured.value.code == "CARD_PLAN_ASYNC_REQUIRED"
+    current = runtime.get_project(project["projectId"], audience())
+    assert current["workflow"]["artifactStage"] == "selection_ready"
+    assert all(
+        ref["payloadSchema"]
+        not in {"study.card-plan-set", "study.card-plan-validation"}
+        for ref in current["latestArtifactRefs"]
+    )

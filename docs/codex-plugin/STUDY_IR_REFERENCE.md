@@ -778,7 +778,7 @@ type CardPlanValidationArtifactPayload = {
 
 CardPlan 不是最终 Anki 字段。生成适配器将其映射到当前 Project/Card 结构；无法无损映射时返回 typed blocker，不能静默降级。
 
-CURRENT 内部实现采用 `deterministic-language-card-plan-v1`：只为当前认证 SelectionArtifact 中的 `production`、`chunk_collocation` 与 `reading_recognition` 候选构造 CardPlan，并发布逐计划 Artifact、CardPlanSet 与 `card-plan-validation-v1` 验证 Artifact。计划保存 selection/candidate/objective/evidence 的精确父引用，核心答案必须等于冻结评分边界；题面泄露、候选 `needs_review` 或任一验证非 pass 都进入 blocked 集合。媒体策略当前固定关闭，因此 `media_generatability=passed` 只表示“不要求媒体”，不能外推为音视频已经生成。用户编辑与锁定尚未开放，所以 `userLocks=[]`，对应检查只证明本轮没有锁可被覆盖。显式非英语 prompt/answer、语用路线、真实语法变形及任何需要额外翻译/模型/媒体推断的组合都返回 `UNSUPPORTED_CARD_PLAN`。公共 `study.plan_cards`、计划查询/编辑/独立重验仍为 PROPOSED；内部同步运行不等于可安装插件已经拥有该工具。
+CURRENT 内部实现采用 `deterministic-language-card-plan-v1`：只为当前认证 SelectionArtifact 中的 `production`、`chunk_collocation` 与 `reading_recognition` 候选构造 CardPlan，并发布逐计划 Artifact、CardPlanSet 与 `card-plan-validation-v1` 验证 Artifact。计划保存 selection/candidate/objective/evidence 的精确父引用，核心答案必须等于冻结评分边界；题面泄露、候选 `needs_review` 或任一验证非 pass 都进入 blocked 集合。媒体策略当前固定关闭，因此 `media_generatability=passed` 只表示“不要求媒体”，不能外推为音视频已经生成。用户编辑与锁定尚未开放，所以 `userLocks=[]`，对应检查只证明本轮没有锁可被覆盖。显式非英语 prompt/answer、语用路线、真实语法变形及任何需要额外翻译/模型/媒体推断的组合都返回 `UNSUPPORTED_CARD_PLAN`。CURRENT 可信 MCP 已开放 `study.plan_cards` 与 `study.list_card_plans`。前者只接收封闭 RequestContext 和当前 selectionHandle；后者通过独立派生密钥认证的 cursor 分页，并只投影题面、核心答案、解释、证据数量、媒体策略、预计复习时间、八项 check 状态和 opaque handle。两者都不接收/返回内部 ArtifactRef、来源路径、授权、模型资料或 inputFingerprint。CardPlan 编辑、用户锁定与独立重验仍为 PROPOSED；当前同步规划仅适用于无需新模型/媒体推断的受限小型映射。
 
 ## 14. 用户编辑
 

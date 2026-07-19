@@ -915,6 +915,11 @@ class CardService:
             "publicSourceInspection": True,
             "publicCandidateQueries": True,
             "publicCandidateSelection": True,
+            "cardPlanRuntime": True,
+            "publicCardPlanPlanning": True,
+            "publicCardPlanQueries": True,
+            "publicCardPlanEditing": False,
+            "publicCardPlanValidation": False,
             "pathDisclosure": False,
             "complete": False,
         }
@@ -1093,6 +1098,55 @@ class CardService:
                 error.message,
                 retryable=False,
                 stage="source_inspection",
+            ) from error
+
+    def plan_study_cards(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_id: str,
+        expected_project_revision: int,
+        idempotency_key: str,
+        selection_handle: str,
+    ) -> dict[str, Any]:
+        try:
+            return self._ensure_study_runtime().plan_cards(
+                audience=audience,
+                project_id=project_id,
+                expected_project_revision=expected_project_revision,
+                idempotency_key=idempotency_key,
+                selection_handle=selection_handle,
+                maximum_plans=100,
+            )
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=False,
+                stage="planning",
+            ) from error
+
+    def list_study_card_plans(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        plan_set_handle: str,
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        try:
+            return self._ensure_study_runtime().list_card_plans(
+                audience=audience,
+                plan_set_handle=plan_set_handle,
+                cursor=cursor,
+                limit=limit,
+            )
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=False,
+                stage="card_plan_query",
             ) from error
 
     def set_study_selection(

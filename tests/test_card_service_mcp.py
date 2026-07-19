@@ -7,6 +7,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from card_service.mcp_card_plan_tools import (
+    LIST_CARD_PLANS_TOOL_NAME,
+    PLAN_CARDS_TOOL_NAME,
+)
 from card_service.mcp_candidate_tools import (
     GET_CANDIDATE_TOOL_NAME,
     LIST_CANDIDATES_TOOL_NAME,
@@ -163,6 +167,8 @@ def test_mcp_bridge_reports_trusted_session_without_disclosing_identity() -> Non
         GET_CANDIDATE_TOOL_NAME,
         PREVIEW_EVIDENCE_TOOL_NAME,
         SET_SELECTION_TOOL_NAME,
+        PLAN_CARDS_TOOL_NAME,
+        LIST_CARD_PLANS_TOOL_NAME,
     ]
 
 
@@ -282,6 +288,8 @@ def test_real_mcp_stdio_process_reports_card_service_capabilities(tmp_path: Path
             GET_CANDIDATE_TOOL_NAME,
             PREVIEW_EVIDENCE_TOOL_NAME,
             SET_SELECTION_TOOL_NAME,
+            PLAN_CARDS_TOOL_NAME,
+            LIST_CARD_PLANS_TOOL_NAME,
         ]
         called = rpc(
             {
