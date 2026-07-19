@@ -226,7 +226,13 @@ def show_consent(request: dict[str, Any]) -> None:
     buttons = ttk.Frame(frame)
     buttons.pack(fill="x", side="bottom")
     ttk.Button(buttons, text="拒绝", command=lambda: finish("declined")).pack(side="right")
-    approve_label = "授权并继续" if request.get("authorizationKind") == "broker_startup" else "确认"
+    approve_label = (
+        "授权并继续"
+        if request.get("authorizationKind") == "broker_startup"
+        else "确认导入"
+        if request.get("confirmationKind") == "anki_import"
+        else "确认"
+    )
     ttk.Button(buttons, text=approve_label, command=lambda: finish("approved")).pack(side="right", padx=(0, 10))
     root.protocol("WM_DELETE_WINDOW", lambda: finish("cancelled"))
     root.mainloop()

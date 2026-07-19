@@ -1,8 +1,9 @@
-"""Closed MCP adapter for read-only Anki import preparation."""
+"""Closed MCP adapters for Anki planning and model-external confirmation."""
 
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
 
 from .service import CardService
@@ -10,10 +11,14 @@ from .trusted_mcp_audience import TrustedMcpAudienceSession
 
 
 PREPARE_IMPORT_TOOL_NAME = "anki.prepare_import"
-ANKI_TOOL_NAMES = frozenset({PREPARE_IMPORT_TOOL_NAME})
+REQUEST_IMPORT_CONFIRMATION_TOOL_NAME = "anki.request_import_confirmation"
+ANKI_TOOL_NAMES = frozenset(
+    {PREPARE_IMPORT_TOOL_NAME, REQUEST_IMPORT_CONFIRMATION_TOOL_NAME}
+)
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
 _PROJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 _HANDLE_RE = re.compile(r"^study_[A-Za-z0-9_-]{43}$")
+_IMPORT_INTENT_RE = re.compile(r"^anki_intent_[0-9a-f]{48}$")
 
 
 class McpAnkiToolInputError(ValueError):
@@ -26,11 +31,10 @@ def anki_tool_definitions() -> list[dict[str, Any]]:
             "name": PREPARE_IMPORT_TOOL_NAME,
             "title": "Prepare a verified Anki import",
             "description": (
-                "Reverify the current authenticated PackageArtifact and inspect the "
-                "currently open local Anki profile through fixed-loopback AnkiConnect. "
-                "Publishes an immutable ImportPlan and verification contract. This tool "
-                "is read-only with respect to Anki: it does not import, create media, "
-                "change decks, or grant write approval."
+                "Reverify the authenticated PackageArtifact and inspect the current "
+                "local Anki target through fixed-loopback AnkiConnect. Publishes an "
+                "immutable ImportPlan and a session-bound importIntentId. This tool "
+                "does not import into Anki and does not grant approval."
             ),
             "inputSchema": {
                 "type": "object",
@@ -73,6 +77,11 @@ def anki_tool_definitions() -> list[dict[str, Any]]:
                 "properties": {
                     "schemaVersion": {"type": "integer", "const": 1},
                     "importPlanHandle": {"type": "string"},
+                    "importIntentId": {
+                        "type": "string",
+                        "pattern": r"^anki_intent_[0-9a-f]{48}$",
+                    },
+                    "approvalState": {"type": "string", "const": "pending"},
                     "artifactStage": {"type": "string", "const": "apkg_ready"},
                     "projectRevision": {"type": "integer"},
                     "package": {"type": "object"},
@@ -92,6 +101,8 @@ def anki_tool_definitions() -> list[dict[str, Any]]:
                 "required": [
                     "schemaVersion",
                     "importPlanHandle",
+                    "importIntentId",
+                    "approvalState",
                     "artifactStage",
                     "projectRevision",
                     "package",
@@ -110,11 +121,65 @@ def anki_tool_definitions() -> list[dict[str, Any]]:
                 "idempotentHint": True,
                 "openWorldHint": True,
             },
-        }
+        },
+        {
+            "name": REQUEST_IMPORT_CONFIRMATION_TOOL_NAME,
+            "title": "Confirm an Anki import locally",
+            "description": (
+                "Open a digest-pinned local confirmation window for one current "
+                "importIntentId. Only a real click in that window can update the "
+                "server-side approval ledger. Chat text is never accepted as approval, "
+                "and no execution bearer is returned."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "importIntentId": {
+                        "type": "string",
+                        "pattern": r"^anki_intent_[0-9a-f]{48}$",
+                    }
+                },
+                "required": ["importIntentId"],
+                "additionalProperties": False,
+            },
+            "outputSchema": {
+                "type": "object",
+                "properties": {
+                    "schemaVersion": {"type": "integer", "const": 1},
+                    "importIntentId": {"type": "string"},
+                    "approvalState": {
+                        "type": "string",
+                        "enum": [
+                            "pending",
+                            "approved",
+                            "declined",
+                            "expired",
+                            "cancelled",
+                            "revoked",
+                            "consumed",
+                        ],
+                    },
+                    "expiresAt": {"type": "string"},
+                },
+                "required": [
+                    "schemaVersion",
+                    "importIntentId",
+                    "approvalState",
+                    "expiresAt",
+                ],
+                "additionalProperties": False,
+            },
+            "annotations": {
+                "readOnlyHint": False,
+                "destructiveHint": False,
+                "idempotentHint": False,
+                "openWorldHint": False,
+            },
+        },
     ]
 
 
-def _arguments(arguments: Any) -> tuple[str, int, str, str]:
+def _prepare_arguments(arguments: Any) -> tuple[str, int, str, str]:
     if not isinstance(arguments, dict) or set(arguments) != {
         "context",
         "packageArtifactHandle",
@@ -142,41 +207,81 @@ def _arguments(arguments: Any) -> tuple[str, int, str, str]:
     return project, revision, key, handle
 
 
+def _confirmation_argument(arguments: Any) -> str:
+    if not isinstance(arguments, dict) or set(arguments) != {"importIntentId"}:
+        raise McpAnkiToolInputError("Anki confirmation fields are invalid")
+    intent = arguments.get("importIntentId")
+    if not isinstance(intent, str) or not _IMPORT_INTENT_RE.fullmatch(intent):
+        raise McpAnkiToolInputError("importIntentId is invalid")
+    return intent
+
+
 def call_anki_tool(
     service: CardService,
     *,
     tool_name: str,
     arguments: Any,
     audience_session: TrustedMcpAudienceSession,
+    user_action_timeout_seconds: float = 300.0,
 ) -> dict[str, Any]:
-    if tool_name != PREPARE_IMPORT_TOOL_NAME:
-        raise McpAnkiToolInputError("Unknown Anki tool")
-    project, revision, key, handle = _arguments(arguments)
-    structured = service.prepare_study_anki_import(
-        audience=audience_session.audience,
-        project_id=project,
-        expected_project_revision=revision,
-        idempotency_key=key,
-        package_artifact_handle=handle,
-    )
-    return {
-        "content": [
-            {
-                "type": "text",
-                "text": (
-                    "Anki import plan is ready. No Anki write has occurred; "
-                    "trusted user confirmation is still required."
-                ),
-            }
-        ],
-        "structuredContent": structured,
-    }
+    if tool_name == PREPARE_IMPORT_TOOL_NAME:
+        project, revision, key, handle = _prepare_arguments(arguments)
+        structured = service.prepare_study_anki_import(
+            audience=audience_session.audience,
+            project_id=project,
+            expected_project_revision=revision,
+            idempotency_key=key,
+            package_artifact_handle=handle,
+        )
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "Anki import plan is ready. No Anki write has occurred; "
+                        "trusted local confirmation is still required."
+                    ),
+                }
+            ],
+            "structuredContent": structured,
+        }
+    if tool_name == REQUEST_IMPORT_CONFIRMATION_TOOL_NAME:
+        intent = _confirmation_argument(arguments)
+        deadline = time.monotonic() + max(0.0, float(user_action_timeout_seconds))
+        structured = service.request_study_anki_import_confirmation(
+            audience=audience_session.audience,
+            import_intent_id=intent,
+        )
+        while (
+            structured.get("approvalState") == "pending" and time.monotonic() < deadline
+        ):
+            time.sleep(0.05)
+            structured = service.request_study_anki_import_confirmation(
+                audience=audience_session.audience,
+                import_intent_id=intent,
+            )
+        state = str(structured["approvalState"])
+        text = {
+            "pending": "The trusted local confirmation window is waiting for the user.",
+            "approved": "The Anki import was approved for one server-side execution.",
+            "declined": "The user declined the Anki import.",
+            "expired": "The Anki import intent expired without execution.",
+            "cancelled": "The user closed the trusted confirmation window.",
+            "revoked": "The Anki import approval was revoked.",
+            "consumed": "The Anki import approval has already been consumed.",
+        }[state]
+        return {
+            "content": [{"type": "text", "text": text}],
+            "structuredContent": structured,
+        }
+    raise McpAnkiToolInputError("Unknown Anki tool")
 
 
 __all__ = [
     "ANKI_TOOL_NAMES",
     "McpAnkiToolInputError",
     "PREPARE_IMPORT_TOOL_NAME",
+    "REQUEST_IMPORT_CONFIRMATION_TOOL_NAME",
     "anki_tool_definitions",
     "call_anki_tool",
 ]

@@ -233,7 +233,7 @@ destructiveHint 表示工具可能终止任务、撤销授权或持久修改外�
 
 成功必须同时满足：Worker 只在 task workspace 写入；Card Service 独立重验完整 APKG 合同、SQLite note/card、模板与 CSS 摘要；APKG 字节进入内容寻址 Blob；目标目录使用同目录 `.partial`、flush/fsync 与 no-replace 版本化发布；PackageArtifact、CardIdentitySet、PackageMediaManifest、CardMediaRoleInventory 和 APKG file Artifact 已认证发布；项目已单调提交到 `apkg_ready` 或更后阶段。任一提交窗口未闭合时不得公开 `succeeded`。重复同一幂等请求不会重新调用 Worker，也不会覆盖或重复创建最终文件。
 
-当前这条公开路线只承诺已经实现的文本、零媒体 CardArtifact 投影；模型/TTS/媒体生成仍按现有门禁失败关闭。APKG 成功不等于已导入 Anki；CURRENT `anki.prepare_import` 只创建认证计划且明确返回 `runtimeVerification=not_assessed`，受信确认和 `anki.import_and_verify` 仍是下一阶段。
+当前这条公开路线只承诺已经实现的文本、零媒体 CardArtifact 投影；模型/TTS/媒体生成仍按现有门禁失败关闭。APKG 成功不等于已导入 Anki；CURRENT `anki.prepare_import` 会创建认证计划与当前 audience/session 绑定的 `importIntentId`，并明确返回 `runtimeVerification=not_assessed`；`anki.request_import_confirmation` 已通过受信本地窗口与一次性内部批准账本接线，真正写入的 `anki.import_and_verify` 仍是下一阶段。
 ## 4.1 系统与本地配置
 
 ### system.get_capabilities
@@ -718,17 +718,17 @@ CURRENT 输入是封闭 `context { projectId, expectedProjectRevision, idempoten
 
 目标检查固定为不使用环境代理的 `http://127.0.0.1:8765`，只调用 `version`、`getActiveProfile`、`getMediaDirPath` 和 `deckNames`。原始 profile、媒体目录和 deck 名不会进入公共结果；持久计划只保留 profileRef、配置/collection/deck 摘要、AnkiConnect 版本和计数。随后服务发布认证 `study.anki-verification-contract` 与 `study.anki-import-plan`，固定 11 项数据检查、`detect_and_report` 重复策略、`explicit-confirmation-required` 写策略和 `inspect-before-any-retry` 恢复策略。项目保持 `apkg_ready`，只增加 revision 和当前计划引用。
 
-公开结果只含 `importPlanHandle`、APKG SHA/size/安全文件名、deck/note/card/media 计数、脱敏目标摘要、检查数、`runtimeVerification=not_assessed`、`confirmationRequired=true` 和下一动作。精确重试返回首次保存的同一句柄且不重复探测 Anki；跨插件句柄、旧 PackageArtifact、离线/畸形 AnkiConnect 响应均失败关闭。此工具不写 Anki，不代表已经导入、数据核验或真实复习核验。
+公开结果只含 `importPlanHandle`、当前 session 的 `importIntentId` 与 pending 状态、APKG SHA/size/安全文件名、deck/note/card/media 计数、脱敏目标摘要、检查数、`runtimeVerification=not_assessed`、`confirmationRequired=true` 和下一动作。精确重试返回首次保存的同一句柄且不重复探测 Anki；跨插件句柄、旧 PackageArtifact、离线/畸形 AnkiConnect 响应均失败关闭。此工具不写 Anki，不代表已经导入、数据核验或真实复习核验。
 
 PROPOSED 扩展会在受信确认之前再冻结 RuntimeVerifierBinding、隔离策略、RequiredAnkiCheckManifest、确定性采样和完整凭据版本绑定；这些尚未实现，不能从 CURRENT ImportPlan 推导。任何已绑定字段变化都必须使旧确认失效。
 
 ### 10.2 anki.request_import_confirmation
 
-> PROPOSED：尚未注册。
+> CURRENT：已注册；只建立一次性服务端批准，不写入 Anki。
 
-输入 importIntentId，只能由真实用户动作触发本地受信确认窗口。窗口显示：Anki profile/collection、目标 deck、note/card/media 数、PackageArtifact/APKG hash、Note Model/template hash、媒体 manifest hash、RequiredAnkiCheckManifest 的数据/运行时范围与采样策略、重复策略和失败恢复。用户确认后 Service 在内部 authorization ledger 写入一次性批准状态，绑定可信 OS 用户、host/plugin/service instance、session、importIntentId 和完整 ImportPlanDigest。
+`anki.prepare_import` 现在从当前认证 ImportPlan 派生确定性的 `importIntentId`；它绑定 OS 用户摘要、host/plugin/service instance、当前 session、完整 ImportPlan ArtifactDigest、APKG SHA-256 和脱敏 Anki target digest，默认 30 分钟过期。输入只能是这个 `importIntentId`，不能附带 `approved=true`、token、路径、Anki 地址、profile 或计划覆盖字段。工具打开 digest-pinned 本地窗口，显示当前 Anki 目标、deck、note/card/media 数、APKG/模板/Note Model/媒体清单摘要、重复策略和写边界恢复策略。
 
-工具只返回 approvalState（approved/declined/expired）和当前 importIntentId。不返回任何可作为执行 bearer 的确认字符串；当前用户消息和复制的 structuredContent 都不能代替该批准状态。该 importIntentId 可以是首次 prepare 产生的 intent，也可以是 AnkiRecoveryDecision.not_written 为同一仍有效 ImportPlan 派生的新 session recovery intent；原/已消费 intent 不能重新批准。
+受信窗口响应以每会话 HMAC 认证，Service 校验 session/nonce 后才生成仅存在于内存的精确手势 attestation；专用 ImportApproval ledger 再用服务密钥认证持久记录并绑定完整计划。工具只返回 `approvalState`、`importIntentId` 和 `expiresAt`；等待或关闭窗口时分别返回 pending/cancelled，真实点击后返回 approved/declined。任何 attestation、执行 token、ledger ref、session ref 或内部 ArtifactRef 都不进入 MCP。跨 audience/session 查询、篡改记录、过期批准和复制聊天内容全部失败关闭；批准只能由后续写任务原子消费一次。恢复 intent 与受信撤销管理器仍属后续恢复切片。
 
 ### 10.3 anki.import_and_verify
 

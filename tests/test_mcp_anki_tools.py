@@ -17,6 +17,8 @@ def _plan():
     return {
         "schemaVersion": 1,
         "importPlanHandle": "study_" + "A" * 43,
+        "importIntentId": "anki_intent_" + "a" * 48,
+        "approvalState": "pending",
         "artifactStage": "apkg_ready",
         "projectRevision": 9,
         "package": {

@@ -259,7 +259,7 @@ def _handle_request(
                     "portfolio, deterministically planned into supported CardPlans, "
                     "edited within a closed agent schema, and reviewed/revalidated with "
                     "all eight local validation states. Fully validated text plans can be converted into "
-                    "authenticated CardArtifacts. Verified APKG export plus task polling/cancellation are available. Starting candidate discovery, import, "
+                    "authenticated CardArtifacts. Verified APKG export, read-only Anki planning, trusted local import confirmation, and task polling/cancellation are available. Starting candidate discovery, Anki write/import execution, "
                     "credentials, and raw Worker commands remain unavailable."
                 ),
             },
@@ -441,6 +441,7 @@ def _handle_request(
                     tool_name=str(tool_name),
                     arguments=arguments,
                     audience_session=audience_session,
+                    user_action_timeout_seconds=user_action_timeout_seconds,
                 )
             except McpAnkiToolInputError:
                 return _rpc_error(request_id, -32602, "Invalid Anki tool arguments")

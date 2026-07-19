@@ -53,7 +53,7 @@ Hermes 本地封装席的结论是 `needs-contract-hardening`，置信度 0.74�
 | verifier 精确接受 V14、拒绝 V1xx 伪版本 | 已列为 M0 P0 和 release gate | CURRENT M0 子项已实现；完整里程碑仍在验收 |
 | M3 tools-only 工具合同 | 已冻结 37 个工具、schema、注解、错误、幂等和任务语义（新增版本化 study.update_learning_contract） | 待实现 |
 | 目标 Codex 宿主/stdio 预检 | 已加入 host capability、M3 阻断与 APKG-only 降级 | 待实测 |
-| Anki 确认不可旁路 | 已改为 ImportPlan → 模型外批准 → importIntentId | 待实现 |
+| Anki 确认不可旁路 | ImportPlan → session-bound importIntentId → digest-pinned 模型外批准 → 服务端一次性账本 | CURRENT（写任务待实现） |
 | 学习硬门禁可机器审计 | 已加入 GateEvaluationSet、规则版本、revision 与 stale 语义 | CURRENT `candidate-gates-language-v1` 内核、认证 CandidateProposal → GateEvaluation → Discovery 图、角色/schema 分离的提案-复核引擎、冻结模型/授权/成本身份的内部可恢复任务与原子项目提交、任务级 Service Broker/授权摘要派生、公共 list/detail/evidence 投影与认证 coverage-first SelectionArtifact；异步公共 discovery、候选编辑、逐角色检查点与 benchmark 待实现 |
 | Artifact 防篡改与 stale | 已加入 canonical preimage、认证注册表、EntityRef 与攻击测试 | CURRENT Registry、证据回放和候选单向图子项；完整跨 Registry 事务与全部领域 Artifact 待实现 |
 | M3 来源范围冻结 | 已固定本地视频/字幕与安全公开视频 URL；其他来源后移 | 待实现 |

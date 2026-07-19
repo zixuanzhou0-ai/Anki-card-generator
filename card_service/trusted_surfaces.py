@@ -32,7 +32,9 @@ from .trusted_surface_auth import (
 
 
 RESOURCE_ATTESTATION_LIFETIME_MS = 5 * 60 * 1_000
+IMPORT_CONSENT_ATTESTATION_LIFETIME_MS = 5 * 60 * 1_000
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+IMPORT_INTENT_RE = re.compile(r"^anki_intent_[0-9a-f]{48}$")
 
 
 class TrustedSurfaceError(RuntimeError):
@@ -48,6 +50,15 @@ class TrustedLocalResourceSelection:
     path: Path
     attestation_ref: str
     selected_at: int
+
+
+@dataclass(frozen=True)
+class TrustedImportConsentDecision:
+    session_ref: str
+    import_intent_id: str
+    decision: str
+    attestation_ref: str
+    decided_at: int
 
 
 @dataclass
@@ -93,6 +104,8 @@ class TrustedSurfaceManager:
         self._authorization_issuer: BrokerAuthorizationIssuer | None = None
         self._local_resource_selections: dict[str, TrustedLocalResourceSelection] = {}
         self._resource_attestations: dict[str, dict[str, Any]] = {}
+        self._import_consent_decisions: dict[str, TrustedImportConsentDecision] = {}
+        self._import_consent_attestations: dict[str, dict[str, Any]] = {}
         self._issued_authorizations: dict[str, IssuedBrokerAuthorization] = {}
         self._lock = threading.RLock()
 
@@ -108,6 +121,7 @@ class TrustedSurfaceManager:
             "localResourcePathDisclosure": False,
             "localSettings": True,
             "consentWindow": True,
+            "ankiImportConsentAttestation": True,
             "digestPinned": True,
             "authenticatedResponse": True,
             "brokerAuthorizationIssuance": True,
@@ -142,6 +156,40 @@ class TrustedSurfaceManager:
         if not title.strip() or not summary.strip() or len(title) > 120 or len(summary) > 2_000:
             raise TrustedSurfaceError("INVALID_CONSENT_COPY", "Consent title or summary is invalid")
         return self._create_session("consent", title=title.strip(), summary=summary.strip(), purpose=purpose)
+
+    def create_anki_import_consent_session(
+        self,
+        *,
+        import_intent_id: str,
+        audience_digest: str,
+        import_plan_digest: str,
+        summary: str,
+    ) -> dict[str, Any]:
+        if not IMPORT_INTENT_RE.fullmatch(import_intent_id):
+            raise TrustedSurfaceError(
+                "INVALID_IMPORT_INTENT", "Invalid Anki import intent"
+            )
+        if not SHA256_RE.fullmatch(audience_digest) or not SHA256_RE.fullmatch(
+            import_plan_digest
+        ):
+            raise TrustedSurfaceError(
+                "INVALID_IMPORT_CONSENT_BINDING", "Invalid Anki consent binding"
+            )
+        copy = str(summary or "").strip()
+        if not copy or len(copy) > 2_000:
+            raise TrustedSurfaceError(
+                "INVALID_CONSENT_COPY", "Consent summary is invalid"
+            )
+        return self._create_session(
+            "consent",
+            title="确认导入 Anki",
+            summary=copy,
+            purpose="anki_import",
+            confirmationKind="anki_import",
+            importIntentId=import_intent_id,
+            audienceDigest=audience_digest,
+            importPlanDigest=import_plan_digest,
+        )
 
     def create_local_resource_session(
         self, *, kind: str, scope_summary: str
@@ -443,6 +491,46 @@ class TrustedSurfaceManager:
             if selection is not None:
                 self._resource_attestations.pop(selection.attestation_ref, None)
 
+    def import_consent_decision(
+        self, session_ref: str
+    ) -> TrustedImportConsentDecision | None:
+        with self._lock:
+            return self._import_consent_decisions.get(session_ref)
+
+    def verify_import_consent_gesture(
+        self,
+        attestation_ref: str,
+        audience_digest: str,
+        import_intent_id: str,
+        action: str,
+    ) -> bool:
+        if (
+            not SHA256_RE.fullmatch(audience_digest)
+            or not IMPORT_INTENT_RE.fullmatch(import_intent_id)
+            or action not in {"decide:approved", "decide:declined"}
+        ):
+            return False
+        with self._lock:
+            pending = self._import_consent_attestations.get(attestation_ref)
+            if pending is None:
+                return False
+            if int(pending["expiresAt"]) <= int(time.time() * 1000):
+                self._import_consent_attestations.pop(attestation_ref, None)
+                return False
+            return (
+                pending["audienceDigest"] == audience_digest
+                and pending["importIntentId"] == import_intent_id
+                and pending["action"] == action
+            )
+
+    def complete_import_consent(self, session_ref: str) -> None:
+        with self._lock:
+            decision = self._import_consent_decisions.pop(session_ref, None)
+            if decision is not None:
+                self._import_consent_attestations.pop(
+                    decision.attestation_ref, None
+                )
+
     def get_session(self, session_ref: str) -> dict[str, Any]:
         _, request = self._load_request(session_ref)
         with self._lock:
@@ -475,6 +563,43 @@ class TrustedSurfaceManager:
         finalized = dict(response)
         if request.get("surface") == "local_resource_picker":
             finalized = self._finalize_local_resource_response(request, response, response_key)
+            try:
+                response_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        elif request.get("confirmationKind") == "anki_import":
+            state = response.get("state")
+            if state in {"approved", "declined"}:
+                if response.get("userGestureRecorded") is not True:
+                    raise TrustedSurfaceError(
+                        "SESSION_RESPONSE_INVALID",
+                        "Trusted Anki import consent has no user gesture",
+                    )
+                decided_at = int(time.time() * 1000)
+                attestation_ref = "import-consent-" + secrets.token_urlsafe(24)
+                decision = TrustedImportConsentDecision(
+                    session_ref=session_ref,
+                    import_intent_id=str(request["importIntentId"]),
+                    decision=str(state),
+                    attestation_ref=attestation_ref,
+                    decided_at=decided_at,
+                )
+                with self._lock:
+                    self._import_consent_decisions[session_ref] = decision
+                    self._import_consent_attestations[attestation_ref] = {
+                        "audienceDigest": str(request["audienceDigest"]),
+                        "importIntentId": decision.import_intent_id,
+                        "importPlanDigest": str(request["importPlanDigest"]),
+                        "action": f"decide:{state}",
+                        "expiresAt": (
+                            decided_at + IMPORT_CONSENT_ATTESTATION_LIFETIME_MS
+                        ),
+                    }
+            elif state not in {"cancelled", "failed"}:
+                raise TrustedSurfaceError(
+                    "SESSION_RESPONSE_INVALID",
+                    "Trusted Anki import consent response is invalid",
+                )
             try:
                 response_path.unlink(missing_ok=True)
             except OSError:

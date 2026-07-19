@@ -794,6 +794,13 @@ class CardService:
         self._completed_local_picker_grants: dict[str, dict[str, Any]] = {}
         self._local_picker_request_index: dict[tuple[str, str, str, str, str], dict[str, str]] = {}
         self._resource_runtime_lock = threading.RLock()
+        self._anki_import_confirmation_requests: dict[
+            tuple[str, str, str, str, str], str
+        ] = {}
+        self._completed_anki_import_confirmations: dict[
+            tuple[str, str, str, str, str], dict[str, Any]
+        ] = {}
+        self._anki_import_confirmation_lock = threading.RLock()
 
         self._active_broker_runtime: ServiceBrokerRuntime | None = None
         self._broker_runtime_lock = threading.RLock()
@@ -930,6 +937,8 @@ class CardService:
             "publicApkgExport": True,
             "ankiImportPreparation": True,
             "publicAnkiImportPreparation": True,
+            "ankiImportApprovalLedger": True,
+            "publicAnkiImportConfirmation": True,
             "publicAnkiWrite": False,
             "pathDisclosure": False,
             "complete": False,
@@ -1003,6 +1012,9 @@ class CardService:
                     workspace_releaser=self._release_workspace_reservation,
                     package_export_executor=self._execute_study_apkg_export,
                     anki_target_inspector=LocalAnkiConnectTargetProbe(),
+                    anki_import_gesture_verifier=(
+                        self.trusted_surfaces.verify_import_consent_gesture
+                    ),
                 )
             except (CredentialStoreError, StudyRuntimeError, OSError) as error:
                 raise CardServiceError(
@@ -1240,6 +1252,112 @@ class CardService:
                 retryable=error.code in {"ANKI_OFFLINE", "ANKI_TARGET_INVALID"},
                 stage="anki_prepare",
                 fallbacks=("open_anki",) if error.code == "ANKI_OFFLINE" else (),
+            ) from error
+
+    @staticmethod
+    def _anki_import_confirmation_key(
+        audience: ArtifactAudienceBinding, import_intent_id: str
+    ) -> tuple[str, str, str, str, str]:
+        return (
+            audience.owner_digest,
+            audience.host_id,
+            audience.plugin_id,
+            audience.session_id,
+            import_intent_id,
+        )
+
+    def request_study_anki_import_confirmation(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        import_intent_id: str,
+    ) -> dict[str, Any]:
+        """Begin or poll a model-external trusted Anki import confirmation."""
+
+        runtime = self._ensure_study_runtime()
+        try:
+            approval = runtime.get_anki_import_approval(
+                audience=audience, import_intent_id=import_intent_id
+            )
+            if approval["approvalState"] in {
+                "approved",
+                "declined",
+                "expired",
+                "revoked",
+                "consumed",
+            }:
+                return approval
+            key = self._anki_import_confirmation_key(audience, import_intent_id)
+            with self._anki_import_confirmation_lock:
+                completed = self._completed_anki_import_confirmations.get(key)
+                if completed is not None:
+                    return json.loads(json.dumps(completed, ensure_ascii=False))
+                session_ref = self._anki_import_confirmation_requests.get(key)
+                if session_ref is None:
+                    context = runtime.get_anki_import_confirmation_context(
+                        audience=audience, import_intent_id=import_intent_id
+                    )
+                    session = self.trusted_surfaces.create_anki_import_consent_session(
+                        import_intent_id=import_intent_id,
+                        audience_digest=str(context["audienceDigest"]),
+                        import_plan_digest=str(context["importPlanDigest"]),
+                        summary=str(context["summary"]),
+                    )
+                    session_ref = str(session["sessionRef"])
+                    self.trusted_surfaces.launch(session_ref)
+                    self._anki_import_confirmation_requests[key] = session_ref
+                    return approval
+                surface = self.trusted_surfaces.get_session(session_ref)
+                state = str(surface.get("state") or "")
+                if state in {"created", "open"}:
+                    return approval
+                if state in {"approved", "declined"}:
+                    decision = self.trusted_surfaces.import_consent_decision(
+                        session_ref
+                    )
+                    if (
+                        decision is None
+                        or decision.import_intent_id != import_intent_id
+                        or decision.decision != state
+                    ):
+                        raise CardServiceError(
+                            "IMPORT_CONSENT_STATE_INVALID",
+                            "Trusted Anki consent decision is unavailable",
+                            stage="anki_confirmation",
+                        )
+                    finalized = runtime.record_anki_import_decision(
+                        audience=audience,
+                        import_intent_id=import_intent_id,
+                        decision=decision.decision,
+                        gesture_attestation_ref=decision.attestation_ref,
+                    )
+                    self.trusted_surfaces.complete_import_consent(session_ref)
+                    self._anki_import_confirmation_requests.pop(key, None)
+                    self._completed_anki_import_confirmations[key] = finalized
+                    return json.loads(json.dumps(finalized, ensure_ascii=False))
+                if state == "cancelled":
+                    self.trusted_surfaces.complete_import_consent(session_ref)
+                    self._anki_import_confirmation_requests.pop(key, None)
+                    return {**approval, "approvalState": "cancelled"}
+                raise CardServiceError(
+                    str(surface.get("errorCode") or "IMPORT_CONSENT_FAILED"),
+                    "Trusted Anki import confirmation failed",
+                    retryable=True,
+                    stage="anki_confirmation",
+                )
+        except TrustedSurfaceError as error:
+            raise CardServiceError(
+                error.code,
+                str(error),
+                retryable=error.code.endswith(("_UNAVAILABLE", "_FAILED")),
+                stage="anki_confirmation",
+            ) from error
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=error.code.endswith(("_UNAVAILABLE", "_EXPIRED")),
+                stage="anki_confirmation",
             ) from error
 
     def get_public_study_task(

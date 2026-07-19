@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
+from .anki_import_approval import (
+    AnkiImportApprovalError,
+    AnkiImportApprovalLedger,
+)
 from .anki_import_preparation import (
     AnkiImportPreparationError,
     AnkiImportPreparationRuntime,
@@ -15,6 +19,7 @@ from .artifact_registry import (
     ArtifactAudienceBinding,
     ArtifactRegistry,
     ArtifactRegistryError,
+    canonical_json_bytes,
 )
 from .candidate_discovery import (
     CandidateDiscoveryModel,
@@ -91,6 +96,9 @@ class StudyRuntime:
         ) = None,
         package_export_executor: PackageExportExecutor | None = None,
         anki_target_inspector: AnkiTargetInspector | None = None,
+        anki_import_gesture_verifier: (
+            Callable[[str, str, str, str], bool] | None
+        ) = None,
     ) -> None:
         root = Path(state_dir).expanduser()
         if not root.is_absolute():
@@ -129,6 +137,9 @@ class StudyRuntime:
             card_artifact_query_key = credential_store.derive_service_key(
                 "study-card-artifact-query-v1", context=context
             )
+            anki_import_approval_key = credential_store.derive_service_key(
+                "study-anki-import-approval-v1", context=context
+            )
             self.artifacts = ArtifactRegistry(
                 self.root / "artifacts",
                 authentication_key=artifact_key,
@@ -138,6 +149,15 @@ class StudyRuntime:
                 self.root / "projects",
                 authentication_key=project_key,
                 service_instance_id=self.service_instance_id,
+            )
+            self.anki_import_approvals = AnkiImportApprovalLedger(
+                self.root / "anki-import-approvals",
+                authentication_key=anki_import_approval_key,
+                service_instance_id=self.service_instance_id,
+                gesture_attestation_verifier=anki_import_gesture_verifier,
+            )
+            self._anki_import_gesture_verifier_available = (
+                anki_import_gesture_verifier is not None
             )
             self.tasks = StudyTaskCoordinator(
                 self.root / "tasks",
@@ -276,6 +296,7 @@ class StudyRuntime:
             CardArtifactRuntimeError,
             PackageArtifactRuntimeError,
             AnkiImportPreparationError,
+            AnkiImportApprovalError,
             OSError,
         ) as error:
             raise StudyRuntimeError(
@@ -310,6 +331,11 @@ class StudyRuntime:
             "publicApkgExport": self.package_artifacts is not None,
             "ankiImportPreparation": self.anki_import_preparation is not None,
             "publicAnkiImportPreparation": self.anki_import_preparation is not None,
+            "ankiImportApprovalLedger": True,
+            "publicAnkiImportConfirmation": (
+                self.anki_import_preparation is not None
+                and self._anki_import_gesture_verifier_available
+            ),
             "publicAnkiWrite": False,
             "publicProjectTools": True,
             "publicInputRegistration": True,
@@ -725,14 +751,132 @@ class StudyRuntime:
                 "Anki target inspection is unavailable",
             )
         try:
-            return self.anki_import_preparation.prepare(
+            prepared = self.anki_import_preparation.prepare(
                 audience=audience,
                 project_id=project_id,
                 expected_project_revision=expected_project_revision,
                 idempotency_key=idempotency_key,
                 package_artifact_handle=package_artifact_handle,
             )
-        except AnkiImportPreparationError as error:
+            resolved = self.anki_import_preparation.resolve_current_import_plan(
+                audience=audience,
+                import_plan_handle=str(prepared["importPlanHandle"]),
+            )
+            ref = resolved["importPlanRef"]
+            payload = resolved["importPlanPayload"]
+            target_digest = hashlib.sha256(
+                canonical_json_bytes(payload["target"])
+            ).hexdigest()
+            intent = self.anki_import_approvals.create_intent(
+                audience=audience,
+                project_id=project_id,
+                project_revision=int(prepared["projectRevision"]),
+                import_plan_ref=ref,
+                import_plan_digest=str(ref["artifactDigest"]),
+                target_digest=target_digest,
+                apkg_sha256=str(payload["apkgSha256"]),
+            )
+            return {
+                **prepared,
+                "importIntentId": intent["importIntentId"],
+                "approvalState": intent["approvalState"],
+            }
+        except (AnkiImportPreparationError, AnkiImportApprovalError) as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
+    def get_anki_import_confirmation_context(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        import_intent_id: str,
+    ) -> dict[str, Any]:
+        if self.anki_import_preparation is None:
+            raise StudyRuntimeError(
+                "ANKI_IMPORT_PREPARATION_UNAVAILABLE",
+                "Anki target inspection is unavailable",
+            )
+        try:
+            binding = self.anki_import_approvals.get_binding(
+                audience=audience, import_intent_id=import_intent_id
+            )
+            resolved = self.anki_import_preparation.resolve_current_import_plan_ref(
+                audience=audience,
+                import_plan_ref=binding["importPlanRef"],
+            )
+            ref = resolved["importPlanRef"]
+            payload = resolved["importPlanPayload"]
+            target_digest = hashlib.sha256(
+                canonical_json_bytes(payload["target"])
+            ).hexdigest()
+            if (
+                ref["artifactDigest"] != binding["importPlanDigest"]
+                or payload["apkgSha256"] != binding["apkgSha256"]
+                or target_digest != binding["targetDigest"]
+            ):
+                raise AnkiImportApprovalError(
+                    "IMPORT_PLAN_STALE",
+                    "ImportPlan changed before trusted confirmation",
+                )
+            deck_summary = "、".join(str(item) for item in payload["deckNames"][:4])
+            if len(payload["deckNames"]) > 4:
+                deck_summary += f" 等 {len(payload['deckNames'])} 个牌组"
+            summary = "\n".join(
+                [
+                    f"目标：当前 Anki（{payload['target']['profileRef']}）",
+                    f"牌组：{deck_summary}",
+                    (
+                        f"内容：{payload['noteCount']} 条笔记 / "
+                        f"{payload['cardCount']} 张卡 / {payload['mediaCount']} 个媒体"
+                    ),
+                    f"APKG：{payload['fileName']}",
+                    f"APKG SHA-256：{payload['apkgSha256']}",
+                    f"模板：{payload['templateFamily']} / {payload['templateSchemaVersion']}",
+                    f"Note Model ID：{payload['noteModelId']}",
+                    f"媒体清单 SHA-256：{payload['mediaManifestDigest']}",
+                    "重复策略：只检测并报告，不静默覆盖已有内容。",
+                    "恢复策略：写入边界不明时停止，不自动重复导入。",
+                    "运行时播放体验：本次确认不代表已经核验。",
+                ]
+            )
+            return {
+                "schemaVersion": 1,
+                "importIntentId": import_intent_id,
+                "audienceDigest": self.anki_import_approvals.audience_digest(audience),
+                "importPlanDigest": binding["importPlanDigest"],
+                "summary": summary,
+            }
+        except (AnkiImportPreparationError, AnkiImportApprovalError) as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
+    def get_anki_import_approval(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        import_intent_id: str,
+    ) -> dict[str, Any]:
+        try:
+            return self.anki_import_approvals.get_intent(
+                audience=audience, import_intent_id=import_intent_id
+            )
+        except AnkiImportApprovalError as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
+    def record_anki_import_decision(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        import_intent_id: str,
+        decision: str,
+        gesture_attestation_ref: str,
+    ) -> dict[str, Any]:
+        try:
+            return self.anki_import_approvals.record_decision(
+                audience=audience,
+                import_intent_id=import_intent_id,
+                decision=decision,
+                gesture_attestation_ref=gesture_attestation_ref,
+            )
+        except AnkiImportApprovalError as error:
             raise StudyRuntimeError(error.code, error.message) from error
 
     def get_study_task(

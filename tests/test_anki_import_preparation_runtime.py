@@ -77,6 +77,17 @@ def test_exported_package_prepares_authenticated_idempotent_import_plan(
         "package_artifact_handle": completed["result"]["packageArtifactHandle"],
     }
     prepared = runtime.prepare_anki_import(**arguments)
+    assert prepared["importIntentId"].startswith("anki_intent_")
+    assert prepared["approvalState"] == "pending"
+    assert runtime.get_anki_import_approval(
+        audience=audience(), import_intent_id=prepared["importIntentId"]
+    )["approvalState"] == "pending"
+    with pytest.raises(StudyRuntimeError) as cross_session:
+        runtime.get_anki_import_approval(
+            audience=audience(session_id="session-2"),
+            import_intent_id=prepared["importIntentId"],
+        )
+    assert cross_session.value.code == "IMPORT_APPROVAL_AUDIENCE_MISMATCH"
 
     assert prepared == {
         **prepared,

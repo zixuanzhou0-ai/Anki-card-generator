@@ -249,6 +249,103 @@ class AnkiImportPreparationRuntime:
         self._packages = packages
         self._target_inspector = target_inspector
 
+    def resolve_current_import_plan_ref(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        import_plan_ref: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Resolve a ledger-held internal reference without creating a new handle."""
+
+        try:
+            envelope = self._artifacts.verify_ref(import_plan_ref, audience)
+            ref = dict(import_plan_ref)
+            if envelope.get("payloadSchema") != "study.anki-import-plan":
+                raise AnkiImportPreparationError(
+                    "IMPORT_PLAN_INVALID", "ImportPlan reference has the wrong schema"
+                )
+            payload = _validated_plan_payload(
+                envelope.get("payload"), project_revision=ref["projectRevision"]
+            )
+            project = self._projects.get_project(ref["projectId"], audience)
+            current_plans = {
+                _identity(value)
+                for value in project.get("latestArtifactRefs", [])
+                if isinstance(value, Mapping)
+                and value.get("payloadSchema") == "study.anki-import-plan"
+            }
+            if (
+                _identity(ref) not in current_plans
+                or project.get("workflow", {}).get("artifactStage")
+                not in {
+                    "apkg_ready",
+                    "imported_unverified",
+                    "anki_data_verified",
+                    "anki_verified",
+                }
+                or project.get("projectRevision", 0)
+                < payload.get("resultingProjectRevision", 0)
+            ):
+                raise AnkiImportPreparationError(
+                    "IMPORT_PLAN_STALE", "ImportPlan is not current"
+                )
+            return {
+                "project": _clone(project),
+                "importPlanRef": _clone(ref),
+                "importPlanPayload": _clone(payload),
+            }
+        except (ArtifactRegistryError, ProjectRegistryError) as error:
+            raise AnkiImportPreparationError(error.code, error.message) from error
+
+    def resolve_current_import_plan(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        import_plan_handle: str,
+    ) -> dict[str, Any]:
+        """Internal authenticated resolution used by confirmation and execution."""
+
+        try:
+            ref, envelope = self._artifacts.resolve_with_ref(
+                import_plan_handle, audience
+            )
+            if envelope.get("payloadSchema") != "study.anki-import-plan":
+                raise AnkiImportPreparationError(
+                    "IMPORT_PLAN_INVALID", "ImportPlan handle has the wrong schema"
+                )
+            payload = _validated_plan_payload(
+                envelope.get("payload"), project_revision=ref["projectRevision"]
+            )
+            project = self._projects.get_project(ref["projectId"], audience)
+            current_plans = {
+                _identity(value)
+                for value in project.get("latestArtifactRefs", [])
+                if isinstance(value, Mapping)
+                and value.get("payloadSchema") == "study.anki-import-plan"
+            }
+            if (
+                _identity(ref) not in current_plans
+                or project.get("workflow", {}).get("artifactStage")
+                not in {
+                    "apkg_ready",
+                    "imported_unverified",
+                    "anki_data_verified",
+                    "anki_verified",
+                }
+                or project.get("projectRevision", 0)
+                < payload.get("resultingProjectRevision", 0)
+            ):
+                raise AnkiImportPreparationError(
+                    "IMPORT_PLAN_STALE", "ImportPlan is not current"
+                )
+            return {
+                "project": _clone(project),
+                "importPlanRef": _clone(ref),
+                "importPlanPayload": _clone(payload),
+            }
+        except (ArtifactRegistryError, ProjectRegistryError) as error:
+            raise AnkiImportPreparationError(error.code, error.message) from error
+
     def _public_plan(
         self,
         *,
