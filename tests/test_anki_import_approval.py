@@ -252,3 +252,107 @@ def test_concurrent_consumers_have_one_atomic_winner(tmp_path: Path) -> None:
         "IMPORT_APPROVAL_CONSUMED",
         "consumed",
     ]
+
+
+def test_list_and_revoke_import_approval_are_audience_bound_and_idempotent(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, str, str, str]] = []
+
+    def verifier(ref: str, audience: str, target: str, action: str) -> bool:
+        calls.append((ref, audience, target, action))
+        return ref == "trusted-revoke" and action == "revoke"
+
+    ledger = _ledger(tmp_path, verifier=verifier)
+    intent_id = str(_create(ledger)["importIntentId"])
+
+    assert [item["importIntentId"] for item in ledger.list_intents(audience=_audience())] == [
+        intent_id
+    ]
+    assert ledger.list_intents(audience=_audience(session="other")) == []
+
+    revoked = ledger.revoke(
+        audience=_audience(),
+        import_intent_id=intent_id,
+        revocation_id="revoke-import-1",
+        gesture_attestation_ref="trusted-revoke",
+    )
+    assert revoked["approvalState"] == "revoked"
+    assert calls[-1][2:] == (intent_id, "revoke")
+    assert (
+        ledger.revoke(
+            audience=_audience(),
+            import_intent_id=intent_id,
+            revocation_id="revoke-import-1",
+            gesture_attestation_ref="trusted-revoke",
+        )
+        == revoked
+    )
+    assert ledger.list_intents(audience=_audience()) == []
+    assert ledger.list_intents(audience=_audience(), include_terminal=True)[0][
+        "approvalState"
+    ] == "revoked"
+    with pytest.raises(AnkiImportApprovalError) as consumed:
+        ledger.consume(
+            audience=_audience(),
+            import_intent_id=intent_id,
+            execution_id="task-after-revoke",
+            expected_import_plan_digest=PLAN_DIGEST,
+            current_target_digest=TARGET_DIGEST,
+        )
+    assert consumed.value.code == "IMPORT_APPROVAL_REVOKED"
+
+
+def test_import_revoke_and_consume_have_one_atomic_winner(tmp_path: Path) -> None:
+    ledger = _ledger(tmp_path, verifier=lambda *_args: True)
+    intent_id = str(_create(ledger)["importIntentId"])
+    ledger.record_decision(
+        audience=_audience(),
+        import_intent_id=intent_id,
+        decision="approved",
+        gesture_attestation_ref="trusted-approve",
+    )
+    barrier = threading.Barrier(3)
+    outcomes: list[str] = []
+
+    def consume() -> None:
+        barrier.wait()
+        try:
+            ledger.consume(
+                audience=_audience(),
+                import_intent_id=intent_id,
+                execution_id="race-consume",
+                expected_import_plan_digest=PLAN_DIGEST,
+                current_target_digest=TARGET_DIGEST,
+            )
+        except AnkiImportApprovalError as error:
+            outcomes.append(error.code)
+        else:
+            outcomes.append("consumed")
+
+    def revoke() -> None:
+        barrier.wait()
+        try:
+            ledger.revoke(
+                audience=_audience(),
+                import_intent_id=intent_id,
+                revocation_id="race-revoke",
+                gesture_attestation_ref="trusted-revoke",
+            )
+        except AnkiImportApprovalError as error:
+            outcomes.append(error.code)
+        else:
+            outcomes.append("revoked")
+
+    first = threading.Thread(target=consume)
+    second = threading.Thread(target=revoke)
+    first.start()
+    second.start()
+    barrier.wait()
+    first.join()
+    second.join()
+
+    assert sorted(outcomes) in (
+        ["IMPORT_APPROVAL_CONSUMED", "consumed"],
+        ["IMPORT_APPROVAL_REVOKED", "revoked"],
+    )

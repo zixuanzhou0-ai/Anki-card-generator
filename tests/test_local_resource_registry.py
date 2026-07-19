@@ -398,6 +398,42 @@ def test_revoke_requires_a_new_gesture_and_is_idempotent(tmp_path: Path) -> None
     assert consumed.value.code == "RESOURCE_REVOKED"
 
 
+def test_list_grants_is_bounded_audience_scoped_and_pathless(tmp_path: Path) -> None:
+    registry = make_registry(tmp_path, gestures=Gestures())
+    source = tmp_path / "private-source.txt"
+    source.write_text("safe", encoding="utf-8")
+    first = issue_file(registry, source)
+    other = audience(session="session-other")
+    other_source = tmp_path / "other-private-source.txt"
+    other_source.write_text("safe", encoding="utf-8")
+    registry.issue_grant(
+        audience=other,
+        grant_request_id="other-grant",
+        raw_path=other_source,
+        kind="file",
+        constraints={"actions": ["read"], "maxBytes": 4},
+        attestation_ref="trusted-gesture",
+    )
+
+    listed = registry.list_grants(audience())
+
+    assert [item["resourceRef"] for item in listed] == [first["resourceRef"]]
+    serialized = json.dumps(listed, sort_keys=True)
+    assert str(source) not in serialized
+    assert str(other_source) not in serialized
+    assert "rawPath" not in serialized
+
+    registry.revoke(
+        first["resourceRef"],
+        audience(),
+        revocation_id="list-revoke",
+        expected_revocation_epoch=0,
+        attestation_ref="trusted-gesture",
+    )
+    assert registry.list_grants(audience()) == []
+    assert registry.list_grants(audience(), include_terminal=True)[0]["state"] == "revoked"
+
+
 def test_expired_grant_is_visible_but_cannot_be_consumed(tmp_path: Path) -> None:
     clock = Clock()
     registry = make_registry(tmp_path, gestures=Gestures(), clock=clock)

@@ -287,6 +287,8 @@ Artifact Registry、StudyTask、Project Registry、AuthorizationLedger、Credent
 
 有界 Artifact/审计查询切片现已进入 CURRENT：`study.get_artifact` 与 `study.get_audit` 只接受当前受信会话签发的 opaque ArtifactHandle，先由 Artifact Registry 重验 audience、service 与 envelope，再投影小型白名单摘要。未知 schema 为 metadata-only；来源正文、卡片全文、原始路径、任意文件、内部 ArtifactRef、registryAuthRef 与私有 receipt 都不会返回。审计证书最多投影 256 个父项并报告总数/截断状态；`integrityVerified` 只表示认证本地产物完整性和父链通过，不把数据级 Anki 检查包装成 reviewer 渲染、媒体播放、焦点或重启复习证据。统一撤销管理器仍未完成，因此 `system.revoke_grant` 继续保持关闭，不能用接受内部授权 ID 的不安全捷径代替受信 UI。
 
+统一撤销的账本内核已先行闭合：本地资源授权与 Anki ImportApproval 支持最多 2048 条的认证、按 audience 隔离枚举，公开摘要不含 raw path、内部 grant ID、手势引用或账本密钥；ImportApproval 的 revoke/consume 共享文件锁事务并经过竞态测试；活动 Broker 的 model/TTS/source profile 由 ReservationLedger 单次批量撤销，Service 随即解绑当前 runtime。该切片仍是内部能力，不构成授权管理产品面；下一切片必须由受信本地窗口生成选择映射和撤销 attestation，MCP 输入不得出现 resourceRef、importIntentId、profileRef 或内部 authorization ID。
+
 ### 出口
 
 - 产物篡改被拒绝。

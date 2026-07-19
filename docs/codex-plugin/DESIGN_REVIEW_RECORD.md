@@ -170,3 +170,9 @@ APKG 纵向切片采用“Worker 产出不等于可信包”的结论。`cards.e
 审计查询把 producer、completeness、issue refs 和 parent lineage 限制为有界结构，父项最多 256 个并显式返回总数与截断状态。`integrityVerified=true` 的语义固定为“本地认证 envelope、payload hash 与 lineage 已验证”，不能解释为模型语义、教学质量或外部服务事实已验证。Anki VerificationArtifact 若没有 `runtimeVerification=fully_verified`，证书必须明确列出 reviewer 渲染、播放、焦点与重启复习尚未完整核验。该切片不扩大写权限，也不使内部授权 ID 成为 bearer；统一受信撤销管理器未完成前，`system.revoke_grant` 继续不公开。
 
 最终证据为：有界查询定向回归 25 项通过，前端 Vitest 830 项和 Worker 600 项通过，正式 Python `tests` 全集 `1607 passed, 1 skipped`；文档、插件包、Skill、真实 Codex trusted/untrusted host 工具枚举以及生产构建均通过。上述证据只覆盖开发态可信 runtime 和当前 33 个公共工具，不代表正式签名安装包、固定侧栏 App UI 或 Anki reviewer 运行时验证器已经交付。
+
+## 4.6 CURRENT 授权生命周期内核复审（2026-07-20）
+
+本轮先实现账本内核而不提前公开 MCP。资源授权和 Anki ImportApproval 的管理枚举都先验证持久记录、服务实例和精确 audience，扫描上限固定为 2048；列表只返回已有 pathless/secretless 摘要，其他会话记录不可见，账本备份与已知原子临时文件不被误判为未知权限。ImportApproval 新增独立 revocation 记录而不覆盖原批准审计，撤销前后都在文件锁内复查 consumption；并发消费与撤销只能得到“consumed + 对方已消费”或“revoked + 对方已撤销”两种终态，不存在双成功。
+
+活动 Broker 撤销对当前 authorization 中的 model、TTS 和 source profile 使用一次 ledger 写入；写入后 Service 清除活动 runtime。已经发送的远程调用不会被描述成回滚，后续 reservation 与安全点调用由 revoked profile 阻止。本轮 64 项直接定向回归及覆盖授权、Broker、Anki、Study 与无头 Service 的 207 项扩大回归通过，但没有受信授权管理窗口、选择映射或撤销手势 attestation，因此 `system.revoke_grant` 仍不得注册；下一切片必须让真实用户在独立本地窗口选择对象，MCP 只能打开/轮询窗口而不能提交内部引用。

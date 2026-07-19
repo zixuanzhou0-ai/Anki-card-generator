@@ -233,13 +233,29 @@ class BrokerReservationLedger:
                     self._save(value)
 
     def revoke_profile(self, profile_ref: str) -> None:
+        self.revoke_profiles((profile_ref,))
+
+    def revoke_profiles(self, profile_refs: tuple[str, ...] | list[str] | set[str]) -> int:
+        normalized = {
+            str(profile_ref)
+            for profile_ref in profile_refs
+            if isinstance(profile_ref, str) and profile_ref
+        }
+        if len(normalized) != len(profile_refs) or any(
+            len(profile_ref) > 256 for profile_ref in normalized
+        ):
+            raise BrokerError(
+                "INVALID_PROFILE_REF", "Broker profile revocation set is invalid"
+            )
         with self._lock:
             with self._interprocess_lock():
                 value = self._load()
                 revoked = set(str(item) for item in value.get("revokedProfiles") or [])
-                revoked.add(profile_ref)
+                before = len(revoked)
+                revoked.update(normalized)
                 value["revokedProfiles"] = sorted(revoked)
                 self._save(value)
+                return len(revoked) - before
 
     def reserve(self, call: BrokerCall, budget: BrokerBudget) -> dict[str, Any]:
         reservation, _ = self.reserve_for_execution(call, budget)

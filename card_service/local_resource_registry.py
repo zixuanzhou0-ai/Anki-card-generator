@@ -27,6 +27,7 @@ MAX_OUTPUT_FILES = 100_000
 MAX_DEPTH = 32
 MAX_USES = 4_096
 MAX_USE_HISTORY = 4_096
+MAX_LIST_RECORDS = 2_048
 MAX_LIFETIME = timedelta(hours=24)
 MAX_SAFE_INTEGER = 9_007_199_254_740_991
 
@@ -1203,6 +1204,86 @@ class LocalResourceGrantRegistry:
         with self._transaction():
             normalized_ref, record, _ = self._resolve_record(resource_ref, audience)
             return _public_summary(record, normalized_ref, self._now())
+
+    def list_grants(
+        self,
+        audience: ArtifactAudienceBinding,
+        *,
+        include_terminal: bool = False,
+        maximum: int = 256,
+    ) -> list[dict[str, Any]]:
+        """Return authenticated, pathless summaries for one exact audience.
+
+        This is an internal authorization-manager primitive. It fails closed
+        instead of walking an unbounded or structurally unsafe ledger.
+        """
+
+        limit = _require_integer(
+            maximum, "maximum", minimum=1, maximum=MAX_LIST_RECORDS
+        )
+        if not isinstance(include_terminal, bool):
+            raise LocalResourceRegistryError(
+                "RESOURCE_REQUEST_INVALID", "includeTerminal is invalid"
+            )
+        audience_digest = self._audience_digest(audience)
+        now = self._now()
+        with self._transaction():
+            paths: list[Path] = []
+            shards = sorted(self._records_root.iterdir(), key=lambda item: item.name)
+            if len(shards) > 256:
+                raise LocalResourceRegistryError(
+                    "RESOURCE_LIST_LIMIT_EXCEEDED",
+                    "resource registry contains too many storage shards",
+                )
+            for shard in shards:
+                info = shard.lstat()
+                if (
+                    not stat.S_ISDIR(info.st_mode)
+                    or stat.S_ISLNK(info.st_mode)
+                    or _has_reparse(info)
+                    or not re.fullmatch(r"[0-9a-f]{2}", shard.name)
+                ):
+                    raise LocalResourceRegistryError(
+                        "RESOURCE_STORAGE_UNSAFE",
+                        "resource registry contains an unsafe storage shard",
+                    )
+                for path in sorted(shard.iterdir(), key=lambda item: item.name):
+                    if re.fullmatch(r"[0-9a-f]{64}\.json", path.name):
+                        paths.append(path)
+                    elif re.fullmatch(r"[0-9a-f]{64}\.json\.bak", path.name):
+                        continue
+                    elif re.fullmatch(
+                        r"\.[0-9a-f]{64}\.json(?:\.bak)?\.[0-9a-f]{24}\.partial",
+                        path.name,
+                    ):
+                        continue
+                    else:
+                        raise LocalResourceRegistryError(
+                            "RESOURCE_STORAGE_UNSAFE",
+                            "resource registry contains an unexpected record",
+                        )
+                    if len(paths) > MAX_LIST_RECORDS:
+                        raise LocalResourceRegistryError(
+                            "RESOURCE_LIST_LIMIT_EXCEEDED",
+                            "resource registry exceeds the bounded management limit",
+                        )
+            summaries: list[dict[str, Any]] = []
+            for path in paths:
+                record = self._validate_record(
+                    self._decode_json(self._safe_read(path))
+                )
+                if record["audienceDigest"] != audience_digest:
+                    continue
+                resource_ref = self._derive_resource_ref(record["grantId"])
+                self._load_binding(resource_ref, audience_digest)
+                summary = _public_summary(record, resource_ref, now)
+                if include_terminal or summary["state"] == "active":
+                    summaries.append(summary)
+            summaries.sort(
+                key=lambda item: (str(item["expiresAt"]), str(item["resourceRef"])),
+                reverse=True,
+            )
+            return summaries[:limit]
 
     def consume(
         self,

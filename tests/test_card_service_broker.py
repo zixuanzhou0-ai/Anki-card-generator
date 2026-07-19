@@ -205,6 +205,19 @@ def test_revocation_blocks_new_reservations(tmp_path: Path) -> None:
     assert caught.value.code == "PROFILE_REVOKED"
 
 
+def test_profile_set_revocation_is_atomic_and_idempotent(tmp_path: Path) -> None:
+    ledger = BrokerReservationLedger((tmp_path / "ledger-bulk.json").resolve())
+
+    assert ledger.revoke_profiles({"model.primary", "tts.primary"}) == 2
+    assert ledger.revoke_profiles({"model.primary", "tts.primary"}) == 0
+    with pytest.raises(BrokerError) as caught:
+        ledger.revoke_profiles({"model.primary", ""})
+    assert caught.value.code == "INVALID_PROFILE_REF"
+
+    value = json.loads((tmp_path / "ledger-bulk.json").read_text(encoding="utf-8"))
+    assert value["revokedProfiles"] == ["model.primary", "tts.primary"]
+
+
 def test_revocation_between_reserve_and_send_is_rechecked(tmp_path: Path) -> None:
     store, _ = make_credentials(tmp_path)
     metadata = store.set_secret("model.primary", "provider-secret")

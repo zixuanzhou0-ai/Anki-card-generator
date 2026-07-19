@@ -2942,6 +2942,73 @@ class CardService:
             if current_digest == issued_digest and self._active_broker_runtime is not None:
                 return
             self._active_broker_runtime = runtime
+
+    def _active_broker_authorization_summary(self) -> dict[str, Any] | None:
+        """Return a bounded internal manager view of the active broker grant."""
+
+        with self._broker_runtime_lock:
+            runtime = self._active_broker_runtime
+            if runtime is None:
+                return None
+            configuration = runtime.configuration
+            capabilities = sorted(
+                {
+                    str(capability)
+                    for bindings in configuration.method_bindings.values()
+                    for capability in bindings
+                }
+            )
+            return {
+                "schemaVersion": 1,
+                "kind": "broker_authorization",
+                "capabilities": capabilities,
+                "profileCount": len(
+                    {
+                        str(profile_ref)
+                        for bindings in configuration.method_bindings.values()
+                        for profile_ref in bindings.values()
+                    }
+                ),
+                "expiresAtUnixMs": int(configuration.expires_at_unix_ms),
+                "state": (
+                    "expired"
+                    if int(time.time() * 1000)
+                    >= int(configuration.expires_at_unix_ms)
+                    else "active"
+                ),
+            }
+
+    def _revoke_active_broker_authorization(self) -> dict[str, Any]:
+        """Atomically revoke every profile in the current broker authorization.
+
+        Running calls are not represented as rolled back. New reservations and
+        later safe-point calls fail through the shared reservation ledger.
+        """
+
+        with self._broker_runtime_lock:
+            runtime = self._active_broker_runtime
+            if runtime is None:
+                return {
+                    "schemaVersion": 1,
+                    "kind": "broker_authorization",
+                    "state": "not_found",
+                    "revokedProfileCount": 0,
+                }
+            profile_refs = {
+                str(profile_ref)
+                for bindings in runtime.configuration.method_bindings.values()
+                for profile_ref in bindings.values()
+            }
+            newly_revoked = runtime.ledger.revoke_profiles(profile_refs)
+            if self._active_broker_runtime is runtime:
+                self._active_broker_runtime = None
+            return {
+                "schemaVersion": 1,
+                "kind": "broker_authorization",
+                "state": "revoked",
+                "revokedProfileCount": len(profile_refs),
+                "newlyRevokedProfileCount": newly_revoked,
+            }
             self.broker_handler_factory = runtime.handler_factory
             self.broker_method_blocker = runtime.method_blocker
             self.broker_runtime_capabilities = runtime.capabilities()

@@ -1693,6 +1693,40 @@ class StudyRuntime:
         except AnkiImportApprovalError as error:
             raise StudyRuntimeError(error.code, error.message) from error
 
+    def list_anki_import_approvals(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        include_terminal: bool = False,
+        maximum: int = 256,
+    ) -> list[dict[str, Any]]:
+        try:
+            return self.anki_import_approvals.list_intents(
+                audience=audience,
+                include_terminal=include_terminal,
+                maximum=maximum,
+            )
+        except AnkiImportApprovalError as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
+    def revoke_anki_import_approval(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        import_intent_id: str,
+        revocation_id: str,
+        gesture_attestation_ref: str,
+    ) -> dict[str, Any]:
+        try:
+            return self.anki_import_approvals.revoke(
+                audience=audience,
+                import_intent_id=import_intent_id,
+                revocation_id=revocation_id,
+                gesture_attestation_ref=gesture_attestation_ref,
+            )
+        except AnkiImportApprovalError as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
     def start_anki_import(
         self,
         *,

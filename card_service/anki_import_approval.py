@@ -25,6 +25,7 @@ from .artifact_registry import (
 
 MAX_RECORD_BYTES = 1024 * 1024
 MAX_INTENT_LIFETIME = timedelta(minutes=30)
+MAX_LIST_RECORDS = 2_048
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -348,6 +349,9 @@ class AnkiImportApprovalLedger:
         approval = record.get("approval")
         if isinstance(approval, Mapping):
             state = str(approval.get("state") or "pending")
+        revocation = record.get("revocation")
+        if isinstance(revocation, Mapping):
+            state = "revoked"
         if now >= _parse_timestamp(record["intent"]["expiresAt"]) and state in {
             "pending",
             "approved",
@@ -416,6 +420,7 @@ class AnkiImportApprovalLedger:
                 },
                 "approval": None,
                 "consumption": None,
+                "revocation": None,
                 "createdAt": _timestamp(now),
                 "updatedAt": _timestamp(now),
             }
@@ -493,6 +498,11 @@ class AnkiImportApprovalLedger:
                     "Import intent belongs to another trusted audience",
                 )
             existing = record.get("approval")
+            if isinstance(record.get("revocation"), Mapping):
+                raise AnkiImportApprovalError(
+                    "IMPORT_APPROVAL_REVOKED",
+                    "Import approval was revoked",
+                )
             gesture_digest = _sha(gesture_attestation_ref.encode("utf-8"))
             if isinstance(existing, Mapping):
                 if (
@@ -588,6 +598,11 @@ class AnkiImportApprovalLedger:
                     "IMPORT_APPROVAL_CONSUMED",
                     "Import approval was already consumed by another execution",
                 )
+            if isinstance(record.get("revocation"), Mapping):
+                raise AnkiImportApprovalError(
+                    "IMPORT_APPROVAL_REVOKED",
+                    "Import approval was revoked before execution",
+                )
             intent = record["intent"]
             if intent["importPlanDigest"] != plan_digest:
                 raise AnkiImportApprovalError(
@@ -639,9 +654,199 @@ class AnkiImportApprovalLedger:
             )
             return json.loads(json.dumps(result, ensure_ascii=False))
 
+    def list_intents(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        include_terminal: bool = False,
+        maximum: int = 256,
+    ) -> list[dict[str, Any]]:
+        if (
+            isinstance(maximum, bool)
+            or not isinstance(maximum, int)
+            or not 1 <= maximum <= MAX_LIST_RECORDS
+            or not isinstance(include_terminal, bool)
+        ):
+            raise AnkiImportApprovalError(
+                "IMPORT_APPROVAL_REQUEST_INVALID",
+                "Import approval list request is invalid",
+            )
+        audience_digest = self._audience_digest(audience)
+        now = self._now()
+        with self._transaction():
+            paths: list[Path] = []
+            shards = sorted(self._intents_root.iterdir(), key=lambda item: item.name)
+            if len(shards) > 256:
+                raise AnkiImportApprovalError(
+                    "IMPORT_APPROVAL_LIST_LIMIT_EXCEEDED",
+                    "Import approval ledger contains too many storage shards",
+                )
+            for shard in shards:
+                _directory(shard)
+                if not re.fullmatch(r"[0-9a-f]{2}", shard.name):
+                    raise AnkiImportApprovalError(
+                        "IMPORT_APPROVAL_STORAGE_UNSAFE",
+                        "Import approval ledger contains an invalid storage shard",
+                    )
+                for path in sorted(shard.iterdir(), key=lambda item: item.name):
+                    if re.fullmatch(r"[0-9a-f]{64}\.json", path.name):
+                        paths.append(path)
+                    elif re.fullmatch(r"[0-9a-f]{64}\.json\.bak", path.name):
+                        continue
+                    elif re.fullmatch(
+                        r"\.[0-9a-f]{64}\.json(?:\.bak)?\.[0-9a-f]{24}\.partial",
+                        path.name,
+                    ):
+                        continue
+                    else:
+                        raise AnkiImportApprovalError(
+                            "IMPORT_APPROVAL_STORAGE_UNSAFE",
+                            "Import approval ledger contains an unexpected record",
+                        )
+                    if len(paths) > MAX_LIST_RECORDS:
+                        raise AnkiImportApprovalError(
+                            "IMPORT_APPROVAL_LIST_LIMIT_EXCEEDED",
+                            "Import approval ledger exceeds the bounded management limit",
+                        )
+            result: list[dict[str, Any]] = []
+            for path in paths:
+                record = self._decode(self._safe_read(path))
+                if record.get("audienceDigest") != audience_digest:
+                    continue
+                summary = self._public(record, now)
+                if include_terminal or summary["approvalState"] in {
+                    "pending",
+                    "approved",
+                }:
+                    result.append(summary)
+            result.sort(
+                key=lambda item: (
+                    str(item["expiresAt"]),
+                    str(item["importIntentId"]),
+                ),
+                reverse=True,
+            )
+            return result[:maximum]
+
+    def revoke(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        import_intent_id: str,
+        revocation_id: str,
+        gesture_attestation_ref: str,
+    ) -> dict[str, Any]:
+        revocation_id = _identifier(revocation_id, "revocationId")
+        if not isinstance(gesture_attestation_ref, str) or not gesture_attestation_ref:
+            raise AnkiImportApprovalError(
+                "TRUSTED_GESTURE_INVALID", "Trusted revocation gesture is unavailable"
+            )
+        audience_digest = self._audience_digest(audience)
+        revocation_digest = hmac.new(
+            self._authentication_key,
+            b"study.anki.import-approval-revocation.v1\x00"
+            + audience_digest.encode("ascii")
+            + b"\x00"
+            + revocation_id.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        now = self._now()
+        with self._transaction():
+            record, _ = self._load(import_intent_id)
+            if record.get("audienceDigest") != audience_digest:
+                raise AnkiImportApprovalError(
+                    "IMPORT_APPROVAL_AUDIENCE_MISMATCH",
+                    "Import intent belongs to another trusted audience",
+                )
+            if isinstance(record.get("consumption"), Mapping):
+                raise AnkiImportApprovalError(
+                    "IMPORT_APPROVAL_CONSUMED",
+                    "Consumed import approval cannot be revoked",
+                )
+            prior = record.get("revocation")
+            if isinstance(prior, Mapping):
+                if prior.get("revocationDigest") == revocation_digest:
+                    return self._public(record, now)
+                raise AnkiImportApprovalError(
+                    "IMPORT_APPROVAL_ALREADY_REVOKED",
+                    "Import approval was already revoked",
+                )
+            if now >= _parse_timestamp(record["intent"]["expiresAt"]):
+                raise AnkiImportApprovalError(
+                    "IMPORT_INTENT_EXPIRED", "Expired import approval cannot be revoked"
+                )
+        if self._gesture_attestation_verifier is None:
+            raise AnkiImportApprovalError(
+                "TRUSTED_GESTURE_VERIFIER_UNAVAILABLE",
+                "Trusted gesture verification is unavailable",
+            )
+        try:
+            verified = self._gesture_attestation_verifier(
+                gesture_attestation_ref,
+                audience_digest,
+                import_intent_id,
+                "revoke",
+            )
+        except Exception as error:
+            raise AnkiImportApprovalError(
+                "TRUSTED_GESTURE_INVALID",
+                "Trusted import revocation could not be verified",
+            ) from error
+        if verified is not True:
+            raise AnkiImportApprovalError(
+                "TRUSTED_GESTURE_INVALID",
+                "Trusted import revocation is invalid",
+            )
+        with self._transaction():
+            record, previous = self._load(import_intent_id)
+            if record.get("audienceDigest") != audience_digest:
+                raise AnkiImportApprovalError(
+                    "IMPORT_APPROVAL_AUDIENCE_MISMATCH",
+                    "Import intent belongs to another trusted audience",
+                )
+            if isinstance(record.get("consumption"), Mapping):
+                raise AnkiImportApprovalError(
+                    "IMPORT_APPROVAL_CONSUMED",
+                    "Consumed import approval cannot be revoked",
+                )
+            prior = record.get("revocation")
+            if isinstance(prior, Mapping):
+                if prior.get("revocationDigest") == revocation_digest:
+                    return self._public(record, self._now())
+                raise AnkiImportApprovalError(
+                    "IMPORT_APPROVAL_ALREADY_REVOKED",
+                    "Import approval was already revoked",
+                )
+            now = self._now()
+            if now >= _parse_timestamp(record["intent"]["expiresAt"]):
+                raise AnkiImportApprovalError(
+                    "IMPORT_INTENT_EXPIRED", "Expired import approval cannot be revoked"
+                )
+            unsigned = dict(record)
+            unsigned.pop("authKeyId", None)
+            unsigned.pop("authTag", None)
+            timestamp = _timestamp(now)
+            unsigned["revocation"] = {
+                "importIntentId": import_intent_id,
+                "audienceDigest": audience_digest,
+                "revocationDigest": revocation_digest,
+                "userGestureRef": _sha(gesture_attestation_ref.encode("utf-8")),
+                "state": "revoked",
+                "revokedAt": timestamp,
+            }
+            unsigned["updatedAt"] = timestamp
+            updated = self._authenticate(unsigned)
+            self._replace(
+                self._intent_path(import_intent_id),
+                canonical_json_bytes(updated),
+                previous,
+            )
+            return self._public(updated, now)
+
 
 __all__ = [
     "AnkiImportApprovalError",
     "AnkiImportApprovalLedger",
+    "MAX_LIST_RECORDS",
     "MAX_INTENT_LIFETIME",
 ]

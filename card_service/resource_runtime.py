@@ -204,6 +204,43 @@ class ServiceResourceRuntime:
         except LocalResourceRegistryError as error:
             raise ServiceResourceRuntimeError(error.code, error.message) from error
 
+    def list_local_grants(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        include_terminal: bool = False,
+        maximum: int = 256,
+    ) -> list[dict[str, Any]]:
+        try:
+            return self.local_registry.list_grants(
+                audience,
+                include_terminal=include_terminal,
+                maximum=maximum,
+            )
+        except LocalResourceRegistryError as error:
+            raise ServiceResourceRuntimeError(error.code, error.message) from error
+
+    def revoke_local_grant(
+        self,
+        *,
+        resource_ref: str,
+        audience: ArtifactAudienceBinding,
+        revocation_id: str,
+        expected_revocation_epoch: int,
+        attestation_ref: str,
+    ) -> dict[str, Any]:
+        _require_request_id(revocation_id, "revocationId")
+        try:
+            return self.local_registry.revoke(
+                resource_ref,
+                audience,
+                revocation_id=revocation_id,
+                expected_revocation_epoch=expected_revocation_epoch,
+                attestation_ref=attestation_ref,
+            )
+        except LocalResourceRegistryError as error:
+            raise ServiceResourceRuntimeError(error.code, error.message) from error
+
     def stage_local_resource(
         self,
         resource: ResolvedLocalResource,
