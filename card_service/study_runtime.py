@@ -11,7 +11,10 @@ from .artifact_registry import (
     ArtifactRegistry,
     ArtifactRegistryError,
 )
-from .candidate_discovery import CandidateDiscoveryModel
+from .candidate_discovery import (
+    CandidateDiscoveryModel,
+    CandidateDiscoveryModelProvider,
+)
 from .candidate_discovery_runtime import (
     CandidateDiscoveryAuthorization,
     CandidateDiscoveryRuntime,
@@ -57,6 +60,9 @@ class StudyRuntime:
         workspace_factory: WorkspaceFactory | None = None,
         workspace_releaser: WorkspaceReleaser | None = None,
         candidate_discovery_model: CandidateDiscoveryModel | None = None,
+        candidate_discovery_model_provider: (
+            CandidateDiscoveryModelProvider | None
+        ) = None,
     ) -> None:
         root = Path(state_dir).expanduser()
         if not root.is_absolute():
@@ -125,6 +131,10 @@ class StudyRuntime:
                 projects=self.projects,
                 tasks=self.tasks,
             )
+            discovery_configured = (
+                candidate_discovery_model is not None
+                or candidate_discovery_model_provider is not None
+            )
             self.candidate_discovery = (
                 CandidateDiscoveryRuntime(
                     service_instance_id=self.service_instance_id,
@@ -132,8 +142,9 @@ class StudyRuntime:
                     projects=self.projects,
                     tasks=self.tasks,
                     model=candidate_discovery_model,
+                    model_provider=candidate_discovery_model_provider,
                 )
-                if candidate_discovery_model is not None
+                if discovery_configured
                 else None
             )
         except (
@@ -267,14 +278,24 @@ class StudyRuntime:
         inspection_handle: str,
         candidate_budget: Mapping[str, Any],
         authorization: CandidateDiscoveryAuthorization,
+        model_provider: CandidateDiscoveryModelProvider | None = None,
     ) -> dict[str, Any]:
-        if self.candidate_discovery is None:
-            raise StudyRuntimeError(
-                "DISCOVERY_MODEL_UNAVAILABLE",
-                "Candidate discovery has no service-bound model adapter",
-            )
+        discovery = self.candidate_discovery
         try:
-            return self.candidate_discovery.start_discovery(
+            if model_provider is not None:
+                discovery = CandidateDiscoveryRuntime(
+                    service_instance_id=self.service_instance_id,
+                    artifacts=self.artifacts,
+                    projects=self.projects,
+                    tasks=self.tasks,
+                    model_provider=model_provider,
+                )
+            if discovery is None:
+                raise StudyRuntimeError(
+                    "DISCOVERY_MODEL_UNAVAILABLE",
+                    "Candidate discovery has no service-bound model adapter",
+                )
+            return discovery.start_discovery(
                 audience=audience,
                 project_id=project_id,
                 expected_project_revision=expected_project_revision,

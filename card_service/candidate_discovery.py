@@ -126,6 +126,12 @@ class CandidateDiscoveryModel(Protocol):
     def review(self, request: Mapping[str, Any]) -> Mapping[str, Any]: ...
 
 
+class CandidateDiscoveryModelProvider(Protocol):
+    @property
+    def identity(self) -> CandidateDiscoveryModelIdentity: ...
+    def bind(self, task_id: str) -> CandidateDiscoveryModel: ...
+
+
 def _clone(value: Any) -> Any:
     return json.loads(json.dumps(value, ensure_ascii=False))
 
@@ -1044,6 +1050,7 @@ __all__ = [
     "CandidateDiscoveryError",
     "CandidateDiscoveryModel",
     "CandidateDiscoveryModelIdentity",
+    "CandidateDiscoveryModelProvider",
     "DISCOVERY_POLICY_VERSION",
     "PROPOSAL_ROLE_VERSION",
     "REVIEW_ROLE_VERSION",

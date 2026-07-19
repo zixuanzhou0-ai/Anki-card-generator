@@ -11,6 +11,12 @@ from .candidate_discovery import (
     CandidateDiscoveryEngine,
     CandidateDiscoveryError,
     CandidateDiscoveryModelIdentity,
+    CandidateDiscoveryModelProvider,
+)
+from .candidate_discovery_broker import (
+    BrokerCandidateDiscoveryModel,
+    BrokerCandidateDiscoveryModelProvider,
+    CandidateDiscoveryBrokerError,
 )
 from .candidate_discovery_runtime import (
     CandidateDiscoveryAuthorization,
@@ -77,10 +83,14 @@ __all__ = [
     "ArtifactRegistryError",
     "AuthorizationLedger",
     "AuthorizationLedgerError",
+    "BrokerCandidateDiscoveryModel",
+    "BrokerCandidateDiscoveryModelProvider",
     "CandidateDiscoveryAuthorization",
+    "CandidateDiscoveryBrokerError",
     "CandidateDiscoveryEngine",
     "CandidateDiscoveryError",
     "CandidateDiscoveryModelIdentity",
+    "CandidateDiscoveryModelProvider",
     "CandidateDiscoveryRuntime",
     "CandidateDiscoveryRuntimeError",
     "CardService",

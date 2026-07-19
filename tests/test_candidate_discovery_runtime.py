@@ -98,6 +98,22 @@ class FakeDiscoveryModel:
         }
 
 
+class FakeDiscoveryModelProvider:
+    def __init__(
+        self,
+        model: FakeDiscoveryModel,
+        *,
+        bound_model: FakeDiscoveryModel | None = None,
+    ) -> None:
+        self.identity = model.identity
+        self.model = bound_model or model
+        self.bound_task_ids: list[str] = []
+
+    def bind(self, task_id: str) -> FakeDiscoveryModel:
+        self.bound_task_ids.append(task_id)
+        return self.model
+
+
 def authorization(*, suffix: str = "v1") -> CandidateDiscoveryAuthorization:
     return CandidateDiscoveryAuthorization(
         operation_intent_digest=digest("operation-intent-" + suffix),
@@ -110,7 +126,11 @@ def authorization(*, suffix: str = "v1") -> CandidateDiscoveryAuthorization:
     )
 
 
-def environment(tmp_path: Path, model: FakeDiscoveryModel | None):
+def environment(
+    tmp_path: Path,
+    model: FakeDiscoveryModel | None,
+    provider: FakeDiscoveryModelProvider | None = None,
+):
     backend = InMemoryCredentialBackend()
     credentials = (tmp_path / "credentials").resolve()
     resources = ServiceResourceRuntime(
@@ -125,6 +145,7 @@ def environment(tmp_path: Path, model: FakeDiscoveryModel | None):
         credential_store=CredentialStore(state_dir=credentials, backend=backend),
         resource_runtime=resources,
         candidate_discovery_model=model,
+        candidate_discovery_model_provider=provider,
     )
     project = runtime.create_project(
         audience=audience(),
@@ -196,7 +217,10 @@ def discover(
 def task_record(runtime: StudyRuntime, task_id: str) -> dict[str, Any]:
     for path in (runtime.root / "tasks" / "tasks").rglob("*.json"):
         value = json.loads(path.read_text(encoding="utf-8"))
-        if value.get("schema") == "study.task.record" and value["task"]["taskId"] == task_id:
+        if (
+            value.get("schema") == "study.task.record"
+            and value["task"]["taskId"] == task_id
+        ):
             return value
     raise AssertionError("task record not found")
 
@@ -228,8 +252,14 @@ def test_discovery_runtime_commits_candidates_and_binds_authorized_model_identit
     assert task["state"] == "succeeded"
     assert task["progress"]["overallPercent"] == 100
     record = task_record(runtime, result["taskId"])
-    assert record["taskInputManifest"]["operationIntentDigest"] == authorization().operation_intent_digest
-    assert record["taskInputManifest"]["costBudgetDigest"] == authorization().cost_budget_digest
+    assert (
+        record["taskInputManifest"]["operationIntentDigest"]
+        == authorization().operation_intent_digest
+    )
+    assert (
+        record["taskInputManifest"]["costBudgetDigest"]
+        == authorization().cost_budget_digest
+    )
     assert record["taskInputManifest"]["serviceBindings"] == [
         {
             "capability": "model",
@@ -244,6 +274,57 @@ def test_discovery_runtime_commits_candidates_and_binds_authorized_model_identit
     assert SOURCE_TEXT not in serialized
     assert str(source) not in serialized
     assert "api_key" not in serialized.casefold()
+
+
+def test_runtime_binds_provider_to_the_deterministic_task_once(
+    tmp_path: Path,
+) -> None:
+    model = FakeDiscoveryModel()
+    provider = FakeDiscoveryModelProvider(model)
+    runtime, project, inspected, _source = environment(
+        tmp_path,
+        None,
+        provider,
+    )
+
+    first = discover(runtime, project, inspected)
+    second = discover(runtime, project, inspected)
+
+    assert first["taskId"] == second["taskId"]
+    assert provider.bound_task_ids == [first["taskId"]]
+    assert model.proposal_calls == 1
+    assert model.review_calls == 1
+
+
+def test_runtime_rejects_a_provider_that_changes_identity_after_task_binding(
+    tmp_path: Path,
+) -> None:
+    expected = FakeDiscoveryModel()
+    changed = FakeDiscoveryModel()
+    changed.identity = CandidateDiscoveryModelIdentity(
+        profile_ref="model.changed",
+        configuration_fingerprint=digest("changed-model-configuration"),
+        credential_revision=8,
+        implementation_version="fake-provider-v2",
+    )
+    provider = FakeDiscoveryModelProvider(expected, bound_model=changed)
+    runtime, project, inspected, _source = environment(
+        tmp_path,
+        None,
+        provider,
+    )
+
+    with pytest.raises(StudyRuntimeError) as captured:
+        discover(runtime, project, inspected)
+
+    assert captured.value.code == "DISCOVERY_MODEL_IDENTITY_CHANGED"
+    assert changed.proposal_calls == 0
+    assert (
+        runtime.get_project(project["projectId"], audience())["workflow"][
+            "artifactStage"
+        ]
+        == "sources_ready"
+    )
 
 
 def test_exact_retry_reuses_succeeded_task_without_repeating_model_calls(
@@ -262,9 +343,9 @@ def test_exact_retry_reuses_succeeded_task_without_repeating_model_calls(
         second["discoveryHandle"], audience()
     )
     assert first_ref == second_ref
-    assert {key: value for key, value in second.items() if key != "discoveryHandle"} == {
-        key: value for key, value in first.items() if key != "discoveryHandle"
-    }
+    assert {
+        key: value for key, value in second.items() if key != "discoveryHandle"
+    } == {key: value for key, value in first.items() if key != "discoveryHandle"}
     assert model.proposal_calls == 1
     assert model.review_calls == 1
 

@@ -413,19 +413,15 @@ CURRENT 输入只接受一个认证 `inspectionHandle`。工具只读取已经�
 
 ~~~ts
 {
-  context: RequestContext;
-  sourceRefs: string[];
-  learningContractRef: string;
-  scope?: {
-    sectionRefs?: string[];
-    timeRangesMs?: [number, number][];
+  context: RequestContext & {
+    projectId: string;
+    expectedProjectRevision: number;
   };
+  inspectionHandle: string;
   candidateBudget: {
     target: number;
     maximum: number;
   };
-  modelProfileRef: string;
-  cachePolicy: "reuse_valid" | "refresh_stale" | "ignore_cache";
 }
 ~~~
 
@@ -442,7 +438,7 @@ CURRENT 输入只接受一个认证 `inspectionHandle`。工具只读取已经�
 
 工具描述必须明确会调用模型并可能访问外部网络。模型只能看到本次任务所需的最小来源片段。每个候选同时生成 versioned GateEvaluationSet；eligibility 由 Service 根据当前规则集派生，模型或调用方不能直接指定。
 
-CURRENT 实现边界：内部 CandidateDiscoveryRuntime 已能冻结模型、授权、egress、成本与输入身份，并以可恢复任务原子提交 `candidates_ready`；公共工具尚未注册。上面的 MCP 输入不能携带 authorizationRecordDigest、constraintsDigest、exactScopeDigest、credentialRevision 或 egress manifest 等内部证明；正式公开时必须由 Service 根据 `modelProfileRef` 与已确认的 OperationIntent 自行解析，并以当前 `inspectionHandle` 取代可移植性不足的裸来源引用。
+CURRENT 实现边界：内部 CandidateDiscoveryRuntime 已能冻结模型、授权、egress、成本与输入身份，并以可恢复任务原子提交 `candidates_ready`；任务级 Service Broker 适配器已经支持 OpenAI-compatible、Anthropic 与 Gemini，并由 Card Service 从当前可信 Broker、audience、project revision、`inspectionHandle` 与候选预算派生全部非秘密授权摘要。公共工具仍未注册，因为当前内部方法会同步等待 proposer/reviewer；正式 MCP 必须先提供异步 start/poll/cancel/resume，不能阻塞 stdio。正式公开输入只保留 RequestContext、当前 `inspectionHandle` 和 candidateBudget，不接受 sourceRefs、learningContractRef、modelProfileRef、authorizationRecordDigest、constraintsDigest、exactScopeDigest、credentialRevision 或 egress manifest；模型方案由已批准的 Service-owned method binding 唯一确定。
 
 ### 6.2 study.get_task
 

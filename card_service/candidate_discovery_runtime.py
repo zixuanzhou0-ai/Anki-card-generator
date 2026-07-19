@@ -18,6 +18,8 @@ from .candidate_discovery import (
     CandidateDiscoveryEngine,
     CandidateDiscoveryError,
     CandidateDiscoveryModel,
+    CandidateDiscoveryModelIdentity,
+    CandidateDiscoveryModelProvider,
     DISCOVERY_POLICY_VERSION,
     PROPOSAL_ROLE_VERSION,
     REVIEW_ROLE_VERSION,
@@ -127,6 +129,23 @@ class CandidateDiscoveryAuthorization:
         }
 
 
+@dataclass(frozen=True)
+class _FixedCandidateDiscoveryModelProvider:
+    model: CandidateDiscoveryModel
+
+    @property
+    def identity(self) -> CandidateDiscoveryModelIdentity:
+        return self.model.identity
+
+    def bind(self, task_id: str) -> CandidateDiscoveryModel:
+        if not task_id:
+            raise CandidateDiscoveryRuntimeError(
+                "DISCOVERY_TASK_BINDING_INVALID",
+                "candidate discovery task binding is invalid",
+            )
+        return self.model
+
+
 class CandidateDiscoveryRuntime:
     """Bind discovery artifacts to a resumable task and atomic project transition."""
 
@@ -137,23 +156,34 @@ class CandidateDiscoveryRuntime:
         artifacts: ArtifactRegistry,
         projects: ProjectRegistry,
         tasks: StudyTaskCoordinator,
-        model: CandidateDiscoveryModel,
+        model: CandidateDiscoveryModel | None = None,
+        model_provider: CandidateDiscoveryModelProvider | None = None,
     ) -> None:
         self._service_instance_id = service_instance_id
         self._artifacts = artifacts
         self._projects = projects
         self._tasks = tasks
-        if not callable(getattr(model, "propose", None)) or not callable(
-            getattr(model, "review", None)
+        if (model is None) == (model_provider is None):
+            raise CandidateDiscoveryRuntimeError(
+                "DISCOVERY_MODEL_INVALID",
+                "exactly one candidate discovery model source is required",
+            )
+        if model_provider is None:
+            if not callable(getattr(model, "propose", None)) or not callable(
+                getattr(model, "review", None)
+            ):
+                raise CandidateDiscoveryRuntimeError(
+                    "DISCOVERY_MODEL_INVALID", "candidate discovery model is invalid"
+                )
+            model_provider = _FixedCandidateDiscoveryModelProvider(model)  # type: ignore[arg-type]
+        if not callable(getattr(model_provider, "bind", None)) or not isinstance(
+            getattr(model_provider, "identity", None), CandidateDiscoveryModelIdentity
         ):
             raise CandidateDiscoveryRuntimeError(
-                "DISCOVERY_MODEL_INVALID", "candidate discovery model is invalid"
+                "DISCOVERY_MODEL_INVALID", "candidate discovery model provider is invalid"
             )
-        self._model = model
-        try:
-            self._engine = CandidateDiscoveryEngine(artifacts=artifacts, model=model)
-        except CandidateDiscoveryError as error:
-            raise CandidateDiscoveryRuntimeError(error.code, error.message) from error
+        self._model_provider = model_provider
+        self._model_identity = model_provider.identity
 
     @staticmethod
     def _budget(value: Mapping[str, Any]) -> dict[str, int]:
@@ -278,7 +308,7 @@ class CandidateDiscoveryRuntime:
                 "contractRevision"
             ],
         }
-        identity = self._model.identity
+        identity = self._model_identity
         service_configuration = {
             "capability": "model",
             "profileRef": identity.profile_ref,
@@ -424,7 +454,10 @@ class CandidateDiscoveryRuntime:
     @staticmethod
     def _failure_code(error: Exception) -> str:
         code = getattr(error, "code", "")
-        if code == "DISCOVERY_MODEL_RESPONSE_INVALID":
+        if code in {
+            "DISCOVERY_MODEL_RESPONSE_INVALID",
+            "DISCOVERY_PROVIDER_RESPONSE_INVALID",
+        }:
             return "MODEL_OUTPUT_INVALID"
         if code.startswith("ARTIFACT_") or code.startswith("CANDIDATE_ARTIFACT"):
             return "ARTIFACT_CORRUPT"
@@ -476,7 +509,7 @@ class CandidateDiscoveryRuntime:
             inspection_ref=inspection_ref,
             learning_contract_digest=project["learningContractDigest"],
             candidate_budget=budget,
-            model_identity=self._model.identity.public(),
+            model_identity=self._model_identity.public(),
             authorization=authorization,
         )
         operation_id = "discover:" + idempotency_key
@@ -581,7 +614,25 @@ class CandidateDiscoveryRuntime:
                             "TASK_RECOVERY_REQUIRED",
                             "Candidate discovery work unit is not recoverable",
                         )
-                    result = self._engine.discover(
+                    try:
+                        bound_model = self._model_provider.bind(task_id)
+                    except CandidateDiscoveryError:
+                        raise
+                    except Exception as error:
+                        raise CandidateDiscoveryRuntimeError(
+                            "DISCOVERY_MODEL_UNAVAILABLE",
+                            "candidate discovery model could not be bound to the task",
+                        ) from error
+                    if bound_model.identity != self._model_identity:
+                        raise CandidateDiscoveryRuntimeError(
+                            "DISCOVERY_MODEL_IDENTITY_CHANGED",
+                            "candidate discovery model identity changed after task binding",
+                        )
+                    engine = CandidateDiscoveryEngine(
+                        artifacts=self._artifacts,
+                        model=bound_model,
+                    )
+                    result = engine.discover(
                         audience=audience,
                         project_id=project_id,
                         project_revision=expected_project_revision,

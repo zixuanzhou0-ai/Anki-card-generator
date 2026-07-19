@@ -23,6 +23,10 @@ from workers.acg.secret_scrub import is_runtime_secret_key, is_sensitive_url_que
 
 from .artifact_registry import ArtifactAudienceBinding
 from .broker_configuration import BrokerConfigurationError, ServiceBrokerRuntime
+from .candidate_discovery_broker import (
+    BrokerCandidateDiscoveryModelProvider,
+    CandidateDiscoveryBrokerError,
+)
 from .broker_ipc import BROKER_REQUEST_PREFIX, BROKER_RESPONSE_PREFIX, TaskBrokerChannel
 from .credentials import CredentialBackend, CredentialStore, CredentialStoreError
 from .local_resource_registry import (
@@ -1087,6 +1091,70 @@ class CardService:
                 error.message,
                 retryable=False,
                 stage="source_inspection",
+            ) from error
+
+    def discover_study_candidates(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_id: str,
+        expected_project_revision: int,
+        idempotency_key: str,
+        inspection_handle: str,
+        candidate_budget: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        study = self._ensure_study_runtime()
+        with self._broker_runtime_lock:
+            broker_runtime = self._active_broker_runtime
+        if broker_runtime is None:
+            raise CardServiceError(
+                "AUTHORIZATION_REQUIRED",
+                "Candidate discovery requires a current trusted model authorization",
+                retryable=True,
+                stage="authorization",
+            )
+        try:
+            provider = BrokerCandidateDiscoveryModelProvider(broker_runtime)
+            authorization = provider.authorization_for(
+                audience=audience,
+                service_instance_id=study.service_instance_id,
+                project_id=project_id,
+                project_revision=expected_project_revision,
+                inspection_handle=inspection_handle,
+                candidate_budget=candidate_budget,
+            )
+            return study.start_candidate_discovery(
+                audience=audience,
+                project_id=project_id,
+                expected_project_revision=expected_project_revision,
+                idempotency_key=idempotency_key,
+                inspection_handle=inspection_handle,
+                candidate_budget=candidate_budget,
+                authorization=authorization,
+                model_provider=provider,
+            )
+        except CandidateDiscoveryBrokerError as error:
+            code = (
+                "AUTHORIZATION_REQUIRED"
+                if error.code in {
+                    "DISCOVERY_BROKER_UNAVAILABLE",
+                    "BROKER_AUTHORIZATION_UNAVAILABLE",
+                    "BROKER_AUTHORIZATION_EXPIRED",
+                }
+                else error.code
+            )
+            raise CardServiceError(
+                code,
+                error.message,
+                retryable=code == "AUTHORIZATION_REQUIRED",
+                stage="authorization",
+            ) from error
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=error.code.endswith(("_CONFLICT", "_UNAVAILABLE", "_REQUIRED")),
+                stage="discovery",
             ) from error
 
     @staticmethod

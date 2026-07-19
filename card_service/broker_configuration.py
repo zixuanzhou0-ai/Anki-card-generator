@@ -30,6 +30,7 @@ AUTHORIZATION_SCHEMA = "study.card-service.broker-authorization"
 MAX_AUTHORIZATION_MANIFEST_BYTES = 256 * 1024
 MAX_AUTHORIZATION_LIFETIME_MS = 24 * 60 * 60 * 1000
 METHOD_REQUIRED_CAPABILITIES = {
+    "study.discover_candidates": frozenset({"model"}),
     "runtime.test_model": frozenset({"model"}),
     "runtime.test_tts": frozenset({"tts"}),
     "runtime.extract_learning_points": frozenset({"model"}),

@@ -54,7 +54,7 @@ Hermes 本地封装席的结论是 `needs-contract-hardening`，置信度 0.74�
 | M3 tools-only 工具合同 | 已冻结 37 个工具、schema、注解、错误、幂等和任务语义（新增版本化 study.update_learning_contract） | 待实现 |
 | 目标 Codex 宿主/stdio 预检 | 已加入 host capability、M3 阻断与 APKG-only 降级 | 待实测 |
 | Anki 确认不可旁路 | 已改为 ImportPlan → 模型外批准 → importIntentId | 待实现 |
-| 学习硬门禁可机器审计 | 已加入 GateEvaluationSet、规则版本、revision 与 stale 语义 | CURRENT `candidate-gates-language-v1` 内核、认证 CandidateProposal → GateEvaluation → Discovery 图、角色/schema 分离的提案-复核引擎，以及冻结模型/授权/成本身份的内部可恢复任务与原子项目提交；公共 discovery、真实 Broker/Approval 解析、逐角色检查点与 benchmark 待实现 |
+| 学习硬门禁可机器审计 | 已加入 GateEvaluationSet、规则版本、revision 与 stale 语义 | CURRENT `candidate-gates-language-v1` 内核、认证 CandidateProposal → GateEvaluation → Discovery 图、角色/schema 分离的提案-复核引擎、冻结模型/授权/成本身份的内部可恢复任务与原子项目提交，以及任务级 Service Broker/授权摘要派生；异步公共 discovery、逐角色检查点与 benchmark 待实现 |
 | Artifact 防篡改与 stale | 已加入 canonical preimage、认证注册表、EntityRef 与攻击测试 | CURRENT Registry、证据回放和候选单向图子项；完整跨 Registry 事务与全部领域 Artifact 待实现 |
 | M3 来源范围冻结 | 已固定本地视频/字幕与安全公开视频 URL；其他来源后移 | 待实现 |
 
@@ -90,6 +90,13 @@ M0 已完成：Computer Use 已在真实 Anki 26.05 中完成翻面、焦点、�
 最终核心架构席与安全红队分别对当前磁盘做了只读复审，结论均为 **PASS（未发现设计文档层面的 P0/P1）**。这个 PASS 只表示文档合同在已审攻击路径下闭合，不表示 runtime verifier、插件或完整 Anki GUI/学习体验核验已经实现，也不解除下一节的真实设备测试门槛。
 
 顾问评审后进行的仓库核对也把 V14 问题从“未显式列入允许版本”修正为更准确的“V1 宽前缀 fail-open”：评审当时的 verifier 会同时接受合法 V14 和伪造 V199。该句保留为历史发现；当前实现状态以 4.1 节、本地逐行核验与真实测试为准。
+
+### 4.2 CURRENT 候选模型边界更新（2026-07-19）
+
+内部双角色候选发现已接入现有 Service Broker，但仍保持“模型提案、服务裁决”：proposer/reviewer 的 prompt、输入/输出 schema 和 Broker workUnitId 分离；eligibility、scores、重复判定、GateResult、用户锁与项目状态仍只由确定性 Service 代码产生。任务在冻结模型 identity 后才生成 taskId，再由 provider 为该 task 绑定 handler；身份变化、授权过期、凭据修订变化、撤销、预算不足或非严格 JSON 均失败关闭。
+
+Service Broker 适配器只支持固定的 OpenAI-compatible、Anthropic 与 Gemini JSON 请求形状。调用方和模型都不能提交 Provider、Base URL、model、credentialRevision、OperationIntent、authorizationRecordDigest、scope、egress 或 CostBudget；Card Service 从当前可信短期 Broker 清单、可信 audience、project revision、inspectionHandle 和 candidateBudget 派生这些非秘密摘要。响应只接受一个 JSON 对象，Markdown fence、重复 key、tool block、多 choice/part、超限输入/输出均拒绝。该更新通过 51 项候选/Broker/Issuer 组合测试，正式 Python `tests` 全集为 1388 passed、1 skipped；但它尚未把公共 MCP 写成同步远程调用：必须先实现异步 start/poll/cancel/resume，才开放 `study.start_discovery`。
+
 ## 5. 仍未消除的不确定性
 
 - M0 的 verifier fail-open 已由精确 V15/V14/V10 合同关闭；最终自动化、V15 20/20/52 离线媒体合同、E→C 单卡、V15 重复/重启、V14/V15 并存与 Computer Use 真实 GUI 20 张连续复习已有证据。合成视频和静音 TTS 仍不能提供真人语义、听感或长期学习效果证据。
