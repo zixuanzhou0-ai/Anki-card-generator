@@ -11,6 +11,12 @@ from .mcp_card_tools import (
     call_card_tool,
     card_tool_definitions,
 )
+from .mcp_anki_tools import (
+    ANKI_TOOL_NAMES,
+    McpAnkiToolInputError,
+    anki_tool_definitions,
+    call_anki_tool,
+)
 from .mcp_package_tools import (
     PACKAGE_TOOL_NAMES,
     McpPackageToolInputError,
@@ -162,6 +168,7 @@ def _tool_definitions(
         definitions.extend(card_tool_definitions())
         definitions.extend(package_tool_definitions())
         definitions.extend(task_tool_definitions())
+        definitions.extend(anki_tool_definitions())
     return definitions
 
 
@@ -420,6 +427,23 @@ def _handle_request(
                 )
             except McpTaskToolInputError:
                 return _rpc_error(request_id, -32602, "Invalid task tool arguments")
+            except CardServiceError as error:
+                return _response(request_id, result=_tool_error(error))
+            except Exception:
+                return _response(request_id, result=_tool_error())
+            return _response(request_id, result=result)
+        if tool_name in ANKI_TOOL_NAMES:
+            if audience_session is None:
+                return _rpc_error(request_id, -32602, "Unknown tool")
+            try:
+                result = call_anki_tool(
+                    service,
+                    tool_name=str(tool_name),
+                    arguments=arguments,
+                    audience_session=audience_session,
+                )
+            except McpAnkiToolInputError:
+                return _rpc_error(request_id, -32602, "Invalid Anki tool arguments")
             except CardServiceError as error:
                 return _response(request_id, result=_tool_error(error))
             except Exception:

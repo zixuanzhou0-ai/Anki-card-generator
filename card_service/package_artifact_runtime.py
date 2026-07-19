@@ -924,6 +924,123 @@ class PackageArtifactRuntime:
         )
         return package_publication.handle
 
+    def resolve_current_package_artifact(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        package_artifact_handle: str,
+    ) -> dict[str, Any]:
+        """Resolve and reverify the current package without disclosing its Blob path."""
+
+        try:
+            package_ref, envelope = self._artifacts.resolve_with_ref(
+                package_artifact_handle, audience
+            )
+            if envelope.get("payloadSchema") != "study.package-artifact":
+                raise PackageArtifactRuntimeError(
+                    "PACKAGE_ARTIFACT_INVALID", "package handle has the wrong schema"
+                )
+            payload = envelope.get("payload")
+            required = {
+                "projectRef",
+                "projectRevision",
+                "resultingProjectRevision",
+                "apkgFileRef",
+                "apkgSha256",
+                "sizeBytes",
+                "fileName",
+                "deckNames",
+                "noteCount",
+                "cardCount",
+                "cardIdentitySetRef",
+                "cardIdentitySetDigest",
+                "mediaCount",
+                "mediaManifestRef",
+                "mediaManifestDigest",
+                "cardMediaRoleInventoryRef",
+                "cardMediaRoleInventoryDigest",
+                "templateFamily",
+                "templateSchemaVersion",
+                "noteModelId",
+                "compatibilityContractVersion",
+                "frontTemplateSha256",
+                "backTemplateSha256",
+                "cssSha256",
+                "reliabilityManifestRef",
+                "exportProducer",
+            }
+            if not isinstance(payload, Mapping) or set(payload) != required:
+                raise PackageArtifactRuntimeError(
+                    "PACKAGE_ARTIFACT_INVALID", "PackageArtifact fields are invalid"
+                )
+            project = self._projects.get_project(package_ref["projectId"], audience)
+            current_packages = {
+                _identity(value)
+                for value in project.get("latestArtifactRefs", [])
+                if isinstance(value, Mapping)
+                and value.get("payloadSchema") == "study.package-artifact"
+            }
+            if (
+                project.get("workflow", {}).get("artifactStage")
+                not in {
+                    "apkg_ready",
+                    "imported_unverified",
+                    "anki_data_verified",
+                    "anki_verified",
+                }
+                or _identity(package_ref) not in current_packages
+                or project.get("projectRevision", 0)
+                < payload.get("resultingProjectRevision", 0)
+            ):
+                raise PackageArtifactRuntimeError(
+                    "PACKAGE_ARTIFACT_STALE", "PackageArtifact is not current"
+                )
+            file_parents = [
+                value
+                for value in envelope.get("parents", [])
+                if isinstance(value, Mapping)
+                and value.get("payloadSchema") == "study.apkg-file"
+                and value.get("artifactId") == payload.get("apkgFileRef")
+            ]
+            if len(file_parents) != 1:
+                raise PackageArtifactRuntimeError(
+                    "PACKAGE_ARTIFACT_INVALID", "APKG file parent is invalid"
+                )
+            file_handle = self._artifacts.issue_handle(file_parents[0], audience)
+            file_ref, file_envelope = self._artifacts.resolve_with_ref(
+                file_handle, audience
+            )
+            file_payload = file_envelope.get("payload")
+            if (
+                file_envelope.get("payloadSchema") != "study.apkg-file"
+                or not isinstance(file_payload, Mapping)
+                or file_payload.get("sha256") != payload.get("apkgSha256")
+                or file_payload.get("sizeBytes") != payload.get("sizeBytes")
+                or file_payload.get("fileName") != payload.get("fileName")
+                or not isinstance(file_payload.get("blobRef"), Mapping)
+                or file_payload["blobRef"].get("sha256")
+                != payload.get("apkgSha256")
+                or file_payload["blobRef"].get("sizeBytes")
+                != payload.get("sizeBytes")
+            ):
+                raise PackageArtifactRuntimeError(
+                    "PACKAGE_ARTIFACT_INVALID", "APKG file identity is invalid"
+                )
+            self._artifacts.read_blob_prefix(
+                file_payload["blobRef"], maximum_prefix_bytes=0
+            )
+            return {
+                "packageRef": _clone(package_ref),
+                "packageEnvelope": _clone(envelope),
+                "packagePayload": _clone(payload),
+                "fileRef": _clone(file_ref),
+                "fileEnvelope": _clone(file_envelope),
+                "filePayload": _clone(file_payload),
+                "project": _clone(project),
+            }
+        except (ArtifactRegistryError, ProjectRegistryError) as error:
+            raise PackageArtifactRuntimeError(error.code, error.message) from error
+
     def _progress(
         self,
         task_id: str,

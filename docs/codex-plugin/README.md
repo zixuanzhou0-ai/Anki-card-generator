@@ -151,6 +151,7 @@ CURRENT，经本轮仓库检查确认：
 - 已有任务快照、单调进度、取消、结果引用和中断恢复基础。
 - 已有安全检查点、输入指纹、APKG 哈希和备份恢复。
 - 已有路径授权、私网 URL 阻断、AnkiConnect 回环限制、秘密存储和跨磁盘 Anki 导入修复。
+- Codex 公共链已经达到认证 PackageArtifact 与只读 `anki.prepare_import`：可冻结当前 Anki 目标的脱敏 ImportPlan，但受信确认、真实写入和导入后核验仍未开放。
 - 已有 APKG、媒体、TTS、卡片字段、AnkiConnect 数据核验与真实 Anki GUI 验收基础；M0 已加入精确 V15/V14/V10 Note Model 合同、V15 模型作用域 GUID、完整 APKG 包合同、partial 校验后 no-replace 原子发布、导入前整包 preflight、隔离真实 Anki 重复/重启/V14-V15 并存证据，以及受版本化 runtime contract 约束的最小媒体快捷键 add-on。Codex 插件侧的通用 runtime verifier 仍是 PROPOSED。
 
 需要重构而不是直接暴露：

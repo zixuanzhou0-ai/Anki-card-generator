@@ -6,6 +6,11 @@ import hashlib
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from .anki_import_preparation import (
+    AnkiImportPreparationError,
+    AnkiImportPreparationRuntime,
+)
+from .anki_target_probe import AnkiTargetInspector
 from .artifact_registry import (
     ArtifactAudienceBinding,
     ArtifactRegistry,
@@ -85,6 +90,7 @@ class StudyRuntime:
             CandidateDiscoveryModelProvider | None
         ) = None,
         package_export_executor: PackageExportExecutor | None = None,
+        anki_target_inspector: AnkiTargetInspector | None = None,
     ) -> None:
         root = Path(state_dir).expanduser()
         if not root.is_absolute():
@@ -224,6 +230,18 @@ class StudyRuntime:
                 if package_export_executor is not None
                 else None
             )
+            self.anki_import_preparation = (
+                AnkiImportPreparationRuntime(
+                    service_instance_id=self.service_instance_id,
+                    artifacts=self.artifacts,
+                    projects=self.projects,
+                    packages=self.package_artifacts,
+                    target_inspector=anki_target_inspector,
+                )
+                if self.package_artifacts is not None
+                and anki_target_inspector is not None
+                else None
+            )
             discovery_configured = (
                 candidate_discovery_model is not None
                 or candidate_discovery_model_provider is not None
@@ -257,6 +275,7 @@ class StudyRuntime:
             CardArtifactQueryError,
             CardArtifactRuntimeError,
             PackageArtifactRuntimeError,
+            AnkiImportPreparationError,
             OSError,
         ) as error:
             raise StudyRuntimeError(
@@ -289,6 +308,9 @@ class StudyRuntime:
             "publicCardQueries": True,
             "packageArtifactRuntime": self.package_artifacts is not None,
             "publicApkgExport": self.package_artifacts is not None,
+            "ankiImportPreparation": self.anki_import_preparation is not None,
+            "publicAnkiImportPreparation": self.anki_import_preparation is not None,
+            "publicAnkiWrite": False,
             "publicProjectTools": True,
             "publicInputRegistration": True,
             "publicSourceInspection": True,
@@ -686,6 +708,31 @@ class StudyRuntime:
                 output_ref=output_ref,
             )
         except PackageArtifactRuntimeError as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
+    def prepare_anki_import(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_id: str,
+        expected_project_revision: int,
+        idempotency_key: str,
+        package_artifact_handle: str,
+    ) -> dict[str, Any]:
+        if self.anki_import_preparation is None:
+            raise StudyRuntimeError(
+                "ANKI_IMPORT_PREPARATION_UNAVAILABLE",
+                "Anki target inspection is unavailable",
+            )
+        try:
+            return self.anki_import_preparation.prepare(
+                audience=audience,
+                project_id=project_id,
+                expected_project_revision=expected_project_revision,
+                idempotency_key=idempotency_key,
+                package_artifact_handle=package_artifact_handle,
+            )
+        except AnkiImportPreparationError as error:
             raise StudyRuntimeError(error.code, error.message) from error
 
     def get_study_task(

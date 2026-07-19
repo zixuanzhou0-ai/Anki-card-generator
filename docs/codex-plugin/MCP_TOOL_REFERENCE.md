@@ -1,6 +1,6 @@
 # MCP 工具参考
 
-> 状态：CURRENT 最小桥 + PROPOSED 完整工具契约；可信会话已实现 `system.get_capabilities`、本地 source/output grant、项目与素材登记/检查、候选查询与选择、CardPlan 创建/审阅/编辑/重验、受限确定性 `cards.generate`/`cards.list`、异步 `cards.export_apkg` 与 `study.get_task`/`study.cancel_task`
+> 状态：CURRENT 最小桥 + PROPOSED 完整工具契约；可信会话已实现 `system.get_capabilities`、本地 source/output grant、项目与素材登记/检查、候选查询与选择、CardPlan 创建/审阅/编辑/重验、受限确定性 `cards.generate`/`cards.list`、异步 `cards.export_apkg`、`study.get_task`/`study.cancel_task` 与Anki 写入前只读边界 `anki.prepare_import`
 > 日期：2026-07-19
 > 工具名和 schema 在实现前仍可调整；一旦 V1 发布即按版本策略维护。
 
@@ -220,7 +220,7 @@ destructiveHint 表示工具可能终止任务、撤销授权或持久修改外�
 | cards.generate | CURRENT：将全门禁通过的文本 CardPlan 确定性投影为 CardArtifact/ProjectArtifact | 本地认证 Artifact 写入；不调用模型/TTS/媒体/网络/Anki | 无 |
 | cards.list | 分页审阅当前 ProjectArtifact 中的已验证卡片 | 只读 | 无 |
 | cards.export_apkg | CURRENT：从当前认证 ProjectArtifact 异步生成、独立复验并投递 APKG | 只在受信 outputRef 下创建版本化文件，不覆盖 | 新目录授权由受信选择器取得 |
-| anki.prepare_import | 预检 APKG 并冻结 ImportPlan | 本地写 ImportPlan，不写 Anki | 无 |
+| anki.prepare_import | CURRENT：重验当前 PackageArtifact、只读检查固定本机 AnkiConnect 并冻结 ImportPlan | 本地写认证 ImportPlan，不写 Anki | Anki 必须已打开 |
 | anki.request_import_confirmation | 打开受信本地确认窗口并写入会话绑定的批准状态 | 本地授权状态 | 必须用户动作 |
 | anki.import_and_verify | 按已批准的 importIntentId 导入并验证 | 修改 Anki | 服务端批准状态必须有效 |
 | study.get_artifact | 读取小型结构化产物或受可信会话约束的 opaque resource handle | 只读 | 无 |
@@ -233,7 +233,7 @@ destructiveHint 表示工具可能终止任务、撤销授权或持久修改外�
 
 成功必须同时满足：Worker 只在 task workspace 写入；Card Service 独立重验完整 APKG 合同、SQLite note/card、模板与 CSS 摘要；APKG 字节进入内容寻址 Blob；目标目录使用同目录 `.partial`、flush/fsync 与 no-replace 版本化发布；PackageArtifact、CardIdentitySet、PackageMediaManifest、CardMediaRoleInventory 和 APKG file Artifact 已认证发布；项目已单调提交到 `apkg_ready` 或更后阶段。任一提交窗口未闭合时不得公开 `succeeded`。重复同一幂等请求不会重新调用 Worker，也不会覆盖或重复创建最终文件。
 
-当前这条公开路线只承诺已经实现的文本、零媒体 CardArtifact 投影；模型/TTS/媒体生成仍按现有门禁失败关闭。APKG 成功不等于已导入 Anki；`anki.prepare_import`、受信确认和 `anki.import_and_verify` 仍是下一阶段。
+当前这条公开路线只承诺已经实现的文本、零媒体 CardArtifact 投影；模型/TTS/媒体生成仍按现有门禁失败关闭。APKG 成功不等于已导入 Anki；CURRENT `anki.prepare_import` 只创建认证计划且明确返回 `runtimeVerification=not_assessed`，受信确认和 `anki.import_and_verify` 仍是下一阶段。
 ## 4.1 系统与本地配置
 
 ### system.get_capabilities
@@ -714,17 +714,25 @@ CURRENT 仍只覆盖确定性文本/零媒体 ProjectArtifact；模型/TTS/媒�
 
 ### 10.1 anki.prepare_import
 
-输入 packageArtifactHandle、目标 deck 选择和 V1 固定策略。Service 从可信导出注册表读取 APKG，验证项目/revision/hash/媒体、template family/schema、Note Model、兼容合同、非空 PackageCardIdentitySet 和逐卡 CardMediaRoleInventory（角色、文件 SHA-256、media-manifest entry），查询 Anki/AnkiConnect、目标 profile/collection identity，并冻结 AnkiVerificationContractV1、RuntimeVerifierBindingV1、RuntimeVerifierIsolationPolicyV1 与确定性 20-card/full sample policy。随后由固定合同与权威卡片/媒体清单生成 RequiredAnkiCheckManifest，并创建不可变 ImportPlan。输出 importIntentId 与人类确认摘要；不写入 Anki，不接受路径、manifest、query、检查子集或任意 duplicate policy。
+CURRENT 输入是封闭 `context { projectId, expectedProjectRevision, idempotencyKey }` 与 audience/session 绑定的 `packageArtifactHandle`。调用方不能传路径、Anki 地址、profile 名、目标目录、manifest、duplicate policy 或检查子集。Service 重新解析当前 PackageArtifact 与其 APKG file 父产物，流式复核内容寻址 Blob 的 SHA/size，并确认项目至少处于 `apkg_ready`。
 
-ImportPlanDigest 覆盖 PackageArtifact、APKG hash/size、目标 profile/collection identity、deck、note/card/media 数、固定 duplicate policy、templateFamily/schema、Note Model ID、compatibilityContractVersion、AnkiVerificationContract ref/digest、CardIdentitySet/CardMediaRoleInventory ref/digest、RequiredAnkiCheckManifest ref/digest、front/back/CSS/JS hash、媒体 manifest、Anki/AnkiConnect 版本、RuntimeVerifierBinding ref/digest、RuntimeVerifierIsolationPolicy ref/digest（含 canonical state/environment/copy 合同与 trusted copier key）、确定性 sample policy、AnkiConnect configurationFingerprint、credentialRevision、服务端 HMAC 凭据绑定摘要以及失败恢复策略；不得存储或返回 key 本身。上述任何字段变化都使旧批准失效。
+目标检查固定为不使用环境代理的 `http://127.0.0.1:8765`，只调用 `version`、`getActiveProfile`、`getMediaDirPath` 和 `deckNames`。原始 profile、媒体目录和 deck 名不会进入公共结果；持久计划只保留 profileRef、配置/collection/deck 摘要、AnkiConnect 版本和计数。随后服务发布认证 `study.anki-verification-contract` 与 `study.anki-import-plan`，固定 11 项数据检查、`detect_and_report` 重复策略、`explicit-confirmation-required` 写策略和 `inspect-before-any-retry` 恢复策略。项目保持 `apkg_ready`，只增加 revision 和当前计划引用。
+
+公开结果只含 `importPlanHandle`、APKG SHA/size/安全文件名、deck/note/card/media 计数、脱敏目标摘要、检查数、`runtimeVerification=not_assessed`、`confirmationRequired=true` 和下一动作。精确重试返回首次保存的同一句柄且不重复探测 Anki；跨插件句柄、旧 PackageArtifact、离线/畸形 AnkiConnect 响应均失败关闭。此工具不写 Anki，不代表已经导入、数据核验或真实复习核验。
+
+PROPOSED 扩展会在受信确认之前再冻结 RuntimeVerifierBinding、隔离策略、RequiredAnkiCheckManifest、确定性采样和完整凭据版本绑定；这些尚未实现，不能从 CURRENT ImportPlan 推导。任何已绑定字段变化都必须使旧确认失效。
 
 ### 10.2 anki.request_import_confirmation
+
+> PROPOSED：尚未注册。
 
 输入 importIntentId，只能由真实用户动作触发本地受信确认窗口。窗口显示：Anki profile/collection、目标 deck、note/card/media 数、PackageArtifact/APKG hash、Note Model/template hash、媒体 manifest hash、RequiredAnkiCheckManifest 的数据/运行时范围与采样策略、重复策略和失败恢复。用户确认后 Service 在内部 authorization ledger 写入一次性批准状态，绑定可信 OS 用户、host/plugin/service instance、session、importIntentId 和完整 ImportPlanDigest。
 
 工具只返回 approvalState（approved/declined/expired）和当前 importIntentId。不返回任何可作为执行 bearer 的确认字符串；当前用户消息和复制的 structuredContent 都不能代替该批准状态。该 importIntentId 可以是首次 prepare 产生的 intent，也可以是 AnkiRecoveryDecision.not_written 为同一仍有效 ImportPlan 派生的新 session recovery intent；原/已消费 intent 不能重新批准。
 
 ### 10.3 anki.import_and_verify
+
+> PROPOSED：尚未注册，真实 Anki 写入保持关闭。
 
 这是 V1 唯一公开的 Anki 写工具。
 

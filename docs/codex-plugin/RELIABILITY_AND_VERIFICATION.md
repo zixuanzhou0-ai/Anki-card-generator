@@ -387,3 +387,11 @@ type VerificationCertificate = {
 公开 `cards.export_apkg` 的成功不是 Worker 返回值，而是以下证据的合取：输入是当前认证 ProjectArtifact；outputRef 的 audience/revision/权限仍有效且按 operation 原子消费；Worker 只在 task workspace 产出；Service 重新计算文件 SHA/size 并验证完整 APKG 合同；SQLite note/card、模板和 CSS 摘要与 ProjectArtifact/CardArtifact 身份一致；媒体清单与角色 inventory 可重算；APKG 字节进入内容寻址 Blob；目标目录完成同盘 `.partial`、fsync 和 no-replace 版本化发布；PackageArtifact 图已发布；项目已提交到 `apkg_ready` 或更后阶段。
 
 任务只有在这条链全部可见时才公开 `succeeded`。Worker 结束但项目 commit 未闭合时，对外是 finalizing 或 `PROJECT_COMMIT_PENDING`，精确重试只补项目提交。取消只允许产生 cancelled/interrupted，不产生 PackageArtifact 成功；伪造/过期/越界 outputRef 在 Worker 调用前失败。任何 APKG 成功状态都明确把下一动作写为 `prepare_anki_import`，不能推导“已导入”或“已在 Anki 核验”。
+
+## 19. CURRENT Anki 导入准备证明
+
+`anki.prepare_import` 只接受当前项目 revision 与 audience/session 绑定的 PackageArtifact opaque handle。Service 重新解析认证 PackageArtifact/APKG file 父链，流式重算内容寻址 Blob 的 SHA/size；随后仅通过固定 `127.0.0.1:8765`、禁用环境代理的 AnkiConnect 读取 version、当前 profile、媒体目录与 deck 清单。原始 profile、路径和 deck 名不进入公共响应。
+
+服务发布认证 `study.anki-verification-contract` 与 `study.anki-import-plan`，冻结 11 项数据检查、Package/CardIdentity/MediaInventory/template 摘要、脱敏 target identity、固定重复/写入/恢复策略，并将项目以同一 `apkg_ready` 阶段推进一个 revision。精确幂等重试返回首次保存的同一 ImportPlan handle，不重复探测目标；跨 audience、旧包、离线或畸形响应均失败关闭。
+
+该状态仍是“尚未写入”：公开结果固定为 `runtimeVerification=not_assessed` 与 `confirmationRequired=true`。它不创建批准、不导入 APKG、不预置媒体、不声明 data_verified 或 fully_verified。受信用户确认、一次性批准消费、写边界恢复和导入后数据/运行时核验属于下一阶段。

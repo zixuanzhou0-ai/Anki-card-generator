@@ -21,6 +21,7 @@ from urllib.parse import parse_qsl, urlsplit
 
 from workers.acg.secret_scrub import is_runtime_secret_key, is_sensitive_url_query_key
 
+from .anki_target_probe import LocalAnkiConnectTargetProbe
 from .artifact_registry import ArtifactAudienceBinding
 from .broker_configuration import BrokerConfigurationError, ServiceBrokerRuntime
 from .candidate_discovery_broker import (
@@ -925,6 +926,11 @@ class CardService:
             "cardArtifactRuntime": True,
             "publicCardGeneration": True,
             "publicCardQueries": True,
+            "packageArtifactRuntime": True,
+            "publicApkgExport": True,
+            "ankiImportPreparation": True,
+            "publicAnkiImportPreparation": True,
+            "publicAnkiWrite": False,
             "pathDisclosure": False,
             "complete": False,
         }
@@ -996,6 +1002,7 @@ class CardService:
                     workspace_factory=self._create_study_task_workspace,
                     workspace_releaser=self._release_workspace_reservation,
                     package_export_executor=self._execute_study_apkg_export,
+                    anki_target_inspector=LocalAnkiConnectTargetProbe(),
                 )
             except (CredentialStoreError, StudyRuntimeError, OSError) as error:
                 raise CardServiceError(
@@ -1207,6 +1214,32 @@ class CardService:
                     ("_CONFLICT", "_UNAVAILABLE", "_REQUIRED", "_WRITABLE")
                 ),
                 stage="export",
+            ) from error
+
+    def prepare_study_anki_import(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_id: str,
+        expected_project_revision: int,
+        idempotency_key: str,
+        package_artifact_handle: str,
+    ) -> dict[str, Any]:
+        try:
+            return self._ensure_study_runtime().prepare_anki_import(
+                audience=audience,
+                project_id=project_id,
+                expected_project_revision=expected_project_revision,
+                idempotency_key=idempotency_key,
+                package_artifact_handle=package_artifact_handle,
+            )
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=error.code in {"ANKI_OFFLINE", "ANKI_TARGET_INVALID"},
+                stage="anki_prepare",
+                fallbacks=("open_anki",) if error.code == "ANKI_OFFLINE" else (),
             ) from error
 
     def get_public_study_task(
