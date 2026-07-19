@@ -1,6 +1,6 @@
 # MCP 工具参考
 
-> 状态：CURRENT 最小桥 + PROPOSED 完整工具契约；可信会话已实现 `system.get_capabilities`、`system.request_source_grant`、`system.request_output_grant`、`study.create_project`、`study.register_inputs`、`study.start_source_inspection`、`study.get_source_inspection`、`study.list_candidates`、`study.get_candidate`、`study.preview_evidence`、`study.set_selection`、`study.plan_cards` 与 `study.list_card_plans`
+> 状态：CURRENT 最小桥 + PROPOSED 完整工具契约；可信会话已实现 `system.get_capabilities`、`system.request_source_grant`、`system.request_output_grant`、`study.create_project`、`study.register_inputs`、`study.start_source_inspection`、`study.get_source_inspection`、`study.list_candidates`、`study.get_candidate`、`study.preview_evidence`、`study.set_selection`、`study.plan_cards`、`study.list_card_plans`、`study.edit_card_plan` 与 `study.validate_card_plans`
 > 日期：2026-07-19
 > 工具名和 schema 在实现前仍可调整；一旦 V1 发布即按版本策略维护。
 
@@ -17,7 +17,7 @@ MCP 工具服务于用户意图，而不是暴露内部 Worker。工具层必须
 
 官方工具设计参考：[Describe tools](https://developers.openai.com/apps-sdk/build/mcp-server#step-2--describe-tools)。
 
-当前桥实现协议握手、动态工具发现、零参数只读能力快照，以及可信会话中的本地 source/output opaque grant、幂等项目/素材登记、有界确定性素材检查、现有认证 Discovery 的候选列表/详情/证据预览、本地组合选择，以及受限确定性 CardPlan 创建/分页复核。没有原生 launcher audience 时只公开 `system.get_capabilities`；可信 audience 由父 PID、固定 launcher 可执行文件、当前 OS 用户 SID 摘要和每进程随机 nonce 派生，工具参数不能自报。桥仍不接受任意路径、URL、调用方构造的 Artifact 或 OperationIntent，也不公开启动候选发现、候选编辑、CardPlan 编辑/独立重验、卡片生成、导出、Anki 写入、凭据、原始 Worker 或 Shell；除明确标为 CURRENT 的工具外，下文仍是后续里程碑的目标合同。
+当前桥实现协议握手、动态工具发现、零参数只读能力快照，以及可信会话中的本地 source/output opaque grant、幂等项目/素材登记、有界确定性素材检查、现有认证 Discovery 的候选列表/详情/证据预览、本地组合选择，以及受限确定性 CardPlan 创建、分页复核、Agent 编辑与独立重验。没有原生 launcher audience 时只公开 `system.get_capabilities`；可信 audience 由父 PID、固定 launcher 可执行文件、当前 OS 用户 SID 摘要和每进程随机 nonce 派生，工具参数不能自报。桥仍不接受任意路径、URL、调用方构造的 Artifact 或 OperationIntent，也不公开启动候选发现、候选编辑、卡片生成、导出、Anki 写入、凭据、原始 Worker 或 Shell；除明确标为 CURRENT 的工具外，下文仍是后续里程碑的目标合同。
 
 ## 2. 公共请求约定
 
@@ -168,7 +168,7 @@ list_projects、get_project、get_artifact、任务和预览工具都先校验�
 | study.preview_evidence | true | false | true | false |
 | study.edit_candidate | false | false | true | false |
 | study.set_selection | false | false | true | false |
-| study.plan_cards | false | false | true | true |
+| study.plan_cards | false | false | true | false |
 | study.list_card_plans | true | false | true | false |
 | study.edit_card_plan | false | false | true | false |
 | study.validate_card_plans | false | false | true | false |
@@ -438,7 +438,7 @@ CURRENT 输入只接受一个认证 `inspectionHandle`。工具只读取已经�
 
 工具描述必须明确会调用模型并可能访问外部网络。模型只能看到本次任务所需的最小来源片段。每个候选同时生成 versioned GateEvaluationSet；eligibility 由 Service 根据当前规则集派生，模型或调用方不能直接指定。
 
-CURRENT 实现边界：内部 CandidateDiscoveryRuntime 已能冻结模型、授权、egress、成本与输入身份，并以可恢复任务原子提交 `candidates_ready`；任务级 Service Broker 适配器已经支持 OpenAI-compatible、Anthropic 与 Gemini，并由 Card Service 从当前可信 Broker、audience、project revision、`inspectionHandle` 与候选预算派生全部非秘密授权摘要。`study.start_discovery` 仍未注册，因为当前内部方法会同步等待 proposer/reviewer；正式 MCP 必须先提供异步 start/poll/cancel/resume，不能阻塞 stdio。只读的 `study.list_candidates`、`study.get_candidate`、`study.preview_evidence`、`study.set_selection`、`study.plan_cards` 与 `study.list_card_plans` 已注册，它们只能读取已经存在的认证 Discovery。未来 discovery 公共输入只保留 RequestContext、当前 `inspectionHandle` 和 candidateBudget，不接受 sourceRefs、learningContractRef、modelProfileRef、authorizationRecordDigest、constraintsDigest、exactScopeDigest、credentialRevision 或 egress manifest；模型方案由已批准的 Service-owned method binding 唯一确定。
+CURRENT 实现边界：内部 CandidateDiscoveryRuntime 已能冻结模型、授权、egress、成本与输入身份，并以可恢复任务原子提交 `candidates_ready`；任务级 Service Broker 适配器已经支持 OpenAI-compatible、Anthropic 与 Gemini，并由 Card Service 从当前可信 Broker、audience、project revision、`inspectionHandle` 与候选预算派生全部非秘密授权摘要。`study.start_discovery` 仍未注册，因为当前内部方法会同步等待 proposer/reviewer；正式 MCP 必须先提供异步 start/poll/cancel/resume，不能阻塞 stdio。只读的 `study.list_candidates`、`study.get_candidate`、`study.preview_evidence`、`study.set_selection`、`study.plan_cards`、`study.list_card_plans`、`study.edit_card_plan` 与 `study.validate_card_plans` 已注册，它们只能读取已经存在的认证 Discovery。未来 discovery 公共输入只保留 RequestContext、当前 `inspectionHandle` 和 candidateBudget，不接受 sourceRefs、learningContractRef、modelProfileRef、authorizationRecordDigest、constraintsDigest、exactScopeDigest、credentialRevision 或 egress manifest；模型方案由已批准的 Service-owned method binding 唯一确定。
 
 ### 6.2 study.get_task
 
@@ -605,7 +605,7 @@ CURRENT 输入：
 
 ### 8.1 study.plan_cards
 
-> CURRENT：本工具已在可信 stdio audience 下注册。输入是封闭对象 `{ context, selectionHandle }`；context 只接受 projectId、expectedProjectRevision、idempotencyKey 和可选 locale。调用方不能提交 route preferences、media policy、model profile、ArtifactRef、路径、授权或网络字段。Card Service 从当前认证 SelectionArtifact 再验证候选图，最多同步处理 100 项，仅为 `production`、`chunk_collocation`、`reading_recognition` 发布认证 plan/set/validation，并执行八类确定性检查。显式翻译、语用/语法推断或媒体需求返回 `UNSUPPORTED_CARD_PLAN`。能力快照分别报告 `publicCardPlanPlanning=true`、`publicCardPlanQueries=true`、`publicCardPlanEditing=false`、`publicCardPlanValidation=false`。
+> CURRENT：本工具已在可信 stdio audience 下注册。输入是封闭对象 `{ context, selectionHandle }`；context 只接受 projectId、expectedProjectRevision、idempotencyKey 和可选 locale。调用方不能提交 route preferences、media policy、model profile、ArtifactRef、路径、授权或网络字段。Card Service 从当前认证 SelectionArtifact 再验证候选图，最多同步处理 100 项，仅为 `production`、`chunk_collocation`、`reading_recognition` 发布认证 plan/set/validation，并执行八类确定性检查。显式翻译、语用/语法推断或媒体需求返回 `UNSUPPORTED_CARD_PLAN`。能力快照分别报告 `publicCardPlanPlanning=true`、`publicCardPlanQueries=true`、`publicCardPlanEditing=true`、`publicCardPlanValidation=true`。
 
 CURRENT 输入只包含当前 selectionHandle；route preferences、media policy 和 model profile 是未来需要模型/媒体规划时的 PROPOSED 扩展，而且必须由服务端已批准 profile 与 OperationIntent 派生，不能作为普通 MCP 注入字段。服务按当前 project/artifact revision 重新验证候选资格，不能只相信保存选择时的状态。
 
@@ -629,11 +629,15 @@ CURRENT 输入只包含当前 selectionHandle；route preferences、media policy
 
 ### 8.3 study.edit_card_plan
 
-只接受 CardPlanEditOperation 的 Agent 可写子集，如 cue、expectedResponse、feedback 和 mediaPolicy；CandidateEditOperation 在本工具 schema 中非法。普通 MCP 参数不含 provenance，Service 固定写入 actor=agent，不自动创建、延长或清除 UserLock；即使用户通过对话要求修改，也仍属于可重算、可失效的 Agent edit。
+> CURRENT：可信 stdio 已开放本工具。输入严格限定为 `{ context, planSetHandle, cardPlanHandle, operation }`；operation 只允许 `edit_card_cue`、`edit_card_answer`、`edit_card_feedback` 与 `edit_media_policy` 四种 CardPlanEditOperation，CandidateEditOperation、provenance、EvidenceRef、UserLock、路径、模型或授权字段均非法。Service 固定记录 `actor=agent` 与权威 taskId，不允许调用方伪装用户动作；原 evidenceRefs 与 userLocks 强制保留，编辑后以同一 Artifact identity 发布新 revision，再发布新 PlanSet/Validation revision，并以 expectedProjectRevision 原子推进项目。
 
-用户明确要求锁定/解锁 CardPlan 时，只提交独立 lockChangeRequest（cardPlanRef、CardPlanLockableField、desiredState）；Service 经受信 App/native UI 内部通道创建 UserLock。原始 hostEventRef/userGestureId 不进入 MCP、Artifact 或读取结果，只保留内部账本与 Artifact 中的非 bearer attestation 摘要。Objective 锁定不经本工具处理。锁定后 Agent 再生成必须保留，相关编辑重新运行下游门禁。
+编辑不是绕过可靠性门禁：核心答案或 scoring point 偏离冻结 Objective 会使 `scoring_boundary=failed`；新解释、例句或非例句无法由当前确定性证据规则证明时为 `evidence_coverage=needs_review`；启用当前尚无生成器的媒体会使 `media_generatability=failed`。这些计划可保存和查看，但不能进入生成。旧 PlanSet、旧 CardPlan 和后续 revision 之前的幂等结果不会被复活。
+
+用户明确要求锁定/解锁 CardPlan 时，仍必须走未来受信 App/native UI 内部通道；普通 MCP 不创建、延长或清除 UserLock。原始 hostEventRef/userGestureId 不进入 MCP、Artifact 或读取结果。Objective 锁定不经本工具处理。
 
 ### 8.4 study.validate_card_plans
+
+> CURRENT：本工具接收封闭 RequestContext 与当前 planSetHandle，不接收调用方自报 check、producer、evidence、ruleSetVersion 或 inputFingerprint。服务重新解析当前认证 Selection/Candidate/Plan 图，重放全部八项确定性检查，发布新 PlanSet 与 CardPlanValidation revision，并保持 `plans_ready`；该动作不访问模型、TTS、网络或 Anki。若图 stale、损坏、跨 audience 或项目 revision 已变化则失败关闭。任务在 Artifact 已写入但提交前中断时，可按同一输入精确恢复；opaque handle 比较按 Artifact identity 而非字符串。
 
 执行：
 

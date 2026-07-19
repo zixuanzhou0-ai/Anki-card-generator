@@ -5,8 +5,10 @@ import json
 import pytest
 
 from card_service.mcp_card_plan_tools import (
+    EDIT_CARD_PLAN_TOOL_NAME,
     LIST_CARD_PLANS_TOOL_NAME,
     PLAN_CARDS_TOOL_NAME,
+    VALIDATE_CARD_PLANS_TOOL_NAME,
     McpCardPlanToolInputError,
     call_card_plan_tool,
     card_plan_tool_definitions,
@@ -59,12 +61,41 @@ class RecordingService:
             "nextAction": "generate_cards",
         }
 
+    def edit_study_card_plan(self, **kwargs):
+        self.calls.append(("edit", kwargs))
+        return {
+            "schemaVersion": 1,
+            "projectId": "project_1",
+            "projectRevision": 7,
+            "artifactStage": "plans_ready",
+            "taskId": "task_card_plan_revision_1",
+            "planSetHandle": PLAN_SET_HANDLE,
+            "validationHandle": VALIDATION_HANDLE,
+            "cardPlanHandle": PLAN_HANDLE,
+            "cardPlanId": "card_plan_1",
+            "totalPlans": 1,
+            "eligiblePlans": 1,
+            "blockedPlans": 0,
+            "issueCodes": [],
+            "nextAction": "generate_cards",
+        }
+
+    def validate_study_card_plans(self, **kwargs):
+        self.calls.append(("validate", kwargs))
+        result = self.edit_study_card_plan(**kwargs)
+        self.calls.pop()
+        result.pop("cardPlanHandle")
+        result.pop("cardPlanId")
+        return result
+
 
 def test_card_plan_tool_schemas_are_closed_and_precisely_annotated() -> None:
     definitions = card_plan_tool_definitions()
     assert [value["name"] for value in definitions] == [
         PLAN_CARDS_TOOL_NAME,
         LIST_CARD_PLANS_TOOL_NAME,
+        EDIT_CARD_PLAN_TOOL_NAME,
+        VALIDATE_CARD_PLANS_TOOL_NAME,
     ]
     assert definitions[0]["annotations"] == {
         "readOnlyHint": False,
@@ -78,6 +109,13 @@ def test_card_plan_tool_schemas_are_closed_and_precisely_annotated() -> None:
         "idempotentHint": True,
         "openWorldHint": False,
     }
+    for definition in definitions[2:]:
+        assert definition["annotations"] == {
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        }
     for definition in definitions:
         assert definition["inputSchema"]["additionalProperties"] is False
         assert definition["outputSchema"]["additionalProperties"] is False
@@ -96,7 +134,6 @@ def test_card_plan_tool_schemas_are_closed_and_precisely_annotated() -> None:
         "sessionid",
         "provider",
         "modelprofile",
-        "mediapolicy",
         "authorization",
         '"path"',
         '"url"',
@@ -131,9 +168,43 @@ def test_card_plan_tools_call_only_the_trusted_service_boundary() -> None:
         },
         audience_session=session,
     )
+    edit_operation = {
+        "kind": "edit_card_cue",
+        "cue": {"kind": "text", "content": "Which expression fits?"},
+    }
+    edited = call_card_plan_tool(
+        service,  # type: ignore[arg-type]
+        tool_name=EDIT_CARD_PLAN_TOOL_NAME,
+        arguments={
+            "context": {
+                "projectId": "project_1",
+                "expectedProjectRevision": 6,
+                "idempotencyKey": "edit-1",
+            },
+            "planSetHandle": PLAN_SET_HANDLE,
+            "cardPlanHandle": PLAN_HANDLE,
+            "operation": edit_operation,
+        },
+        audience_session=session,
+    )
+    validated = call_card_plan_tool(
+        service,  # type: ignore[arg-type]
+        tool_name=VALIDATE_CARD_PLANS_TOOL_NAME,
+        arguments={
+            "context": {
+                "projectId": "project_1",
+                "expectedProjectRevision": 7,
+                "idempotencyKey": "validate-1",
+            },
+            "planSetHandle": PLAN_SET_HANDLE,
+        },
+        audience_session=session,
+    )
 
     assert planned["structuredContent"]["eligiblePlans"] == 1
     assert listed["structuredContent"]["returnedPlans"] == 1
+    assert edited["structuredContent"]["cardPlanId"] == "card_plan_1"
+    assert validated["structuredContent"]["eligiblePlans"] == 1
     assert service.calls == [
         (
             "plan",
@@ -152,6 +223,28 @@ def test_card_plan_tools_call_only_the_trusted_service_boundary() -> None:
                 "plan_set_handle": PLAN_SET_HANDLE,
                 "cursor": CURSOR,
                 "limit": 7,
+            },
+        ),
+        (
+            "edit",
+            {
+                "audience": session.audience,
+                "project_id": "project_1",
+                "expected_project_revision": 6,
+                "idempotency_key": "edit-1",
+                "plan_set_handle": PLAN_SET_HANDLE,
+                "card_plan_handle": PLAN_HANDLE,
+                "operation": edit_operation,
+            },
+        ),
+        (
+            "validate",
+            {
+                "audience": session.audience,
+                "project_id": "project_1",
+                "expected_project_revision": 7,
+                "idempotency_key": "validate-1",
+                "plan_set_handle": PLAN_SET_HANDLE,
             },
         ),
     ]
@@ -203,6 +296,69 @@ def test_card_plan_tools_call_only_the_trusted_service_boundary() -> None:
         (
             LIST_CARD_PLANS_TOOL_NAME,
             {"planSetHandle": PLAN_SET_HANDLE, "path": "C:/plans"},
+        ),
+        (
+            EDIT_CARD_PLAN_TOOL_NAME,
+            {
+                "context": {
+                    "projectId": "project_1",
+                    "expectedProjectRevision": 6,
+                    "idempotencyKey": "edit-1",
+                },
+                "planSetHandle": PLAN_SET_HANDLE,
+                "cardPlanHandle": PLAN_HANDLE,
+                "operation": {"kind": "exclude"},
+            },
+        ),
+        (
+            EDIT_CARD_PLAN_TOOL_NAME,
+            {
+                "context": {
+                    "projectId": "project_1",
+                    "expectedProjectRevision": 6,
+                    "idempotencyKey": "edit-1",
+                },
+                "planSetHandle": PLAN_SET_HANDLE,
+                "cardPlanHandle": PLAN_HANDLE,
+                "operation": {
+                    "kind": "edit_card_cue",
+                    "cue": {"kind": "text", "content": "Which expression fits?"},
+                    "provenance": {"actor": "user"},
+                },
+            },
+        ),
+        (
+            EDIT_CARD_PLAN_TOOL_NAME,
+            {
+                "context": {
+                    "projectId": "project_1",
+                    "expectedProjectRevision": 6,
+                    "idempotencyKey": "edit-1",
+                },
+                "planSetHandle": PLAN_SET_HANDLE,
+                "cardPlanHandle": PLAN_HANDLE,
+                "operation": {
+                    "kind": "edit_card_feedback",
+                    "feedback": {
+                        "explanation": "Explanation",
+                        "examples": [],
+                        "nonexamples": [],
+                        "evidenceRefs": [],
+                    },
+                },
+            },
+        ),
+        (
+            VALIDATE_CARD_PLANS_TOOL_NAME,
+            {
+                "context": {
+                    "projectId": "project_1",
+                    "expectedProjectRevision": 6,
+                    "idempotencyKey": "validate-1",
+                },
+                "planSetHandle": PLAN_SET_HANDLE,
+                "authorization": "forged",
+            },
         ),
     ],
 )

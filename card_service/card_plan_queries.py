@@ -178,6 +178,7 @@ class CardPlanQueryRuntime:
         dict[str, Any],
         dict[str, Any],
         dict[str, Any],
+        dict[str, Any],
         list[tuple[dict[str, Any], str, tuple[str, int, str]]],
         dict[tuple[str, int, str], list[dict[str, Any]]],
         set[tuple[str, int, str]],
@@ -309,12 +310,40 @@ class CardPlanQueryRuntime:
         return (
             plan_set_ref,
             plan_set,
+            dict(validation_refs[0]),
             validation,
             project,
             plan_refs,
             records_by_plan,
             eligible,
         )
+
+    def resolve_current_plan_graph(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        plan_set_handle: str,
+    ) -> dict[str, Any]:
+        (
+            plan_set_ref,
+            plan_set,
+            validation_ref,
+            validation,
+            project,
+            plan_refs,
+            records_by_plan,
+            eligible,
+        ) = self._current_graph(audience=audience, plan_set_handle=plan_set_handle)
+        return {
+            "planSetRef": plan_set_ref,
+            "planSet": plan_set,
+            "validationRef": validation_ref,
+            "validation": validation,
+            "project": project,
+            "planRefs": plan_refs,
+            "recordsByPlan": records_by_plan,
+            "eligible": eligible,
+        }
 
     def list_card_plans(
         self,
@@ -333,6 +362,7 @@ class CardPlanQueryRuntime:
         (
             plan_set_ref,
             plan_set,
+            _validation_ref,
             _validation,
             project,
             plan_refs,

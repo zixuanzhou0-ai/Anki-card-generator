@@ -24,6 +24,7 @@ WORKFLOW_ACTIONS = frozenset(
         "review_candidates",
         "save_selection",
         "plan_cards",
+        "edit_card_plan",
         "validate_card_plans",
         "generate_cards",
         "export_apkg",

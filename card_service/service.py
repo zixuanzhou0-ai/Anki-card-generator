@@ -918,8 +918,8 @@ class CardService:
             "cardPlanRuntime": True,
             "publicCardPlanPlanning": True,
             "publicCardPlanQueries": True,
-            "publicCardPlanEditing": False,
-            "publicCardPlanValidation": False,
+            "publicCardPlanEditing": True,
+            "publicCardPlanValidation": True,
             "pathDisclosure": False,
             "complete": False,
         }
@@ -1147,6 +1147,60 @@ class CardService:
                 error.message,
                 retryable=False,
                 stage="card_plan_query",
+            ) from error
+
+    def edit_study_card_plan(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_id: str,
+        expected_project_revision: int,
+        idempotency_key: str,
+        plan_set_handle: str,
+        card_plan_handle: str,
+        operation: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            return self._ensure_study_runtime().edit_card_plan(
+                audience=audience,
+                project_id=project_id,
+                expected_project_revision=expected_project_revision,
+                idempotency_key=idempotency_key,
+                plan_set_handle=plan_set_handle,
+                card_plan_handle=card_plan_handle,
+                operation=operation,
+            )
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=False,
+                stage="card_plan_edit",
+            ) from error
+
+    def validate_study_card_plans(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_id: str,
+        expected_project_revision: int,
+        idempotency_key: str,
+        plan_set_handle: str,
+    ) -> dict[str, Any]:
+        try:
+            return self._ensure_study_runtime().validate_card_plans(
+                audience=audience,
+                project_id=project_id,
+                expected_project_revision=expected_project_revision,
+                idempotency_key=idempotency_key,
+                plan_set_handle=plan_set_handle,
+            )
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=False,
+                stage="card_plan_validation",
             ) from error
 
     def set_study_selection(

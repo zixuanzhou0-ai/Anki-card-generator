@@ -135,7 +135,7 @@ R8b 真实渲染、播放与复习核验通过
 - review：需要用户/专家判断，默认不自动导出。
 - fail：禁止生成。
 
-CURRENT 内部 R4 子集使用 `deterministic-language-card-plan-v1` 和 `card-plan-validation-v1`：从当前认证 SelectionArtifact 再验证候选图，为 `production`、`chunk_collocation`、`reading_recognition` 发布逐项计划、计划集合和验证 Artifact。八项记录覆盖 evidence、scoring boundary、answer leakage、duplicate、conflict、template、media generatability 与 user lock preservation；任一非 passed 项进入 blocked 集合。当前媒体策略固定全关，用户锁为空，因而相应 pass 只证明受限输入，不证明媒体或锁定编辑能力。翻译、语用/语法推断及媒体路线 fail closed。CURRENT 可信 MCP 已开放受限的 `study.plan_cards` 与只读 `study.list_card_plans`：规划前再次验证精确当前 Selection，查询前再次验证 PlanSet/Validation 当前性、成员覆盖和八项记录完整性；认证 cursor 防止篡改与跨集合复用，公共投影删除全部内部 refs、路径、授权和 input fingerprint。计划编辑、独立重验与生成尚未开放。
+CURRENT 内部 R4 子集使用 `deterministic-language-card-plan-v1` 和 `card-plan-validation-v1`：从当前认证 SelectionArtifact 再验证候选图，为 `production`、`chunk_collocation`、`reading_recognition` 发布逐项计划、计划集合和验证 Artifact。八项记录覆盖 evidence、scoring boundary、answer leakage、duplicate、conflict、template、media generatability 与 user lock preservation；任一非 passed 项进入 blocked 集合。初始媒体策略固定全关、用户锁为空，因而相应 pass 只证明受限输入；翻译、语用/语法推断及媒体路线 fail closed。CURRENT 可信 MCP 已开放受限的 `study.plan_cards`、只读 `study.list_card_plans`、`study.edit_card_plan` 与 `study.validate_card_plans`：规划前再次验证精确当前 Selection，查询前再次验证 PlanSet/Validation 当前性、成员覆盖和八项记录完整性；认证 cursor 防止篡改与跨集合复用，公共投影删除全部内部 refs、路径、授权和 input fingerprint。Agent 编辑不能提交 provenance/evidence/lock，服务保留原证据和用户锁、记录权威 taskId，并对新 revision 重放全部门禁；新语义证据不足为 needs_review，评分边界破坏或未接线媒体为 failed。独立重验发布新的认证 set/validation revision，中断恢复按 Artifact identity 比较，旧幂等结果不能覆盖更新 revision。本轮恢复、失效、schema 与全链合同进入正式 Python `tests` 全集后为 1448 passed、1 skipped；受信用户锁通道与 card generation 尚未开放。
 
 ## 8. R5：生成与媒体
 

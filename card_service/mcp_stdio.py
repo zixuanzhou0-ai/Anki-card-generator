@@ -228,7 +228,8 @@ def _handle_request(
                     "Study project, freeze selected InputRefs with study.register_inputs, then "
                     "run deterministic source inspection. Existing authenticated candidate discoveries "
                     "can be listed, reviewed with bounded evidence replay, and saved as a reliable local "
-                    "portfolio, deterministically planned into supported CardPlans, and reviewed with "
+                    "portfolio, deterministically planned into supported CardPlans, "
+                    "edited within a closed agent schema, and reviewed/revalidated with "
                     "all eight local validation states. Starting candidate discovery, card generation, "
                     "export, import, credentials, and raw Worker commands remain unavailable."
                 ),
