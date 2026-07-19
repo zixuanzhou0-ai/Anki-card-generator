@@ -23,14 +23,20 @@ def sign(value: dict[str, object], key: bytes) -> dict[str, object]:
     return {**value, "responseMac": mac}
 
 
-def seal_picker_path(request: dict[str, object], key: bytes, selected_path: Path) -> dict[str, object]:
+def seal_private(
+    request: dict[str, object],
+    key: bytes,
+    *,
+    surface: str,
+    payload: dict[str, object],
+) -> dict[str, object]:
     aad = json.dumps(
         {
             "schema": "study.trusted-surface-private-payload-aad",
             "schemaVersion": 1,
             "sessionRef": request["sessionRef"],
             "requestNonce": request["requestNonce"],
-            "surface": "local_resource_picker",
+            "surface": surface,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -41,7 +47,7 @@ def seal_picker_path(request: dict[str, object], key: bytes, selected_path: Path
     ).digest()
     nonce = os.urandom(12)
     plaintext = json.dumps(
-        {"schemaVersion": 1, "selectedPath": str(selected_path)},
+        payload,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -74,7 +80,34 @@ def main() -> None:
                 "requestNonce": request["requestNonce"],
                 "state": "selected",
                 "userGestureRecorded": True,
-                "privatePayload": seal_picker_path(request, response_key, selected),
+                "privatePayload": seal_private(
+                    request,
+                    response_key,
+                    surface="local_resource_picker",
+                    payload={"schemaVersion": 1, "selectedPath": str(selected)},
+                ),
+            },
+            response_key,
+        )
+    elif surface == "authorization_manager":
+        selected_refs = [
+            item["selectionRef"]
+            for item in request.get("authorizationItems", [])
+            if isinstance(item, dict) and isinstance(item.get("selectionRef"), str)
+        ]
+        response = sign(
+            {
+                "schemaVersion": 1,
+                "sessionRef": request["sessionRef"],
+                "requestNonce": request["requestNonce"],
+                "state": "approved",
+                "userGestureRecorded": True,
+                "privatePayload": seal_private(
+                    request,
+                    response_key,
+                    surface="authorization_manager",
+                    payload={"schemaVersion": 1, "selectedRefs": selected_refs},
+                ),
             },
             response_key,
         )

@@ -4,7 +4,7 @@
 
 ## CURRENT 公共工具清单与能力上限（2026-07-20）
 
-截至 2026-07-20，可信开发态 Card Service stdio runtime 共公开 33 个工具：`system.get_capabilities`、`system.authorize_candidate_discovery`、`system.list_profiles`、`system.open_local_settings`、`system.request_source_grant`、`system.request_output_grant`、`study.create_project`、`study.list_projects`、`study.get_project`、`study.register_inputs`、`study.start_source_inspection`、`study.get_source_inspection`、`study.start_discovery`、`study.get_task`、`study.cancel_task`、`study.list_recoverable_tasks`、`study.resume_task`、`study.list_candidates`、`study.get_candidate`、`study.preview_evidence`、`study.set_selection`、`study.plan_cards`、`study.list_card_plans`、`study.edit_card_plan`、`study.validate_card_plans`、`cards.generate`、`cards.list`、`cards.export_apkg`、`anki.prepare_import`、`anki.request_import_confirmation`、`anki.import_and_verify`、`study.get_artifact`、`study.get_audit`。
+截至 2026-07-20，可信开发态 Card Service stdio runtime 共公开 34 个工具：`system.get_capabilities`、`system.authorize_candidate_discovery`、`system.list_profiles`、`system.open_local_settings`、`system.revoke_grant`、`system.request_source_grant`、`system.request_output_grant`、`study.create_project`、`study.list_projects`、`study.get_project`、`study.register_inputs`、`study.start_source_inspection`、`study.get_source_inspection`、`study.start_discovery`、`study.get_task`、`study.cancel_task`、`study.list_recoverable_tasks`、`study.resume_task`、`study.list_candidates`、`study.get_candidate`、`study.preview_evidence`、`study.set_selection`、`study.plan_cards`、`study.list_card_plans`、`study.edit_card_plan`、`study.validate_card_plans`、`cards.generate`、`cards.list`、`cards.export_apkg`、`anki.prepare_import`、`anki.request_import_confirmation`、`anki.import_and_verify`、`study.get_artifact`、`study.get_audit`。
 
 当前候选发现授权工具只接受 `{"preset":"hermes_grok_4_5"}`。授权成功后，`study.start_discovery` 只接受 RequestContext、`inspectionHandle` 和 1–256 的 `candidateBudget`；Service 从当前可信授权派生模型身份、endpoint、凭据与 disclosure，调用方无权注入这些字段。
 
@@ -162,7 +162,7 @@ list_projects、get_project、get_artifact、任务和预览工具都先校验�
 | system.request_output_grant | false | false | false | false |
 | system.request_network_grant | false | false | false | true |
 | system.request_operation_confirmation | false | false | false | false |
-| system.revoke_grant | false | true | true | false |
+| system.revoke_grant | false | true | false | false |
 | system.validate_profile | false | false | true | true |
 | study.list_projects | true | false | true | false |
 | study.get_project | true | false | true | false |
@@ -329,9 +329,13 @@ OperationRequestManifest 的 subject 是 project_task 或 profile_validation。�
 
 ### system.revoke_grant
 
-只能由真实用户动作打开受信本地授权管理器。MCP 可传可选 project/resource/operation/import 公共引用作为显示筛选，但不能提交 authorizationId、ledger key 或撤销 bearer。受信 UI 从 Card Service 直接列出脱敏的文件/目录/网络授权、模型/TTS OperationApproval、Anki ImportApproval 及其范围/过期/消费状态；用户选择后由 Service 在内部账本写 revoked。
+> CURRENT：可信开发态工具已公开。只能在用户明确要求管理/撤销权限时调用；Agent 不能自动触发或选择对象。
 
-输出只包含 revoked/already_consumed/not_found、受影响任务数和脱敏摘要，不返回内部授权 ID。撤销在消费前立即阻止调用；运行中任务在安全点停止。已经完成的远程调用或 Anki 写入不会被伪装成已回滚，已产生 Artifact 保留并记录授权撤销。相同 UI revocation operation 重试幂等。
+首次调用输入必须是空对象 `{}`。Service 直接从当前受信 audience 的认证账本构建最多 256 项的脱敏清单，随后打开 digest-pinned 本地授权管理器。工具不接受 project/resource/operation/import/profile/ledger/authorization ID、路径、URL、手势引用或撤销 bearer。只有真实用户在本地窗口中的选择与二次确认会产生 AES-GCM 私有选择响应及短期精确 attestation。
+
+若窗口仍打开，输出 `authorizationSessionRef`、`state=open|created` 与 `availableCount`；正在应用选择时返回 `state=processing`，后续仅用同一 session ref 轮询。终态只返回 selected/revoked/already-consumed/already-revoked/not-found/failed 计数和逐类 disposition，不返回目标引用。窗口默认不选择任何项目，未选择时撤销按钮不可用，二次确认默认落在“否”，Escape 只会取消。当前覆盖本地 file/directory/output grant、未消费 Anki ImportApproval 与当前 Broker model/TTS/source authorization；尚未公开的 network grant 和通用 OperationApproval 不会被虚假列为已覆盖。
+
+本地资源与 Anki 撤销分别通过其认证账本原子写入，Anki consume/revoke 竞态只有一个赢家；Broker 撤销对当前授权全部 profile 做一次 ledger 写并先核对窗口打开时的不可变 authorization digest，旧窗口不能撤销后来替换的新授权。跨 Registry 不宣称全局原子事务，终态逐项报告结果。相同 UI session 重试幂等。撤销立即阻止后续使用，但已经完成的远程调用、读取、Artifact 或 Anki 写入不会被伪装成已回滚。
 
 ### 授权生命周期
 

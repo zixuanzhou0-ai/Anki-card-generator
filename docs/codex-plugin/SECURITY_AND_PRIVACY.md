@@ -416,7 +416,7 @@ type ImportApprovalLedgerState = {
 - 原工具重试时重建并核对同一 OperationRequestManifestDigest、audience、intentDigest、profile/configurationFingerprint/credentialRevision、精确 disclosure/egress、资源/费用上限与当前撤销状态；任何变化都要求新 intent。随后生成的 TaskInputManifestDigest 包含 intentDigest。
 - 重启/新 session 后旧 audience 授权绝不搬迁或回填旧任务。若 WorkReuseDigest、稳定 capability、profile configuration 和已完成 Artifact 均一致，且新 disclosure/egress 等价或更窄，Service 可在重新验证/确认后创建 successor task 与新 TaskInputManifest；SuccessorTaskRebase 同时引用旧/新授权审计。范围扩大或语义/配置变化禁止 remaining 复用。
 
-CURRENT 内部实现已经覆盖 model/TTS OperationIntent、OperationApproval、task-bound InternalAuthorization、认证 SecretRef/credentialRevision、非秘密 Service Profile，以及 file/directory/output/network 资源授权账本。Task AuthorizationBinding 不包含内部 authorizationId；资源 ref 也只定位当前 audience/service 下的认证私有记录。所有批准/撤销写入默认失败关闭；开发态测试可注入精确 audience/target/action 绑定的 verifier，但 packaged Card Service 明确拒绝任意 verifier 注入。本地资源账本已接入 `TrustedSurfaceManager` 的真实 picker verifier；可信 stdio 会话已公开 source/output grant 两个最小工具。ImportApproval 已通过独立的服务密钥认证账本和 digest-pinned 本地确认窗口接线，绑定当前 audience/session、ImportPlan、APKG 与 Anki target，且不向 MCP 返回执行 bearer；`anki.import_and_verify` 已能消费该批准并执行幂等数据导入/核验。资源授权和 ImportApproval 的内部枚举均有 2048 条扫描硬上限、认证记录重验和精确 audience 隔离；ImportApproval 撤销/消费共享原子事务，活动 Broker profile 采用一次性批量 ledger 撤销。统一受信管理 UI、对应手势 attestation 和公共 `system.revoke_grant` 仍未接线。URL 输入、通用 OperationApproval、统一跨 Registry 事务及其余公共 MCP 仍不完整，因此不能据此声称端到端授权已完成。
+CURRENT 内部实现已经覆盖 model/TTS OperationIntent、OperationApproval、task-bound InternalAuthorization、认证 SecretRef/credentialRevision、非秘密 Service Profile，以及 file/directory/output/network 资源授权账本。Task AuthorizationBinding 不包含内部 authorizationId；资源 ref 也只定位当前 audience/service 下的认证私有记录。所有批准/撤销写入默认失败关闭；开发态测试可注入精确 audience/target/action 绑定的 verifier，但 packaged Card Service 明确拒绝任意 verifier 注入。本地资源账本已接入 `TrustedSurfaceManager` 的真实 picker verifier；可信 stdio 会话已公开 source/output grant。ImportApproval 已通过独立的服务密钥认证账本和 digest-pinned 本地确认窗口接线，绑定当前 audience/session、ImportPlan、APKG 与 Anki target，且不向 MCP 返回执行 bearer；`anki.import_and_verify` 已能消费该批准并执行幂等数据导入/核验。资源授权和 ImportApproval 的内部枚举均有 2048 条扫描硬上限、认证记录重验和精确 audience 隔离；ImportApproval 撤销/消费共享原子事务，活动 Broker profile 采用一次性批量 ledger 撤销。统一受信授权管理 UI、对应短期精确 attestation 和公共 `system.revoke_grant` 已接线：公共 schema 不含 resourceRef/importIntentId/profileRef/authorizationId/ledger key/路径/URL，私有 locator 不写进窗口请求或 MCP，选择密文绑定 session、nonce 和 surface；Broker 撤销还绑定旧清单 digest，避免窗口陈旧时误撤销新授权。URL 输入、通用 OperationApproval、network grant 的公共入口、统一跨 Registry 事务及其余公共 MCP 仍不完整，因此不能据此声称端到端授权已全部完成。
 
 CURRENT M2 的 legacy Project 投影边界坚持“先净化、后持久化”：递归遍历在内存中完成，API/TTS 配置、SecretRef/profile 注入和 secret-bearing 键被移除并记录非秘密 JSON pointer；高置信凭据值或显式 canary 即使藏在普通字段中也使整单失败。Project 顶层使用封闭 allowlist，嵌套 JSON 有节点、深度、字节与安全整数上限，任意调用方预置的 `$resourceSlot` marker 均视为伪造。
 
@@ -672,9 +672,9 @@ Windows launcher 的外层代码签名现有独立 fail-closed 验证器。它�
 ## 15. 权限撤销
 
 - system.revoke_grant 只打开受信本地授权管理器；MCP 不接收或返回 authorizationId、ledger key、userGestureRef 或撤销 bearer。
-- 受信 UI 可按项目查看并单独撤销文件/目录/网络授权、模型/TTS OperationApproval、Anki ImportApproval 和尚未消费的内部授权记录。
-- AuthorizationLedgerState、OperationApprovalLedgerState 与 ImportApprovalLedgerState 都有 revoked 终态；消费与撤销使用同一服务端原子事务，竞态只能有一个成功。
-- 撤销后新调用立即失败；运行中任务在安全点取消，不得继续扩大读取或开始新的远程批次。
+- CURRENT 受信 UI 只列出当前 audience 的文件/目录/output grant、未消费 Anki ImportApproval 与当前 Broker model/TTS/source authorization；network grant、通用 OperationApproval 与其他内部授权尚未接入该公共管理器。窗口默认零选择、撤销按钮禁用，二次确认默认“否”。
+- 当前各资源 Registry 仍保持独立事务边界：本地资源和 Anki 撤销分别原子写入自己的认证账本，Anki consume/revoke 竞态只有一个赢家；Broker profile 在一个 ReservationLedger 写入中批量撤销。当前不宣称跨 Registry 全局事务。
+- 撤销后新的资源消费和新的 Broker 调用立即失败；已经发出的远程调用、已经读取的字节或已经进入非撤销安全点的运行中工作不保证被反向取消。
 - 已完成的远程调用、已写入 Anki 的内容和本地产物不会被伪装成已回滚；产物保留并记录撤销时间与影响。
 - 删除本地数据是独立的预览与确认流程，不与撤销混为一谈。
 

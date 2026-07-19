@@ -33,8 +33,10 @@ from .trusted_surface_auth import (
 
 RESOURCE_ATTESTATION_LIFETIME_MS = 5 * 60 * 1_000
 IMPORT_CONSENT_ATTESTATION_LIFETIME_MS = 5 * 60 * 1_000
+AUTHORIZATION_REVOCATION_ATTESTATION_LIFETIME_MS = 5 * 60 * 1_000
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 IMPORT_INTENT_RE = re.compile(r"^anki_intent_[0-9a-f]{48}$")
+AUTHORIZATION_SELECTION_RE = re.compile(r"^authsel_[A-Za-z0-9_-]{32}$")
 
 
 class TrustedSurfaceError(RuntimeError):
@@ -59,6 +61,16 @@ class TrustedImportConsentDecision:
     decision: str
     attestation_ref: str
     decided_at: int
+
+
+@dataclass(frozen=True)
+class TrustedAuthorizationRevocationSelection:
+    session_ref: str
+    selection_ref: str
+    kind: str
+    locator: dict[str, Any]
+    attestation_ref: str
+    selected_at: int
 
 
 @dataclass
@@ -106,6 +118,13 @@ class TrustedSurfaceManager:
         self._resource_attestations: dict[str, dict[str, Any]] = {}
         self._import_consent_decisions: dict[str, TrustedImportConsentDecision] = {}
         self._import_consent_attestations: dict[str, dict[str, Any]] = {}
+        self._authorization_manager_bindings: dict[
+            str, dict[str, dict[str, Any]]
+        ] = {}
+        self._authorization_revocation_selections: dict[
+            str, tuple[TrustedAuthorizationRevocationSelection, ...]
+        ] = {}
+        self._authorization_revocation_attestations: dict[str, dict[str, Any]] = {}
         self._issued_authorizations: dict[str, IssuedBrokerAuthorization] = {}
         self._lock = threading.RLock()
 
@@ -122,11 +141,15 @@ class TrustedSurfaceManager:
             "localSettings": True,
             "consentWindow": True,
             "ankiImportConsentAttestation": True,
+            "authorizationManager": True,
+            "authorizationRevocationAttestation": True,
             "digestPinned": True,
             "authenticatedResponse": True,
             "brokerAuthorizationIssuance": True,
             "authorizationPathDisclosure": False,
             "secretViaModel": False,
+            # The manager coordinates multiple independently authenticated ledgers.
+            # It is not a single transactional authorization ledger.
             "authorizationLedger": False,
             "complete": False,
         }
@@ -207,6 +230,82 @@ class TrustedSurfaceManager:
             "local_resource_picker", selectionKind=kind, scopeSummary=summary
         )
 
+    def create_authorization_manager_session(
+        self,
+        *,
+        audience_digest: str,
+        items: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not SHA256_RE.fullmatch(audience_digest):
+            raise TrustedSurfaceError(
+                "INVALID_AUTHORIZATION_AUDIENCE",
+                "Authorization manager audience is invalid",
+            )
+        if not isinstance(items, list) or not 1 <= len(items) <= 256:
+            raise TrustedSurfaceError(
+                "INVALID_AUTHORIZATION_ITEMS",
+                "Authorization manager items are invalid",
+            )
+        public_items: list[dict[str, Any]] = []
+        bindings: dict[str, dict[str, Any]] = {}
+        for item in items:
+            if not isinstance(item, dict) or set(item) != {
+                "kind",
+                "title",
+                "detail",
+                "state",
+                "locator",
+            }:
+                raise TrustedSurfaceError(
+                    "INVALID_AUTHORIZATION_ITEMS",
+                    "Authorization manager item is invalid",
+                )
+            kind = str(item["kind"])
+            if kind not in {"local_resource", "anki_import", "broker_authorization"}:
+                raise TrustedSurfaceError(
+                    "INVALID_AUTHORIZATION_ITEMS",
+                    "Authorization manager item kind is invalid",
+                )
+            title = str(item["title"] or "").strip()
+            detail = str(item["detail"] or "").strip()
+            state = str(item["state"] or "")
+            locator = item["locator"]
+            if (
+                not title
+                or len(title) > 160
+                or not detail
+                or len(detail) > 500
+                or state not in {"active", "approved", "pending"}
+                or not isinstance(locator, dict)
+                or not locator
+            ):
+                raise TrustedSurfaceError(
+                    "INVALID_AUTHORIZATION_ITEMS",
+                    "Authorization manager item metadata is invalid",
+                )
+            selection_ref = "authsel_" + secrets.token_urlsafe(24)
+            bindings[selection_ref] = {
+                "kind": kind,
+                "locator": json.loads(json.dumps(locator, ensure_ascii=False)),
+            }
+            public_items.append(
+                {
+                    "selectionRef": selection_ref,
+                    "kind": kind,
+                    "title": title,
+                    "detail": detail,
+                    "state": state,
+                }
+            )
+        session = self._create_session(
+            "authorization_manager",
+            audienceDigest=audience_digest,
+            authorizationItems=public_items,
+        )
+        with self._lock:
+            self._authorization_manager_bindings[str(session["sessionRef"])] = bindings
+        return session
+
     def _issuer(self) -> BrokerAuthorizationIssuer:
         with self._lock:
             if self._authorization_issuer is None:
@@ -269,7 +368,12 @@ class TrustedSurfaceManager:
         if (
             not isinstance(request, dict)
             or request.get("sessionRef") != session_ref
-            or request.get("surface") not in {"local_settings", "consent", "local_resource_picker"}
+            or request.get("surface") not in {
+                "local_settings",
+                "consent",
+                "local_resource_picker",
+                "authorization_manager",
+            }
             or not isinstance(request.get("requestNonce"), str)
             or len(request["requestNonce"]) != 64
             or Path(str(request.get("responsePath") or "")) != expected_response
@@ -455,6 +559,172 @@ class TrustedSurfaceManager:
             },
         }
 
+    def _finalize_authorization_manager_response(
+        self,
+        request: dict[str, Any],
+        response: dict[str, Any],
+        response_key: bytes,
+    ) -> dict[str, Any]:
+        session_ref = str(request["sessionRef"])
+        if response.get("state") == "cancelled":
+            return {
+                "schemaVersion": 1,
+                "sessionRef": session_ref,
+                "state": "cancelled",
+                "userGestureRecorded": False,
+                "authorizationRevocation": {
+                    "selectedCount": 0,
+                    "availableCount": len(request.get("authorizationItems") or []),
+                },
+            }
+        if response.get("state") != "approved" or response.get(
+            "userGestureRecorded"
+        ) is not True:
+            raise TrustedSurfaceError(
+                "SESSION_RESPONSE_INVALID",
+                "Trusted authorization revocation was not user approved",
+            )
+        try:
+            private = open_private_payload(
+                response.get("privatePayload") or {},
+                response_key,
+                session_ref=session_ref,
+                request_nonce=str(request["requestNonce"]),
+                surface="authorization_manager",
+            )
+        except (TypeError, ValueError) as error:
+            raise TrustedSurfaceError(
+                "SESSION_RESPONSE_INVALID",
+                "Trusted authorization revocation payload is invalid",
+            ) from error
+        if set(private) != {"schemaVersion", "selectedRefs"} or private.get(
+            "schemaVersion"
+        ) != 1:
+            raise TrustedSurfaceError(
+                "SESSION_RESPONSE_INVALID",
+                "Trusted authorization revocation payload is invalid",
+            )
+        selected_refs = private.get("selectedRefs")
+        if (
+            not isinstance(selected_refs, list)
+            or not 1 <= len(selected_refs) <= 256
+            or any(
+                not isinstance(value, str)
+                or not AUTHORIZATION_SELECTION_RE.fullmatch(value)
+                for value in selected_refs
+            )
+            or len(set(selected_refs)) != len(selected_refs)
+        ):
+            raise TrustedSurfaceError(
+                "SESSION_RESPONSE_INVALID",
+                "Trusted authorization revocation selection is invalid",
+            )
+        with self._lock:
+            bindings = self._authorization_manager_bindings.get(session_ref)
+        if bindings is None or any(value not in bindings for value in selected_refs):
+            raise TrustedSurfaceError(
+                "SESSION_RESPONSE_INVALID",
+                "Trusted authorization revocation selection is stale",
+            )
+        selected_at = int(time.time() * 1000)
+        audience_digest = str(request.get("audienceDigest") or "")
+        selections: list[TrustedAuthorizationRevocationSelection] = []
+        for selection_ref in selected_refs:
+            binding = bindings[selection_ref]
+            kind = str(binding["kind"])
+            locator = json.loads(json.dumps(binding["locator"], ensure_ascii=False))
+            if kind == "local_resource":
+                if (
+                    set(locator) != {"resourceRef", "revocationEpoch"}
+                    or not isinstance(locator.get("resourceRef"), str)
+                    or isinstance(locator.get("revocationEpoch"), bool)
+                    or not isinstance(locator.get("revocationEpoch"), int)
+                ):
+                    raise TrustedSurfaceError(
+                        "SESSION_RESPONSE_INVALID",
+                        "Trusted resource revocation binding is invalid",
+                    )
+                action = "revoke_local_resource"
+            elif kind == "anki_import":
+                if set(locator) != {"importIntentId"} or not IMPORT_INTENT_RE.fullmatch(
+                    str(locator.get("importIntentId") or "")
+                ):
+                    raise TrustedSurfaceError(
+                        "SESSION_RESPONSE_INVALID",
+                        "Trusted import revocation binding is invalid",
+                    )
+                action = "revoke"
+            elif kind == "broker_authorization":
+                if (
+                    set(locator) != {"activeAuthorization", "authorizationDigest"}
+                    or locator.get("activeAuthorization") is not True
+                    or not isinstance(locator.get("authorizationDigest"), str)
+                    or not re.fullmatch(
+                        r"sha256:[0-9a-f]{64}", locator["authorizationDigest"]
+                    )
+                ):
+                    raise TrustedSurfaceError(
+                        "SESSION_RESPONSE_INVALID",
+                        "Trusted broker revocation binding is invalid",
+                    )
+                action = "revoke_broker_authorization"
+            else:
+                raise TrustedSurfaceError(
+                    "SESSION_RESPONSE_INVALID",
+                    "Trusted authorization revocation kind is invalid",
+                )
+            attestation_ref = "revoke-attestation-" + secrets.token_urlsafe(24)
+            selection = TrustedAuthorizationRevocationSelection(
+                session_ref=session_ref,
+                selection_ref=selection_ref,
+                kind=kind,
+                locator=locator,
+                attestation_ref=attestation_ref,
+                selected_at=selected_at,
+            )
+            selections.append(selection)
+            with self._lock:
+                if kind == "local_resource":
+                    self._resource_attestations[attestation_ref] = {
+                        "sessionRef": session_ref,
+                        "action": action,
+                        "audienceDigest": audience_digest,
+                        "requestDigest": None,
+                        "expiresAt": (
+                            selected_at
+                            + AUTHORIZATION_REVOCATION_ATTESTATION_LIFETIME_MS
+                        ),
+                    }
+                else:
+                    self._authorization_revocation_attestations[attestation_ref] = {
+                        "sessionRef": session_ref,
+                        "selectionRef": selection_ref,
+                        "kind": kind,
+                        "targetId": (
+                            locator["importIntentId"]
+                            if kind == "anki_import"
+                            else selection_ref
+                        ),
+                        "action": action,
+                        "audienceDigest": audience_digest,
+                        "expiresAt": (
+                            selected_at
+                            + AUTHORIZATION_REVOCATION_ATTESTATION_LIFETIME_MS
+                        ),
+                    }
+        with self._lock:
+            self._authorization_revocation_selections[session_ref] = tuple(selections)
+        return {
+            "schemaVersion": 1,
+            "sessionRef": session_ref,
+            "state": "approved",
+            "userGestureRecorded": True,
+            "authorizationRevocation": {
+                "selectedCount": len(selections),
+                "availableCount": len(bindings),
+            },
+        }
+
     def selected_local_resource(self, session_ref: str) -> TrustedLocalResourceSelection | None:
         with self._lock:
             return self._local_resource_selections.get(session_ref)
@@ -476,10 +746,12 @@ class TrustedSurfaceManager:
                 self._local_resource_selections.pop(session_ref, None)
                 self._resource_attestations.pop(attestation_ref, None)
                 return False
-            if pending["audienceDigest"] is None and pending["requestDigest"] is None:
+            if pending["audienceDigest"] is None:
                 pending["audienceDigest"] = audience_digest
+            if pending["audienceDigest"] != audience_digest:
+                return False
+            if pending["requestDigest"] is None:
                 pending["requestDigest"] = request_digest
-                return True
             return (
                 pending["audienceDigest"] == audience_digest
                 and pending["requestDigest"] == request_digest
@@ -504,11 +776,29 @@ class TrustedSurfaceManager:
         import_intent_id: str,
         action: str,
     ) -> bool:
-        if (
-            not SHA256_RE.fullmatch(audience_digest)
-            or not IMPORT_INTENT_RE.fullmatch(import_intent_id)
-            or action not in {"decide:approved", "decide:declined"}
+        if not SHA256_RE.fullmatch(audience_digest) or not IMPORT_INTENT_RE.fullmatch(
+            import_intent_id
         ):
+            return False
+        if action == "revoke":
+            with self._lock:
+                pending = self._authorization_revocation_attestations.get(
+                    attestation_ref
+                )
+                if pending is None:
+                    return False
+                if int(pending["expiresAt"]) <= int(time.time() * 1000):
+                    self._authorization_revocation_attestations.pop(
+                        attestation_ref, None
+                    )
+                    return False
+                return (
+                    pending["kind"] == "anki_import"
+                    and pending["audienceDigest"] == audience_digest
+                    and pending["targetId"] == import_intent_id
+                    and pending["action"] == "revoke"
+                )
+        if action not in {"decide:approved", "decide:declined"}:
             return False
         with self._lock:
             pending = self._import_consent_attestations.get(attestation_ref)
@@ -531,6 +821,56 @@ class TrustedSurfaceManager:
                     decision.attestation_ref, None
                 )
 
+    def authorization_revocation_selections(
+        self, session_ref: str
+    ) -> tuple[TrustedAuthorizationRevocationSelection, ...]:
+        with self._lock:
+            return self._authorization_revocation_selections.get(session_ref, ())
+
+    def verify_authorization_revocation(
+        self,
+        *,
+        attestation_ref: str,
+        audience_digest: str,
+        selection_ref: str,
+        action: str,
+    ) -> bool:
+        if (
+            not SHA256_RE.fullmatch(audience_digest)
+            or not AUTHORIZATION_SELECTION_RE.fullmatch(selection_ref)
+            or action != "revoke_broker_authorization"
+        ):
+            return False
+        with self._lock:
+            pending = self._authorization_revocation_attestations.get(
+                attestation_ref
+            )
+            if pending is None:
+                return False
+            if int(pending["expiresAt"]) <= int(time.time() * 1000):
+                self._authorization_revocation_attestations.pop(
+                    attestation_ref, None
+                )
+                return False
+            return (
+                pending["kind"] == "broker_authorization"
+                and pending["audienceDigest"] == audience_digest
+                and pending["selectionRef"] == selection_ref
+                and pending["action"] == action
+            )
+
+    def complete_authorization_manager(self, session_ref: str) -> None:
+        with self._lock:
+            selections = self._authorization_revocation_selections.pop(
+                session_ref, ()
+            )
+            self._authorization_manager_bindings.pop(session_ref, None)
+            for selection in selections:
+                self._authorization_revocation_attestations.pop(
+                    selection.attestation_ref, None
+                )
+                self._resource_attestations.pop(selection.attestation_ref, None)
+
     def get_session(self, session_ref: str) -> dict[str, Any]:
         _, request = self._load_request(session_ref)
         with self._lock:
@@ -538,7 +878,7 @@ class TrustedSurfaceManager:
         if verified is not None:
             allowed = {
                 "schemaVersion", "sessionRef", "state", "credential", "userGestureRecorded",
-                "authorization", "resourceSelection", "errorCode",
+                "authorization", "resourceSelection", "authorizationRevocation", "errorCode",
             }
             return {key: value for key, value in verified.items() if key in allowed}
         response_path = self.responses_dir / f"{session_ref}.json"
@@ -563,6 +903,14 @@ class TrustedSurfaceManager:
         finalized = dict(response)
         if request.get("surface") == "local_resource_picker":
             finalized = self._finalize_local_resource_response(request, response, response_key)
+            try:
+                response_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        elif request.get("surface") == "authorization_manager":
+            finalized = self._finalize_authorization_manager_response(
+                request, response, response_key
+            )
             try:
                 response_path.unlink(missing_ok=True)
             except OSError:
@@ -628,6 +976,6 @@ class TrustedSurfaceManager:
             self._response_keys.pop(session_ref, None)
         allowed = {
             "schemaVersion", "sessionRef", "state", "credential", "userGestureRecorded",
-            "authorization", "resourceSelection", "errorCode",
+            "authorization", "resourceSelection", "authorizationRevocation", "errorCode",
         }
         return {key: value for key, value in finalized.items() if key in allowed}

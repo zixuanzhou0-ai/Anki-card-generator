@@ -233,6 +233,106 @@ def test_local_resource_picker_keeps_raw_path_out_of_request_response_and_public
     ) is False
 
 
+def test_authorization_manager_keeps_private_targets_out_of_public_files_and_attests_exact_selection(
+    tmp_path: Path,
+) -> None:
+    surfaces = manager(tmp_path)
+    audience_digest = "a" * 64
+    import_intent_id = "anki_intent_" + "b" * 48
+    resource_ref = "resource_" + "c" * 43
+    authorization_digest = "sha256:" + "d" * 64
+    session = surfaces.create_authorization_manager_session(
+        audience_digest=audience_digest,
+        items=[
+            {
+                "kind": "local_resource",
+                "title": "本地资源 · lesson.srt",
+                "detail": "允许读取；剩余 8 次",
+                "state": "active",
+                "locator": {"resourceRef": resource_ref, "revocationEpoch": 0},
+            },
+            {
+                "kind": "anki_import",
+                "title": "Anki 导入批准",
+                "detail": "状态：已批准",
+                "state": "approved",
+                "locator": {"importIntentId": import_intent_id},
+            },
+            {
+                "kind": "broker_authorization",
+                "title": "模型、语音与来源服务授权",
+                "detail": "能力：model",
+                "state": "active",
+                "locator": {
+                    "activeAuthorization": True,
+                    "authorizationDigest": authorization_digest,
+                },
+            },
+        ],
+    )
+    request_path = surfaces.sessions_dir / f"{session['sessionRef']}.json"
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    serialized_request = json.dumps(request, ensure_ascii=False, sort_keys=True)
+    assert resource_ref not in serialized_request
+    assert import_intent_id not in serialized_request
+    assert authorization_digest not in serialized_request
+    assert "locator" not in serialized_request
+    assert len(request["authorizationItems"]) == 3
+
+    surfaces.launch(str(session["sessionRef"]))
+    result = wait_session(surfaces, str(session["sessionRef"]))
+    assert result["state"] == "approved"
+    assert result["authorizationRevocation"] == {
+        "selectedCount": 3,
+        "availableCount": 3,
+    }
+    serialized_result = json.dumps(result, ensure_ascii=False, sort_keys=True)
+    assert resource_ref not in serialized_result
+    assert import_intent_id not in serialized_result
+    assert authorization_digest not in serialized_result
+    assert "privatePayload" not in serialized_result
+    assert not (surfaces.responses_dir / f"{session['sessionRef']}.json").exists()
+
+    selections = surfaces.authorization_revocation_selections(
+        str(session["sessionRef"])
+    )
+    assert [selection.kind for selection in selections] == [
+        "local_resource",
+        "anki_import",
+        "broker_authorization",
+    ]
+    local, anki, broker = selections
+    assert local.locator == {"resourceRef": resource_ref, "revocationEpoch": 0}
+    assert surfaces.verify_resource_gesture(
+        audience_digest,
+        "e" * 64,
+        local.attestation_ref,
+        "revoke_local_resource",
+    ) is True
+    assert surfaces.verify_import_consent_gesture(
+        anki.attestation_ref,
+        audience_digest,
+        import_intent_id,
+        "revoke",
+    ) is True
+    assert surfaces.verify_authorization_revocation(
+        attestation_ref=broker.attestation_ref,
+        audience_digest=audience_digest,
+        selection_ref=broker.selection_ref,
+        action="revoke_broker_authorization",
+    ) is True
+    surfaces.complete_authorization_manager(str(session["sessionRef"]))
+    assert surfaces.authorization_revocation_selections(
+        str(session["sessionRef"])
+    ) == ()
+    assert surfaces.verify_resource_gesture(
+        audience_digest,
+        "e" * 64,
+        local.attestation_ref,
+        "revoke_local_resource",
+    ) is False
+
+
 @pytest.mark.parametrize("profile_ref", ["", "../escape", "model primary", "x" * 129])
 def test_invalid_profile_refs_are_rejected(tmp_path: Path, profile_ref: str) -> None:
     with pytest.raises(TrustedSurfaceError) as caught:

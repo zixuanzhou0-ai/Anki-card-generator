@@ -276,7 +276,9 @@ def _handle_request(
                     "all eight local validation states. Fully validated text plans can be converted into "
                     "authenticated CardArtifacts. Verified APKG export, trusted local Anki confirmation, "
                     "actual import with data verification, and task polling/cancellation are available. "
-                    "Trusted local credential settings are available for existing profiles; profile creation, "
+                    "Trusted local credential settings are available for existing profiles. Only when the user "
+                    "explicitly asks to manage permissions, system.revoke_grant opens a trusted local manager "
+                    "where the user chooses targets; completed effects are not rolled back. Profile creation, "
                     "remote profile validation, raw Worker commands, and runtime rendering/playback verification "
                     "remain unavailable."
                 ),
@@ -303,6 +305,7 @@ def _handle_request(
                     tool_name=str(tool_name),
                     arguments=arguments,
                     user_action_timeout_seconds=user_action_timeout_seconds,
+                    audience_session=audience_session,
                 )
             except McpSystemToolInputError:
                 return _rpc_error(request_id, -32602, "Invalid system tool arguments")

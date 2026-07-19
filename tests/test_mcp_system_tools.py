@@ -13,11 +13,13 @@ from card_service.mcp_system_tools import (
     LIST_PROFILES_TOOL,
     McpSystemToolInputError,
     OPEN_LOCAL_SETTINGS_TOOL,
+    REVOKE_GRANT_TOOL,
     call_system_tool,
     system_tool_definitions,
 )
 from card_service.credentials import InMemoryCredentialBackend
 from card_service.service import CardService
+from card_service.trusted_mcp_audience import create_development_mcp_audience
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -244,6 +246,7 @@ def test_profile_tools_have_closed_non_secret_contracts() -> None:
         AUTHORIZE_DISCOVERY_TOOL,
         LIST_PROFILES_TOOL,
         OPEN_LOCAL_SETTINGS_TOOL,
+        REVOKE_GRANT_TOOL,
     }
     assert definitions[LIST_PROFILES_TOOL]["inputSchema"] == {
         "type": "object",
@@ -345,5 +348,96 @@ def test_local_settings_rejects_open_ended_arguments(arguments: dict[str, Any]) 
             StubService({"state": "completed"}),  # type: ignore[arg-type]
             tool_name=OPEN_LOCAL_SETTINGS_TOOL,
             arguments=arguments,
+            user_action_timeout_seconds=0,
+        )
+
+
+def test_revoke_grant_has_closed_destructive_contract_without_private_ids() -> None:
+    definition = {
+        item["name"]: item for item in system_tool_definitions()
+    }[REVOKE_GRANT_TOOL]
+    assert definition["annotations"] == {
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    }
+    encoded = json.dumps(
+        {
+            "inputSchema": definition["inputSchema"],
+            "outputSchema": definition["outputSchema"],
+        },
+        sort_keys=True,
+    ).casefold()
+    for forbidden in (
+        "authorizationid",
+        "resourceRef".casefold(),
+        "importintentid",
+        "ledger",
+        "attestation",
+        "path\"",
+        "url\"",
+        "bearer",
+    ):
+        assert forbidden not in encoded
+
+
+def test_revoke_grant_uses_trusted_audience_and_returns_only_bounded_summary() -> None:
+    class RevocationService:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        def request_authorization_revocation(self, **values: Any) -> dict[str, Any]:
+            self.calls.append(values)
+            return {
+                "schemaVersion": 1,
+                "state": "completed",
+                "availableCount": 1,
+                "selectedCount": 1,
+                "revokedCount": 1,
+                "alreadyConsumedCount": 0,
+                "alreadyRevokedCount": 0,
+                "notFoundCount": 0,
+                "failedCount": 0,
+                "results": [
+                    {"kind": "local_resource", "disposition": "revoked"}
+                ],
+            }
+
+    service = RevocationService()
+    audience = create_development_mcp_audience()
+    result = call_system_tool(
+        service,  # type: ignore[arg-type]
+        tool_name=REVOKE_GRANT_TOOL,
+        arguments={},
+        audience_session=audience,
+        user_action_timeout_seconds=0,
+    )
+    assert service.calls == [
+        {"audience": audience.audience, "authorization_session_ref": None}
+    ]
+    assert result["structuredContent"]["revokedCount"] == 1
+    serialized = json.dumps(result, sort_keys=True).casefold()
+    for forbidden in ("resource_", "anki_intent_", "attestation", "ledger"):
+        assert forbidden not in serialized
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"resourceRef": "resource_private"},
+        {"authorizationSessionRef": "not-a-uuid"},
+        {"authorizationSessionRef": "00000000-0000-4000-8000-000000000000", "all": True},
+    ],
+)
+def test_revoke_grant_rejects_private_or_open_ended_arguments(
+    arguments: dict[str, Any],
+) -> None:
+    with pytest.raises(McpSystemToolInputError):
+        call_system_tool(
+            StubService({"state": "completed"}),  # type: ignore[arg-type]
+            tool_name=REVOKE_GRANT_TOOL,
+            arguments=arguments,
+            audience_session=create_development_mcp_audience(),
             user_action_timeout_seconds=0,
         )

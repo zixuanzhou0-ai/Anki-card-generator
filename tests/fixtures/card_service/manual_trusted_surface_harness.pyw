@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import tempfile
@@ -21,7 +22,9 @@ def main() -> None:
         python_path=Path(sys.executable).resolve(),
         credential_backend=InMemoryCredentialBackend(),
     )
-    if "--picker" in sys.argv[1:]:
+    if "--authorization-manager" in sys.argv[1:]:
+        session = _create_authorization_manager_session(manager)
+    elif "--picker" in sys.argv[1:]:
         session = manager.create_local_resource_session(
             kind="file",
             scope_summary="读取所选文件一次，最多 16 MiB，仅用于受信选择器视觉验收。",
@@ -80,6 +83,43 @@ def _create_broker_session(manager: TrustedSurfaceManager) -> dict[str, object]:
                 "youtubeSubtitles": {"enabled": True, "timeoutSeconds": 30}
             },
         }
+    )
+
+
+def _create_authorization_manager_session(
+    manager: TrustedSurfaceManager,
+) -> dict[str, object]:
+    return manager.create_authorization_manager_session(
+        audience_digest=hashlib.sha256(b"manual-visual-check").hexdigest(),
+        items=[
+            {
+                "kind": "local_resource",
+                "title": "本地资源 · 示例字幕.srt",
+                "detail": "允许操作：读取；剩余 2 次；有效期至 2026-07-19 23:59",
+                "state": "active",
+                "locator": {
+                    "resourceRef": "private-resource-ref-for-visual-check",
+                    "revocationEpoch": 3,
+                },
+            },
+            {
+                "kind": "anki_import",
+                "title": "Anki 导入批准",
+                "detail": "状态：已批准；有效期至 2026-07-19 23:59",
+                "state": "approved",
+                "locator": {"importIntentId": "anki_intent_" + "a" * 48},
+            },
+            {
+                "kind": "broker_authorization",
+                "title": "模型、语音与来源服务授权",
+                "detail": "能力：model、tts、source；配置 3 项；有效期至 2026-07-19 23:59",
+                "state": "active",
+                "locator": {
+                    "activeAuthorization": True,
+                    "authorizationDigest": "sha256:" + "b" * 64,
+                },
+            },
+        ],
     )
 
 

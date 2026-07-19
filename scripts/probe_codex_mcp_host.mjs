@@ -17,6 +17,7 @@ const FULL_TOOLSET = [
   "system.authorize_candidate_discovery",
   "system.list_profiles",
   "system.open_local_settings",
+  "system.revoke_grant",
   "system.request_source_grant",
   "system.request_output_grant",
   "study.create_project",

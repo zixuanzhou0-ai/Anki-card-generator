@@ -103,3 +103,29 @@ def test_private_picker_payload_rejects_open_envelopes_and_wrong_keys() -> None:
             request_nonce=REQUEST_NONCE,
             surface=SURFACE,
         )
+
+
+def test_private_payload_is_cryptographically_bound_to_surface_kind() -> None:
+    key = new_response_key()
+    sealed = seal_private_payload(
+        {"schemaVersion": 1, "selectedRefs": ["authsel_" + "a" * 32]},
+        key,
+        session_ref=SESSION_REF,
+        request_nonce=REQUEST_NONCE,
+        surface="authorization_manager",
+    )
+    assert open_private_payload(
+        sealed,
+        key,
+        session_ref=SESSION_REF,
+        request_nonce=REQUEST_NONCE,
+        surface="authorization_manager",
+    )["selectedRefs"] == ["authsel_" + "a" * 32]
+    with pytest.raises(ValueError):
+        open_private_payload(
+            sealed,
+            key,
+            session_ref=SESSION_REF,
+            request_nonce=REQUEST_NONCE,
+            surface="local_resource_picker",
+        )

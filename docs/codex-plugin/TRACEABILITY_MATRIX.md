@@ -98,7 +98,7 @@
 | SR-012 | 不监听 LAN | stdio/local runtime | no public port | process/network inspect | M1/M3 |
 | SR-013 | 模型/TTS/成本/批量确认不可旁路 | OperationIntent + trusted approval ledger | request_operation_confirmation | mutation/replay/no-user-gesture | M2/M3 |
 | SR-014 | 恶意媒体不能逃逸或耗尽宿主 | restricted child/job + protocol/demuxer allowlist + staging/resource caps | source adapters only | playlist/concat/subfile/protocol/decode-bomb corpus | M1/M3 |
-| SR-015 | 所有未消费授权均可安全撤销 | unified trusted authorization manager + atomic ledgers | system.revoke_grant 仅打开受信 UI | revoke/consume race、repeat revoke、no-bearer | M2/M3 |
+| SR-015 | 所有当前已接线、未消费授权均可安全撤销 | CURRENT trusted authorization manager + per-ledger atomic revoke/consume + broker digest freshness | CURRENT system.revoke_grant 仅打开/轮询受信 UI；不接受目标 ID | revoke/consume race、repeat revoke、stale broker window、cross-audience、no-bearer | M2/M3 |
 | SR-016 | 出域与成本边界可机器验证 | OperationRequestManifest + per-target DisclosureEntry + CostBudget + canonical profile/egress/audience manifests | request_operation_confirmation | canonical digest/cross-target mutation/unknown-price | M2/M3 |
 | SR-017 | Worker 不持有服务秘密或公网能力 | typed BrokerRequest + authoritative locator + reservation ledger | structured task-owned IPC only | bypass/cross-target/text-swap/overlimit/revoke/crash/retry | M1/M2 |
 | SR-018 | 插件摄取的 raw URL 不进入 MCP；trusted-entry 敏感值不进入模型/helper | trusted_entry-only + opaque networkResourceRef + network broker | public schema has no URL field | ordinary/signed MCP + model/process/log/crash canary | M2/M3 |

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import tkinter as tk
 from pathlib import Path
@@ -21,7 +22,12 @@ def read_request(path: Path) -> dict[str, Any]:
     value = json.loads(sys.stdin.read())
     if not isinstance(value, dict) or value.get("schemaVersion") != 1:
         raise ValueError("Invalid trusted surface request")
-    if value.get("surface") not in {"local_settings", "consent", "local_resource_picker"}:
+    if value.get("surface") not in {
+        "local_settings",
+        "consent",
+        "local_resource_picker",
+        "authorization_manager",
+    }:
         raise ValueError("Unknown trusted surface")
     session_ref = str(value.get("sessionRef") or "")
     expected_response = (path.parent.parent / "responses" / f"{session_ref}.json").resolve()
@@ -35,6 +41,37 @@ def read_request(path: Path) -> dict[str, Any]:
         expected_credentials = (path.parent.parent / "credentials").resolve()
         if Path(str(value.get("credentialStateDir") or "")) != expected_credentials:
             raise ValueError("Trusted credential state path mismatch")
+    if value["surface"] == "authorization_manager":
+        if not re.fullmatch(r"[0-9a-f]{64}", str(value.get("audienceDigest") or "")):
+            raise ValueError("Trusted authorization audience is invalid")
+        items = value.get("authorizationItems")
+        if not isinstance(items, list) or not 1 <= len(items) <= 256:
+            raise ValueError("Trusted authorization items are invalid")
+        seen: set[str] = set()
+        for item in items:
+            if not isinstance(item, dict) or set(item) != {
+                "selectionRef",
+                "kind",
+                "title",
+                "detail",
+                "state",
+            }:
+                raise ValueError("Trusted authorization item is invalid")
+            selection_ref = item.get("selectionRef")
+            if (
+                not isinstance(selection_ref, str)
+                or not re.fullmatch(r"authsel_[A-Za-z0-9_-]{32}", selection_ref)
+                or selection_ref in seen
+                or item.get("kind")
+                not in {"local_resource", "anki_import", "broker_authorization"}
+                or item.get("state") not in {"active", "approved", "pending"}
+                or not isinstance(item.get("title"), str)
+                or not 1 <= len(item["title"].strip()) <= 160
+                or not isinstance(item.get("detail"), str)
+                or not 1 <= len(item["detail"].strip()) <= 500
+            ):
+                raise ValueError("Trusted authorization item is invalid")
+            seen.add(selection_ref)
     decode_response_key(str(value.get("responseAuthKey") or ""))
     return value
 
@@ -238,9 +275,162 @@ def show_consent(request: dict[str, Any]) -> None:
     root.mainloop()
 
 
+def show_authorization_manager(request: dict[str, Any]) -> None:
+    root = tk.Tk()
+    root.title("Codex Study · 授权管理")
+    root.geometry("820x600")
+    root.minsize(680, 500)
+    frame = ttk.Frame(root, padding=24)
+    frame.pack(fill="both", expand=True)
+    ttk.Label(
+        frame,
+        text="管理当前会话的授权",
+        font=("Microsoft YaHei UI", 18, "bold"),
+    ).pack(anchor="w")
+    ttk.Label(
+        frame,
+        text=(
+            "请选择要停止继续使用的授权。撤销只阻止后续访问；已经完成的模型调用、"
+            "文件读取或 Anki 写入不会被回滚。授权的私有标识不会进入对话。"
+        ),
+        wraplength=750,
+    ).pack(anchor="w", pady=(10, 18))
+
+    table_frame = ttk.Frame(frame)
+    table_frame.pack(fill="both", expand=True)
+    table = ttk.Treeview(
+        table_frame,
+        columns=("kind", "title", "detail", "state"),
+        show="headings",
+        selectmode="extended",
+        height=12,
+    )
+    table.heading("kind", text="类型")
+    table.heading("title", text="授权")
+    table.heading("detail", text="范围")
+    table.heading("state", text="状态")
+    table.column("kind", width=105, minwidth=90, stretch=False)
+    table.column("title", width=185, minwidth=140, stretch=False)
+    table.column("detail", width=390, minwidth=220, stretch=True)
+    table.column("state", width=80, minwidth=70, stretch=False)
+    scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=table.yview)
+    table.configure(yscrollcommand=scrollbar.set)
+    kind_labels = {
+        "local_resource": "本地资源",
+        "anki_import": "Anki 导入",
+        "broker_authorization": "远程服务",
+    }
+    state_labels = {"active": "使用中", "approved": "已批准", "pending": "待执行"}
+    for item in request["authorizationItems"]:
+        table.insert(
+            "",
+            "end",
+            iid=str(item["selectionRef"]),
+            values=(
+                kind_labels[str(item["kind"])],
+                str(item["title"]),
+                str(item["detail"]),
+                state_labels[str(item["state"])],
+            ),
+        )
+    table.pack(side="left", fill="both", expand=True)
+    scrollbar.pack(side="right", fill="y")
+    status = ttk.Label(frame, text="请选择至少一项。")
+    status.pack(anchor="w", pady=(12, 8))
+    revoke_button: ttk.Button
+
+    finished = False
+
+    def finish(state: str, selected_refs: list[str] | None = None) -> None:
+        nonlocal finished
+        if finished:
+            return
+        finished = True
+        extra: dict[str, Any] = {"userGestureRecorded": state == "approved"}
+        if state == "approved" and selected_refs:
+            response_key = decode_response_key(
+                str(request.get("responseAuthKey") or "")
+            )
+            extra["privatePayload"] = seal_private_payload(
+                {"schemaVersion": 1, "selectedRefs": selected_refs},
+                response_key,
+                session_ref=str(request["sessionRef"]),
+                request_nonce=str(request["requestNonce"]),
+                surface="authorization_manager",
+            )
+        write_response(request, state, **extra)
+        root.destroy()
+
+    def revoke_selected() -> None:
+        selected_refs = list(table.selection())
+        if not selected_refs:
+            status.configure(text="请先选择至少一项要撤销的授权。")
+            table.focus_set()
+            return
+        if not messagebox.askyesno(
+            "确认撤销",
+            (
+                f"确定撤销选中的 {len(selected_refs)} 项授权吗？\n\n"
+                "这会阻止后续访问，但不会回滚已经完成的调用或写入。"
+            ),
+            parent=root,
+            default=messagebox.NO,
+        ):
+            return
+        finish("approved", selected_refs)
+
+    def update_selection_status(_event: tk.Event[Any] | None = None) -> None:
+        selected_count = len(table.selection())
+        revoke_button.configure(state="normal" if selected_count else "disabled")
+        status.configure(
+            text=(
+                f"已选择 {selected_count} 项。"
+                if selected_count
+                else "请选择至少一项。"
+            )
+        )
+
+    def select_all(_event: tk.Event[Any] | None = None) -> str:
+        table.selection_set(table.get_children())
+        update_selection_status()
+        return "break"
+
+    buttons = ttk.Frame(frame)
+    buttons.pack(fill="x", side="bottom", pady=(6, 0))
+    ttk.Button(buttons, text="取消", command=lambda: finish("cancelled")).pack(
+        side="right"
+    )
+    revoke_button = ttk.Button(
+        buttons,
+        text="撤销所选授权",
+        command=revoke_selected,
+        state="disabled",
+    )
+    revoke_button.pack(side="right", padx=(0, 10))
+    table.bind("<<TreeviewSelect>>", update_selection_status)
+    table.bind("<Control-a>", select_all)
+    table.bind("<Control-A>", select_all)
+    table.bind("<Return>", lambda _event: revoke_selected())
+    root.bind("<Escape>", lambda _event: finish("cancelled"))
+    root.protocol("WM_DELETE_WINDOW", lambda: finish("cancelled"))
+    children = table.get_children()
+    if children:
+        table.focus(children[0])
+    table.focus_set()
+    root.mainloop()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("surface", choices=("local_settings", "consent", "local_resource_picker"))
+    parser.add_argument(
+        "surface",
+        choices=(
+            "local_settings",
+            "consent",
+            "local_resource_picker",
+            "authorization_manager",
+        ),
+    )
     parser.add_argument("request_path", type=Path)
     arguments = parser.parse_args()
     request = read_request(arguments.request_path.resolve(strict=True))
@@ -250,6 +440,8 @@ def main() -> None:
         show_local_settings(request)
     elif arguments.surface == "consent":
         show_consent(request)
+    elif arguments.surface == "authorization_manager":
+        show_authorization_manager(request)
     else:
         show_local_resource_picker(request)
 

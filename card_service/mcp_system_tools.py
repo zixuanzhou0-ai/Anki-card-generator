@@ -1,18 +1,29 @@
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
 from .hermes_proxy import HERMES_PROXY_BASE_URL
 from .provider_egress import MAX_MODEL_RESPONSE_BYTES
 from .service import CardService, CardServiceError
+from .trusted_mcp_audience import TrustedMcpAudienceSession
 
 
 AUTHORIZE_DISCOVERY_TOOL = "system.authorize_candidate_discovery"
 LIST_PROFILES_TOOL = "system.list_profiles"
 OPEN_LOCAL_SETTINGS_TOOL = "system.open_local_settings"
+REVOKE_GRANT_TOOL = "system.revoke_grant"
+_AUTHORIZATION_SESSION_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
 SYSTEM_TOOL_NAMES = frozenset(
-    {AUTHORIZE_DISCOVERY_TOOL, LIST_PROFILES_TOOL, OPEN_LOCAL_SETTINGS_TOOL}
+    {
+        AUTHORIZE_DISCOVERY_TOOL,
+        LIST_PROFILES_TOOL,
+        OPEN_LOCAL_SETTINGS_TOOL,
+        REVOKE_GRANT_TOOL,
+    }
 )
 
 
@@ -283,6 +294,102 @@ def system_tool_definitions() -> list[dict[str, Any]]:
                 "openWorldHint": False,
             },
         },
+        {
+            "name": REVOKE_GRANT_TOOL,
+            "title": "Manage and Revoke Authorizations",
+            "description": (
+                "Open or poll a trusted local authorization manager. Only the user can choose "
+                "which current file, folder, Anki import, or remote-service authorization to "
+                "revoke; private ledger identifiers never enter tool arguments or results."
+            ),
+            "inputSchema": {
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "authorizationSessionRef": {
+                                "type": "string",
+                                "pattern": (
+                                    "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-"
+                                    "[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                ),
+                            }
+                        },
+                        "required": ["authorizationSessionRef"],
+                        "additionalProperties": False,
+                    },
+                ]
+            },
+            "outputSchema": {
+                "type": "object",
+                "properties": {
+                    "schemaVersion": {"type": "integer", "const": 1},
+                    "authorizationSessionRef": {"type": "string"},
+                    "state": {
+                        "type": "string",
+                        "enum": [
+                            "open",
+                            "created",
+                            "processing",
+                            "empty",
+                            "completed",
+                            "cancelled",
+                            "failed",
+                        ],
+                    },
+                    "availableCount": {"type": "integer", "minimum": 0, "maximum": 256},
+                    "selectedCount": {"type": "integer", "minimum": 0, "maximum": 256},
+                    "revokedCount": {"type": "integer", "minimum": 0, "maximum": 256},
+                    "alreadyConsumedCount": {"type": "integer", "minimum": 0, "maximum": 256},
+                    "alreadyRevokedCount": {"type": "integer", "minimum": 0, "maximum": 256},
+                    "notFoundCount": {"type": "integer", "minimum": 0, "maximum": 256},
+                    "failedCount": {"type": "integer", "minimum": 0, "maximum": 256},
+                    "results": {
+                        "type": "array",
+                        "maxItems": 256,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                        "local_resource",
+                                        "anki_import",
+                                        "broker_authorization",
+                                    ],
+                                },
+                                "disposition": {
+                                    "type": "string",
+                                    "enum": [
+                                        "revoked",
+                                        "already_consumed",
+                                        "already_revoked",
+                                        "not_found",
+                                        "failed",
+                                    ],
+                                },
+                            },
+                            "required": ["kind", "disposition"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "errorCode": {"type": "string"},
+                },
+                "required": ["schemaVersion", "state", "availableCount"],
+                "additionalProperties": False,
+            },
+            "annotations": {
+                "readOnlyHint": False,
+                "destructiveHint": True,
+                "idempotentHint": False,
+                "openWorldHint": False,
+            },
+        },
     ]
 
 
@@ -292,6 +399,7 @@ def call_system_tool(
     tool_name: str,
     arguments: Any,
     user_action_timeout_seconds: float,
+    audience_session: TrustedMcpAudienceSession | None = None,
 ) -> dict[str, Any]:
     if tool_name == LIST_PROFILES_TOOL:
         if arguments != {}:
@@ -314,6 +422,24 @@ def call_system_tool(
             result = service.dispatch("system.get_local_settings", arguments)
             return _settings_tool_result(result)
         raise McpSystemToolInputError("invalid system tool arguments")
+    if tool_name == REVOKE_GRANT_TOOL:
+        if audience_session is None or not isinstance(arguments, dict):
+            raise McpSystemToolInputError("invalid system tool arguments")
+        if arguments == {}:
+            session_ref = None
+        elif set(arguments) == {"authorizationSessionRef"} and isinstance(
+            arguments["authorizationSessionRef"], str
+        ) and _AUTHORIZATION_SESSION_RE.fullmatch(
+            arguments["authorizationSessionRef"]
+        ):
+            session_ref = arguments["authorizationSessionRef"]
+        else:
+            raise McpSystemToolInputError("invalid system tool arguments")
+        result = service.request_authorization_revocation(
+            audience=audience_session.audience,
+            authorization_session_ref=session_ref,
+        )
+        return _revocation_tool_result(result)
     if tool_name != AUTHORIZE_DISCOVERY_TOOL:
         raise McpSystemToolInputError("unknown system tool")
     if not isinstance(arguments, dict) or arguments != {"preset": "hermes_grok_4_5"}:
@@ -405,11 +531,33 @@ def _settings_tool_result(public: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _revocation_tool_result(public: dict[str, Any]) -> dict[str, Any]:
+    state = str(public.get("state") or "failed")
+    if state in {"open", "created"}:
+        message = "The trusted local authorization manager is open."
+    elif state == "processing":
+        message = "The selected authorization changes are being applied."
+    elif state == "empty":
+        message = "There are no current authorizations available to revoke."
+    elif state == "completed":
+        message = (
+            f"Authorization management completed: {int(public.get('revokedCount') or 0)} "
+            "authorization(s) revoked. Completed calls and writes were not rolled back."
+        )
+    else:
+        message = "Authorization management did not revoke any new authorization."
+    return {
+        "content": [{"type": "text", "text": message}],
+        "structuredContent": public,
+    }
+
+
 __all__ = [
     "AUTHORIZE_DISCOVERY_TOOL",
     "LIST_PROFILES_TOOL",
     "McpSystemToolInputError",
     "OPEN_LOCAL_SETTINGS_TOOL",
+    "REVOKE_GRANT_TOOL",
     "SYSTEM_TOOL_NAMES",
     "call_system_tool",
     "system_tool_definitions",

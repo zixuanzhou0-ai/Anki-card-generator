@@ -31,7 +31,11 @@ from .anki_target_probe import (
     LocalAnkiConnectTargetProbe,
     normalize_anki_connect_url,
 )
-from .artifact_registry import ArtifactAudienceBinding, ArtifactRegistryError
+from .artifact_registry import (
+    ArtifactAudienceBinding,
+    ArtifactRegistryError,
+    canonical_json_bytes,
+)
 from .broker_configuration import BrokerConfigurationError, ServiceBrokerRuntime
 from .candidate_discovery_broker import (
     CANDIDATE_DISCOVERY_BROKER_METHOD,
@@ -839,6 +843,9 @@ class CardService:
             tuple[str, str, str, str, str], dict[str, Any]
         ] = {}
         self._anki_import_confirmation_lock = threading.RLock()
+        self._authorization_manager_sessions: dict[str, dict[str, Any]] = {}
+        self._completed_authorization_revocations: dict[str, dict[str, Any]] = {}
+        self._authorization_manager_lock = threading.RLock()
 
         self._active_broker_runtime: ServiceBrokerRuntime | None = broker_runtime
         self._broker_runtime_lock = threading.RLock()
@@ -2480,6 +2487,7 @@ class CardService:
                 "system.list_profiles",
                 "system.request_source_grant",
                 "system.request_output_grant",
+                "system.revoke_grant",
                 "system.open_local_settings",
                 "system.get_local_settings",
                 "system.open_broker_authorization",
@@ -2942,6 +2950,9 @@ class CardService:
             if current_digest == issued_digest and self._active_broker_runtime is not None:
                 return
             self._active_broker_runtime = runtime
+            self.broker_handler_factory = runtime.handler_factory
+            self.broker_method_blocker = runtime.method_blocker
+            self.broker_runtime_capabilities = runtime.capabilities()
 
     def _active_broker_authorization_summary(self) -> dict[str, Any] | None:
         """Return a bounded internal manager view of the active broker grant."""
@@ -2961,6 +2972,7 @@ class CardService:
             return {
                 "schemaVersion": 1,
                 "kind": "broker_authorization",
+                "authorizationDigest": configuration.manifest_digest,
                 "capabilities": capabilities,
                 "profileCount": len(
                     {
@@ -2978,7 +2990,9 @@ class CardService:
                 ),
             }
 
-    def _revoke_active_broker_authorization(self) -> dict[str, Any]:
+    def _revoke_active_broker_authorization(
+        self, *, expected_authorization_digest: str | None = None
+    ) -> dict[str, Any]:
         """Atomically revoke every profile in the current broker authorization.
 
         Running calls are not represented as rolled back. New reservations and
@@ -2994,6 +3008,17 @@ class CardService:
                     "state": "not_found",
                     "revokedProfileCount": 0,
                 }
+            current_digest = runtime.configuration.manifest_digest
+            if (
+                expected_authorization_digest is not None
+                and current_digest != expected_authorization_digest
+            ):
+                return {
+                    "schemaVersion": 1,
+                    "kind": "broker_authorization",
+                    "state": "stale",
+                    "revokedProfileCount": 0,
+                }
             profile_refs = {
                 str(profile_ref)
                 for bindings in runtime.configuration.method_bindings.values()
@@ -3002,6 +3027,9 @@ class CardService:
             newly_revoked = runtime.ledger.revoke_profiles(profile_refs)
             if self._active_broker_runtime is runtime:
                 self._active_broker_runtime = None
+                self.broker_handler_factory = None
+                self.broker_method_blocker = None
+                self.broker_runtime_capabilities = {}
             return {
                 "schemaVersion": 1,
                 "kind": "broker_authorization",
@@ -3009,9 +3037,391 @@ class CardService:
                 "revokedProfileCount": len(profile_refs),
                 "newlyRevokedProfileCount": newly_revoked,
             }
-            self.broker_handler_factory = runtime.handler_factory
-            self.broker_method_blocker = runtime.method_blocker
-            self.broker_runtime_capabilities = runtime.capabilities()
+
+    @staticmethod
+    def _authorization_session_matches(
+        pending: Mapping[str, Any], audience: ArtifactAudienceBinding
+    ) -> bool:
+        return pending.get("audience") == audience
+
+    def _authorization_audience_digest(
+        self, audience: ArtifactAudienceBinding
+    ) -> str:
+        if not isinstance(audience, ArtifactAudienceBinding):
+            raise CardServiceError(
+                "AUTHORIZATION_AUDIENCE_INVALID",
+                "Trusted authorization audience is invalid",
+                retryable=False,
+                stage="authorization",
+            )
+        runtime = self._ensure_resource_runtime()
+        return hashlib.sha256(
+            canonical_json_bytes(audience.audience(runtime.service_instance_id))
+        ).hexdigest()
+
+    def _authorization_inventory(
+        self, audience: ArtifactAudienceBinding
+    ) -> tuple[str, list[dict[str, Any]]]:
+        audience_digest = self._authorization_audience_digest(audience)
+        try:
+            local_grants = self._ensure_resource_runtime().list_local_grants(
+                audience=audience,
+                include_terminal=False,
+                maximum=257,
+            )
+            import_approvals = self._ensure_study_runtime().list_anki_import_approvals(
+                audience=audience,
+                include_terminal=False,
+                maximum=257,
+            )
+        except (ServiceResourceRuntimeError, StudyRuntimeError) as error:
+            raise CardServiceError(
+                error.code,
+                "Authorization inventory is unavailable",
+                retryable=False,
+                stage="authorization",
+            ) from error
+
+        items: list[dict[str, Any]] = []
+        for grant in local_grants:
+            actions = ", ".join(str(value) for value in grant.get("actions") or [])
+            items.append(
+                {
+                    "kind": "local_resource",
+                    "title": f"本地资源 · {str(grant.get('displayName') or '已选择资源')[:120]}",
+                    "detail": (
+                        f"允许操作：{actions or '读取'}；剩余 {int(grant.get('remainingUses') or 0)} 次；"
+                        f"有效期至 {str(grant.get('expiresAt') or '未知')}"
+                    )[:500],
+                    "state": "active",
+                    "locator": {
+                        "resourceRef": str(grant["resourceRef"]),
+                        "revocationEpoch": int(grant["revocationEpoch"]),
+                    },
+                }
+            )
+        for approval in import_approvals:
+            approval_state = str(approval.get("approvalState") or "pending")
+            if approval_state not in {"pending", "approved"}:
+                continue
+            items.append(
+                {
+                    "kind": "anki_import",
+                    "title": "Anki 导入批准",
+                    "detail": (
+                        f"状态：{'已批准' if approval_state == 'approved' else '待确认'}；"
+                        f"有效期至 {str(approval.get('expiresAt') or '未知')}"
+                    )[:500],
+                    "state": approval_state,
+                    "locator": {
+                        "importIntentId": str(approval["importIntentId"]),
+                    },
+                }
+            )
+        broker = self._active_broker_authorization_summary()
+        if broker is not None and broker["state"] == "active":
+            capabilities = "、".join(str(value) for value in broker["capabilities"])
+            items.append(
+                {
+                    "kind": "broker_authorization",
+                    "title": "模型、语音与来源服务授权",
+                    "detail": (
+                        f"能力：{capabilities or '远程服务'}；配置 {broker['profileCount']} 项；"
+                        f"有效期至 {broker['expiresAtUnixMs']}"
+                    )[:500],
+                    "state": "active",
+                    "locator": {
+                        "activeAuthorization": True,
+                        "authorizationDigest": str(broker["authorizationDigest"]),
+                    },
+                }
+            )
+        if len(local_grants) > 256 or len(import_approvals) > 256 or len(items) > 256:
+            raise CardServiceError(
+                "AUTHORIZATION_MANAGER_LIMIT_EXCEEDED",
+                "Authorization inventory exceeds the bounded management limit",
+                retryable=False,
+                stage="authorization",
+            )
+        return audience_digest, items
+
+    @staticmethod
+    def _authorization_disposition(error_code: str) -> str:
+        if error_code in {"IMPORT_APPROVAL_CONSUMED"}:
+            return "already_consumed"
+        if error_code in {
+            "RESOURCE_ALREADY_REVOKED",
+            "RESOURCE_REVOKED",
+            "IMPORT_APPROVAL_ALREADY_REVOKED",
+            "IMPORT_APPROVAL_REVOKED",
+        }:
+            return "already_revoked"
+        if error_code in {
+            "RESOURCE_NOT_FOUND",
+            "IMPORT_INTENT_NOT_FOUND",
+            "IMPORT_APPROVAL_NOT_FOUND",
+        }:
+            return "not_found"
+        return "failed"
+
+    def request_authorization_revocation(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        authorization_session_ref: str | None = None,
+    ) -> dict[str, Any]:
+        """Open or poll the trusted, pathless authorization revocation manager."""
+
+        if authorization_session_ref is None:
+            audience_digest, items = self._authorization_inventory(audience)
+            if not items:
+                return {
+                    "schemaVersion": 1,
+                    "state": "empty",
+                    "availableCount": 0,
+                    "selectedCount": 0,
+                    "revokedCount": 0,
+                    "alreadyConsumedCount": 0,
+                    "alreadyRevokedCount": 0,
+                    "notFoundCount": 0,
+                    "failedCount": 0,
+                    "results": [],
+                }
+            try:
+                session = self.trusted_surfaces.create_authorization_manager_session(
+                    audience_digest=audience_digest,
+                    items=items,
+                )
+                session_ref = str(session["sessionRef"])
+                with self._authorization_manager_lock:
+                    self._authorization_manager_sessions[session_ref] = {
+                        "audience": audience,
+                        "audienceDigest": audience_digest,
+                        "availableCount": len(items),
+                        "processing": False,
+                    }
+                opened = self.trusted_surfaces.launch(session_ref)
+            except TrustedSurfaceError as error:
+                if "session_ref" in locals():
+                    with self._authorization_manager_lock:
+                        self._authorization_manager_sessions.pop(session_ref, None)
+                raise CardServiceError(
+                    error.code,
+                    str(error),
+                    retryable=False,
+                    stage="authorization",
+                ) from error
+            return {
+                "schemaVersion": 1,
+                "authorizationSessionRef": session_ref,
+                "state": str(opened.get("state") or "open"),
+                "availableCount": len(items),
+            }
+
+        session_ref = str(authorization_session_ref)
+        with self._authorization_manager_lock:
+            completed = self._completed_authorization_revocations.get(session_ref)
+            pending = self._authorization_manager_sessions.get(session_ref)
+            if completed is not None:
+                if not self._authorization_session_matches(completed, audience):
+                    raise CardServiceError(
+                        "AUTHORIZATION_SESSION_NOT_FOUND",
+                        "Authorization manager session was not found",
+                        retryable=False,
+                        stage="authorization",
+                    )
+                return json.loads(
+                    json.dumps(completed["result"], ensure_ascii=False)
+                )
+            if pending is None or not self._authorization_session_matches(
+                pending, audience
+            ):
+                raise CardServiceError(
+                    "AUTHORIZATION_SESSION_NOT_FOUND",
+                    "Authorization manager session was not found",
+                    retryable=False,
+                    stage="authorization",
+                )
+        try:
+            surface = self.trusted_surfaces.get_session(session_ref)
+        except TrustedSurfaceError as error:
+            raise CardServiceError(
+                error.code,
+                str(error),
+                retryable=False,
+                stage="authorization",
+            ) from error
+        surface_state = str(surface.get("state") or "failed")
+        summary = surface.get("authorizationRevocation") or {}
+        if surface_state in {"open", "created"}:
+            return {
+                "schemaVersion": 1,
+                "authorizationSessionRef": session_ref,
+                "state": surface_state,
+                "availableCount": int(
+                    summary.get("availableCount")
+                    or pending.get("availableCount")
+                    or 0
+                ),
+            }
+        if surface_state in {"cancelled", "failed"}:
+            result = {
+                "schemaVersion": 1,
+                "authorizationSessionRef": session_ref,
+                "state": surface_state,
+                "availableCount": int(
+                    summary.get("availableCount")
+                    or pending.get("availableCount")
+                    or 0
+                ),
+                "selectedCount": 0,
+                "revokedCount": 0,
+                "alreadyConsumedCount": 0,
+                "alreadyRevokedCount": 0,
+                "notFoundCount": 0,
+                "failedCount": 0,
+                "results": [],
+            }
+            if isinstance(surface.get("errorCode"), str):
+                result["errorCode"] = surface["errorCode"]
+            self.trusted_surfaces.complete_authorization_manager(session_ref)
+            with self._authorization_manager_lock:
+                pending = self._authorization_manager_sessions.pop(session_ref)
+                self._completed_authorization_revocations[session_ref] = {
+                    "audience": pending["audience"],
+                    "result": result,
+                }
+            return json.loads(json.dumps(result, ensure_ascii=False))
+        if surface_state != "approved":
+            raise CardServiceError(
+                "AUTHORIZATION_SESSION_INVALID",
+                "Authorization manager returned an invalid state",
+                retryable=False,
+                stage="authorization",
+            )
+
+        with self._authorization_manager_lock:
+            pending = self._authorization_manager_sessions.get(session_ref)
+            if pending is None or not self._authorization_session_matches(
+                pending, audience
+            ):
+                raise CardServiceError(
+                    "AUTHORIZATION_SESSION_NOT_FOUND",
+                    "Authorization manager session was not found",
+                    retryable=False,
+                    stage="authorization",
+                )
+            if pending["processing"]:
+                return {
+                    "schemaVersion": 1,
+                    "authorizationSessionRef": session_ref,
+                    "state": "processing",
+                    "availableCount": int(
+                        summary.get("availableCount")
+                        or pending.get("availableCount")
+                        or 0
+                    ),
+                }
+            pending["processing"] = True
+
+        selections = self.trusted_surfaces.authorization_revocation_selections(
+            session_ref
+        )
+        results: list[dict[str, str]] = []
+        try:
+            for index, selection in enumerate(selections):
+                disposition = "failed"
+                try:
+                    if selection.kind == "local_resource":
+                        self._ensure_resource_runtime().revoke_local_grant(
+                            resource_ref=str(selection.locator["resourceRef"]),
+                            audience=audience,
+                            revocation_id=f"revoke-{session_ref}-{index}",
+                            expected_revocation_epoch=int(
+                                selection.locator["revocationEpoch"]
+                            ),
+                            attestation_ref=selection.attestation_ref,
+                        )
+                        disposition = "revoked"
+                    elif selection.kind == "anki_import":
+                        self._ensure_study_runtime().revoke_anki_import_approval(
+                            audience=audience,
+                            import_intent_id=str(
+                                selection.locator["importIntentId"]
+                            ),
+                            revocation_id=f"revoke-{session_ref}-{index}",
+                            gesture_attestation_ref=selection.attestation_ref,
+                        )
+                        disposition = "revoked"
+                    elif selection.kind == "broker_authorization":
+                        verified = self.trusted_surfaces.verify_authorization_revocation(
+                            attestation_ref=selection.attestation_ref,
+                            audience_digest=str(pending["audienceDigest"]),
+                            selection_ref=selection.selection_ref,
+                            action="revoke_broker_authorization",
+                        )
+                        if verified is not True:
+                            raise CardServiceError(
+                                "TRUSTED_GESTURE_INVALID",
+                                "Trusted broker revocation gesture is invalid",
+                            )
+                        revoked = self._revoke_active_broker_authorization(
+                            expected_authorization_digest=str(
+                                selection.locator["authorizationDigest"]
+                            )
+                        )
+                        disposition = (
+                            "revoked"
+                            if revoked["state"] == "revoked"
+                            else "not_found"
+                        )
+                except (ServiceResourceRuntimeError, StudyRuntimeError) as error:
+                    disposition = self._authorization_disposition(error.code)
+                except CardServiceError as error:
+                    disposition = self._authorization_disposition(error.code)
+                results.append(
+                    {"kind": selection.kind, "disposition": disposition}
+                )
+        except Exception:
+            with self._authorization_manager_lock:
+                current = self._authorization_manager_sessions.get(session_ref)
+                if current is not None:
+                    current["processing"] = False
+            raise
+
+        counts = {
+            disposition: sum(
+                1 for item in results if item["disposition"] == disposition
+            )
+            for disposition in {
+                "revoked",
+                "already_consumed",
+                "already_revoked",
+                "not_found",
+                "failed",
+            }
+        }
+        result = {
+            "schemaVersion": 1,
+            "authorizationSessionRef": session_ref,
+            "state": "completed",
+            "availableCount": int(summary.get("availableCount") or len(selections)),
+            "selectedCount": len(selections),
+            "revokedCount": counts["revoked"],
+            "alreadyConsumedCount": counts["already_consumed"],
+            "alreadyRevokedCount": counts["already_revoked"],
+            "notFoundCount": counts["not_found"],
+            "failedCount": counts["failed"],
+            "results": results,
+        }
+        self.trusted_surfaces.complete_authorization_manager(session_ref)
+        with self._authorization_manager_lock:
+            pending = self._authorization_manager_sessions.pop(session_ref)
+            self._completed_authorization_revocations[session_ref] = {
+                "audience": pending["audience"],
+                "result": result,
+            }
+        return json.loads(json.dumps(result, ensure_ascii=False))
 
     def _managed_environment(self, task_workspace: Path | None = None) -> dict[str, str]:
         safe_keys = (
