@@ -1,6 +1,6 @@
 # Study IR 参考
 
-> 状态：PROPOSED 领域契约，尚未实现  
+> 状态：CURRENT M2 部分实现 + PROPOSED 完整领域契约
 > 日期：2026-07-16  
 > 本文中的类型用于设计、合同测试和后续迁移，不是当前 TypeScript API。
 
@@ -667,6 +667,8 @@ type ConflictSet = {
 
 eligibility 只能由当前 GateEvaluationSet 按冻结规则派生，调用方不能直接写入。任一 evidence/conflict/security fail 必须派生 hard_blocked；其他 gate 的 fail/review 映射由 versioned rule set 明确。set_selection、plan_cards、cards.generate 和 cards.export_apkg 都校验 evaluation 的 project/artifact revision、inputFingerprint 和 ruleSetVersion；过期即 stale 并重评。
 
+不可变 Artifact 禁止候选与门禁互相引用形成摘要环。固定发布图是：Evidence/SemanticUnit/Objective 作为 CandidateProposal Artifact 内的实体 → GateEvaluation Artifact 以 EntityRef 指向该 CandidateProposal → Discovery Artifact 同时引用两者。`LearningCandidate` 是 Service 读取两个认证 Artifact 后形成的公共投影；CandidateProposal payload 本身不保存 gateEvaluationRef，模型也不能把 eligibility、scores 或 GateResult 写入 proposal。安全门禁失败且原提案可能含路径、URL 或秘密模式时，只发布不含原文的 CandidateRejection 摘要。
+
 未解决 conflict 不能进入普通事实卡。可生成“不同来源如何主张”的论证/归因卡，但题面必须保留分歧。
 
 ## 12. 组合选择
@@ -830,6 +832,28 @@ type UserLock = {
 M2/M3 必须正式实现：
 
 ~~~ts
+type CandidateProposalArtifactPayload = {
+  candidateId: string;
+  sourceId: string;
+  representationRef: ArtifactRef;
+  evidenceAnchors: EvidenceAnchor[];
+  semanticUnit: SemanticUnit;
+  objective: LearningObjective;
+  scores: CandidateScores;
+  explanation: string[];
+  issueRefs: string[];
+};
+
+type DiscoveryArtifactPayload = {
+  discoveryId: string;
+  inspectionRef: ArtifactRef;
+  candidateRefs: EntityRef[];
+  gateEvaluationRefs: ArtifactRef[];
+  completeness: CompletenessRecord;
+  counts: Record<LearningCandidate["eligibility"], number>;
+  ruleSetVersion: string;
+};
+
 type InspectionArtifactPayload = {
   inspectionId: string;
   taskId: string;
