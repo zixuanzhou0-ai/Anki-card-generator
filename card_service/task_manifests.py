@@ -49,6 +49,7 @@ FIXED_CAPABILITIES = frozenset(
         "runtime.yt_dlp", "runtime.document_parsers", "source.local_video",
         "source.subtitle", "source.public_video_url", "source.text", "source.pdf_text",
         "source.web_snapshot", "source.audio_podcast", "source.directory",
+        "source.media_embedded_transcript",
         "source.codex_attachment_bridge", "source.ocr_visual", "source.code_repository",
         "service.anki", "service.anki_runtime_verifier",
     }

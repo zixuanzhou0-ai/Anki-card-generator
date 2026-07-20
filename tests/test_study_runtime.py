@@ -71,6 +71,12 @@ def test_study_runtime_composes_all_registries_under_one_service_identity(
         "supportTier": "B",
         "blockerCode": "SOURCE_PARSER_NOT_AVAILABLE",
     }
+    assert capabilities["sourceAdapters"]["embeddedMediaTranscript"] == {
+        "available": False,
+        "supportTier": "B",
+        "blockerCode": "SOURCE_PARSER_NOT_AVAILABLE",
+        "requiresEmbeddedSubtitle": True,
+    }
     assert capabilities["publicInputRegistration"] is True
     assert capabilities["publicSourceInspection"] is True
     assert capabilities["publicProjectQueries"] is True

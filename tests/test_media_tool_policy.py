@@ -4,6 +4,7 @@ import os
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 import wave
@@ -17,6 +18,7 @@ from workers.acg.media_tool_policy import (
     MAX_MEDIA_OUTPUT_BYTES,
     MAX_MEDIA_STREAMS,
     MediaToolPolicyError,
+    _run_bounded_capture,
     ffmpeg_command,
     ffprobe_command,
     managed_tool_path,
@@ -45,6 +47,29 @@ class MediaToolPolicyTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    def test_bounded_capture_stops_oversized_and_timed_out_probes(self) -> None:
+        with self.assertRaises(MediaToolPolicyError) as oversized:
+            _run_bounded_capture(
+                [sys.executable, "-c", "import sys;sys.stdout.write('x'*4096)"],
+                timeout=5,
+                maximum_stdout_bytes=128,
+                maximum_stderr_bytes=128,
+                timeout_code="TEST_TIMEOUT",
+                output_code="TEST_OUTPUT_LIMIT",
+            )
+        self.assertEqual(oversized.exception.code, "TEST_OUTPUT_LIMIT")
+
+        with self.assertRaises(MediaToolPolicyError) as timed_out:
+            _run_bounded_capture(
+                [sys.executable, "-c", "import time;time.sleep(5)"],
+                timeout=1,
+                maximum_stdout_bytes=128,
+                maximum_stderr_bytes=128,
+                timeout_code="TEST_TIMEOUT",
+                output_code="TEST_OUTPUT_LIMIT",
+            )
+        self.assertEqual(timed_out.exception.code, "TEST_TIMEOUT")
 
     def test_commands_bind_absolute_tools_and_fixed_protocol_format_policy(self) -> None:
         with patch.dict(os.environ, self.environment, clear=False):
@@ -260,11 +285,14 @@ class MediaToolPolicyTests(unittest.TestCase):
                         stdout=json.dumps(evidence),
                         stderr="",
                     )
-                    with patch("workers.acg.media_tool_policy.subprocess.run", return_value=probe) as run:
+                    with patch(
+                        "workers.acg.media_tool_policy._run_bounded_capture",
+                        return_value=probe,
+                    ) as bounded_probe:
                         with self.assertRaises(MediaToolPolicyError) as caught:
                             run_ffmpeg(["-i", str(self.source), "-vn", str(self.output)])
                     self.assertEqual(caught.exception.code, expected_code)
-                    self.assertEqual(run.call_count, 1)
+                    self.assertEqual(bounded_probe.call_count, 1)
 
     def test_raw_pcm_limits_are_derived_without_untrusted_probe(self) -> None:
         pcm = self.root / "speech.pcm"

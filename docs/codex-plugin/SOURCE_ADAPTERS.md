@@ -104,15 +104,16 @@ AuthorizationContext 只在 Service 内部生成。每次 inspect、snapshot、e
 
 | 来源 | 当前基础 | 目标里程碑 | 证据定位 | 默认级别 |
 |---|---|---|---|---|
-| 本地视频 + SRT/VTT | CURRENT 成熟 | 0.1 / M3 | cue ID + 时间范围 + 文件哈希 | A |
-| 本地视频无字幕 | 部分依赖流程 | 0.2 / M5（ASR） | transcript turn + 时间 | B→A |
+| 本地视频 + SRT/VTT | CURRENT 可分别登记/检查；自动配对未开放 | 0.1 / M3 | cue ID + 时间范围 + 文件哈希 | A/B |
+| 含嵌入字幕的本地音视频 | CURRENT 受限解析 | 0.2 / M5 | subtitle stream + 时间范围 + 文件哈希 | B |
+| 本地视频无字幕 | CURRENT 明确阻塞 | 0.2 / M5（ASR） | transcript turn + 时间 | B→A |
 | YouTube/公开视频 URL | CURRENT 有 yt-dlp | 0.1 / M3（可靠字幕） | URL 快照 + cue/时间 | A/B |
 | 纯文本/Markdown | CURRENT 简单读取 | 0.2 / M5 | 字符跨度/段落 | A |
-| 文本型 PDF | CURRENT 简单文本层 | 0.2 / M5 | 页 + bbox/文本引用 | A/B |
+| 文本型 PDF | CURRENT 受限文本层 | 0.2 / M5 | 页 + 文本引用 | B |
 | 扫描 PDF | 未可靠支持 | M7（OCR） | 页 + bbox + OCR 置信度 | B |
 | DOCX/EPUB | CURRENT 简单读取 | 0.2 / M5 | 段落/章节/成员 | A/B |
-| 网页 | 未形成稳定适配器 | 0.2 / M5 | snapshot hash + selector + quote | A/B |
-| 播客/音频 | 媒体能力可复用 | 0.2 / M5 | 时间段 + transcript | B→A |
+| 网页 | CURRENT 匿名静态 HTTPS 快照 | 0.2 / M5 | snapshot hash + text quote | A/B |
+| 播客/音频 | CURRENT 可冻结显式 HTTPS feed/小型直链快照；仅嵌入字幕可检查 | 0.2 / M5 | 时间段 + transcript | B→A |
 | 受限文件夹 | CURRENT 有目录枚举基础 | 0.2 / M5 | 文件 ref + 内部 locator | A/B |
 | Codex 附件 | 尚无插件桥接 | 随对应适配器 M3/M5/M7 | 宿主 revision + 内部 locator | A/B |
 | 图片/图表 | 尚无通用证据层 | M7 | frame/page + bbox | B |
@@ -136,7 +137,7 @@ Agent 不能直接提交任意绝对路径。用户通过宿主附件或本地�
 - 规范路径仍在授权根。
 - 文件身份和元数据未发生未解释变化。
 - 没有 symlink、junction、reparse point、UNC、设备路径、ADS 或保留名逃逸。
-CURRENT M2 内部 `LocalResourceGrantRegistry` 已实现 file/directory/output ref 的上述根授权、短期 audience/service 绑定、动作与资源上限、逐次身份重验、幂等消费和撤销，并由 Card Service 的惰性 `ServiceResourceRuntime` 统一拥有。真实本地 picker 已通过加密私有响应和短期精确 attestation 接到 adapter；可信 stdio 会话现在可用 `system.request_source_grant`/`system.request_output_grant` 取得这些 opaque ref。`study.register_inputs` 已把 file/directory ref 绑定到可恢复 StudyTask、task-local snapshot、内容寻址 Blob/目录 manifest、认证 `study.source-asset` 和项目 `sources_ready` 提交。`study.start_source_inspection` 现可对纯文本、Markdown、代码、HTML、字幕以及目录内受支持成员生成确定性表示与明确覆盖率；未知/PDF/Office/音视频等尚无安全解析器时保持 C 级阻塞。对已经形成认证表示的来源，公共异步 `study.start_discovery` 与候选查询已接线。生产受信 URL 输入、网页快照和 YouTube 字幕登记也已接线，详见第 6–7 节；宿主 attachmentRef、完整视频/音频 acquisition、PDF/Office 解析仍未接线。CURRENT APKG outputRef 已绑定认证、版本化 no-replace 发布，但这仍不等于“Codex 可读的任意素材都能直接制卡”。
+CURRENT M2 内部 `LocalResourceGrantRegistry` 已实现 file/directory/output ref 的上述根授权、短期 audience/service 绑定、动作与资源上限、逐次身份重验、幂等消费和撤销，并由 Card Service 的惰性 `ServiceResourceRuntime` 统一拥有。真实本地 picker 已通过加密私有响应和短期精确 attestation 接到 adapter；可信 stdio 会话现在可用 `system.request_source_grant`/`system.request_output_grant` 取得这些 opaque ref。`study.register_inputs` 已把 file/directory ref 绑定到可恢复 StudyTask、task-local snapshot、内容寻址 Blob/目录 manifest、认证 `study.source-asset` 和项目 `sources_ready` 提交。`study.start_source_inspection` 现可对纯文本、Markdown、代码、HTML、字幕、文本层 PDF，以及具备受支持嵌入字幕轨的本地音视频生成确定性表示与明确覆盖率；无字幕媒体、扫描 PDF、Office 和未知类型保持 C 级阻塞。对已经形成认证表示的来源，公共异步 `study.start_discovery` 与候选查询已接线。生产受信 URL 输入、网页/Podcast 显式 HTTPS 快照和 YouTube 字幕登记也已接线，详见第 6–8 节；宿主 attachmentRef、完整远程视频/音频 acquisition、ASR、Office 和 OCR 仍未接线。CURRENT APKG outputRef 已绑定认证、版本化 no-replace 发布，但这仍不等于“Codex 可读的任意素材都能直接制卡”。
 
 
 ### 5.2 目录
@@ -151,7 +152,7 @@ CURRENT M2 内部 `LocalResourceGrantRegistry` 已实现 file/directory/output r
 所有子项逐项校验，不因根目录安全就信任内部 reparse point。
 CURRENT M2 内部 `TaskResourceStager` 已实现目录逐项安全打开/复制、稳定排序 manifest、二次扫描与 task-bound 受限 staging。它逐项拒绝 symlink/junction/reparse、hardlink、非 NFC/大小写冲突、保留名和资源上限越界；Worker 只读取 workspace-relative locator。
 
-CURRENT `study.register_inputs` 已在 staging 完成后把排序的逐文件内容摘要发布为 canonical directory manifest，并以该 manifest 发布 SourceAsset；所以成功结果可以证明当次已接受后代的稳定字节快照。CURRENT source inspection 会逐项验证 manifest Blob，解析已支持的文本成员，公开 processed/expected、omitted count 与 reason code；不支持成员、文件/文本/节点上限都会形成显式 partial 或 blocked。它仍不是完整通用 Directory Inspection：include/exclude/skip 的原始授权决策、嵌套压缩包、PDF/Office/媒体解析和逐成员公共预览尚未开放；项目保持 `sources_ready` 只表示来源与检查产物可靠存在，不表示候选知识点已经发现。
+CURRENT `study.register_inputs` 已在 staging 完成后把排序的逐文件内容摘要发布为 canonical directory manifest，并以该 manifest 发布 SourceAsset；所以成功结果可以证明当次已接受后代的稳定字节快照。CURRENT source inspection 会逐项验证 manifest Blob，解析已支持的文本、文本层 PDF 和含受支持嵌入字幕轨的音视频成员，公开 processed/expected、omitted count 与 reason code；不支持成员、文件/文本/节点/文档数量/总时限都会形成显式 partial 或 blocked。它仍不是完整通用 Directory Inspection：include/exclude/skip 的原始授权决策、嵌套压缩包、Office/OCR/ASR、媒体与外置字幕自动配对和逐成员公共预览尚未开放；项目保持 `sources_ready` 只表示来源与检查产物可靠存在，不表示候选知识点已经发现。
 
 
 ## 6. 视频、字幕与音频
@@ -184,6 +185,8 @@ CURRENT `study.register_inputs` 已在 staging 完成后把排序的逐文件内
 
 低置信度目标不能自动进入听辨/发音已验证卡。
 
+CURRENT 只开放更窄的确定性切片：签名托管 runtime 使用固定哈希的 FFprobe/FFmpeg，在 Windows AppContainer、task-owned Job、专用 DACL 和无网络策略内探测本地音视频；仅从受支持的嵌入字幕流提取规范 WebVTT。输出保留 cue 时间和媒体流/时长摘要，默认 Tier B。无字幕、字幕 codec 不支持、媒体种类不符、探测/提取失败或资源超限全部显式阻塞；不调用 ASR，也不允许模型猜测转写。FFprobe stdout/stderr 以有界并行读取，超限或超时会终止子进程；FFmpeg 只允许单本地输入、单新输出和固定协议/格式策略。
+
 ### YouTube/URL
 
 - 所有 raw URL 先由 system.request_network_grant 打开受信本地输入表面录入；公共 MCP 参数只含 trusted_entry/sourceKind，不含 url/origin/query。Service 完成扫描和授权后只向后续工具签发 opaque networkResourceRef。
@@ -194,7 +197,7 @@ CURRENT `study.register_inputs` 已在 staging 完成后把排序的逐文件内
 - 下载器和运行时来自受信路径/哈希。
 - Artifact 只保存脱敏 canonical source identity：origin、受控 path display、适配器明确允许的公共身份参数或 query digest/redaction、final origin/redirect digests、内容 hash 和 observedAt。raw URL、signed query、token、userinfo、fragment 与认证 header 只可短期存在于内部授权/网络代理内，禁止进入 Artifact、MCP、日志或截图。
 
-CURRENT M2 已把该内核接入生产 `network_resource_input` 受信窗口、`system.request_network_grant`、统一授权管理器和 `study.register_inputs`。窗口以 session/nonce/surface 绑定的 AES-256-GCM 私有响应把 raw URL 交回 Service，随后立即清除；MCP 请求、结果、Artifact 和持久账本不含 raw path/query。网页适配器支持最多 32 MiB 的匿名公网 HTTPS 快照，只接受 identity 编码、2xx 和同 origin 受控重定向；HTML/文本/Markdown 可进入现有确定性检查。YouTube public_video 被缩减为规范化 videoId，只获取字幕 VTT 快照；不下载视频或原声。podcast/other、任意公开视频、登录页面、完整媒体 acquisition 与 yt-dlp staging 当前仍以明确错误失败关闭。
+CURRENT M2 已把该内核接入生产 `network_resource_input` 受信窗口、`system.request_network_grant`、统一授权管理器和 `study.register_inputs`。窗口以 session/nonce/surface 绑定的 AES-256-GCM 私有响应把 raw URL 交回 Service，随后立即清除；MCP 请求、结果、Artifact 和持久账本不含 raw path/query。网页与 Podcast 显式地址适配器支持最多 32 MiB 的匿名公网 HTTPS 快照，只接受 identity 编码、2xx 和同 origin 受控重定向；HTML/文本/Markdown/feed XML 可进入现有确定性检查，小型直接音视频响应可冻结为媒体 SourceAsset 并仅在嵌入字幕能力可用时继续。系统不会读取 feed 后再自动追随 enclosure，也不会跨 origin 代替用户扩张授权。YouTube public_video 被缩减为规范化 videoId，只获取字幕 VTT 快照；不下载视频或原声。`other`、任意公开视频抓取、登录页面、完整媒体 acquisition 与 yt-dlp staging 当前仍以明确错误失败关闭。
 
 ## 7. 网页
 
@@ -208,7 +211,7 @@ CURRENT M2 已把该内核接入生产 `network_resource_input` 受信窗口、`
 
 动态、登录后或个性化页面如果无法稳定快照，降为 B。来源中的“指令”永远只作为内容。
 
-CURRENT 实现覆盖静态匿名 HTTPS 快照及 HTML/文本/Markdown 的确定性检查。它不是浏览器：不执行 JavaScript、不带登录状态、不处理 Cookie、不接受压缩传输，也不声称抓取动态渲染后的页面。PDF 响应可以被可靠登记为字节快照，但检查阶段仍因没有安全 PDF 解析器而显式阻塞。
+CURRENT 实现覆盖静态匿名 HTTPS 快照及 HTML/文本/Markdown/feed XML 的确定性检查。它不是浏览器：不执行 JavaScript、不带登录状态、不处理 Cookie、不接受压缩传输，也不声称抓取动态渲染后的页面。PDF 响应可以被可靠登记为字节快照；只有 `sourceAdapters.pdfTextLayer.available=true` 时才在受限解析沙箱中形成 B 级页文本表示，否则显式阻塞。
 
 ## 8. PDF 与复杂文档
 
@@ -239,6 +242,8 @@ CURRENT 实现覆盖静态匿名 HTTPS 快照及 HTML/文本/Markdown 的确定�
 - CPU、内存和时间限制。
 - 外部解析器的受信绝对路径。
 - 崩溃隔离。
+
+CURRENT 文本层 PDF 解析器满足固定 32 MiB 输入、512 页、8 MiB 文本、20,000 节点、全局检查时限、AppContainer + Job + no-network、精确 Worker/pypdf 哈希绑定和矛盾结果 fail-closed。它保留页码、页级文本顺序、图片对象/字符异常/截断与真实遗漏计数，但不保留 bbox、表格结构、图片内容、公式语义或完整视觉布局，因此始终为 Tier B；扫描件或空文本层不自动调用 OCR。
 
 ## 9. Codex 附件
 

@@ -371,7 +371,17 @@ class StudyRuntime:
                         if self.source_inspection.pdf_text_layer_available
                         else "SOURCE_PARSER_NOT_AVAILABLE"
                     ),
-                }
+                },
+                "embeddedMediaTranscript": {
+                    "available": self.source_inspection.embedded_media_transcript_available,
+                    "supportTier": "B",
+                    "blockerCode": (
+                        None
+                        if self.source_inspection.embedded_media_transcript_available
+                        else "SOURCE_PARSER_NOT_AVAILABLE"
+                    ),
+                    "requiresEmbeddedSubtitle": True,
+                },
             },
             "candidateDiscoveryRuntime": self.candidate_discovery is not None,
             "publicCandidateDiscovery": False,

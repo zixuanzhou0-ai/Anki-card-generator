@@ -48,7 +48,7 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _MAX_INPUTS = 64
 _MAX_DIRECTORY_ENTRIES = 100_000
 _SOURCE_ADAPTER_SET_DIGEST = hashlib.sha256(
-    b"speakright.study.source-registration.adapters.v1"
+    b"speakright.study.source-registration.adapters.v2"
 ).hexdigest()
 _COMPONENTS = {
     "cardService": "2.0.0",
@@ -575,7 +575,14 @@ class SourceRegistrationRuntime:
     @staticmethod
     def _network_source_type(media_type: str) -> str:
         base = media_type.split(";", 1)[0].strip().casefold()
-        if base in {"text/html", "application/xhtml+xml"}:
+        if base in {
+            "text/html",
+            "application/xhtml+xml",
+            "application/rss+xml",
+            "application/atom+xml",
+            "application/xml",
+            "text/xml",
+        }:
             return "html"
         if base == "text/markdown":
             return "markdown"
@@ -595,7 +602,7 @@ class SourceRegistrationRuntime:
         *,
         audience: ArtifactAudienceBinding,
     ) -> tuple[bytes, str]:
-        if resource.source_kind != "web":
+        if resource.source_kind not in {"web", "podcast"}:
             raise SourceRegistrationError(
                 "SOURCE_NETWORK_ADAPTER_NOT_AVAILABLE",
                 "This network source type does not yet have a snapshot adapter",
@@ -720,10 +727,16 @@ class SourceRegistrationRuntime:
                         "text": " · document.txt",
                         "markdown": " · document.md",
                         "pdf": " · document.pdf",
+                        "audio": " · podcast-audio.bin",
+                        "video": " · podcast-video.bin",
                     }.get(source_type, " · network-resource.bin")
                 )[:160]
                 adapter_metadata = {
-                    "adapter": str(summary["adapter"]),
+                    "adapter": (
+                        "podcast_https_snapshot"
+                        if resource.source_kind == "podcast"
+                        else str(summary["adapter"])
+                    ),
                     "publicIdentity": summary.get("publicIdentity"),
                 }
         except (NetworkResourceRegistryError, SourceAcquisitionError) as error:

@@ -397,6 +397,94 @@ def _frame_rate(value: Any) -> float | None:
     return _finite_number(text)
 
 
+def _run_bounded_capture(
+    command: Sequence[str],
+    *,
+    timeout: float | int,
+    maximum_stdout_bytes: int,
+    maximum_stderr_bytes: int,
+    timeout_code: str,
+    output_code: str,
+) -> subprocess.CompletedProcess[str]:
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    process = subprocess.Popen(
+        list(command),
+        shell=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        creationflags=creationflags,
+    )
+    stdout_buffer = bytearray()
+    stderr_buffer = bytearray()
+    overflow = threading.Event()
+    reader_failed = threading.Event()
+
+    def drain(stream: Any, target: bytearray, maximum_bytes: int) -> None:
+        try:
+            while True:
+                chunk = stream.read(64 * 1024)
+                if not chunk:
+                    break
+                remaining = maximum_bytes + 1 - len(target)
+                if remaining > 0:
+                    target.extend(chunk[:remaining])
+                if len(target) > maximum_bytes or len(chunk) > remaining:
+                    overflow.set()
+                    try:
+                        process.kill()
+                    except OSError:
+                        pass
+                    break
+        except (OSError, ValueError):
+            reader_failed.set()
+            try:
+                process.kill()
+            except OSError:
+                pass
+        finally:
+            try:
+                stream.close()
+            except OSError:
+                pass
+
+    readers = [
+        threading.Thread(
+            target=drain,
+            args=(process.stdout, stdout_buffer, maximum_stdout_bytes),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=drain,
+            args=(process.stderr, stderr_buffer, maximum_stderr_bytes),
+            daemon=True,
+        ),
+    ]
+    for reader in readers:
+        reader.start()
+    try:
+        process.wait(timeout=_timeout(timeout))
+    except subprocess.TimeoutExpired as error:
+        process.kill()
+        process.wait()
+        raise MediaToolPolicyError(timeout_code, "Media probe timed out") from error
+    finally:
+        for reader in readers:
+            reader.join(timeout=5)
+    if reader_failed.is_set() or any(reader.is_alive() for reader in readers):
+        raise MediaToolPolicyError(
+            "MEDIA_RESOURCE_PROBE_FAILED", "Media probe output could not be read"
+        )
+    if overflow.is_set():
+        raise MediaToolPolicyError(output_code, "Media probe output is too large")
+    return subprocess.CompletedProcess(
+        list(command),
+        int(process.returncode),
+        bytes(stdout_buffer).decode("utf-8", errors="replace"),
+        bytes(stderr_buffer).decode("utf-8", errors="replace"),
+    )
+
+
 def _probe_resource_evidence(path: Path) -> dict[str, Any]:
     stat_result = path.stat()
     cache_key = (str(path), int(stat_result.st_size), int(stat_result.st_mtime_ns))
@@ -417,22 +505,17 @@ def _probe_resource_evidence(path: Path) -> dict[str, Any]:
             ],
             path,
         )
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         try:
-            completed = subprocess.run(
+            completed = _run_bounded_capture(
                 command,
-                shell=False,
-                stdin=subprocess.DEVNULL,
                 timeout=30,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                creationflags=creationflags,
+                maximum_stdout_bytes=MAX_RESOURCE_PROBE_STDOUT_BYTES,
+                maximum_stderr_bytes=MAX_RESOURCE_PROBE_STDERR_BYTES,
+                timeout_code="MEDIA_RESOURCE_PROBE_TIMEOUT",
+                output_code="MEDIA_RESOURCE_PROBE_OUTPUT_EXCEEDED",
             )
-        except subprocess.TimeoutExpired as error:
-            raise MediaToolPolicyError("MEDIA_RESOURCE_PROBE_TIMEOUT", "Media resource probe timed out") from error
+        except OSError as error:
+            raise MediaToolPolicyError("MEDIA_RESOURCE_PROBE_FAILED", "Media resource probe failed") from error
         stdout = completed.stdout or ""
         stderr = completed.stderr or ""
         if (
@@ -717,6 +800,35 @@ def run_ffprobe(
         stdin=subprocess.DEVNULL,
         timeout=_timeout(timeout),
         **kwargs,
+    )
+
+
+def run_ffprobe_bounded(
+    arguments: Sequence[str],
+    input_path: str | Path,
+    *,
+    timeout: float | int | None = None,
+    maximum_stdout_bytes: int = MAX_RESOURCE_PROBE_STDOUT_BYTES,
+    maximum_stderr_bytes: int = MAX_RESOURCE_PROBE_STDERR_BYTES,
+) -> subprocess.CompletedProcess[str]:
+    if (
+        isinstance(maximum_stdout_bytes, bool)
+        or not isinstance(maximum_stdout_bytes, int)
+        or not 1 <= maximum_stdout_bytes <= MAX_RESOURCE_PROBE_STDOUT_BYTES
+        or isinstance(maximum_stderr_bytes, bool)
+        or not isinstance(maximum_stderr_bytes, int)
+        or not 1 <= maximum_stderr_bytes <= MAX_RESOURCE_PROBE_STDERR_BYTES
+    ):
+        raise MediaToolPolicyError(
+            "MEDIA_ARGUMENTS_INVALID", "Media probe output limits are invalid"
+        )
+    return _run_bounded_capture(
+        ffprobe_command(arguments, input_path),
+        timeout=_timeout(timeout),
+        maximum_stdout_bytes=maximum_stdout_bytes,
+        maximum_stderr_bytes=maximum_stderr_bytes,
+        timeout_code="MEDIA_RESOURCE_PROBE_TIMEOUT",
+        output_code="MEDIA_RESOURCE_PROBE_OUTPUT_EXCEEDED",
     )
 
 

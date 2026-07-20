@@ -367,10 +367,8 @@ def test_network_registration_rejects_compressed_response(tmp_path: Path) -> Non
     assert fetcher.calls == 1
 
 
-@pytest.mark.parametrize("source_kind", ["podcast", "other"])
-def test_unimplemented_network_adapters_fail_before_fetch(
-    tmp_path: Path, source_kind: str
-) -> None:
+def test_unimplemented_network_adapter_fails_before_fetch(tmp_path: Path) -> None:
+    source_kind = "other"
     network, runtime, project, ref, fetcher = network_environment(
         tmp_path, b"unsupported"
     )
@@ -404,6 +402,67 @@ def test_unimplemented_network_adapters_fail_before_fetch(
         )
     assert unavailable.value.code == "SOURCE_NETWORK_ADAPTER_NOT_AVAILABLE"
     assert fetcher.calls == 0
+
+
+@pytest.mark.parametrize(
+    ("media_type", "expected_type"),
+    [
+        ("application/rss+xml; charset=utf-8", "html"),
+        ("audio/mpeg", "audio"),
+    ],
+)
+def test_podcast_registration_freezes_only_the_explicit_https_snapshot(
+    tmp_path: Path,
+    media_type: str,
+    expected_type: str,
+) -> None:
+    body = (
+        b"<rss><channel><title>Retrieval Practice</title></channel></rss>"
+        if expected_type == "html"
+        else b"bounded-podcast-audio"
+    )
+    network, runtime, project, ref, fetcher = network_environment(tmp_path, body)
+    fetcher.media_type = media_type
+    grant = network.issue_grant(
+        audience=audience(),
+        grant_request_id=f"podcast-{expected_type}",
+        raw_url=f"https://media.example/lesson-{expected_type}",
+        source_kind="podcast",
+        attestation_ref=f"podcast-{expected_type}-gesture",
+        max_uses=8,
+    )
+    podcast_ref = {
+        **ref,
+        "networkResourceRef": grant["networkResourceRef"],
+        "displayOrigin": grant["displayOrigin"],
+        "sourceKind": grant["sourceKind"],
+        "adapter": grant["adapter"],
+        "publicIdentity": grant["publicIdentity"],
+        "queryPresent": grant["queryPresent"],
+        "sensitiveQuery": grant["sensitiveQuery"],
+        "resourceRevisionDigest": grant["resourceRevisionDigest"],
+        "constraints": grant["constraints"],
+        "expiresAt": grant["expiresAt"],
+    }
+
+    registered = register(
+        runtime,
+        project,
+        podcast_ref,
+        key=f"register-podcast-{expected_type}",
+    )
+
+    assert fetcher.calls == 1
+    assert registered["sources"][0]["sourceType"] == expected_type
+    envelope = runtime.artifacts.resolve(
+        registered["sources"][0]["sourceHandle"], audience()
+    )
+    payload = envelope["payload"]
+    assert payload["provenance"]["adapter"] == "podcast_https_snapshot"
+    assert (
+        runtime.artifacts.read_blob(payload["representations"][0]["blobRef"])
+        == body
+    )
 
 
 def test_register_youtube_grant_uses_only_canonical_video_identity(

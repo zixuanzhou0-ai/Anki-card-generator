@@ -31,7 +31,12 @@ def audience(**changes: str) -> ArtifactAudienceBinding:
     return ArtifactAudienceBinding(**values)
 
 
-def environment(tmp_path: Path, *, structured_source_parser=None):
+def environment(
+    tmp_path: Path,
+    *,
+    structured_source_parser=None,
+    media_tools: bool = True,
+):
     backend = InMemoryCredentialBackend()
     credentials = (tmp_path / "credentials").resolve()
     resources = ServiceResourceRuntime(
@@ -51,6 +56,14 @@ def environment(tmp_path: Path, *, structured_source_parser=None):
                 "workerSha256": hashlib.sha256(b"fake-source-parser").hexdigest(),
                 "pypdfVersion": "6.14.2",
                 "sandboxPolicy": "windows-appcontainer-job-no-network-v1",
+                **(
+                    {
+                        "ffmpegSha256": hashlib.sha256(b"fake-ffmpeg").hexdigest(),
+                        "ffprobeSha256": hashlib.sha256(b"fake-ffprobe").hexdigest(),
+                    }
+                    if media_tools
+                    else {}
+                ),
             }
             if structured_source_parser is not None
             else None
@@ -65,6 +78,28 @@ def environment(tmp_path: Path, *, structured_source_parser=None):
         },
     )
     return resources, runtime, project
+
+
+def test_pdf_parser_remains_available_when_media_tools_are_absent(
+    tmp_path: Path,
+) -> None:
+    _resources, runtime, _project = environment(
+        tmp_path,
+        structured_source_parser=lambda **_request: {},
+        media_tools=False,
+    )
+
+    assert runtime.capabilities()["sourceAdapters"]["pdfTextLayer"] == {
+        "available": True,
+        "supportTier": "B",
+        "blockerCode": None,
+    }
+    assert runtime.capabilities()["sourceAdapters"]["embeddedMediaTranscript"] == {
+        "available": False,
+        "supportTier": "B",
+        "blockerCode": "SOURCE_PARSER_NOT_AVAILABLE",
+        "requiresEmbeddedSubtitle": True,
+    }
 
 
 def input_ref(
@@ -488,6 +523,217 @@ def test_pdf_parser_relational_contradictions_fail_closed(
             blob_ref=blob_ref,
         )
 
+    assert failed.value.code == "SOURCE_PARSER_RESULT_INVALID"
+
+
+def test_video_embedded_transcript_preserves_timing_and_media_summary(
+    tmp_path: Path,
+) -> None:
+    calls = []
+
+    def parse_media(**request):
+        materialized = tmp_path / "media-parser" / "source.media"
+        materialized.parent.mkdir()
+        request["materialize"](materialized)
+        calls.append(
+            {key: value for key, value in request.items() if key != "materialize"}
+        )
+        return {
+            "schema": "study.source-parser-result",
+            "schemaVersion": 1,
+            "kind": "video",
+            "status": "conditional",
+            "parser": {"name": "ffmpeg-suite", "version": "sha256-bound"},
+            "media": {
+                "durationMs": 4000,
+                "audioStreamCount": 1,
+                "videoStreamCount": 1,
+                "subtitleStreamCount": 1,
+            },
+            "transcript": {
+                "format": "webvtt",
+                "text": (
+                    "WEBVTT\n\n"
+                    "00:00:01.000 --> 00:00:02.000\nActions speak louder.\n\n"
+                    "00:00:03.000 --> 00:00:04.000\nUse it in context.\n"
+                ),
+                "language": "eng",
+                "streamIndex": 2,
+            },
+            "issueCodes": ["SOURCE_MEDIA_EMBEDDED_TRANSCRIPT_EXTRACTED"],
+        }
+
+    resources, runtime, project = environment(
+        tmp_path,
+        structured_source_parser=parse_media,
+    )
+    source = (tmp_path / "lesson.mp4").resolve()
+    source.write_bytes(b"verified media fixture")
+    registration = register(
+        runtime,
+        project,
+        input_ref(resources, source, request_id="video-transcript"),
+    )
+
+    result = inspect(runtime, project, registration)
+
+    assert result["sources"][0]["sourceType"] == "video"
+    assert result["sources"][0]["supportTier"] == "B"
+    assert result["sources"][0]["contentNodeCount"] == 2
+    assert calls == [
+        {
+            "source_type": "video",
+            "source_sha256": hashlib.sha256(b"verified media fixture").hexdigest(),
+            "source_size_bytes": len(b"verified media fixture"),
+            "maximum_text_bytes": 8 * 1024 * 1024,
+            "maximum_execution_seconds": 180.0,
+        }
+    ]
+    project_after = runtime.get_project(project["projectId"], audience())
+    representation_ref = next(
+        value
+        for value in project_after["latestArtifactRefs"]
+        if value["artifactId"].startswith("representation_")
+    )
+    payload = runtime.artifacts.verify_ref(representation_ref, audience())["payload"]
+    assert payload["kind"] == "media_transcript"
+    assert payload["mediaSummary"]["durationMs"] == 4000
+    assert [
+        (node["locator"]["startMs"], node["locator"]["endMs"])
+        for node in payload["contentNodes"]
+    ] == [(1000, 2000), (3000, 4000)]
+    serialized = json.dumps(result, ensure_ascii=False)
+    assert "Actions speak louder" not in serialized
+    assert str(source) not in serialized
+
+
+def test_audio_without_embedded_transcript_completes_as_explicit_blocker(
+    tmp_path: Path,
+) -> None:
+    def parse_media(**_request):
+        return {
+            "schema": "study.source-parser-result",
+            "schemaVersion": 1,
+            "kind": "audio",
+            "status": "blocked",
+            "parser": {"name": "ffmpeg-suite", "version": "sha256-bound"},
+            "media": {
+                "durationMs": 5000,
+                "audioStreamCount": 1,
+                "videoStreamCount": 0,
+                "subtitleStreamCount": 0,
+            },
+            "transcript": None,
+            "issueCodes": ["SOURCE_MEDIA_TRANSCRIPT_NOT_AVAILABLE"],
+        }
+
+    resources, runtime, project = environment(
+        tmp_path,
+        structured_source_parser=parse_media,
+    )
+    source = (tmp_path / "lesson.mp3").resolve()
+    source.write_bytes(b"verified audio fixture")
+    registration = register(
+        runtime,
+        project,
+        input_ref(resources, source, request_id="audio-no-transcript"),
+    )
+
+    result = inspect(runtime, project, registration)
+
+    assert result["completeness"]["state"] == "blocked"
+    assert result["sources"][0]["issueCodes"] == [
+        "SOURCE_MEDIA_TRANSCRIPT_NOT_AVAILABLE"
+    ]
+    assert runtime.tasks.get_task(result["taskId"], audience())["state"] == "succeeded"
+
+
+@pytest.mark.parametrize(
+    "contradiction",
+    [
+        "conditional_without_transcript",
+        "conditional_without_subtitle_stream",
+        "conditional_with_failure_issue",
+        "blocked_with_transcript",
+        "blocked_without_issue",
+        "missing_transcript_with_subtitle_stream",
+        "unsupported_subtitle_without_stream",
+        "known_duration_marked_unknown",
+        "unknown_duration_not_declared",
+    ],
+)
+def test_media_parser_result_fails_closed_on_relational_contradictions(
+    tmp_path: Path,
+    contradiction: str,
+) -> None:
+    def contradictory_parser(**_request):
+        result = {
+            "schema": "study.source-parser-result",
+            "schemaVersion": 1,
+            "kind": "video",
+            "status": "conditional",
+            "parser": {"name": "ffmpeg-suite", "version": "sha256-bound"},
+            "media": {
+                "durationMs": 4000,
+                "audioStreamCount": 1,
+                "videoStreamCount": 1,
+                "subtitleStreamCount": 1,
+            },
+            "transcript": {
+                "format": "webvtt",
+                "text": "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nVerify this.\n",
+                "language": "eng",
+                "streamIndex": 2,
+            },
+            "issueCodes": ["SOURCE_MEDIA_EMBEDDED_TRANSCRIPT_EXTRACTED"],
+        }
+        if contradiction == "conditional_without_transcript":
+            result["transcript"] = None
+        elif contradiction == "conditional_without_subtitle_stream":
+            result["media"]["subtitleStreamCount"] = 0
+        elif contradiction == "conditional_with_failure_issue":
+            result["issueCodes"] = [
+                "SOURCE_MEDIA_EMBEDDED_TRANSCRIPT_EXTRACTED",
+                "SOURCE_MEDIA_PROBE_FAILED",
+            ]
+        elif contradiction == "blocked_with_transcript":
+            result["status"] = "blocked"
+        elif contradiction == "blocked_without_issue":
+            result["status"] = "blocked"
+            result["transcript"] = None
+            result["issueCodes"] = []
+        elif contradiction == "missing_transcript_with_subtitle_stream":
+            result["status"] = "blocked"
+            result["transcript"] = None
+            result["issueCodes"] = ["SOURCE_MEDIA_TRANSCRIPT_NOT_AVAILABLE"]
+        elif contradiction == "unsupported_subtitle_without_stream":
+            result["status"] = "blocked"
+            result["transcript"] = None
+            result["media"]["subtitleStreamCount"] = 0
+            result["issueCodes"] = ["SOURCE_MEDIA_SUBTITLE_CODEC_UNSUPPORTED"]
+        elif contradiction == "known_duration_marked_unknown":
+            result["issueCodes"] = [
+                "SOURCE_MEDIA_DURATION_UNKNOWN",
+                "SOURCE_MEDIA_EMBEDDED_TRANSCRIPT_EXTRACTED",
+            ]
+        elif contradiction == "unknown_duration_not_declared":
+            result["media"]["durationMs"] = None
+        return result
+
+    resources, runtime, project = environment(
+        tmp_path,
+        structured_source_parser=contradictory_parser,
+    )
+    source = (tmp_path / f"{contradiction}.mp4").resolve()
+    source.write_bytes(b"contradictory media fixture")
+    registration = register(
+        runtime,
+        project,
+        input_ref(resources, source, request_id=contradiction),
+    )
+
+    with pytest.raises(StudyRuntimeError) as failed:
+        inspect(runtime, project, registration)
     assert failed.value.code == "SOURCE_PARSER_RESULT_INVALID"
 
 

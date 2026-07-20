@@ -6,7 +6,7 @@
 
 - 当前可信开发态 stdio runtime 已公开 38 个工具，能够完成：脱敏 profile 列表与现有 profile 的受信本地凭据管理、精确 model/TTS/AnkiConnect profile 验证、远程诊断前的受信操作确认、受信本地授权查看/撤销、项目分页找回与权威工作流快照、版本化 Learning Contract 语义更新与精确下游失效、本地/网络受支持文本授权与检查、固定 Hermes Grok 4.5 候选发现、候选发现安全恢复、候选选择、确定性文本 CardPlan 与卡片生成、APKG 导出、受信确认、真实 Anki 导入和数据级核验，以及对当前会话 ArtifactHandle 的有界产物摘要和完整性审计查询。
 - 当前统一授权管理器覆盖同一受信会话的本地文件/目录/输出 grant、network grant、未消费 Anki ImportApproval、未消费 profile-validation OperationApproval 和当前 Broker model/TTS/source 授权。当前 OperationApproval 公共生产者只有 model/TTS profile 诊断，不能当作 discovery/generate 的通用授权。管理器是逐账本的明确结果集合，不宣称跨多个 Registry 的全局原子事务，也不会删除已生成产物或回滚既有远程/Anki 副作用。
-- 当前来源包括本地文本、Markdown、代码、HTML、字幕文本及目录中的受支持成员，也包括匿名静态 HTTPS 网页快照、YouTube 字幕快照，以及仅在能力摘要明确可用时开放的文本层 PDF。PDF 解析是 B 级有损表示，不保留完整布局、图片或公式；源码开发态缺少签名沙箱 runtime 时会主动阻塞。视频解码/下载、任意公开视频、扫描 PDF/OCR、Office、动态或登录网页、音频/播客转写和附件桥仍未实现。
+- 当前来源包括本地文本、Markdown、代码、HTML、字幕文本及目录中的受支持成员，也包括匿名静态 HTTPS 网页/Podcast 显式快照、YouTube 字幕快照，以及仅在能力摘要明确可用时开放的文本层 PDF 与嵌入字幕音视频。PDF 和嵌入媒体字幕都是 B 级有损表示：前者不保留完整布局、图片或公式，后者不做 ASR、只读取受支持的内嵌字幕轨；源码开发态缺少签名沙箱 runtime/固定媒体工具时会主动阻塞。完整视频下载、feed enclosure 自动追随、任意公开视频、无字幕媒体转写、扫描 PDF/OCR、Office、动态或登录网页和附件桥仍未实现。
 - 当前不生成模型扩写卡片、TTS 或媒体切片；CardPlan 只允许冻结证据足以确定性支持的文本/零媒体路线。
 - Anki 导入最高状态为 `anki_data_verified`。实际渲染、音视频播放、复习按键和重启持久性均为 `not_assessed`，不能写成“已在 Anki 完整核验”。
 - 仓库内 manifest/Skill 是被动插件源；正式发布签名、MCP 声明、安装包和 App UI 尚未交付，不能宣称插件已正式可安装或可发布。
@@ -22,7 +22,7 @@
 - 当前产品是 Windows Tauri 桌面应用。
 - 当前仓库已有 Card Service、最小 stdio MCP、原生固定 launcher、被动插件 manifest/SKILL.md、候选插件装配与完整设计文档，但尚无带正式发行签名、可安装 MCP 声明或 App UI 的发布包。
 - 当前 Worker 仍是一次性 JSON 协议；Agent 不能直连 Worker。可信 Card Service MCP 已公开受限项目/来源/候选/计划、固定 Hermes 候选发现、确定性文本生成、异步 APKG 导出、任务查询/取消和受信确认后的 Anki 数据级导入核验；仍不公开 raw Worker、Shell、通用模型/TTS/媒体生成或 runtime verifier。
-- source/output/network grant 已绑定 StudyTask、受支持来源快照/检查与认证 APKG 发布；异步 discovery、ImportPlan、确认和 Anki 数据写入/核验已经接线。完整媒体 acquisition、模型扩写/TTS/媒体生成、R8b runtime verifier 和正式插件安装仍缺失。
+- source/output/network grant 已绑定 StudyTask、受支持来源快照/检查与认证 APKG 发布；异步 discovery、ImportPlan、确认和 Anki 数据写入/核验已经接线。仅“已有嵌入字幕的本地/显式 HTTPS 小型媒体快照”可进入 B 级时间证据检查；完整媒体 acquisition、ASR、模型扩写/TTS/媒体生成、R8b runtime verifier 和正式插件安装仍缺失。
 - 当前文档/知识卡能力是局部基础，不是通用 Study IR。
 - 当前真实强项是语言视频、媒体、APKG 和 Anki 数据一致性核验；完整运行时渲染/播放/重启复习仍需独立版本化 verifier 证明。
 
@@ -75,6 +75,7 @@ M0 基线、Card Service、可信 MCP、认证 Artifact/opaque handles 和 Anki 
 - 动态/登录网页可能无法稳定快照。
 - 为保证 raw URL 不进入 MCP，所有 URL（包括普通公开链接）都必须在受信本地表面重新输入；对话里粘贴的值不会被工具复制。含 signed/token/auth query 的值若已进入对话，应撤销/重新签发。
 - 目录部分失败必须显式，不能保证每个文件都能处理。
+- Podcast grant 只冻结用户明确输入的 HTTPS feed 或直链响应；不会自动追随 feed enclosure 或替用户扩大到另一个 origin。音视频没有受支持的嵌入字幕时停止，不把模型猜测当成转写。
 
 ## 6. 学习选择
 

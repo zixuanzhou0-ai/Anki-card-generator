@@ -913,6 +913,16 @@ class CardService:
                 "Managed source parser must be an existing absolute file",
             )
         self.source_parser_sha256 = self._file_sha256(self.source_parser_path)
+        self.source_parser_ffmpeg_sha256 = (
+            self._file_sha256(self.managed_media_tools["ACG_MANAGED_FFMPEG"])
+            if "ACG_MANAGED_FFMPEG" in self.managed_media_tools
+            else None
+        )
+        self.source_parser_ffprobe_sha256 = (
+            self._file_sha256(self.managed_media_tools["ACG_MANAGED_FFPROBE"])
+            if "ACG_MANAGED_FFPROBE" in self.managed_media_tools
+            else None
+        )
         try:
             if self.runtime_package is not None:
                 runtime_entries = self.runtime_package.runtime_entries()
@@ -1448,18 +1458,24 @@ class CardService:
         maximum_execution_seconds: float,
     ) -> Mapping[str, Any]:
         if (
-            source_type != "pdf"
+            source_type not in {"pdf", "video", "audio"}
             or not re.fullmatch(r"[0-9a-f]{64}", source_sha256)
             or isinstance(source_size_bytes, bool)
             or not isinstance(source_size_bytes, int)
-            or not 1 <= source_size_bytes <= 32 * 1024 * 1024
+            or not 1 <= source_size_bytes <= (
+                32 * 1024 * 1024
+                if source_type == "pdf"
+                else 2 * 1024 * 1024 * 1024
+            )
             or not callable(materialize)
             or isinstance(maximum_text_bytes, bool)
             or not isinstance(maximum_text_bytes, int)
             or not 1 <= maximum_text_bytes <= 8 * 1024 * 1024
             or isinstance(maximum_execution_seconds, bool)
             or not isinstance(maximum_execution_seconds, (int, float))
-            or not 0 < maximum_execution_seconds <= 60
+            or not 0 < maximum_execution_seconds <= (
+                60 if source_type == "pdf" else 180
+            )
         ):
             raise CardServiceError(
                 "SOURCE_PARSER_INPUT_INVALID",
@@ -1486,7 +1502,9 @@ class CardService:
                     stage="source_parser",
                 )
             workspace, task_sid = self._create_study_task_workspace(parser_task_id)
-            input_path = workspace / "source.pdf"
+            input_path = workspace / (
+                "source.pdf" if source_type == "pdf" else "source.media"
+            )
             materialization = materialize(input_path)
             if (
                 not isinstance(materialization, Mapping)
@@ -1571,7 +1589,10 @@ class CardService:
                 )
             process_group = TaskOwnedProcessGroup(
                 memory_limit_bytes=min(self.task_memory_limit_bytes, 512 * 1024 * 1024),
-                active_process_limit=min(self.task_active_process_limit, 2),
+                active_process_limit=min(
+                    self.task_active_process_limit,
+                    2 if source_type == "pdf" else 3,
+                ),
             )
             process_group.assign(process)
             stdout_parts: list[str] = []
@@ -1694,13 +1715,16 @@ class CardService:
                 )
             request = {
                 "schemaVersion": 1,
-                "kind": "pdf",
-                "inputName": "source.pdf",
+                "kind": source_type,
+                "inputName": (
+                    "source.pdf" if source_type == "pdf" else "source.media"
+                ),
                 "limits": {
-                    "maximumPages": 512,
                     "maximumTextBytes": maximum_text_bytes,
                 },
             }
+            if source_type == "pdf":
+                request["limits"]["maximumPages"] = 512
             write_control(
                 json.dumps(
                     {"schemaVersion": 1, "request": request},
@@ -1876,6 +1900,15 @@ class CardService:
                             "workerSha256": self.source_parser_sha256,
                             "pypdfVersion": "6.14.2",
                             "sandboxPolicy": "windows-appcontainer-job-no-network-v1",
+                            **(
+                                {
+                                    "ffmpegSha256": self.source_parser_ffmpeg_sha256,
+                                    "ffprobeSha256": self.source_parser_ffprobe_sha256,
+                                }
+                                if self.source_parser_ffmpeg_sha256 is not None
+                                and self.source_parser_ffprobe_sha256 is not None
+                                else {}
+                            ),
                         }
                         if self.runtime_package_dacl
                         else None

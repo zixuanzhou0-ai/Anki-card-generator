@@ -33,6 +33,7 @@ _HANDLE_RE = re.compile(r"^study_[A-Za-z0-9_-]{43}$")
 _MAX_SOURCES = 64
 _MAX_TEXT_BYTES = 8 * 1024 * 1024
 _MAX_DOCUMENT_BYTES = 32 * 1024 * 1024
+_MAX_MEDIA_BYTES = 2 * 1024 * 1024 * 1024
 _MAX_DIRECTORY_TEXT_BYTES = 16 * 1024 * 1024
 _MAX_DIRECTORY_MANIFEST_BYTES = 64 * 1024 * 1024
 _MAX_DIRECTORY_FILES = 2_048
@@ -41,7 +42,10 @@ _MAX_CONTENT_NODES = 20_000
 _MAX_NODE_CHARACTERS = 4_096
 _SUPPORTED_TEXT_TYPES = frozenset({"text", "markdown", "code", "html", "subtitle"})
 _SUPPORTED_DOCUMENT_TYPES = frozenset({"pdf"})
-_SUPPORTED_INSPECTION_TYPES = _SUPPORTED_TEXT_TYPES | _SUPPORTED_DOCUMENT_TYPES
+_SUPPORTED_MEDIA_TYPES = frozenset({"audio", "video"})
+_SUPPORTED_INSPECTION_TYPES = (
+    _SUPPORTED_TEXT_TYPES | _SUPPORTED_DOCUMENT_TYPES | _SUPPORTED_MEDIA_TYPES
+)
 _PDF_ISSUE_CODES = frozenset(
     {
         "SOURCE_PDF_CHARACTER_ANOMALIES",
@@ -64,6 +68,26 @@ _PDF_ISSUE_CODES = frozenset(
         "SOURCE_PARSER_TIMEOUT",
     }
 )
+_MEDIA_ISSUE_CODES = frozenset(
+    {
+        "SOURCE_MEDIA_DURATION_UNKNOWN",
+        "SOURCE_MEDIA_EMBEDDED_TRANSCRIPT_EXTRACTED",
+        "SOURCE_MEDIA_KIND_MISMATCH",
+        "SOURCE_MEDIA_PARSER_UNAVAILABLE",
+        "SOURCE_MEDIA_PROBE_FAILED",
+        "SOURCE_MEDIA_STREAMS_INVALID",
+        "SOURCE_MEDIA_SUBTITLE_CODEC_UNSUPPORTED",
+        "SOURCE_MEDIA_TRANSCRIPT_EXTRACTION_FAILED",
+        "SOURCE_MEDIA_TRANSCRIPT_INVALID",
+        "SOURCE_MEDIA_TRANSCRIPT_NOT_AVAILABLE",
+        "SOURCE_PARSER_REQUEST_FAILED",
+        "SOURCE_PARSER_EXECUTION_FAILED",
+        "SOURCE_PARSER_OUTPUT_LIMIT",
+        "SOURCE_PARSER_RUNTIME_UNTRUSTED",
+        "SOURCE_PARSER_SANDBOX_UNAVAILABLE",
+        "SOURCE_PARSER_TIMEOUT",
+    }
+)
 StructuredSourceParser = Callable[..., Mapping[str, Any]]
 _SOURCE_INSPECTION_COMPONENTS = {
     "cardService": "2.0.0",
@@ -73,11 +97,12 @@ _SOURCE_INSPECTION_COMPONENTS = {
     ).hexdigest(),
     "gateRuleSetVersion": "source-inspection-v1",
 }
-_PARSER_BINDING_FIELDS = {
+_PARSER_BINDING_BASE_FIELDS = {
     "workerSha256",
     "pypdfVersion",
     "sandboxPolicy",
 }
+_PARSER_BINDING_MEDIA_FIELDS = {"ffmpegSha256", "ffprobeSha256"}
 
 
 class SourceInspectionError(RuntimeError):
@@ -89,7 +114,7 @@ class SourceInspectionError(RuntimeError):
 
 class StructuredSourceParserError(RuntimeError):
     def __init__(self, code: str) -> None:
-        if code not in _PDF_ISSUE_CODES:
+        if code not in _PDF_ISSUE_CODES | _MEDIA_ISSUE_CODES:
             code = "SOURCE_PARSER_EXECUTION_FAILED"
         super().__init__(code)
         self.code = code
@@ -309,11 +334,23 @@ def _timestamp_ms(value: str) -> int:
 
 
 def _subtitle_content(
-    text: str, *, source_id: str, member_ref: str | None = None
+    text: str,
+    *,
+    source_id: str,
+    member_ref: str | None = None,
+    maximum_nodes: int = _MAX_CONTENT_NODES,
 ) -> tuple[str, list[dict[str, Any]], list[str]]:
     cues: list[tuple[int, int, str]] = []
     invalid = 0
-    for block in re.split(r"\n\s*\n", text):
+    limited = False
+    def iter_blocks() -> Iterator[str]:
+        cursor = 0
+        for boundary in re.finditer(r"\n[ \t]*\n", text):
+            yield text[cursor : boundary.start()]
+            cursor = boundary.end()
+        yield text[cursor:]
+
+    for block in iter_blocks():
         lines = [line.strip("\ufeff ") for line in block.splitlines() if line.strip()]
         if not lines or lines[0].upper().startswith("WEBVTT"):
             continue
@@ -334,11 +371,14 @@ def _subtitle_content(
         if end_ms <= start_ms:
             invalid += 1
             continue
+        if len(cues) >= maximum_nodes:
+            limited = True
+            break
         cues.append((start_ms, end_ms, cue_text))
     plain_parts: list[str] = []
     nodes: list[dict[str, Any]] = []
     cursor = 0
-    for index, (start_ms, end_ms, cue_text) in enumerate(cues[:_MAX_CONTENT_NODES]):
+    for index, (start_ms, end_ms, cue_text) in enumerate(cues):
         if plain_parts:
             plain_parts.append("\n")
             cursor += 1
@@ -378,7 +418,7 @@ def _subtitle_content(
     issues = []
     if invalid:
         issues.append("SOURCE_SUBTITLE_CUES_OMITTED")
-    if len(cues) > _MAX_CONTENT_NODES:
+    if limited:
         issues.append("SOURCE_NODE_LIMIT_REACHED")
     return "".join(plain_parts), nodes, issues
 
@@ -405,6 +445,10 @@ def _source_type_for_member(member_ref: str) -> str:
         return "html"
     if extension == ".pdf":
         return "pdf"
+    if extension in {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v"}:
+        return "video"
+    if extension in {".mp3", ".m4a", ".wav", ".flac", ".ogg", ".opus", ".aac"}:
+        return "audio"
     if extension in {
         ".py",
         ".js",
@@ -434,7 +478,7 @@ def _source_type_for_member(member_ref: str) -> str:
 
 
 def _recommended_routes(source_type: str) -> list[str]:
-    if source_type == "subtitle":
+    if source_type in {"subtitle", "audio", "video"}:
         return ["reading_recognition", "listening_recognition", "chunk_collocation"]
     if source_type == "code":
         return ["procedural_decision", "error_repair", "concept_discrimination"]
@@ -469,9 +513,24 @@ class SourceInspectionRuntime:
         if structured_source_parser_binding is not None:
             binding = dict(structured_source_parser_binding)
             if (
-                set(binding) != _PARSER_BINDING_FIELDS
+                frozenset(binding)
+                not in {
+                    frozenset(_PARSER_BINDING_BASE_FIELDS),
+                    frozenset(
+                        _PARSER_BINDING_BASE_FIELDS | _PARSER_BINDING_MEDIA_FIELDS
+                    ),
+                }
                 or not isinstance(binding.get("workerSha256"), str)
                 or not re.fullmatch(r"[0-9a-f]{64}", binding["workerSha256"])
+                or (
+                    "ffmpegSha256" in binding
+                    and (
+                        not isinstance(binding["ffmpegSha256"], str)
+                        or not re.fullmatch(r"[0-9a-f]{64}", binding["ffmpegSha256"])
+                        or not isinstance(binding["ffprobeSha256"], str)
+                        or not re.fullmatch(r"[0-9a-f]{64}", binding["ffprobeSha256"])
+                    )
+                )
                 or binding.get("pypdfVersion") != "6.14.2"
                 or binding.get("sandboxPolicy")
                 != "windows-appcontainer-job-no-network-v1"
@@ -486,7 +545,7 @@ class SourceInspectionRuntime:
         adapter_set_digest = _sha(
             canonical_json_bytes(
                 {
-                    "policy": "deterministic-text-pdf-v2",
+                    "policy": "deterministic-text-pdf-media-v3",
                     "parserBinding": self._parser_binding,
                 }
             )
@@ -496,14 +555,8 @@ class SourceInspectionRuntime:
             "worker": (
                 "not-invoked"
                 if self._parser_binding is None
-                else (
-                    "source-parser@sha256:"
-                    + self._parser_binding["workerSha256"]
-                    + ";pypdf="
-                    + self._parser_binding["pypdfVersion"]
-                    + ";sandbox="
-                    + self._parser_binding["sandboxPolicy"]
-                )
+                else "source-parser@sha256:"
+                + self._parser_binding["workerSha256"]
             ),
             "sourceAdapterSetDigest": adapter_set_digest,
         }
@@ -513,6 +566,13 @@ class SourceInspectionRuntime:
         return (
             self._structured_source_parser is not None
             and self._parser_binding is not None
+        )
+
+    @property
+    def embedded_media_transcript_available(self) -> bool:
+        return self.pdf_text_layer_available and bool(
+            self._parser_binding
+            and _PARSER_BINDING_MEDIA_FIELDS.issubset(self._parser_binding)
         )
 
     def _operation_digest(
@@ -529,7 +589,7 @@ class SourceInspectionRuntime:
                     "projectId": project_id,
                     "expectedProjectRevision": expected_revision,
                     "sourceRefs": [dict(value) for value in source_refs],
-                    "extractorPolicy": "deterministic-text-pdf-v2",
+                    "extractorPolicy": "deterministic-text-pdf-media-v3",
                     "sourceAdapterSetDigest": self._component_versions[
                         "sourceAdapterSetDigest"
                     ],
@@ -642,6 +702,20 @@ class SourceInspectionRuntime:
                     },
                 ]
             )
+        if self.embedded_media_transcript_available:
+            required_capabilities.append(
+                {
+                    "kind": "fixed",
+                    "capabilityId": "source.media_embedded_transcript",
+                    "implementationVersionOrDigest": (
+                        "ffmpeg:sha256:"
+                        + self._parser_binding["ffmpegSha256"]
+                        + ";ffprobe:sha256:"
+                        + self._parser_binding["ffprobeSha256"]
+                    ),
+                    "compatibilityContractVersion": "embedded-transcript-v1",
+                }
+            )
         capability, capability_digest = build_capability_binding(
             required_capabilities
         )
@@ -720,7 +794,10 @@ class SourceInspectionRuntime:
             text = _visible_html(text)
         if source_type == "subtitle":
             plain, nodes, subtitle_issues = _subtitle_content(
-                text, source_id=source_id, member_ref=member_ref
+                text,
+                source_id=source_id,
+                member_ref=member_ref,
+                maximum_nodes=maximum_nodes,
             )
             if not nodes:
                 return {
@@ -824,7 +901,7 @@ class SourceInspectionRuntime:
                 ),
                 "issueRefs": ["SOURCE_ASYNC_INSPECTION_REQUIRED"],
             }
-        if self._structured_source_parser is None:
+        if not self.embedded_media_transcript_available:
             return {
                 "text": "",
                 "nodes": [],
@@ -1131,6 +1208,315 @@ class SourceInspectionRuntime:
             "issueRefs": issues,
         }
 
+    def _read_media_source(
+        self,
+        *,
+        source_id: str,
+        source_type: str,
+        blob_ref: Mapping[str, Any],
+        member_ref: str | None = None,
+        maximum_text_bytes: int = _MAX_TEXT_BYTES,
+        maximum_nodes: int = _MAX_CONTENT_NODES,
+        deadline: float | None = None,
+    ) -> dict[str, Any]:
+        size_bytes = blob_ref.get("sizeBytes")
+        if (
+            source_type not in _SUPPORTED_MEDIA_TYPES
+            or isinstance(size_bytes, bool)
+            or not isinstance(size_bytes, int)
+            or size_bytes < 0
+        ):
+            raise SourceInspectionError(
+                "SOURCE_ASSET_CORRUPT", "Media SourceAsset payload is invalid"
+            )
+        if size_bytes > _MAX_MEDIA_BYTES:
+            return {
+                "text": "",
+                "nodes": [],
+                "supportTier": "C",
+                "status": "blocked",
+                "completeness": _completeness(
+                    "blocked",
+                    expected_units=None,
+                    processed_units=0,
+                    omitted_units=1,
+                    reason_codes=["SOURCE_ASYNC_INSPECTION_REQUIRED"],
+                ),
+                "issueRefs": ["SOURCE_ASYNC_INSPECTION_REQUIRED"],
+            }
+        if self._structured_source_parser is None:
+            return {
+                "text": "",
+                "nodes": [],
+                "supportTier": "C",
+                "status": "blocked",
+                "completeness": _completeness(
+                    "blocked",
+                    expected_units=1,
+                    processed_units=0,
+                    omitted_units=1,
+                    reason_codes=["SOURCE_PARSER_NOT_AVAILABLE"],
+                ),
+                "issueRefs": ["SOURCE_PARSER_NOT_AVAILABLE"],
+            }
+        remaining_seconds = 180.0
+        if deadline is not None:
+            remaining_seconds = min(remaining_seconds, deadline - time.monotonic())
+        if remaining_seconds <= 0:
+            return {
+                "text": "",
+                "nodes": [],
+                "supportTier": "C",
+                "status": "blocked",
+                "completeness": _completeness(
+                    "blocked",
+                    expected_units=1,
+                    processed_units=0,
+                    omitted_units=1,
+                    reason_codes=["SOURCE_INSPECTION_TIME_LIMIT_REACHED"],
+                ),
+                "issueRefs": ["SOURCE_INSPECTION_TIME_LIMIT_REACHED"],
+            }
+        try:
+            result = self._structured_source_parser(
+                source_type=source_type,
+                source_sha256=str(blob_ref.get("sha256") or ""),
+                source_size_bytes=size_bytes,
+                materialize=lambda destination: self._artifacts.materialize_blob(
+                    blob_ref, destination
+                ),
+                maximum_text_bytes=maximum_text_bytes,
+                maximum_execution_seconds=max(1.0, remaining_seconds),
+            )
+        except StructuredSourceParserError as error:
+            return {
+                "text": "",
+                "nodes": [],
+                "supportTier": "C",
+                "status": "blocked",
+                "completeness": _completeness(
+                    "blocked",
+                    expected_units=1,
+                    processed_units=0,
+                    omitted_units=1,
+                    reason_codes=[error.code],
+                ),
+                "issueRefs": [error.code],
+            }
+        if (
+            not isinstance(result, Mapping)
+            or set(result)
+            != {
+                "schema",
+                "schemaVersion",
+                "kind",
+                "status",
+                "parser",
+                "media",
+                "transcript",
+                "issueCodes",
+            }
+            or result.get("schema") != "study.source-parser-result"
+            or result.get("schemaVersion") != 1
+            or result.get("kind") != source_type
+            or result.get("status") not in {"conditional", "blocked"}
+            or result.get("parser")
+            != {"name": "ffmpeg-suite", "version": "sha256-bound"}
+            or not isinstance(result.get("media"), Mapping)
+            or set(result["media"])
+            != {
+                "durationMs",
+                "audioStreamCount",
+                "videoStreamCount",
+                "subtitleStreamCount",
+            }
+            or not isinstance(result.get("issueCodes"), list)
+            or result["issueCodes"] != sorted(set(result["issueCodes"]))
+            or not all(
+                isinstance(value, str) and value in _MEDIA_ISSUE_CODES
+                for value in result["issueCodes"]
+            )
+        ):
+            raise SourceInspectionError(
+                "SOURCE_PARSER_RESULT_INVALID", "Media parser result is invalid"
+            )
+        media = result["media"]
+        duration_ms = media["durationMs"]
+        counts = [
+            media["audioStreamCount"],
+            media["videoStreamCount"],
+            media["subtitleStreamCount"],
+        ]
+        if (
+            (
+                duration_ms is not None
+                and (
+                    isinstance(duration_ms, bool)
+                    or not isinstance(duration_ms, int)
+                    or not 1 <= duration_ms <= 12 * 60 * 60 * 1000
+                )
+            )
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or not 0 <= value <= 32
+                for value in counts
+            )
+            or sum(counts) > 32
+            or (
+                result["status"] == "conditional"
+                and source_type == "video"
+                and media["videoStreamCount"] == 0
+            )
+            or (
+                result["status"] == "conditional"
+                and source_type == "audio"
+                and media["audioStreamCount"] == 0
+            )
+        ):
+            raise SourceInspectionError(
+                "SOURCE_PARSER_RESULT_INVALID", "Media parser metadata is invalid"
+            )
+        issues = list(result["issueCodes"])
+        transcript = result["transcript"]
+        duration_unknown = "SOURCE_MEDIA_DURATION_UNKNOWN" in issues
+        probe_level_failures = {
+            "SOURCE_MEDIA_KIND_MISMATCH",
+            "SOURCE_MEDIA_PARSER_UNAVAILABLE",
+            "SOURCE_MEDIA_PROBE_FAILED",
+            "SOURCE_MEDIA_STREAMS_INVALID",
+            "SOURCE_PARSER_REQUEST_FAILED",
+            "SOURCE_PARSER_EXECUTION_FAILED",
+            "SOURCE_PARSER_OUTPUT_LIMIT",
+            "SOURCE_PARSER_RUNTIME_UNTRUSTED",
+            "SOURCE_PARSER_SANDBOX_UNAVAILABLE",
+            "SOURCE_PARSER_TIMEOUT",
+        }
+        if (
+            (duration_ms is not None and duration_unknown)
+            or (
+                duration_ms is None
+                and not duration_unknown
+                and not set(issues) & probe_level_failures
+            )
+        ):
+            raise SourceInspectionError(
+                "SOURCE_PARSER_RESULT_INVALID",
+                "Media duration status contradicts its metadata",
+            )
+        if result["status"] == "blocked":
+            blocking_issues = set(issues) - {"SOURCE_MEDIA_DURATION_UNKNOWN"}
+            if (
+                transcript is not None
+                or "SOURCE_MEDIA_EMBEDDED_TRANSCRIPT_EXTRACTED" in issues
+                or not blocking_issues
+                or (
+                    not blocking_issues & probe_level_failures
+                    and (
+                        (source_type == "video" and media["videoStreamCount"] == 0)
+                        or (source_type == "audio" and media["audioStreamCount"] == 0)
+                    )
+                )
+                or (
+                    "SOURCE_MEDIA_TRANSCRIPT_NOT_AVAILABLE" in issues
+                    and media["subtitleStreamCount"] != 0
+                )
+                or (
+                    "SOURCE_MEDIA_SUBTITLE_CODEC_UNSUPPORTED" in issues
+                    and media["subtitleStreamCount"] == 0
+                )
+            ):
+                raise SourceInspectionError(
+                    "SOURCE_PARSER_RESULT_INVALID",
+                    "Blocked media parser result is contradictory",
+                )
+            return {
+                "text": "",
+                "nodes": [],
+                "supportTier": "C",
+                "status": "blocked",
+                "mediaSummary": _clone(media),
+                "extractor": {
+                    "component": "source-parser-worker",
+                    "name": "ffmpeg-suite",
+                    "version": "sha256-bound",
+                },
+                "completeness": _completeness(
+                    "blocked",
+                    expected_units=1,
+                    processed_units=0,
+                    omitted_units=1,
+                    reason_codes=issues,
+                ),
+                "issueRefs": issues,
+            }
+        if (
+            not isinstance(transcript, Mapping)
+            or set(transcript) != {"format", "text", "language", "streamIndex"}
+            or transcript.get("format") != "webvtt"
+            or not isinstance(transcript.get("text"), str)
+            or not transcript["text"].strip()
+            or len(transcript["text"].encode("utf-8")) > maximum_text_bytes
+            or (
+                transcript.get("language") is not None
+                and (
+                    not isinstance(transcript["language"], str)
+                    or not 1 <= len(transcript["language"]) <= 32
+                    or not re.fullmatch(r"[a-z0-9-]+", transcript["language"])
+                )
+            )
+            or isinstance(transcript.get("streamIndex"), bool)
+            or not isinstance(transcript.get("streamIndex"), int)
+            or not 0 <= transcript["streamIndex"] <= 65_535
+            or "SOURCE_MEDIA_EMBEDDED_TRANSCRIPT_EXTRACTED" not in issues
+            or set(issues)
+            - {
+                "SOURCE_MEDIA_EMBEDDED_TRANSCRIPT_EXTRACTED",
+                "SOURCE_MEDIA_DURATION_UNKNOWN",
+            }
+            or media["subtitleStreamCount"] == 0
+        ):
+            raise SourceInspectionError(
+                "SOURCE_PARSER_RESULT_INVALID", "Media transcript is invalid"
+            )
+        normalized, decode_issue = _decode_text(
+            transcript["text"].encode("utf-8"), truncated=False
+        )
+        if normalized is None or decode_issue is not None or normalized != transcript["text"]:
+            raise SourceInspectionError(
+                "SOURCE_PARSER_RESULT_INVALID", "Media transcript is not canonical"
+            )
+        plain, nodes, subtitle_issues = _subtitle_content(
+            normalized,
+            source_id=source_id,
+            member_ref=member_ref,
+            maximum_nodes=maximum_nodes,
+        )
+        if not nodes:
+            raise SourceInspectionError(
+                "SOURCE_PARSER_RESULT_INVALID", "Media transcript contains no valid cues"
+            )
+        issues = sorted(set(issues + subtitle_issues))
+        return {
+            "text": plain,
+            "nodes": nodes,
+            "supportTier": "B",
+            "status": "conditional",
+            "mediaSummary": _clone(media),
+            "extractor": {
+                "component": "source-parser-worker",
+                "name": "ffmpeg-suite",
+                "version": "sha256-bound",
+            },
+            "completeness": _completeness(
+                "partial_declared",
+                expected_units=(len(nodes) if "SOURCE_NODE_LIMIT_REACHED" not in issues else None),
+                processed_units=len(nodes),
+                reason_codes=issues,
+            ),
+            "issueRefs": issues,
+        }
+
     def _inspect_directory(
         self,
         *,
@@ -1238,7 +1624,7 @@ class SourceInspectionRuntime:
             relative = entry["relativeLocator"]
             source_type = _source_type_for_member(relative)
             document_limit_reached = (
-                source_type in _SUPPORTED_DOCUMENT_TYPES
+                source_type in (_SUPPORTED_DOCUMENT_TYPES | _SUPPORTED_MEDIA_TYPES)
                 and parsed_documents >= _MAX_DIRECTORY_DOCUMENTS
             )
             time_limit_reached = deadline is not None and time.monotonic() >= deadline
@@ -1270,16 +1656,27 @@ class SourceInspectionRuntime:
                 else:
                     issue_refs.append("SOURCE_MEMBER_UNSUPPORTED")
                 continue
-            if source_type == "pdf":
+            if source_type in (_SUPPORTED_DOCUMENT_TYPES | _SUPPORTED_MEDIA_TYPES):
                 parsed_documents += 1
-                extracted = self._read_pdf_source(
-                    source_id=source_id,
-                    blob_ref=entry["blobRef"],
-                    member_ref=relative,
-                    maximum_text_bytes=min(_MAX_TEXT_BYTES, remaining_bytes),
-                    maximum_nodes=max(0, _MAX_CONTENT_NODES - len(nodes)),
-                    deadline=deadline,
-                )
+                if source_type == "pdf":
+                    extracted = self._read_pdf_source(
+                        source_id=source_id,
+                        blob_ref=entry["blobRef"],
+                        member_ref=relative,
+                        maximum_text_bytes=min(_MAX_TEXT_BYTES, remaining_bytes),
+                        maximum_nodes=max(0, _MAX_CONTENT_NODES - len(nodes)),
+                        deadline=deadline,
+                    )
+                else:
+                    extracted = self._read_media_source(
+                        source_id=source_id,
+                        source_type=source_type,
+                        blob_ref=entry["blobRef"],
+                        member_ref=relative,
+                        maximum_text_bytes=min(_MAX_TEXT_BYTES, remaining_bytes),
+                        maximum_nodes=max(0, _MAX_CONTENT_NODES - len(nodes)),
+                        deadline=deadline,
+                    )
             else:
                 extracted = self._read_text_source(
                     source_id=source_id,
@@ -1405,6 +1802,13 @@ class SourceInspectionRuntime:
                 blob_ref=representations[0]["blobRef"],
                 deadline=deadline,
             )
+        if source_type in _SUPPORTED_MEDIA_TYPES:
+            return self._read_media_source(
+                source_id=source_id,
+                source_type=source_type,
+                blob_ref=representations[0]["blobRef"],
+                deadline=deadline,
+            )
         if source_type not in _SUPPORTED_TEXT_TYPES:
             return {
                 "text": "",
@@ -1462,7 +1866,11 @@ class SourceInspectionRuntime:
                     else (
                         "pdf_text_layer"
                         if source["sourceType"] == "pdf"
-                        else "plain_text"
+                        else (
+                            "media_transcript"
+                            if source["sourceType"] in _SUPPORTED_MEDIA_TYPES
+                            else "plain_text"
+                        )
                     )
                 ),
                 "plainTextBlobRef": text_blob,
@@ -1477,6 +1885,10 @@ class SourceInspectionRuntime:
                 "completeness": extracted["completeness"],
                 "issueRefs": extracted["issueRefs"],
             }
+            if "mediaSummary" in extracted:
+                representation_payload["mediaSummary"] = _clone(
+                    extracted["mediaSummary"]
+                )
             publication = self._artifacts.publish_idempotent(
                 audience=audience,
                 project_id=project_id,
