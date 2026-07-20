@@ -21,6 +21,12 @@ from .artifact_registry import (
     canonical_json_bytes,
 )
 from .card_plan_queries import CardPlanQueryError, CardPlanQueryRuntime
+from .evidence_replay import EvidenceReplay, EvidenceReplayError
+from .language_profiles import (
+    contains_han,
+    is_latin_script_text,
+    normalize_answer_leakage_text,
+)
 from .legacy_project_projection import (
     LegacyProjectProjectionError,
     LegacyProjectProjectionPublisher,
@@ -36,7 +42,7 @@ from .task_manifests import (
 )
 
 
-CARD_GENERATION_POLICY_VERSION = "deterministic-card-artifact-v1"
+CARD_GENERATION_POLICY_VERSION = "deterministic-card-artifact-v2"
 CARD_RELIABILITY_RULE_SET_VERSION = "card-artifact-reliability-v1"
 _IDEMPOTENCY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
 _HANDLE_RE = re.compile(r"^study_[A-Za-z0-9_-]{43}$")
@@ -123,6 +129,107 @@ def _artifact_entity(ref: Mapping[str, Any], entity_id: str) -> dict[str, Any]:
     return {"artifactRef": dict(ref), "entityId": entity_id}
 
 
+def _card_language_profile(value: Any, *, route: str) -> dict[str, str]:
+    if value is None:
+        return {
+            "promptLanguage": "en",
+            "answerLanguage": "en",
+            "targetLanguage": "en",
+            "meaningLanguage": "en",
+            "route": route,
+        }
+    required = {
+        "promptLanguage",
+        "answerLanguage",
+        "targetLanguage",
+        "meaningLanguage",
+        "route",
+    }
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != required
+        or value.get("route") != route
+        or value.get("promptLanguage") not in {"en", "zh-CN"}
+        or value.get("answerLanguage") != "en"
+        or value.get("targetLanguage") != "en"
+        or value.get("meaningLanguage") not in {"en", "zh-CN"}
+        or (
+            value.get("promptLanguage") == "zh-CN"
+            and value.get("meaningLanguage") != "zh-CN"
+        )
+        or (
+            value.get("promptLanguage") == "en"
+            and value.get("meaningLanguage") != "en"
+        )
+    ):
+        _fail("CARD_GENERATION_GRAPH_CORRUPT", "card language profile is invalid")
+    return {key: str(value[key]) for key in sorted(required)}
+
+
+def _clock(value: int) -> str:
+    hours, remainder = divmod(max(0, value), 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    seconds, milliseconds = divmod(remainder, 1_000)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+
+
+def _legacy_source_time(row: Mapping[str, Any], card: Mapping[str, Any]) -> str:
+    display_name = _text(
+        row.get("sourceDisplayName"), "source display name", maximum=160
+    )
+    presentation = card.get("evidencePresentation")
+    items = presentation.get("items") if isinstance(presentation, Mapping) else None
+    direct_target = (
+        card.get("back", {}).get("coreAnswer")
+        if card.get("route") in {"production", "chunk_collocation"}
+        else card.get("front", {}).get("prompt")
+    )
+    normalized_target = normalize_answer_leakage_text(direct_target)
+    matching_item = None
+    if isinstance(items, list):
+        matching_item = next(
+            (
+                item
+                for item in items
+                if isinstance(item, Mapping)
+                and normalize_answer_leakage_text(item.get("quote"))
+                == normalized_target
+            ),
+            None,
+        )
+    locator = (
+        matching_item.get("locator")
+        if isinstance(matching_item, Mapping)
+        else None
+    )
+    if not isinstance(locator, Mapping):
+        _fail("CARD_GENERATION_GRAPH_CORRUPT", "legacy source locator is missing")
+    page_number = locator.get("pageNumber")
+    start_ms = locator.get("startMs")
+    end_ms = locator.get("endMs")
+    start = locator.get("start")
+    end = locator.get("end")
+    if isinstance(page_number, int) and not isinstance(page_number, bool):
+        position = f"第 {page_number} 页"
+    elif (
+        isinstance(start_ms, int)
+        and not isinstance(start_ms, bool)
+        and isinstance(end_ms, int)
+        and not isinstance(end_ms, bool)
+    ):
+        position = f"{_clock(start_ms)}–{_clock(end_ms)}"
+    elif (
+        isinstance(start, int)
+        and not isinstance(start, bool)
+        and isinstance(end, int)
+        and not isinstance(end, bool)
+    ):
+        position = f"字符 {start}–{end}"
+    else:
+        _fail("CARD_GENERATION_GRAPH_CORRUPT", "legacy source locator is invalid")
+    return f"{display_name} · {position}"
+
+
 class CardArtifactRuntime:
     """Generate immutable text cards and an export-compatible ProjectArtifact."""
 
@@ -141,6 +248,94 @@ class CardArtifactRuntime:
         self._tasks = tasks
         self._plans = card_plan_queries
         self._legacy = LegacyProjectProjectionPublisher(artifacts)
+        self._evidence = EvidenceReplay(artifacts=artifacts)
+
+    def _evidence_presentation(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        candidate_ref: Mapping[str, Any],
+        candidate_payload: Mapping[str, Any],
+        representation_ref: Mapping[str, Any],
+        source_ref: Mapping[str, Any],
+        source_display_name: str,
+        source_type: str,
+    ) -> dict[str, Any]:
+        anchors = candidate_payload.get("evidenceAnchors")
+        if not isinstance(anchors, list) or not anchors:
+            _fail("CARD_GENERATION_GRAPH_CORRUPT", "card evidence is missing")
+        items: list[dict[str, Any]] = []
+        evidence_ids: set[str] = set()
+        for anchor in anchors:
+            locator = anchor.get("locator") if isinstance(anchor, Mapping) else None
+            evidence_id = (
+                anchor.get("evidenceId") if isinstance(anchor, Mapping) else None
+            )
+            if (
+                not isinstance(anchor, Mapping)
+                or not isinstance(locator, Mapping)
+                or not isinstance(evidence_id, str)
+                or not evidence_id
+                or evidence_id in evidence_ids
+                or not isinstance(anchor.get("sourceRef"), Mapping)
+                or _identity(anchor["sourceRef"]) != _identity(source_ref)
+            ):
+                _fail("CARD_GENERATION_GRAPH_CORRUPT", "card evidence is invalid")
+            try:
+                replay = self._evidence.replay(
+                    audience=audience,
+                    representation_ref=representation_ref,
+                    locator=locator,
+                    quote_sha256=str(anchor.get("quoteSha256") or ""),
+                    context_characters=240,
+                )
+            except EvidenceReplayError as error:
+                raise CardArtifactRuntimeError(error.code, error.message) from error
+            evidence_ids.add(evidence_id)
+            context_before = str(replay["contextBefore"])
+            quote = str(replay["quote"])
+            raw_context = "".join(
+                (context_before, quote, str(replay["contextAfter"]))
+            )
+            leading_trim = len(raw_context) - len(raw_context.lstrip())
+            context = raw_context.strip()
+            context_quote_start = len(context_before) - leading_trim
+            context_quote_end = context_quote_start + len(quote)
+            if not context:
+                _fail(
+                    "CARD_GENERATION_GRAPH_CORRUPT",
+                    "card evidence context is empty",
+                )
+            if (
+                context_quote_start < 0
+                or context_quote_end > len(context)
+                or context[context_quote_start:context_quote_end] != quote
+            ):
+                _fail(
+                    "CARD_GENERATION_GRAPH_CORRUPT",
+                    "card evidence quote is outside its replayed context",
+                )
+            items.append(
+                {
+                    "evidenceRef": _artifact_entity(candidate_ref, evidence_id),
+                    "sourceRef": dict(source_ref),
+                    "sourceDisplayName": source_display_name,
+                    "sourceType": source_type,
+                    "quote": quote,
+                    "context": context,
+                    "contextQuoteStart": context_quote_start,
+                    "contextQuoteEnd": context_quote_end,
+                    "locator": _clone(replay["locator"]),
+                    "quoteSha256": str(replay["quoteSha256"]),
+                    "snapshotBacked": replay["snapshotBacked"] is True,
+                    "networkAccessed": replay["networkAccessed"] is True,
+                }
+            )
+        return {
+            "state": "verified",
+            "primaryText": items[0]["context"],
+            "items": items,
+        }
 
     def _bundle(
         self,
@@ -326,6 +521,26 @@ class CardArtifactRuntime:
                 raise CardArtifactRuntimeError(error.code, error.message) from error
             if source.get("payloadSchema") != "study.source-asset":
                 _fail("CARD_GENERATION_GRAPH_CORRUPT", "source asset is invalid")
+            source_payload = source.get("payload")
+            if not isinstance(source_payload, Mapping):
+                _fail("CARD_GENERATION_GRAPH_CORRUPT", "source asset is invalid")
+            source_display_name = _text(
+                source_payload.get("displayName"),
+                "source display name",
+                maximum=160,
+            )
+            source_type = _text(
+                source_payload.get("sourceType"), "source type", maximum=64
+            )
+            evidence_presentation = self._evidence_presentation(
+                audience=audience,
+                candidate_ref=candidate_ref,
+                candidate_payload=candidate_payload,
+                representation_ref=representation_ref,
+                source_ref=source_ref,
+                source_display_name=source_display_name,
+                source_type=source_type,
+            )
             source_refs[_identity(source_ref)] = dict(source_ref)
             rows.append(
                 {
@@ -333,6 +548,8 @@ class CardArtifactRuntime:
                     "planId": plan_id,
                     "payload": _clone(payload),
                     "sourceRef": dict(source_ref),
+                    "sourceDisplayName": source_display_name,
+                    "evidencePresentation": evidence_presentation,
                 }
             )
         rows.sort(key=lambda value: value["planId"].encode("utf-8"))
@@ -393,11 +610,92 @@ class CardArtifactRuntime:
                 )
             ).hexdigest()[:40]
         )
+        language_profile = _card_language_profile(
+            plan.get("languageProfile"), route=str(plan.get("route") or "")
+        )
+        evidence_presentation = row.get("evidencePresentation")
+        if (
+            not isinstance(evidence_presentation, Mapping)
+            or evidence_presentation.get("state") != "verified"
+            or not isinstance(evidence_presentation.get("items"), list)
+            or not evidence_presentation["items"]
+            or not isinstance(evidence_presentation.get("primaryText"), str)
+        ):
+            _fail(
+                "CARD_GENERATION_GRAPH_CORRUPT",
+                "card evidence presentation is invalid",
+            )
+        if (
+            language_profile["promptLanguage"] == "zh-CN"
+            and not contains_han(cue_text)
+        ):
+            _fail(
+                "CARD_GENERATION_GRAPH_CORRUPT",
+                "Chinese card cue does not match its frozen language profile",
+            )
+        direct_answer = plan["route"] in {"production", "chunk_collocation"}
+        target_form = answer if direct_answer else cue_text
+        if not is_latin_script_text(target_form):
+            _fail(
+                "CARD_GENERATION_GRAPH_CORRUPT",
+                "card target form does not match its English language profile",
+            )
+        meaning_language = language_profile["meaningLanguage"]
+        meaning_matches_profile = (
+            contains_han(explanation)
+            if meaning_language == "zh-CN"
+            else is_latin_script_text(explanation)
+        )
+        if not meaning_matches_profile:
+            _fail(
+                "CARD_GENERATION_GRAPH_CORRUPT",
+                "card meaning does not match its frozen language profile",
+            )
+        source_direct_text = answer if direct_answer else cue_text
+        normalized_source_direct_text = normalize_answer_leakage_text(
+            source_direct_text
+        )
+        authenticated_quote_match = False
+        for item in evidence_presentation["items"]:
+            if not isinstance(item, Mapping):
+                continue
+            quote = item.get("quote")
+            quote_sha256 = item.get("quoteSha256")
+            locator = item.get("locator")
+            if (
+                not isinstance(quote, str)
+                or not quote
+                or not isinstance(quote_sha256, str)
+                or hashlib.sha256(quote.encode("utf-8")).hexdigest()
+                != quote_sha256
+                or not isinstance(locator, Mapping)
+                or locator.get("kind") != "text_span"
+                or item.get("snapshotBacked") is not True
+                or item.get("networkAccessed") is not False
+            ):
+                continue
+            if (
+                normalized_source_direct_text
+                and normalize_answer_leakage_text(quote)
+                == normalized_source_direct_text
+            ):
+                authenticated_quote_match = True
+                break
+        if not authenticated_quote_match:
+            field_label = "answer" if direct_answer else "prompt"
+            _fail(
+                "CARD_GENERATION_GRAPH_CORRUPT",
+                "card "
+                f"{field_label} is not an authenticated source-direct evidence quote",
+            )
+        plan_origin = _artifact_entity(row["planRef"], row["planId"])
+        primary_evidence_origin = _clone(evidence_refs[0])
         return {
             "cardId": card_id,
             "projectRevision": project_revision,
             "cardPlanRef": _artifact_entity(row["planRef"], row["planId"]),
             "route": plan["route"],
+            "languageProfile": language_profile,
             "front": {"modality": "text", "prompt": cue_text},
             "back": {
                 "coreAnswer": answer,
@@ -411,6 +709,40 @@ class CardArtifactRuntime:
                 "singleRecallTarget": True,
             },
             "evidenceRefs": _clone(evidence_refs),
+            "contentOrigins": {
+                "frontPrompt": {
+                    "kind": (
+                        "model_reviewed_interpretation"
+                        if direct_answer
+                        else "source_direct"
+                    ),
+                    "field": "cue.content",
+                    "originRef": (
+                        plan_origin if direct_answer else primary_evidence_origin
+                    ),
+                },
+                "coreAnswer": {
+                    "kind": (
+                        "source_direct"
+                        if direct_answer
+                        else "model_reviewed_interpretation"
+                    ),
+                    "field": "expectedResponse.coreAnswer",
+                    "originRef": (
+                        primary_evidence_origin if direct_answer else plan_origin
+                    ),
+                },
+                "explanation": {
+                    "kind": "model_reviewed_interpretation",
+                    "field": "feedback.explanation",
+                    "originRef": plan_origin,
+                },
+                "sourceQuote": {
+                    "kind": "source_direct",
+                    "evidenceRefs": _clone(evidence_refs),
+                },
+            },
+            "evidencePresentation": _clone(evidence_presentation),
             "mediaRefs": [],
             "verification": {
                 "state": "verified",
@@ -434,20 +766,89 @@ class CardArtifactRuntime:
         explanation = str(back["explanation"])
         examples = [str(value) for value in back["examples"]]
         nonexamples = [str(value) for value in back["nonexamples"]]
-        source_evidence = " ".join(
-            value for value in (answer, explanation, *examples) if value
+        language_profile = card.get("languageProfile")
+        prompt_language = (
+            language_profile.get("promptLanguage")
+            if isinstance(language_profile, Mapping)
+            else "en"
         )
+        evidence_presentation = card.get("evidencePresentation")
+        evidence_items = (
+            evidence_presentation.get("items")
+            if isinstance(evidence_presentation, Mapping)
+            else None
+        )
+        if not isinstance(evidence_items, list) or not evidence_items:
+            _fail("CARD_GENERATION_GRAPH_CORRUPT", "legacy evidence is missing")
+        evidence_contexts = list(
+            dict.fromkeys(
+                str(item.get("context") or "").strip()
+                for item in evidence_items
+                if isinstance(item, Mapping) and str(item.get("context") or "").strip()
+            )
+        )
+        source_evidence = "\n".join(evidence_contexts)
+        if not source_evidence:
+            _fail("CARD_GENERATION_GRAPH_CORRUPT", "legacy evidence is empty")
+        highlight_target = (
+            answer
+            if card.get("route") in {"production", "chunk_collocation"}
+            else str(front["prompt"])
+        )
+        normalized_answer = normalize_answer_leakage_text(highlight_target)
+        matching_item = next(
+            (
+                item
+                for item in evidence_items
+                if isinstance(item, Mapping)
+                and normalize_answer_leakage_text(item.get("quote"))
+                == normalized_answer
+            ),
+            None,
+        )
+        if not isinstance(matching_item, Mapping):
+            _fail(
+                "CARD_GENERATION_GRAPH_CORRUPT",
+                "legacy source-direct evidence is missing",
+            )
+        exact_span = str(matching_item.get("quote") or "")
+        matching_context = str(matching_item.get("context") or "").strip()
+        context_quote_start = matching_item.get("contextQuoteStart")
+        context_quote_end = matching_item.get("contextQuoteEnd")
+        context_base = source_evidence.find(matching_context)
+        if (
+            isinstance(context_quote_start, bool)
+            or not isinstance(context_quote_start, int)
+            or isinstance(context_quote_end, bool)
+            or not isinstance(context_quote_end, int)
+            or context_base < 0
+        ):
+            _fail(
+                "CARD_GENERATION_GRAPH_CORRUPT",
+                "legacy answer evidence bounds are invalid",
+            )
+        exact_span_start = context_base + context_quote_start
+        exact_span_end = context_base + context_quote_end
+        if source_evidence[exact_span_start:exact_span_end] != exact_span:
+            _fail(
+                "CARD_GENERATION_GRAPH_CORRUPT",
+                "legacy answer evidence bounds do not match",
+            )
         return {
             "id": card["cardId"],
-            "type": "knowledge",
+            "type": "phrase",
             "enabled": True,
             "document_card_kind": "knowledge",
-            "english": str(front["prompt"]),
+            "retrieval_prompt": str(front["prompt"]),
+            "english": source_evidence,
             "answer_core": answer,
-            "phrase": answer,
-            "chinese": answer,
+            "phrase": highlight_target,
+            "exact_span": exact_span,
+            "exact_span_start": exact_span_start,
+            "exact_span_end": exact_span_end,
+            "chinese": explanation if prompt_language == "zh-CN" else answer,
             "definition": explanation,
-            "context": explanation,
+            "context": source_evidence,
             "source_evidence": source_evidence,
             "example": " / ".join(examples),
             "teacher_note": " / ".join(nonexamples),
@@ -486,7 +887,7 @@ class CardArtifactRuntime:
                 artifact_id=payload["cardId"],
                 artifact_revision=1,
                 payload_schema="study.card",
-                payload_schema_version=1,
+                payload_schema_version=2,
                 payload=payload,
                 producer=_PRODUCER,
                 parents=[dict(row["planRef"]), dict(row["sourceRef"])],
@@ -585,12 +986,13 @@ class CardArtifactRuntime:
         contract = project["learningContract"]
         level = str(contract.get("learnerLevel") or "B1")
         legacy_segments = []
-        for index, (row, card) in enumerate(zip(rows, card_payloads, strict=True), 1):
+        for row, card in zip(rows, card_payloads, strict=True):
+            evidence_text = str(card["evidencePresentation"]["primaryText"])
             legacy_segments.append(
                 {
                     "id": "segment_" + card["cardId"][5:],
-                    "text": card["front"]["prompt"],
-                    "source_time": f"Study card {index}",
+                    "text": evidence_text,
+                    "source_time": _legacy_source_time(row, card),
                     "learning_point_id": row["planId"],
                     "cards": [self._legacy_card(card, row["planId"])],
                 }
@@ -599,16 +1001,19 @@ class CardArtifactRuntime:
             "schema_version": 15,
             "id": project_id,
             "title": project["title"],
-            "source_mode": "document",
+            "source_mode": "local",
             "video_path": "",
             "subtitle_path": "",
             "document_path": "",
-            "language": "en",
+            "language": str(
+                card_payloads[0]["languageProfile"]["targetLanguage"]
+            ),
             "level": level,
             "template_id": "immersive_v11",
             "document_study_mode": "knowledge",
+            "skip_video_slicing": True,
             "content_toggles": {"video": False, "tts": False},
-            "card_types": ["knowledge"],
+            "card_types": ["phrase"],
             "segments": legacy_segments,
             "reliability_manifest": reliability_payload,
             "warnings": [],

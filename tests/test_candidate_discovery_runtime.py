@@ -150,6 +150,9 @@ def environment(
     provider: FakeDiscoveryModelProvider | None = None,
     *,
     routes: list[str] | None = None,
+    prompt_language: str | None = None,
+    answer_language: str | None = None,
+    purpose: str = "Learn reusable spoken English",
 ):
     backend = InMemoryCredentialBackend()
     credentials = (tmp_path / "credentials").resolve()
@@ -167,16 +170,21 @@ def environment(
         candidate_discovery_model=model,
         candidate_discovery_model_provider=provider,
     )
+    learning_contract = {
+        "purpose": purpose,
+        "targetBehavior": "Recall and use the expression",
+        "routes": routes or ["production", "reading_recognition"],
+        "maxNewCards": 20,
+        "learnerLevel": "B1",
+    }
+    if prompt_language is not None:
+        learning_contract["promptLanguage"] = prompt_language
+    if answer_language is not None:
+        learning_contract["answerLanguage"] = answer_language
     project = runtime.create_project(
         audience=audience(),
         idempotency_key="project-1",
-        learning_contract={
-            "purpose": "Learn reusable spoken English",
-            "targetBehavior": "Recall and use the expression",
-            "routes": routes or ["production", "reading_recognition"],
-            "maxNewCards": 20,
-            "learnerLevel": "B1",
-        },
+        learning_contract=learning_contract,
     )
     source = (tmp_path / "lesson.txt").resolve()
     source.write_text(SOURCE_TEXT, encoding="utf-8")
@@ -278,6 +286,126 @@ def task_record(runtime: StudyRuntime, task_id: str) -> dict[str, Any]:
         ):
             return value
     raise AssertionError("task record not found")
+
+
+def test_bad_bilingual_candidate_is_blocked_without_destroying_valid_batch_member(
+    tmp_path: Path,
+) -> None:
+    class MixedBilingualModel(FakeDiscoveryModel):
+        def __init__(self) -> None:
+            super().__init__(proposal_count=2)
+
+        def propose(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+            response = dict(super().propose(request))
+            response["proposals"][0]["meaningOrFunction"] = "身体或事物处于良好状态"
+            response["proposals"][1]["meaningOrFunction"] = (
+                "healthy or in a good condition"
+            )
+            return response
+
+    runtime, project, inspected, _source = environment(
+        tmp_path,
+        MixedBilingualModel(),
+        routes=["production", "chunk_collocation"],
+        prompt_language="中文",
+        answer_language="English",
+    )
+
+    result = discover(runtime, project, inspected)
+
+    assert result["candidateCount"] == 2
+    assert result["counts"]["recommended"] == 1
+    assert result["counts"]["hard_blocked"] == 1
+
+
+def test_legacy_auto_candidate_language_is_blocked_without_destroying_batch(
+    tmp_path: Path,
+) -> None:
+    class MixedLegacyLanguageModel(FakeDiscoveryModel):
+        def __init__(self) -> None:
+            super().__init__(proposal_count=2)
+
+        def propose(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+            response = dict(super().propose(request))
+            response["proposals"][1]["language"] = "auto"
+            return response
+
+    runtime, project, inspected, _source = environment(
+        tmp_path,
+        MixedLegacyLanguageModel(),
+        prompt_language="auto",
+        answer_language="auto",
+    )
+
+    result = discover(runtime, project, inspected)
+
+    assert result["candidateCount"] == 2
+    assert result["counts"]["recommended"] == 1
+    assert result["counts"]["hard_blocked"] == 1
+
+
+def test_sensitive_contract_failure_persists_no_secret_and_calls_no_model(
+    tmp_path: Path,
+) -> None:
+    secret = "runtime-contract-canary"
+    sensitive_url = "https://example.invalid/lesson?access_token=" + secret
+    model = FakeDiscoveryModel()
+    runtime, project, inspected, _source = environment(
+        tmp_path,
+        model,
+        purpose="Learn safely " + sensitive_url,
+    )
+
+    with pytest.raises(StudyRuntimeError) as captured:
+        discover(runtime, project, inspected)
+
+    assert captured.value.code == "DISCOVERY_CONTRACT_DISCLOSURE_BLOCKED"
+    assert secret not in captured.value.message
+    assert model.proposal_calls == 0
+    assert model.review_calls == 0
+    recoverable = runtime.tasks.list_recoverable_tasks(
+        audience(), scope_id=project["projectId"]
+    )
+    assert len(recoverable) == 1
+    assert recoverable[0]["failure"]["code"] == "PROMPT_INJECTION_SUSPECTED"
+    persisted = json.dumps(
+        task_record(runtime, recoverable[0]["taskId"]),
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    assert secret not in persisted
+
+
+def test_unsupported_language_contract_fails_task_before_model_call(
+    tmp_path: Path,
+) -> None:
+    unsupported = "en-unsupported-canary"
+    model = FakeDiscoveryModel()
+    runtime, project, inspected, _source = environment(
+        tmp_path,
+        model,
+        prompt_language=unsupported,
+        answer_language="en",
+    )
+
+    with pytest.raises(StudyRuntimeError) as captured:
+        discover(runtime, project, inspected)
+
+    assert captured.value.code == "DISCOVERY_LANGUAGE_PAIR_UNSUPPORTED"
+    assert unsupported not in captured.value.message
+    assert model.proposal_calls == 0
+    assert model.review_calls == 0
+    recoverable = runtime.tasks.list_recoverable_tasks(
+        audience(), scope_id=project["projectId"]
+    )
+    assert len(recoverable) == 1
+    assert recoverable[0]["failure"]["code"] == "UNSUPPORTED_COMBINATION"
+    persisted = json.dumps(
+        task_record(runtime, recoverable[0]["taskId"]),
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    assert unsupported not in persisted
 
 
 def test_public_discovery_start_returns_before_model_completion_and_polls_success(
@@ -859,7 +987,7 @@ def test_evidence_preview_rechecks_disclosure_policy(
         candidate_handle=candidate_handle,
     )
     monkeypatch.setattr(
-        "card_service.candidate_queries.sensitive_disclosure_reason",
+        "card_service.evidence_replay.sensitive_disclosure_reason",
         lambda _value: "DISCOVERY_SECRET_TEXT_OMITTED",
     )
 

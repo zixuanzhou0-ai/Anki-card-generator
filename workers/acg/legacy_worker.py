@@ -15177,13 +15177,26 @@ def card_template_labels(card: dict[str, Any], deck_kind_code: str = "") -> dict
     }
 
 
-def card_front_fields(card: dict[str, Any], *, repetition_mode: bool = False) -> dict[str, str]:
+def card_front_fields(
+    card: dict[str, Any],
+    *,
+    repetition_mode: bool = False,
+    trusted_no_media_projection: bool = False,
+) -> dict[str, str]:
     card_type = card.get("type", "")
     english = clean_study_text(card.get("english"))
     phrase = clean_study_text(card.get("phrase"))
     chinese = card_chinese_core(card)
     retrieval_prompt = clean_study_text(card.get("retrieval_prompt"))
-    if repetition_mode and card_type != "knowledge":
+    preserve_explicit_prompt = (
+        repetition_mode
+        and trusted_no_media_projection
+        and card_type == "phrase"
+        and bool(retrieval_prompt)
+        and card.get("generation_source") == "deterministic_card_plan"
+        and card.get("verification_status") == "verified"
+    )
+    if repetition_mode and card_type != "knowledge" and not preserve_explicit_prompt:
         return {
             "front_prompt": "听原声，跟读这一句。",
             "front_content": "先听一遍，再模仿语气和节奏。",
@@ -15858,6 +15871,12 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     anki_tag = f"anki_card_generator_{template_version.lower()}"
     is_ciba_template = normalize_template_id(template_id) == "ciba_tianxia_v1"
     use_v11_repetition_front = uses_v11_repetition_front(template_id, deck_kind_code)
+    trusted_no_media_projection = (
+        use_v11_repetition_front
+        and skip_video_media
+        and bool(project.get("skip_video_slicing"))
+        and not video_path_raw
+    )
     model_field_specs = note_model_field_specs(use_v11_repetition_front)
     model_field_names = [str(field["name"]) for field in model_field_specs]
     note_model_contract = resolve_export_note_model_contract(
@@ -16145,7 +16164,14 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
     if not is_document_project:
         for segment in export_segments:
             for card in [card for card in segment.get("cards", []) if card.get("enabled", True)]:
-                phrase_text = card_phrase_tts_text(card, card_front_fields(card, repetition_mode=use_v11_repetition_front)).lower()
+                phrase_text = card_phrase_tts_text(
+                    card,
+                    card_front_fields(
+                        card,
+                        repetition_mode=use_v11_repetition_front,
+                        trusted_no_media_projection=trusted_no_media_projection,
+                    ),
+                ).lower()
                 if phrase_text and phrase_text not in {"key expression", "n/a"}:
                     phrase_tts_text_keys.add(phrase_text)
     phrase_tts_total = 0
@@ -16290,7 +16316,11 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             except RuntimeError:
                 warnings.append(f"{segment_id} 整句 TTS 文本为空，已跳过。")
             for card in enabled_cards:
-                front_fields = card_front_fields(card, repetition_mode=use_v11_repetition_front)
+                front_fields = card_front_fields(
+                    card,
+                    repetition_mode=use_v11_repetition_front,
+                    trusted_no_media_projection=trusted_no_media_projection,
+                )
                 phrase_text = card_phrase_tts_text(card, front_fields)
                 phrase_key = phrase_text.lower()
                 if not phrase_text or phrase_key in {"key expression", "n/a"} or phrase_key in seen_phrase_keys:
@@ -16670,7 +16700,11 @@ def handle_export(payload: dict[str, Any]) -> dict[str, Any]:
             cut_segments.add(segment_id)
 
         for card in enabled_cards:
-            front_fields = card_front_fields(card, repetition_mode=use_v11_repetition_front)
+            front_fields = card_front_fields(
+                card,
+                repetition_mode=use_v11_repetition_front,
+                trusted_no_media_projection=trusted_no_media_projection,
+            )
             front_fields = front_fields_for_export_media(
                 front_fields,
                 repetition_mode=use_v11_repetition_front,

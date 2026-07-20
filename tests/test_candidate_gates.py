@@ -5,6 +5,11 @@ import hashlib
 import pytest
 
 from card_service.candidate_gates import CandidateGateError, evaluate_language_candidate
+from card_service.language_profiles import (
+    is_latin_script_text,
+    normalize_answer_leakage_text,
+    normalize_language,
+)
 
 
 TEXT = "And finally, if someone is in good shape, they're in a good state of health."
@@ -74,7 +79,7 @@ def proposal(**changes):
         "language": "en",
         "form": FORM,
         "formType": "phrase",
-        "meaningOrFunction": "身体或事物处于良好状态",
+        "meaningOrFunction": "healthy or in a good condition",
         "route": "production",
         "spans": [{"nodeId": NODE_ID, "start": START, "end": END}],
     }
@@ -149,6 +154,213 @@ def test_verified_phrase_derives_recommended_candidate_and_replayable_evidence()
     assert result["objective"]["granularity"]["independentScorePoints"] == 1
 
 
+@pytest.mark.parametrize(
+    ("alias", "expected"),
+    [
+        ("zh-CN", "zh-CN"),
+        ("中文", "zh-CN"),
+        ("zh", "zh-CN"),
+        ("English", "en"),
+        ("en-US", "en"),
+        ("en-GB", "en"),
+        ("en", "en"),
+        ("en-AU", "en-au"),
+        ("en-injection-canary", "en-injection-canary"),
+    ],
+)
+def test_language_aliases_use_stable_candidate_identifiers(alias: str, expected: str) -> None:
+    assert normalize_language(alias) == expected
+
+
+@pytest.mark.parametrize("prompt_alias", ["zh-CN", "中文", "zh"])
+def test_zh_cn_to_en_candidate_uses_localized_production_cue(prompt_alias: str) -> None:
+    result = evaluate(
+        proposal=proposal(
+            language="English",
+            meaningOrFunction="身体或事物处于良好状态",
+        ),
+        learning_contract=contract(
+            promptLanguage=prompt_alias,
+            answerLanguage="en-US",
+            routes=["production", "chunk_collocation"],
+        ),
+    )
+
+    assert result["semanticUnit"]["language"] == "en"
+    assert result["objective"]["cueSpec"] == "表达这个意思：身体或事物处于良好状态"
+    assert result["gateEvaluation"]["derivedEligibility"] == "recommended"
+
+
+@pytest.mark.parametrize(
+    "leaking_meaning",
+    [
+        f"表达 {FORM} 的意思",
+        "表达 in-good shape 的意思",
+        "表达 in\u200bgood shape 的意思",
+        "表达 in / good / shape 的意思",
+    ],
+)
+def test_bilingual_target_copy_is_hard_blocked_without_throwing(
+    leaking_meaning: str,
+) -> None:
+    result = evaluate(
+        proposal=proposal(meaningOrFunction=leaking_meaning),
+        learning_contract=contract(
+            promptLanguage="中文",
+            answerLanguage="en",
+            routes=["production"],
+        ),
+    )
+
+    assert gate(result, "scoreability")["state"] == "fail"
+    assert gate(result, "scoreability")["reasonCode"] == "SCOREABILITY_CUE_REVEALS_TARGET"
+    assert result["gateEvaluation"]["derivedEligibility"] == "hard_blocked"
+
+
+def test_answer_leakage_normalization_is_closed_across_display_separators() -> None:
+    expected = "ingoodshape"
+    assert normalize_answer_leakage_text("in good shape") == expected
+    assert normalize_answer_leakage_text("in-good shape") == expected
+    assert normalize_answer_leakage_text("in\u200bgood shape") == expected
+    assert normalize_answer_leakage_text("IN / GOOD / SHAPE") == expected
+
+
+def test_bilingual_non_chinese_meaning_is_hard_blocked_without_throwing() -> None:
+    result = evaluate(
+        proposal=proposal(meaningOrFunction="healthy or in a good condition"),
+        learning_contract=contract(
+            promptLanguage="zh-CN",
+            answerLanguage="en",
+            routes=["production"],
+        ),
+    )
+
+    assert gate(result, "scoreability")["state"] == "fail"
+    assert (
+        gate(result, "scoreability")["reasonCode"]
+        == "SCOREABILITY_PROMPT_LANGUAGE_REQUIRED"
+    )
+    assert result["gateEvaluation"]["derivedEligibility"] == "hard_blocked"
+
+
+@pytest.mark.parametrize(
+    ("proposal_changes", "contract_changes", "expected_reason"),
+    [
+        (
+            {"language": "zh"},
+            {"promptLanguage": "zh", "answerLanguage": "en", "routes": ["production"]},
+            "CARD_ANSWER_LANGUAGE_MISMATCH",
+        ),
+        (
+            {"route": "reading_recognition"},
+            {
+                "promptLanguage": "zh-CN",
+                "answerLanguage": "en",
+                "routes": ["reading_recognition"],
+            },
+            "CARD_LANGUAGE_ROUTE_UNSUPPORTED",
+        ),
+        (
+            {},
+            {"promptLanguage": "fr", "answerLanguage": "en", "routes": ["production"]},
+            "CARD_LANGUAGE_PAIR_UNSUPPORTED",
+        ),
+    ],
+)
+def test_unsupported_bilingual_candidate_is_gated_not_raised(
+    proposal_changes, contract_changes, expected_reason
+) -> None:
+    result = evaluate(
+        proposal=proposal(**proposal_changes),
+        learning_contract=contract(**contract_changes),
+    )
+
+    assert gate(result, "card_suitability")["state"] == "fail"
+    assert gate(result, "card_suitability")["reasonCode"] == expected_reason
+    assert result["gateEvaluation"]["derivedEligibility"] == "hard_blocked"
+
+
+def test_explicit_english_contract_keeps_legacy_cue_and_routes() -> None:
+    result = evaluate(
+        learning_contract=contract(
+            promptLanguage="English",
+            answerLanguage="en-US",
+            routes=["production", "reading_recognition"],
+        )
+    )
+
+    assert result["objective"]["cueSpec"] == "Intended function: healthy or in a good condition"
+    assert result["gateEvaluation"]["derivedEligibility"] == "recommended"
+
+
+@pytest.mark.parametrize("contract_languages", [{}, {"promptLanguage": "auto", "answerLanguage": "auto"}])
+def test_legacy_auto_policy_requires_en_candidate_language(contract_languages) -> None:
+    result = evaluate(
+        proposal=proposal(language="auto"),
+        learning_contract=contract(**contract_languages),
+    )
+
+    assert gate(result, "card_suitability")["state"] == "fail"
+    assert gate(result, "card_suitability")["reasonCode"] == "CARD_ANSWER_LANGUAGE_MISMATCH"
+    assert result["gateEvaluation"]["derivedEligibility"] == "hard_blocked"
+
+
+@pytest.mark.parametrize(
+    "contract_languages",
+    [
+        {},
+        {"promptLanguage": "auto", "answerLanguage": "auto"},
+        {"promptLanguage": "zh-CN", "answerLanguage": "en"},
+    ],
+)
+def test_english_target_form_cannot_mix_han_with_one_latin_letter(
+    contract_languages,
+) -> None:
+    text = "身体状态A"
+    result = evaluate(
+        proposal=proposal(
+            form=text,
+            meaningOrFunction="身体或事物处于良好状态",
+            spans=[{"nodeId": NODE_ID, "start": 0, "end": len(text)}],
+        ),
+        representation_payload=representation_payload(text),
+        representation_text=text,
+        learning_contract=contract(**contract_languages),
+    )
+
+    assert gate(result, "card_suitability")["state"] == "fail"
+    assert gate(result, "card_suitability")["reasonCode"] == "CARD_TARGET_LANGUAGE_MISMATCH"
+    assert result["gateEvaluation"]["derivedEligibility"] == "hard_blocked"
+
+
+@pytest.mark.parametrize("form", ["gооd", "身体状态A", "hello世界"])
+def test_english_target_rejects_non_latin_unicode_letters(form: str) -> None:
+    assert is_latin_script_text(form) is False
+    result = evaluate(
+        proposal=proposal(
+            form=form,
+            spans=[{"nodeId": NODE_ID, "start": 0, "end": len(form)}],
+        ),
+        representation_payload=representation_payload(form),
+        representation_text=form,
+    )
+
+    assert gate(result, "card_suitability")["state"] == "fail"
+    assert gate(result, "card_suitability")["reasonCode"] == "CARD_TARGET_LANGUAGE_MISMATCH"
+    assert result["gateEvaluation"]["derivedEligibility"] == "hard_blocked"
+
+
+@pytest.mark.parametrize("meaning", ["身体状态良好", "gооd condition", "meaning含义"])
+def test_legacy_english_meaning_rejects_non_latin_unicode_letters(
+    meaning: str,
+) -> None:
+    result = evaluate(proposal=proposal(meaningOrFunction=meaning))
+
+    assert gate(result, "scoreability")["state"] == "fail"
+    assert gate(result, "scoreability")["reasonCode"] == "SCOREABILITY_PROMPT_LANGUAGE_REQUIRED"
+    assert result["gateEvaluation"]["derivedEligibility"] == "hard_blocked"
+
+
 def test_pdf_page_locator_is_preserved_in_candidate_evidence() -> None:
     payload = representation_payload()
     payload["kind"] = "pdf_text_layer"
@@ -195,7 +407,7 @@ def test_grammar_multi_anchor_requires_ordered_non_overlapping_exact_frame() -> 
             form="not only … but also",
             formType="grammar",
             route="grammar_cloze",
-            meaningOrFunction="连接两个并列且递进的成分",
+            meaningOrFunction="connects parallel elements with added emphasis",
             spans=[
                 {"nodeId": NODE_ID, "start": first_start, "end": first_start + len(first)},
                 {"nodeId": NODE_ID, "start": second_start, "end": second_start + len(second)},

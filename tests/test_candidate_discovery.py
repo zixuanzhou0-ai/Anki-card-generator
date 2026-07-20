@@ -287,6 +287,10 @@ def test_two_role_discovery_publishes_auditable_graph_and_service_owned_decision
     review_batch = artifacts.verify_ref(result["reviewBatchRef"], bound)
     assert proposal_batch["payloadSchema"] == "study.discovery-proposal-batch"
     assert review_batch["payloadSchema"] == "study.discovery-review-batch"
+    assert result["reviewerIndependence"] == "role_separated_same_model"
+    assert result["independentModelReview"] is False
+    assert review_batch["payload"]["reviewerIndependence"] == "role_separated_same_model"
+    assert review_batch["payload"]["independentModelReview"] is False
     assert all(
         "eligibility" not in item and "scores" not in item
         for item in proposal_batch["payload"]["proposals"]
@@ -315,6 +319,110 @@ def test_proposer_cannot_submit_scores_or_eligibility(tmp_path: Path) -> None:
         )
     assert captured.value.code == "DISCOVERY_MODEL_RESPONSE_INVALID"
     assert model.review_requests == []
+
+
+@pytest.mark.parametrize(
+    "contract_change",
+    [
+        {"purpose": "Bearer " + "A" * 24},
+        {"exclusions": ["safe", "sk-" + "B" * 24]},
+        {"targetBehavior": {"nested": ["Bearer " + "C" * 24]}},
+    ],
+)
+def test_sensitive_learning_contract_is_blocked_before_any_model_call(
+    tmp_path: Path, contract_change: dict[str, Any]
+) -> None:
+    artifacts, bound, fingerprint, inspection, contract = environment(tmp_path)
+    contract.update(contract_change)
+    model = FakeModel([proposal()])
+
+    with pytest.raises(CandidateDiscoveryError) as captured:
+        run(
+            CandidateDiscoveryEngine(artifacts=artifacts, model=model),
+            bound,
+            fingerprint,
+            inspection,
+            contract,
+        )
+
+    assert captured.value.code == "DISCOVERY_CONTRACT_DISCLOSURE_BLOCKED"
+    assert model.proposal_requests == []
+    assert model.review_requests == []
+    serialized_error = captured.value.code + " " + captured.value.message
+    assert "Bearer" not in serialized_error
+    assert "sk-" not in serialized_error
+
+
+@pytest.mark.parametrize(
+    "contract_change",
+    [
+        {
+            "promptLanguage": "en-AU",
+            "answerLanguage": "en",
+            "routes": ["production"],
+        },
+        {
+            "promptLanguage": "zh-CN",
+            "answerLanguage": "en",
+            "routes": ["reading_recognition"],
+        },
+    ],
+)
+def test_unsupported_language_profile_is_blocked_before_source_or_model_disclosure(
+    tmp_path: Path, contract_change: dict[str, Any]
+) -> None:
+    artifacts, bound, fingerprint, inspection, contract = environment(tmp_path)
+    contract.update(contract_change)
+    model = FakeModel([proposal()])
+    engine = CandidateDiscoveryEngine(artifacts=artifacts, model=model)
+    engine._resolve_inspection = lambda **_kwargs: pytest.fail(  # type: ignore[method-assign]
+        "unsupported language contracts must fail before source resolution"
+    )
+
+    with pytest.raises(CandidateDiscoveryError) as captured:
+        run(
+            engine,
+            bound,
+            fingerprint,
+            inspection,
+            contract,
+        )
+
+    assert captured.value.code == "DISCOVERY_LANGUAGE_PAIR_UNSUPPORTED"
+    assert "en-AU" not in captured.value.message
+    assert model.proposal_requests == []
+    assert model.review_requests == []
+
+
+@pytest.mark.parametrize(
+    ("prompt_language", "answer_language"),
+    [("English", "English"), ("en-US", "en-GB"), ("auto", "auto")],
+)
+def test_supported_legacy_language_aliases_keep_discovery_compatible(
+    tmp_path: Path, prompt_language: str, answer_language: str
+) -> None:
+    artifacts, bound, fingerprint, inspection, contract = environment(tmp_path)
+    contract.update(
+        {
+            "promptLanguage": prompt_language,
+            "answerLanguage": answer_language,
+            "routes": ["production", "reading_recognition"],
+        }
+    )
+    model = FakeModel([proposal()])
+
+    result = run(
+        CandidateDiscoveryEngine(artifacts=artifacts, model=model),
+        bound,
+        fingerprint,
+        inspection,
+        contract,
+    )
+
+    assert result["candidateCount"] == 1
+    assert result["counts"]["recommended"] == 1
+    assert len(model.proposal_requests) == 1
+    assert len(model.review_requests) == 1
 
 
 def test_proposal_span_must_be_inside_exact_disclosed_window(tmp_path: Path) -> None:

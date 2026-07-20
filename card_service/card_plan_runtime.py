@@ -20,6 +20,15 @@ from .artifact_registry import (
     canonical_json_bytes,
 )
 from .candidate_selection import CandidateSelectionError, CandidateSelectionRuntime
+from .language_profiles import (
+    EN,
+    ZH_CN,
+    candidate_language_profile,
+    contains_han,
+    is_latin_script_text,
+    normalize_answer_leakage_text,
+    normalize_language,
+)
 from .project_registry import ProjectRegistry, ProjectRegistryError
 from .task_coordinator import StudyTaskCoordinator, StudyTaskError
 from .task_manifests import (
@@ -31,7 +40,7 @@ from .task_manifests import (
 )
 
 
-CARD_PLAN_POLICY_VERSION = "deterministic-language-card-plan-v1"
+CARD_PLAN_POLICY_VERSION = "deterministic-language-card-plan-v2"
 CARD_PLAN_VALIDATION_RULE_SET_VERSION = "card-plan-validation-v1"
 _SUPPORTED_ROUTES = frozenset(
     {"production", "chunk_collocation", "reading_recognition"}
@@ -114,8 +123,8 @@ def _validation_state(value: str) -> str:
 
 
 def _answer_leaks(cue: str, answer: str) -> bool:
-    normalized_cue = _normalize(cue)
-    normalized_answer = _normalize(answer)
+    normalized_cue = normalize_answer_leakage_text(cue)
+    normalized_answer = normalize_answer_leakage_text(answer)
     if not normalized_answer:
         return True
     if normalized_cue == normalized_answer:
@@ -125,10 +134,62 @@ def _answer_leaks(cue: str, answer: str) -> bool:
     return normalized_answer in normalized_cue
 
 
+def _language_profile(
+    *,
+    learning_contract: Mapping[str, Any],
+    route: str,
+    candidate_language: Any,
+    form: str,
+    meaning: str,
+) -> dict[str, str]:
+    profile = candidate_language_profile(learning_contract)
+    target_language = normalize_language(candidate_language)
+    if (
+        profile.mode == "unsupported"
+        or target_language != EN
+        or not profile.supports_route(route)
+    ):
+        _fail(
+            "UNSUPPORTED_CARD_PLAN",
+            "the frozen candidate is outside the first deterministic language matrix",
+        )
+    if not is_latin_script_text(form):
+        _fail(
+            "UNSUPPORTED_CARD_PLAN",
+            "the frozen English target form is not Latin-script text",
+        )
+    if profile.is_zh_cn_to_en:
+        if not contains_han(meaning):
+            _fail(
+                "UNSUPPORTED_CARD_PLAN",
+                "the frozen candidate has no Chinese meaning for a Chinese recall cue",
+            )
+        return {
+            "promptLanguage": ZH_CN,
+            "answerLanguage": EN,
+            "targetLanguage": EN,
+            "meaningLanguage": ZH_CN,
+            "route": route,
+        }
+    if not is_latin_script_text(meaning):
+        _fail(
+            "UNSUPPORTED_CARD_PLAN",
+            "the frozen English meaning is not Latin-script text",
+        )
+    return {
+        "promptLanguage": EN,
+        "answerLanguage": EN,
+        "targetLanguage": EN,
+        "meaningLanguage": EN,
+        "route": route,
+    }
+
+
 def _plan_draft(
     row: Mapping[str, Any],
     *,
     project_revision: int,
+    learning_contract: Mapping[str, Any],
     selection_ref: Mapping[str, Any],
     operation_digest: str,
 ) -> dict[str, Any]:
@@ -158,6 +219,13 @@ def _plan_draft(
     meaning = _text(
         semantic_unit.get("meaningOrFunction"), "target meaning", maximum=500
     )
+    language_profile = _language_profile(
+        learning_contract=learning_contract,
+        route=route,
+        candidate_language=semantic_unit.get("language"),
+        form=form,
+        meaning=meaning,
+    )
     objective_id = _text(objective.get("objectiveId"), "objectiveId", maximum=256)
     candidate_id = _text(candidate.get("candidateId"), "candidateId", maximum=256)
     scoring_boundary = objective.get("scoringBoundary")
@@ -170,6 +238,14 @@ def _plan_draft(
 
     if route in {"production", "chunk_collocation"}:
         cue_content = _text(objective.get("cueSpec"), "cue", maximum=1_000)
+        if (
+            language_profile["promptLanguage"] == ZH_CN
+            and _normalize(cue_content) != _normalize(f"表达这个意思：{meaning}")
+        ):
+            _fail(
+                "UNSUPPORTED_CARD_PLAN",
+                "the frozen objective cue does not match its Chinese language profile",
+            )
         core_answer = form
     else:
         cue_content = form
@@ -227,6 +303,7 @@ def _plan_draft(
         "candidateRef": dict(candidate_ref),
         "objectiveRef": _entity_ref(candidate_ref, objective_id),
         "route": route,
+        "languageProfile": language_profile,
         "cue": {"kind": "text", "content": cue_content, "mediaRefs": []},
         "expectedResponse": {
             "modality": "text",
@@ -525,21 +602,11 @@ class CardPlanRuntime:
                 "CARD_PLAN_ASYNC_REQUIRED",
                 "selection is too large for synchronous deterministic planning",
             )
-        language_values = {
-            _normalize(str(project["learningContract"].get(field, "auto")))
-            for field in ("promptLanguage", "answerLanguage")
-        }
-        supported_languages = {"auto", "english", "en", "en-us", "en-gb"}
-        if not language_values.issubset(supported_languages):
-            _fail(
-                "UNSUPPORTED_CARD_PLAN",
-                "deterministic planning cannot translate the frozen objective",
-            )
-
         drafts = [
             _plan_draft(
                 row,
                 project_revision=expected_project_revision,
+                learning_contract=project["learningContract"],
                 selection_ref=selection_ref,
                 operation_digest=operation_digest,
             )

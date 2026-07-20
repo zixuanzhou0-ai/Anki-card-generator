@@ -155,7 +155,7 @@ def draft(
         "language": "en",
         "form": FORM,
         "formType": "phrase",
-        "meaningOrFunction": "状态良好",
+        "meaningOrFunction": "healthy or in a good condition",
         "route": "production",
         "spans": [{"nodeId": NODE, "start": START, "end": END}],
     }

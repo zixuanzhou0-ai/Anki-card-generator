@@ -9,6 +9,7 @@ import threading
 import pytest
 
 from card_service.provider_egress import (
+    MAX_PROMPT_CHARS,
     ProviderEgress,
     ProviderEgressError,
     ProviderProfile,
@@ -191,13 +192,155 @@ def test_anthropic_and_gemini_have_fixed_origins_and_service_built_auth() -> Non
     ).prepare(
         "model.gemini_content",
         {
-            "contents": [{"parts": [{"text": "hello"}]}],
+            "systemInstruction": {"parts": [{"text": "Return JSON"}]},
+            "contents": [
+                {"role": "user", "parts": [{"text": "INPUT_JSON\n{\"value\":1}"}]}
+            ],
             "generationConfig": {"responseMimeType": "application/json", "maxOutputTokens": 100},
         },
         "gemini-secret",
     )
     assert gemini.url == "https://generativelanguage.googleapis.com/v1beta/models/gemini-test:generateContent"
     assert gemini.headers["x-goog-api-key"] == "gemini-secret"
+    gemini_body = json.loads(gemini.body)
+    assert gemini_body["systemInstruction"] == {
+        "parts": [{"text": "Return JSON"}]
+    }
+    assert gemini_body["contents"] == [
+        {"role": "user", "parts": [{"text": "INPUT_JSON\n{\"value\":1}"}]}
+    ]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "contents": [
+                {"role": "user", "parts": [{"text": "INPUT_JSON\n{}"}]}
+            ]
+        },
+        {
+            "systemInstruction": {
+                "parts": [{"text": "fixed"}],
+                "role": "system",
+            },
+            "contents": [
+                {"role": "user", "parts": [{"text": "INPUT_JSON\n{}"}]}
+            ],
+        },
+        {
+            "systemInstruction": {
+                "parts": [{"text": "fixed"}, {"text": "second"}]
+            },
+            "contents": [
+                {"role": "user", "parts": [{"text": "INPUT_JSON\n{}"}]}
+            ],
+        },
+        {
+            "systemInstruction": {"parts": [{"text": "fixed", "tool": {}}]},
+            "contents": [
+                {"role": "user", "parts": [{"text": "INPUT_JSON\n{}"}]}
+            ],
+        },
+        {
+            "systemInstruction": {"parts": [{"text": "fixed"}]},
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": "INPUT_JSON\n{}"}, {"text": "extra"}],
+                }
+            ],
+        },
+        {
+            "systemInstruction": {"parts": [{"text": "fixed"}]},
+            "contents": [
+                {"role": "model", "parts": [{"text": "INPUT_JSON\n{}"}]}
+            ],
+        },
+        {
+            "systemInstruction": {"parts": [{"text": "fixed"}]},
+            "contents": [
+                {"role": "user", "parts": [{"text": "not input json"}]}
+            ],
+        },
+        {
+            "systemInstruction": {"parts": [{"text": "fixed"}]},
+            "contents": [
+                {"role": "user", "parts": [{"text": "INPUT_JSON\n{} trailing"}]}
+            ],
+        },
+        {
+            "systemInstruction": {"parts": [{"text": "fixed"}]},
+            "contents": [
+                {"role": "user", "parts": [{"text": "INPUT_JSON\n[]"}]}
+            ],
+        },
+        {
+            "systemInstruction": {"parts": [{"text": "fixed"}]},
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": 'INPUT_JSON\n{"a":1,"a":2}'}],
+                }
+            ],
+        },
+        {
+            "systemInstruction": {"parts": [{"text": "fixed"}]},
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": "INPUT_JSON\n{}", "toolCall": {}}],
+                }
+            ],
+        },
+    ],
+)
+def test_gemini_system_and_user_boundaries_fail_closed(
+    payload: dict[str, object],
+) -> None:
+    profile = model_profile(
+        profile_ref="model.gemini",
+        provider="gemini",
+        base_url="https://generativelanguage.googleapis.com/v1beta",
+        model="gemini-test",
+    )
+    with pytest.raises(ProviderEgressError) as caught:
+        ProviderEgress(profile).prepare("model.gemini_content", payload, "secret")
+    assert caught.value.code in {
+        "PROVIDER_PAYLOAD_INVALID",
+        "PROVIDER_PAYLOAD_FIELD_BLOCKED",
+    }
+
+
+def test_gemini_prompt_limit_counts_system_and_user_text_together() -> None:
+    profile = model_profile(
+        profile_ref="model.gemini",
+        provider="gemini",
+        base_url="https://generativelanguage.googleapis.com/v1beta",
+        model="gemini-test",
+    )
+    input_prefix = 'INPUT_JSON\n{"value":"'
+    input_suffix = '"}'
+    desired_content_length = MAX_PROMPT_CHARS - 10
+    content_text = (
+        input_prefix
+        + "x"
+        * (desired_content_length - len(input_prefix) - len(input_suffix))
+        + input_suffix
+    )
+    assert len(content_text) == desired_content_length
+    payload = {
+        "systemInstruction": {"parts": [{"text": "s" * 20}]},
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": content_text}],
+            }
+        ],
+    }
+    with pytest.raises(ProviderEgressError) as caught:
+        ProviderEgress(profile).prepare("model.gemini_content", payload, "secret")
+    assert caught.value.code == "PROVIDER_PAYLOAD_INVALID"
 
 
 def test_operation_must_match_provider_and_capability() -> None:

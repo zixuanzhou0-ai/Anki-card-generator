@@ -527,6 +527,10 @@ class CandidateDiscoveryRuntime:
             "DISCOVERY_PROVIDER_RESPONSE_INVALID",
         }:
             return "MODEL_OUTPUT_INVALID"
+        if code == "DISCOVERY_CONTRACT_DISCLOSURE_BLOCKED":
+            return "PROMPT_INJECTION_SUSPECTED"
+        if code == "DISCOVERY_LANGUAGE_PAIR_UNSUPPORTED":
+            return "UNSUPPORTED_COMBINATION"
         if code in {
             "PROVIDER_UNAVAILABLE",
             "PROVIDER_HTTP_ERROR",

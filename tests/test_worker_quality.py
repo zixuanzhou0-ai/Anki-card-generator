@@ -14804,6 +14804,39 @@ class WorkerQualityTests(unittest.TestCase):
         self.assertEqual(worker.card_label_for_learning_card("", "vocabulary"), "学习卡")
         self.assertEqual(worker.card_label_for_learning_card("idiom", "phrase"), "学习卡")
 
+    def test_trusted_no_media_projection_preserves_explicit_retrieval_prompt(self):
+        card = {
+            "type": "phrase",
+            "retrieval_prompt": "表达这个意思：身体或事物处于良好状态",
+            "phrase": "in good shape",
+            "answer_core": "in good shape",
+            "generation_source": "deterministic_card_plan",
+            "verification_status": "verified",
+        }
+
+        trusted = worker.card_front_fields(
+            card,
+            repetition_mode=True,
+            trusted_no_media_projection=True,
+        )
+        ordinary_repetition = worker.card_front_fields(
+            card,
+            repetition_mode=True,
+            trusted_no_media_projection=False,
+        )
+        unverified = worker.card_front_fields(
+            {**card, "verification_status": "needs_review"},
+            repetition_mode=True,
+            trusted_no_media_projection=True,
+        )
+
+        self.assertEqual(
+            trusted["front_prompt"], "表达这个意思：身体或事物处于良好状态"
+        )
+        self.assertEqual(trusted["answer"], "in good shape")
+        self.assertEqual(ordinary_repetition["front_prompt"], "听原声，跟读这一句。")
+        self.assertEqual(unverified["front_prompt"], "听原声，跟读这一句。")
+
     def test_repetition_front_fields_do_not_claim_original_audio_when_tts_only(self):
         from acg.export_fields import front_fields_for_export_media
 

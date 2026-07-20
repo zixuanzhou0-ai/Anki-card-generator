@@ -309,6 +309,15 @@ def _messages(value: Any) -> list[dict[str, str]]:
     return result
 
 
+def _no_duplicate_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, child in pairs:
+        if key in value:
+            raise ValueError("duplicate JSON key")
+        value[key] = child
+    return value
+
+
 def _openai_body(profile: ProviderProfile, payload: dict[str, Any]) -> dict[str, Any]:
     allowed = {
         "model", "messages", "temperature", "max_tokens", "max_completion_tokens",
@@ -376,30 +385,64 @@ def _anthropic_body(profile: ProviderProfile, payload: dict[str, Any]) -> dict[s
 
 
 def _gemini_body(profile: ProviderProfile, payload: dict[str, Any]) -> dict[str, Any]:
-    if set(payload) - {"contents", "generationConfig"}:
+    if set(payload) - {"systemInstruction", "contents", "generationConfig"}:
         raise ProviderEgressError("PROVIDER_PAYLOAD_FIELD_BLOCKED", "Provider payload contains blocked fields")
+    system_instruction = payload.get("systemInstruction")
+    if not isinstance(system_instruction, dict) or set(system_instruction) != {"parts"}:
+        raise ProviderEgressError(
+            "PROVIDER_PAYLOAD_INVALID", "Gemini system instruction is invalid"
+        )
+    system_parts = system_instruction.get("parts")
+    if not isinstance(system_parts, list) or len(system_parts) != 1:
+        raise ProviderEgressError(
+            "PROVIDER_PAYLOAD_INVALID", "Gemini system instruction parts are invalid"
+        )
+    system_part = system_parts[0]
+    if not isinstance(system_part, dict) or set(system_part) != {"text"}:
+        raise ProviderEgressError(
+            "PROVIDER_PAYLOAD_INVALID", "Gemini system instruction part is invalid"
+        )
+    system_text = _bounded_text(
+        system_part.get("text"),
+        name="system instruction",
+        maximum=MAX_PROMPT_CHARS,
+    )
     contents = payload.get("contents")
-    if not isinstance(contents, list) or not 1 <= len(contents) <= 200:
+    if not isinstance(contents, list) or len(contents) != 1:
         raise ProviderEgressError("PROVIDER_PAYLOAD_INVALID", "Gemini contents are invalid")
-    rebuilt: list[dict[str, Any]] = []
-    total = 0
-    for content in contents:
-        if not isinstance(content, dict) or set(content) - {"role", "parts"}:
-            raise ProviderEgressError("PROVIDER_PAYLOAD_INVALID", "Gemini content shape is invalid")
-        parts = content.get("parts")
-        if not isinstance(parts, list) or not parts:
-            raise ProviderEgressError("PROVIDER_PAYLOAD_INVALID", "Gemini parts are invalid")
-        rebuilt_parts = []
-        for part in parts:
-            if not isinstance(part, dict) or set(part) != {"text"}:
-                raise ProviderEgressError("PROVIDER_PAYLOAD_INVALID", "Gemini part is invalid")
-            text = _bounded_text(part.get("text"), name="content text", maximum=MAX_PROMPT_CHARS)
-            total += len(text)
-            rebuilt_parts.append({"text": text})
-        role = str(content.get("role") or "user")
-        if role not in {"user", "model"} or total > MAX_PROMPT_CHARS:
-            raise ProviderEgressError("PROVIDER_PAYLOAD_INVALID", "Gemini content is invalid")
-        rebuilt.append({"role": role, "parts": rebuilt_parts})
+    content = contents[0]
+    if not isinstance(content, dict) or set(content) != {"role", "parts"}:
+        raise ProviderEgressError("PROVIDER_PAYLOAD_INVALID", "Gemini content shape is invalid")
+    if content.get("role") != "user":
+        raise ProviderEgressError("PROVIDER_PAYLOAD_INVALID", "Gemini content role is invalid")
+    parts = content.get("parts")
+    if not isinstance(parts, list) or len(parts) != 1:
+        raise ProviderEgressError("PROVIDER_PAYLOAD_INVALID", "Gemini parts are invalid")
+    part = parts[0]
+    if not isinstance(part, dict) or set(part) != {"text"}:
+        raise ProviderEgressError("PROVIDER_PAYLOAD_INVALID", "Gemini part is invalid")
+    content_text = _bounded_text(
+        part.get("text"), name="content text", maximum=MAX_PROMPT_CHARS
+    )
+    if not content_text.startswith("INPUT_JSON\n"):
+        raise ProviderEgressError(
+            "PROVIDER_PAYLOAD_INVALID", "Gemini user content is not INPUT_JSON"
+        )
+    try:
+        input_json = json.loads(
+            content_text.removeprefix("INPUT_JSON\n"),
+            object_pairs_hook=_no_duplicate_json_object,
+        )
+    except (RecursionError, UnicodeError, ValueError) as error:
+        raise ProviderEgressError(
+            "PROVIDER_PAYLOAD_INVALID", "Gemini INPUT_JSON is invalid"
+        ) from error
+    if not isinstance(input_json, dict):
+        raise ProviderEgressError(
+            "PROVIDER_PAYLOAD_INVALID", "Gemini INPUT_JSON must be an object"
+        )
+    if len(system_text) + len(content_text) > MAX_PROMPT_CHARS:
+        raise ProviderEgressError("PROVIDER_PAYLOAD_INVALID", "Gemini prompt is too large")
     config = payload.get("generationConfig") or {}
     if not isinstance(config, dict) or set(config) - {"temperature", "maxOutputTokens", "responseMimeType"}:
         raise ProviderEgressError("PROVIDER_PAYLOAD_FIELD_BLOCKED", "Gemini generation config is invalid")
@@ -414,7 +457,11 @@ def _gemini_body(profile: ProviderProfile, payload: dict[str, Any]) -> dict[str,
         if config["responseMimeType"] != "application/json":
             raise ProviderEgressError("PROVIDER_PAYLOAD_INVALID", "Gemini response MIME type is invalid")
         rebuilt_config["responseMimeType"] = "application/json"
-    return {"contents": rebuilt, "generationConfig": rebuilt_config}
+    return {
+        "systemInstruction": {"parts": [{"text": system_text}]},
+        "contents": [{"role": "user", "parts": [{"text": content_text}]}],
+        "generationConfig": rebuilt_config,
+    }
 
 
 def _tts_body(profile: ProviderProfile, payload: dict[str, Any]) -> dict[str, Any]:

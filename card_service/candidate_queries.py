@@ -15,7 +15,11 @@ from .artifact_registry import (
     ArtifactRegistryError,
     canonical_json_bytes,
 )
-from .candidate_discovery import sensitive_disclosure_reason
+from .evidence_replay import (
+    EvidenceReplay,
+    EvidenceReplayError,
+    MAX_EVIDENCE_CONTEXT_CHARACTERS,
+)
 from .project_registry import ARTIFACT_STAGES, ProjectRegistry, ProjectRegistryError
 
 
@@ -47,7 +51,7 @@ _HANDLE_RE = re.compile(r"^study_[A-Za-z0-9_-]{43}$")
 _CURSOR_RE = re.compile(r"^study_cursor_[A-Za-z0-9_-]{80,1800}$")
 _MAX_LIMIT = 100
 _MAX_QUERY = 200
-_MAX_CONTEXT = 480
+_MAX_CONTEXT = MAX_EVIDENCE_CONTEXT_CHARACTERS
 _CURSOR_DOMAIN = b"study.candidate-query.cursor.v1\x00"
 
 
@@ -103,6 +107,7 @@ class CandidateQueryRuntime:
         self._artifacts = artifacts
         self._projects = projects
         self._cursor_key = bytes(cursor_key)
+        self._evidence_replay = EvidenceReplay(artifacts=artifacts)
 
     def _cursor_tag(self, raw: bytes) -> bytes:
         return hmac.new(self._cursor_key, _CURSOR_DOMAIN + raw, hashlib.sha256).digest()
@@ -935,89 +940,16 @@ class CandidateQueryRuntime:
         ):
             _fail("EVIDENCE_REPLAY_FAILED", "evidence locator is invalid")
         try:
-            representation = self._artifacts.verify_ref(representation_ref, audience)
-            representation_payload = representation["payload"]
-            text = self._artifacts.read_blob(
-                representation_payload["plainTextBlobRef"]
-            ).decode("utf-8", errors="strict")
-        except (
-            ArtifactRegistryError,
-            UnicodeDecodeError,
-            KeyError,
-            TypeError,
-        ) as error:
-            raise CandidateQueryError(
-                "EVIDENCE_REPLAY_FAILED", "evidence source could not be replayed"
-            ) from error
-        nodes = representation_payload.get("contentNodes")
-        node_id = locator.get("nodeId")
-        start = locator.get("start")
-        end = locator.get("end")
-        node_matches = (
-            [
-                value
-                for value in nodes
-                if isinstance(nodes, list)
-                and isinstance(value, Mapping)
-                and value.get("nodeId") == node_id
-            ]
-            if isinstance(nodes, list)
-            else []
-        )
-        if (
-            len(node_matches) != 1
-            or isinstance(start, bool)
-            or not isinstance(start, int)
-            or isinstance(end, bool)
-            or not isinstance(end, int)
-        ):
-            _fail("EVIDENCE_REPLAY_FAILED", "evidence source bounds are invalid")
-        attributes = node_matches[0].get("attributes")
-        node_start = (
-            attributes.get("textStart") if isinstance(attributes, Mapping) else None
-        )
-        node_end = (
-            attributes.get("textEnd") if isinstance(attributes, Mapping) else None
-        )
-        if (
-            not isinstance(node_start, int)
-            or not isinstance(node_end, int)
-            or start < node_start
-            or end > node_end
-            or end <= start
-            or node_end > len(text)
-        ):
-            _fail("EVIDENCE_REPLAY_FAILED", "evidence source bounds are invalid")
-        sensitive_reason = sensitive_disclosure_reason(text[node_start:node_end])
-        if sensitive_reason is not None:
-            _fail(
-                "EVIDENCE_PREVIEW_REDACTED",
-                "evidence context was withheld by the disclosure policy",
+            replay = self._evidence_replay.replay(
+                audience=audience,
+                representation_ref=representation_ref,
+                locator=locator,
+                quote_sha256=anchor.get("quoteSha256"),
+                context_characters=context_characters,
             )
-        quote = text[start:end]
-        if hashlib.sha256(quote.encode("utf-8")).hexdigest() != anchor.get(
-            "quoteSha256"
-        ):
-            _fail(
-                "EVIDENCE_REPLAY_FAILED", "evidence quote no longer matches its digest"
-            )
-        context_start = max(node_start, start - context_characters)
-        context_end = min(node_end, end + context_characters)
-        node_locator = node_matches[0].get("locator", {})
+        except EvidenceReplayError as error:
+            raise CandidateQueryError(error.code, error.message) from error
         source = self._source_summary(row, audience)
-        result_locator = {
-            "kind": "text_span",
-            "nodeId": node_id,
-            "start": start,
-            "end": end,
-        }
-        if isinstance(node_locator, Mapping):
-            if isinstance(node_locator.get("pageNumber"), int):
-                result_locator["pageNumber"] = node_locator["pageNumber"]
-            if isinstance(node_locator.get("startMs"), int):
-                result_locator["startMs"] = node_locator["startMs"]
-            if isinstance(node_locator.get("endMs"), int):
-                result_locator["endMs"] = node_locator["endMs"]
         return {
             "schemaVersion": 1,
             "projectId": row["candidateRef"]["projectId"],
@@ -1028,13 +960,7 @@ class CandidateQueryRuntime:
                 key: source[key]
                 for key in ("sourceId", "displayName", "sourceType", "sourceHandle")
             },
-            "quote": quote,
-            "contextBefore": text[context_start:start],
-            "contextAfter": text[end:context_end],
-            "locator": result_locator,
-            "quoteSha256": anchor["quoteSha256"],
-            "snapshotBacked": True,
-            "networkAccessed": False,
+            **replay,
         }
 
 

@@ -137,8 +137,11 @@ class CardArtifactQueryRuntime:
         ):
             _fail("CARD_ARTIFACT_INVALID", "CardArtifact fields are invalid")
         card_id = payload.get("cardId")
+        artifact_schema_version = envelope.get("payloadSchemaVersion", 1)
         if (
             not isinstance(card_id, str)
+            or isinstance(artifact_schema_version, bool)
+            or artifact_schema_version not in {1, 2}
             or front.get("modality") != "text"
             or not isinstance(front.get("prompt"), str)
             or not isinstance(back.get("coreAnswer"), str)
@@ -152,9 +155,10 @@ class CardArtifactQueryRuntime:
             or payload.get("mediaRefs") != []
         ):
             _fail("CARD_ARTIFACT_INVALID", "CardArtifact is not safely reviewable")
-        return {
+        result = {
             "cardId": card_id,
             "cardHandle": handle,
+            "artifactSchemaVersion": artifact_schema_version,
             "route": str(payload.get("route") or ""),
             "front": {"prompt": front["prompt"]},
             "back": {
@@ -174,6 +178,123 @@ class CardArtifactQueryRuntime:
             },
             "mediaRoles": [],
         }
+        if artifact_schema_version == 1:
+            return result
+
+        language_profile = payload.get("languageProfile")
+        content_origins = payload.get("contentOrigins")
+        presentation = payload.get("evidencePresentation")
+        required_language_fields = {
+            "promptLanguage",
+            "answerLanguage",
+            "targetLanguage",
+            "meaningLanguage",
+            "route",
+        }
+        required_origin_fields = {
+            "frontPrompt",
+            "coreAnswer",
+            "explanation",
+            "sourceQuote",
+        }
+        if (
+            not isinstance(language_profile, Mapping)
+            or set(language_profile) != required_language_fields
+            or language_profile.get("route") != payload.get("route")
+            or language_profile.get("promptLanguage") not in {"en", "zh-CN"}
+            or language_profile.get("answerLanguage") != "en"
+            or language_profile.get("targetLanguage") != "en"
+            or language_profile.get("meaningLanguage") not in {"en", "zh-CN"}
+            or not isinstance(content_origins, Mapping)
+            or set(content_origins) != required_origin_fields
+            or not isinstance(presentation, Mapping)
+            or presentation.get("state") != "verified"
+            or not isinstance(presentation.get("primaryText"), str)
+            or not presentation["primaryText"].strip()
+            or not isinstance(presentation.get("items"), list)
+            or not 1 <= len(presentation["items"]) <= 8
+        ):
+            _fail("CARD_ARTIFACT_INVALID", "CardArtifact V2 fields are invalid")
+        public_origins: dict[str, str] = {}
+        direct_answer = payload.get("route") in {"production", "chunk_collocation"}
+        expected_origin_kinds = {
+            "frontPrompt": (
+                "model_reviewed_interpretation" if direct_answer else "source_direct"
+            ),
+            "coreAnswer": (
+                "source_direct" if direct_answer else "model_reviewed_interpretation"
+            ),
+            "explanation": "model_reviewed_interpretation",
+            "sourceQuote": "source_direct",
+        }
+        for field, expected_kind in expected_origin_kinds.items():
+            origin = content_origins.get(field)
+            if not isinstance(origin, Mapping) or origin.get("kind") != expected_kind:
+                _fail("CARD_ARTIFACT_INVALID", "CardArtifact origin is invalid")
+            public_origins[field] = expected_kind
+        public_evidence: list[dict[str, Any]] = []
+        for item in presentation["items"]:
+            if not isinstance(item, Mapping):
+                _fail("CARD_ARTIFACT_INVALID", "CardArtifact evidence is invalid")
+            quote = item.get("quote")
+            context = item.get("context")
+            locator = item.get("locator")
+            quote_sha256 = item.get("quoteSha256")
+            source_display_name = item.get("sourceDisplayName")
+            source_type = item.get("sourceType")
+            if (
+                not isinstance(quote, str)
+                or not quote
+                or len(quote) > 500
+                or not isinstance(context, str)
+                or not context
+                or len(context) > 1_200
+                or quote not in context
+                or not isinstance(locator, Mapping)
+                or locator.get("kind") != "text_span"
+                or not isinstance(source_display_name, str)
+                or not source_display_name
+                or len(source_display_name) > 160
+                or not isinstance(source_type, str)
+                or not source_type
+                or len(source_type) > 64
+                or not isinstance(quote_sha256, str)
+                or len(quote_sha256) != 64
+                or not hmac.compare_digest(
+                    hashlib.sha256(quote.encode("utf-8")).hexdigest(), quote_sha256
+                )
+                or item.get("snapshotBacked") is not True
+                or item.get("networkAccessed") is not False
+            ):
+                _fail("CARD_ARTIFACT_INVALID", "CardArtifact evidence is invalid")
+            public_locator = {
+                key: locator[key]
+                for key in ("pageNumber", "startMs", "endMs")
+                if isinstance(locator.get(key), int)
+                and not isinstance(locator.get(key), bool)
+            }
+            public_evidence.append(
+                {
+                    "sourceDisplayName": source_display_name,
+                    "sourceType": source_type,
+                    "quote": quote,
+                    "context": context,
+                    "locator": public_locator,
+                    "quoteSha256": quote_sha256,
+                    "snapshotBacked": True,
+                    "networkAccessed": False,
+                }
+            )
+        if presentation["primaryText"] != public_evidence[0]["context"]:
+            _fail("CARD_ARTIFACT_INVALID", "CardArtifact primary evidence is invalid")
+        result["languageProfile"] = dict(language_profile)
+        result["contentOrigins"] = public_origins
+        result["evidencePresentation"] = {
+            "state": "verified",
+            "primaryText": presentation["primaryText"],
+            "items": public_evidence,
+        }
+        return result
 
     def list_cards(
         self,

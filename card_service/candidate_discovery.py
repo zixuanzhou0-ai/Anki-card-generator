@@ -19,10 +19,11 @@ from .artifact_registry import (
 )
 from .candidate_artifacts import CandidateArtifactError, CandidateArtifactPublisher
 from .candidate_gates import CandidateGateError, evaluate_language_candidate
+from .language_profiles import candidate_language_profile
 
 DISCOVERY_POLICY_VERSION = "candidate-discovery-language-v1"
 PROPOSAL_ROLE_VERSION = "high-recall-language-proposer-v1"
-REVIEW_ROLE_VERSION = "independent-learning-reviewer-v1"
+REVIEW_ROLE_VERSION = "separate-pass-learning-reviewer-v1"
 _MAX_REPRESENTATIONS = 64
 _MAX_PROPOSALS = 256
 _MAX_DISCLOSURE_CHARACTERS = 256_000
@@ -69,6 +70,18 @@ _LANGUAGE_ROUTES = frozenset(
     }
 )
 _FORM_TYPES = frozenset({"word", "phrase", "grammar", "pronunciation", "pragmatic"})
+_DISCLOSED_CONTRACT_FIELDS = frozenset(
+    {
+        "purpose",
+        "targetBehavior",
+        "learnerLevel",
+        "routes",
+        "promptLanguage",
+        "answerLanguage",
+        "exclusions",
+        "evidencePolicy",
+    }
+)
 
 
 class CandidateDiscoveryError(RuntimeError):
@@ -205,6 +218,48 @@ def sensitive_disclosure_reason(value: str) -> str | None:
             if key.casefold() in _SENSITIVE_QUERY_KEYS or len(child) >= 48:
                 return "DISCOVERY_SENSITIVE_URL_OMITTED"
     return None
+
+
+def _contract_disclosure_reason(value: Any, *, depth: int = 0) -> str | None:
+    if depth > 32:
+        return "DISCOVERY_CONTRACT_STRUCTURE_BLOCKED"
+    if isinstance(value, str):
+        return sensitive_disclosure_reason(value)
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            for nested in (key, child):
+                reason = _contract_disclosure_reason(nested, depth=depth + 1)
+                if reason is not None:
+                    return reason
+        return None
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        for child in value:
+            reason = _contract_disclosure_reason(child, depth=depth + 1)
+            if reason is not None:
+                return reason
+    return None
+
+
+def model_learning_contract(learning_contract: Mapping[str, Any]) -> dict[str, Any]:
+    projected = {
+        key: value
+        for key, value in learning_contract.items()
+        if key in _DISCLOSED_CONTRACT_FIELDS
+    }
+    try:
+        disclosure_reason = _contract_disclosure_reason(projected)
+        contract = _clone(projected)
+    except (RecursionError, RuntimeError, TypeError, ValueError) as error:
+        raise CandidateDiscoveryError(
+            "DISCOVERY_CONTRACT_DISCLOSURE_BLOCKED",
+            "Learning contract text cannot be disclosed to the candidate model",
+        ) from error
+    if disclosure_reason is not None:
+        raise CandidateDiscoveryError(
+            "DISCOVERY_CONTRACT_DISCLOSURE_BLOCKED",
+            "Learning contract text cannot be disclosed to the candidate model",
+        )
+    return contract
 
 
 def _normalized(value: str) -> str:
@@ -453,21 +508,7 @@ class CandidateDiscoveryEngine:
         learning_contract: Mapping[str, Any],
         maximum_proposals: int,
     ) -> dict[str, Any]:
-        allowed_contract_fields = {
-            "purpose",
-            "targetBehavior",
-            "learnerLevel",
-            "routes",
-            "promptLanguage",
-            "answerLanguage",
-            "exclusions",
-            "evidencePolicy",
-        }
-        contract = {
-            key: _clone(value)
-            for key, value in learning_contract.items()
-            if key in allowed_contract_fields
-        }
+        contract = model_learning_contract(learning_contract)
         return {
             "schema": "study.candidate-discovery.proposal-request",
             "schemaVersion": 1,
@@ -653,19 +694,11 @@ class CandidateDiscoveryEngine:
                     "evidence": evidence,
                 }
             )
-        contract_fields = {
-            "purpose", "targetBehavior", "learnerLevel", "routes",
-            "promptLanguage", "answerLanguage", "exclusions", "evidencePolicy",
-        }
         return {
             "schema": "study.candidate-discovery.review-request",
             "schemaVersion": 1,
             "role": REVIEW_ROLE_VERSION,
-            "learningContract": {
-                key: _clone(value)
-                for key, value in learning_contract.items()
-                if key in contract_fields
-            },
+            "learningContract": model_learning_contract(learning_contract),
             "proposals": review_items,
             "constraints": {
                 "submitEligibility": False,
@@ -800,6 +833,16 @@ class CandidateDiscoveryEngine:
             raise CandidateDiscoveryError(
                 "DISCOVERY_LANGUAGE_ROUTE_REQUIRED",
                 "learning contract has no language-learning route",
+            )
+        language_profile = candidate_language_profile(learning_contract)
+        if language_profile.mode == "unsupported" or not any(
+            language_profile.supports_route(route)
+            for route in routes
+            if isinstance(route, str)
+        ):
+            raise CandidateDiscoveryError(
+                "DISCOVERY_LANGUAGE_PAIR_UNSUPPORTED",
+                "Learning contract language and route combination is unsupported",
             )
         inspection = self._resolve_inspection(
             audience=audience,
@@ -938,6 +981,8 @@ class CandidateDiscoveryEngine:
             "proposalBatchRef": dict(proposal_batch.artifact_ref),
             "role": REVIEW_ROLE_VERSION,
             "modelIdentity": self._model.identity.public(),
+            "reviewerIndependence": "role_separated_same_model",
+            "independentModelReview": False,
             "reviews": [reviews[key] for key in sorted(reviews)],
             "issueRefs": review_issues,
         }
@@ -1047,6 +1092,8 @@ class CandidateDiscoveryEngine:
             "proposalBatchRef": dict(proposal_batch.artifact_ref),
             "reviewBatchHandle": review_batch.handle,
             "reviewBatchRef": dict(review_batch.artifact_ref),
+            "reviewerIndependence": "role_separated_same_model",
+            "independentModelReview": False,
             "candidatePublications": publications,
             **discovery,
             "issueCodes": sorted(
@@ -1073,5 +1120,6 @@ __all__ = [
     "DISCOVERY_POLICY_VERSION",
     "PROPOSAL_ROLE_VERSION",
     "REVIEW_ROLE_VERSION",
+    "model_learning_contract",
     "sensitive_disclosure_reason",
 ]

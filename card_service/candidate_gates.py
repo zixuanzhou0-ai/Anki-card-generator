@@ -15,6 +15,14 @@ from datetime import datetime
 from typing import Any, Mapping, Sequence
 
 from .artifact_registry import canonical_json_bytes
+from .language_profiles import (
+    EN,
+    candidate_language_profile,
+    contains_han,
+    is_latin_script_text,
+    normalize_answer_leakage_text,
+    normalize_language,
+)
 
 
 CANDIDATE_GATE_RULE_SET_VERSION = "candidate-gates-language-v1"
@@ -154,6 +162,7 @@ def _closed_proposal(value: Any) -> dict[str, Any]:
             "CANDIDATE_SCHEMA_INVALID", "Language candidate proposal fields are invalid"
         )
     language = _text(value["language"], "language", maximum=32)
+    language = normalize_language(language) or language
     form = _text(value["form"], "form", maximum=_MAX_FORM_CHARACTERS)
     meaning = _text(
         value["meaningOrFunction"],
@@ -334,14 +343,22 @@ def _gate(
     }
 
 
-def _objective_fields(proposal: Mapping[str, Any]) -> tuple[str, str, str, list[str]]:
+def _objective_fields(
+    proposal: Mapping[str, Any], *, learning_contract: Mapping[str, Any]
+) -> tuple[str, str, str, list[str]]:
     route = str(proposal["route"])
     form = str(proposal["form"])
     meaning = str(proposal["meaningOrFunction"])
     if route in {"production", "chunk_collocation", "grammar_cloze"}:
+        profile = candidate_language_profile(learning_contract)
+        cue = (
+            f"表达这个意思：{meaning}"
+            if profile.is_zh_cn_to_en
+            else f"Intended function: {meaning}"
+        )
         return (
             "Produce the target language form from its intended function and context.",
-            f"Intended function: {meaning}",
+            cue,
             form,
             [form],
         )
@@ -585,15 +602,57 @@ def evaluate_language_candidate(
     else:
         novelty_state, novelty_reason = "pass", "NOVELTY_LEARNER_FIT_SUPPORTED"
 
-    recall_action, cue_spec, response_spec, scoring_boundary = _objective_fields(normalized)
+    language_profile = candidate_language_profile(learning_contract)
+    recall_action, cue_spec, response_spec, scoring_boundary = _objective_fields(
+        normalized, learning_contract=learning_contract
+    )
     if not response_spec or len(response_spec) > 500 or len(scoring_boundary) != 1:
         score_state, score_reason = "fail", "SCOREABILITY_BOUNDARY_INVALID"
+    elif language_profile.is_zh_cn_to_en and (
+        normalize_answer_leakage_text(normalized["form"])
+        in normalize_answer_leakage_text(normalized["meaningOrFunction"])
+    ):
+        score_state, score_reason = "fail", "SCOREABILITY_CUE_REVEALS_TARGET"
+    elif language_profile.is_zh_cn_to_en and not contains_han(
+        normalized["meaningOrFunction"]
+    ):
+        score_state, score_reason = "fail", "SCOREABILITY_PROMPT_LANGUAGE_REQUIRED"
+    elif language_profile.mode == "legacy-en" and not is_latin_script_text(
+        normalized["meaningOrFunction"]
+    ):
+        score_state, score_reason = "fail", "SCOREABILITY_PROMPT_LANGUAGE_REQUIRED"
     elif normalized["route"] == "pronunciation":
         score_state, score_reason = "review", "SCOREABILITY_PRONUNCIATION_RUBRIC_REQUIRED"
     else:
         score_state, score_reason = "pass", "SCOREABILITY_SINGLE_BOUNDARY"
 
-    if normalized["route"] == "contrast":
+    if language_profile.mode == "unsupported":
+        suitability_state, suitability_reason = (
+            "fail",
+            "CARD_LANGUAGE_PAIR_UNSUPPORTED",
+        )
+    elif language_profile.is_zh_cn_to_en and not language_profile.supports_route(
+        normalized["route"]
+    ):
+        suitability_state, suitability_reason = (
+            "fail",
+            "CARD_LANGUAGE_ROUTE_UNSUPPORTED",
+        )
+    elif language_profile.mode in {"zh-CN-to-en", "legacy-en"} and normalize_language(
+        normalized["language"]
+    ) != EN:
+        suitability_state, suitability_reason = (
+            "fail",
+            "CARD_ANSWER_LANGUAGE_MISMATCH",
+        )
+    elif language_profile.mode in {"zh-CN-to-en", "legacy-en"} and (
+        not is_latin_script_text(normalized["form"])
+    ):
+        suitability_state, suitability_reason = (
+            "fail",
+            "CARD_TARGET_LANGUAGE_MISMATCH",
+        )
+    elif normalized["route"] == "contrast":
         suitability_state, suitability_reason = "review", "CARD_CONTRAST_PAIR_REQUIRED"
     elif normalized["formType"] == "grammar" and len(normalized["spans"]) == 1:
         suitability_state, suitability_reason = "review", "CARD_GRAMMAR_FRAME_REVIEW_REQUIRED"
