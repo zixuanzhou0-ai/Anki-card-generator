@@ -122,6 +122,35 @@ def _public_payload_summary(schema: str, payload: Any) -> tuple[str, dict[str, A
             "targetDigest": _hex_digest(value.get("targetDigest")),
             "policyVersion": _text(value.get("policyVersion")),
         }
+    if schema == "study.anki-reconciliation-receipt":
+        return "import_reconciliation_receipt_summary", {
+            "presenceState": _text(value.get("presenceState"), default="unknown"),
+            "writeBoundaryState": _text(
+                value.get("writeBoundaryState"), default="unknown"
+            ),
+            "apkgSha256": _hex_digest(value.get("apkgSha256")),
+            "targetDigest": _hex_digest(value.get("targetDigest")),
+            "policyVersion": _text(value.get("policyVersion")),
+        }
+    if schema == "study.anki-reconciliation":
+        return "import_reconciliation_summary", {
+            "reconciliationState": _text(
+                value.get("reconciliationState"), default="unknown"
+            ),
+            "expectedCardCount": _integer(value.get("expectedCardCount")),
+            "observedCardCount": _integer(value.get("observedCardCount")),
+            "expectedMediaCount": _integer(value.get("expectedMediaCount")),
+            "checkedMediaCount": _integer(value.get("checkedMediaCount")),
+            "receiptObserved": value.get("receiptObserved") is True,
+            "dataVerification": _text(
+                value.get("dataVerification"), default="not_verified"
+            ),
+            "runtimeVerification": _text(
+                value.get("runtimeVerification"), default="not_assessed"
+            ),
+            "reasonCodes": _codes(value.get("reasonCodes")),
+            "policyVersion": _text(value.get("policyVersion")),
+        }
     if schema == "study.package-artifact":
         return "package_summary", {
             "fileName": _text(value.get("fileName"), maximum=240),

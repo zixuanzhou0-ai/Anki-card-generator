@@ -188,6 +188,7 @@ METHOD_POLICIES: dict[str, MethodPolicy] = {
     "runtime.export_apkg": MethodPolicy("export", 600.0, requires_broker=True),
     "internal.export_study_apkg": MethodPolicy("export", 600.0),
     "internal.verify_study_anki_import": MethodPolicy("verify_anki_import", 120.0),
+    "internal.inspect_study_anki_import": MethodPolicy("verify_anki_import", 120.0),
     "runtime.verify_anki_import": MethodPolicy("verify_anki_import", 120.0),
 }
 
@@ -1364,6 +1365,15 @@ class CardService:
             "taskSourceBinding": True,
             "sourceAssetPublication": True,
             "sourceInspection": True,
+            **StudyRuntime.source_card_capabilities(
+                network_sources_available=True,
+                pdf_text_layer_available=self.runtime_package_dacl,
+                embedded_media_transcript_available=(
+                    self.runtime_package_dacl
+                    and self.source_parser_ffmpeg_sha256 is not None
+                    and self.source_parser_ffprobe_sha256 is not None
+                ),
+            ),
             "candidateDiscoveryRuntime": True,
             "publicCandidateDiscovery": True,
             "publicRecoverableTaskListing": True,
@@ -1391,6 +1401,7 @@ class CardService:
             "ankiImportApprovalLedger": True,
             "publicAnkiImportConfirmation": True,
             "publicAnkiWrite": True,
+            "publicAnkiImportReconciliation": True,
             "pathDisclosure": False,
             "publicProjectQueries": True,
             "complete": False,
@@ -1920,6 +1931,7 @@ class CardService:
                         endpoint=self.anki_connect_url
                     ),
                     anki_import_executor=self._execute_study_anki_import,
+                    anki_import_inspector=self._execute_study_anki_inspection,
                     anki_import_gesture_verifier=(
                         self.trusted_surfaces.verify_import_consent_gesture
                     ),
@@ -2892,6 +2904,33 @@ class CardService:
                     else ()
                 ),
             ) from error
+
+    def inspect_study_anki_import(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_id: str,
+        expected_project_revision: int,
+        idempotency_key: str,
+        import_plan_handle: str,
+    ) -> dict[str, Any]:
+        try:
+            return self._ensure_study_runtime().inspect_anki_import(
+                audience=audience,
+                project_id=project_id,
+                expected_project_revision=expected_project_revision,
+                idempotency_key=idempotency_key,
+                import_plan_handle=import_plan_handle,
+            )
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=error.code in {"ANKI_OFFLINE", "ANKI_VERIFY_FAILED"},
+                stage="anki_data_verification",
+                fallbacks=("open_anki",) if error.code == "ANKI_OFFLINE" else (),
+            ) from error
+
     @staticmethod
     def _anki_import_confirmation_key(
         audience: ArtifactAudienceBinding, import_intent_id: str
@@ -4194,6 +4233,7 @@ class CardService:
             raise CardServiceError(
                 "TASK_ID_INVALID", "Card Service task identifier is invalid"
             ) from error
+
         if self.get_task(task_id) is not None:
             raise CardServiceError(
                 "TASK_ALREADY_EXISTS", "Card Service task identifier already exists"
@@ -5159,6 +5199,41 @@ class CardService:
                 "Managed Anki verification returned an invalid result",
             )
         return dict(result)
+
+    def _execute_study_anki_inspection(
+        self,
+        bundle: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        """Run the managed Anki verifier without permitting an import write."""
+
+        snapshot = self.start_task(
+            "internal.inspect_study_anki_import",
+            {"bundle": copy.deepcopy(dict(bundle))},
+        )
+        task_id = str(snapshot["id"])
+        while snapshot.get("state") in ACTIVE_STATES:
+            time.sleep(0.05)
+            snapshot = self.get_task(task_id) or snapshot
+        if snapshot.get("state") != "succeeded":
+            failure = snapshot.get("error")
+            code = str(
+                failure.get("code")
+                if isinstance(failure, Mapping)
+                else "WORKER_EXITED"
+            )
+            if code in {"WORKER_TIMEOUT", "WORKER_EXITED"}:
+                code = "ANKI_OFFLINE"
+            raise AnkiImportExecutionError(
+                code, "Managed read-only Anki inspection failed"
+            )
+        result = self.read_result(task_id)
+        if not isinstance(result, Mapping):
+            raise AnkiImportExecutionError(
+                "ANKI_VERIFY_FAILED",
+                "Managed read-only Anki inspection returned an invalid result",
+            )
+        return dict(result)
+
     def _worker_request(self, runtime: _RuntimeTask) -> dict[str, Any]:
         request = copy.deepcopy(runtime.request)
         method = str(runtime.snapshot.get("method") or "")
@@ -5166,6 +5241,7 @@ class CardService:
             "runtime.export_apkg",
             "internal.export_study_apkg",
             "internal.verify_study_anki_import",
+            "internal.inspect_study_anki_import",
         }:
             return request
         workspace = runtime.sandbox_workspace
@@ -5176,7 +5252,10 @@ class CardService:
                 retryable=False,
                 stage="workspace",
             )
-        if method == "internal.verify_study_anki_import":
+        if method in {
+            "internal.verify_study_anki_import",
+            "internal.inspect_study_anki_import",
+        }:
             bundle = request.get("bundle")
             if not isinstance(bundle, Mapping) or set(request) != {"bundle"}:
                 raise CardServiceError(
@@ -5191,6 +5270,7 @@ class CardService:
                     workspace,
                     self._ensure_study_runtime().artifacts,
                     anki_connect_url=self.anki_connect_url,
+                    import_apkg=(method == "internal.verify_study_anki_import"),
                 )
             except (AnkiImportExecutionError, ArtifactRegistryError) as error:
                 raise CardServiceError(

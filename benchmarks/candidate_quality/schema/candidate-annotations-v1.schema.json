@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/anki/card-candidate-annotation-v1.schema.json",
+  "title": "Anki candidate benchmark annotation record v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schemaVersion",
+    "corpusId",
+    "caseId",
+    "sourceId",
+    "annotationSetId",
+    "annotationRole",
+    "annotatorId",
+    "provenance",
+    "complete",
+    "targets"
+  ],
+  "properties": {
+    "schema": {"const": "anki.card-candidate-annotation"},
+    "schemaVersion": {"const": 1},
+    "corpusId": {"$ref": "#/$defs/id"},
+    "caseId": {"$ref": "#/$defs/id"},
+    "sourceId": {"$ref": "#/$defs/id"},
+    "annotationSetId": {"$ref": "#/$defs/id"},
+    "annotationRole": {"enum": ["annotator", "adjudication"]},
+    "annotatorId": {"$ref": "#/$defs/id"},
+    "provenance": {"enum": ["human", "synthetic_demo"]},
+    "complete": {"type": "boolean"},
+    "targets": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": {"$ref": "#/$defs/target"}
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+    },
+    "span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodeId", "start", "end", "text"],
+      "properties": {
+        "nodeId": {"$ref": "#/$defs/id"},
+        "start": {"type": "integer", "minimum": 0},
+        "end": {"type": "integer", "minimum": 1},
+        "text": {"type": "string", "minLength": 1}
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "targetId",
+        "worthy",
+        "recommended",
+        "hardBlocked",
+        "route",
+        "span",
+        "duplicateGroup"
+      ],
+      "properties": {
+        "targetId": {"$ref": "#/$defs/id"},
+        "worthy": {"type": "boolean"},
+        "recommended": {"type": "boolean"},
+        "hardBlocked": {"type": "boolean"},
+        "route": {"$ref": "#/$defs/id"},
+        "span": {"$ref": "#/$defs/span"},
+        "duplicateGroup": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/id"}]
+        }
+      }
+    }
+  }
+}

@@ -88,3 +88,12 @@ def test_authenticated_package_is_reconstructed_for_worker_without_caller_paths(
         anki_connect_url="http://127.0.0.1:8785/",
     )
     assert custom_request["anki_connect_url"] == "http://127.0.0.1:8785"
+
+    inspection_request = materialize_anki_worker_request(
+        bundle,
+        (tmp_path / "inspection-workspace").resolve(),
+        registry,
+        import_apkg=False,
+    )
+    assert inspection_request["import_apkg"] is False
+    assert inspection_request["wait_for_anki_seconds"] == 0

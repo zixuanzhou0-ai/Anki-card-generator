@@ -84,6 +84,16 @@ def test_register_inputs_schema_is_closed_and_cannot_accept_paths_or_audience() 
         "oneOf"
     ]
     assert all(item["additionalProperties"] is False for item in alternatives)
+    network = next(
+        item
+        for item in alternatives
+        if item["properties"]["kind"].get("const") == "url"
+    )
+    assert network["properties"]["sourceKind"]["enum"] == [
+        "public_video",
+        "web",
+        "podcast",
+    ]
     encoded = json.dumps(definition, sort_keys=True).casefold()
     for forbidden in ('"path":', '"url":', "ownerdigest", "sessionid", "apikey"):
         assert forbidden not in encoded
@@ -200,6 +210,32 @@ def test_register_inputs_calls_only_the_trusted_service_boundary() -> None:
                     },
                     "expiresAt": "2026-07-20T12:00:00.000Z",
                     "rawUrl": "https://example.com/private",
+                }
+            ],
+        },
+        {
+            **arguments(),
+            "inputRefs": [
+                {
+                    "schemaVersion": 1,
+                    "kind": "url",
+                    "networkResourceRef": "network_" + "n" * 43,
+                    "displayOrigin": "https://example.com",
+                    "sourceKind": "other",
+                    "adapter": "generic_https",
+                    "publicIdentity": None,
+                    "queryPresent": False,
+                    "sensitiveQuery": False,
+                    "resourceRevisionDigest": "c" * 64,
+                    "constraints": {
+                        "actions": ["fetch"],
+                        "methods": ["GET"],
+                        "maxResponseBytes": 1024,
+                        "timeoutSeconds": 30,
+                        "redirectPolicy": "same_origin",
+                        "maxRedirects": 2,
+                    },
+                    "expiresAt": "2026-07-20T12:00:00.000Z",
                 }
             ],
         },

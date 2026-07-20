@@ -21,6 +21,11 @@ from .anki_import_execution import (
     AnkiImportExecutionRuntime,
     AnkiImportExecutor,
 )
+from .anki_import_reconciliation import (
+    AnkiImportInspector,
+    AnkiImportReconciliationError,
+    AnkiImportReconciliationRuntime,
+)
 from .anki_target_probe import AnkiTargetInspector
 from .artifact_registry import (
     ArtifactAudienceBinding,
@@ -116,6 +121,7 @@ class StudyRuntime:
         package_export_executor: PackageExportExecutor | None = None,
         anki_target_inspector: AnkiTargetInspector | None = None,
         anki_import_executor: AnkiImportExecutor | None = None,
+        anki_import_inspector: AnkiImportInspector | None = None,
         anki_import_gesture_verifier: (
             Callable[[str, str, str, str], bool] | None
         ) = None,
@@ -316,6 +322,20 @@ class StudyRuntime:
                 and anki_import_executor is not None
                 else None
             )
+            self.anki_import_reconciliation = (
+                AnkiImportReconciliationRuntime(
+                    service_instance_id=self.service_instance_id,
+                    artifacts=self.artifacts,
+                    projects=self.projects,
+                    tasks=self.tasks,
+                    preparation=self.anki_import_preparation,
+                    execution=self.anki_import_execution,
+                    inspector=anki_import_inspector,
+                )
+                if self.anki_import_execution is not None
+                and anki_import_inspector is not None
+                else None
+            )
             discovery_configured = (
                 candidate_discovery_model is not None
                 or candidate_discovery_model_provider is not None
@@ -360,6 +380,91 @@ class StudyRuntime:
                 "Study runtime could not be initialized safely",
             ) from error
 
+    @staticmethod
+    def source_card_capabilities(
+        *,
+        network_sources_available: bool,
+        pdf_text_layer_available: bool,
+        embedded_media_transcript_available: bool,
+    ) -> dict[str, Any]:
+        """Return the public, machine-readable source and card media contract."""
+
+        return {
+            "sourceAdapters": {
+                "localText": {
+                    "available": True,
+                    "formats": ["text", "markdown", "code", "html"],
+                    "supportTierByFormat": {
+                        "text": "A",
+                        "markdown": "A",
+                        "code": "A",
+                        "html": "B",
+                    },
+                },
+                "subtitleText": {
+                    "available": True,
+                    "supportTier": "A",
+                    "formats": ["srt", "vtt", "ass", "ssa"],
+                    "deterministicParsing": True,
+                },
+                "directoryManifest": {
+                    "available": True,
+                    "supportTier": "B",
+                    "mode": "bounded_manifest",
+                    "automaticSidecarAssociation": False,
+                },
+                "pdfTextLayer": {
+                    "available": pdf_text_layer_available,
+                    "supportTier": "B",
+                    "blockerCode": (
+                        None
+                        if pdf_text_layer_available
+                        else "SOURCE_PARSER_NOT_AVAILABLE"
+                    ),
+                },
+                "embeddedMediaTranscript": {
+                    "available": embedded_media_transcript_available,
+                    "supportTier": "B",
+                    "blockerCode": (
+                        None
+                        if embedded_media_transcript_available
+                        else "SOURCE_PARSER_NOT_AVAILABLE"
+                    ),
+                    "requiresEmbeddedSubtitle": True,
+                },
+                "staticHttpsSnapshot": {
+                    "available": network_sources_available,
+                    "supportTier": "B",
+                    "mode": "explicit_response_only",
+                    "dynamicPageExecution": False,
+                    "authenticatedSession": False,
+                },
+                "youtube": {
+                    "available": network_sources_available,
+                    "supportTier": "B",
+                    "mode": "captions_only",
+                    "videoAcquisition": False,
+                    "audioAcquisition": False,
+                },
+                "podcast": {
+                    "available": network_sources_available,
+                    "supportTier": "B",
+                    "mode": "explicit_response_only",
+                    "followsEnclosures": False,
+                    "audioTranscription": False,
+                },
+            },
+            "sourceComposition": {
+                "sidecarAssociation": False,
+                "attachmentBridge": False,
+            },
+            "cardOutputs": {
+                "generationMode": "deterministic_text_only",
+                "cardMedia": False,
+                "tts": False,
+            },
+        }
+
     def capabilities(self) -> dict[str, Any]:
         return {
             "schemaVersion": 1,
@@ -373,27 +478,17 @@ class StudyRuntime:
             "taskSourceBinding": True,
             "sourceAssetPublication": True,
             "sourceInspection": True,
-            "sourceAdapters": {
-                "pdfTextLayer": {
-                    "available": self.source_inspection.pdf_text_layer_available,
-                    "supportTier": "B",
-                    "blockerCode": (
-                        None
-                        if self.source_inspection.pdf_text_layer_available
-                        else "SOURCE_PARSER_NOT_AVAILABLE"
-                    ),
-                },
-                "embeddedMediaTranscript": {
-                    "available": self.source_inspection.embedded_media_transcript_available,
-                    "supportTier": "B",
-                    "blockerCode": (
-                        None
-                        if self.source_inspection.embedded_media_transcript_available
-                        else "SOURCE_PARSER_NOT_AVAILABLE"
-                    ),
-                    "requiresEmbeddedSubtitle": True,
-                },
-            },
+            **self.source_card_capabilities(
+                network_sources_available=(
+                    self.source_registration.trusted_network_sources_available
+                ),
+                pdf_text_layer_available=(
+                    self.source_inspection.pdf_text_layer_available
+                ),
+                embedded_media_transcript_available=(
+                    self.source_inspection.embedded_media_transcript_available
+                ),
+            ),
             "candidateDiscoveryRuntime": self.candidate_discovery is not None,
             "publicCandidateDiscovery": False,
             "publicRecoverableTaskListing": True,
@@ -418,6 +513,9 @@ class StudyRuntime:
                 and self._anki_import_gesture_verifier_available
             ),
             "publicAnkiWrite": self.anki_import_execution is not None,
+            "publicAnkiImportReconciliation": (
+                self.anki_import_reconciliation is not None
+            ),
             "publicProjectTools": True,
             "publicProjectQueries": True,
             "publicLearningContractUpdate": True,
@@ -2217,6 +2315,31 @@ class StudyRuntime:
         except AnkiImportExecutionError as error:
             raise StudyRuntimeError(error.code, error.message) from error
 
+    def inspect_anki_import(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_id: str,
+        expected_project_revision: int,
+        idempotency_key: str,
+        import_plan_handle: str,
+    ) -> dict[str, Any]:
+        if self.anki_import_reconciliation is None:
+            raise StudyRuntimeError(
+                "ANKI_IMPORT_RECONCILIATION_UNAVAILABLE",
+                "Read-only Anki import reconciliation is unavailable",
+            )
+        try:
+            return self.anki_import_reconciliation.start(
+                audience=audience,
+                project_id=project_id,
+                expected_project_revision=expected_project_revision,
+                idempotency_key=idempotency_key,
+                import_plan_handle=import_plan_handle,
+            )
+        except AnkiImportReconciliationError as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
     def get_study_task(
         self, *, audience: ArtifactAudienceBinding, task_id: str
     ) -> dict[str, Any]:
@@ -2231,6 +2354,13 @@ class StudyRuntime:
                         "Anki import task runtime is unavailable",
                     )
                 return self.anki_import_execution.get_task(task_id, audience)
+            if task.get("intent") == "resolve_anki_conflict":
+                if self.anki_import_reconciliation is None:
+                    raise StudyRuntimeError(
+                        "TASK_RUNTIME_UNAVAILABLE",
+                        "Anki reconciliation task runtime is unavailable",
+                    )
+                return self.anki_import_reconciliation.get_task(task_id, audience)
             if task.get("intent") != "export_apkg":
                 raise StudyRuntimeError(
                     "TASK_RUNTIME_UNAVAILABLE",
@@ -2246,6 +2376,7 @@ class StudyRuntime:
             StudyTaskError,
             PackageArtifactRuntimeError,
             AnkiImportExecutionError,
+            AnkiImportReconciliationError,
             ArtifactRegistryError,
             ProjectRegistryError,
         ) as error:

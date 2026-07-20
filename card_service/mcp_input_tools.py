@@ -98,7 +98,7 @@ def _network_input_ref_schema() -> dict[str, Any]:
             "displayOrigin": {"type": "string", "minLength": 9, "maxLength": 300},
             "sourceKind": {
                 "type": "string",
-                "enum": ["public_video", "web", "podcast", "other"],
+                "enum": ["public_video", "web", "podcast"],
             },
             "adapter": {
                 "type": "string",
@@ -287,7 +287,7 @@ def _validated_input_ref(value: Any) -> dict[str, Any]:
             or not 9 <= len(value["displayOrigin"]) <= 300
             or not value["displayOrigin"].startswith("https://")
             or value.get("sourceKind")
-            not in {"public_video", "web", "podcast", "other"}
+            not in {"public_video", "web", "podcast"}
             or value.get("adapter") not in {"youtube", "generic_https"}
             or (
                 value.get("publicIdentity") is not None

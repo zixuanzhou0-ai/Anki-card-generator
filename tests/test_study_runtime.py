@@ -66,6 +66,28 @@ def test_study_runtime_composes_all_registries_under_one_service_identity(
     assert capabilities["taskSourceBinding"] is True
     assert capabilities["sourceAssetPublication"] is True
     assert capabilities["sourceInspection"] is True
+    assert capabilities["sourceAdapters"]["localText"] == {
+        "available": True,
+        "formats": ["text", "markdown", "code", "html"],
+        "supportTierByFormat": {
+            "text": "A",
+            "markdown": "A",
+            "code": "A",
+            "html": "B",
+        },
+    }
+    assert capabilities["sourceAdapters"]["subtitleText"] == {
+        "available": True,
+        "supportTier": "A",
+        "formats": ["srt", "vtt", "ass", "ssa"],
+        "deterministicParsing": True,
+    }
+    assert capabilities["sourceAdapters"]["directoryManifest"] == {
+        "available": True,
+        "supportTier": "B",
+        "mode": "bounded_manifest",
+        "automaticSidecarAssociation": False,
+    }
     assert capabilities["sourceAdapters"]["pdfTextLayer"] == {
         "available": False,
         "supportTier": "B",
@@ -76,6 +98,36 @@ def test_study_runtime_composes_all_registries_under_one_service_identity(
         "supportTier": "B",
         "blockerCode": "SOURCE_PARSER_NOT_AVAILABLE",
         "requiresEmbeddedSubtitle": True,
+    }
+    assert capabilities["sourceAdapters"]["staticHttpsSnapshot"] == {
+        "available": False,
+        "supportTier": "B",
+        "mode": "explicit_response_only",
+        "dynamicPageExecution": False,
+        "authenticatedSession": False,
+    }
+    assert capabilities["sourceAdapters"]["youtube"] == {
+        "available": False,
+        "supportTier": "B",
+        "mode": "captions_only",
+        "videoAcquisition": False,
+        "audioAcquisition": False,
+    }
+    assert capabilities["sourceAdapters"]["podcast"] == {
+        "available": False,
+        "supportTier": "B",
+        "mode": "explicit_response_only",
+        "followsEnclosures": False,
+        "audioTranscription": False,
+    }
+    assert capabilities["sourceComposition"] == {
+        "sidecarAssociation": False,
+        "attachmentBridge": False,
+    }
+    assert capabilities["cardOutputs"] == {
+        "generationMode": "deterministic_text_only",
+        "cardMedia": False,
+        "tts": False,
     }
     assert capabilities["publicInputRegistration"] is True
     assert capabilities["publicSourceInspection"] is True

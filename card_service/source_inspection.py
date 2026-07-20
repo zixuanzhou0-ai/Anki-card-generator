@@ -17,6 +17,7 @@ from .artifact_registry import (
     ArtifactRegistryError,
     canonical_json_bytes,
 )
+from .language_profiles import candidate_language_profile
 from .project_registry import ProjectRegistry, ProjectRegistryError
 from .task_coordinator import StudyTaskCoordinator, StudyTaskError
 from .task_manifests import (
@@ -93,9 +94,9 @@ _SOURCE_INSPECTION_COMPONENTS = {
     "cardService": "2.0.0",
     "worker": "not-invoked",
     "sourceAdapterSetDigest": hashlib.sha256(
-        b"speakright.study.source-inspection.deterministic-text-pdf-v2"
+        b"speakright.study.source-inspection.deterministic-text-pdf-media-ass-v4"
     ).hexdigest(),
-    "gateRuleSetVersion": "source-inspection-v1",
+    "gateRuleSetVersion": "source-inspection-v2",
 }
 _PARSER_BINDING_BASE_FIELDS = {
     "workerSha256",
@@ -320,6 +321,10 @@ _TIMESTAMP_RE = re.compile(
     r"(?P<start>(?:\d{1,2}:)?\d{2}:\d{2}[,.]\d{3})\s*-->\s*"
     r"(?P<end>(?:\d{1,2}:)?\d{2}:\d{2}[,.]\d{3})"
 )
+_ASS_TIMESTAMP_RE = re.compile(
+    r"^(?P<hours>\d{1,2}):(?P<minutes>[0-5]\d):"
+    r"(?P<seconds>[0-5]\d)\.(?P<centiseconds>\d{2})$"
+)
 
 
 def _timestamp_ms(value: str) -> int:
@@ -333,13 +338,117 @@ def _timestamp_ms(value: str) -> int:
     return ((int(hours) * 60 + int(minutes)) * 60 + int(second)) * 1000 + int(millis)
 
 
-def _subtitle_content(
-    text: str,
-    *,
-    source_id: str,
-    member_ref: str | None = None,
-    maximum_nodes: int = _MAX_CONTENT_NODES,
-) -> tuple[str, list[dict[str, Any]], list[str]]:
+def _ass_timestamp_ms(value: str) -> int | None:
+    match = _ASS_TIMESTAMP_RE.fullmatch(value.strip())
+    if match is None:
+        return None
+    return (
+        (
+            int(match.group("hours")) * 60 * 60
+            + int(match.group("minutes")) * 60
+            + int(match.group("seconds"))
+        )
+        * 1000
+        + int(match.group("centiseconds")) * 10
+    )
+
+
+def _ass_visible_text(value: str) -> str | None:
+    """Return deterministic visible ASS text or reject malformed override markup."""
+
+    visible: list[str] = []
+    cursor = 0
+    while cursor < len(value):
+        character = value[cursor]
+        if character == "{":
+            closing = value.find("}", cursor + 1)
+            if closing < 0 or "{" in value[cursor + 1 : closing]:
+                return None
+            cursor = closing + 1
+            continue
+        if character == "}":
+            return None
+        if character == "\\" and cursor + 1 < len(value):
+            escape = value[cursor + 1]
+            if escape in {"N", "n", "h"}:
+                visible.append(" ")
+                cursor += 2
+                continue
+        visible.append(character)
+        cursor += 1
+    return re.sub(r"\s+", " ", "".join(visible)).strip()
+
+
+def _ass_cues(
+    text: str, *, maximum_nodes: int
+) -> tuple[list[tuple[int, int, str]], int, bool]:
+    cues: list[tuple[int, int, str]] = []
+    invalid = 0
+    limited = False
+    in_events = False
+    fields: list[str] | None = None
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip("\ufeff \t")
+        if not line or line.startswith(";"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            in_events = line.casefold() == "[events]"
+            fields = None
+            continue
+        if not in_events:
+            continue
+        prefix, separator, payload = line.partition(":")
+        if not separator:
+            continue
+        kind = prefix.strip().casefold()
+        if kind == "format":
+            proposed = [field.strip().casefold() for field in payload.split(",")]
+            if (
+                len(proposed) < 3
+                or any(not field for field in proposed)
+                or len(proposed) != len(set(proposed))
+                or not {"start", "end", "text"}.issubset(proposed)
+                or proposed[-1] != "text"
+            ):
+                fields = None
+                invalid += 1
+            else:
+                fields = proposed
+            continue
+        if kind != "dialogue":
+            continue
+        if fields is None:
+            invalid += 1
+            continue
+        values = [
+            item.strip() for item in payload.lstrip().split(",", len(fields) - 1)
+        ]
+        if len(values) != len(fields):
+            invalid += 1
+            continue
+        row = dict(zip(fields, values, strict=True))
+        start_ms = _ass_timestamp_ms(row["start"])
+        end_ms = _ass_timestamp_ms(row["end"])
+        cue_text = _ass_visible_text(row["text"])
+        if (
+            start_ms is None
+            or end_ms is None
+            or end_ms <= start_ms
+            or not cue_text
+        ):
+            invalid += 1
+            continue
+        if len(cues) >= maximum_nodes:
+            limited = True
+            break
+        cues.append((start_ms, end_ms, cue_text))
+    return cues, invalid, limited
+
+
+def _srt_vtt_cues(
+    text: str, *, maximum_nodes: int
+) -> tuple[list[tuple[int, int, str]], int, bool]:
     cues: list[tuple[int, int, str]] = []
     invalid = 0
     limited = False
@@ -376,6 +485,27 @@ def _subtitle_content(
             limited = True
             break
         cues.append((start_ms, end_ms, cue_text))
+    return cues, invalid, limited
+
+
+def _subtitle_content(
+    text: str,
+    *,
+    source_id: str,
+    member_ref: str | None = None,
+    format_hint: str | None = None,
+    maximum_nodes: int = _MAX_CONTENT_NODES,
+) -> tuple[str, list[dict[str, Any]], list[str]]:
+    suffix = PurePosixPath(str(format_hint or member_ref or "")).suffix.casefold()
+    ass_format = suffix in {".ass", ".ssa"} or (
+        not suffix and "[events]" in text.casefold() and "dialogue:" in text.casefold()
+    )
+    if ass_format:
+        cues, invalid, limited = _ass_cues(text, maximum_nodes=maximum_nodes)
+    else:
+        cues, invalid, limited = _srt_vtt_cues(
+            text, maximum_nodes=maximum_nodes
+        )
     plain_parts: list[str] = []
     nodes: list[dict[str, Any]] = []
     cursor = 0
@@ -478,12 +608,39 @@ def _source_type_for_member(member_ref: str) -> str:
     return "unknown"
 
 
-def _recommended_routes(source_type: str) -> list[str]:
+def _recommended_routes(
+    source_type: str, learning_contract: Mapping[str, Any]
+) -> list[str]:
+    """Recommend only routes supported by the current language-card runtime."""
+
+    profile = candidate_language_profile(learning_contract)
+    requested = learning_contract.get("routes")
+    requested_routes = (
+        frozenset(str(route) for route in requested)
+        if isinstance(requested, Sequence) and not isinstance(requested, (str, bytes))
+        else frozenset()
+    )
     if source_type in {"subtitle", "audio", "video"}:
-        return ["reading_recognition", "listening_recognition", "chunk_collocation"]
-    if source_type == "code":
-        return ["procedural_decision", "error_repair", "concept_discrimination"]
-    return ["fact_recall", "concept_discrimination", "application_transfer"]
+        candidates = (
+            "listening_recognition",
+            "reading_recognition",
+            "production",
+            "pronunciation",
+            "chunk_collocation",
+        )
+    else:
+        candidates = (
+            "reading_recognition",
+            "production",
+            "grammar_cloze",
+            "chunk_collocation",
+        )
+    return [
+        route
+        for route in candidates
+        if profile.supports_route(route)
+        and (not requested_routes or route in requested_routes)
+    ]
 
 
 class SourceInspectionRuntime:
@@ -546,7 +703,7 @@ class SourceInspectionRuntime:
         adapter_set_digest = _sha(
             canonical_json_bytes(
                 {
-                    "policy": "deterministic-text-pdf-media-v3",
+                    "policy": "deterministic-text-pdf-media-ass-v4",
                     "parserBinding": self._parser_binding,
                 }
             )
@@ -589,7 +746,7 @@ class SourceInspectionRuntime:
                     "projectId": project_id,
                     "expectedProjectRevision": expected_revision,
                     "sourceRefs": [dict(value) for value in source_refs],
-                    "extractorPolicy": "deterministic-text-pdf-media-v3",
+                    "extractorPolicy": "deterministic-text-pdf-media-ass-v4",
                     "sourceAdapterSetDigest": self._component_versions[
                         "sourceAdapterSetDigest"
                     ],
@@ -743,6 +900,7 @@ class SourceInspectionRuntime:
         source_type: str,
         blob_ref: Mapping[str, Any],
         member_ref: str | None = None,
+        format_hint: str | None = None,
         maximum_bytes: int = _MAX_TEXT_BYTES,
         maximum_nodes: int = _MAX_CONTENT_NODES,
     ) -> dict[str, Any]:
@@ -795,6 +953,7 @@ class SourceInspectionRuntime:
                 text,
                 source_id=source_id,
                 member_ref=member_ref,
+                format_hint=format_hint,
                 maximum_nodes=maximum_nodes,
             )
             if not nodes:
@@ -1829,6 +1988,7 @@ class SourceInspectionRuntime:
             source_id=source_id,
             source_type=source_type,
             blob_ref=representations[0]["blobRef"],
+            format_hint=str(source.get("displayName") or ""),
         )
 
     def _publish_source_inspection(
@@ -1839,6 +1999,7 @@ class SourceInspectionRuntime:
         project_revision: int,
         source_ref: Mapping[str, Any],
         source_envelope: Mapping[str, Any],
+        learning_contract: Mapping[str, Any],
         input_fingerprint: str,
         operation_digest: str,
         index: int,
@@ -1924,7 +2085,9 @@ class SourceInspectionRuntime:
             "representationRefs": representation_refs,
             "contentNodeCount": len(extracted["nodes"]),
             "recommendedRoutes": (
-                _recommended_routes(str(source["sourceType"]))
+                _recommended_routes(
+                    str(source["sourceType"]), learning_contract
+                )
                 if extracted["nodes"]
                 else []
             ),
@@ -2244,6 +2407,7 @@ class SourceInspectionRuntime:
                         project_revision=expected_project_revision,
                         source_ref=source_ref,
                         source_envelope=source_envelope,
+                        learning_contract=project["learningContract"],
                         input_fingerprint=input_fingerprint,
                         operation_digest=operation_digest,
                         index=index,

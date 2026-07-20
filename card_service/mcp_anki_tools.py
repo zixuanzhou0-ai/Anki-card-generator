@@ -13,11 +13,13 @@ from .trusted_mcp_audience import TrustedMcpAudienceSession
 PREPARE_IMPORT_TOOL_NAME = "anki.prepare_import"
 REQUEST_IMPORT_CONFIRMATION_TOOL_NAME = "anki.request_import_confirmation"
 IMPORT_AND_VERIFY_TOOL_NAME = "anki.import_and_verify"
+INSPECT_IMPORT_STATE_TOOL_NAME = "anki.inspect_import_state"
 ANKI_TOOL_NAMES = frozenset(
     {
         PREPARE_IMPORT_TOOL_NAME,
         REQUEST_IMPORT_CONFIRMATION_TOOL_NAME,
         IMPORT_AND_VERIFY_TOOL_NAME,
+        INSPECT_IMPORT_STATE_TOOL_NAME,
     }
 )
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
@@ -245,6 +247,91 @@ def anki_tool_definitions() -> list[dict[str, Any]]:
                 "openWorldHint": True,
             },
         },
+        {
+            "name": INSPECT_IMPORT_STATE_TOOL_NAME,
+            "title": "Inspect an existing Anki import",
+            "description": (
+                "Read the current Anki target through the authenticated ImportPlan "
+                "and classify it as absent, present, partial, or unknown. This tool "
+                "never calls importPackage and never retries an import automatically."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "context": {
+                        "type": "object",
+                        "properties": {
+                            "projectId": {"type": "string", "minLength": 1, "maxLength": 256},
+                            "expectedProjectRevision": {"type": "integer", "minimum": 1},
+                            "idempotencyKey": {"type": "string", "minLength": 1, "maxLength": 160},
+                        },
+                        "required": ["projectId", "expectedProjectRevision", "idempotencyKey"],
+                        "additionalProperties": False,
+                    },
+                    "importPlanHandle": {
+                        "type": "string",
+                        "pattern": r"^study_[A-Za-z0-9_-]{43}$",
+                    },
+                },
+                "required": ["context", "importPlanHandle"],
+                "additionalProperties": False,
+            },
+            "outputSchema": {
+                "type": "object",
+                "properties": {
+                    "schemaVersion": {"type": "integer", "const": 1},
+                    "taskId": {"type": "string"},
+                    "intent": {"type": "string", "const": "inspect_anki_import"},
+                    "state": {"type": "string"},
+                    "cancellable": {"type": "boolean", "const": False},
+                    "resumability": {"type": "string"},
+                    "progress": {"type": "object"},
+                    "result": {
+                        "type": "object",
+                        "properties": {
+                            "reconciliationState": {
+                                "type": "string",
+                                "enum": ["absent", "present", "partial", "unknown"],
+                            },
+                            "artifactStage": {"type": "string"},
+                            "projectRevision": {"type": "integer"},
+                            "expectedCardCount": {"type": "integer"},
+                            "observedCardCount": {"type": "integer"},
+                            "expectedMediaCount": {"type": "integer"},
+                            "checkedMediaCount": {"type": "integer"},
+                            "receiptObserved": {"type": "boolean"},
+                            "dataVerification": {
+                                "type": "string",
+                                "enum": ["passed", "not_verified"],
+                            },
+                            "runtimeVerification": {"type": "string", "const": "not_assessed"},
+                            "reasonCodes": {"type": "array", "items": {"type": "string"}},
+                            "nextAction": {"type": "string"},
+                        },
+                        "required": [
+                            "reconciliationState", "artifactStage", "projectRevision",
+                            "expectedCardCount", "observedCardCount", "expectedMediaCount",
+                            "checkedMediaCount", "receiptObserved", "dataVerification",
+                            "runtimeVerification", "reasonCodes", "nextAction"
+                        ],
+                        "additionalProperties": False,
+                    },
+                    "error": {"type": "object"},
+                    "nextAction": {"type": "string"},
+                },
+                "required": [
+                    "schemaVersion", "taskId", "intent", "state", "cancellable",
+                    "resumability", "progress", "nextAction"
+                ],
+                "additionalProperties": False,
+            },
+            "annotations": {
+                "readOnlyHint": True,
+                "destructiveHint": False,
+                "idempotentHint": True,
+                "openWorldHint": True,
+            },
+        },
     ]
 
 
@@ -301,6 +388,34 @@ def _import_arguments(arguments: Any) -> tuple[str, str]:
     if not isinstance(intent, str) or not _IMPORT_INTENT_RE.fullmatch(intent):
         raise McpAnkiToolInputError("importIntentId is invalid")
     return key, intent
+
+
+def _inspection_arguments(arguments: Any) -> tuple[str, int, str, str]:
+    if not isinstance(arguments, dict) or set(arguments) != {
+        "context",
+        "importPlanHandle",
+    }:
+        raise McpAnkiToolInputError("Anki inspection fields are invalid")
+    context = arguments.get("context")
+    if not isinstance(context, dict) or set(context) != {
+        "projectId",
+        "expectedProjectRevision",
+        "idempotencyKey",
+    }:
+        raise McpAnkiToolInputError("Anki inspection context is invalid")
+    project = context.get("projectId")
+    revision = context.get("expectedProjectRevision")
+    key = context.get("idempotencyKey")
+    handle = arguments.get("importPlanHandle")
+    if not isinstance(project, str) or not _PROJECT_RE.fullmatch(project):
+        raise McpAnkiToolInputError("projectId is invalid")
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+        raise McpAnkiToolInputError("expectedProjectRevision is invalid")
+    if not isinstance(key, str) or not _ID_RE.fullmatch(key):
+        raise McpAnkiToolInputError("idempotencyKey is invalid")
+    if not isinstance(handle, str) or not _HANDLE_RE.fullmatch(handle):
+        raise McpAnkiToolInputError("importPlanHandle is invalid")
+    return project, revision, key, handle
 
 def call_anki_tool(
     service: CardService,
@@ -379,6 +494,27 @@ def call_anki_tool(
             ],
             "structuredContent": structured,
         }
+    if tool_name == INSPECT_IMPORT_STATE_TOOL_NAME:
+        project, revision, key, handle = _inspection_arguments(arguments)
+        structured = service.inspect_study_anki_import(
+            audience=audience_session.audience,
+            project_id=project,
+            expected_project_revision=revision,
+            idempotency_key=key,
+            import_plan_handle=handle,
+        )
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "The authenticated Anki target was inspected without importing. "
+                        "No automatic re-import was attempted."
+                    ),
+                }
+            ],
+            "structuredContent": structured,
+        }
     raise McpAnkiToolInputError("Unknown Anki tool")
 
 
@@ -386,6 +522,7 @@ __all__ = [
     "ANKI_TOOL_NAMES",
     "McpAnkiToolInputError",
     "IMPORT_AND_VERIFY_TOOL_NAME",
+    "INSPECT_IMPORT_STATE_TOOL_NAME",
     "PREPARE_IMPORT_TOOL_NAME",
     "REQUEST_IMPORT_CONFIRMATION_TOOL_NAME",
     "anki_tool_definitions",

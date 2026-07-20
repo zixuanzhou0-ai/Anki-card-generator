@@ -113,7 +113,7 @@ def resource_tool_definitions() -> list[dict[str, Any]]:
                     "kind": {"type": "string", "const": "trusted_entry"},
                     "sourceKind": {
                         "type": "string",
-                        "enum": ["public_video", "web", "podcast", "other"],
+                        "enum": ["public_video", "web", "podcast"],
                     },
                 },
                 "required": ["grantRequestId", "kind", "sourceKind"],
@@ -155,7 +155,7 @@ def _validated_request(
     if tool_name == NETWORK_GRANT_TOOL_NAME:
         if arguments.get("kind") != "trusted_entry" or arguments.get(
             "sourceKind"
-        ) not in {"public_video", "web", "podcast", "other"}:
+        ) not in {"public_video", "web", "podcast"}:
             raise McpResourceToolInputError("network source kind is invalid")
         return request_id, str(arguments["sourceKind"])
     return request_id, "output_directory"

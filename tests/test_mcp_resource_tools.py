@@ -100,6 +100,12 @@ def test_resource_tool_schemas_have_no_path_url_audience_or_replace_inputs() -> 
     for forbidden in ("path\"", "url\"", "audience", "raw", "replace\""):
         assert forbidden not in serialized
     assert all(item["inputSchema"]["additionalProperties"] is False for item in definitions)
+    network = next(item for item in definitions if item["name"] == NETWORK_GRANT_TOOL_NAME)
+    assert network["inputSchema"]["properties"]["sourceKind"]["enum"] == [
+        "public_video",
+        "web",
+        "podcast",
+    ]
 
 
 def test_network_tool_accepts_only_trusted_entry_and_returns_url_free_ref() -> None:
@@ -191,6 +197,7 @@ def test_waiting_and_cancelled_states_disclose_no_private_session() -> None:
         (OUTPUT_GRANT_TOOL_NAME, {"grantRequestId": "x", "replace": True}),
         (NETWORK_GRANT_TOOL_NAME, {"grantRequestId": "x", "kind": "trusted_entry", "sourceKind": "web", "url": "https://example.com"}),
         (NETWORK_GRANT_TOOL_NAME, {"grantRequestId": "x", "kind": "public_url", "sourceKind": "web"}),
+        (NETWORK_GRANT_TOOL_NAME, {"grantRequestId": "x", "kind": "trusted_entry", "sourceKind": "other"}),
     ],
 )
 def test_resource_tool_rejects_scope_injection(tool_name: str, arguments: dict[str, Any]) -> None:

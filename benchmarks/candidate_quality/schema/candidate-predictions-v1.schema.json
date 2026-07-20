@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/anki/card-candidate-prediction-v1.schema.json",
+  "title": "Anki candidate benchmark prediction record v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schemaVersion",
+    "corpusId",
+    "caseId",
+    "sourceId",
+    "systemId",
+    "runId",
+    "items",
+    "declaredOmissions"
+  ],
+  "properties": {
+    "schema": {"const": "anki.card-candidate-prediction"},
+    "schemaVersion": {"const": 1},
+    "corpusId": {"$ref": "#/$defs/id"},
+    "caseId": {"$ref": "#/$defs/id"},
+    "sourceId": {"$ref": "#/$defs/id"},
+    "systemId": {"$ref": "#/$defs/id"},
+    "runId": {"$ref": "#/$defs/id"},
+    "items": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": {"$ref": "#/$defs/item"}
+    },
+    "declaredOmissions": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": {"$ref": "#/$defs/omission"}
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+    },
+    "span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodeId", "start", "end", "text"],
+      "properties": {
+        "nodeId": {"$ref": "#/$defs/id"},
+        "start": {"type": "integer", "minimum": 0},
+        "end": {"type": "integer", "minimum": 1},
+        "text": {"type": "string", "minLength": 1}
+      }
+    },
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "predictionId",
+        "matchedTargetId",
+        "route",
+        "span",
+        "recommended",
+        "confidence",
+        "duplicateGroup",
+        "status"
+      ],
+      "properties": {
+        "predictionId": {"$ref": "#/$defs/id"},
+        "matchedTargetId": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/id"}]
+        },
+        "route": {"$ref": "#/$defs/id"},
+        "span": {"$ref": "#/$defs/span"},
+        "recommended": {"type": "boolean"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "duplicateGroup": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/id"}]
+        },
+        "status": {"enum": ["candidate", "hard_blocked"]}
+      }
+    },
+    "omission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["targetId", "reason"],
+      "properties": {
+        "targetId": {"$ref": "#/$defs/id"},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 500}
+      }
+    }
+  }
+}

@@ -236,6 +236,7 @@ def materialize_anki_worker_request(
     artifacts: ArtifactRegistry,
     *,
     anki_connect_url: str = ANKI_CONNECT_URL,
+    import_apkg: bool = True,
 ) -> dict[str, Any]:
     """Build a legacy Worker request only from authenticated, immutable inputs."""
 
@@ -661,9 +662,9 @@ def materialize_anki_worker_request(
         )
     return {
         "export_result": export_result,
-        "import_apkg": True,
+        "import_apkg": bool(import_apkg),
         "anki_connect_url": normalize_anki_connect_url(anki_connect_url),
-        "wait_for_anki_seconds": 10,
+        "wait_for_anki_seconds": 10 if import_apkg else 0,
     }
 
 
@@ -764,6 +765,16 @@ class AnkiImportExecutionRuntime:
             "cardIdentities": _clone(identities.get("cards")),
             "mediaEntries": _clone(manifest.get("entries")),
         }
+
+    def authenticated_bundle(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        resolved: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Return the closed Worker bundle for another trusted Anki runtime."""
+
+        return self._bundle(audience=audience, resolved=resolved)
 
     def _manifests(
         self,

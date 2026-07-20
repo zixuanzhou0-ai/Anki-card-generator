@@ -36,6 +36,7 @@ def environment(
     *,
     structured_source_parser=None,
     media_tools: bool = True,
+    learning_contract: dict | None = None,
 ):
     backend = InMemoryCredentialBackend()
     credentials = (tmp_path / "credentials").resolve()
@@ -72,7 +73,8 @@ def environment(
     project = runtime.create_project(
         audience=audience(),
         idempotency_key="project-1",
-        learning_contract={
+        learning_contract=learning_contract
+        or {
             "purpose": "Remember the most useful ideas",
             "targetBehavior": "Recall and apply them without seeing the source",
         },
@@ -186,6 +188,7 @@ def test_text_inspection_publishes_structured_nodes_without_returning_source_tex
     }
     assert result["sources"][0]["supportTier"] == "A"
     assert result["sources"][0]["contentNodeCount"] == 2
+    assert result["sources"][0]["recommendedRoutes"] == ["reading_recognition"]
     serialized = json.dumps(result, ensure_ascii=False, sort_keys=True)
     assert source_text not in serialized
     assert str(source) not in serialized
@@ -223,6 +226,7 @@ def test_subtitle_inspection_preserves_cue_timing(tmp_path: Path) -> None:
 
     result = inspect(runtime, project, registration)
     assert result["sources"][0]["supportTier"] == "A"
+    assert result["sources"][0]["recommendedRoutes"] == ["reading_recognition"]
     project_after = runtime.get_project(project["projectId"], audience())
     representation_ref = next(
         value
@@ -236,6 +240,119 @@ def test_subtitle_inspection_preserves_cue_timing(tmp_path: Path) -> None:
     ] == [
         (1000, 2250),
         (3000, 4000),
+    ]
+
+
+@pytest.mark.parametrize("extension", ["ass", "ssa"])
+def test_ass_subtitle_inspection_is_deterministic_and_strips_override_markup(
+    tmp_path: Path, extension: str
+) -> None:
+    resources, runtime, project = environment(tmp_path)
+    source = (tmp_path / f"lesson.{extension}").resolve()
+    source.write_text(
+        "[Script Info]\nTitle: Reliable fixture\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        "Dialogue: 0,0:00:01.23,0:00:03.45,Default,,0,0,0,,"
+        "{\\i1}Actions{\\i0} speak louder, than words.\\NUse it in context.\n",
+        encoding="utf-8",
+    )
+    registration = register(
+        runtime, project, input_ref(resources, source, request_id=f"subtitle-{extension}")
+    )
+
+    result = inspect(runtime, project, registration)
+
+    assert result["sources"][0]["supportTier"] == "A"
+    assert result["sources"][0]["contentNodeCount"] == 1
+    project_after = runtime.get_project(project["projectId"], audience())
+    representation_ref = next(
+        value
+        for value in project_after["latestArtifactRefs"]
+        if value["artifactId"].startswith("representation_")
+    )
+    payload = runtime.artifacts.verify_ref(representation_ref, audience())["payload"]
+    assert runtime.artifacts.read_blob(payload["plainTextBlobRef"]).decode("utf-8") == (
+        "Actions speak louder, than words. Use it in context."
+    )
+    assert payload["contentNodes"][0]["locator"] == {
+        "kind": "subtitle",
+        "cueIds": [payload["contentNodes"][0]["nodeId"]],
+        "startMs": 1230,
+        "endMs": 3450,
+    }
+
+
+def test_ass_subtitle_omits_malformed_rows_without_guessing(tmp_path: Path) -> None:
+    resources, runtime, project = environment(tmp_path)
+    source = (tmp_path / "lesson.ass").resolve()
+    source.write_text(
+        "[Events]\n"
+        "Format: Start, End, Text\n"
+        "Dialogue: 0:00:01.00,0:00:02.00,{\\b1}Valid{\\b0} cue\n"
+        "Dialogue: 0:00:02.00,0:00:03.00,{unclosed cue\n"
+        "Dialogue: invalid,0:00:04.00,Invalid timestamp\n",
+        encoding="utf-8",
+    )
+    registration = register(
+        runtime, project, input_ref(resources, source, request_id="subtitle-ass-partial")
+    )
+
+    result = inspect(runtime, project, registration)
+
+    row = result["sources"][0]
+    assert row["supportTier"] == "B"
+    assert row["status"] == "conditional"
+    assert row["contentNodeCount"] == 1
+    assert row["issueCodes"] == ["SOURCE_SUBTITLE_CUES_OMITTED"]
+
+
+def test_ass_subtitle_rejects_ambiguous_nonfinal_text_field(tmp_path: Path) -> None:
+    resources, runtime, project = environment(tmp_path)
+    source = (tmp_path / "ambiguous.ass").resolve()
+    source.write_text(
+        "[Events]\n"
+        "Format: Start, Text, End\n"
+        "Dialogue: 0:00:01.00,Text, with comma,0:00:02.00\n",
+        encoding="utf-8",
+    )
+    registration = register(
+        runtime, project, input_ref(resources, source, request_id="subtitle-ass-format")
+    )
+
+    result = inspect(runtime, project, registration)
+
+    row = result["sources"][0]
+    assert row["supportTier"] == "C"
+    assert row["status"] == "blocked"
+    assert row["contentNodeCount"] == 0
+    assert row["issueCodes"] == ["SOURCE_SUBTITLE_UNREADABLE"]
+
+
+def test_route_recommendations_follow_the_supported_bilingual_contract(
+    tmp_path: Path,
+) -> None:
+    resources, runtime, project = environment(
+        tmp_path,
+        learning_contract={
+            "purpose": "学习可复用英语表达",
+            "targetBehavior": "看到中文提示后说出英文",
+            "promptLanguage": "zh-CN",
+            "answerLanguage": "en",
+            "routes": ["production", "chunk_collocation", "fact_recall"],
+        },
+    )
+    source = (tmp_path / "lesson.txt").resolve()
+    source.write_text("Actions speak louder than words.", encoding="utf-8")
+    registration = register(
+        runtime, project, input_ref(resources, source, request_id="bilingual-routes")
+    )
+
+    result = inspect(runtime, project, registration)
+
+    assert result["sources"][0]["recommendedRoutes"] == [
+        "production",
+        "chunk_collocation",
     ]
 
 

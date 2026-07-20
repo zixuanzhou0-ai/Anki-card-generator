@@ -83,6 +83,20 @@ def test_capabilities_expose_only_restricted_high_level_methods(tmp_path: Path) 
     assert capabilities["trustedSurfaces"]["localSettings"] is True
     assert capabilities["trustedSurfaces"]["authorizationLedger"] is False
     assert capabilities["methods"] == ["runtime.check_environment", "runtime.extract_learning_points"]
+    study_capabilities = capabilities["studyRuntime"]
+    assert study_capabilities["sourceAdapters"]["youtube"]["available"] is True
+    assert study_capabilities["sourceAdapters"]["youtube"]["mode"] == "captions_only"
+    assert study_capabilities["sourceAdapters"]["youtube"]["videoAcquisition"] is False
+    assert study_capabilities["sourceAdapters"]["podcast"]["mode"] == "explicit_response_only"
+    assert study_capabilities["sourceComposition"] == {
+        "sidecarAssociation": False,
+        "attachmentBridge": False,
+    }
+    assert study_capabilities["cardOutputs"] == {
+        "generationMode": "deterministic_text_only",
+        "cardMedia": False,
+        "tts": False,
+    }
     assert capabilities["worker"]["resourceId"] == "managed:legacy-worker"
     assert "path" not in capabilities["worker"]
     assert "path" not in capabilities["python"]

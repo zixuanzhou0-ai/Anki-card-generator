@@ -379,6 +379,12 @@ class SourceRegistrationRuntime:
         self._workspace_factory = workspace_factory or self._default_workspace
         self._workspace_releaser = workspace_releaser or (lambda _task_id: None)
 
+    @property
+    def trusted_network_sources_available(self) -> bool:
+        """Whether opaque, consent-bound HTTPS source grants can be resolved."""
+
+        return self._network_resources is not None
+
     def _default_workspace(self, task_id: str) -> tuple[Path, None]:
         root = (self._root / "workspaces").absolute()
         root.mkdir(parents=True, exist_ok=True)
