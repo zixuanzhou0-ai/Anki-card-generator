@@ -4,15 +4,15 @@
 
 ## CURRENT 公共工具清单与能力上限（2026-07-20）
 
-截至 2026-07-20，可信开发态 Card Service stdio runtime 共公开 37 个工具：`system.get_capabilities`、`system.authorize_candidate_discovery`、`system.list_profiles`、`system.open_local_settings`、`system.revoke_grant`、`system.validate_profile`、`system.request_operation_confirmation`、`system.request_source_grant`、`system.request_output_grant`、`system.request_network_grant`、`study.create_project`、`study.list_projects`、`study.get_project`、`study.register_inputs`、`study.start_source_inspection`、`study.get_source_inspection`、`study.start_discovery`、`study.get_task`、`study.cancel_task`、`study.list_recoverable_tasks`、`study.resume_task`、`study.list_candidates`、`study.get_candidate`、`study.preview_evidence`、`study.set_selection`、`study.plan_cards`、`study.list_card_plans`、`study.edit_card_plan`、`study.validate_card_plans`、`cards.generate`、`cards.list`、`cards.export_apkg`、`anki.prepare_import`、`anki.request_import_confirmation`、`anki.import_and_verify`、`study.get_artifact`、`study.get_audit`。
+截至 2026-07-20，可信开发态 Card Service stdio runtime 共公开 38 个工具：`system.get_capabilities`、`system.authorize_candidate_discovery`、`system.list_profiles`、`system.open_local_settings`、`system.revoke_grant`、`system.validate_profile`、`system.request_operation_confirmation`、`system.request_source_grant`、`system.request_output_grant`、`system.request_network_grant`、`study.create_project`、`study.update_learning_contract`、`study.list_projects`、`study.get_project`、`study.register_inputs`、`study.start_source_inspection`、`study.get_source_inspection`、`study.start_discovery`、`study.get_task`、`study.cancel_task`、`study.list_recoverable_tasks`、`study.resume_task`、`study.list_candidates`、`study.get_candidate`、`study.preview_evidence`、`study.set_selection`、`study.plan_cards`、`study.list_card_plans`、`study.edit_card_plan`、`study.validate_card_plans`、`cards.generate`、`cards.list`、`cards.export_apkg`、`anki.prepare_import`、`anki.request_import_confirmation`、`anki.import_and_verify`、`study.get_artifact`、`study.get_audit`。
 
 当前候选发现授权工具只接受 `{"preset":"hermes_grok_4_5"}`。授权成功后，`study.start_discovery` 只接受 RequestContext、`inspectionHandle` 和 1–256 的 `candidateBudget`；Service 从当前可信授权派生模型身份、endpoint、凭据与 disclosure，调用方无权注入这些字段。
 
 `anki.import_and_verify` 只接受 `context.idempotencyKey` 与已确认的 `importIntentId`。成功写入后执行 deck/note/card/field/media 的数据级核验并最多推进到 `anki_data_verified`。写入成功但数据核验失败时保留 receipt 并置为 `imported_unverified`；写入前失败保持 `apkg_ready` 且不创建 receipt；跨越不确定写边界的取消/中断必须 `inspect_before_retry`。同一 import intent 即使换 idempotency key 也不得重复导入。运行时渲染、媒体播放、reviewer 操作与重启核验不在当前工具集中。
 
-下文总表同时保留 PROPOSED V1 工具设计；只有本节列出的 37 个名字可被当前 Skill 命令式调用。
+下文总表同时保留 PROPOSED V1 工具设计；只有本节列出的 38 个名字可被当前 Skill 命令式调用。
 
-> 状态：CURRENT 37 工具开发态 runtime + PROPOSED 扩展工具契约；正式签名插件尚未发布
+> 状态：CURRENT 38 工具开发态 runtime + PROPOSED 扩展工具契约；正式签名插件尚未发布
 > 日期：2026-07-20
 > 工具名和 schema 在实现前仍可调整；一旦 V1 发布即按版本策略维护。
 
@@ -405,11 +405,11 @@ prepare request
 
 ### 5.2 study.update_learning_contract
 
-> CURRENT 内部状态：固定语义操作、双 revision CAS、operationId 精确幂等和最小失效矩阵已有服务端存储实现与回归测试；公共 MCP schema、canonical learningContractRef 发布和跨 Artifact/Task 原子提交仍未实现。
+> CURRENT：固定语义操作、双 revision CAS、operationId 精确幂等、最小失效矩阵、canonical learningContractRef 与公开 MCP schema 已实现。当前仍不是 Project/Artifact/Task 三个 Registry 的单一数据库事务；旧 revision 任务只能保留私有中间结果，并会在项目 compare-and-publish 时失败。
 
 输入 projectId、expectedProjectRevision、expectedContractRevision、operationId 和非空 operations。operations 只允许 StudyIR 冻结的语义联合：set_purpose、set_target_behavior、set_learner_level、replace_routes、set_budget、set_languages、set_evidence_policy、add_exclusion、remove_exclusion；不接受 JSON Patch、任意字段路径或模型生成的对象合并。
 
-Service 先对整个 ChangeSet 做 schema/长度/预算/路线约束校验，再以 compare-and-publish 原子提交。相同 operationId 与相同 payload 幂等返回同一 revision；同 ID 不同 payload 拒绝。输出新 projectRevision、contractRevision、canonical learningContractRef，以及 invalidatedStages 和 preservedArtifactRefs。
+Service 先对整个 ChangeSet 做 schema/长度/预算/路线约束校验，再以项目记录内的 compare-and-publish 原子提交。相同 operationId 与相同 payload 幂等返回同一操作 revision；同 ID 不同 payload 拒绝。输出该操作的新 projectRevision、contractRevision、canonical learningContractRef、invalidatedStages，以及仍可靠的 `preservedArtifacts`。后者会与调用时的 current/latest 指针重新求交，只含当前会话 opaque ArtifactHandle、schema 与 revision，不暴露内部 ArtifactRef、路径或摘要材料。调用方随后用 `study.get_project` 读取唯一当前 WorkflowSnapshot，不能把历史幂等重放的结果冒充当前状态。
 
 失效矩阵固定为：purpose、targetBehavior、routes、evidencePolicy 或 exclusions 变化使 discovery 与全部下游 stale；prompt/answer language 变化使 CardPlan 与全部下游 stale；budget 变化使 selection、planning 与全部下游 stale；learnerLevel 变化使 discovery 与全部下游 stale。运行中旧 revision 任务可以完成私有中间结果，但 compare-and-publish 失败，不能覆盖当前项目。修改本身不调用模型/TTS，也不自动重跑。
 

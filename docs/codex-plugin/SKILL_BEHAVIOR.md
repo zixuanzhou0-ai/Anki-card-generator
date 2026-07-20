@@ -10,7 +10,7 @@
 
 当前 `system.revoke_grant` 已公开，但不属于自动主链。只有用户明确要求查看、管理或撤销权限时，Skill 才能以空对象打开受信本地管理器，并只按返回的 `authorizationSessionRef` 轮询；具体对象必须由用户在本地窗口选择。Skill 不能提交或推断 resource/import/profile/authorization/ledger ID，不能把撤销描述成已经回滚既有读取、远程调用、Artifact 或 Anki 写入。
 
-当前 `system.validate_profile` 只验证已保存的精确绑定，不验证未提交 draft，也不是 profile 编辑器。model/TTS 验证的一次性受信批准只覆盖该次固定诊断，不能替代候选发现、生成或 TTS 学习任务的授权；AnkiConnect 使用有界 loopback 探测。任务 `succeeded` 后仍须检查 verification 结果，失败、取消、中断或过期都不能解释为 ready。当前仍没有 `study.update_learning_contract`，Skill 不得调用。`study.get_artifact` 与 `study.get_audit` 已公开，但只接受当前受信会话的 opaque ArtifactHandle，并只返回白名单摘要或完整性/父链/门禁/限制证书；未知 schema 为 metadata-only，不返回任意来源、卡片正文、内部 ArtifactRef 或本地文件。当前本地设置只管理已存在 profile 的凭据，不能创建配置或由 Agent 注入 Provider/Base URL/model。公开恢复只适用于候选发现；profile 验证、导出和 Anki 写入不允许通过通用 resume 重放。固定 discovery preset 也不是通用模型设置接口。
+当前 `system.validate_profile` 只验证已保存的精确绑定，不验证未提交 draft，也不是 profile 编辑器。model/TTS 验证的一次性受信批准只覆盖该次固定诊断，不能替代候选发现、生成或 TTS 学习任务的授权；AnkiConnect 使用有界 loopback 探测。任务 `succeeded` 后仍须检查 verification 结果，失败、取消、中断或过期都不能解释为 ready。已有项目的目标变化必须调用 `study.update_learning_contract` 并携当前 project/contract revision；只能使用九类封闭语义操作，Service 返回的 invalidatedStages 和 workflow 是唯一状态真相。`study.get_artifact` 与 `study.get_audit` 已公开，但只接受当前受信会话的 opaque ArtifactHandle，并只返回白名单摘要或完整性/父链/门禁/限制证书；未知 schema 为 metadata-only，不返回任意来源、卡片正文、内部 ArtifactRef 或本地文件。当前本地设置只管理已存在 profile 的凭据，不能创建配置或由 Agent 注入 Provider/Base URL/model。公开恢复只适用于候选发现；profile 验证、导出和 Anki 写入不允许通过通用 resume 重放。固定 discovery preset 也不是通用模型设置接口。
 
 完成措辞最高只能是：“Anki 数据已核验；运行时渲染、播放和重启复习未评估。” 只有未来 trusted runtime verifier 给出认证证据后，才能称“已在 Anki 完整核验”。
 

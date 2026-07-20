@@ -8,6 +8,8 @@
 
 项目控制面现已开放 `study.list_projects` 与 `study.get_project`：前者使用绑定 service instance 与 owner/host/plugin scope 的认证 cursor 有界分页，后者返回唯一 WorkflowSnapshot、当前任务脱敏摘要和当前 session 的 opaque Artifact handles。重启后的 Agent 可以先找回项目与精确 revision/stage，再决定是否查询可恢复任务；两个只读工具都不返回路径、来源正文、内部 ArtifactRef 或认证材料。
 
+`study.update_learning_contract` 现已公开九类封闭语义更新。ProjectRegistry 在同一认证记录事务内执行 projectRevision + contractRevision 双 CAS、operationId 精确幂等和字段依赖失效；purpose/behavior/level/routes/evidence/exclusions、预算、语言分别回退到 sources/candidates/selection 可靠边界。Artifact 本体仍不可变保留供审计，但项目 `latestArtifactRefs` 会删除失效边界后的指针，公开结果只重新签发仍可靠的当前会话 opaque handles。
+
 候选发现已经通过固定 `hermes_grok_4_5` 受信授权和异步 `study.start_discovery` 接线。服务冻结 inspection、项目 revision、候选预算、模型配置指纹、凭据 revision、授权与成本边界，并分别执行 proposer/reviewer 工作单元。公共调用方不能选择模型、endpoint、credential、prompt 或 source body。
 
 交付链已经从认证 ProjectArtifact 导出 PackageArtifact，并通过 ImportPlan → 本地确认 → `anki.import_and_verify` 完成幂等 Anki 写入与数据核验。状态上限为 `anki_data_verified`；runtime rendering/playback/reviewer/restart verifier 尚不存在，因此架构图中的 R8b 仍是 PROPOSED。
@@ -485,7 +487,7 @@ app-data/
 - 只读检查和预览可以并发。
 - Anki 导入使用 import intent/idempotency key，重试前先检查是否已存在。
 
-CURRENT 内部 `ProjectRegistry` 已实现 projectRevision + contractRevision 双 CAS、项目创建 idempotency key 与语义 operationId 幂等、固定 Learning Contract ChangeSet 以及按实际变化字段计算的失效矩阵。记录使用 canonical JSON、域隔离 HMAC、跨进程文件锁、no-replace 创建和认证备份；公开快照不包含内部账本或认证数据。它尚未与 Artifact Registry/StudyTask 组成单一 compare-and-publish 事务，也尚未暴露为 MCP 工具，因此不能把内部实现推导为项目工具已经发布。
+CURRENT `ProjectRegistry` 已实现并通过 `study.update_learning_contract` 公开 projectRevision + contractRevision 双 CAS、项目创建 idempotency key 与语义 operationId 幂等、固定 Learning Contract ChangeSet 以及按实际变化字段计算的失效矩阵。记录使用 canonical JSON、域隔离 HMAC、跨进程文件锁、no-replace 创建和认证备份；公开快照不包含内部账本或认证数据。它尚未与 Artifact Registry/StudyTask 组成单一数据库事务，因此运行中的旧 revision 工作可以形成私有中间结果，但最终项目提交必须失败，不能覆盖当前 revision。
 
 ## 8. 能力与秘密
 

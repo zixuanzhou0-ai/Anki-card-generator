@@ -11,6 +11,7 @@ from card_service.mcp_project_tools import (
     CREATE_PROJECT_TOOL_NAME,
     GET_PROJECT_TOOL_NAME,
     LIST_PROJECTS_TOOL_NAME,
+    UPDATE_LEARNING_CONTRACT_TOOL_NAME,
     McpProjectToolInputError,
     call_project_tool,
     project_tool_definitions,
@@ -50,6 +51,7 @@ def test_project_tool_schema_is_closed_local_and_idempotent() -> None:
     definitions = project_tool_definitions()
     assert [item["name"] for item in definitions] == [
         CREATE_PROJECT_TOOL_NAME,
+        UPDATE_LEARNING_CONTRACT_TOOL_NAME,
         LIST_PROJECTS_TOOL_NAME,
         GET_PROJECT_TOOL_NAME,
     ]
@@ -71,10 +73,28 @@ def test_project_tool_schema_is_closed_local_and_idempotent() -> None:
         "idempotentHint": True,
         "openWorldHint": False,
     }
+    update = definitions[1]
+    assert update["inputSchema"]["additionalProperties"] is False
+    operation_schemas = update["inputSchema"]["properties"]["operations"][
+        "items"
+    ]["oneOf"]
+    assert len(operation_schemas) == 9
+    assert all(item["additionalProperties"] is False for item in operation_schemas)
+    assert {item["properties"]["op"]["const"] for item in operation_schemas} == {
+        "set_purpose",
+        "set_target_behavior",
+        "set_learner_level",
+        "replace_routes",
+        "set_budget",
+        "set_languages",
+        "set_evidence_policy",
+        "add_exclusion",
+        "remove_exclusion",
+    }
     serialized = json.dumps(definition, sort_keys=True).casefold()
     for forbidden in ('path"', 'url"', "apikey", "authorization", "credential"):
         assert forbidden not in serialized
-    for read_definition in definitions[1:]:
+    for read_definition in definitions[2:]:
         assert read_definition["inputSchema"]["additionalProperties"] is False
         assert read_definition["annotations"] == {
             "readOnlyHint": True,
@@ -111,6 +131,118 @@ def test_create_project_returns_minimal_project_control_plane(tmp_path: Path) ->
     assert "Recall and use each item" not in serialized
     assert str(tmp_path) not in serialized
     assert "secret" not in serialized.casefold()
+
+
+def test_update_learning_contract_is_public_exact_and_idempotent(tmp_path: Path) -> None:
+    card_service = service(tmp_path)
+    audience_session = create_development_mcp_audience()
+    created = call_project_tool(
+        card_service,
+        tool_name=CREATE_PROJECT_TOOL_NAME,
+        arguments=arguments(),
+        audience_session=audience_session,
+    )["structuredContent"]
+    update_arguments = {
+        "projectId": created["projectId"],
+        "expectedProjectRevision": 1,
+        "expectedContractRevision": 1,
+        "operationId": "change-purpose-1",
+        "operations": [
+            {"op": "set_purpose", "purpose": "Use English precisely at work"},
+            {"op": "set_learner_level", "learnerLevel": "B2"},
+        ],
+    }
+    first = call_project_tool(
+        card_service,
+        tool_name=UPDATE_LEARNING_CONTRACT_TOOL_NAME,
+        arguments=update_arguments,
+        audience_session=audience_session,
+    )
+    repeated = call_project_tool(
+        card_service,
+        tool_name=UPDATE_LEARNING_CONTRACT_TOOL_NAME,
+        arguments=update_arguments,
+        audience_session=audience_session,
+    )
+    assert repeated == first
+    structured = first["structuredContent"]
+    assert structured == {
+        "schemaVersion": 1,
+        "projectId": created["projectId"],
+        "projectRevision": 2,
+        "learningContractRef": created["learningContractRef"],
+        "contractRevision": 2,
+        "invalidatedStages": [
+            "discovery",
+            "selection",
+            "planning",
+            "cards",
+            "apkg",
+            "anki",
+        ],
+        "preservedArtifacts": [],
+    }
+    current = call_project_tool(
+        card_service,
+        tool_name=GET_PROJECT_TOOL_NAME,
+        arguments={"projectId": created["projectId"]},
+        audience_session=audience_session,
+    )["structuredContent"]
+    assert current["learningContract"]["purpose"] == "Use English precisely at work"
+    serialized = json.dumps(first, ensure_ascii=False, sort_keys=True)
+    for forbidden in (
+        "learningContractDigest",
+        "preservedArtifactRefs",
+        "registryAuthRef",
+        "Use English precisely at work",
+    ):
+        assert forbidden not in serialized
+
+
+def test_update_learning_contract_rejects_stale_or_conflicting_replay(
+    tmp_path: Path,
+) -> None:
+    card_service = service(tmp_path)
+    audience_session = create_development_mcp_audience()
+    created = call_project_tool(
+        card_service,
+        tool_name=CREATE_PROJECT_TOOL_NAME,
+        arguments=arguments(),
+        audience_session=audience_session,
+    )["structuredContent"]
+    base = {
+        "projectId": created["projectId"],
+        "expectedProjectRevision": 1,
+        "expectedContractRevision": 1,
+        "operationId": "change-1",
+        "operations": [{"op": "set_budget", "maxNewCards": 9}],
+    }
+    call_project_tool(
+        card_service,
+        tool_name=UPDATE_LEARNING_CONTRACT_TOOL_NAME,
+        arguments=base,
+        audience_session=audience_session,
+    )
+    with pytest.raises(CardServiceError) as replay_conflict:
+        call_project_tool(
+            card_service,
+            tool_name=UPDATE_LEARNING_CONTRACT_TOOL_NAME,
+            arguments={
+                **base,
+                "operations": [{"op": "set_budget", "maxNewCards": 8}],
+            },
+            audience_session=audience_session,
+        )
+    assert replay_conflict.value.code == "PROJECT_IDEMPOTENCY_CONFLICT"
+    with pytest.raises(CardServiceError) as stale:
+        call_project_tool(
+            card_service,
+            tool_name=UPDATE_LEARNING_CONTRACT_TOOL_NAME,
+            arguments={**base, "operationId": "change-2"},
+            audience_session=audience_session,
+        )
+    assert stale.value.code == "PROJECT_REVISION_CONFLICT"
+    assert stale.value.retryable is True
 
 
 def test_list_and_get_project_are_restart_safe_minimal_queries(tmp_path: Path) -> None:
@@ -279,6 +411,58 @@ def test_project_queries_reject_scope_and_cursor_injection(
         call_project_tool(
             object(),  # type: ignore[arg-type]
             tool_name=tool_name,
+            arguments=invalid,
+            audience_session=create_development_mcp_audience(),
+        )
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        {},
+        {
+            "projectId": "project_" + "a" * 48,
+            "expectedProjectRevision": 1,
+            "expectedContractRevision": 1,
+            "operationId": "update-1",
+            "operations": [],
+        },
+        {
+            "projectId": "project_" + "a" * 48,
+            "expectedProjectRevision": 1,
+            "expectedContractRevision": 1,
+            "operationId": "update-1",
+            "operations": [
+                {"op": "json_patch", "path": "/purpose", "value": "x"}
+            ],
+        },
+        {
+            "projectId": "project_" + "a" * 48,
+            "expectedProjectRevision": 1,
+            "expectedContractRevision": 1,
+            "operationId": "update-1",
+            "operations": [
+                {"op": "set_budget", "maxNewCards": 10_000}
+            ],
+        },
+        {
+            "projectId": "project_" + "a" * 48,
+            "expectedProjectRevision": 1,
+            "expectedContractRevision": 1,
+            "operationId": "update-1",
+            "operations": [
+                {"op": "replace_routes", "routes": [{"forged": True}]}
+            ],
+        },
+    ],
+)
+def test_update_learning_contract_rejects_open_or_malformed_operations(
+    invalid: dict,
+) -> None:
+    with pytest.raises(McpProjectToolInputError):
+        call_project_tool(
+            object(),  # type: ignore[arg-type]
+            tool_name=UPDATE_LEARNING_CONTRACT_TOOL_NAME,
             arguments=invalid,
             audience_session=create_development_mcp_audience(),
         )

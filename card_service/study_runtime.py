@@ -380,6 +380,7 @@ class StudyRuntime:
             "publicAnkiWrite": self.anki_import_execution is not None,
             "publicProjectTools": True,
             "publicProjectQueries": True,
+            "publicLearningContractUpdate": True,
             "publicInputRegistration": True,
             "publicSourceInspection": True,
             "pathDisclosure": False,
@@ -416,6 +417,56 @@ class StudyRuntime:
         try:
             return self.projects.list_projects(audience)
         except ProjectRegistryError as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
+    def update_learning_contract(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_id: str,
+        expected_project_revision: int,
+        expected_contract_revision: int,
+        operation_id: str,
+        operations: list[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        try:
+            updated = self.projects.update_learning_contract(
+                audience=audience,
+                project_id=project_id,
+                expected_project_revision=expected_project_revision,
+                expected_contract_revision=expected_contract_revision,
+                operation_id=operation_id,
+                operations=operations,
+            )
+            current = self.projects.get_project(project_id, audience)
+            current_refs = {
+                canonical_json_bytes(artifact_ref)
+                for artifact_ref in current["latestArtifactRefs"]
+            }
+            preserved: list[dict[str, Any]] = []
+            for artifact_ref in updated["preservedArtifactRefs"]:
+                if canonical_json_bytes(artifact_ref) not in current_refs:
+                    continue
+                preserved.append(
+                    {
+                        "artifactHandle": self.artifacts.issue_handle(
+                            artifact_ref, audience
+                        ),
+                        "payloadSchema": artifact_ref["payloadSchema"],
+                        "projectRevision": artifact_ref["projectRevision"],
+                        "artifactRevision": artifact_ref["artifactRevision"],
+                    }
+                )
+            return {
+                "schemaVersion": 1,
+                "projectId": updated["projectId"],
+                "projectRevision": updated["projectRevision"],
+                "learningContractRef": updated["learningContractRef"],
+                "contractRevision": updated["contractRevision"],
+                "invalidatedStages": updated["invalidatedStages"],
+                "preservedArtifacts": preserved,
+            }
+        except (ProjectRegistryError, ArtifactRegistryError) as error:
             raise StudyRuntimeError(error.code, error.message) from error
 
     def get_public_artifact(

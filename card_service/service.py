@@ -1348,6 +1348,7 @@ class CardService:
             "candidateDiscoveryAuthorizationReady": discovery_authorized,
             "candidateDiscoveryProvider": provider_status,
             "publicProjectTools": True,
+            "publicLearningContractUpdate": True,
             "publicInputRegistration": True,
             "publicSourceInspection": True,
             "publicCandidateQueries": True,
@@ -2141,6 +2142,33 @@ class CardService:
                 error.message,
                 retryable=False,
                 stage="artifact_query",
+            ) from error
+
+    def update_study_learning_contract(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        project_id: str,
+        expected_project_revision: int,
+        expected_contract_revision: int,
+        operation_id: str,
+        operations: list[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        try:
+            return self._ensure_study_runtime().update_learning_contract(
+                audience=audience,
+                project_id=project_id,
+                expected_project_revision=expected_project_revision,
+                expected_contract_revision=expected_contract_revision,
+                operation_id=operation_id,
+                operations=operations,
+            )
+        except StudyRuntimeError as error:
+            raise CardServiceError(
+                error.code,
+                error.message,
+                retryable=error.code.endswith("_CONFLICT"),
+                stage="request",
             ) from error
 
     def get_study_audit(

@@ -4,15 +4,16 @@
 
 ## CURRENT 增量出口（2026-07-19）
 
-在下文带日期的历史切片之后，当前代码又关闭了三个纵向出口：
+在下文带日期的历史切片之后，当前代码又关闭了四个纵向出口：
 
 1. 候选发现公共出口：新增 `system.authorize_candidate_discovery` 与 `study.start_discovery`。前者只批准固定 `hermes_grok_4_5`，后者异步启动并由 `study.get_task` 轮询；调用方无法注入 Provider、模型、endpoint、凭据、prompt、原始来源正文或服务端授权字段。
 2. Anki 数据闭环出口：`anki.import_and_verify` 已公开，使用已确认的 `importIntentId` 幂等执行导入并发布 receipt/data verification。成功上限为 `anki_data_verified`；写后核验失败为 `imported_unverified`；不确定写边界要求 `inspect_before_retry`。
 3. 受信网络来源出口：`system.request_network_grant` 只打开本地受信 URL 输入窗口，raw URL 不进入 MCP；`study.register_inputs` 已能对静态网页做匿名固定 IP HTTPS 快照，并把 YouTube public_video 缩成规范化 videoId 后获取字幕快照。网络授权可由统一管理器撤销，Service 重启后旧 ref 要求重新授权。
+4. Learning Contract 更新出口：`study.update_learning_contract` 只接受九类封闭语义操作、当前 project/contract revision 与稳定 operationId。Service 按真实变化从 discovery、selection 或 planning 开始失效下游，把过期 Artifact 从项目 current/latest 指针中移除，同时保留不可变审计历史；公共响应只返回仍可靠的 opaque ArtifactHandle。
 
-该网络切片的定向回归为 98 项通过，正式 Python `tests` 全集为 `1653 passed, 1 skipped`；Computer Use 已验证真实受信窗口的默认安全焦点、无效地址阻断、敏感查询提示、授权/取消和 URL-free 持久结果。真实 Codex `0.144.1` app-server 已验证可信 37 工具/不可信 1 工具的实际枚举。真实公网长期可用性、正式安装布局与完整媒体 acquisition 仍属于后续验收，不能从本切片提前推导。
+网络切片的历史证据是 98 项定向回归、`1653 passed, 1 skipped` 的当时 Python 全集和 Computer Use 受信窗口验证；Learning Contract 公共出口新增 73 项定向组合回归，当前正式 Python `tests` 全集为 `1665 passed, 1 skipped`。前端 830 项、Worker 600 项、UI smoke、Rust 31 项通过与 1 项按设计忽略、plugin/Skill validator 均通过；真实 Codex `0.144.1` app-server 已验证可信会话枚举 38 个工具并实际创建项目/更新合同到 projectRevision=2、contractRevision=2，不可信会话仍只枚举 `system.get_capabilities`。真实公网长期可用性、正式安装布局与完整媒体 acquisition 仍属于后续验收，不能从这些切片提前推导。
 
-因此，“公共 start_discovery 尚未注册”“anki.import_and_verify 是下一出口”“Anki 写工具仍未开放”“生产受信 URL 输入尚未接线”等句子只记录早期切片，已被本节取代。仍未完成的是：宿主附件、完整视频/音频/播客 acquisition、PDF/Office 解析、动态或登录网页、模型扩写/TTS/媒体生成、非发现任务恢复、R8b runtime rendering/playback/restart verifier，以及正式发布签名与可安装插件/App UI。
+因此，“公共 start_discovery 尚未注册”“anki.import_and_verify 是下一出口”“Anki 写工具仍未开放”“生产受信 URL 输入尚未接线”“Learning Contract 只在内部实现”等句子只记录早期切片，已被本节取代。仍未完成的是：宿主附件、完整视频/音频/播客 acquisition、PDF/Office 解析、动态或登录网页、模型扩写/TTS/媒体生成、非发现任务恢复、R8b runtime rendering/playback/restart verifier，以及正式发布签名与可安装插件/App UI。
 
 > 状态：CURRENT 实施跟踪 + PROPOSED 后续路线
 > 日期：2026-07-17

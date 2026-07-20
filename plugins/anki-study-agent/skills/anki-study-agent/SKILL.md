@@ -22,6 +22,7 @@ Create cards as verifiable memory-retrieval tasks, not saved summaries. Preserve
 2. Ask only when different answers would materially change what should be learned, what may leave the device, or how much review debt will be created.
 3. Otherwise choose conservative, reversible defaults and state them briefly.
 4. Create the project and versioned learning contract before discovery. Never let a later model silently redefine the goal.
+5. For an existing project, change those fields only through `study.update_learning_contract` with current project/contract revisions and the fixed semantic operation union. Treat its invalidation result as authoritative; never use JSON Patch or silently recreate the project.
 
 Read [learning-contract.md](references/learning-contract.md) when selecting objectives, card routes, or a candidate portfolio.
 

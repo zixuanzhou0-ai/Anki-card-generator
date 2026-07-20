@@ -12,10 +12,16 @@ from .trusted_mcp_audience import TrustedMcpAudienceSession
 
 
 CREATE_PROJECT_TOOL_NAME = "study.create_project"
+UPDATE_LEARNING_CONTRACT_TOOL_NAME = "study.update_learning_contract"
 LIST_PROJECTS_TOOL_NAME = "study.list_projects"
 GET_PROJECT_TOOL_NAME = "study.get_project"
 PROJECT_TOOL_NAMES = frozenset(
-    {CREATE_PROJECT_TOOL_NAME, LIST_PROJECTS_TOOL_NAME, GET_PROJECT_TOOL_NAME}
+    {
+        CREATE_PROJECT_TOOL_NAME,
+        UPDATE_LEARNING_CONTRACT_TOOL_NAME,
+        LIST_PROJECTS_TOOL_NAME,
+        GET_PROJECT_TOOL_NAME,
+    }
 )
 _IDEMPOTENCY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
 _PROJECT_ID_RE = re.compile(r"^project_[0-9a-f]{48}$")
@@ -50,7 +56,7 @@ def project_tool_definitions() -> list[dict[str, Any]]:
                 "maxItems": 32,
                 "uniqueItems": True,
             },
-            "maxNewCards": {"type": "integer", "minimum": 1, "maximum": 10000},
+            "maxNewCards": {"type": "integer", "minimum": 1, "maximum": 1000},
             "targetDailyReviewMinutes": {
                 "type": "integer",
                 "minimum": 1,
@@ -109,6 +115,109 @@ def project_tool_definitions() -> list[dict[str, Any]]:
                     "contractRevision",
                     "inferredDefaults",
                     "workflow",
+                ],
+                "additionalProperties": False,
+            },
+            "annotations": {
+                "readOnlyHint": False,
+                "destructiveHint": False,
+                "idempotentHint": True,
+                "openWorldHint": False,
+            },
+        },
+        {
+            "name": UPDATE_LEARNING_CONTRACT_TOOL_NAME,
+            "title": "Update a Study learning contract",
+            "description": (
+                "Apply an idempotent, revision-checked semantic change set to the "
+                "local Learning Contract. The service invalidates dependent current "
+                "artifacts but does not call a model, TTS, the network, or Anki."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "projectId": {
+                        "type": "string",
+                        "pattern": r"^project_[0-9a-f]{48}$",
+                    },
+                    "expectedProjectRevision": {
+                        "type": "integer",
+                        "minimum": 1,
+                    },
+                    "expectedContractRevision": {
+                        "type": "integer",
+                        "minimum": 1,
+                    },
+                    "operationId": {
+                        "type": "string",
+                        "pattern": r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$",
+                    },
+                    "operations": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 64,
+                        "items": {"oneOf": _learning_contract_operation_schemas()},
+                    },
+                },
+                "required": [
+                    "projectId",
+                    "expectedProjectRevision",
+                    "expectedContractRevision",
+                    "operationId",
+                    "operations",
+                ],
+                "additionalProperties": False,
+            },
+            "outputSchema": {
+                "type": "object",
+                "properties": {
+                    "schemaVersion": {"type": "integer", "const": 1},
+                    "projectId": {"type": "string"},
+                    "projectRevision": {"type": "integer", "minimum": 1},
+                    "learningContractRef": {"type": "string"},
+                    "contractRevision": {"type": "integer", "minimum": 1},
+                    "invalidatedStages": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": [
+                                "discovery",
+                                "selection",
+                                "planning",
+                                "cards",
+                                "apkg",
+                                "anki",
+                            ],
+                        },
+                    },
+                    "preservedArtifacts": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "artifactHandle": {"type": "string"},
+                                "payloadSchema": {"type": "string"},
+                                "projectRevision": {"type": "integer"},
+                                "artifactRevision": {"type": "integer"},
+                            },
+                            "required": [
+                                "artifactHandle",
+                                "payloadSchema",
+                                "projectRevision",
+                                "artifactRevision",
+                            ],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "required": [
+                    "schemaVersion",
+                    "projectId",
+                    "projectRevision",
+                    "learningContractRef",
+                    "contractRevision",
+                    "invalidatedStages",
+                    "preservedArtifacts",
                 ],
                 "additionalProperties": False,
             },
@@ -234,6 +343,89 @@ def project_tool_definitions() -> list[dict[str, Any]]:
     ]
 
 
+def _closed_operation(
+    kind: str,
+    properties: dict[str, Any],
+    required: list[str],
+) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {"op": {"type": "string", "const": kind}, **properties},
+        "required": ["op", *required],
+        "additionalProperties": False,
+    }
+
+
+def _learning_contract_operation_schemas() -> list[dict[str, Any]]:
+    text = {"type": "string", "minLength": 1, "maxLength": 4000}
+    return [
+        _closed_operation("set_purpose", {"purpose": text}, ["purpose"]),
+        _closed_operation(
+            "set_target_behavior", {"targetBehavior": text}, ["targetBehavior"]
+        ),
+        _closed_operation(
+            "set_learner_level",
+            {
+                "learnerLevel": {
+                    "oneOf": [
+                        {"type": "string", "minLength": 1, "maxLength": 200},
+                        {"type": "null"},
+                    ]
+                }
+            },
+            ["learnerLevel"],
+        ),
+        _closed_operation(
+            "replace_routes",
+            {
+                "routes": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": sorted(LEARNING_ROUTES)},
+                    "minItems": 1,
+                    "maxItems": 32,
+                    "uniqueItems": True,
+                }
+            },
+            ["routes"],
+        ),
+        _closed_operation(
+            "set_budget",
+            {
+                "maxNewCards": {"type": "integer", "minimum": 1, "maximum": 1000},
+                "targetDailyReviewMinutes": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1440,
+                },
+            },
+            ["maxNewCards"],
+        ),
+        _closed_operation(
+            "set_languages",
+            {
+                "promptLanguage": {"type": "string", "minLength": 1, "maxLength": 64},
+                "answerLanguage": {"type": "string", "minLength": 1, "maxLength": 64},
+            },
+            ["promptLanguage", "answerLanguage"],
+        ),
+        _closed_operation(
+            "set_evidence_policy",
+            {"evidencePolicy": {"type": "string", "enum": sorted(EVIDENCE_POLICIES)}},
+            ["evidencePolicy"],
+        ),
+        _closed_operation(
+            "add_exclusion",
+            {"exclusion": {"type": "string", "minLength": 1, "maxLength": 500}},
+            ["exclusion"],
+        ),
+        _closed_operation(
+            "remove_exclusion",
+            {"exclusion": {"type": "string", "minLength": 1, "maxLength": 500}},
+            ["exclusion"],
+        ),
+    ]
+
+
 def _validated_arguments(arguments: Any) -> tuple[str, str | None, dict[str, Any]]:
     if (
         not isinstance(arguments, dict)
@@ -347,6 +539,117 @@ def _project_id_argument(arguments: Any) -> str:
     return arguments["projectId"]
 
 
+def _positive_revision(value: Any) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, int)
+        and 1 <= value <= 9_007_199_254_740_991
+    )
+
+
+def _bounded_text(value: Any, maximum: int) -> bool:
+    return isinstance(value, str) and bool(value.strip()) and len(value) <= maximum
+
+
+def _validated_contract_operations(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or not 1 <= len(value) <= 64:
+        raise McpProjectToolInputError("learning contract operations are invalid")
+    normalized: list[dict[str, Any]] = []
+    for operation in value:
+        if not isinstance(operation, dict) or not isinstance(operation.get("op"), str):
+            raise McpProjectToolInputError("learning contract operation is invalid")
+        kind = operation["op"]
+        if kind == "set_purpose":
+            valid = set(operation) == {"op", "purpose"} and _bounded_text(
+                operation.get("purpose"), 4000
+            )
+        elif kind == "set_target_behavior":
+            valid = set(operation) == {"op", "targetBehavior"} and _bounded_text(
+                operation.get("targetBehavior"), 4000
+            )
+        elif kind == "set_learner_level":
+            level = operation.get("learnerLevel")
+            valid = set(operation) == {"op", "learnerLevel"} and (
+                level is None or _bounded_text(level, 200)
+            )
+        elif kind == "replace_routes":
+            routes = operation.get("routes")
+            valid = (
+                set(operation) == {"op", "routes"}
+                and isinstance(routes, list)
+                and 1 <= len(routes) <= 32
+                and all(isinstance(route, str) for route in routes)
+                and len(routes) == len(set(routes))
+                and all(route in LEARNING_ROUTES for route in routes)
+            )
+        elif kind == "set_budget":
+            valid_fields = {"op", "maxNewCards", "targetDailyReviewMinutes"}
+            valid = (
+                set(operation).issubset(valid_fields)
+                and {"op", "maxNewCards"}.issubset(operation)
+                and _positive_revision(operation.get("maxNewCards"))
+                and operation["maxNewCards"] <= 1000
+                and (
+                    "targetDailyReviewMinutes" not in operation
+                    or (
+                        _positive_revision(operation["targetDailyReviewMinutes"])
+                        and operation["targetDailyReviewMinutes"] <= 1440
+                    )
+                )
+            )
+        elif kind == "set_languages":
+            valid = (
+                set(operation) == {"op", "promptLanguage", "answerLanguage"}
+                and _bounded_text(operation.get("promptLanguage"), 64)
+                and _bounded_text(operation.get("answerLanguage"), 64)
+            )
+        elif kind == "set_evidence_policy":
+            valid = (
+                set(operation) == {"op", "evidencePolicy"}
+                and operation.get("evidencePolicy") in EVIDENCE_POLICIES
+            )
+        elif kind in {"add_exclusion", "remove_exclusion"}:
+            valid = set(operation) == {"op", "exclusion"} and _bounded_text(
+                operation.get("exclusion"), 500
+            )
+        else:
+            valid = False
+        if not valid:
+            raise McpProjectToolInputError("learning contract operation is invalid")
+        normalized.append(json.loads(json.dumps(operation, ensure_ascii=False)))
+    return normalized
+
+
+def _update_arguments(
+    arguments: Any,
+) -> tuple[str, int, int, str, list[dict[str, Any]]]:
+    required = {
+        "projectId",
+        "expectedProjectRevision",
+        "expectedContractRevision",
+        "operationId",
+        "operations",
+    }
+    if not isinstance(arguments, dict) or set(arguments) != required:
+        raise McpProjectToolInputError("learning contract update fields are invalid")
+    if (
+        not isinstance(arguments["projectId"], str)
+        or not _PROJECT_ID_RE.fullmatch(arguments["projectId"])
+        or not _positive_revision(arguments["expectedProjectRevision"])
+        or not _positive_revision(arguments["expectedContractRevision"])
+        or not isinstance(arguments["operationId"], str)
+        or not _IDEMPOTENCY_RE.fullmatch(arguments["operationId"])
+    ):
+        raise McpProjectToolInputError("learning contract update identity is invalid")
+    return (
+        arguments["projectId"],
+        arguments["expectedProjectRevision"],
+        arguments["expectedContractRevision"],
+        arguments["operationId"],
+        _validated_contract_operations(arguments["operations"]),
+    )
+
+
 def call_project_tool(
     service: CardService,
     *,
@@ -375,6 +678,27 @@ def call_project_tool(
         text = (
             f"Study project created at revision {structured['projectRevision']}. "
             "No source has been read yet."
+        )
+    elif tool_name == UPDATE_LEARNING_CONTRACT_TOOL_NAME:
+        (
+            project_id,
+            expected_project_revision,
+            expected_contract_revision,
+            operation_id,
+            operations,
+        ) = _update_arguments(arguments)
+        structured = service.update_study_learning_contract(
+            audience=audience_session.audience,
+            project_id=project_id,
+            expected_project_revision=expected_project_revision,
+            expected_contract_revision=expected_contract_revision,
+            operation_id=operation_id,
+            operations=operations,
+        )
+        text = (
+            f"Learning Contract advanced to revision "
+            f"{structured['contractRevision']}; dependent stages were invalidated "
+            "without rerunning external work."
         )
     elif tool_name == LIST_PROJECTS_TOOL_NAME:
         cursor, limit = _list_arguments(arguments)
@@ -409,6 +733,7 @@ __all__ = [
     "CREATE_PROJECT_TOOL_NAME",
     "GET_PROJECT_TOOL_NAME",
     "LIST_PROJECTS_TOOL_NAME",
+    "UPDATE_LEARNING_CONTRACT_TOOL_NAME",
     "McpProjectToolInputError",
     "PROJECT_TOOL_NAMES",
     "call_project_tool",

@@ -8,6 +8,7 @@
 |---|---|---|---|
 | PR-201/PR-202 候选发现与可解释筛选 | `system.authorize_candidate_discovery`、`study.start_discovery`、`study.get_task`、candidate read tools | 固定 Hermes 授权、Service-owned scope/budget、异步任务、认证 Discovery/Candidate/evidence | 多来源适配、质量基准与更细恢复 |
 | PR-301 / PR-404 项目状态找回 | `study.list_projects`、`study.get_project` | 认证分页 cursor、跨同宿主 session 续页、跨 scope/篡改/stale 拒绝、Workflow/Task 一致性、opaque latest Artifact handles；正式 Python `tests` 全集 1595 passed、1 skipped | 通用长任务恢复仍仅开放候选发现 |
+| PR-207 Learning Contract 可版本化更新 | `study.update_learning_contract` + ProjectRegistry | 九类封闭语义操作、双 revision CAS、精确幂等、字段级失效矩阵、失效后 current Artifact 指针裁剪、opaque preserved handles | 跨 Project/Artifact/Task 的单一数据库事务仍未实现 |
 | PR-305 / SR-008 明确且幂等的 Anki 导入 | ImportPlan → `anki.request_import_confirmation` → `anki.import_and_verify` | import intent 精确绑定、一次批准消费、相同 intent 不重复导入、写边界状态机 | 撤销管理和更完整恢复 UX |
 | PR-404 / PR-501 当前外部能力与恢复 | HermesProxyManager + discovery preflight + `study.resume_task` | 8645 固定代理、当前 OAuth/health、首次/异步/恢复三条预检、上游故障→可重试 `MODEL_STALE`；Computer Use 真实 picker/授权 | xAI 公网路由恢复后的完整正例 |
 | PR-305 / SR-012 Windows AnkiConnect 部署 | launcher `--anki-connect-url` + literal-loopback normalizer | 8765 默认、8785 隔离目标、非 loopback/hostname/query/userinfo 拒绝、Worker 与 probe 同端口 | 正式安装器端口发现与安装版复测 |

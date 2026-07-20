@@ -53,6 +53,38 @@ ARTIFACT_STAGES = (
     "empty", "sources_ready", "candidates_ready", "selection_ready", "plans_ready",
     "cards_ready", "apkg_ready", "imported_unverified", "anki_data_verified", "anki_verified",
 )
+ARTIFACT_SCHEMA_STAGE = {
+    "study.source-asset": "sources_ready",
+    "study.source-representation": "sources_ready",
+    "study.source-inspection": "sources_ready",
+    "study.inspection": "sources_ready",
+    "study.discovery-proposal-batch": "candidates_ready",
+    "study.discovery-review-batch": "candidates_ready",
+    "study.candidate-proposal": "candidates_ready",
+    "study.candidate-rejection": "candidates_ready",
+    "study.gate-evaluation": "candidates_ready",
+    "study.discovery": "candidates_ready",
+    "study.portfolio-selection": "selection_ready",
+    "study.card-plan": "plans_ready",
+    "study.card-plan-set": "plans_ready",
+    "study.card-plan-validation": "plans_ready",
+    "study.card": "cards_ready",
+    "study.reliability-manifest": "cards_ready",
+    "study.media-ledger": "cards_ready",
+    "study.project-artifact": "cards_ready",
+    "study.learning-point-inventory": "cards_ready",
+    "study.generation-diagnostics": "cards_ready",
+    "study.legacy.sanitized": "cards_ready",
+    "study.apkg-file": "apkg_ready",
+    "study.card-identity-set": "apkg_ready",
+    "study.package-media-manifest": "apkg_ready",
+    "study.card-media-role-inventory": "apkg_ready",
+    "study.package-artifact": "apkg_ready",
+    "study.anki-verification-contract": "apkg_ready",
+    "study.anki-import-plan": "apkg_ready",
+    "study.anki-import-receipt": "imported_unverified",
+    "study.anki-verification": "anki_data_verified",
+}
 SECRET_VALUE_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"),
     re.compile(r"\bAIza[0-9A-Za-z_-]{30,}\b"),
@@ -191,6 +223,27 @@ def _stage_at_most(current: str, maximum: str) -> str:
     if current not in ARTIFACT_STAGES:
         raise ProjectRegistryError("PROJECT_RECORD_INVALID", "Project artifact stage is invalid")
     return ARTIFACT_STAGES[min(ARTIFACT_STAGES.index(current), ARTIFACT_STAGES.index(maximum))]
+
+
+def _preserved_artifact_refs(
+    refs: Sequence[Mapping[str, Any]], maximum_stage: str
+) -> list[dict[str, Any]]:
+    """Keep only current-project pointers that remain valid after invalidation.
+
+    Artifact Registry envelopes remain immutable for audit.  Unknown schemas are
+    intentionally not retained as *latest* because their dependency boundary is
+    not proven here.
+    """
+
+    maximum_index = ARTIFACT_STAGES.index(maximum_stage)
+    preserved: list[dict[str, Any]] = []
+    for ref in refs:
+        schema = ref.get("payloadSchema")
+        stage = ARTIFACT_SCHEMA_STAGE.get(schema) if isinstance(schema, str) else None
+        if stage is None or ARTIFACT_STAGES.index(stage) > maximum_index:
+            continue
+        preserved.append(json.loads(json.dumps(ref, ensure_ascii=False)))
+    return preserved
 
 
 def _workflow_for_stage(stage: str) -> tuple[str, str]:
@@ -1261,6 +1314,10 @@ class ProjectRegistry:
             workflow["artifactStage"] = _stage_at_most(
                 workflow["artifactStage"], maximum_stage
             )
+            preserved_artifact_refs = _preserved_artifact_refs(
+                updated_project["latestArtifactRefs"], workflow["artifactStage"]
+            )
+            updated_project["latestArtifactRefs"] = preserved_artifact_refs
             workflow["operationState"] = "idle"
             workflow["productStep"], workflow["primaryActionId"] = (
                 _workflow_for_stage(workflow["artifactStage"])
@@ -1268,14 +1325,14 @@ class ProjectRegistry:
             result = {
                 "projectId": project_id,
                 "projectRevision": updated_project["projectRevision"],
+                "learningContractRef": updated_contract["contractId"],
                 "contractRevision": updated_contract["contractRevision"],
                 "learningContractDigest": updated_project[
                     "learningContractDigest"
                 ],
                 "invalidatedStages": invalidated_stages,
-                "preservedArtifactRefs": list(
-                    updated_project["latestArtifactRefs"]
-                ),
+                "preservedArtifactRefs": preserved_artifact_refs,
+                "workflow": json.loads(json.dumps(workflow, ensure_ascii=False)),
             }
             if len(unsigned["operations"]) >= MAX_OPERATIONS:
                 raise ProjectRegistryError(

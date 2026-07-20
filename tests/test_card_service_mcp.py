@@ -48,6 +48,7 @@ from card_service.mcp_project_tools import (
     CREATE_PROJECT_TOOL_NAME,
     GET_PROJECT_TOOL_NAME,
     LIST_PROJECTS_TOOL_NAME,
+    UPDATE_LEARNING_CONTRACT_TOOL_NAME,
 )
 from card_service.mcp_resource_tools import (
     NETWORK_GRANT_TOOL_NAME,
@@ -206,6 +207,7 @@ def test_mcp_bridge_reports_trusted_session_without_disclosing_identity() -> Non
         OUTPUT_GRANT_TOOL_NAME,
         NETWORK_GRANT_TOOL_NAME,
         CREATE_PROJECT_TOOL_NAME,
+        UPDATE_LEARNING_CONTRACT_TOOL_NAME,
         LIST_PROJECTS_TOOL_NAME,
         GET_PROJECT_TOOL_NAME,
         REGISTER_INPUTS_TOOL_NAME,
@@ -351,6 +353,7 @@ def test_real_mcp_stdio_process_reports_card_service_capabilities(tmp_path: Path
             OUTPUT_GRANT_TOOL_NAME,
             NETWORK_GRANT_TOOL_NAME,
             CREATE_PROJECT_TOOL_NAME,
+            UPDATE_LEARNING_CONTRACT_TOOL_NAME,
             LIST_PROJECTS_TOOL_NAME,
             GET_PROJECT_TOOL_NAME,
             REGISTER_INPUTS_TOOL_NAME,
@@ -395,6 +398,7 @@ def test_real_mcp_stdio_process_reports_card_service_capabilities(tmp_path: Path
         assert capabilities["studyRuntime"]["publicCardGeneration"] is True
         assert capabilities["studyRuntime"]["publicCardQueries"] is True
         assert capabilities["studyRuntime"]["publicProjectQueries"] is True
+        assert capabilities["studyRuntime"]["publicLearningContractUpdate"] is True
         assert capabilities["studyRuntime"]["publicArtifactQueries"] is True
         assert capabilities["studyRuntime"]["publicAuditQueries"] is True
         assert capabilities["studyRuntime"]["publicCandidateDiscovery"] is True

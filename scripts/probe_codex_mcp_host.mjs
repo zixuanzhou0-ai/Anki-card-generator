@@ -24,6 +24,7 @@ const FULL_TOOLSET = [
   "system.request_output_grant",
   "system.request_network_grant",
   "study.create_project",
+  "study.update_learning_contract",
   "study.list_projects",
   "study.get_project",
   "study.register_inputs",
@@ -466,9 +467,34 @@ async function main() {
       ) {
         throw new Error("Trusted Codex host could not create an isolated Study project.");
       }
+      const updated = await call("mcpServer/tool/call", {
+        threadId,
+        server: SERVER,
+        tool: "study.update_learning_contract",
+        arguments: {
+          projectId: createdProject.projectId,
+          expectedProjectRevision: createdProject.projectRevision,
+          expectedContractRevision: createdProject.contractRevision,
+          operationId: "codex-host-probe-contract-v1",
+          operations: [{ op: "set_learner_level", learnerLevel: "probe" }],
+        },
+      });
+      const updatedProject = updated?.structuredContent;
+      if (
+        updated?.isError === true ||
+        updatedProject?.projectId !== createdProject.projectId ||
+        updatedProject?.projectRevision !== 2 ||
+        updatedProject?.contractRevision !== 2 ||
+        updatedProject?.learningContractRef !== createdProject.learningContractRef ||
+        updatedProject?.invalidatedStages?.[0] !== "discovery" ||
+        !Array.isArray(updatedProject?.preservedArtifacts)
+      ) {
+        throw new Error("Trusted Codex host could not update a Learning Contract safely.");
+      }
       project = {
         projectId: createdProject.projectId,
-        projectRevision: createdProject.projectRevision,
+        projectRevision: updatedProject.projectRevision,
+        contractRevision: updatedProject.contractRevision,
         artifactStage: createdProject.workflow.artifactStage,
       };
       const listed = await call("mcpServer/tool/call", {
@@ -496,13 +522,15 @@ async function main() {
       if (
         loaded?.isError === true ||
         loadedProject?.projectId !== project.projectId ||
+        loadedProject?.projectRevision !== project.projectRevision ||
+        loadedProject?.learningContract?.contractRevision !== project.contractRevision ||
         loadedProject?.workflow?.artifactStage !== "empty" ||
         loadedProject?.currentTask !== null ||
         !Array.isArray(loadedProject?.latestArtifacts)
       ) {
         throw new Error("Trusted Codex host could not reload the Study workflow snapshot.");
       }
-      trace("trusted Study project created");
+      trace("trusted Study project created and Learning Contract updated");
     }
 
     process.stdout.write(

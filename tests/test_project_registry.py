@@ -553,17 +553,120 @@ def test_public_project_never_exposes_authentication_or_operation_ledger(
     assert "operationId" not in encoded
 
 
-def artifact_ref(project_id: str, *, artifact_id: str, project_revision: int) -> dict:
+def artifact_ref(
+    project_id: str,
+    *,
+    artifact_id: str,
+    project_revision: int,
+    schema: str = "study.source-asset",
+) -> dict:
     return {
         "artifactId": artifact_id,
         "projectId": project_id,
         "projectRevision": project_revision,
         "artifactRevision": 1,
-        "payloadSchema": "study.source-asset",
+        "payloadSchema": schema,
         "payloadSchemaVersion": 1,
         "artifactDigest": hashlib.sha256(artifact_id.encode("utf-8")).hexdigest(),
         "registryAuthRef": f"auth-{artifact_id}",
     }
+
+
+def advance_project_with_stage_artifacts(
+    store: ProjectRegistry, bound: ArtifactAudienceBinding
+) -> tuple[dict, dict[str, dict]]:
+    project = create(store, bound)
+    stages = [
+        ("sources_ready", "study.source-asset"),
+        ("candidates_ready", "study.discovery"),
+        ("selection_ready", "study.portfolio-selection"),
+        ("plans_ready", "study.card-plan-set"),
+        ("cards_ready", "study.project-artifact"),
+        ("apkg_ready", "study.package-artifact"),
+        ("imported_unverified", "study.anki-import-receipt"),
+        ("anki_data_verified", "study.anki-verification"),
+    ]
+    refs: dict[str, dict] = {}
+    revision = 1
+    for index, (stage, schema) in enumerate(stages):
+        ref = artifact_ref(
+            project["projectId"],
+            artifact_id=f"artifact-{index}",
+            project_revision=revision,
+            schema=schema,
+        )
+        refs[schema] = ref
+        store.commit_artifact_stage(
+            audience=bound,
+            project_id=project["projectId"],
+            expected_project_revision=revision,
+            operation_id=f"advance-{index}",
+            operation_digest=hashlib.sha256(f"advance-{index}".encode()).hexdigest(),
+            task_id=f"task-advance-{index}",
+            artifact_stage=stage,
+            artifact_refs=[ref],
+            artifact_handles=["study_" + chr(ord("a") + index) * 43],
+        )
+        revision += 1
+    current = store.get_project(project["projectId"], bound)
+    return current, refs
+
+
+@pytest.mark.parametrize(
+    ("operation", "expected_schemas", "expected_stage"),
+    [
+        (
+            {"op": "set_purpose", "purpose": "A new reliable purpose"},
+            {"study.source-asset"},
+            "sources_ready",
+        ),
+        (
+            {"op": "set_budget", "maxNewCards": 9},
+            {"study.source-asset", "study.discovery"},
+            "candidates_ready",
+        ),
+        (
+            {
+                "op": "set_languages",
+                "promptLanguage": "en",
+                "answerLanguage": "zh-CN",
+            },
+            {
+                "study.source-asset",
+                "study.discovery",
+                "study.portfolio-selection",
+            },
+            "selection_ready",
+        ),
+    ],
+)
+def test_learning_contract_update_preserves_only_pre_invalidation_artifacts(
+    tmp_path: Path,
+    operation: dict,
+    expected_schemas: set[str],
+    expected_stage: str,
+) -> None:
+    store = registry(tmp_path)
+    bound = audience()
+    current, _refs = advance_project_with_stage_artifacts(store, bound)
+    result = store.update_learning_contract(
+        audience=bound,
+        project_id=current["projectId"],
+        expected_project_revision=current["projectRevision"],
+        expected_contract_revision=1,
+        operation_id="invalidate-current-artifacts",
+        operations=[operation],
+    )
+    assert {ref["payloadSchema"] for ref in result["preservedArtifactRefs"]} == (
+        expected_schemas
+    )
+    updated = store.get_project(current["projectId"], bound)
+    assert updated["workflow"]["artifactStage"] == expected_stage
+    assert {ref["payloadSchema"] for ref in updated["latestArtifactRefs"]} == (
+        expected_schemas
+    )
+    assert result["learningContractRef"] == updated["learningContract"]["contractId"]
+    assert result["workflow"] == updated["workflow"]
 
 
 def test_artifact_commit_advances_one_stage_and_is_exactly_idempotent(tmp_path: Path) -> None:

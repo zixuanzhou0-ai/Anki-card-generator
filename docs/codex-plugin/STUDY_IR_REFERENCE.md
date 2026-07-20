@@ -345,6 +345,8 @@ type LearningPreferences = {
 
 优先级从 system_default 到 card_lock 递增。高层默认值不能覆盖更具体或 locked 的值。每次解析后的有效偏好都保存 provenance，使 Agent 能解释“为什么这张卡使用产出路线/为什么有 TTS”。LearningContract 只通过版本化语义 patch 更新，不接受通用 JSON Patch：purpose、targetBehavior、routes、evidencePolicy 或 exclusions 改变会使 discovery 及全部下游 stale；语言改变使 CardPlan 及下游 stale；预算改变至少使 selection/plan 及下游 stale。运行中任务可完成到私有结果，但 compare-and-publish 必须因旧 contractRevision 失败。
 
+CURRENT 公共 `study.update_learning_contract` 已实现上述联合，并额外把 learnerLevel 归入 discovery 失效边界。项目记录内以 projectRevision + contractRevision 双 CAS 和 operationId 精确幂等提交；失效只裁剪项目的 current/latest 指针，不删除不可变 Artifact 审计历史。公共响应只返回 canonical learningContractRef、操作 revisions、invalidatedStages 与调用时仍在 current/latest 集合中的当前会话 opaque ArtifactHandle，不返回内部 ArtifactRef；唯一当前 WorkflowSnapshot 必须另由 `study.get_project` 读取。
+
 LearnerProfile 只保存支持学习决策所需的最小状态，如已知/部分掌握/易混目标和复习预算。原始 Anki 历史属于受限数据，不自动进入模型上下文。
 
 ## 6. SourceAsset

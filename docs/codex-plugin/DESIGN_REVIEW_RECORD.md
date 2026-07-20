@@ -51,7 +51,7 @@ Hermes 本地封装席的结论是 `needs-contract-hardening`，置信度 0.74�
 | 意见 | 文档处理 | 代码状态 |
 |---|---|---|
 | verifier 精确接受 V14、拒绝 V1xx 伪版本 | 已列为 M0 P0 和 release gate | CURRENT M0 子项已实现；完整里程碑仍在验收 |
-| M3 tools-only 工具合同 | 原始评审冻结 37 工具目标；CURRENT 开发 runtime 现有 37 个已实现工具，但 `study.update_learning_contract` 仍未公开，因此下一公共工具必须伴随合同版本与清单更新，不能沿用旧总数 | 分阶段实现 |
+| M3 tools-only 工具合同 | 原始评审冻结 37 工具目标；CURRENT 开发 runtime 已因公开 `study.update_learning_contract` 增至 38 个工具，代码、Skill、探针与文档清单必须共同版本化 | 分阶段实现 |
 | 目标 Codex 宿主/stdio 预检 | 已加入 host capability、M3 阻断与 APKG-only 降级 | 待实测 |
 | Anki 确认不可旁路 | ImportPlan → session-bound importIntentId → digest-pinned 模型外批准 → 服务端一次性账本 | CURRENT（写任务待实现） |
 | 学习硬门禁可机器审计 | 已加入 GateEvaluationSet、规则版本、revision 与 stale 语义 | CURRENT `candidate-gates-language-v1` 内核、认证 CandidateProposal → GateEvaluation → Discovery 图、角色/schema 分离的提案-复核引擎、冻结模型/授权/成本身份的内部可恢复任务与原子项目提交、任务级 Service Broker/授权摘要派生、公共 list/detail/evidence 投影与认证 coverage-first SelectionArtifact；异步公共 discovery、候选编辑、逐角色检查点与 benchmark 待实现 |
@@ -194,3 +194,11 @@ APKG 纵向切片采用“Worker 产出不等于可信包”的结论。`cards.e
 `study.register_inputs` 已对该 InputRef 逐字段重验同 audience/service/session 的认证记录。web 适配器只做固定 IP + TLS hostname 的匿名 HTTPS GET，拒绝 ambient proxy/Cookie/Authorization、压缩响应、跨 origin 重定向、非 2xx 与超过 32 MiB 的登记快照；YouTube public_video 只向字幕适配器传规范化 videoId 对应的 canonical URL，跟踪 query 不传播。podcast/other、完整视频/音频、动态登录网页与 PDF 解析均显式失败关闭。统一授权管理器已经能以 URL-free 摘要撤销 network grant。
 
 自动化定向回归 98 项通过，正式 Python `tests` 全集为 `1653 passed, 1 skipped`。Computer Use 在真实 Windows Tk 受信窗口验证了：默认安全焦点为“取消”、HTTP 输入不能授权、HTTPS 查询参数显示敏感处理提示、授权与 Escape 取消均可达；完成后的持久结果只有 sourceKind、urlDisclosure=false 与手势状态，测试 URL 的 path/query canary 未落盘。插件与 Skill 官方本地验证器均通过。真实 Codex `0.144.1` app-server 的隔离开发探针确认可信会话枚举全部 37 个工具并可调用能力/项目接口，不可信会话仍只枚举 `system.get_capabilities`；协议版本为 `2025-11-25`，genericShell/secretBearingRequests 均为 false。该证据证明开发态 host 注册、本地受信表面及受控适配器合同，不证明真实公网长期可用性、正式安装布局、完整视频/音频或已签名发布包。
+
+## 4.9 CURRENT Learning Contract 公共更新复审（2026-07-20）
+
+可信 MCP 新增 `study.update_learning_contract`，当前工具数从 37 增至 38。输入只允许 projectId、两个 expected revision、稳定 operationId 和九类封闭语义操作；JSON Patch、任意字段路径、调用方提供的 ArtifactRef、模型/Provider、URL、凭据和自动重跑开关都没有 schema 通道。ProjectRegistry 在同一认证项目记录事务内先执行精确幂等重放，再执行双 revision CAS；同 operationId 异 payload、旧 project revision 或旧 contract revision 均失败关闭。
+
+失效集合只由真正改变的字段决定。purpose/targetBehavior/learnerLevel/routes/evidencePolicy/exclusions 回到 sources_ready，预算回到 candidates_ready，语言回到 selection_ready；混合 ChangeSet 中 no-op 不扩大边界。不可变 Artifact 仍在 Registry 中供审计，但项目 current/latest 指针会删除失效边界后的结果，避免旧候选、计划、卡片、APKG 或 Anki 状态被重新投影为当前。公共结果只含 canonical learningContractRef、revisions、invalidatedStages、WorkflowSnapshot 和当前会话重新签发的 preserved opaque handles，不含内部 ArtifactRef、认证标签、路径、正文或 operation ledger。
+
+当前定向组合回归 73 项通过，覆盖公共 schema、九类操作、幂等重放、revision 冲突、三档 current Artifact 裁剪、真实 opaque handle 重签发、历史重放不复活后来失效产物和不可信会话隐藏；正式 Python `tests` 全集为 `1665 passed, 1 skipped`。前端 830 项、Worker 600 项、UI smoke、Rust 31 项通过与 1 项按设计忽略、plugin/Skill validator 均通过。真实 Codex `0.144.1` app-server 已枚举可信 38 工具，并实际创建项目后调用合同更新到 projectRevision=2、contractRevision=2；不可信会话仍只有 `system.get_capabilities`。跨 Project/Artifact/Task 的单一数据库事务仍未实现，旧任务只允许形成私有中间结果，最终项目提交必须以旧 revision 冲突失败。
