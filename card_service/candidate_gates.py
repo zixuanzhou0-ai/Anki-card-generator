@@ -516,16 +516,29 @@ def evaluate_language_candidate(
         evidence_id = "evidence_" + hashlib.sha256(
             f"{identity_digest}:{index}:{span['start']}:{span['end']}".encode("ascii")
         ).hexdigest()[:40]
+        node = next(
+            value
+            for value in representation_payload["contentNodes"]
+            if value.get("nodeId") == span["nodeId"]
+        )
+        node_locator = node.get("locator", {})
+        locator = {
+            "kind": "text_span",
+            "nodeId": span["nodeId"],
+            "start": span["start"],
+            "end": span["end"],
+        }
+        if isinstance(node_locator, Mapping):
+            for key in ("pageNumber", "startMs", "endMs"):
+                if isinstance(node_locator.get(key), int) and not isinstance(
+                    node_locator.get(key), bool
+                ):
+                    locator[key] = node_locator[key]
         evidence.append(
             {
                 "evidenceId": evidence_id,
                 "sourceRef": source_ref,
-                "locator": {
-                    "kind": "text_span",
-                    "nodeId": span["nodeId"],
-                    "start": span["start"],
-                    "end": span["end"],
-                },
+                "locator": locator,
                 "quoteSha256": hashlib.sha256(quote.encode("utf-8")).hexdigest(),
                 "provenanceClass": "source_direct",
                 "semanticRelation": "supports",

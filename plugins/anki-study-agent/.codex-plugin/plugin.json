@@ -8,19 +8,27 @@
   },
   "homepage": "https://github.com/zixuanzhou0-ai/Anki-card-generator",
   "repository": "https://github.com/zixuanzhou0-ai/Anki-card-generator",
-  "keywords": ["anki", "learning", "flashcards", "codex"],
+  "keywords": [
+    "anki",
+    "learning",
+    "flashcards",
+    "codex"
+  ],
   "skills": "./skills/",
   "interface": {
     "displayName": "Anki Study Agent",
     "shortDescription": "Create evidence-backed Anki cards with a trusted local runtime.",
-    "longDescription": "Inspect authorized local text, static web, and YouTube subtitle sources, discover learning objectives with the fixed Hermes Grok 4.5 authorization preset, generate validated text cards, export APKG, and verify imported Anki data. Full media acquisition, runtime rendering, playback, and restart verification are not yet provided.",
+    "longDescription": "Inspect authorized local text, capability-advertised text-layer PDFs, static web, and YouTube subtitle sources; discover learning objectives with the fixed Hermes Grok 4.5 authorization preset; generate validated text cards; export APKG; and verify imported Anki data. Scanned PDF/OCR, full media acquisition, runtime rendering, playback, and restart verification are not yet provided.",
     "developerName": "zixuanzhou0-ai",
     "category": "Productivity",
-    "capabilities": ["Read", "Write"],
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
     "defaultPrompt": [
-      "先检查本地 Card Service，再把这个受支持的素材做成可验证卡片。",
-      "从这个字幕或文本中选出 10 个值得主动表达的英语词块。",
-      "继续轮询上次返回的制卡任务，并准确报告当前阶段。"
+      "\u5148\u68c0\u67e5\u672c\u5730 Card Service\uff0c\u518d\u628a\u8fd9\u4e2a\u53d7\u652f\u6301\u7684\u7d20\u6750\u505a\u6210\u53ef\u9a8c\u8bc1\u5361\u7247\u3002",
+      "\u4ece\u8fd9\u4e2a\u5b57\u5e55\u6216\u6587\u672c\u4e2d\u9009\u51fa 10 \u4e2a\u503c\u5f97\u4e3b\u52a8\u8868\u8fbe\u7684\u82f1\u8bed\u8bcd\u5757\u3002",
+      "\u7ee7\u7eed\u8f6e\u8be2\u4e0a\u6b21\u8fd4\u56de\u7684\u5236\u5361\u4efb\u52a1\uff0c\u5e76\u51c6\u786e\u62a5\u544a\u5f53\u524d\u9636\u6bb5\u3002"
     ],
     "brandColor": "#245B85"
   }

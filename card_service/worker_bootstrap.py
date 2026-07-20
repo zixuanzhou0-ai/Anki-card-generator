@@ -21,6 +21,7 @@ ALLOWED_COMMANDS = frozenset(
         "generate",
         "export",
         "verify_anki_import",
+        "parse_source_document",
     }
 )
 MAX_BOOTSTRAP_ENVELOPE_BYTES = 64 * 1024 * 1024

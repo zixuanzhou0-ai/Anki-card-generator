@@ -63,7 +63,11 @@ from .package_artifact_runtime import (
 from .resource_runtime import ServiceResourceRuntime
 from .network_resource_registry import NetworkResourceGrantRegistry, PinnedNetworkFetcher
 from .source_acquisition import YouTubeSubtitleAcquirer
-from .source_inspection import SourceInspectionError, SourceInspectionRuntime
+from .source_inspection import (
+    SourceInspectionError,
+    SourceInspectionRuntime,
+    StructuredSourceParser,
+)
 from .source_registration import (
     SourceRegistrationError,
     SourceRegistrationRuntime,
@@ -100,6 +104,8 @@ class StudyRuntime:
         network_resource_registry: NetworkResourceGrantRegistry | None = None,
         network_fetcher: PinnedNetworkFetcher | None = None,
         youtube_subtitle_acquirer: YouTubeSubtitleAcquirer | None = None,
+        structured_source_parser: StructuredSourceParser | None = None,
+        structured_source_parser_binding: Mapping[str, Any] | None = None,
         workspace_factory: WorkspaceFactory | None = None,
         workspace_releaser: WorkspaceReleaser | None = None,
         candidate_discovery_model: CandidateDiscoveryModel | None = None,
@@ -209,6 +215,8 @@ class StudyRuntime:
                 artifacts=self.artifacts,
                 projects=self.projects,
                 tasks=self.tasks,
+                structured_source_parser=structured_source_parser,
+                structured_source_parser_binding=structured_source_parser_binding,
             )
             self.candidate_queries = CandidateQueryRuntime(
                 service_instance_id=self.service_instance_id,
@@ -354,6 +362,17 @@ class StudyRuntime:
             "taskSourceBinding": True,
             "sourceAssetPublication": True,
             "sourceInspection": True,
+            "sourceAdapters": {
+                "pdfTextLayer": {
+                    "available": self.source_inspection.pdf_text_layer_available,
+                    "supportTier": "B",
+                    "blockerCode": (
+                        None
+                        if self.source_inspection.pdf_text_layer_available
+                        else "SOURCE_PARSER_NOT_AVAILABLE"
+                    ),
+                }
+            },
             "candidateDiscoveryRuntime": self.candidate_discovery is not None,
             "publicCandidateDiscovery": False,
             "publicRecoverableTaskListing": True,

@@ -6,7 +6,7 @@
 
 - 当前可信开发态 stdio runtime 已公开 38 个工具，能够完成：脱敏 profile 列表与现有 profile 的受信本地凭据管理、精确 model/TTS/AnkiConnect profile 验证、远程诊断前的受信操作确认、受信本地授权查看/撤销、项目分页找回与权威工作流快照、版本化 Learning Contract 语义更新与精确下游失效、本地/网络受支持文本授权与检查、固定 Hermes Grok 4.5 候选发现、候选发现安全恢复、候选选择、确定性文本 CardPlan 与卡片生成、APKG 导出、受信确认、真实 Anki 导入和数据级核验，以及对当前会话 ArtifactHandle 的有界产物摘要和完整性审计查询。
 - 当前统一授权管理器覆盖同一受信会话的本地文件/目录/输出 grant、network grant、未消费 Anki ImportApproval、未消费 profile-validation OperationApproval 和当前 Broker model/TTS/source 授权。当前 OperationApproval 公共生产者只有 model/TTS profile 诊断，不能当作 discovery/generate 的通用授权。管理器是逐账本的明确结果集合，不宣称跨多个 Registry 的全局原子事务，也不会删除已生成产物或回滚既有远程/Anki 副作用。
-- 当前来源包括本地文本、Markdown、代码、HTML、字幕文本及目录中的受支持成员，也包括匿名静态 HTTPS 网页快照和 YouTube 字幕快照。视频解码/下载、任意公开视频、PDF/Office 解析、动态或登录网页、音频/播客转写和附件桥仍未实现。
+- 当前来源包括本地文本、Markdown、代码、HTML、字幕文本及目录中的受支持成员，也包括匿名静态 HTTPS 网页快照、YouTube 字幕快照，以及仅在能力摘要明确可用时开放的文本层 PDF。PDF 解析是 B 级有损表示，不保留完整布局、图片或公式；源码开发态缺少签名沙箱 runtime 时会主动阻塞。视频解码/下载、任意公开视频、扫描 PDF/OCR、Office、动态或登录网页、音频/播客转写和附件桥仍未实现。
 - 当前不生成模型扩写卡片、TTS 或媒体切片；CardPlan 只允许冻结证据足以确定性支持的文本/零媒体路线。
 - Anki 导入最高状态为 `anki_data_verified`。实际渲染、音视频播放、复习按键和重启持久性均为 `not_assessed`，不能写成“已在 Anki 完整核验”。
 - 仓库内 manifest/Skill 是被动插件源；正式发布签名、MCP 声明、安装包和 App UI 尚未交付，不能宣称插件已正式可安装或可发布。

@@ -72,7 +72,11 @@ def _public_completeness(value: Mapping[str, Any]) -> dict[str, Any]:
         "state": str(value.get("state") or "unknown")[:32],
         "expectedUnits": _integer(value.get("expectedUnits")),
         "processedUnits": _integer(value.get("processedUnits")),
-        "omittedCount": _count(value.get("omittedLocators")),
+        "omittedCount": (
+            _integer(value.get("omittedUnits"))
+            if value.get("omittedUnits") is not None
+            else _count(value.get("omittedLocators"))
+        ),
         "reasonCodes": _codes(value.get("reasonCodes")),
     }
 

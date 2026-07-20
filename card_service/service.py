@@ -90,6 +90,7 @@ from .profile_validation import (
 )
 from .provider_egress import ProviderTransport
 from .study_runtime import StudyRuntime, StudyRuntimeError
+from .source_inspection import StructuredSourceParserError
 from .runtime_trust import (
     RuntimePackageTrustPolicy,
     RuntimeTrustError,
@@ -896,10 +897,22 @@ class CardService:
                 "card-service:windows-restricted-launcher"
             )
             self.broker_client_path = self.runtime_package.resource_path("card-service:broker-client")
+            self.source_parser_path = self.runtime_package.resource_path(
+                "legacy-worker:module:acg/source_parser_worker.py"
+            )
         else:
             self.bootstrap_path = (Path(__file__).resolve().parent / "worker_bootstrap.py").resolve()
             self.restricted_launcher_path = (Path(__file__).resolve().parent / "windows_restricted_launcher.py").resolve()
             self.broker_client_path = (repository_root / "workers" / "acg" / "broker_client.py").resolve()
+            self.source_parser_path = (
+                repository_root / "workers" / "acg" / "source_parser_worker.py"
+            ).resolve()
+        if not self.source_parser_path.is_absolute() or not self.source_parser_path.is_file():
+            raise CardServiceError(
+                "SOURCE_PARSER_NOT_FOUND",
+                "Managed source parser must be an existing absolute file",
+            )
+        self.source_parser_sha256 = self._file_sha256(self.source_parser_path)
         try:
             if self.runtime_package is not None:
                 runtime_entries = self.runtime_package.runtime_entries()
@@ -1424,6 +1437,421 @@ class CardService:
             self._workspace_reservations.add(task_id)
             return workspace, sandbox_id
 
+    def _execute_study_source_parser_once(
+        self,
+        *,
+        source_type: str,
+        source_sha256: str,
+        source_size_bytes: int,
+        materialize: Callable[[Path], Mapping[str, Any]],
+        maximum_text_bytes: int,
+        maximum_execution_seconds: float,
+    ) -> Mapping[str, Any]:
+        if (
+            source_type != "pdf"
+            or not re.fullmatch(r"[0-9a-f]{64}", source_sha256)
+            or isinstance(source_size_bytes, bool)
+            or not isinstance(source_size_bytes, int)
+            or not 1 <= source_size_bytes <= 32 * 1024 * 1024
+            or not callable(materialize)
+            or isinstance(maximum_text_bytes, bool)
+            or not isinstance(maximum_text_bytes, int)
+            or not 1 <= maximum_text_bytes <= 8 * 1024 * 1024
+            or isinstance(maximum_execution_seconds, bool)
+            or not isinstance(maximum_execution_seconds, (int, float))
+            or not 0 < maximum_execution_seconds <= 60
+        ):
+            raise CardServiceError(
+                "SOURCE_PARSER_INPUT_INVALID",
+                "Source parser input failed its bounded integrity contract",
+                retryable=False,
+                stage="source_parser",
+            )
+        parser_task_id = str(uuid.uuid4())
+        workspace: Path | None = None
+        input_path: Path | None = None
+        process: subprocess.Popen[str] | None = None
+        process_group: TaskOwnedProcessGroup | None = None
+        try:
+            if not (
+                os.name == "nt"
+                and self.use_restricted_launcher
+                and self.runtime_package_dacl
+                and self.runtime_sandbox_sid is not None
+            ):
+                raise CardServiceError(
+                    "SOURCE_PARSER_SANDBOX_REQUIRED",
+                    "PDF parsing requires the signed AppContainer runtime boundary",
+                    retryable=False,
+                    stage="source_parser",
+                )
+            workspace, task_sid = self._create_study_task_workspace(parser_task_id)
+            input_path = workspace / "source.pdf"
+            materialization = materialize(input_path)
+            if (
+                not isinstance(materialization, Mapping)
+                or set(materialization) != {"sha256", "sizeBytes", "path"}
+                or materialization.get("sha256") != source_sha256
+                or materialization.get("sizeBytes") != source_size_bytes
+                or materialization.get("path") != str(input_path)
+            ):
+                raise CardServiceError(
+                    "SOURCE_PARSER_MATERIALIZATION_INVALID",
+                    "Source parser materialization receipt is invalid",
+                    retryable=False,
+                    stage="source_parser",
+                )
+            if task_sid is not None:
+                harden_staged_path(input_path, task_sid)
+            try:
+                if self.runtime_package is not None:
+                    self.runtime_package.verify()
+                self.runtime_manifest.verify()
+                self.runtime_manifest.verify_serialized(self.runtime_manifest_path)
+            except (RuntimeManifestError, RuntimePackageError) as error:
+                raise CardServiceError(error.code, str(error)) from error
+            parser_command = [
+                str(self.python_path),
+                "-I",
+                "-B",
+                str(self.bootstrap_path),
+                str(self.source_parser_path),
+                "parse_source_document",
+                self.source_parser_sha256,
+                "@stdin" if self.use_restricted_launcher else str(self.runtime_manifest_path),
+                self.runtime_manifest.digest,
+            ]
+            attestation_key = os.urandom(32) if self.use_restricted_launcher else b""
+            if self.use_restricted_launcher:
+                process_command = [
+                    str(self.python_path),
+                    "-I",
+                    "-B",
+                    str(self.restricted_launcher_path),
+                    "--task-id",
+                    parser_task_id,
+                    "--cwd",
+                    str(workspace),
+                ]
+                if self.runtime_sandbox_sid is not None and task_sid is not None:
+                    process_command.extend(
+                        [
+                            "--runtime-sid",
+                            self.runtime_sandbox_sid,
+                            "--task-sid",
+                            task_sid,
+                        ]
+                    )
+                process_command.extend(["--", *parser_command])
+                process_cwd = self.restricted_launcher_path.parent
+            else:
+                process_command = parser_command
+                process_cwd = workspace
+            process = subprocess.Popen(
+                process_command,
+                cwd=str(process_cwd),
+                env=self._managed_environment(workspace),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                shell=False,
+                creationflags=(
+                    getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+                ),
+            )
+            if process.stdin is None or process.stdout is None or process.stderr is None:
+                raise CardServiceError(
+                    "SOURCE_PARSER_START_FAILED",
+                    "Source parser control channels are unavailable",
+                    retryable=True,
+                    stage="source_parser",
+                )
+            process_group = TaskOwnedProcessGroup(
+                memory_limit_bytes=min(self.task_memory_limit_bytes, 512 * 1024 * 1024),
+                active_process_limit=min(self.task_active_process_limit, 2),
+            )
+            process_group.assign(process)
+            stdout_parts: list[str] = []
+            stderr_parts: list[str] = []
+            stream_error: list[str] = []
+            attestation_error: list[str] = []
+            attestation_seen = threading.Event()
+            stdout_bytes = 0
+            stderr_bytes = 0
+
+            def read_stdout() -> None:
+                nonlocal stdout_bytes
+                for chunk in iter(lambda: process.stdout.read(8192), ""):
+                    stdout_bytes += len(chunk.encode("utf-8"))
+                    if stdout_bytes > 18 * 1024 * 1024:
+                        stream_error.append("Source parser stdout exceeded its limit")
+                        self._terminate(process)
+                        return
+                    stdout_parts.append(chunk)
+
+            def read_stderr() -> None:
+                nonlocal stderr_bytes
+                for line in process.stderr:
+                    stderr_bytes += len(line.encode("utf-8"))
+                    if stderr_bytes > 1024 * 1024:
+                        stream_error.append("Source parser stderr exceeded its limit")
+                        self._terminate(process)
+                        return
+                    stripped = line.rstrip("\r\n")
+                    if stripped.startswith(SANDBOX_ATTESTATION_PREFIX):
+                        try:
+                            if attestation_seen.is_set():
+                                raise ValueError("duplicate sandbox attestation")
+                            value = json.loads(
+                                stripped[len(SANDBOX_ATTESTATION_PREFIX) :]
+                            )
+                            _verify_sandbox_attestation(
+                                value,
+                                key=attestation_key,
+                                task_id=parser_task_id,
+                                expected_filesystem_restricted=self.runtime_package_dacl,
+                                expected_network_restricted=self.runtime_package_dacl,
+                                expected_runtime_sid_digest=(
+                                    _sid_binding_digest(
+                                        "study.runtime-appcontainer-sid.v1",
+                                        self.runtime_sandbox_sid,
+                                    )
+                                    if self.runtime_sandbox_sid is not None
+                                    else None
+                                ),
+                                expected_task_sid_digest=(
+                                    _sid_binding_digest(
+                                        "study.task-capability-sid.v1", task_sid
+                                    )
+                                    if task_sid is not None
+                                    else None
+                                ),
+                            )
+                            attestation_seen.set()
+                        except (TypeError, ValueError):
+                            attestation_error.append(
+                                "Restricted source parser attestation was invalid"
+                            )
+                            self._terminate(process)
+                        continue
+                    if stripped:
+                        stderr_parts.append(_safe_error(stripped, 500))
+
+            readers = [
+                threading.Thread(
+                    target=read_stdout,
+                    daemon=True,
+                    name=f"source-parser-stdout-{parser_task_id}",
+                ),
+                threading.Thread(
+                    target=read_stderr,
+                    daemon=True,
+                    name=f"source-parser-stderr-{parser_task_id}",
+                ),
+            ]
+            for reader in readers:
+                reader.start()
+
+            def write_control(value: str) -> None:
+                assert process is not None and process.stdin is not None
+                process.stdin.write(value)
+                process.stdin.flush()
+
+            deadline = time.monotonic() + float(maximum_execution_seconds)
+            if self.use_restricted_launcher:
+                encoded_key = base64.urlsafe_b64encode(attestation_key).decode("ascii").rstrip("=")
+                write_control(f"START {encoded_key}\n")
+                handshake_deadline = min(deadline, time.monotonic() + 5.0)
+                while (
+                    not attestation_seen.is_set()
+                    and process.poll() is None
+                    and not attestation_error
+                    and not stream_error
+                    and time.monotonic() < handshake_deadline
+                ):
+                    time.sleep(0.01)
+                if not attestation_seen.is_set():
+                    self._terminate(process)
+                    raise CardServiceError(
+                        "SOURCE_PARSER_SANDBOX_ATTESTATION_FAILED",
+                        attestation_error[-1]
+                        if attestation_error
+                        else "Restricted source parser did not prove its sandbox boundary",
+                        retryable=False,
+                        stage="source_parser",
+                    )
+                write_control(
+                    json.dumps(
+                        self.runtime_manifest.value,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                )
+            request = {
+                "schemaVersion": 1,
+                "kind": "pdf",
+                "inputName": "source.pdf",
+                "limits": {
+                    "maximumPages": 512,
+                    "maximumTextBytes": maximum_text_bytes,
+                },
+            }
+            write_control(
+                json.dumps(
+                    {"schemaVersion": 1, "request": request},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
+            process.stdin.close()
+            while process.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.02)
+            if process.poll() is None:
+                self._terminate(process)
+                raise CardServiceError(
+                    "SOURCE_PARSER_TIMEOUT",
+                    "Source parser exceeded its bounded execution timeout",
+                    retryable=True,
+                    stage="source_parser",
+                )
+            for reader in readers:
+                reader.join(timeout=2.0)
+            if stream_error:
+                raise CardServiceError(
+                    "SOURCE_PARSER_OUTPUT_LIMIT",
+                    stream_error[-1],
+                    retryable=False,
+                    stage="source_parser",
+                )
+            if process.returncode != 0:
+                raise CardServiceError(
+                    "SOURCE_PARSER_FAILED",
+                    stderr_parts[-1]
+                    if stderr_parts
+                    else "Managed source parser failed",
+                    retryable=False,
+                    stage="source_parser",
+                )
+            raw_result = "".join(stdout_parts).strip().lstrip("\ufeff")
+            try:
+                result = json.loads(raw_result)
+            except (ValueError, RecursionError) as error:
+                raise CardServiceError(
+                    "SOURCE_PARSER_INVALID_JSON",
+                    "Managed source parser returned invalid JSON",
+                    retryable=False,
+                    stage="source_parser",
+                ) from error
+            if not isinstance(result, dict):
+                raise CardServiceError(
+                    "SOURCE_PARSER_INVALID_RESULT",
+                    "Managed source parser returned an invalid result",
+                    retryable=False,
+                    stage="source_parser",
+                )
+            if (
+                input_path.stat().st_size != source_size_bytes
+                or self._file_sha256(input_path) != source_sha256
+            ):
+                raise CardServiceError(
+                    "SOURCE_PARSER_INPUT_CHANGED",
+                    "Source parser input changed during parsing",
+                    retryable=False,
+                    stage="source_parser",
+                )
+            workspace_usage = _task_workspace_usage(
+                workspace,
+                byte_limit=source_size_bytes,
+                entry_limit=1,
+            )
+            if (
+                workspace_usage.entry_count != 1
+                or workspace_usage.logical_bytes != source_size_bytes
+            ):
+                raise CardServiceError(
+                    "SOURCE_PARSER_WORKSPACE_VIOLATION",
+                    "Source parser created unexpected workspace entries",
+                    retryable=False,
+                    stage="source_parser",
+                )
+            return result
+        except ProcessIsolationError as error:
+            if process is not None:
+                self._terminate(process)
+            raise CardServiceError(
+                "SOURCE_PARSER_ISOLATION_FAILED",
+                "Source parser process isolation failed",
+                retryable=False,
+                stage="source_parser",
+            ) from error
+        except OSError as error:
+            if process is not None:
+                self._terminate(process)
+            raise CardServiceError(
+                "SOURCE_PARSER_IO_FAILED",
+                "Source parser workspace or process I/O failed",
+                retryable=True,
+                stage="source_parser",
+            ) from error
+        finally:
+            if process_group is not None:
+                try:
+                    process_group.close()
+                except ProcessIsolationError:
+                    pass
+            if input_path is not None:
+                try:
+                    input_path.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    pass
+            if workspace is not None:
+                _remove_empty_task_workspace(workspace)
+            self._release_workspace_reservation(parser_task_id)
+
+    def _execute_study_source_parser(self, **request: Any) -> Mapping[str, Any]:
+        try:
+            return self._execute_study_source_parser_once(**request)
+        except StructuredSourceParserError:
+            raise
+        except (
+            ArtifactRegistryError,
+            CardServiceError,
+            WindowsSandboxAclError,
+            OSError,
+        ) as error:
+            code = getattr(error, "code", "SOURCE_PARSER_EXECUTION_FAILED")
+            if code == "SOURCE_PARSER_TIMEOUT":
+                public_code = "SOURCE_PARSER_TIMEOUT"
+            elif code == "SOURCE_PARSER_OUTPUT_LIMIT":
+                public_code = "SOURCE_PARSER_OUTPUT_LIMIT"
+            elif isinstance(error, WindowsSandboxAclError):
+                public_code = "SOURCE_PARSER_SANDBOX_UNAVAILABLE"
+            elif code in {
+                "SOURCE_PARSER_SANDBOX_REQUIRED",
+                "SOURCE_PARSER_SANDBOX_ATTESTATION_FAILED",
+                "SOURCE_PARSER_ISOLATION_FAILED",
+            }:
+                public_code = "SOURCE_PARSER_SANDBOX_UNAVAILABLE"
+            elif code in {
+                "RUNTIME_PACKAGE_CHANGED",
+                "RUNTIME_MANIFEST_CHANGED",
+                "RUNTIME_PACKAGE_RESOURCE_MISSING",
+                "RUNTIME_MANIFEST_MISMATCH",
+            }:
+                public_code = "SOURCE_PARSER_RUNTIME_UNTRUSTED"
+            else:
+                public_code = "SOURCE_PARSER_EXECUTION_FAILED"
+            raise StructuredSourceParserError(public_code) from error
+
     def _ensure_study_runtime(self) -> StudyRuntime:
         with self._study_runtime_lock:
             if self._study_runtime is not None:
@@ -1438,6 +1866,20 @@ class CardService:
                     credential_store=credential_store,
                     resource_runtime=self._ensure_resource_runtime(),
                     network_resource_registry=self._ensure_network_resource_registry(),
+                    structured_source_parser=(
+                        self._execute_study_source_parser
+                        if self.runtime_package_dacl
+                        else None
+                    ),
+                    structured_source_parser_binding=(
+                        {
+                            "workerSha256": self.source_parser_sha256,
+                            "pypdfVersion": "6.14.2",
+                            "sandboxPolicy": "windows-appcontainer-job-no-network-v1",
+                        }
+                        if self.runtime_package_dacl
+                        else None
+                    ),
                     workspace_factory=self._create_study_task_workspace,
                     workspace_releaser=self._release_workspace_reservation,
                     package_export_executor=self._execute_study_apkg_export,

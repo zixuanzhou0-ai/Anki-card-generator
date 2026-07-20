@@ -28,6 +28,7 @@ RESOURCE_PATHS = {
     "card-service:windows-sandbox-acl": "card_service/windows_sandbox_acl.py",
     "legacy-worker:entry": "workers/anki_worker.py",
     "legacy-worker:module:acg/media_tool_policy.py": "workers/acg/media_tool_policy.py",
+    "legacy-worker:module:acg/source_parser_worker.py": "workers/acg/source_parser_worker.py",
     "managed-tool:ffmpeg": "tools/ffmpeg.exe",
     "managed-tool:ffprobe": "tools/ffprobe.exe",
     "managed-tool:yt-dlp": "tools/yt-dlp.exe",

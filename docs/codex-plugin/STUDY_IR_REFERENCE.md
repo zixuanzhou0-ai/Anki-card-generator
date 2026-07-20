@@ -218,6 +218,7 @@ type CompletenessRecord = {
   state: "complete" | "partial_declared" | "unknown" | "blocked";
   expectedUnits?: number;
   processedUnits?: number;
+  omittedUnits?: number; // 真实遗漏总数；定位数组可以是有界样例
   omittedLocators: SourceLocator[];
   reasonCodes: string[];
 };
@@ -243,7 +244,7 @@ type ArtifactRegistryRecord = {
 - registryAuthRef 指向 Service 认证账本中的 HMAC/签名记录；MCP 调用方只能提交 ArtifactHandle，不能自报 schema/revision/hash。
 - 认证记录覆盖 artifact/project/owner/digest/service/key/revocation；handle 解析时同时校验当前调用者 owner/scope、authTag 和撤销状态，防止跨项目 transplant 或调用方重算哈希伪造。
 - projectRevision 是项目整体乐观锁；artifactRevision 是某 Artifact 身份的版本；sourceRevision 属于 SourceAsset 内容身份，三者不能互换。
-- complete 不能同时有未解释 omittedLocators。
+- complete 不能同时有未解释 omittedLocators 或非零 omittedUnits；定位样例被截断时，omittedUnits 仍须保存真实总数。
 - 任何父产物 revision 改变后，旧派生产物不得自动成为当前版本。
 - issueRefs 必须引用结构化 Issue，不只保存日志字符串。
 
@@ -279,7 +280,7 @@ type InputRef =
 InputRef 不携带永久原始绝对路径或 raw URL。fileResourceRef、directoryResourceRef 和 networkResourceRef 由本地服务通过受信授权流程签发；MCP 后续调用只能缩小范围，不能替换 URL path/query 或扩大目录。
 CURRENT M2 内部实现已能签发 `fileResourceRef`、`directoryResourceRef`、`outputResourceRef` 和 `networkResourceRef`。本地 raw path 只留在认证私有账本；网络 raw/signed URL 只留在当前 Service 进程的短期 locator 内存，持久记录只保存不可逆 request/query 摘要和脱敏 origin。所有 ref 绑定 owner/host/plugin/session/service instance、资源 revision/策略、动作、硬上限、期限、次数和撤销 epoch。
 
-本地 file/directory ref 现可在再次授权验证后绑定到尚未启动的 StudyTask：Task input manifest 必须已经承诺完全相同的 source revision，当前 audience/service/session 必须与任务创建身份一致，内部 receipt 绑定 workspace identity 与逐项 manifest，对 Worker 只暴露相对 task locator。网络 InputRef 也已通过受信本地 URL 表面与公开 `system.request_network_grant` 接线；公共 `study.register_inputs` 对网页执行匿名固定 IP HTTPS 快照，对 YouTube public_video 只获取规范化视频 ID 对应的字幕快照，随后发布认证 SourceAsset。`study.start_source_inspection` 已对受支持文本、HTML、字幕和目录成员发布确定性表示；播客、完整视频/音频、PDF/Office 解析和宿主附件仍未完成。Service 重启后的 network ref 仍必须重新授权。
+本地 file/directory ref 现可在再次授权验证后绑定到尚未启动的 StudyTask：Task input manifest 必须已经承诺完全相同的 source revision，当前 audience/service/session 必须与任务创建身份一致，内部 receipt 绑定 workspace identity 与逐项 manifest，对 Worker 只暴露相对 task locator。网络 InputRef 也已通过受信本地 URL 表面与公开 `system.request_network_grant` 接线；公共 `study.register_inputs` 对网页执行匿名固定 IP HTTPS 快照，对 YouTube public_video 只获取规范化视频 ID 对应的字幕快照，随后发布认证 SourceAsset。`study.start_source_inspection` 已对受支持文本、HTML、字幕、目录成员和文本层 PDF 发布确定性表示。PDF 只有在已签名、精确哈希且具备 Windows AppContainer + Job Object 的托管 runtime 中才开放；开发态或沙箱不可用时失败关闭。扫描 PDF、Office、播客、完整视频/音频和宿主附件仍未完成。Service 重启后的 network ref 仍必须重新授权。
 
 
 ## 5.1 Learning Contract 与偏好层

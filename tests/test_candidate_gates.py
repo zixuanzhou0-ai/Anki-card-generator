@@ -149,6 +149,17 @@ def test_verified_phrase_derives_recommended_candidate_and_replayable_evidence()
     assert result["objective"]["granularity"]["independentScorePoints"] == 1
 
 
+def test_pdf_page_locator_is_preserved_in_candidate_evidence() -> None:
+    payload = representation_payload()
+    payload["kind"] = "pdf_text_layer"
+    payload["contentNodes"][0]["locator"]["pageNumber"] = 7
+    payload["contentNodes"][0]["attributes"]["pageNumber"] = 7
+
+    result = evaluate(representation_payload=payload)
+
+    assert result["evidenceAnchors"][0]["locator"]["pageNumber"] == 7
+
+
 def test_model_cannot_submit_eligibility_scores_or_unknown_fields() -> None:
     with pytest.raises(CandidateGateError) as captured:
         evaluate(proposal={**proposal(), "eligibility": "recommended"})

@@ -435,7 +435,7 @@ snapshotPolicy：
 - allow_conditional：允许 B 级来源，但必须返回警告。
 - draft_only：model_relayed 内容只生成草稿。
 
-登记只证明“获得了稳定字节快照”，不证明内容已经解析、完整或适合制卡。文件、目录和网络快照在 source inspection 完成前固定为 B 级 conditional；未知类型、PDF、Office、音视频或尚未接线的网络适配器为 C 级 unsupported/显式阻塞。当前调用同步等待登记完成；公共 task poll/cancel 已用于已公开的异步任务，但登记本身仍是有界同步路径。
+登记只证明“获得了稳定字节快照”，不证明内容已经解析、完整或适合制卡。文件、目录和网络快照在 source inspection 完成前固定为 B 级 conditional；未知类型、Office、音视频或尚未接线的网络适配器为 C 级 unsupported/显式阻塞。文本层 PDF 只有在能力摘要明确显示 `sourceAdapters.pdfTextLayer.available=true` 时进入 B 级有损解析；扫描件仍阻塞。当前调用同步等待登记完成；公共 task poll/cancel 已用于已公开的异步任务，但登记本身仍是有界同步路径。
 
 禁止：
 
@@ -447,7 +447,7 @@ snapshotPolicy：
 
 CURRENT 输入为封闭对象：`context` 只接受 projectId、expectedProjectRevision、idempotencyKey 和可选 locale；`sourceHandles` 接受 1–64 个当前项目的认证 SourceAsset handle。schema 不接受路径、URL、source text、audience、解析器参数、模型 profile 或网络能力。
 
-Card Service 创建可恢复 StudyTask，逐来源验证认证 Blob，再发布 `study.source-representation`、`study.source-inspection` 与汇总 `study.inspection`。纯文本、Markdown、代码、HTML 和 SRT/VTT/ASS/SSA 走无模型、无网络的确定性解析；HTML 的 script/style/noscript/template 内容不会进入可见文本，字幕保留 cue 时间。受限目录只解析 manifest 中已快照且受支持的成员。PDF、Office、图片、音视频等尚无本安全解析器的来源显式返回 C 级 `SOURCE_PARSER_NOT_AVAILABLE`，超过同步上限的来源返回 `SOURCE_ASYNC_INSPECTION_REQUIRED`，不会无限同步读取或伪造成功。
+Card Service 创建可恢复 StudyTask，逐来源验证认证 Blob，再发布 `study.source-representation`、`study.source-inspection` 与汇总 `study.inspection`。纯文本、Markdown、代码、HTML 和 SRT/VTT/ASS/SSA 走无模型、无网络的确定性解析；HTML 的 script/style/noscript/template 内容不会进入可见文本，字幕保留 cue 时间。受限目录只解析 manifest 中已快照且受支持的成员。文本层 PDF 由固定 pypdf 版本的独立 Worker 在 Windows AppContainer、Job Object、无网络和只读任务输入下解析，保留页码、真实遗漏总数与最多 256 个遗漏定位样例；布局、图片、空页、截断和异常字符必须显式声明，扫描件不会伪造正文。能力不可用时返回固定 blocker。Office、图片和完整音视频仍显式返回 C 级；超过同步上限的来源返回 `SOURCE_ASYNC_INSPECTION_REQUIRED`。
 
 公开结果仅返回项目 revision、taskId、inspectionHandle、每个来源的 identity 摘要、支持级别、覆盖计数、推荐路线和 issue code；不返回来源正文、BlobRef、SourceAsset 内部 ref、原始路径、目录成员名、InputRef、staging receipt 或私有任务记录。至少一个来源形成可用表示时项目保持 `sources_ready` 并把主动作推进为 `discover_candidates`；全部阻塞时主动作是 `resolve_issue`。当前工具为有界同步调用，公共 task poll/cancel 与大型异步解析器仍待统一任务工具开放。
 

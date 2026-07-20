@@ -1,6 +1,6 @@
 ---
 name: anki-study-agent
-description: Use a registered local Anki Card Service to turn authorized text, Markdown, code, HTML, subtitle files, bounded directories, static HTTPS webpages, or YouTube subtitle snapshots into evidence-backed Anki cards. Use when Codex needs to inspect a supported source, authorize fixed Hermes Grok 4.5 candidate discovery, safely resume interrupted discovery, select language-learning candidates, generate validated text cards, export APKG, or explicitly import and data-verify a deck in Anki. Treat full video/audio acquisition, podcasts, PDF/Office parsing, media generation, export/import task resumption, and runtime rendering/playback/restart verification as unavailable unless the installed tool capability explicitly exposes them.
+description: Use a registered local Anki Card Service to turn authorized text, Markdown, code, HTML, subtitle files, bounded directories, static HTTPS webpages, YouTube subtitle snapshots, or capability-advertised text-layer PDFs into evidence-backed Anki cards. Use when Codex needs to inspect a supported source, authorize fixed Hermes Grok 4.5 candidate discovery, safely resume interrupted discovery, select language-learning candidates, generate validated text cards, export APKG, or explicitly import and data-verify a deck in Anki. Treat full video/audio acquisition, podcasts, scanned PDF/OCR, Office parsing, media generation, export/import task resumption, and runtime rendering/playback/restart verification as unavailable unless the installed tool capability explicitly exposes them.
 ---
 
 # Anki Study Agent
@@ -51,7 +51,7 @@ Read [workflow-contract.md](references/workflow-contract.md) for stage vocabular
 - Never treat model confidence, successful HTML rendering, or an APKG file as Anki verification.
 - Do not hide blocked, stale, partial, cancelled, interrupted, or needs-repair states.
 - Preserve completed artifacts and retry only when the returned task contract permits it. Public list/resume is limited to candidate discovery; an interrupted export or Anki write requires its own inspection before any retry.
-- Require trusted local confirmation for new source scope, data egress, cost expansion, batch expansion, and Anki import. A network grant is not proof that a parser exists: stop on podcast/other/full-media adapter errors rather than silently substituting a web fetch.
+- Require trusted local confirmation for new source scope, data egress, cost expansion, batch expansion, and Anki import. A grant is not proof that a parser exists: inspect `sourceAdapters.pdfTextLayer.available` before promising PDF support, and stop on scanned-PDF, podcast, other, or full-media adapter errors rather than silently substituting a web fetch or OCR.
 - Never expose secrets, sensitive paths, OAuth material, cookies, or signed media queries in prompts, logs, snapshots, or results.
 
 Read [source-and-safety.md](references/source-and-safety.md) before handling local files, URLs, provider calls, media tools, or Anki writes.

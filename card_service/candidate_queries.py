@@ -1012,6 +1012,8 @@ class CandidateQueryRuntime:
             "end": end,
         }
         if isinstance(node_locator, Mapping):
+            if isinstance(node_locator.get("pageNumber"), int):
+                result_locator["pageNumber"] = node_locator["pageNumber"]
             if isinstance(node_locator.get("startMs"), int):
                 result_locator["startMs"] = node_locator["startMs"]
             if isinstance(node_locator.get("endMs"), int):

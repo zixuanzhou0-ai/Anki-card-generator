@@ -5,10 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 import unicodedata
 from html.parser import HTMLParser
 from pathlib import PurePosixPath
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from .artifact_registry import (
     ArtifactAudienceBinding,
@@ -31,19 +32,51 @@ _IDEMPOTENCY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
 _HANDLE_RE = re.compile(r"^study_[A-Za-z0-9_-]{43}$")
 _MAX_SOURCES = 64
 _MAX_TEXT_BYTES = 8 * 1024 * 1024
+_MAX_DOCUMENT_BYTES = 32 * 1024 * 1024
 _MAX_DIRECTORY_TEXT_BYTES = 16 * 1024 * 1024
 _MAX_DIRECTORY_MANIFEST_BYTES = 64 * 1024 * 1024
 _MAX_DIRECTORY_FILES = 2_048
+_MAX_DIRECTORY_DOCUMENTS = 8
 _MAX_CONTENT_NODES = 20_000
 _MAX_NODE_CHARACTERS = 4_096
 _SUPPORTED_TEXT_TYPES = frozenset({"text", "markdown", "code", "html", "subtitle"})
+_SUPPORTED_DOCUMENT_TYPES = frozenset({"pdf"})
+_SUPPORTED_INSPECTION_TYPES = _SUPPORTED_TEXT_TYPES | _SUPPORTED_DOCUMENT_TYPES
+_PDF_ISSUE_CODES = frozenset(
+    {
+        "SOURCE_PDF_CHARACTER_ANOMALIES",
+        "SOURCE_PDF_ENCRYPTED",
+        "SOURCE_PDF_EMPTY_PAGES",
+        "SOURCE_PDF_IMAGES_OMITTED",
+        "SOURCE_PDF_IMAGE_SCAN_PARTIAL",
+        "SOURCE_PDF_LAYOUT_PARTIAL",
+        "SOURCE_PDF_PAGE_LIMIT_REACHED",
+        "SOURCE_PDF_PAGE_UNREADABLE",
+        "SOURCE_PDF_PARSER_UNAVAILABLE",
+        "SOURCE_PDF_TEXT_LAYER_EMPTY",
+        "SOURCE_PDF_TEXT_LIMIT_REACHED",
+        "SOURCE_PDF_UNREADABLE",
+        "SOURCE_PARSER_REQUEST_FAILED",
+        "SOURCE_PARSER_EXECUTION_FAILED",
+        "SOURCE_PARSER_OUTPUT_LIMIT",
+        "SOURCE_PARSER_RUNTIME_UNTRUSTED",
+        "SOURCE_PARSER_SANDBOX_UNAVAILABLE",
+        "SOURCE_PARSER_TIMEOUT",
+    }
+)
+StructuredSourceParser = Callable[..., Mapping[str, Any]]
 _SOURCE_INSPECTION_COMPONENTS = {
     "cardService": "2.0.0",
     "worker": "not-invoked",
     "sourceAdapterSetDigest": hashlib.sha256(
-        b"speakright.study.source-inspection.deterministic-text-v1"
+        b"speakright.study.source-inspection.deterministic-text-pdf-v2"
     ).hexdigest(),
     "gateRuleSetVersion": "source-inspection-v1",
+}
+_PARSER_BINDING_FIELDS = {
+    "workerSha256",
+    "pypdfVersion",
+    "sandboxPolicy",
 }
 
 
@@ -52,6 +85,14 @@ class SourceInspectionError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+class StructuredSourceParserError(RuntimeError):
+    def __init__(self, code: str) -> None:
+        if code not in _PDF_ISSUE_CODES:
+            code = "SOURCE_PARSER_EXECUTION_FAILED"
+        super().__init__(code)
+        self.code = code
 
 
 class _VisibleHtmlParser(HTMLParser):
@@ -117,6 +158,7 @@ def _completeness(
     *,
     expected_units: int | None,
     processed_units: int,
+    omitted_units: int | None = None,
     reason_codes: Sequence[str] = (),
     omitted_locators: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
@@ -128,6 +170,8 @@ def _completeness(
     }
     if expected_units is not None:
         result["expectedUnits"] = expected_units
+    if omitted_units is not None:
+        result["omittedUnits"] = omitted_units
     return result
 
 
@@ -150,11 +194,10 @@ def _decode_text(data: bytes, *, truncated: bool) -> tuple[str | None, str | Non
     return text, None
 
 
-def _paragraph_ranges(text: str, *, code: bool) -> list[tuple[int, int]]:
+def _paragraph_ranges(text: str, *, code: bool) -> Iterator[tuple[int, int]]:
     if not text:
-        return []
+        return
     if code:
-        ranges: list[tuple[int, int]] = []
         start = 0
         line_count = 0
         for match in re.finditer(r".*(?:\n|$)", text):
@@ -162,33 +205,30 @@ def _paragraph_ranges(text: str, *, code: bool) -> list[tuple[int, int]]:
                 continue
             line_count += 1
             if line_count >= 40:
-                ranges.append((start, match.end()))
+                yield start, match.end()
                 start = match.end()
                 line_count = 0
         if start < len(text):
-            ranges.append((start, len(text)))
-        return ranges
-    ranges = []
+            yield start, len(text)
+        return
     start: int | None = None
     cursor = 0
-    for line in text.splitlines(keepends=True):
-        end = cursor + len(line)
+    while cursor < len(text):
+        newline = text.find("\n", cursor)
+        end = len(text) if newline < 0 else newline + 1
+        line = text[cursor:end]
         if line.strip():
             if start is None:
                 start = cursor
         elif start is not None:
-            ranges.append((start, cursor))
+            yield start, cursor
             start = None
         cursor = end
     if start is not None:
-        ranges.append((start, len(text)))
-    if not ranges and text.strip():
-        ranges.append((0, len(text)))
-    return ranges
+        yield start, len(text)
 
 
-def _split_range(text: str, start: int, end: int) -> list[tuple[int, int]]:
-    result = []
+def _split_range(text: str, start: int, end: int) -> Iterator[tuple[int, int]]:
     cursor = start
     while cursor < end:
         limit = min(end, cursor + _MAX_NODE_CHARACTERS)
@@ -199,9 +239,8 @@ def _split_range(text: str, start: int, end: int) -> list[tuple[int, int]]:
                 limit = cursor + boundary + 1
         if limit <= cursor:
             limit = min(end, cursor + _MAX_NODE_CHARACTERS)
-        result.append((cursor, limit))
+        yield cursor, limit
         cursor = limit
-    return result
 
 
 def _text_nodes(
@@ -211,11 +250,12 @@ def _text_nodes(
     source_type: str,
     member_ref: str | None = None,
     order_offset: int = 0,
+    maximum_nodes: int = _MAX_CONTENT_NODES,
 ) -> tuple[list[dict[str, Any]], bool]:
     nodes: list[dict[str, Any]] = []
     for start, end in _paragraph_ranges(text, code=source_type == "code"):
         for chunk_start, chunk_end in _split_range(text, start, end):
-            if len(nodes) >= _MAX_CONTENT_NODES:
+            if len(nodes) >= maximum_nodes:
                 return nodes, True
             order = order_offset + len(nodes)
             node_id = (
@@ -363,6 +403,8 @@ def _source_type_for_member(member_ref: str) -> str:
         return "subtitle"
     if extension in {".html", ".htm"}:
         return "html"
+    if extension == ".pdf":
+        return "pdf"
     if extension in {
         ".py",
         ".js",
@@ -409,14 +451,72 @@ class SourceInspectionRuntime:
         artifacts: ArtifactRegistry,
         projects: ProjectRegistry,
         tasks: StudyTaskCoordinator,
+        structured_source_parser: StructuredSourceParser | None = None,
+        structured_source_parser_binding: Mapping[str, Any] | None = None,
     ) -> None:
         self._service_instance_id = service_instance_id
         self._artifacts = artifacts
         self._projects = projects
         self._tasks = tasks
+        self._structured_source_parser = structured_source_parser
+        if (structured_source_parser is None) != (
+            structured_source_parser_binding is None
+        ):
+            raise SourceInspectionError(
+                "SOURCE_PARSER_BINDING_INVALID",
+                "Structured source parser and binding must be configured together",
+            )
+        if structured_source_parser_binding is not None:
+            binding = dict(structured_source_parser_binding)
+            if (
+                set(binding) != _PARSER_BINDING_FIELDS
+                or not isinstance(binding.get("workerSha256"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", binding["workerSha256"])
+                or binding.get("pypdfVersion") != "6.14.2"
+                or binding.get("sandboxPolicy")
+                != "windows-appcontainer-job-no-network-v1"
+            ):
+                raise SourceInspectionError(
+                    "SOURCE_PARSER_BINDING_INVALID",
+                    "Structured source parser binding is invalid",
+                )
+            self._parser_binding: dict[str, Any] | None = binding
+        else:
+            self._parser_binding = None
+        adapter_set_digest = _sha(
+            canonical_json_bytes(
+                {
+                    "policy": "deterministic-text-pdf-v2",
+                    "parserBinding": self._parser_binding,
+                }
+            )
+        )
+        self._component_versions = {
+            **_SOURCE_INSPECTION_COMPONENTS,
+            "worker": (
+                "not-invoked"
+                if self._parser_binding is None
+                else (
+                    "source-parser@sha256:"
+                    + self._parser_binding["workerSha256"]
+                    + ";pypdf="
+                    + self._parser_binding["pypdfVersion"]
+                    + ";sandbox="
+                    + self._parser_binding["sandboxPolicy"]
+                )
+            ),
+            "sourceAdapterSetDigest": adapter_set_digest,
+        }
 
-    @staticmethod
+    @property
+    def pdf_text_layer_available(self) -> bool:
+        return (
+            self._structured_source_parser is not None
+            and self._parser_binding is not None
+        )
+
     def _operation_digest(
+        self,
         project_id: str,
         expected_revision: int,
         source_refs: Sequence[Mapping[str, Any]],
@@ -429,7 +529,10 @@ class SourceInspectionRuntime:
                     "projectId": project_id,
                     "expectedProjectRevision": expected_revision,
                     "sourceRefs": [dict(value) for value in source_refs],
-                    "extractorPolicy": "deterministic-text-v1",
+                    "extractorPolicy": "deterministic-text-pdf-v2",
+                    "sourceAdapterSetDigest": self._component_versions[
+                        "sourceAdapterSetDigest"
+                    ],
                 }
             )
         )
@@ -504,19 +607,43 @@ class SourceInspectionRuntime:
         work, work_digest = build_work_reuse_manifest(
             action_id="inspect_source",
             subject=subject,
-            component_versions=_SOURCE_INSPECTION_COMPONENTS,
+            component_versions=self._component_versions,
             service_configurations=[],
             work_partition_policy_digest=_sha(b"study.source-inspection.partition.v1"),
         )
+        required_capabilities = [
+            {
+                "kind": "fixed",
+                "capabilityId": "runtime.card_service",
+                "implementationVersionOrDigest": "2.0.0",
+                "compatibilityContractVersion": "source-inspection-v1",
+            }
+        ]
+        if self._parser_binding is not None:
+            required_capabilities.extend(
+                [
+                    {
+                        "kind": "fixed",
+                        "capabilityId": "runtime.document_parsers",
+                        "implementationVersionOrDigest": (
+                            "sha256:" + self._parser_binding["workerSha256"]
+                        ),
+                        "compatibilityContractVersion": self._parser_binding[
+                            "sandboxPolicy"
+                        ],
+                    },
+                    {
+                        "kind": "fixed",
+                        "capabilityId": "source.pdf_text",
+                        "implementationVersionOrDigest": (
+                            "pypdf@" + self._parser_binding["pypdfVersion"]
+                        ),
+                        "compatibilityContractVersion": "pdf-text-layer-v1",
+                    },
+                ]
+            )
         capability, capability_digest = build_capability_binding(
-            [
-                {
-                    "kind": "fixed",
-                    "capabilityId": "runtime.card_service",
-                    "implementationVersionOrDigest": "2.0.0",
-                    "compatibilityContractVersion": "source-inspection-v1",
-                }
-            ]
+            required_capabilities
         )
         authorization, authorization_digest = build_authorization_binding(
             audience=audience,
@@ -530,7 +657,7 @@ class SourceInspectionRuntime:
             subject=subject,
             authorization_binding_digest=authorization_digest,
             capability_binding_digest=capability_digest,
-            component_versions=_SOURCE_INSPECTION_COMPONENTS,
+            component_versions=self._component_versions,
             service_bindings=[],
             operation_intent_digest=operation_digest,
             batch_policy_digest=_sha(b"study.source-inspection.batch.v1"),
@@ -545,6 +672,7 @@ class SourceInspectionRuntime:
         blob_ref: Mapping[str, Any],
         member_ref: str | None = None,
         maximum_bytes: int = _MAX_TEXT_BYTES,
+        maximum_nodes: int = _MAX_CONTENT_NODES,
     ) -> dict[str, Any]:
         size_bytes = blob_ref.get("sizeBytes")
         if (
@@ -630,6 +758,7 @@ class SourceInspectionRuntime:
             source_id=source_id,
             source_type=source_type,
             member_ref=member_ref,
+            maximum_nodes=maximum_nodes,
         )
         issues = []
         if truncated:
@@ -662,8 +791,352 @@ class SourceInspectionRuntime:
             "issueRefs": sorted(set(issues)),
         }
 
+    def _read_pdf_source(
+        self,
+        *,
+        source_id: str,
+        blob_ref: Mapping[str, Any],
+        member_ref: str | None = None,
+        maximum_text_bytes: int = _MAX_TEXT_BYTES,
+        maximum_nodes: int = _MAX_CONTENT_NODES,
+        deadline: float | None = None,
+    ) -> dict[str, Any]:
+        size_bytes = blob_ref.get("sizeBytes")
+        if (
+            isinstance(size_bytes, bool)
+            or not isinstance(size_bytes, int)
+            or size_bytes < 0
+        ):
+            raise SourceInspectionError(
+                "SOURCE_ASSET_CORRUPT", "Source Blob size is invalid"
+            )
+        if size_bytes > _MAX_DOCUMENT_BYTES:
+            return {
+                "text": "",
+                "nodes": [],
+                "supportTier": "C",
+                "status": "blocked",
+                "completeness": _completeness(
+                    "blocked",
+                    expected_units=None,
+                    processed_units=0,
+                    reason_codes=["SOURCE_ASYNC_INSPECTION_REQUIRED"],
+                ),
+                "issueRefs": ["SOURCE_ASYNC_INSPECTION_REQUIRED"],
+            }
+        if self._structured_source_parser is None:
+            return {
+                "text": "",
+                "nodes": [],
+                "supportTier": "C",
+                "status": "blocked",
+                "completeness": _completeness(
+                    "blocked",
+                    expected_units=1,
+                    processed_units=0,
+                    reason_codes=["SOURCE_PARSER_NOT_AVAILABLE"],
+                ),
+                "issueRefs": ["SOURCE_PARSER_NOT_AVAILABLE"],
+            }
+        remaining_seconds = 60.0
+        if deadline is not None:
+            remaining_seconds = min(remaining_seconds, deadline - time.monotonic())
+        if remaining_seconds <= 0:
+            return {
+                "text": "",
+                "nodes": [],
+                "supportTier": "C",
+                "status": "blocked",
+                "completeness": _completeness(
+                    "blocked",
+                    expected_units=None,
+                    processed_units=0,
+                    reason_codes=["SOURCE_INSPECTION_TIME_LIMIT_REACHED"],
+                ),
+                "issueRefs": ["SOURCE_INSPECTION_TIME_LIMIT_REACHED"],
+            }
+        try:
+            result = self._structured_source_parser(
+                source_type="pdf",
+                source_sha256=str(blob_ref.get("sha256") or ""),
+                source_size_bytes=size_bytes,
+                materialize=lambda destination: self._artifacts.materialize_blob(
+                    blob_ref, destination
+                ),
+                maximum_text_bytes=maximum_text_bytes,
+                maximum_execution_seconds=max(1.0, remaining_seconds),
+            )
+        except StructuredSourceParserError as error:
+            return {
+                "text": "",
+                "nodes": [],
+                "supportTier": "C",
+                "status": "blocked",
+                "completeness": _completeness(
+                    "blocked",
+                    expected_units=1,
+                    processed_units=0,
+                    reason_codes=[error.code],
+                ),
+                "issueRefs": [error.code],
+            }
+        if (
+            not isinstance(result, Mapping)
+            or set(result)
+            != {
+                "schema",
+                "schemaVersion",
+                "kind",
+                "status",
+                "parser",
+                "pageCount",
+                "pages",
+                "omittedPageCount",
+                "omittedPages",
+                "issueCodes",
+            }
+            or result.get("schema") != "study.source-parser-result"
+            or result.get("schemaVersion") != 1
+            or result.get("kind") != "pdf"
+            or result.get("status") not in {"conditional", "blocked"}
+            or not isinstance(result.get("parser"), Mapping)
+            or set(result["parser"]) != {"name", "version"}
+            or result["parser"].get("name") != "pypdf"
+            or result["parser"].get("version")
+            not in {self._parser_binding["pypdfVersion"], "unavailable"}
+            or isinstance(result.get("pageCount"), bool)
+            or not isinstance(result.get("pageCount"), int)
+            or not 0 <= result["pageCount"] <= 1_000_000
+            or not isinstance(result.get("pages"), list)
+            or len(result["pages"]) > 512
+            or isinstance(result.get("omittedPageCount"), bool)
+            or not isinstance(result.get("omittedPageCount"), int)
+            or not 0 <= result["omittedPageCount"] <= result["pageCount"]
+            or not isinstance(result.get("omittedPages"), list)
+            or len(result["omittedPages"]) > 256
+            or not isinstance(result.get("issueCodes"), list)
+            or not all(
+                isinstance(value, str) and value in _PDF_ISSUE_CODES
+                for value in result["issueCodes"]
+            )
+            or result["issueCodes"] != sorted(set(result["issueCodes"]))
+        ):
+            raise SourceInspectionError(
+                "SOURCE_PARSER_RESULT_INVALID", "Document parser result is invalid"
+            )
+        omitted_pages = result["omittedPages"]
+        omitted_page_count = result["omittedPageCount"]
+        if (
+            omitted_pages != sorted(set(omitted_pages))
+            or not all(
+                isinstance(value, int)
+                and not isinstance(value, bool)
+                and 1 <= value <= result["pageCount"]
+                for value in omitted_pages
+            )
+        ):
+            raise SourceInspectionError(
+                "SOURCE_PARSER_RESULT_INVALID", "Document parser omissions are invalid"
+            )
+        pages: list[tuple[int, str, int, int, bool]] = []
+        seen_pages: set[int] = set()
+        total_text_bytes = 0
+        for page in result["pages"]:
+            if (
+                not isinstance(page, Mapping)
+                or set(page)
+                != {
+                    "pageNumber",
+                    "text",
+                    "characterAnomalyCount",
+                    "imageObjectCount",
+                    "textTruncated",
+                }
+            ):
+                raise SourceInspectionError(
+                    "SOURCE_PARSER_RESULT_INVALID", "Document parser page is invalid"
+                )
+            page_number = page.get("pageNumber")
+            text = page.get("text")
+            anomaly_count = page.get("characterAnomalyCount")
+            image_count = page.get("imageObjectCount")
+            text_truncated = page.get("textTruncated")
+            if (
+                isinstance(page_number, bool)
+                or not isinstance(page_number, int)
+                or not 1 <= page_number <= result["pageCount"]
+                or page_number in seen_pages
+                or not isinstance(text, str)
+                or len(text.encode("utf-8")) > 1024 * 1024
+                or isinstance(anomaly_count, bool)
+                or not isinstance(anomaly_count, int)
+                or not 0 <= anomaly_count <= len(text)
+                or isinstance(image_count, bool)
+                or not isinstance(image_count, int)
+                or not 0 <= image_count <= 4096
+                or not isinstance(text_truncated, bool)
+            ):
+                raise SourceInspectionError(
+                    "SOURCE_PARSER_RESULT_INVALID", "Document parser page values are invalid"
+                )
+            normalized, decode_issue = _decode_text(text.encode("utf-8"), truncated=False)
+            if normalized is None or decode_issue is not None or normalized != text:
+                raise SourceInspectionError(
+                    "SOURCE_PARSER_RESULT_INVALID", "Document parser text is not canonical"
+                )
+            total_text_bytes += len(text.encode("utf-8"))
+            if total_text_bytes > maximum_text_bytes:
+                raise SourceInspectionError(
+                    "SOURCE_PARSER_RESULT_INVALID", "Document parser exceeded its text limit"
+                )
+            seen_pages.add(page_number)
+            pages.append(
+                (page_number, text, anomaly_count, image_count, text_truncated)
+            )
+        if (
+            [page[0] for page in pages] != sorted(seen_pages)
+            or seen_pages.intersection(omitted_pages)
+            or omitted_page_count < len(omitted_pages)
+            or len(pages) + omitted_page_count != result["pageCount"]
+        ):
+            raise SourceInspectionError(
+                "SOURCE_PARSER_RESULT_INVALID", "Document parser pages are not canonical"
+            )
+        issues = sorted(set(result["issueCodes"]))
+        issue_set = set(issues)
+        has_text = any(page[1].strip() for page in pages)
+        has_anomalies = any(page[2] > 0 for page in pages)
+        has_images = any(page[3] > 0 for page in pages)
+        has_truncation = any(page[4] for page in pages)
+        parser_unavailable = result["parser"]["version"] == "unavailable"
+        if (
+            (result["status"] == "blocked" and has_text)
+            or (result["status"] == "conditional" and not has_text)
+            or (
+                parser_unavailable
+                and (
+                    result["status"] != "blocked"
+                    or result["pageCount"] != 0
+                    or pages
+                    or omitted_page_count != 0
+                    or issue_set != {"SOURCE_PDF_PARSER_UNAVAILABLE"}
+                )
+            )
+            or (has_anomalies != ("SOURCE_PDF_CHARACTER_ANOMALIES" in issue_set))
+            or (has_images != ("SOURCE_PDF_IMAGES_OMITTED" in issue_set))
+            or (has_truncation and "SOURCE_PDF_TEXT_LIMIT_REACHED" not in issue_set)
+            or (
+                result["pageCount"] > 512
+                and "SOURCE_PDF_PAGE_LIMIT_REACHED" not in issue_set
+            )
+            or (
+                result["pageCount"] <= 512
+                and "SOURCE_PDF_PAGE_LIMIT_REACHED" in issue_set
+            )
+            or (
+                result["parser"]["version"] != "unavailable"
+                and result["pageCount"] > 0
+                and "SOURCE_PDF_LAYOUT_PARTIAL" not in issue_set
+            )
+            or (
+                omitted_page_count > 0
+                and not issue_set.intersection(
+                    {
+                        "SOURCE_PDF_PAGE_LIMIT_REACHED",
+                        "SOURCE_PDF_PAGE_UNREADABLE",
+                        "SOURCE_PDF_TEXT_LIMIT_REACHED",
+                    }
+                )
+            )
+            or (
+                (not has_text)
+                != ("SOURCE_PDF_TEXT_LAYER_EMPTY" in issue_set)
+                and result["pageCount"] > 0
+            )
+        ):
+            raise SourceInspectionError(
+                "SOURCE_PARSER_RESULT_INVALID",
+                "Document parser status and issue relationships are inconsistent",
+            )
+        combined: list[str] = []
+        nodes: list[dict[str, Any]] = []
+        represented_pages: set[int] = set()
+        cursor = 0
+        for page_number, text, _, _, _ in pages:
+            if not text.strip():
+                issues.append("SOURCE_PDF_EMPTY_PAGES")
+                continue
+            if len(nodes) >= _MAX_CONTENT_NODES:
+                issues.append("SOURCE_NODE_LIMIT_REACHED")
+                break
+            if combined:
+                combined.append("\n\n")
+                cursor += 2
+            page_nodes, node_limit = _text_nodes(
+                text,
+                source_id=source_id,
+                source_type="text",
+                member_ref=member_ref,
+                order_offset=len(nodes),
+                maximum_nodes=max(0, maximum_nodes - len(nodes)),
+            )
+            for node in page_nodes:
+                adjusted = _clone(node)
+                adjusted["attributes"]["pageNumber"] = page_number
+                adjusted["attributes"]["textStart"] += cursor
+                adjusted["attributes"]["textEnd"] += cursor
+                adjusted["locator"]["start"] += cursor
+                adjusted["locator"]["end"] += cursor
+                adjusted["locator"]["pageNumber"] = page_number
+                adjusted["extractionConfidence"] = 0.85
+                nodes.append(adjusted)
+            if node_limit:
+                issues.append("SOURCE_NODE_LIMIT_REACHED")
+            else:
+                represented_pages.add(page_number)
+            combined.append(text)
+            cursor += len(text)
+            if len(nodes) >= maximum_nodes:
+                break
+        issues = sorted(set(issues))
+        if not nodes:
+            state, tier, status = "blocked", "C", "blocked"
+        else:
+            state, tier, status = "partial_declared", "B", "conditional"
+        all_omitted_pages = sorted(
+            set(omitted_pages).union(seen_pages - represented_pages)
+        )
+        omitted_locators = [
+            {"kind": "pdf_page", "pageNumber": value}
+            for value in all_omitted_pages[:256]
+        ]
+        return {
+            "text": "".join(combined),
+            "nodes": nodes,
+            "supportTier": tier,
+            "status": status,
+            "extractor": {
+                "component": "source-parser-worker",
+                "name": "pypdf",
+                "version": result["parser"]["version"],
+            },
+            "completeness": _completeness(
+                state,
+                expected_units=result["pageCount"],
+                processed_units=len(represented_pages),
+                omitted_units=result["pageCount"] - len(represented_pages),
+                reason_codes=issues,
+                omitted_locators=omitted_locators,
+            ),
+            "issueRefs": issues,
+        }
+
     def _inspect_directory(
-        self, *, source_id: str, manifest_blob_ref: Mapping[str, Any]
+        self,
+        *,
+        source_id: str,
+        manifest_blob_ref: Mapping[str, Any],
+        deadline: float | None = None,
     ) -> dict[str, Any]:
         manifest_size = manifest_blob_ref.get("sizeBytes")
         if (
@@ -758,15 +1231,25 @@ class SourceInspectionRuntime:
         processed_files = 0
         issue_refs: list[str] = []
         omitted: list[dict[str, Any]] = []
+        omitted_units = 0
         remaining_bytes = _MAX_DIRECTORY_TEXT_BYTES
+        parsed_documents = 0
         for index, entry in enumerate(entries):
             relative = entry["relativeLocator"]
             source_type = _source_type_for_member(relative)
+            document_limit_reached = (
+                source_type in _SUPPORTED_DOCUMENT_TYPES
+                and parsed_documents >= _MAX_DIRECTORY_DOCUMENTS
+            )
+            time_limit_reached = deadline is not None and time.monotonic() >= deadline
             if (
                 index >= _MAX_DIRECTORY_FILES
-                or source_type not in _SUPPORTED_TEXT_TYPES
+                or source_type not in _SUPPORTED_INSPECTION_TYPES
                 or remaining_bytes <= 0
+                or document_limit_reached
+                or time_limit_reached
             ):
+                omitted_units += 1
                 if len(omitted) < 256:
                     omitted.append(
                         {
@@ -780,18 +1263,35 @@ class SourceInspectionRuntime:
                     issue_refs.append("SOURCE_DIRECTORY_FILE_LIMIT_REACHED")
                 elif remaining_bytes <= 0:
                     issue_refs.append("SOURCE_DIRECTORY_TEXT_LIMIT_REACHED")
+                elif document_limit_reached:
+                    issue_refs.append("SOURCE_DIRECTORY_DOCUMENT_LIMIT_REACHED")
+                elif time_limit_reached:
+                    issue_refs.append("SOURCE_INSPECTION_TIME_LIMIT_REACHED")
                 else:
                     issue_refs.append("SOURCE_MEMBER_UNSUPPORTED")
                 continue
-            extracted = self._read_text_source(
-                source_id=source_id,
-                source_type=source_type,
-                blob_ref=entry["blobRef"],
-                member_ref=relative,
-                maximum_bytes=min(_MAX_TEXT_BYTES, remaining_bytes),
-            )
+            if source_type == "pdf":
+                parsed_documents += 1
+                extracted = self._read_pdf_source(
+                    source_id=source_id,
+                    blob_ref=entry["blobRef"],
+                    member_ref=relative,
+                    maximum_text_bytes=min(_MAX_TEXT_BYTES, remaining_bytes),
+                    maximum_nodes=max(0, _MAX_CONTENT_NODES - len(nodes)),
+                    deadline=deadline,
+                )
+            else:
+                extracted = self._read_text_source(
+                    source_id=source_id,
+                    source_type=source_type,
+                    blob_ref=entry["blobRef"],
+                    member_ref=relative,
+                    maximum_bytes=min(_MAX_TEXT_BYTES, remaining_bytes),
+                    maximum_nodes=max(0, _MAX_CONTENT_NODES - len(nodes)),
+                )
             issue_refs.extend(extracted["issueRefs"])
             if not extracted["nodes"]:
+                omitted_units += 1
                 if len(omitted) < 256:
                     omitted.append(
                         {
@@ -824,6 +1324,17 @@ class SourceInspectionRuntime:
             remaining_bytes -= len(text.encode("utf-8"))
             processed_files += 1
             if len(nodes) >= _MAX_CONTENT_NODES:
+                remaining_members = len(entries) - index - 1
+                omitted_units += remaining_members
+                for pending in entries[index + 1 : index + 1 + max(0, 256 - len(omitted))]:
+                    omitted.append(
+                        {
+                            "kind": "code",
+                            "pathRef": pending["relativeLocator"],
+                            "startLine": 1,
+                            "endLine": 1,
+                        }
+                    )
                 break
         if processed_files < len(entries) and not issue_refs:
             issue_refs.append("SOURCE_DIRECTORY_PARTIAL")
@@ -843,13 +1354,31 @@ class SourceInspectionRuntime:
                 state,
                 expected_units=len(entries),
                 processed_units=processed_files,
+                omitted_units=omitted_units,
                 reason_codes=issue_refs,
                 omitted_locators=omitted,
             ),
             "issueRefs": issue_refs,
         }
 
-    def _inspect_payload(self, source: Mapping[str, Any]) -> dict[str, Any]:
+    def _inspect_payload(
+        self, source: Mapping[str, Any], *, deadline: float | None = None
+    ) -> dict[str, Any]:
+        if deadline is not None and time.monotonic() >= deadline:
+            return {
+                "text": "",
+                "nodes": [],
+                "supportTier": "C",
+                "status": "blocked",
+                "completeness": _completeness(
+                    "blocked",
+                    expected_units=None,
+                    processed_units=0,
+                    omitted_units=1,
+                    reason_codes=["SOURCE_INSPECTION_TIME_LIMIT_REACHED"],
+                ),
+                "issueRefs": ["SOURCE_INSPECTION_TIME_LIMIT_REACHED"],
+            }
         source_id = source.get("sourceId")
         source_type = source.get("sourceType")
         representations = source.get("representations")
@@ -868,6 +1397,13 @@ class SourceInspectionRuntime:
             return self._inspect_directory(
                 source_id=source_id,
                 manifest_blob_ref=representations[0]["blobRef"],
+                deadline=deadline,
+            )
+        if source_type == "pdf":
+            return self._read_pdf_source(
+                source_id=source_id,
+                blob_ref=representations[0]["blobRef"],
+                deadline=deadline,
             )
         if source_type not in _SUPPORTED_TEXT_TYPES:
             return {
@@ -900,9 +1436,10 @@ class SourceInspectionRuntime:
         input_fingerprint: str,
         operation_digest: str,
         index: int,
+        deadline: float | None = None,
     ) -> str:
         source = source_envelope["payload"]
-        extracted = self._inspect_payload(source)
+        extracted = self._inspect_payload(source, deadline=deadline)
         representation_refs: list[dict[str, Any]] = []
         if extracted["nodes"]:
             text_blob = self._artifacts.put_blob(
@@ -922,14 +1459,21 @@ class SourceInspectionRuntime:
                 "kind": (
                     "subtitle_cues"
                     if source["sourceType"] == "subtitle"
-                    else "plain_text"
+                    else (
+                        "pdf_text_layer"
+                        if source["sourceType"] == "pdf"
+                        else "plain_text"
+                    )
                 ),
                 "plainTextBlobRef": text_blob,
                 "contentNodes": extracted["nodes"],
-                "extractor": {
-                    "component": "source-inspection",
-                    "version": "1.0.0",
-                },
+                "extractor": extracted.get(
+                    "extractor",
+                    {
+                        "component": "source-inspection",
+                        "version": "1.0.0",
+                    },
+                ),
                 "completeness": extracted["completeness"],
                 "issueRefs": extracted["issueRefs"],
             }
@@ -1113,8 +1657,9 @@ class SourceInspectionRuntime:
                                 "expectedUnits"
                             ),
                             "processedUnits": payload["completeness"]["processedUnits"],
-                            "omittedCount": len(
-                                payload["completeness"]["omittedLocators"]
+                            "omittedCount": payload["completeness"].get(
+                                "omittedUnits",
+                                len(payload["completeness"]["omittedLocators"]),
                             ),
                             "reasonCodes": payload["completeness"]["reasonCodes"],
                         },
@@ -1253,6 +1798,7 @@ class SourceInspectionRuntime:
                         expected_revision=task["taskRevision"],
                         operation_id="start-" + operation_digest[:40],
                     )
+                inspection_deadline = time.monotonic() + 5 * 60
                 detail_handles: list[str] = []
                 for index, (source_ref, source_envelope) in enumerate(resolved):
                     unit_id = f"inspect-{index:04d}"
@@ -1287,6 +1833,7 @@ class SourceInspectionRuntime:
                         input_fingerprint=input_fingerprint,
                         operation_digest=operation_digest,
                         index=index,
+                        deadline=inspection_deadline,
                     )
                     task = self._tasks.get_task(task_id, audience)
                     self._tasks.complete_work_unit(
@@ -1461,4 +2008,9 @@ class SourceInspectionRuntime:
         )
 
 
-__all__ = ["SourceInspectionError", "SourceInspectionRuntime"]
+__all__ = [
+    "SourceInspectionError",
+    "SourceInspectionRuntime",
+    "StructuredSourceParser",
+    "StructuredSourceParserError",
+]

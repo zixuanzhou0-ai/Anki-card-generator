@@ -384,7 +384,22 @@ class ArtifactRegistry:
         reasons = value.get("reasonCodes", [])
         if not isinstance(omitted, list) or not isinstance(reasons, list):
             raise ArtifactRegistryError("ARTIFACT_COMPLETENESS_INVALID", "Completeness lists are invalid")
-        if value.get("state") == "complete" and (omitted or reasons):
+        omitted_units = value.get("omittedUnits")
+        if (
+            omitted_units is not None
+            and (
+                isinstance(omitted_units, bool)
+                or not isinstance(omitted_units, int)
+                or omitted_units < len(omitted)
+            )
+        ):
+            raise ArtifactRegistryError(
+                "ARTIFACT_COMPLETENESS_INVALID",
+                "Completeness omitted unit count is invalid",
+            )
+        if value.get("state") == "complete" and (
+            omitted or reasons or (omitted_units not in {None, 0})
+        ):
             raise ArtifactRegistryError("ARTIFACT_COMPLETENESS_INVALID", "Complete artifacts cannot declare omissions")
 
     @staticmethod

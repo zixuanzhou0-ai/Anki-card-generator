@@ -10,6 +10,10 @@ from card_service.artifact_registry import ArtifactAudienceBinding
 from card_service.credentials import CredentialStore, InMemoryCredentialBackend
 from card_service.project_registry import ProjectRegistryError
 from card_service.resource_runtime import ServiceResourceRuntime
+from card_service.source_inspection import (
+    SourceInspectionError,
+    StructuredSourceParserError,
+)
 from card_service.study_runtime import StudyRuntime, StudyRuntimeError
 
 
@@ -27,7 +31,7 @@ def audience(**changes: str) -> ArtifactAudienceBinding:
     return ArtifactAudienceBinding(**values)
 
 
-def environment(tmp_path: Path):
+def environment(tmp_path: Path, *, structured_source_parser=None):
     backend = InMemoryCredentialBackend()
     credentials = (tmp_path / "credentials").resolve()
     resources = ServiceResourceRuntime(
@@ -41,6 +45,16 @@ def environment(tmp_path: Path):
         state_dir=(tmp_path / "study").resolve(),
         credential_store=CredentialStore(state_dir=credentials, backend=backend),
         resource_runtime=resources,
+        structured_source_parser=structured_source_parser,
+        structured_source_parser_binding=(
+            {
+                "workerSha256": hashlib.sha256(b"fake-source-parser").hexdigest(),
+                "pypdfVersion": "6.14.2",
+                "sandboxPolicy": "windows-appcontainer-job-no-network-v1",
+            }
+            if structured_source_parser is not None
+            else None
+        ),
     )
     project = runtime.create_project(
         audience=audience(),
@@ -210,7 +224,7 @@ def test_directory_inspection_declares_unsupported_members_instead_of_hiding_the
     assert row["completeness"]["expectedUnits"] == 2
     assert row["completeness"]["processedUnits"] == 1
     assert row["completeness"]["omittedCount"] == 1
-    assert "SOURCE_MEMBER_UNSUPPORTED" in row["issueCodes"]
+    assert "SOURCE_PARSER_NOT_AVAILABLE" in row["issueCodes"]
     assert result["nextAction"] == "discover_candidates"
     serialized = json.dumps(result, ensure_ascii=False)
     assert str(source) not in serialized
@@ -241,6 +255,240 @@ def test_unsupported_source_is_blocked_and_keeps_resolution_as_next_action(
         ]
         == "resolve_issue"
     )
+
+
+def test_pdf_text_layer_is_bounded_structured_and_path_free(tmp_path: Path) -> None:
+    calls = []
+
+    def parse_pdf(**request):
+        materialized_root = tmp_path / "fake-parser-workspace"
+        materialized_root.mkdir(exist_ok=True)
+        materialized_path = materialized_root / "source.pdf"
+        receipt = request["materialize"](materialized_path)
+        calls.append(
+            {
+                key: value
+                for key, value in request.items()
+                if key != "materialize"
+            }
+        )
+        assert receipt == {
+            "sha256": hashlib.sha256(
+                b"%PDF-1.7\nverified fixture"
+            ).hexdigest(),
+            "sizeBytes": len(b"%PDF-1.7\nverified fixture"),
+            "path": str(materialized_path),
+        }
+        assert materialized_path.read_bytes() == b"%PDF-1.7\nverified fixture"
+        return {
+            "schema": "study.source-parser-result",
+            "schemaVersion": 1,
+            "kind": "pdf",
+            "status": "conditional",
+            "parser": {"name": "pypdf", "version": "6.14.2"},
+            "pageCount": 2,
+            "pages": [
+                {
+                    "pageNumber": 1,
+                    "text": "Reliable learning\n\nRecall first, then verify.",
+                    "characterAnomalyCount": 0,
+                    "imageObjectCount": 0,
+                    "textTruncated": False,
+                },
+                {
+                    "pageNumber": 2,
+                    "text": "Apply the idea in a new context.",
+                    "characterAnomalyCount": 0,
+                    "imageObjectCount": 1,
+                    "textTruncated": False,
+                },
+            ],
+            "omittedPageCount": 0,
+            "omittedPages": [],
+            "issueCodes": [
+                "SOURCE_PDF_IMAGES_OMITTED",
+                "SOURCE_PDF_LAYOUT_PARTIAL",
+            ],
+        }
+
+    resources, runtime, project = environment(
+        tmp_path, structured_source_parser=parse_pdf
+    )
+    assert runtime.capabilities()["sourceAdapters"]["pdfTextLayer"] == {
+        "available": True,
+        "supportTier": "B",
+        "blockerCode": None,
+    }
+    source = (tmp_path / "lesson.pdf").resolve()
+    source.write_bytes(b"%PDF-1.7\nverified fixture")
+    registration = register(
+        runtime, project, input_ref(resources, source, request_id="pdf-text-layer")
+    )
+
+    result = inspect(runtime, project, registration)
+
+    assert result["sources"][0]["status"] == "conditional"
+    assert result["sources"][0]["supportTier"] == "B"
+    assert result["sources"][0]["contentNodeCount"] == 3
+    assert result["sources"][0]["issueCodes"] == [
+        "SOURCE_PDF_IMAGES_OMITTED",
+        "SOURCE_PDF_LAYOUT_PARTIAL",
+    ]
+    assert calls == [
+        {
+            "source_type": "pdf",
+            "source_sha256": hashlib.sha256(
+                b"%PDF-1.7\nverified fixture"
+            ).hexdigest(),
+            "source_size_bytes": len(b"%PDF-1.7\nverified fixture"),
+            "maximum_text_bytes": 8 * 1024 * 1024,
+            "maximum_execution_seconds": 60.0,
+        }
+    ]
+    project_after = runtime.get_project(project["projectId"], audience())
+    representation_ref = next(
+        value
+        for value in project_after["latestArtifactRefs"]
+        if value["artifactId"].startswith("representation_")
+    )
+    representation = runtime.artifacts.verify_ref(representation_ref, audience())[
+        "payload"
+    ]
+    assert representation["kind"] == "pdf_text_layer"
+    assert representation["extractor"] == {
+        "component": "source-parser-worker",
+        "name": "pypdf",
+        "version": "6.14.2",
+    }
+    assert [node["attributes"]["pageNumber"] for node in representation["contentNodes"]] == [
+        1,
+        1,
+        2,
+    ]
+    assert [node["locator"]["pageNumber"] for node in representation["contentNodes"]] == [
+        1,
+        1,
+        2,
+    ]
+    assert result["sources"][0]["completeness"]["omittedCount"] == 0
+    public = json.dumps(result, ensure_ascii=False)
+    assert str(source) not in public
+    assert "Reliable learning" not in public
+
+
+def test_pdf_parser_result_fails_closed_when_schema_is_not_exact(tmp_path: Path) -> None:
+    def invalid_parser(**_request):
+        return {
+            "schema": "study.source-parser-result",
+            "schemaVersion": 1,
+            "kind": "pdf",
+            "status": "conditional",
+            "parser": {"name": "pypdf", "version": "6.14.2"},
+            "pageCount": 1,
+            "pages": [],
+            "omittedPageCount": 0,
+            "omittedPages": [],
+            "issueCodes": ["SOURCE_PDF_LAYOUT_PARTIAL"],
+            "unexpected": "must be rejected",
+        }
+
+    resources, runtime, project = environment(
+        tmp_path, structured_source_parser=invalid_parser
+    )
+    source = (tmp_path / "invalid-result.pdf").resolve()
+    source.write_bytes(b"%PDF-1.7\nfixture")
+    registration = register(
+        runtime, project, input_ref(resources, source, request_id="pdf-invalid-result")
+    )
+
+    with pytest.raises(StudyRuntimeError) as failed:
+        inspect(runtime, project, registration)
+    assert failed.value.code == "SOURCE_PARSER_RESULT_INVALID"
+
+
+def test_pdf_parser_execution_failure_becomes_a_completed_blocked_inspection(
+    tmp_path: Path,
+) -> None:
+    def failed_parser(**_request):
+        raise StructuredSourceParserError("SOURCE_PARSER_TIMEOUT")
+
+    resources, runtime, project = environment(
+        tmp_path, structured_source_parser=failed_parser
+    )
+    source = (tmp_path / "timeout.pdf").resolve()
+    source.write_bytes(b"%PDF-1.7\nfixture")
+    registration = register(
+        runtime, project, input_ref(resources, source, request_id="pdf-timeout")
+    )
+
+    result = inspect(runtime, project, registration)
+
+    assert result["completeness"]["state"] == "blocked"
+    assert result["sources"][0]["issueCodes"] == ["SOURCE_PARSER_TIMEOUT"]
+    assert runtime.tasks.get_task(result["taskId"], audience())["state"] == "succeeded"
+
+
+@pytest.mark.parametrize(
+    "contradiction",
+    [
+        "omission_overlap",
+        "blocked_with_text",
+        "unavailable_with_text",
+        "image_issue_missing",
+        "truncation_issue_missing",
+    ],
+)
+def test_pdf_parser_relational_contradictions_fail_closed(
+    tmp_path: Path,
+    contradiction: str,
+) -> None:
+    result = {
+        "schema": "study.source-parser-result",
+        "schemaVersion": 1,
+        "kind": "pdf",
+        "status": "conditional",
+        "parser": {"name": "pypdf", "version": "6.14.2"},
+        "pageCount": 1,
+        "pages": [
+            {
+                "pageNumber": 1,
+                "text": "Verified text",
+                "characterAnomalyCount": 0,
+                "imageObjectCount": 0,
+                "textTruncated": False,
+            }
+        ],
+        "omittedPageCount": 0,
+        "omittedPages": [],
+        "issueCodes": ["SOURCE_PDF_LAYOUT_PARTIAL"],
+    }
+    if contradiction == "omission_overlap":
+        result["omittedPageCount"] = 1
+        result["omittedPages"] = [1]
+    elif contradiction == "blocked_with_text":
+        result["status"] = "blocked"
+    elif contradiction == "unavailable_with_text":
+        result["status"] = "blocked"
+        result["parser"] = {"name": "pypdf", "version": "unavailable"}
+        result["issueCodes"] = ["SOURCE_PDF_PARSER_UNAVAILABLE"]
+    elif contradiction == "image_issue_missing":
+        result["pages"][0]["imageObjectCount"] = 1
+    else:
+        result["pages"][0]["textTruncated"] = True
+
+    _resources, runtime, _project = environment(
+        tmp_path,
+        structured_source_parser=lambda **_request: result,
+    )
+    blob_ref = runtime.artifacts.put_blob(b"%PDF fixture", media_type="application/pdf")
+
+    with pytest.raises(SourceInspectionError) as failed:
+        runtime.source_inspection._read_pdf_source(
+            source_id="source-invalid",
+            blob_ref=blob_ref,
+        )
+
+    assert failed.value.code == "SOURCE_PARSER_RESULT_INVALID"
 
 
 def test_inspection_retry_is_idempotent_and_reissues_the_summary_handle(

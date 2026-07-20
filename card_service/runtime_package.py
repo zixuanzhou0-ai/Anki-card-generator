@@ -54,6 +54,7 @@ REQUIRED_RUNTIME_RESOURCES = frozenset(
         "card-service:windows-sandbox-acl",
         "legacy-worker:entry",
         "legacy-worker:module:acg/media_tool_policy.py",
+        "legacy-worker:module:acg/source_parser_worker.py",
         "managed-tool:ffmpeg",
         "managed-tool:ffprobe",
         "managed-tool:yt-dlp",

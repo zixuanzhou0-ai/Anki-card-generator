@@ -11,9 +11,9 @@
 3. 受信网络来源出口：`system.request_network_grant` 只打开本地受信 URL 输入窗口，raw URL 不进入 MCP；`study.register_inputs` 已能对静态网页做匿名固定 IP HTTPS 快照，并把 YouTube public_video 缩成规范化 videoId 后获取字幕快照。网络授权可由统一管理器撤销，Service 重启后旧 ref 要求重新授权。
 4. Learning Contract 更新出口：`study.update_learning_contract` 只接受九类封闭语义操作、当前 project/contract revision 与稳定 operationId。Service 按真实变化从 discovery、selection 或 planning 开始失效下游，把过期 Artifact 从项目 current/latest 指针中移除，同时保留不可变审计历史；公共响应只返回仍可靠的 opaque ArtifactHandle。
 
-网络切片的历史证据是 98 项定向回归、`1653 passed, 1 skipped` 的当时 Python 全集和 Computer Use 受信窗口验证；Learning Contract 公共出口新增 73 项定向组合回归，当前正式 Python `tests` 全集为 `1665 passed, 1 skipped`。前端 830 项、Worker 600 项、UI smoke、Rust 31 项通过与 1 项按设计忽略、plugin/Skill validator 均通过；真实 Codex `0.144.1` app-server 已验证可信会话枚举 38 个工具并实际创建项目/更新合同到 projectRevision=2、contractRevision=2，不可信会话仍只枚举 `system.get_capabilities`。真实公网长期可用性、正式安装布局与完整媒体 acquisition 仍属于后续验收，不能从这些切片提前推导。
+网络切片的历史证据是 98 项定向回归、`1653 passed, 1 skipped` 的当时 Python 全集和 Computer Use 受信窗口验证；Learning Contract 公共出口新增 73 项定向组合回归。文本层 PDF 切片补充了独立 Worker、页覆盖关系、20,000 节点、沙箱错误、真实遗漏计数和下游页证据测试；当前正式 Python `tests` 全集为 `1681 passed, 1 skipped`。前端 830 项、Worker 600 项、UI smoke、Rust 31 项通过与 1 项按设计忽略、plugin/Skill validator 均通过；真实 Codex `0.144.1` app-server 已验证可信会话枚举 38 个工具并实际创建项目/更新合同到 projectRevision=2、contractRevision=2，不可信会话仍只枚举 `system.get_capabilities`。真实公网长期可用性、正式安装布局与完整媒体 acquisition 仍属于后续验收，不能从这些切片提前推导。
 
-因此，“公共 start_discovery 尚未注册”“anki.import_and_verify 是下一出口”“Anki 写工具仍未开放”“生产受信 URL 输入尚未接线”“Learning Contract 只在内部实现”等句子只记录早期切片，已被本节取代。仍未完成的是：宿主附件、完整视频/音频/播客 acquisition、PDF/Office 解析、动态或登录网页、模型扩写/TTS/媒体生成、非发现任务恢复、R8b runtime rendering/playback/restart verifier，以及正式发布签名与可安装插件/App UI。
+因此，“公共 start_discovery 尚未注册”“anki.import_and_verify 是下一出口”“Anki 写工具仍未开放”“生产受信 URL 输入尚未接线”“Learning Contract 只在内部实现”“PDF 一律不支持”等句子只记录早期切片，已被本节取代。CURRENT 新增文本层 PDF 的受限解析：仅签名托管 runtime 在 Windows AppContainer + Job Object 中运行固定 pypdf Worker，页码和真实遗漏计数进入认证来源图，开发态、扫描件或沙箱不可用时失败关闭。仍未完成的是：宿主附件、完整视频/音频/播客 acquisition、Office/扫描 PDF、动态或登录网页、模型扩写/TTS/媒体生成、非发现任务恢复、R8b runtime rendering/playback/restart verifier，以及正式发布签名与可安装插件/App UI。
 
 > 状态：CURRENT 实施跟踪 + PROPOSED 后续路线
 > 日期：2026-07-17
