@@ -23,12 +23,14 @@ from card_service.plugin_release_trust import (
 )
 from card_service.runtime_manifest import canonical_bytes
 from card_service.runtime_trust import encode_base64url
-from tests.test_plugin_bundle import build
+from tests.test_plugin_bundle import PLUGIN_VERSION, build
 
 
 ROOT = Path(__file__).resolve().parents[1]
 TEST_NOW = datetime(2026, 7, 18, 12, 0, 0, tzinfo=timezone.utc)
-TEST_KEY = Ed25519PrivateKey.from_private_bytes(hashlib.sha256(b"plugin-release-test-key-v1").digest())
+TEST_KEY = Ed25519PrivateKey.from_private_bytes(
+    hashlib.sha256(b"plugin-release-test-key-v1").digest()
+)
 TEST_PUBLIC_KEY = TEST_KEY.public_key().public_bytes(
     encoding=serialization.Encoding.Raw,
     format=serialization.PublicFormat.Raw,
@@ -72,7 +74,9 @@ def write_policy(
     return path, PluginReleaseTrustPolicy.load(path)
 
 
-def request_for(bundle_root: Path, policy: PluginReleaseTrustPolicy) -> dict[str, object]:
+def request_for(
+    bundle_root: Path, policy: PluginReleaseTrustPolicy
+) -> dict[str, object]:
     return build_plugin_release_signing_request(
         (bundle_root / "release-package-v1.json").resolve(),
         trust_policy=policy,
@@ -92,7 +96,9 @@ def write_signature(
     root.mkdir(parents=True, exist_ok=True)
     unsigned = dict(request["unsignedEnvelope"])
     signature = dict(unsigned)
-    signature["signature"] = encode_base64url(key.sign(plugin_release_signature_message(unsigned)))
+    signature["signature"] = encode_base64url(
+        key.sign(plugin_release_signature_message(unsigned))
+    )
     path = (root / SIGNATURE_FILE_NAME).resolve()
     path.write_bytes(canonical_bytes(signature))
     return path
@@ -111,7 +117,9 @@ def verify(root: Path, policy: PluginReleaseTrustPolicy, signature: Path):
     )
 
 
-def test_public_only_signing_request_is_deterministic_and_signature_verifies(tmp_path: Path) -> None:
+def test_public_only_signing_request_is_deterministic_and_signature_verifies(
+    tmp_path: Path,
+) -> None:
     bundle = build(tmp_path / "bundle")
     _, policy = write_policy(tmp_path)
     first = request_for(bundle.root, policy)
@@ -120,9 +128,12 @@ def test_public_only_signing_request_is_deterministic_and_signature_verifies(tmp
     assert first == second
     assert first["privateKeyRead"] is False
     assert first["networkUsed"] is False
-    assert first["signingMessageSha256"] == hashlib.sha256(
-        plugin_release_signature_message(first["unsignedEnvelope"])
-    ).hexdigest()
+    assert (
+        first["signingMessageSha256"]
+        == hashlib.sha256(
+            plugin_release_signature_message(first["unsignedEnvelope"])
+        ).hexdigest()
+    )
     output = (tmp_path / "request.json").resolve()
     digest = write_plugin_release_signing_request(output, first)
     assert digest == hashlib.sha256(output.read_bytes()).hexdigest()
@@ -132,11 +143,13 @@ def test_public_only_signing_request_is_deterministic_and_signature_verifies(tmp
     verified = verify(bundle.root, policy, signature)
     assert verified.authority == "anki-study-agent.release"
     assert verified.package_id == "anki-study-agent-plugin"
-    assert verified.plugin_version == "0.1.0"
+    assert verified.plugin_version == PLUGIN_VERSION
     assert verified.manifest_sha256 == first["unsignedEnvelope"]["manifestSha256"]
 
 
-def test_signing_request_never_overwrites_and_rejects_invalid_windows(tmp_path: Path) -> None:
+def test_signing_request_never_overwrites_and_rejects_invalid_windows(
+    tmp_path: Path,
+) -> None:
     bundle = build(tmp_path / "bundle")
     _, policy = write_policy(tmp_path)
     request = request_for(bundle.root, policy)
@@ -167,13 +180,17 @@ def test_signing_request_never_overwrites_and_rejects_invalid_windows(tmp_path: 
     assert alternate_stream.value.code == "PLUGIN_RELEASE_SIGNING_REQUEST_PATH_INVALID"
 
 
-def test_signature_rejects_forgery_revocation_expiry_and_manifest_change(tmp_path: Path) -> None:
+def test_signature_rejects_forgery_revocation_expiry_and_manifest_change(
+    tmp_path: Path,
+) -> None:
     bundle = build(tmp_path / "bundle")
     _, policy = write_policy(tmp_path)
     request = request_for(bundle.root, policy)
     signature = write_signature(tmp_path, request)
 
-    forged_key = Ed25519PrivateKey.from_private_bytes(hashlib.sha256(b"forged-plugin-release-key").digest())
+    forged_key = Ed25519PrivateKey.from_private_bytes(
+        hashlib.sha256(b"forged-plugin-release-key").digest()
+    )
     _, forged_policy = write_policy(tmp_path, key=forged_key, sequence=2)
     with pytest.raises(PluginReleaseTrustError) as forged:
         verify(bundle.root, forged_policy, signature)
@@ -214,7 +231,9 @@ def test_signature_rejects_forgery_revocation_expiry_and_manifest_change(tmp_pat
 
 def test_policy_rejects_noncanonical_and_revoked_release(tmp_path: Path) -> None:
     bundle = build(tmp_path / "bundle")
-    manifest_digest = hashlib.sha256((bundle.root / "release-package-v1.json").read_bytes()).hexdigest()
+    manifest_digest = hashlib.sha256(
+        (bundle.root / "release-package-v1.json").read_bytes()
+    ).hexdigest()
     path, _ = write_policy(tmp_path, revoked_manifests=[manifest_digest])
     policy = PluginReleaseTrustPolicy.load(path)
     with pytest.raises(PluginReleaseTrustError) as revoked:
@@ -228,7 +247,9 @@ def test_policy_rejects_noncanonical_and_revoked_release(tmp_path: Path) -> None
     assert noncanonical.value.code == "PLUGIN_RELEASE_TRUST_POLICY_NONCANONICAL"
 
 
-def test_plugin_release_floor_blocks_policy_fork_rollback_and_version_reuse(tmp_path: Path) -> None:
+def test_plugin_release_floor_blocks_policy_fork_rollback_and_version_reuse(
+    tmp_path: Path,
+) -> None:
     bundle = build(tmp_path / "current")
     _, policy = write_policy(tmp_path, sequence=2)
     request = request_for(bundle.root, policy)
@@ -242,7 +263,9 @@ def test_plugin_release_floor_blocks_policy_fork_rollback_and_version_reuse(tmp_
         signature=current,
     )
 
-    fork_path, fork_policy = write_policy(tmp_path, sequence=2, revoked_versions=["9.9.9"])
+    fork_path, fork_policy = write_policy(
+        tmp_path, sequence=2, revoked_versions=["9.9.9"]
+    )
     assert fork_path.is_file()
     fork_request = request_for(bundle.root, fork_policy)
     fork_signature = write_signature(tmp_path / "fork", fork_request)
@@ -349,7 +372,9 @@ def test_cli_writes_request_without_signing_or_installing(tmp_path: Path) -> Non
     assert not inside.exists()
 
 
-def test_verify_cli_uses_external_policy_and_keeps_candidate_passive(tmp_path: Path) -> None:
+def test_verify_cli_uses_external_policy_and_keeps_candidate_passive(
+    tmp_path: Path,
+) -> None:
     bundle = build(tmp_path / "bundle")
     policy_path, policy = write_policy(tmp_path)
     request = request_for(bundle.root, policy)

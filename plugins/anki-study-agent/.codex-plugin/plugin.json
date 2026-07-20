@@ -1,6 +1,6 @@
 {
   "name": "anki-study-agent",
-  "version": "0.1.0",
+  "version": "0.1.0+codex.20260720065818",
   "description": "Orchestrate a registered local Card Service to create evidence-backed Anki study tasks.",
   "author": {
     "name": "zixuanzhou0-ai",

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -33,16 +34,38 @@ from card_service.runtime_manifest import canonical_bytes, file_sha256
 from card_service.runtime_trust import encode_base64url
 from card_service.windows_authenticode import AuthenticodePolicy, VerifiedAuthenticode
 from tests.test_plugin_bundle import PLUGIN_ROOT, launcher, signed_runtime
-from tests.test_plugin_release_trust import TEST_KEY, write_policy as write_publisher_policy
-from tests.test_windows_authenticode import certificate, write_policy as write_authenticode_policy
+from tests.test_plugin_release_trust import (
+    TEST_KEY,
+    write_policy as write_publisher_policy,
+)
+from tests.test_windows_authenticode import (
+    certificate,
+    write_policy as write_authenticode_policy,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
 TEST_NOW = datetime(2026, 7, 18, 12, 0, 0, tzinfo=timezone.utc)
 
 
+def stable_plugin(root: Path) -> Path:
+    plugin = (root / "stable-plugin").resolve()
+    if not plugin.exists():
+        shutil.copytree(PLUGIN_ROOT, plugin)
+        manifest_path = plugin / ".codex-plugin" / "plugin.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["version"] = "0.1.0"
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    return plugin
+
+
 def fake_authenticode(path: Path, policy: AuthenticodePolicy) -> VerifiedAuthenticode:
-    signer = next(value for value in policy.signers.values() if value.status == "active")
+    signer = next(
+        value for value in policy.signers.values() if value.status == "active"
+    )
     return VerifiedAuthenticode(
         file_sha256=file_sha256(path),
         certificate_sha256=signer.certificate_sha256,
@@ -64,12 +87,14 @@ def install_inputs(root: Path):
 
 
 def build(root: Path, name: str = "candidate"):
-    runtime, runtime_trust, publisher_path, publisher, authenticode_path = install_inputs(root)
+    runtime, runtime_trust, publisher_path, publisher, authenticode_path = (
+        install_inputs(root)
+    )
     result = _build_plugin_install_candidate(
         (root / name).resolve(),
         version="0.1.0",
         created_at="2026-07-18T00:00:00Z",
-        plugin_root=PLUGIN_ROOT,
+        plugin_root=stable_plugin(root),
         launcher=launcher(root),
         runtime_root=runtime,
         runtime_trust_policy=runtime_trust,
@@ -85,7 +110,9 @@ def build(root: Path, name: str = "candidate"):
     return result, candidate, publisher_path, publisher, authenticode_path
 
 
-def signing_request(candidate: PluginInstallBundle, publisher: PluginReleaseTrustPolicy):
+def signing_request(
+    candidate: PluginInstallBundle, publisher: PluginReleaseTrustPolicy
+):
     return build_plugin_install_signing_request(
         candidate.root,
         trust_policy=publisher,
@@ -96,25 +123,33 @@ def signing_request(candidate: PluginInstallBundle, publisher: PluginReleaseTrus
     )
 
 
-def write_signature(root: Path, request: dict[str, object], *, domain: str = INSTALL_SIGNATURE_DOMAIN) -> Path:
+def write_signature(
+    root: Path, request: dict[str, object], *, domain: str = INSTALL_SIGNATURE_DOMAIN
+) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     unsigned = dict(request["unsignedEnvelope"])
     unsigned["domain"] = domain
     value = dict(unsigned)
-    value["signature"] = encode_base64url(TEST_KEY.sign(plugin_install_signature_message(unsigned)))
+    value["signature"] = encode_base64url(
+        TEST_KEY.sign(plugin_install_signature_message(unsigned))
+    )
     path = (root / INSTALL_SIGNATURE_NAME).resolve()
     path.write_bytes(canonical_bytes(value))
     return path
 
 
-def test_install_candidate_is_deterministic_mcp_wired_and_never_installable(tmp_path: Path) -> None:
-    runtime, runtime_trust, publisher_path, publisher, authenticode_path = install_inputs(tmp_path)
+def test_install_candidate_is_deterministic_mcp_wired_and_never_installable(
+    tmp_path: Path,
+) -> None:
+    runtime, runtime_trust, publisher_path, publisher, authenticode_path = (
+        install_inputs(tmp_path)
+    )
     executable = launcher(tmp_path)
     first = _build_plugin_install_candidate(
         (tmp_path / "candidate-a").resolve(),
         version="0.1.0",
         created_at="2026-07-18T00:00:00Z",
-        plugin_root=PLUGIN_ROOT,
+        plugin_root=stable_plugin(tmp_path),
         launcher=executable,
         runtime_root=runtime,
         runtime_trust_policy=runtime_trust,
@@ -126,7 +161,7 @@ def test_install_candidate_is_deterministic_mcp_wired_and_never_installable(tmp_
         (tmp_path / "candidate-b").resolve(),
         version="0.1.0",
         created_at="2026-07-18T00:00:00Z",
-        plugin_root=PLUGIN_ROOT,
+        plugin_root=stable_plugin(tmp_path),
         launcher=executable,
         runtime_root=runtime,
         runtime_trust_policy=runtime_trust,
@@ -137,7 +172,9 @@ def test_install_candidate_is_deterministic_mcp_wired_and_never_installable(tmp_
 
     assert first.manifest_sha256 == second.manifest_sha256
     assert first.manifest_path.read_bytes() == second.manifest_path.read_bytes()
-    candidate = PluginInstallBundle(first.root, publisher_policy=publisher, require_signature=False)
+    candidate = PluginInstallBundle(
+        first.root, publisher_policy=publisher, require_signature=False
+    )
     assert candidate.signature is None
     assert not (first.root / INSTALL_SIGNATURE_NAME).exists()
     assert json.loads((first.root / MCP_CONFIG_PATH).read_bytes()) == {
@@ -160,7 +197,9 @@ def test_install_candidate_is_deterministic_mcp_wired_and_never_installable(tmp_
     assert summary["installable"] is False
 
 
-def test_public_only_signing_request_uses_install_domain_and_verifies(tmp_path: Path) -> None:
+def test_public_only_signing_request_uses_install_domain_and_verifies(
+    tmp_path: Path,
+) -> None:
     _, candidate, _, publisher, _ = build(tmp_path)
     first = signing_request(candidate, publisher)
     second = signing_request(candidate, publisher)
@@ -193,7 +232,9 @@ def test_finalizer_requires_all_gates_and_publishes_atomically(tmp_path: Path) -
 
     def native(root: Path) -> None:
         calls.append(root)
-        PluginInstallBundle(root, publisher_policy=publisher, require_signature=True, now=TEST_NOW)
+        PluginInstallBundle(
+            root, publisher_policy=publisher, require_signature=True, now=TEST_NOW
+        )
 
     output = (tmp_path / "final").resolve()
     result = _finalize_plugin_install_package(
@@ -223,7 +264,9 @@ def test_finalizer_requires_all_gates_and_publishes_atomically(tmp_path: Path) -
 def test_tamper_cross_domain_and_native_failure_are_fail_closed(tmp_path: Path) -> None:
     _, candidate, publisher_path, publisher, authenticode_path = build(tmp_path)
     request = signing_request(candidate, publisher)
-    wrong_domain = write_signature(tmp_path / "wrong", request, domain="study.plugin-release-manifest.v1")
+    wrong_domain = write_signature(
+        tmp_path / "wrong", request, domain="study.plugin-release-manifest.v1"
+    )
     with pytest.raises(PluginInstallError) as domain:
         verify_plugin_install_signature(
             wrong_domain,
@@ -239,7 +282,9 @@ def test_tamper_cross_domain_and_native_failure_are_fail_closed(tmp_path: Path) 
     output = (tmp_path / "rejected").resolve()
 
     def reject(_root: Path) -> None:
-        raise PluginInstallError("PLUGIN_INSTALL_NATIVE_VERIFICATION_FAILED", "rejected")
+        raise PluginInstallError(
+            "PLUGIN_INSTALL_NATIVE_VERIFICATION_FAILED", "rejected"
+        )
 
     with pytest.raises(PluginInstallError) as native:
         _finalize_plugin_install_package(
@@ -258,13 +303,19 @@ def test_tamper_cross_domain_and_native_failure_are_fail_closed(tmp_path: Path) 
 
     (candidate.root / LAUNCHER_PATH).write_bytes(b"tampered")
     with pytest.raises(PluginInstallError) as changed:
-        PluginInstallBundle(candidate.root, publisher_policy=publisher, require_signature=False)
+        PluginInstallBundle(
+            candidate.root, publisher_policy=publisher, require_signature=False
+        )
     assert changed.value.code == "PLUGIN_INSTALL_RESOURCE_CHANGED"
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Authenticode CLI gate is Windows-only")
+@pytest.mark.skipif(
+    sys.platform != "win32", reason="Authenticode CLI gate is Windows-only"
+)
 def test_real_candidate_cli_rejects_unsigned_launcher(tmp_path: Path) -> None:
-    runtime, runtime_trust, publisher_path, _, authenticode_path = install_inputs(tmp_path)
+    runtime, runtime_trust, publisher_path, _, authenticode_path = install_inputs(
+        tmp_path
+    )
     output = (tmp_path / "must-not-exist").resolve()
     process = subprocess.run(
         [
@@ -277,7 +328,7 @@ def test_real_candidate_cli_rejects_unsigned_launcher(tmp_path: Path) -> None:
             "--created-at",
             "2026-07-18T00:00:00Z",
             "--plugin-root",
-            str(PLUGIN_ROOT),
+            str(stable_plugin(tmp_path)),
             "--launcher",
             str(launcher(tmp_path)),
             "--runtime-root",

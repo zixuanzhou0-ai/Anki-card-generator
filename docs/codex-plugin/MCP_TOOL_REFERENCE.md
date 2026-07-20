@@ -323,7 +323,7 @@ CURRENT M2 已实现 file/directory/output grant 的认证账本、opaque ref、
 
 如果用户已把 URL 粘贴到对话，Skill 不得把该值复制进工具参数。疑似 signed/token/auth/query 凭据时应说明对话记录可能已经暴露、建议撤销或轮换，然后要求在受信表面输入新值。此设计为所有 URL 增加一次本地输入动作，以换取“raw URL 从不进入 MCP request”的可验证边界。
 
-CURRENT `study.register_inputs` 已能消费该 InputRef。`web` 使用固定 IP + TLS hostname 的匿名 HTTPS GET，拒绝环境代理、Cookie、Authorization、跨 origin 重定向、压缩响应、非 2xx 和超过 32 MiB 的登记快照，并发布内容寻址 SourceAsset；HTML/文本/Markdown 可继续进入现有确定性检查。`public_video` 当前仅对 YouTube 提取规范化 videoId 后获取字幕快照，不下载视频、原声或调用通用 yt-dlp。`podcast` 与 `other` 可以由同一受信表面形成权限记录，但当前登记适配器会以 `SOURCE_NETWORK_ADAPTER_NOT_AVAILABLE` 显式失败；这不等于已支持播客或任意 URL。Service 重启后因 raw URL 不落盘，旧 ref 返回 `reauthorization_required`。
+CURRENT `study.register_inputs` 已能消费该 InputRef。`web` 与 `podcast` 使用固定 IP + TLS hostname 的匿名 HTTPS GET，拒绝环境代理、Cookie、Authorization、跨 origin 重定向、压缩响应、非 2xx 和超过 32 MiB 的登记快照，并发布内容寻址 SourceAsset；HTML/文本/Markdown、文本层 PDF或带受支持嵌入字幕的小型音视频响应可按能力继续检查。Podcast 只冻结用户明确输入的 feed 或直链响应，不自动追随 enclosure，也不扩大到其他 origin。`public_video` 当前仅对 YouTube 提取规范化 videoId 后获取字幕快照，不下载视频、原声或调用通用 yt-dlp。`other` 仍以 `SOURCE_NETWORK_ADAPTER_NOT_AVAILABLE` 显式失败；这不等于已支持任意 URL。Service 重启后因 raw URL 不落盘，旧 ref 返回 `reauthorization_required`。
 
 ### system.request_operation_confirmation
 

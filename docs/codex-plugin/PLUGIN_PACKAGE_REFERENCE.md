@@ -2,9 +2,9 @@
 
 ## CURRENT 源插件、开发 runtime 与正式发行边界（2026-07-20）
 
-仓库内 `plugins/anki-study-agent` 是版本 `0.1.0` 的被动 Skill 插件源：manifest 只声明 `./skills/`，没有 `mcpServers`、Apps 或 hooks。它可以接受 plugin/skill validator 检查，但本身不会注册本地 runtime。
+仓库内 `plugins/anki-study-agent` 是基线版本 `0.1.0`（本地升级可带单一 `+codex.<cachebuster>`）的被动 Skill 插件源：manifest 只声明 `./skills/`，没有 `mcpServers`、Apps 或 hooks。它可以接受 plugin/skill validator 检查，但本身不会注册本地 runtime。
 
-与它配套的开发态可信 stdio Card Service 当前公开 38 个工具，已包括脱敏 profile 列表、现有 profile 的受信本地凭据窗口、精确 profile 验证与受信操作确认、受信本地/网络资源授权查看与撤销、匿名静态网页/YouTube 字幕登记、项目分页找回、版本化 Learning Contract 更新与权威工作流快照、固定 Hermes 候选发现、候选发现安全恢复、Anki 数据级 import-and-verify，以及有界 Artifact/审计查询。该开发能力不改变发行结论：源插件未绑定正式 `.mcp.json`，当前 launcher 仍无正式发布者签名，候选固定 `installable=false`，没有 App resource，也没有通过独立正式安装验收。不得称其为已签名、正式可安装或可发布插件。
+与它配套的开发态可信 stdio Card Service 当前公开 38 个工具，已包括脱敏 profile 列表、现有 profile 的受信本地凭据窗口、精确 profile 验证与受信操作确认、受信本地/网络资源授权查看与撤销、匿名静态网页/Podcast 显式响应/YouTube 字幕登记、项目分页找回、版本化 Learning Contract 更新与权威工作流快照、固定 Hermes 候选发现、候选发现安全恢复、Anki 数据级 import-and-verify，以及有界 Artifact/审计查询。仓库现提供 `anki-study-agent-local` Marketplace 和只通过 Codex CLI 变更宿主配置的开发安装器。安装器把 Marketplace/Plugin/Skill 输入源与 Card Service runtime 分别发布为 `%USERPROFILE%\.anki-study-agent` 下的内容寻址私有快照并应用精确 DACL；Codex 从该插件源摄取 Skill 到自身托管缓存，MCP 则直接绑定具体 runtime digest，因此两者都不从可写 Git 工作区运行。安装器验证私有输入快照、Codex 返回的插件版本/来源与 MCP 快照，但不把 Codex 托管缓存声明成同一逐文件 DACL/哈希信任根。升级使用 Plugin Creator 官方 cachebuster、协作安装器进程互斥和事务回滚；绕过安装器的并发原生 CLI 变更不具备原子保证。该开发能力不改变发行结论：源插件未绑定正式 `.mcp.json`，当前 launcher 仍无正式发布者签名，候选固定 `installable=false`，没有 App resource，也没有通过独立正式安装验收。不得称其为已签名、正式可安装或可发布插件。
 
 Anki 当前最高状态为 `anki_data_verified`；插件侧通用渲染/播放/reviewer/重启 verifier 未实现。下文“唯一只读工具”的实物探针数字属于较早候选，不描述当前开发 runtime 的工具数量。
 

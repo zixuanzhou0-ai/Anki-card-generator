@@ -1,0 +1,20 @@
+{
+  "name": "anki-study-agent-local",
+  "interface": {
+    "displayName": "Anki Study Agent Local"
+  },
+  "plugins": [
+    {
+      "name": "anki-study-agent",
+      "source": {
+        "source": "local",
+        "path": "./plugins/anki-study-agent"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

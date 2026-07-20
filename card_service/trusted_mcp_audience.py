@@ -175,7 +175,9 @@ def _process_executable(process_id: int) -> Path:
     try:
         size = wintypes.DWORD(32_768)
         buffer = ctypes.create_unicode_buffer(size.value)
-        if not kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+        if not kernel32.QueryFullProcessImageNameW(
+            handle, 0, buffer, ctypes.byref(size)
+        ):
             raise TrustedMcpAudienceError(
                 "MCP_LAUNCH_ATTESTATION_INVALID", "Launcher executable is unavailable"
             )
@@ -185,14 +187,25 @@ def _process_executable(process_id: int) -> Path:
 
 
 def _derive_session(
-    *, owner_digest: str, launcher: Path, nonce: str, mode: str
+    *,
+    owner_digest: str,
+    launcher: Path,
+    nonce: str,
+    mode: str,
+    stable_host_identity: str | None = None,
 ) -> TrustedMcpAudienceSession:
-    if not re.fullmatch(r"[0-9a-f]{64}", owner_digest) or not _NONCE_RE.fullmatch(nonce):
+    if not re.fullmatch(r"[0-9a-f]{64}", owner_digest) or not _NONCE_RE.fullmatch(
+        nonce
+    ):
         raise TrustedMcpAudienceError(
             "MCP_LAUNCH_ATTESTATION_INVALID", "MCP launch identity is invalid"
         )
     launcher_digest = _sha(
-        os.path.normcase(str(launcher.absolute())).encode("utf-8", "strict")
+        (
+            "stable-install:" + stable_host_identity
+            if stable_host_identity is not None
+            else os.path.normcase(str(launcher.absolute()))
+        ).encode("utf-8", "strict")
     )
     nonce_bytes = bytes.fromhex(nonce)
     host_digest = _sha(
@@ -204,12 +217,15 @@ def _derive_session(
         + PLUGIN_ID.encode("utf-8", "strict")
     )
     host_id = "stdio-host-" + host_digest[:48]
-    session_id = "mcp-session-" + _sha(
-        b"study.mcp-session.v2\x00"
-        + host_digest.encode("ascii")
-        + b"\x00"
-        + nonce_bytes
-    )[:48]
+    session_id = (
+        "mcp-session-"
+        + _sha(
+            b"study.mcp-session.v2\x00"
+            + host_digest.encode("ascii")
+            + b"\x00"
+            + nonce_bytes
+        )[:48]
+    )
     return TrustedMcpAudienceSession(
         audience=ArtifactAudienceBinding(
             owner_digest=owner_digest,
@@ -236,7 +252,9 @@ def create_packaged_mcp_audience(runtime_root: str | Path) -> TrustedMcpAudience
         )
     root = Path(runtime_root).resolve(strict=True)
     executable_name = "anki-study-agent.exe" if os.name == "nt" else "anki-study-agent"
-    expected_launcher = (root.parent / "launcher" / executable_name).resolve(strict=True)
+    expected_launcher = (root.parent / "launcher" / executable_name).resolve(
+        strict=True
+    )
     actual_launcher = _process_executable(launcher_pid)
     try:
         same_launcher = os.path.samefile(actual_launcher, expected_launcher)
@@ -246,7 +264,8 @@ def create_packaged_mcp_audience(runtime_root: str | Path) -> TrustedMcpAudience
         ) from error
     if not same_launcher:
         raise TrustedMcpAudienceError(
-            "MCP_LAUNCH_ATTESTATION_INVALID", "MCP launcher executable binding is invalid"
+            "MCP_LAUNCH_ATTESTATION_INVALID",
+            "MCP launcher executable binding is invalid",
         )
     return _derive_session(
         owner_digest=current_owner_digest(),
@@ -256,10 +275,25 @@ def create_packaged_mcp_audience(runtime_root: str | Path) -> TrustedMcpAudience
     )
 
 
-def create_development_mcp_audience() -> TrustedMcpAudienceSession:
+def create_development_mcp_audience(
+    *, installation_identity: str | None = None
+) -> TrustedMcpAudienceSession:
+    if installation_identity is None:
+        launcher = Path(__file__).resolve()
+    else:
+        if not _NONCE_RE.fullmatch(installation_identity):
+            raise TrustedMcpAudienceError(
+                "MCP_INSTALL_IDENTITY_INVALID",
+                "Development MCP installation identity is invalid",
+            )
+        # A stable, opaque identity keeps project scope intact when a content-
+        # addressed development snapshot is upgraded. It is stored beneath the
+        # same exact-DACL state root as the Card Service, never in the snapshot.
+        launcher = Path(__file__).resolve()
     return _derive_session(
         owner_digest=current_owner_digest(),
-        launcher=Path(__file__).resolve(),
+        launcher=launcher,
         nonce=secrets.token_hex(32),
         mode="development_explicit",
+        stable_host_identity=installation_identity,
     )

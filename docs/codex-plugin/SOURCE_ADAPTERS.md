@@ -107,18 +107,18 @@ AuthorizationContext 只在 Service 内部生成。每次 inspect、snapshot、e
 | 本地视频 + SRT/VTT | CURRENT 可分别登记/检查；自动配对未开放 | 0.1 / M3 | cue ID + 时间范围 + 文件哈希 | A/B |
 | 含嵌入字幕的本地音视频 | CURRENT 受限解析 | 0.2 / M5 | subtitle stream + 时间范围 + 文件哈希 | B |
 | 本地视频无字幕 | CURRENT 明确阻塞 | 0.2 / M5（ASR） | transcript turn + 时间 | B→A |
-| YouTube/公开视频 URL | CURRENT 有 yt-dlp | 0.1 / M3（可靠字幕） | URL 快照 + cue/时间 | A/B |
+| YouTube URL | CURRENT 仅字幕快照，不下载完整媒体 | 0.1 / M3（可靠字幕） | video ID + 字幕快照 + cue/时间 | A/B |
 | 纯文本/Markdown | CURRENT 简单读取 | 0.2 / M5 | 字符跨度/段落 | A |
 | 文本型 PDF | CURRENT 受限文本层 | 0.2 / M5 | 页 + 文本引用 | B |
 | 扫描 PDF | 未可靠支持 | M7（OCR） | 页 + bbox + OCR 置信度 | B |
-| DOCX/EPUB | CURRENT 简单读取 | 0.2 / M5 | 段落/章节/成员 | A/B |
+| DOCX/EPUB | 当前阻塞；解析器未开放 | 0.2 / M5 | 段落/章节/成员 | A/B |
 | 网页 | CURRENT 匿名静态 HTTPS 快照 | 0.2 / M5 | snapshot hash + text quote | A/B |
 | 播客/音频 | CURRENT 可冻结显式 HTTPS feed/小型直链快照；仅嵌入字幕可检查 | 0.2 / M5 | 时间段 + transcript | B→A |
 | 受限文件夹 | CURRENT 有目录枚举基础 | 0.2 / M5 | 文件 ref + 内部 locator | A/B |
 | Codex 附件 | 尚无插件桥接 | 随对应适配器 M3/M5/M7 | 宿主 revision + 内部 locator | A/B |
 | 图片/图表 | 尚无通用证据层 | M7 | frame/page + bbox | B |
 | 代码仓库 | Codex 可读但无 Study adapter | M7 | file ref + commit/hash + lines | A/B |
-| Kindle/Calibre | CURRENT 有外部转换基础 | 0.2 / M5 | 转换产物 + 原始身份 | B |
+| Kindle/Calibre | 当前未开放 | 0.2 / M5 | 转换产物 + 原始身份 | B |
 
 ## 5. 本地文件
 

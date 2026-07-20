@@ -148,6 +148,55 @@ def test_digest_pinned_launcher_completes_over_private_response_file(tmp_path: P
     assert "responseMac" in response_text
 
 
+def test_trusted_surface_child_is_isolated_and_does_not_pollute_runtime(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    package_dir = runtime_root / "card_service"
+    package_dir.mkdir(parents=True)
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "surface_helper.py").write_text("VALUE = 'loaded'\n", encoding="utf-8")
+    surface_path = package_dir / "surface.py"
+    surface_path.write_text(
+        """from __future__ import annotations
+import json
+import os
+import sys
+from pathlib import Path
+from card_service import surface_helper
+
+request_path = Path(sys.argv[2])
+marker_path = request_path.parent.parent / "child-runtime-proof.json"
+marker_path.write_text(json.dumps({
+    "helper": surface_helper.VALUE,
+    "isolated": sys.flags.isolated,
+    "dontWriteBytecode": sys.dont_write_bytecode,
+    "envDontWriteBytecode": os.environ.get("PYTHONDONTWRITEBYTECODE"),
+}), encoding="utf-8")
+""",
+        encoding="utf-8",
+    )
+    surfaces = manager(tmp_path, surface_path)
+    session = surfaces.create_consent_session(
+        title="确认", summary="验证受信窗口不会污染运行时。", purpose="operation"
+    )
+
+    surfaces.launch(str(session["sessionRef"]))
+    deadline = time.monotonic() + 4
+    marker_path = surfaces.root / "child-runtime-proof.json"
+    while time.monotonic() < deadline and not marker_path.exists():
+        time.sleep(0.02)
+
+    assert json.loads(marker_path.read_text(encoding="utf-8")) == {
+        "helper": "loaded",
+        "isolated": 1,
+        "dontWriteBytecode": True,
+        "envDontWriteBytecode": "1",
+    }
+    assert list(runtime_root.rglob("*.pyc")) == []
+    assert list(runtime_root.rglob("__pycache__")) == []
+
+
 def test_operation_consent_attestation_is_bound_to_exact_audience_target_and_action(
     tmp_path: Path,
 ) -> None:

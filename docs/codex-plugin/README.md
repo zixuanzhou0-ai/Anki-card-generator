@@ -6,13 +6,15 @@
 
 截至 2026-07-20，可信开发态 Card Service stdio runtime 共公开 38 个工具：`system.get_capabilities`、`system.authorize_candidate_discovery`、`system.list_profiles`、`system.open_local_settings`、`system.revoke_grant`、`system.validate_profile`、`system.request_operation_confirmation`、`system.request_source_grant`、`system.request_output_grant`、`system.request_network_grant`、`study.create_project`、`study.update_learning_contract`、`study.list_projects`、`study.get_project`、`study.register_inputs`、`study.start_source_inspection`、`study.get_source_inspection`、`study.start_discovery`、`study.get_task`、`study.cancel_task`、`study.list_recoverable_tasks`、`study.resume_task`、`study.list_candidates`、`study.get_candidate`、`study.preview_evidence`、`study.set_selection`、`study.plan_cards`、`study.list_card_plans`、`study.edit_card_plan`、`study.validate_card_plans`、`cards.generate`、`cards.list`、`cards.export_apkg`、`anki.prepare_import`、`anki.request_import_confirmation`、`anki.import_and_verify`、`study.get_artifact`、`study.get_audit`。
 
+高级开发安装不再让 Codex 直接执行可写工作区：安装器分别把 Marketplace/Plugin/Skill 输入源发布到 `codex-dev-plugin\<manifest-sha256>`，把固定 Card Service/Worker/launcher 与可选媒体工具发布到 `codex-dev-runtime\<manifest-sha256>`，两者都位于 `%USERPROFILE%\.anki-study-agent`、使用受保护的精确 DACL，并把 Marketplace 与 MCP 注册到具体 digest。Codex 会再把 Skill 摄取到自身托管插件缓存；安装器当前验证输入源快照和 Codex 返回的版本/来源，不把托管缓存声明为同一精确 DACL 信任根。Plugin 升级使用官方 cachebuster；Python 以 `-I -S -B` 启动并验证依赖信任路径；同一安装器的安装/升级/卸载由跨进程互斥串行化，并在遇到已存在的同名陌生 Marketplace、Plugin 或 MCP 时停止。绕过安装器并发运行原生 `codex plugin/mcp` 命令不在原子性保证内。完整操作见 `DEVELOPMENT_INSTALL.md`。
+
 已有项目的学习目标、行为、级别、路线、预算、语言、证据策略与排除项现在只能经 `study.update_learning_contract` 的九类封闭语义操作修改。Service 同时比较 project/contract revision、精确幂等记录 operationId，并按真实变化从 discovery、selection 或 planning 边界失效下游；旧 Artifact 仍可用于审计，但不再作为项目的 current/latest 结果返回。
 
 `system.validate_profile` 能验证 Registry 中精确的 model/TTS/AnkiConnect 绑定。model/TTS 首次诊断只创建不可变 intent；真实用户在 `system.request_operation_confirmation` 打开的受信窗口批准后，同一幂等请求才会最多访问服务一次。AnkiConnect 只做有界 loopback 探测。该确认目前只覆盖 profile 诊断，不代表 discovery/generate 的通用操作批准已经完成。
 
 `system.revoke_grant` 只在用户明确要求管理权限时打开独立受信本地窗口。窗口从当前 audience 的认证账本读取脱敏的本地/network 资源、未消费 Anki/诊断批准和当前 Broker 授权，真实用户在窗口中选择后才生成短期、精确绑定的撤销证明；MCP 不接受资源、导入、profile、ledger 或内部 authorization ID。撤销阻止后续使用，但不会伪装成回滚已经完成的读取、远程调用、Artifact 或 Anki 写入。
 
-当前候选发现只能通过 `system.authorize_candidate_discovery` 的固定 `hermes_grok_4_5` 预设授权，再由 `study.start_discovery` 启动异步任务；调用方不能选择 Provider、Base URL、模型、凭据、提示词或原始来源正文。批准后 Service 会在固定 `127.0.0.1:8645` 上复核/启动 Hermes xAI 代理；本地健康与 OAuth ready 仍不等于 xAI 公网推理可达。当前输入面支持经本地授权并成功检查的文本、Markdown、代码、HTML、字幕文本及其目录成员，也支持通过受信 URL 窗口取得的匿名静态网页快照与 YouTube 字幕快照。完整视频/音频、任意公开视频、PDF/Office 解析、动态/登录网页、播客与媒体转写仍是路线图，不是当前插件能力。
+当前候选发现只能通过 `system.authorize_candidate_discovery` 的固定 `hermes_grok_4_5` 预设授权，再由 `study.start_discovery` 启动异步任务；调用方不能选择 Provider、Base URL、模型、凭据、提示词或原始来源正文。批准后 Service 会在固定 `127.0.0.1:8645` 上复核/启动 Hermes xAI 代理；本地健康与 OAuth ready 仍不等于 xAI 公网推理可达。当前输入面支持经本地授权并成功检查的文本、Markdown、代码、HTML、字幕文本及其目录成员，也支持匿名静态 HTTPS 网页/Podcast 显式响应快照、YouTube 字幕快照，以及能力摘要明确开放时的文本层 PDF 与含受支持嵌入字幕的音视频。完整远程视频/音频获取、任意公开视频、Podcast enclosure 自动追随、扫描 PDF/OCR、Office、动态/登录网页与无字幕媒体转写仍是路线图。
 
 当前 Anki 闭环已能执行受信确认后的真实导入及数据级核验。最高可信状态是 `anki_data_verified`；真实卡片渲染、音视频播放、复习交互和重启持久性的 runtime verifier 尚未实现，必须报告 `runtimeVerification=not_assessed`。仓库内插件清单仍是被动 Skill 包，不声明 MCP/App；开发态 runtime 可用不等于已有正式签名、可安装、可发布的插件。
 
@@ -160,6 +162,8 @@ Codex 插件仍未正式交付：仓库已有被动 plugin manifest/Skill、开�
 20. [术语表](GLOSSARY.md)：跨文档统一语义。
 21. [设计评审记录](DESIGN_REVIEW_RECORD.md)：内部委员会、Gemini 与 Hermes/Grok 的终审结论、分歧和裁决。
 22. [真实服务与端口恢复验证报告](M1_REAL_SERVICE_RECOVERY_VERIFICATION_2026-07-20.md)：Hermes 自动预检、真实上游阻断证据、Windows AnkiConnect 排除端口与 8785 隔离回归。
+23. [Codex 插件开发安装](DEVELOPMENT_INSTALL.md)：仓库 Marketplace、受限开发 MCP、安装/升级/卸载命令与生产签名边界。
+24. [开发插件安装验证报告](DEVELOPMENT_PLUGIN_VERIFICATION_2026-07-20.md)：真实 Codex CLI 安装/升级/卸载、私有快照、MCP 新任务发现、自动化证据和未关闭目标。
 
 ## 6. 当前可复用资产
 

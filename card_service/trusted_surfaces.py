@@ -158,6 +158,33 @@ class TrustedSurfaceManager:
     def _sha256(path: Path) -> str:
         return hashlib.sha256(path.read_bytes()).hexdigest()
 
+    def _managed_environment(self) -> dict[str, str]:
+        """Return the minimal environment required by the trusted GUI child.
+
+        Trusted surfaces execute from an integrity-checked runtime snapshot.  They
+        must never write import caches back into that snapshot, otherwise a
+        successful first launch makes the next runtime verification fail.
+        """
+
+        safe_keys = (
+            "SYSTEMROOT",
+            "WINDIR",
+            "COMSPEC",
+            "TEMP",
+            "TMP",
+            "USERPROFILE",
+            "APPDATA",
+            "LOCALAPPDATA",
+            "PROGRAMDATA",
+            "LANG",
+        )
+        environment = {key: os.environ[key] for key in safe_keys if key in os.environ}
+        environment["PATH"] = str(self.python_path.parent)
+        environment["PYTHONIOENCODING"] = "utf-8"
+        environment["PYTHONUTF8"] = "1"
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        return environment
+
     def capabilities(self) -> dict[str, Any]:
         return {
             "localResourcePicker": True,
@@ -499,10 +526,11 @@ class TrustedSurfaceManager:
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         process = subprocess.Popen(
             [
-                str(self.python_path), str(self.bootstrap_path), str(self.surface_path),
+                str(self.python_path), "-I", "-B", str(self.bootstrap_path), str(self.surface_path),
                 self.surface_sha256, str(request["surface"]), str(request_path.resolve()),
             ],
             cwd=str(self.surface_path.parent.parent),
+            env=self._managed_environment(),
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

@@ -4,13 +4,14 @@
 
 ## CURRENT 增量出口（2026-07-19）
 
-在下文带日期的历史切片之后，当前代码又关闭了五个纵向出口：
+在下文带日期的历史切片之后，当前代码又关闭了六个纵向出口：
 
 1. 候选发现公共出口：新增 `system.authorize_candidate_discovery` 与 `study.start_discovery`。前者只批准固定 `hermes_grok_4_5`，后者异步启动并由 `study.get_task` 轮询；调用方无法注入 Provider、模型、endpoint、凭据、prompt、原始来源正文或服务端授权字段。
 2. Anki 数据闭环出口：`anki.import_and_verify` 已公开，使用已确认的 `importIntentId` 幂等执行导入并发布 receipt/data verification。成功上限为 `anki_data_verified`；写后核验失败为 `imported_unverified`；不确定写边界要求 `inspect_before_retry`。
 3. 受信网络来源出口：`system.request_network_grant` 只打开本地受信 URL 输入窗口，raw URL 不进入 MCP；`study.register_inputs` 已能对静态网页做匿名固定 IP HTTPS 快照，并把 YouTube public_video 缩成规范化 videoId 后获取字幕快照。网络授权可由统一管理器撤销，Service 重启后旧 ref 要求重新授权。
 4. Learning Contract 更新出口：`study.update_learning_contract` 只接受九类封闭语义操作、当前 project/contract revision 与稳定 operationId。Service 按真实变化从 discovery、selection 或 planning 开始失效下游，把过期 Artifact 从项目 current/latest 指针中移除，同时保留不可变审计历史；公共响应只返回仍可靠的 opaque ArtifactHandle。
 5. 候选发现恢复加固：active Worker 使用认证短租约、心跳与单调 fencing token 证明跨进程所有权；同步兼容入口也不能绕过租约。恢复与 successor 冲突检查读取只含 active/recoverable/pending-commit 项的认证索引，不再扫描全部历史 JSON；公开恢复列表增加 query/audience/index-generation 绑定 cursor，并在 current/stale 过滤后满足 limit。模型工作成功但项目提交中断时只重放本地幂等提交，提交前验证 Discovery bundle，提交后用持久 lineage closure 阻止迟到 successor；旧版无 completion binding 的成功任务可确定性迁移。第二个 Service 实例不能把第一实例的活任务误判为 orphan，无关损坏文件也不能通过第 2049 条记录永久禁用恢复。
+6. 高级用户开发安装出口：仓库新增 `anki-study-agent-local` Marketplace、固定参数的开发 stdio 启动器和只使用 `codex plugin`/`codex mcp` CLI 改变宿主配置的安装器。可信 MCP 不再执行宽 ACL 的 Git 工作区：安装器把 Card Service/Worker/launcher 和可选媒体工具复制为 `%USERPROFILE%\.anki-study-agent\codex-dev-runtime\<manifest-sha256>` 内容寻址快照，逐文件绑定角色、大小和 SHA-256，并为应用根、状态和所有快照文件设置受保护的精确 DACL。MCP 直接指向具体 digest，不经过可变 `current` 链接；稳定安装身份保证换快照后 host scope 不变、session nonce 仍逐进程轮换。升级调用 Plugin Creator 官方 cachebuster，安装/升级/卸载对陌生或并发变化的同名对象失败关闭，并在后段失败时反向恢复本次新增的 MCP、Marketplace、Plugin/manifest。该路径明确报告 `productionSigned=false`，没有生成源码 `.mcp.json`，仍不替代正式发布者签名。
 
 网络切片的历史证据是 98 项定向回归、`1653 passed, 1 skipped` 的当时 Python 全集和 Computer Use 受信窗口验证；Learning Contract 公共出口新增 73 项定向组合回归。文本层 PDF 切片补充了独立 Worker、页覆盖关系、20,000 节点、沙箱错误、真实遗漏计数和下游页证据测试；其当时正式 Python `tests` 全集为 `1681 passed, 1 skipped`。随后新增的嵌入媒体字幕/Podcast 快照切片通过 100 项定向回归，包括真实 FFmpeg MP4 + mov_text 提取、有界 FFprobe 输出/超时、媒体关系矛盾拒绝和 feed/直链冻结；切片合入后的正式 Python 全集为 `1698 passed, 1 skipped`。前端 830 项、Worker 600 项、UI smoke、Rust 31 项通过与 1 项按设计忽略是前一基线，plugin/Skill validator 会在本切片归档前重跑；真实 Codex `0.144.1` app-server 已验证可信会话枚举 38 个工具并实际创建项目/更新合同到 projectRevision=2、contractRevision=2，不可信会话仍只枚举 `system.get_capabilities`。真实公网长期可用性、正式安装布局与完整媒体 acquisition 仍属于后续验收，不能从这些切片提前推导。
 
@@ -510,6 +511,16 @@ Artifact Registry、StudyTask、Project Registry、AuthorizationLedger、Credent
 不迁移业务状态，不改变 MCP/Study IR。
 
 ## 14. 提交边界建议
+
+### 14.1 CURRENT：高级开发安装隔离（2026-07-20）
+
+- 开发安装器已经把被动 Marketplace/Plugin/Skill 与 Card Service runtime 分成两个内容寻址私有快照；Codex 配置只引用用户目录中的精确 digest，不引用可写 Git 工作树。
+- Plugin 快照与 runtime 快照都执行规范 manifest、精确文件集合、逐文件 SHA-256、reparse/hardlink 拒绝、受保护 DACL 和 owner 检查；用户目录祖先的 delete-child 替换权限也进入失败关闭门禁。
+- 外部开发 CPython 固定使用 `-I -S -B`，安装时扫描启动文件、标准库和所需依赖的 ACL，启动时再次检查根、关键路径和祖先。它仍是同一 OS 用户可信的开发边界，不是原生签名 bootstrap 或发布者证明。
+- 安装、升级和卸载持有 Windows 跨进程互斥；同名 Marketplace、Plugin、MCP 在删除或恢复前按私有快照身份复核，失败结果包含 `partial`、`failedStep` 和 `unrecovered`。直接绕过安装器执行 Codex 配置命令不参加该互斥，仍属于显式限制。
+
+### 14.2 提交拆分
+
 
 每个阶段拆分：
 

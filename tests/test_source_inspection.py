@@ -301,16 +301,10 @@ def test_pdf_text_layer_is_bounded_structured_and_path_free(tmp_path: Path) -> N
         materialized_path = materialized_root / "source.pdf"
         receipt = request["materialize"](materialized_path)
         calls.append(
-            {
-                key: value
-                for key, value in request.items()
-                if key != "materialize"
-            }
+            {key: value for key, value in request.items() if key != "materialize"}
         )
         assert receipt == {
-            "sha256": hashlib.sha256(
-                b"%PDF-1.7\nverified fixture"
-            ).hexdigest(),
+            "sha256": hashlib.sha256(b"%PDF-1.7\nverified fixture").hexdigest(),
             "sizeBytes": len(b"%PDF-1.7\nverified fixture"),
             "path": str(materialized_path),
         }
@@ -347,7 +341,9 @@ def test_pdf_text_layer_is_bounded_structured_and_path_free(tmp_path: Path) -> N
         }
 
     resources, runtime, project = environment(
-        tmp_path, structured_source_parser=parse_pdf
+        tmp_path,
+        structured_source_parser=parse_pdf,
+        media_tools=False,
     )
     assert runtime.capabilities()["sourceAdapters"]["pdfTextLayer"] == {
         "available": True,
@@ -372,9 +368,7 @@ def test_pdf_text_layer_is_bounded_structured_and_path_free(tmp_path: Path) -> N
     assert calls == [
         {
             "source_type": "pdf",
-            "source_sha256": hashlib.sha256(
-                b"%PDF-1.7\nverified fixture"
-            ).hexdigest(),
+            "source_sha256": hashlib.sha256(b"%PDF-1.7\nverified fixture").hexdigest(),
             "source_size_bytes": len(b"%PDF-1.7\nverified fixture"),
             "maximum_text_bytes": 8 * 1024 * 1024,
             "maximum_execution_seconds": 60.0,
@@ -395,12 +389,16 @@ def test_pdf_text_layer_is_bounded_structured_and_path_free(tmp_path: Path) -> N
         "name": "pypdf",
         "version": "6.14.2",
     }
-    assert [node["attributes"]["pageNumber"] for node in representation["contentNodes"]] == [
+    assert [
+        node["attributes"]["pageNumber"] for node in representation["contentNodes"]
+    ] == [
         1,
         1,
         2,
     ]
-    assert [node["locator"]["pageNumber"] for node in representation["contentNodes"]] == [
+    assert [
+        node["locator"]["pageNumber"] for node in representation["contentNodes"]
+    ] == [
         1,
         1,
         2,
@@ -411,7 +409,9 @@ def test_pdf_text_layer_is_bounded_structured_and_path_free(tmp_path: Path) -> N
     assert "Reliable learning" not in public
 
 
-def test_pdf_parser_result_fails_closed_when_schema_is_not_exact(tmp_path: Path) -> None:
+def test_pdf_parser_result_fails_closed_when_schema_is_not_exact(
+    tmp_path: Path,
+) -> None:
     def invalid_parser(**_request):
         return {
             "schema": "study.source-parser-result",

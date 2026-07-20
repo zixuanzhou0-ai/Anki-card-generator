@@ -26,6 +26,9 @@ from tests.test_runtime_package import trust_policy_path, write_package
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ROOT = (ROOT / "plugins" / "anki-study-agent").resolve()
+PLUGIN_VERSION = json.loads(
+    (PLUGIN_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
+)["version"]
 
 
 def signed_runtime(root: Path) -> tuple[Path, Path]:
@@ -46,7 +49,7 @@ def build(tmp_path: Path, name: str = "candidate") -> PluginReleaseBundle:
     runtime, trust = signed_runtime(tmp_path)
     result = build_plugin_release_candidate(
         (tmp_path / name).resolve(),
-        version="0.1.0",
+        version=PLUGIN_VERSION,
         created_at="2026-07-18T00:00:00Z",
         plugin_root=PLUGIN_ROOT,
         launcher=launcher(tmp_path),
@@ -64,7 +67,7 @@ def test_builder_is_deterministic_exact_and_explicitly_non_installable(
     launcher_path = launcher(tmp_path)
     first = build_plugin_release_candidate(
         (tmp_path / "candidate-a").resolve(),
-        version="0.1.0",
+        version=PLUGIN_VERSION,
         created_at="2026-07-18T00:00:00Z",
         plugin_root=PLUGIN_ROOT,
         launcher=launcher_path,
@@ -73,7 +76,7 @@ def test_builder_is_deterministic_exact_and_explicitly_non_installable(
     )
     second = build_plugin_release_candidate(
         (tmp_path / "candidate-b").resolve(),
-        version="0.1.0",
+        version=PLUGIN_VERSION,
         created_at="2026-07-18T00:00:00Z",
         plugin_root=PLUGIN_ROOT,
         launcher=launcher_path,
@@ -101,10 +104,9 @@ def test_builder_is_deterministic_exact_and_explicitly_non_installable(
         for path in first.root.rglob("*")
         if path.is_file()
     }
-    listed = {
-        str(entry["relativePath"])
-        for entry in bundle.value["resources"]
-    } | {RELEASE_MANIFEST_NAME}
+    listed = {str(entry["relativePath"]) for entry in bundle.value["resources"]} | {
+        RELEASE_MANIFEST_NAME
+    }
     assert actual == listed
 
 
@@ -120,7 +122,7 @@ def test_builder_rejects_mcp_or_app_declarations_before_output(
     with pytest.raises(PluginBundleError) as blocked:
         build_plugin_release_candidate(
             output,
-            version="0.1.0",
+            version=PLUGIN_VERSION,
             created_at="2026-07-18T00:00:00Z",
             plugin_root=plugin,
             launcher=launcher(tmp_path),
@@ -139,7 +141,7 @@ def test_builder_rejects_mcp_or_app_declarations_before_output(
     with pytest.raises(PluginBundleError) as declared:
         build_plugin_release_candidate(
             output,
-            version="0.1.0",
+            version=PLUGIN_VERSION,
             created_at="2026-07-18T00:00:00Z",
             plugin_root=plugin,
             launcher=launcher(tmp_path),
@@ -155,7 +157,7 @@ def test_builder_rejects_mcp_or_app_declarations_before_output(
     with pytest.raises(PluginBundleError) as preassembled:
         build_plugin_release_candidate(
             output,
-            version="0.1.0",
+            version=PLUGIN_VERSION,
             created_at="2026-07-18T00:00:00Z",
             plugin_root=plugin,
             launcher=launcher(tmp_path),
@@ -200,7 +202,7 @@ def test_builder_preserves_existing_output(tmp_path: Path) -> None:
     with pytest.raises(PluginBundleError) as existing:
         build_plugin_release_candidate(
             output,
-            version="0.1.0",
+            version=PLUGIN_VERSION,
             created_at="2026-07-18T00:00:00Z",
             plugin_root=PLUGIN_ROOT,
             launcher=launcher(tmp_path),
@@ -236,7 +238,7 @@ def test_cli_builds_a_verified_passive_candidate(tmp_path: Path) -> None:
             "--output",
             str(output),
             "--version",
-            "0.1.0",
+            PLUGIN_VERSION,
             "--created-at",
             "2026-07-18T00:00:00Z",
             "--plugin-root",

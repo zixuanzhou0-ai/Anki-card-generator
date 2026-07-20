@@ -343,6 +343,7 @@ def _subtitle_content(
     cues: list[tuple[int, int, str]] = []
     invalid = 0
     limited = False
+
     def iter_blocks() -> Iterator[str]:
         cursor = 0
         for boundary in re.finditer(r"\n[ \t]*\n", text):
@@ -555,8 +556,7 @@ class SourceInspectionRuntime:
             "worker": (
                 "not-invoked"
                 if self._parser_binding is None
-                else "source-parser@sha256:"
-                + self._parser_binding["workerSha256"]
+                else "source-parser@sha256:" + self._parser_binding["workerSha256"]
             ),
             "sourceAdapterSetDigest": adapter_set_digest,
         }
@@ -716,9 +716,7 @@ class SourceInspectionRuntime:
                     "compatibilityContractVersion": "embedded-transcript-v1",
                 }
             )
-        capability, capability_digest = build_capability_binding(
-            required_capabilities
-        )
+        capability, capability_digest = build_capability_binding(required_capabilities)
         authorization, authorization_digest = build_authorization_binding(
             audience=audience,
             service_instance_id=self._service_instance_id,
@@ -901,7 +899,7 @@ class SourceInspectionRuntime:
                 ),
                 "issueRefs": ["SOURCE_ASYNC_INSPECTION_REQUIRED"],
             }
-        if not self.embedded_media_transcript_available:
+        if not self.pdf_text_layer_available:
             return {
                 "text": "",
                 "nodes": [],
@@ -1003,14 +1001,11 @@ class SourceInspectionRuntime:
             )
         omitted_pages = result["omittedPages"]
         omitted_page_count = result["omittedPageCount"]
-        if (
-            omitted_pages != sorted(set(omitted_pages))
-            or not all(
-                isinstance(value, int)
-                and not isinstance(value, bool)
-                and 1 <= value <= result["pageCount"]
-                for value in omitted_pages
-            )
+        if omitted_pages != sorted(set(omitted_pages)) or not all(
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and 1 <= value <= result["pageCount"]
+            for value in omitted_pages
         ):
             raise SourceInspectionError(
                 "SOURCE_PARSER_RESULT_INVALID", "Document parser omissions are invalid"
@@ -1019,17 +1014,13 @@ class SourceInspectionRuntime:
         seen_pages: set[int] = set()
         total_text_bytes = 0
         for page in result["pages"]:
-            if (
-                not isinstance(page, Mapping)
-                or set(page)
-                != {
-                    "pageNumber",
-                    "text",
-                    "characterAnomalyCount",
-                    "imageObjectCount",
-                    "textTruncated",
-                }
-            ):
+            if not isinstance(page, Mapping) or set(page) != {
+                "pageNumber",
+                "text",
+                "characterAnomalyCount",
+                "imageObjectCount",
+                "textTruncated",
+            }:
                 raise SourceInspectionError(
                     "SOURCE_PARSER_RESULT_INVALID", "Document parser page is invalid"
                 )
@@ -1054,17 +1045,22 @@ class SourceInspectionRuntime:
                 or not isinstance(text_truncated, bool)
             ):
                 raise SourceInspectionError(
-                    "SOURCE_PARSER_RESULT_INVALID", "Document parser page values are invalid"
+                    "SOURCE_PARSER_RESULT_INVALID",
+                    "Document parser page values are invalid",
                 )
-            normalized, decode_issue = _decode_text(text.encode("utf-8"), truncated=False)
+            normalized, decode_issue = _decode_text(
+                text.encode("utf-8"), truncated=False
+            )
             if normalized is None or decode_issue is not None or normalized != text:
                 raise SourceInspectionError(
-                    "SOURCE_PARSER_RESULT_INVALID", "Document parser text is not canonical"
+                    "SOURCE_PARSER_RESULT_INVALID",
+                    "Document parser text is not canonical",
                 )
             total_text_bytes += len(text.encode("utf-8"))
             if total_text_bytes > maximum_text_bytes:
                 raise SourceInspectionError(
-                    "SOURCE_PARSER_RESULT_INVALID", "Document parser exceeded its text limit"
+                    "SOURCE_PARSER_RESULT_INVALID",
+                    "Document parser exceeded its text limit",
                 )
             seen_pages.add(page_number)
             pages.append(
@@ -1077,7 +1073,8 @@ class SourceInspectionRuntime:
             or len(pages) + omitted_page_count != result["pageCount"]
         ):
             raise SourceInspectionError(
-                "SOURCE_PARSER_RESULT_INVALID", "Document parser pages are not canonical"
+                "SOURCE_PARSER_RESULT_INVALID",
+                "Document parser pages are not canonical",
             )
         issues = sorted(set(result["issueCodes"]))
         issue_set = set(issues)
@@ -1126,8 +1123,7 @@ class SourceInspectionRuntime:
                 )
             )
             or (
-                (not has_text)
-                != ("SOURCE_PDF_TEXT_LAYER_EMPTY" in issue_set)
+                (not has_text) != ("SOURCE_PDF_TEXT_LAYER_EMPTY" in issue_set)
                 and result["pageCount"] > 0
             )
         ):
@@ -1392,13 +1388,10 @@ class SourceInspectionRuntime:
             "SOURCE_PARSER_SANDBOX_UNAVAILABLE",
             "SOURCE_PARSER_TIMEOUT",
         }
-        if (
-            (duration_ms is not None and duration_unknown)
-            or (
-                duration_ms is None
-                and not duration_unknown
-                and not set(issues) & probe_level_failures
-            )
+        if (duration_ms is not None and duration_unknown) or (
+            duration_ms is None
+            and not duration_unknown
+            and not set(issues) & probe_level_failures
         ):
             raise SourceInspectionError(
                 "SOURCE_PARSER_RESULT_INVALID",
@@ -1482,7 +1475,11 @@ class SourceInspectionRuntime:
         normalized, decode_issue = _decode_text(
             transcript["text"].encode("utf-8"), truncated=False
         )
-        if normalized is None or decode_issue is not None or normalized != transcript["text"]:
+        if (
+            normalized is None
+            or decode_issue is not None
+            or normalized != transcript["text"]
+        ):
             raise SourceInspectionError(
                 "SOURCE_PARSER_RESULT_INVALID", "Media transcript is not canonical"
             )
@@ -1494,7 +1491,8 @@ class SourceInspectionRuntime:
         )
         if not nodes:
             raise SourceInspectionError(
-                "SOURCE_PARSER_RESULT_INVALID", "Media transcript contains no valid cues"
+                "SOURCE_PARSER_RESULT_INVALID",
+                "Media transcript contains no valid cues",
             )
         issues = sorted(set(issues + subtitle_issues))
         return {
@@ -1510,7 +1508,9 @@ class SourceInspectionRuntime:
             },
             "completeness": _completeness(
                 "partial_declared",
-                expected_units=(len(nodes) if "SOURCE_NODE_LIMIT_REACHED" not in issues else None),
+                expected_units=(
+                    len(nodes) if "SOURCE_NODE_LIMIT_REACHED" not in issues else None
+                ),
                 processed_units=len(nodes),
                 reason_codes=issues,
             ),
@@ -1723,7 +1723,9 @@ class SourceInspectionRuntime:
             if len(nodes) >= _MAX_CONTENT_NODES:
                 remaining_members = len(entries) - index - 1
                 omitted_units += remaining_members
-                for pending in entries[index + 1 : index + 1 + max(0, 256 - len(omitted))]:
+                for pending in entries[
+                    index + 1 : index + 1 + max(0, 256 - len(omitted))
+                ]:
                     omitted.append(
                         {
                             "kind": "code",
