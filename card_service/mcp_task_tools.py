@@ -67,7 +67,10 @@ def task_tool_definitions() -> list[dict[str, Any]]:
     }
     list_input_schema = {
         "type": "object",
-        "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 100}},
+        "properties": {
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            "cursor": {"type": "string", "minLength": 1, "maxLength": 1800},
+        },
         "additionalProperties": False,
     }
     resume_input_schema = {
@@ -85,9 +88,16 @@ def task_tool_definitions() -> list[dict[str, Any]]:
             "schemaVersion": {"type": "integer", "const": 1},
             "tasks": {"type": "array", "items": _task_schema()},
             "returnedTasks": {"type": "integer", "minimum": 0},
+            "nextCursor": {"type": ["string", "null"]},
             "nextAction": {"type": "string", "enum": ["resume_task", "none"]},
         },
-        "required": ["schemaVersion", "tasks", "returnedTasks", "nextAction"],
+        "required": [
+            "schemaVersion",
+            "tasks",
+            "returnedTasks",
+            "nextCursor",
+            "nextAction",
+        ],
         "additionalProperties": False,
     }
     return [
@@ -169,13 +179,20 @@ def _task_id(arguments: Any) -> str:
     return value
 
 
-def _list_limit(arguments: Any) -> int:
-    if not isinstance(arguments, dict) or not set(arguments).issubset({"limit"}):
+def _list_arguments(arguments: Any) -> tuple[int, str | None]:
+    if not isinstance(arguments, dict) or not set(arguments).issubset(
+        {"limit", "cursor"}
+    ):
         raise McpTaskToolInputError("recoverable task list fields are invalid")
     limit = arguments.get("limit", 20)
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
         raise McpTaskToolInputError("limit is invalid")
-    return limit
+    cursor = arguments.get("cursor")
+    if cursor is not None and (
+        not isinstance(cursor, str) or not 1 <= len(cursor) <= 1800
+    ):
+        raise McpTaskToolInputError("cursor is invalid")
+    return limit, cursor
 
 
 def _resume_arguments(arguments: Any) -> tuple[str, str]:
@@ -213,9 +230,9 @@ def call_task_tool(
         )
         text = f"Study task cancellation state: {structured['state']}."
     elif tool_name == LIST_RECOVERABLE_TASKS_TOOL_NAME:
-        limit = _list_limit(arguments)
+        limit, cursor = _list_arguments(arguments)
         structured = service.list_public_recoverable_study_tasks(
-            audience=audience_session.audience, limit=limit
+            audience=audience_session.audience, limit=limit, cursor=cursor
         )
         text = f"Recoverable Study tasks: {structured['returnedTasks']}."
     elif tool_name == RESUME_TASK_TOOL_NAME:

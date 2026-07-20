@@ -490,9 +490,9 @@ Service 从当前可信授权、audience、项目 revision、inspection 与候�
 
 ### 6.3 study.list_recoverable_tasks
 
-> CURRENT：输入只能为空对象或 `{"limit": 1..100}`。返回当前 audience 下公开恢复运行时真正支持的 failed/cancelled/interrupted 候选发现任务；导出与 Anki import 不会出现在列表中。
+> CURRENT：输入只能为空对象或 `{"limit": 1..100,"cursor":"..."}`；`cursor` 可省略。返回当前 audience 下公开恢复运行时真正支持的 failed/cancelled/interrupted 候选发现任务，以及已完成模型工作但尚待本地项目提交、在公开视图中投影为 interrupted 的任务；导出与 Anki import 不会出现在列表中。
 
-输出包含 `schemaVersion`、公开任务快照数组、`returnedTasks` 与 `nextAction`。任务仍经公开投影，不返回授权、路径、ArtifactRef、Provider、input fingerprint 或 Worker 状态。
+输出包含 `schemaVersion`、公开任务快照数组、`returnedTasks`、可空的认证 `nextCursor` 与 `nextAction`。任务仍经公开投影，不返回授权、路径、ArtifactRef、Provider、input fingerprint 或 Worker 状态。cursor 绑定当前 audience、intent、查询条件、索引 generation 和首次翻页快照；篡改、跨查询复用或索引重建后复用会明确失败。调用方应继续翻页直到 `nextCursor=null`，不能假设前一页被判 stale 后就不存在更早的有效任务。
 
 ### 6.4 study.cancel_task
 

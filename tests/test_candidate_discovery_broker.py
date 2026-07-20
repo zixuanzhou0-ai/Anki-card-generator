@@ -474,6 +474,10 @@ class _RecoveryStudyRuntime:
         return "task-recovery-source", None
 
     @staticmethod
+    def finalize_pending_candidate_discovery_commit(**_kwargs: Any) -> None:
+        return None
+
+    @staticmethod
     def candidate_discovery_recovery_request(**_kwargs: Any) -> dict[str, Any]:
         return {
             "projectId": "project-1",
@@ -481,6 +485,22 @@ class _RecoveryStudyRuntime:
             "inspectionHandle": "study_" + "R" * 43,
             "candidateBudget": {"target": 8, "maximum": 16},
         }
+
+
+class _PendingCommitStudyRuntime(_RecoveryStudyRuntime):
+    @staticmethod
+    def finalize_pending_candidate_discovery_commit(**_kwargs: Any) -> dict[str, Any]:
+        return {
+            "schemaVersion": 1,
+            "projectId": "project-1",
+            "projectRevision": 4,
+            "artifactStage": "candidates_ready",
+            "taskId": "task-recovery-source",
+        }
+
+    @staticmethod
+    def candidate_discovery_recovery_request(**_kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("pending commit recovery must not request model authorization")
 
 
 def _card_service_shell(
@@ -597,6 +617,28 @@ def test_card_service_rechecks_hermes_before_recovering_discovery() -> None:
 
     assert caught.value.code == "HERMES_PROXY_START_FAILED"
     assert calls == ["preflight"]
+
+
+def test_card_service_finishes_pending_commit_without_a_model_broker() -> None:
+    service = object.__new__(CardService)
+    service._study_runtime = _PendingCommitStudyRuntime()
+    service._study_runtime_lock = threading.RLock()
+    service._broker_runtime_lock = threading.RLock()
+    service._active_broker_runtime = None
+
+    result = service.resume_public_study_task(
+        audience=ArtifactAudienceBinding(
+            owner_digest="f" * 64,
+            host_id="codex-desktop",
+            plugin_id="speakright.study",
+            session_id="session-pending-commit",
+        ),
+        task_id="task-recovery-source",
+        idempotency_key="resume-pending-commit",
+    )
+
+    assert result["artifactStage"] == "candidates_ready"
+    assert result["taskId"] == "task-recovery-source"
 
 
 def test_provider_fails_closed_when_method_is_not_authorized(tmp_path: Path) -> None:

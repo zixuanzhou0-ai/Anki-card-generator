@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import secrets
 import threading
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -135,8 +136,18 @@ class StudyRuntime:
         self.service_instance_id = resource_runtime.service_instance_id
         self._active_discovery_lock = threading.RLock()
         self._active_discoveries: dict[
-            str, tuple[threading.Event, threading.Thread]
+            str,
+            tuple[
+                threading.Event,
+                threading.Thread,
+                threading.Event,
+                threading.Thread,
+            ],
         ] = {}
+        self._worker_owner_id = "worker_" + secrets.token_urlsafe(24)
+        self._worker_lease_seconds = 30
+        self._worker_heartbeat_seconds = 5
+        self._worker_startup_grace_seconds = 15
         try:
             context = _context(self.root)
             artifact_key = credential_store.derive_service_key(
@@ -754,6 +765,54 @@ class StudyRuntime:
         model_provider: CandidateDiscoveryModelProvider | None = None,
     ) -> dict[str, Any]:
         discovery = self.candidate_discovery
+        worker_lease: Mapping[str, Any] | None = None
+        leased_task_id: str | None = None
+        sync_worker_owner_id = self._worker_owner_id + ":" + secrets.token_hex(8)
+        lease_stop = threading.Event()
+        lease_lost = threading.Event()
+        lease_thread: threading.Thread | None = None
+
+        def heartbeat(task_id: str) -> None:
+            while not lease_stop.wait(self._worker_heartbeat_seconds):
+                try:
+                    assert worker_lease is not None
+                    self.tasks.renew_worker_lease(
+                        task_id,
+                        audience,
+                        owner_id=sync_worker_owner_id,
+                        fencing_token=int(worker_lease["fencingToken"]),
+                        ttl_seconds=self._worker_lease_seconds,
+                    )
+                except (AssertionError, StudyTaskError):
+                    lease_lost.set()
+                    return
+
+        def task_ready(task_id: str) -> Mapping[str, Any] | bool:
+            nonlocal worker_lease, leased_task_id, lease_thread
+            persisted = self.tasks.get_task(task_id, audience)
+            if persisted.get("state") not in {"queued", "running", "cancelling"}:
+                return True
+            try:
+                worker_lease = self.tasks.acquire_worker_lease(
+                    task_id,
+                    audience,
+                    owner_id=sync_worker_owner_id,
+                    ttl_seconds=self._worker_lease_seconds,
+                )
+            except StudyTaskError as error:
+                if error.code == "TASK_WORKER_LEASE_HELD":
+                    return False
+                raise
+            leased_task_id = task_id
+            lease_thread = threading.Thread(
+                target=heartbeat,
+                args=(task_id,),
+                daemon=True,
+                name="study-candidate-discovery-sync-heartbeat",
+            )
+            lease_thread.start()
+            return worker_lease
+
         try:
             if model_provider is not None:
                 discovery = CandidateDiscoveryRuntime(
@@ -776,6 +835,8 @@ class StudyRuntime:
                 inspection_handle=inspection_handle,
                 candidate_budget=candidate_budget,
                 authorization=authorization,
+                task_ready_callback=task_ready,
+                cancellation_requested=lease_lost.is_set,
             )
         except (
             CandidateDiscoveryRuntimeError,
@@ -784,6 +845,19 @@ class StudyRuntime:
             StudyTaskError,
         ) as error:
             raise StudyRuntimeError(error.code, error.message) from error
+        finally:
+            lease_stop.set()
+            if lease_thread is not None:
+                lease_thread.join(timeout=1.0)
+            if leased_task_id is not None and worker_lease is not None:
+                try:
+                    self.tasks.release_worker_lease(
+                        leased_task_id,
+                        owner_id=sync_worker_owner_id,
+                        fencing_token=int(worker_lease["fencingToken"]),
+                    )
+                except StudyTaskError:
+                    pass
 
     def start_candidate_discovery_task(
         self,
@@ -812,19 +886,93 @@ class StudyRuntime:
             raise StudyRuntimeError(error.code, error.message) from error
         ready = threading.Event()
         cancel_event = threading.Event()
+        lease_stop = threading.Event()
         holder: dict[str, Any] = {}
 
-        def task_ready(task_id: str) -> bool:
+        def heartbeat(task_id: str) -> None:
+            try:
+                while not lease_stop.wait(self._worker_heartbeat_seconds):
+                    with self._active_discovery_lock:
+                        active = self._active_discoveries.get(task_id)
+                        if active is None or active[1] is not thread:
+                            break
+                    try:
+                        worker_lease = holder.get("workerLease")
+                        if not isinstance(worker_lease, Mapping):
+                            break
+                        self.tasks.renew_worker_lease(
+                            task_id,
+                            audience,
+                            owner_id=self._worker_owner_id,
+                            fencing_token=int(worker_lease["fencingToken"]),
+                            ttl_seconds=self._worker_lease_seconds,
+                        )
+                    except StudyTaskError as error:
+                        holder["leaseError"] = error
+                        cancel_event.set()
+                        break
+            finally:
+                try:
+                    worker_lease = holder.get("workerLease")
+                    self.tasks.release_worker_lease(
+                        task_id,
+                        owner_id=self._worker_owner_id,
+                        fencing_token=(
+                            int(worker_lease["fencingToken"])
+                            if isinstance(worker_lease, Mapping)
+                            else None
+                        ),
+                    )
+                except StudyTaskError:
+                    pass
+
+        def task_ready(task_id: str) -> Mapping[str, Any] | bool:
             holder["taskId"] = task_id
+            try:
+                persisted = self.tasks.get_task(task_id, audience)
+            except StudyTaskError as error:
+                holder["leaseError"] = error
+                ready.set()
+                return False
+            if persisted.get("state") not in {"queued", "running", "cancelling"}:
+                ready.set()
+                return True
             accepted = True
             with self._active_discovery_lock:
                 existing = self._active_discoveries.get(task_id)
                 if existing is None:
-                    self._active_discoveries[task_id] = (cancel_event, thread)
+                    try:
+                        worker_lease = self.tasks.acquire_worker_lease(
+                            task_id,
+                            audience,
+                            owner_id=self._worker_owner_id,
+                            ttl_seconds=self._worker_lease_seconds,
+                        )
+                        holder["workerLease"] = worker_lease
+                    except StudyTaskError as error:
+                        holder["leaseError"] = error
+                        accepted = False
+                    if accepted:
+                        lease_thread = threading.Thread(
+                            target=heartbeat,
+                            args=(task_id,),
+                            daemon=True,
+                            name="study-candidate-discovery-heartbeat",
+                        )
+                        self._active_discoveries[task_id] = (
+                            cancel_event,
+                            thread,
+                            lease_stop,
+                            lease_thread,
+                        )
+                        lease_thread.start()
                 elif existing[1] is not thread:
                     accepted = False
             ready.set()
-            return accepted
+            if not accepted:
+                return False
+            worker_lease = holder.get("workerLease")
+            return worker_lease if isinstance(worker_lease, Mapping) else True
 
         def run() -> None:
             try:
@@ -848,10 +996,24 @@ class StudyRuntime:
             finally:
                 task_id = holder.get("taskId")
                 if isinstance(task_id, str):
+                    lease_stop.set()
                     with self._active_discovery_lock:
                         active = self._active_discoveries.get(task_id)
                         if active is not None and active[1] is thread:
                             self._active_discoveries.pop(task_id, None)
+                    try:
+                        worker_lease = holder.get("workerLease")
+                        self.tasks.release_worker_lease(
+                            task_id,
+                            owner_id=self._worker_owner_id,
+                            fencing_token=(
+                                int(worker_lease["fencingToken"])
+                                if isinstance(worker_lease, Mapping)
+                                else None
+                            ),
+                        )
+                    except StudyTaskError:
+                        pass
 
         thread = threading.Thread(
             target=run,
@@ -879,6 +1041,9 @@ class StudyRuntime:
         error = holder.get("error")
         if isinstance(error, StudyRuntimeError):
             raise error
+        lease_error = holder.get("leaseError")
+        if isinstance(lease_error, StudyTaskError):
+            raise StudyRuntimeError(lease_error.code, lease_error.message) from lease_error
         try:
             task = self.tasks.get_task(task_id, audience)
         except StudyTaskError as task_error:
@@ -1039,63 +1204,171 @@ class StudyRuntime:
         return public
 
     def list_recoverable_study_tasks(
-        self, *, audience: ArtifactAudienceBinding, limit: int = 20
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        limit: int = 20,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
             raise StudyRuntimeError(
                 "TASK_LIST_INVALID", "Recoverable task limit is invalid"
             )
-        with self._active_discovery_lock:
-            active_task_ids = frozenset(self._active_discoveries)
         try:
-            recoverable = self.tasks.list_recoverable_tasks(
-                audience,
-                limit=limit,
-                include_active=True,
-                exclude_task_ids=active_task_ids,
-                intent="discover_candidates",
-            )
             discovery_tasks: list[dict[str, Any]] = []
-            for task in recoverable:
-                task_id = str(task["taskId"])
-                if task["state"] in {"queued", "running", "cancelling"}:
-                    with self._active_discovery_lock:
-                        if task_id in self._active_discoveries:
-                            continue
-                    try:
-                        task = self.tasks.interrupt_stale_task(
-                            task_id,
-                            audience,
-                            expected_revision=int(task["taskRevision"]),
-                            operation_id=(
-                                "interrupt-orphan-"
-                                + hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:32]
-                            ),
-                            allow_current_audience_orphan=True,
-                        )
-                    except StudyTaskError as error:
-                        if error.code in {
-                            "TASK_REVISION_CONFLICT",
-                            "TASK_STATE_CONFLICT",
-                        }:
-                            continue
-                        raise
+            seen_task_ids: set[str] = set()
+            next_cursor = cursor
+            exhausted = False
+            cursor_restarts = 0
+            while len(discovery_tasks) < limit and not exhausted:
                 try:
-                    self.candidate_discovery_recovery_request(
-                        audience=audience, task_id=task_id
+                    page = self.tasks.list_recoverable_task_page(
+                        audience,
+                        limit=100,
+                        include_active=True,
+                        intent="discover_candidates",
+                        cursor=next_cursor,
                     )
-                    discovery_tasks.append(
-                        self._public_discovery_task(task, audience)
-                    )
-                except StudyRuntimeError as error:
-                    if error.code in {
-                        "TASK_RECOVERY_STALE",
-                        "DISCOVERY_RECOVERY_INVALID",
-                        "TASK_NOT_RECOVERABLE",
-                        "TASK_RESUME_UNSUPPORTED",
-                    }:
+                except StudyTaskError as error:
+                    if error.code == "TASK_CURSOR_STALE" and next_cursor is not None:
+                        if cursor is not None or cursor_restarts >= 1:
+                            raise
+                        cursor_restarts += 1
+                        next_cursor = None
+                        exhausted = False
+                        discovery_tasks.clear()
+                        seen_task_ids.clear()
                         continue
                     raise
+                recoverable = page["tasks"]
+                exhausted = page["nextCursor"] is None
+                if not recoverable:
+                    next_cursor = page["nextCursor"]
+                    if next_cursor is None:
+                        break
+                    continue
+                stopped_early = False
+                for offset, original_task in enumerate(recoverable):
+                    task = original_task
+                    task_id = str(task["taskId"])
+                    if task_id in seen_task_ids:
+                        continue
+                    seen_task_ids.add(task_id)
+                    if task["state"] in {"queued", "running", "cancelling"}:
+                        with self._active_discovery_lock:
+                            if task_id in self._active_discoveries:
+                                continue
+                        liveness = self.tasks.worker_liveness(
+                            task_id,
+                            audience,
+                            startup_grace_seconds=self._worker_startup_grace_seconds,
+                        )
+                        if liveness in {"active", "starting", "unknown"}:
+                            continue
+                        if liveness == "terminal":
+                            continue
+                        try:
+                            task = self.tasks.interrupt_stale_task(
+                                task_id,
+                                audience,
+                                expected_revision=int(task["taskRevision"]),
+                                operation_id=(
+                                    "interrupt-orphan-"
+                                    + hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:32]
+                                ),
+                                allow_current_audience_orphan=True,
+                                startup_grace_seconds=self._worker_startup_grace_seconds,
+                            )
+                        except StudyTaskError as error:
+                            if error.code in {
+                                "TASK_REVISION_CONFLICT",
+                                "TASK_STATE_CONFLICT",
+                                "TASK_WORKER_LEASE_HELD",
+                            }:
+                                continue
+                            raise
+                    try:
+                        if task.get("state") == "succeeded":
+                            public_task = self._public_discovery_task(task, audience)
+                            if public_task.get("state") == "succeeded":
+                                self.tasks.retire_recovery_lineage(
+                                    task_id, audience
+                                )
+                                continue
+                            discovery_tasks.append(public_task)
+                            if len(discovery_tasks) >= limit:
+                                has_more = (
+                                    offset < len(recoverable) - 1
+                                    or page["nextCursor"] is not None
+                                )
+                                next_cursor = (
+                                    self.tasks.recovery_cursor_after(
+                                        audience,
+                                        page["positions"][offset],
+                                        include_active=True,
+                                        intent="discover_candidates",
+                                    )
+                                    if has_more
+                                    else None
+                                )
+                                stopped_early = True
+                                break
+                            continue
+                        self.candidate_discovery_recovery_request(
+                            audience=audience, task_id=task_id
+                        )
+                        discovery_tasks.append(
+                            self._public_discovery_task(task, audience)
+                        )
+                    except StudyRuntimeError as error:
+                        if error.code in {
+                            "TASK_RECOVERY_STALE",
+                            "DISCOVERY_RECOVERY_INVALID",
+                            "TASK_NOT_RECOVERABLE",
+                            "TASK_RESUME_UNSUPPORTED",
+                        }:
+                            if error.code == "TASK_RECOVERY_STALE":
+                                try:
+                                    revision = task.get("taskRevision")
+                                    if isinstance(revision, int) and not isinstance(
+                                        revision, bool
+                                    ):
+                                        self.tasks.retire_recovery_index_entry(
+                                            task_id,
+                                            audience,
+                                            expected_revision=revision,
+                                        )
+                                except StudyTaskError as cleanup_error:
+                                    if cleanup_error.code not in {
+                                        "TASK_REVISION_CONFLICT",
+                                        "TASK_STATE_CONFLICT",
+                                        "TASK_NOT_FOUND",
+                                    }:
+                                        raise
+                            continue
+                        raise
+                    if len(discovery_tasks) >= limit:
+                        has_more = (
+                            offset < len(recoverable) - 1
+                            or page["nextCursor"] is not None
+                        )
+                        next_cursor = (
+                            self.tasks.recovery_cursor_after(
+                                audience,
+                                page["positions"][offset],
+                                include_active=True,
+                                intent="discover_candidates",
+                            )
+                            if has_more
+                            else None
+                        )
+                        stopped_early = True
+                        break
+                if stopped_early:
+                    break
+                next_cursor = page["nextCursor"]
+                if next_cursor is None:
+                    exhausted = True
         except (
             StudyTaskError,
             ArtifactRegistryError,
@@ -1106,6 +1379,7 @@ class StudyRuntime:
             "schemaVersion": 1,
             "tasks": discovery_tasks,
             "returnedTasks": len(discovery_tasks),
+            "nextCursor": next_cursor,
             "nextAction": "resume_task" if discovery_tasks else "none",
         }
 
@@ -1138,6 +1412,15 @@ class StudyRuntime:
                         is_active_here = successor_task_id in self._active_discoveries
                     if is_active_here:
                         return current_task_id, public
+                    liveness = self.tasks.worker_liveness(
+                        successor_task_id,
+                        audience,
+                        startup_grace_seconds=self._worker_startup_grace_seconds,
+                    )
+                    if liveness in {"active", "starting", "unknown"}:
+                        return current_task_id, public
+                    if liveness == "terminal":
+                        continue
                     try:
                         successor = self.tasks.interrupt_stale_task(
                             successor_task_id,
@@ -1150,11 +1433,13 @@ class StudyRuntime:
                                 ).hexdigest()[:32]
                             ),
                             allow_current_audience_orphan=True,
+                            startup_grace_seconds=self._worker_startup_grace_seconds,
                         )
                     except StudyTaskError as error:
                         if error.code in {
                             "TASK_REVISION_CONFLICT",
                             "TASK_STATE_CONFLICT",
+                            "TASK_WORKER_LEASE_HELD",
                         }:
                             continue
                         raise
@@ -1163,7 +1448,7 @@ class StudyRuntime:
                 if persisted_state == "succeeded":
                     if public.get("state") == "succeeded":
                         return current_task_id, public
-                    return current_task_id, None
+                    return str(successor["taskId"]), None
                 if (
                     persisted_state in {"failed", "cancelled", "interrupted"}
                     and successor.get("resumability") != "none"
@@ -1309,6 +1594,90 @@ class StudyRuntime:
             ),
         }
 
+    def finalize_pending_candidate_discovery_commit(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        task_id: str,
+    ) -> dict[str, Any] | None:
+        """Finish a generated discovery result locally when project commit was interrupted."""
+
+        try:
+            record = self.tasks.get_recovery_record(task_id, audience)
+            if record.get("task", {}).get("state") != "succeeded":
+                return None
+            if not isinstance(record.get("completionBinding"), Mapping):
+                task = record.get("task")
+                task_input = record.get("taskInputManifest")
+                work = record.get("workReuseManifest")
+                subject = (
+                    task_input.get("subject")
+                    if isinstance(task_input, Mapping)
+                    else None
+                )
+                if (
+                    not isinstance(task, Mapping)
+                    or task.get("intent") != "discover_candidates"
+                    or not isinstance(work, Mapping)
+                    or work.get("actionId") != "discover_candidates"
+                    or not isinstance(subject, Mapping)
+                    or subject.get("kind") != "project_task"
+                ):
+                    raise StudyRuntimeError(
+                        "DISCOVERY_COMMIT_NOT_READY",
+                        "Legacy discovery task cannot be migrated safely",
+                    )
+                project_id = subject.get("projectId")
+                project_revision = subject.get("projectRevision")
+                input_fingerprint = task.get("inputFingerprint")
+                if (
+                    not isinstance(project_id, str)
+                    or not project_id
+                    or isinstance(project_revision, bool)
+                    or not isinstance(project_revision, int)
+                    or project_revision < 1
+                    or not isinstance(input_fingerprint, str)
+                ):
+                    raise StudyRuntimeError(
+                        "DISCOVERY_COMMIT_NOT_READY",
+                        "Legacy discovery task input is incomplete",
+                    )
+                migration_digest = hashlib.sha256(
+                    canonical_json_bytes(
+                        {
+                            "schema": "study.candidate-discovery.commit-migration",
+                            "schemaVersion": 1,
+                            "taskId": task_id,
+                            "inputFingerprint": input_fingerprint,
+                            "resultHandles": sorted(
+                                value
+                                for value in task.get("resultHandles", [])
+                                if isinstance(value, str)
+                            ),
+                        }
+                    )
+                ).hexdigest()
+                self.tasks.ensure_completion_binding(
+                    task_id,
+                    audience,
+                    completion_binding={
+                        "projectId": project_id,
+                        "expectedProjectRevision": project_revision,
+                        "operationId": "recover-commit:" + task_id,
+                        "operationDigest": migration_digest,
+                        "artifactStage": "candidates_ready",
+                    },
+                )
+            return CandidateDiscoveryRuntime.finalize_pending_commit_with_registries(
+                artifacts=self.artifacts,
+                projects=self.projects,
+                tasks=self.tasks,
+                audience=audience,
+                task_id=task_id,
+            )
+        except (CandidateDiscoveryRuntimeError, StudyTaskError) as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+
     def resume_candidate_discovery_task(
         self,
         *,
@@ -1326,6 +1695,18 @@ class StudyRuntime:
         )
         if existing is not None:
             return existing
+        try:
+            recovery_record = self.tasks.get_recovery_record(
+                recovery_task_id, audience
+            )
+        except StudyTaskError as error:
+            raise StudyRuntimeError(error.code, error.message) from error
+        if recovery_record.get("task", {}).get("state") == "succeeded":
+            pending_commit = self.finalize_pending_candidate_discovery_commit(
+                audience=audience, task_id=recovery_task_id
+            )
+            assert pending_commit is not None
+            return pending_commit
         current_request = self.candidate_discovery_recovery_request(
             audience=audience, task_id=recovery_task_id
         )

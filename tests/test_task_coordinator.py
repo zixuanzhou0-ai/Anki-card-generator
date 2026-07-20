@@ -3,11 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+import time
 from pathlib import Path
 
 import pytest
-import card_service.task_coordinator as task_coordinator_module
 
+import card_service.task_coordinator as task_coordinator_module
 from card_service.artifact_registry import ArtifactAudienceBinding, ArtifactRegistry
 from card_service.task_coordinator import StudyTaskCoordinator, StudyTaskError
 from card_service.task_manifests import (
@@ -706,23 +707,37 @@ def test_recoverable_listing_isolates_a_corrupt_record(tmp_path: Path) -> None:
     assert [item["taskId"] for item in recoverable] == [failed["taskId"]]
 
 
-def test_recoverable_listing_fails_explicitly_at_scan_bound(
-    tmp_path: Path, monkeypatch
+def test_recoverable_listing_uses_index_and_ignores_unindexed_junk(
+    tmp_path: Path,
 ) -> None:
     audience, _, tasks = environment(tmp_path)
-    for name in ("one", "two"):
+    running = start(tasks, audience, create(tasks, audience))
+    failed = tasks.fail_task(
+        running["taskId"],
+        audience,
+        expected_revision=running["taskRevision"],
+        operation_id="fail-indexed-task",
+        code="MODEL_OUTPUT_INVALID",
+        stage="discovery",
+        retryable=True,
+        remote_cost_state="incurred",
+        retry_scope="phase",
+        authorization_state="valid",
+        preserved_artifact_handles=[],
+        required_action="retry",
+    )
+    for number in range(32):
+        name = f"junk-{number}"
         path = tasks._tasks_root / name / "record.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"not-json")
-    monkeypatch.setattr(task_coordinator_module, "MAX_RECOVERY_SCAN_RECORDS", 1)
 
-    with pytest.raises(StudyTaskError) as captured:
-        tasks.list_recoverable_tasks(audience)
+    recoverable = tasks.list_recoverable_tasks(audience)
 
-    assert captured.value.code == "TASK_LIST_SCAN_LIMIT"
+    assert [item["taskId"] for item in recoverable] == [failed["taskId"]]
 
-def test_successor_lineage_scan_is_bounded_and_isolates_corrupt_records(
-    tmp_path: Path, monkeypatch
+def test_successor_lineage_uses_index_and_ignores_unindexed_junk(
+    tmp_path: Path,
 ) -> None:
     audience, _, tasks, predecessor, _ = interrupted_with_one_completed_unit(tmp_path)
     corrupt_path = tasks._tasks_root / "corrupt-record" / "record.json"
@@ -743,7 +758,6 @@ def test_successor_lineage_scan_is_bounded_and_isolates_corrupt_records(
     )
     assert successor["predecessorTaskId"] == predecessor["taskId"]
 
-    monkeypatch.setattr(task_coordinator_module, "MAX_RECOVERY_SCAN_RECORDS", 1)
     with pytest.raises(StudyTaskError) as captured:
         tasks.create_successor_task(
             predecessor["taskId"],
@@ -756,7 +770,485 @@ def test_successor_lineage_scan_is_bounded_and_isolates_corrupt_records(
             predecessor_authorization_audit_ref="audit-old",
             successor_authorization_audit_ref="audit-new",
         )
-    assert captured.value.code == "TASK_LIST_SCAN_LIMIT"
+    assert captured.value.code == "TASK_SUCCESSOR_ACTIVE"
+
+
+def test_recoverable_task_pages_are_authenticated_and_non_overlapping(
+    tmp_path: Path,
+) -> None:
+    audience, _, tasks = environment(tmp_path)
+    failed_ids: set[str] = set()
+    for number in range(3):
+        running = start(tasks, audience, create(tasks, audience))
+        failed = tasks.fail_task(
+            running["taskId"],
+            audience,
+            expected_revision=running["taskRevision"],
+            operation_id=f"fail-page-{number}",
+            code="MODEL_OUTPUT_INVALID",
+            stage="discovery",
+            retryable=True,
+            remote_cost_state="incurred",
+            retry_scope="phase",
+            authorization_state="valid",
+            preserved_artifact_handles=[],
+            required_action="retry",
+        )
+        failed_ids.add(failed["taskId"])
+
+    first = tasks.list_recoverable_task_page(audience, limit=2)
+    assert len(first["tasks"]) == 2
+    assert isinstance(first["nextCursor"], str)
+    second = tasks.list_recoverable_task_page(
+        audience, limit=2, cursor=first["nextCursor"]
+    )
+    assert len(second["tasks"]) == 1
+    assert second["nextCursor"] is None
+    observed = {item["taskId"] for item in first["tasks"] + second["tasks"]}
+    assert observed == failed_ids
+
+    forged = first["nextCursor"][:-1] + (
+        "A" if first["nextCursor"][-1] != "A" else "B"
+    )
+    with pytest.raises(StudyTaskError) as captured:
+        tasks.list_recoverable_task_page(audience, cursor=forged)
+    assert captured.value.code == "TASK_CURSOR_INVALID"
+
+
+def test_recovery_cursor_uses_an_immutable_snapshot_during_index_changes(
+    tmp_path: Path,
+) -> None:
+    audience, _, tasks = environment(tmp_path)
+    original_ids: set[str] = set()
+    for number in range(3):
+        running = start(tasks, audience, create(tasks, audience))
+        failed = tasks.fail_task(
+            running["taskId"],
+            audience,
+            expected_revision=running["taskRevision"],
+            operation_id=f"fail-cursor-{number}",
+            code="MODEL_OUTPUT_INVALID",
+            stage="discovery",
+            retryable=True,
+            remote_cost_state="incurred",
+            retry_scope="phase",
+            authorization_state="valid",
+            required_action="retry",
+        )
+        original_ids.add(failed["taskId"])
+    first = tasks.list_recoverable_task_page(audience, limit=1)
+    assert isinstance(first["nextCursor"], str)
+
+    running = start(tasks, audience, create(tasks, audience))
+    added = tasks.fail_task(
+        running["taskId"],
+        audience,
+        expected_revision=running["taskRevision"],
+        operation_id="fail-after-cursor",
+        code="MODEL_OUTPUT_INVALID",
+        stage="discovery",
+        retryable=True,
+        remote_cost_state="incurred",
+        retry_scope="phase",
+        authorization_state="valid",
+        required_action="retry",
+    )
+    observed = {first["tasks"][0]["taskId"]}
+    cursor = first["nextCursor"]
+    while cursor is not None:
+        page = tasks.list_recoverable_task_page(audience, limit=1, cursor=cursor)
+        observed.update(item["taskId"] for item in page["tasks"])
+        cursor = page["nextCursor"]
+    assert observed == original_ids
+    assert added["taskId"] not in observed
+
+
+def test_recovery_cursor_is_rejected_after_index_generation_rebuild(
+    tmp_path: Path,
+) -> None:
+    audience, _, tasks = environment(tmp_path)
+    for number in range(3):
+        running = start(tasks, audience, create(tasks, audience))
+        tasks.fail_task(
+            running["taskId"],
+            audience,
+            expected_revision=running["taskRevision"],
+            operation_id=f"fail-before-index-rebuild-{number}",
+            code="MODEL_OUTPUT_INVALID",
+            stage="discovery",
+            retryable=True,
+            remote_cost_state="incurred",
+            retry_scope="phase",
+            authorization_state="valid",
+            required_action="retry",
+        )
+    first = tasks.list_recoverable_task_page(audience, limit=1)
+    assert isinstance(first["nextCursor"], str)
+
+    for path in (
+        tasks._recovery_index_path,
+        tasks._recovery_index_path.with_suffix(".json.bak"),
+    ):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+    with pytest.raises(StudyTaskError) as stale:
+        tasks.list_recoverable_task_page(
+            audience, limit=1, cursor=first["nextCursor"]
+        )
+    assert stale.value.code == "TASK_CURSOR_STALE"
+
+
+def test_recovery_index_bootstrap_fails_explicitly_when_scan_bound_is_exceeded(
+    tmp_path: Path, monkeypatch
+) -> None:
+    audience, _, tasks = environment(tmp_path)
+    create(tasks, audience)
+    create(tasks, audience)
+    for path in (
+        tasks._recovery_index_path,
+        tasks._recovery_index_path.with_suffix(".json.bak"),
+    ):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    monkeypatch.setattr(task_coordinator_module, "MAX_RECOVERY_BOOTSTRAP_PATHS", 1)
+
+    with pytest.raises(StudyTaskError) as bounded:
+        tasks.list_recoverable_tasks(audience, include_active=True)
+    assert bounded.value.code == "TASK_RECOVERY_INDEX_BOOTSTRAP_INCOMPLETE"
+
+
+def test_worker_lease_prevents_another_coordinator_from_claiming_live_task(
+    tmp_path: Path,
+) -> None:
+    audience, _, first = environment(tmp_path)
+    running = start(first, audience, create(first, audience))
+    lease = first.acquire_worker_lease(
+        running["taskId"], audience, owner_id="worker-first", ttl_seconds=30
+    )
+    second_artifacts = ArtifactRegistry(
+        tmp_path / "artifacts",
+        authentication_key=KEY,
+        service_instance_id="service-1",
+    )
+    second = StudyTaskCoordinator(
+        tmp_path / "tasks",
+        authentication_key=KEY,
+        service_instance_id="service-1",
+        artifact_registry=second_artifacts,
+    )
+
+    assert second.worker_liveness(running["taskId"], audience) == "active"
+    with pytest.raises(StudyTaskError) as captured:
+        second.acquire_worker_lease(
+            running["taskId"],
+            audience,
+            owner_id="worker-second",
+            ttl_seconds=30,
+        )
+    assert captured.value.code == "TASK_WORKER_LEASE_HELD"
+
+    first.release_worker_lease(
+        running["taskId"],
+        owner_id="worker-first",
+        fencing_token=lease["fencingToken"],
+    )
+    assert (
+        second.worker_liveness(
+            running["taskId"], audience, startup_grace_seconds=0
+        )
+        == "stale"
+    )
+
+
+def test_worker_fence_rejects_old_owner_after_takeover_and_interrupt_is_atomic(
+    tmp_path: Path,
+) -> None:
+    audience, _, tasks = environment(tmp_path)
+    queued = create(tasks, audience)
+    first_lease = tasks.acquire_worker_lease(
+        queued["taskId"], audience, owner_id="worker-first", ttl_seconds=30
+    )
+    with pytest.raises(StudyTaskError) as missing_fence:
+        tasks.start_task(
+            queued["taskId"],
+            audience,
+            expected_revision=queued["taskRevision"],
+            operation_id="start-without-issued-fence",
+        )
+    assert missing_fence.value.code == "TASK_WORKER_FENCE_REQUIRED"
+    running = tasks.start_task(
+        queued["taskId"],
+        audience,
+        expected_revision=queued["taskRevision"],
+        operation_id="start-fenced",
+        worker_owner_id="worker-first",
+        worker_fencing_token=first_lease["fencingToken"],
+    )
+    tasks.release_worker_lease(
+        queued["taskId"],
+        owner_id="worker-first",
+        fencing_token=first_lease["fencingToken"],
+    )
+    assert tasks.worker_liveness(queued["taskId"], audience) == "stale"
+
+    second_lease = tasks.acquire_worker_lease(
+        queued["taskId"], audience, owner_id="worker-second", ttl_seconds=30
+    )
+    assert second_lease["fencingToken"] > first_lease["fencingToken"]
+    with pytest.raises(StudyTaskError) as old_worker:
+        tasks.begin_work_unit(
+            queued["taskId"],
+            audience,
+            expected_revision=running["taskRevision"],
+            operation_id="old-worker-begin",
+            work_unit_id="inspect",
+            worker_owner_id="worker-first",
+            worker_fencing_token=first_lease["fencingToken"],
+        )
+    assert old_worker.value.code == "TASK_WORKER_FENCE_REJECTED"
+
+    tasks.release_worker_lease(
+        queued["taskId"],
+        owner_id="worker-first",
+        fencing_token=first_lease["fencingToken"],
+    )
+    assert tasks.worker_liveness(queued["taskId"], audience) == "active"
+    with pytest.raises(StudyTaskError) as interrupt:
+        tasks.interrupt_stale_task(
+            queued["taskId"],
+            audience,
+            expected_revision=running["taskRevision"],
+            operation_id="interrupt-after-takeover",
+            allow_current_audience_orphan=True,
+        )
+    assert interrupt.value.code == "TASK_WORKER_LEASE_HELD"
+
+
+def test_worker_lease_repairs_valid_backup_and_reclaims_both_corrupt_records(
+    tmp_path: Path, monkeypatch
+) -> None:
+    audience, _, tasks = environment(tmp_path)
+    running = start(tasks, audience, create(tasks, audience))
+    lease = tasks.acquire_worker_lease(
+        running["taskId"], audience, owner_id="worker-first", ttl_seconds=30
+    )
+    tasks.renew_worker_lease(
+        running["taskId"],
+        audience,
+        owner_id="worker-first",
+        fencing_token=lease["fencingToken"],
+        ttl_seconds=30,
+    )
+    lease_path = tasks._worker_lease_path(running["taskId"])
+    lease_path.write_bytes(b"not-json")
+
+    second_artifacts = ArtifactRegistry(
+        tmp_path / "artifacts",
+        authentication_key=KEY,
+        service_instance_id="service-1",
+    )
+    second = StudyTaskCoordinator(
+        tmp_path / "tasks",
+        authentication_key=KEY,
+        service_instance_id="service-1",
+        artifact_registry=second_artifacts,
+    )
+    assert second.worker_liveness(running["taskId"], audience) == "active"
+    with pytest.raises(StudyTaskError) as held:
+        second.acquire_worker_lease(
+            running["taskId"], audience, owner_id="worker-second", ttl_seconds=30
+        )
+    assert held.value.code == "TASK_WORKER_LEASE_HELD"
+
+    lease_path.write_bytes(b"bad-current")
+    lease_path.with_suffix(".json.bak").write_bytes(b"bad-backup")
+    assert second.worker_liveness(running["taskId"], audience) == "unknown"
+    with pytest.raises(StudyTaskError) as indeterminate:
+        second.acquire_worker_lease(
+            running["taskId"], audience, owner_id="worker-second", ttl_seconds=30
+        )
+    assert indeterminate.value.code == "TASK_WORKER_LEASE_INDETERMINATE"
+
+    monkeypatch.setattr(
+        task_coordinator_module, "WORKER_LEASE_CORRUPTION_GRACE_SECONDS", 0
+    )
+    assert second.worker_liveness(running["taskId"], audience) == "stale"
+    replacement = second.acquire_worker_lease(
+        running["taskId"], audience, owner_id="worker-second", ttl_seconds=30
+    )
+    assert replacement["fencingToken"] > lease["fencingToken"]
+    assert second.worker_liveness(running["taskId"], audience) == "active"
+
+
+def test_successful_recovery_lineages_do_not_exhaust_the_bounded_index(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(task_coordinator_module, "MAX_RECOVERY_INDEX_ENTRIES", 2)
+    audience, artifacts, tasks = environment(tmp_path)
+    capability, authorization = successor_bindings(audience, "service-1")
+
+    for number in range(6):
+        running = start(tasks, audience, create(tasks, audience))
+        predecessor = tasks.fail_task(
+            running["taskId"],
+            audience,
+            expected_revision=running["taskRevision"],
+            operation_id=f"fail-cycle-{number}",
+            code="MODEL_OUTPUT_INVALID",
+            stage="discovery",
+            retryable=True,
+            remote_cost_state="incurred",
+            retry_scope="phase",
+            authorization_state="valid",
+            required_action="retry",
+        )
+        successor = tasks.create_successor_task(
+            predecessor["taskId"],
+            audience,
+            operation_id=f"resume-cycle-{number}",
+            authorization_binding=authorization,
+            capability_binding=capability,
+            service_bindings=[],
+            scope_relation="equivalent",
+            predecessor_authorization_audit_ref=f"audit-old-{number}",
+            successor_authorization_audit_ref=f"audit-new-{number}",
+            completion_binding={
+                "projectId": "project-1",
+                "expectedProjectRevision": 1,
+                "operationId": f"discover:cycle-{number}",
+                "operationDigest": digest(f"completion-{number}"),
+                "artifactStage": "candidates_ready",
+            },
+        )
+        successor = tasks.start_task(
+            successor["taskId"],
+            audience,
+            expected_revision=successor["taskRevision"],
+            operation_id=f"start-successor-{number}",
+        )
+        for unit_number, unit in enumerate(successor["workUnits"]):
+            successor = tasks.begin_work_unit(
+                successor["taskId"],
+                audience,
+                expected_revision=successor["taskRevision"],
+                operation_id=f"begin-{number}-{unit_number}",
+                work_unit_id=unit["workUnitId"],
+            )
+            result = publish_result(
+                artifacts,
+                audience,
+                artifact_id=f"result-{number}-{unit_number}",
+            )
+            successor = tasks.complete_work_unit(
+                successor["taskId"],
+                audience,
+                expected_revision=successor["taskRevision"],
+                operation_id=f"complete-{number}-{unit_number}",
+                work_unit_id=unit["workUnitId"],
+                result_handles=[result.handle],
+            )
+        successor = tasks.succeed_task(
+            successor["taskId"],
+            audience,
+            expected_revision=successor["taskRevision"],
+            operation_id=f"succeed-{number}",
+        )
+        assert tasks.retire_recovery_lineage(successor["taskId"], audience) == 2
+        with pytest.raises(StudyTaskError) as closed:
+            tasks.create_successor_task(
+                predecessor["taskId"],
+                audience,
+                operation_id=f"late-resume-cycle-{number}",
+                authorization_binding=authorization,
+                capability_binding=capability,
+                service_bindings=[],
+                scope_relation="equivalent",
+                predecessor_authorization_audit_ref=f"audit-old-{number}",
+                successor_authorization_audit_ref=f"audit-late-{number}",
+                completion_binding={
+                    "projectId": "project-1",
+                    "expectedProjectRevision": 1,
+                    "operationId": f"discover:late-cycle-{number}",
+                    "operationDigest": digest(f"late-completion-{number}"),
+                    "artifactStage": "candidates_ready",
+                },
+            )
+        assert closed.value.code == "TASK_LINEAGE_CLOSED"
+
+    assert tasks.list_recoverable_tasks(audience) == []
+
+
+def test_legacy_successor_binding_upgrade_does_not_reenter_coordinator_lock(
+    tmp_path: Path,
+) -> None:
+    audience, _, tasks, predecessor, _ = interrupted_with_one_completed_unit(
+        tmp_path
+    )
+    capability, authorization = successor_bindings(audience, "service-2")
+    completion_binding = {
+        "projectId": "project-1",
+        "expectedProjectRevision": 1,
+        "operationId": "discover:legacy-successor",
+        "operationDigest": digest("legacy-successor-completion"),
+        "artifactStage": "candidates_ready",
+    }
+    successor = tasks.create_successor_task(
+        predecessor["taskId"],
+        audience,
+        operation_id="resume-legacy-successor",
+        authorization_binding=authorization,
+        capability_binding=capability,
+        service_bindings=[],
+        scope_relation="equivalent",
+        predecessor_authorization_audit_ref="audit-old-legacy",
+        successor_authorization_audit_ref="audit-new-legacy",
+        completion_binding=completion_binding,
+    )
+    path = tasks._task_path(successor["taskId"])
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record.pop("completionBinding", None)
+    record.pop("authKeyId", None)
+    record.pop("authTag", None)
+    path.write_bytes(
+        task_coordinator_module.canonical_json_bytes(
+            tasks._authenticate("study.task.record.v1", record)
+        )
+    )
+    second_artifacts = ArtifactRegistry(
+        tmp_path / "artifacts",
+        authentication_key=KEY,
+        service_instance_id="service-2",
+    )
+    second = StudyTaskCoordinator(
+        tmp_path / "tasks",
+        authentication_key=KEY,
+        service_instance_id="service-2",
+        artifact_registry=second_artifacts,
+    )
+
+    started = time.monotonic()
+    upgraded = second.create_successor_task(
+        predecessor["taskId"],
+        audience,
+        operation_id="resume-legacy-successor",
+        authorization_binding=authorization,
+        capability_binding=capability,
+        service_bindings=[],
+        scope_relation="equivalent",
+        predecessor_authorization_audit_ref="audit-old-legacy",
+        successor_authorization_audit_ref="audit-new-legacy",
+        completion_binding=completion_binding,
+    )
+
+    assert time.monotonic() - started < 2
+    assert upgraded["taskId"] == successor["taskId"]
+    migrated = second.get_recovery_record(successor["taskId"], audience)
+    assert migrated["completionBinding"] == completion_binding
 
 def test_concurrent_coordinators_allow_only_one_lineage_successor(
     tmp_path: Path,

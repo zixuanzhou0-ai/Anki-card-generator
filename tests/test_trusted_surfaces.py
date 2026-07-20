@@ -94,6 +94,41 @@ def test_real_trusted_surface_writer_authenticates_response_without_persisting_k
     assert "responseAuthKey" not in response_path.read_text(encoding="utf-8")
 
 
+def test_session_response_retries_transient_windows_permission_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    surfaces = manager(tmp_path)
+    session = surfaces.create_consent_session(
+        title="导入 Anki",
+        summary="验证瞬时 ACL 交接。",
+        purpose="anki_import",
+    )
+    session_ref = str(session["sessionRef"])
+    request_path = surfaces.sessions_dir / f"{session_ref}.json"
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    response_key = new_response_key()
+    surfaces._response_keys[session_ref] = response_key
+    request["responseAuthKey"] = encode_response_key(response_key)
+    write_response(request, "approved", userGestureRecorded=True)
+    response_path = surfaces.responses_dir / f"{session_ref}.json"
+    original_open = Path.open
+    denied = 0
+
+    def transient_open(path, *args, **kwargs):
+        nonlocal denied
+        if Path(path) == response_path and denied == 0:
+            denied += 1
+            raise PermissionError("simulated Windows ACL handoff")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", transient_open)
+    completed = surfaces.get_session(session_ref)
+
+    assert denied == 1
+    assert completed["state"] == "approved"
+    assert completed["userGestureRecorded"] is True
+
+
 def test_digest_pinned_launcher_completes_over_private_response_file(tmp_path: Path) -> None:
     surfaces = manager(tmp_path)
     session = surfaces.create_consent_session(

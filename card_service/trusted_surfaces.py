@@ -1177,8 +1177,33 @@ class TrustedSurfaceManager:
             with self._lock:
                 running = session_ref in self._processes
             return {"sessionRef": session_ref, "surface": request["surface"], "state": "open" if running else "created"}
-        with response_path.open("r", encoding="utf-8") as handle:
-            response = json.load(handle)
+        response: dict[str, Any] | None = None
+        for attempt in range(5):
+            try:
+                with response_path.open("r", encoding="utf-8") as handle:
+                    loaded = json.load(handle)
+                if not isinstance(loaded, dict):
+                    raise TrustedSurfaceError(
+                        "SESSION_RESPONSE_INVALID",
+                        "Trusted surface response is not an object",
+                    )
+                response = loaded
+                break
+            except PermissionError as error:
+                if attempt == 4:
+                    raise TrustedSurfaceError(
+                        "SESSION_RESPONSE_UNREADABLE",
+                        "Trusted surface response is temporarily unreadable",
+                    ) from error
+                time.sleep(0.02)
+            except json.JSONDecodeError as error:
+                if attempt == 4:
+                    raise TrustedSurfaceError(
+                        "SESSION_RESPONSE_INVALID",
+                        "Trusted surface response is incomplete or invalid",
+                    ) from error
+                time.sleep(0.02)
+        assert response is not None
         with self._lock:
             response_key = self._response_keys.get(session_ref)
         if response_key is None:

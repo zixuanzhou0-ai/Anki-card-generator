@@ -159,9 +159,15 @@ APKG 纵向切片采用“Worker 产出不等于可信包”的结论。`cards.e
 
 恢复不搬运旧 session 授权。可信启动器的 host identity 由 owner、已验证 launcher 和 plugin 稳定派生，每次进程启动仍产生新的 session；项目与任务可在同一可信 host 下重新打开，旧 session 的 Artifact handle 仍因 session binding 不可重放。候选发现必须在新会话重新授权，并同时证明当前项目 revision、当前 InspectionArtifact、candidate budget、模型 profile/configuration 和远程 cost budget 与前序任务等价；修改 exact scope、扩大数量/费用或替换 inspection 均失败。
 
-进程崩溃遗留的 queued/running/cancelling 任务在确认不属于当前 StudyRuntime 活动线程后原子转为 interrupted。该判断同时用于恢复列表和直接 resume，因此不存在“必须先 list 才能解开孤儿 successor”的隐藏顺序。successor 创建按 lineage 使用线程锁和 Windows/Unix 文件锁串行化；两个协调器使用不同幂等键同时恢复同一 lineage 时只允许一个创建成功。恢复列表与 lineage 扫描都有 2048 条硬上限，单个损坏或不属于当前 scope 的记录被隔离，超过上限则明确失败，避免无界磁盘扫描。
+进程崩溃遗留的 queued/running/cancelling 任务只有在认证 Worker lease 已过期后才原子转为 interrupted；“不在本进程内存表”不再被当作死亡证明。每个候选发现 Worker 在持久任务创建后取得短租约并由独立心跳续期，第二个 Card Service 实例只能观察而不能误杀或接管仍有有效租约的任务；无租约的新任务另有短启动宽限，关闭创建与登记之间的竞态。该判断同时用于恢复列表和直接 resume，因此不存在“必须先 list 才能解开孤儿 successor”的隐藏顺序。successor 创建按 lineage 使用线程锁和 Windows/Unix 文件锁串行化；两个协调器使用不同幂等键同时恢复同一 lineage 时只允许一个创建成功。
 
-安全差异复审最初确认了六类风险：崩溃任务不转 interrupted、孤儿 successor 永久卡住、重新授权被旧 session 摘要拒绝、不同幂等键并发分叉、stale 项继续暴露、无界/损坏记录导致列表不可用。实现与反例测试现已逐项关闭；根任务额外发现并修复了直接 resume 的孤儿 successor 与 successor-lineage 扫描未复用上限两处缺口。相关根任务独立回归覆盖恢复/协调器 37 项、MCP/可信会话 26 项、候选运行时 13 项、Broker/候选工具 28 项、Artifact 句柄防重放 4 项和双协调器竞态 1 项。该结论只证明候选发现恢复切片，不表示关闭应用后任务继续后台运行，也不表示导出/Anki 跨会话恢复已经开放。
+恢复枚举和 lineage 冲突检查改为读取认证、最多 4096 个 active/recoverable 条目的派生索引，不再遍历全部历史 task JSON。索引在任务文件发布前先保留条目，任务突变后更新；精确幂等重放会补写索引，从而收敛多文件提交窗口。首次迁移最多检查 16384 个旧路径，认证失败、损坏或超限记录被隔离；索引建立后，无关的第 2049 个乃至更多垃圾 JSON 不会永久禁用恢复。索引只保留 active、可恢复失败终态和“Worker 已成功但项目提交尚未确认”的任务；成功提交会先写认证 lineage closure，再从索引移除。达到 4096 个真实未解决任务时创建新可恢复任务会明确阻塞，要求先处理已有任务，而不是继续无界增长。
+
+公开恢复列表使用 audience/query/index-generation 绑定的认证 cursor 和不可变 recovery sequence 快照。StudyRuntime 会跨内部页继续扫描，并在检查项目 revision、Inspection 与恢复资格之后再满足调用方 limit；较新的 stale 项不能再遮蔽较旧的有效任务。cursor 篡改、跨 audience、跨查询或索引重建后复用均失败关闭；外部 stale cursor 明确返回错误，只有本次从首页开始的内部翻页可清空已收集结果后重启一次。
+
+任务一旦签发 Worker lease，所有 Worker 状态突变必须携带当前单调 fencing token；旧 owner、遗漏 token 和 lease 接管前的迟到写入都会被拒绝。同步兼容入口也使用每次调用唯一的 owner 与心跳，不再存在绕过租约后重复调用付费模型的路径。Worker 成功与 ProjectRegistry 提交之间使用显式 pending-commit 状态：恢复只重放本地幂等提交，不重新绑定模型；提交前先验证 task/binding、唯一 DiscoveryArtifact、input fingerprint 与 payload 结构，提交成功后写持久 lineage closure，阻止任何迟到 successor。升级前缺少 `completionBinding` 的 discovery 任务仍进入 migration-required 索引，并从认证 task input 派生确定性绑定，不会静默丢失。
+
+安全差异复审最初确认了六类风险：崩溃任务不转 interrupted、孤儿 successor 永久卡住、重新授权被旧 session 摘要拒绝、不同幂等键并发分叉、stale 项继续暴露、无界/损坏记录导致列表不可用。后续复审又关闭跨进程误杀、fence 绕过、成功/提交竞态、旧任务迁移和 cursor 代际混合；当前恢复、协调器、Broker、MCP 与可信文件选择扩大定向回归为 142 项通过，正式 Python 全仓回归为 1719 项通过、1 项按设计跳过。该结论只证明候选发现恢复切片，不表示关闭应用后任务继续后台运行，也不表示导出/Anki 跨会话恢复已经开放。
 
 ## 4.5 CURRENT 有界 Artifact 与审计查询复审（2026-07-20）
 

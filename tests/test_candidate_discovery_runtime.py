@@ -11,7 +11,10 @@ import pytest
 
 from card_service.artifact_registry import ArtifactAudienceBinding
 from card_service.candidate_discovery import CandidateDiscoveryModelIdentity
-from card_service.candidate_discovery_runtime import CandidateDiscoveryAuthorization
+from card_service.candidate_discovery_runtime import (
+    CandidateDiscoveryAuthorization,
+    CandidateDiscoveryRuntime,
+)
 from card_service.credentials import CredentialStore, InMemoryCredentialBackend
 from card_service.resource_runtime import ServiceResourceRuntime
 from card_service.study_runtime import StudyRuntime, StudyRuntimeError
@@ -333,6 +336,87 @@ def test_duplicate_public_discovery_start_reuses_active_task_without_model_repla
     await_public_task(runtime, first["taskId"], expected_states={"succeeded"})
     assert model.proposal_calls == 1
     assert model.review_calls == 1
+
+
+def test_synchronous_discovery_lease_blocks_parallel_model_replay(
+    tmp_path: Path,
+) -> None:
+    model = BlockingDiscoveryModel()
+    provider = FakeDiscoveryModelProvider(model)
+    runtime, project, inspected, _source = environment(tmp_path, None, provider)
+    holder: dict[str, Any] = {}
+
+    def run_first() -> None:
+        try:
+            holder["result"] = discover(runtime, project, inspected)
+        except Exception as error:  # pragma: no cover - assertion below reports it
+            holder["error"] = error
+
+    thread = threading.Thread(target=run_first, daemon=True)
+    thread.start()
+    assert model.proposal_started.wait(2)
+    with pytest.raises(StudyRuntimeError) as duplicate:
+        discover(runtime, project, inspected)
+    assert duplicate.value.code == "DISCOVERY_ALREADY_RUNNING"
+
+    model.release_proposal.set()
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+    assert "error" not in holder
+    assert holder["result"]["artifactStage"] == "candidates_ready"
+    assert model.proposal_calls == 1
+    assert model.review_calls == 1
+
+
+def test_terminal_race_reloads_task_before_any_second_model_call(
+    tmp_path: Path,
+) -> None:
+    outer_model = FakeDiscoveryModel()
+    outer_provider = FakeDiscoveryModelProvider(outer_model)
+    winner_model = FakeDiscoveryModel()
+    winner_provider = FakeDiscoveryModelProvider(winner_model)
+    runtime, project, inspected, _source = environment(
+        tmp_path, None, winner_provider
+    )
+    outer = CandidateDiscoveryRuntime(
+        service_instance_id=runtime.service_instance_id,
+        artifacts=runtime.artifacts,
+        projects=runtime.projects,
+        tasks=runtime.tasks,
+        model_provider=outer_provider,
+    )
+
+    def winner_finishes(_task_id: str) -> bool:
+        completed = runtime.start_candidate_discovery(
+            audience=audience(),
+            project_id=project["projectId"],
+            expected_project_revision=inspected["projectRevision"],
+            idempotency_key="terminal-race",
+            inspection_handle=inspected["inspectionHandle"],
+            candidate_budget={"target": 1, "maximum": 8},
+            authorization=authorization(),
+            model_provider=winner_provider,
+        )
+        assert completed["artifactStage"] == "candidates_ready"
+        return True
+
+    result = outer.start_discovery(
+        audience=audience(),
+        project_id=project["projectId"],
+        expected_project_revision=inspected["projectRevision"],
+        idempotency_key="terminal-race",
+        inspection_handle=inspected["inspectionHandle"],
+        candidate_budget={"target": 1, "maximum": 8},
+        authorization=authorization(),
+        task_ready_callback=winner_finishes,
+    )
+
+    assert result["artifactStage"] == "candidates_ready"
+    assert outer_provider.bound_task_ids == []
+    assert outer_model.proposal_calls == 0
+    assert outer_model.review_calls == 0
+    assert winner_model.proposal_calls == 1
+    assert winner_model.review_calls == 1
 
 
 def test_public_discovery_cancel_waits_for_remote_call_then_finishes_safely(

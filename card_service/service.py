@@ -2081,6 +2081,12 @@ class CardService:
     def _record_profile_validation_result(
         self, task_id: str
     ) -> dict[str, Any] | None:
+        with self._profile_validation_lock:
+            return self._record_profile_validation_result_locked(task_id)
+
+    def _record_profile_validation_result_locked(
+        self, task_id: str
+    ) -> dict[str, Any] | None:
         snapshot = self.get_task(task_id)
         if not isinstance(snapshot, Mapping):
             return None
@@ -3041,11 +3047,15 @@ class CardService:
             ) from error
 
     def list_public_recoverable_study_tasks(
-        self, *, audience: ArtifactAudienceBinding, limit: int = 20
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        limit: int = 20,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
         try:
             return self._ensure_study_runtime().list_recoverable_study_tasks(
-                audience=audience, limit=limit
+                audience=audience, limit=limit, cursor=cursor
             )
         except StudyRuntimeError as error:
             raise CardServiceError(
@@ -3392,6 +3402,12 @@ class CardService:
             )
             if existing is not None:
                 return existing
+            pending_commit = study.finalize_pending_candidate_discovery_commit(
+                audience=audience,
+                task_id=recovery_task_id,
+            )
+            if pending_commit is not None:
+                return pending_commit
             request = study.candidate_discovery_recovery_request(
                 audience=audience, task_id=recovery_task_id
             )

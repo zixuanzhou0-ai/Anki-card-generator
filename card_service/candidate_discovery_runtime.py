@@ -469,11 +469,26 @@ class CandidateDiscoveryRuntime:
         committed: Mapping[str, Any],
         task_id: str,
     ) -> dict[str, Any]:
+        return self._public_result_from_artifacts(
+            artifacts=self._artifacts,
+            audience=audience,
+            committed=committed,
+            task_id=task_id,
+        )
+
+    @staticmethod
+    def _public_result_from_artifacts(
+        *,
+        artifacts: ArtifactRegistry,
+        audience: ArtifactAudienceBinding,
+        committed: Mapping[str, Any],
+        task_id: str,
+    ) -> dict[str, Any]:
         discovery_ref: Mapping[str, Any] | None = None
         discovery: Mapping[str, Any] | None = None
         issue_codes: list[str] = []
         for ref in committed["artifactRefs"]:
-            envelope = self._artifacts.verify_ref(ref, audience)
+            envelope = artifacts.verify_ref(ref, audience)
             if envelope.get("payloadSchema") == "study.discovery":
                 if discovery is not None:
                     raise CandidateDiscoveryRuntimeError(
@@ -496,7 +511,7 @@ class CandidateDiscoveryRuntime:
             "artifactStage": committed["artifactStage"],
             "taskId": task_id,
             "inputFingerprint": discovery["inputFingerprint"],
-            "discoveryHandle": self._artifacts.issue_handle(discovery_ref, audience),
+            "discoveryHandle": artifacts.issue_handle(discovery_ref, audience),
             "candidateCount": candidate_count,
             "counts": _clone(payload["counts"]),
             "completeness": _clone(payload["completeness"]),
@@ -529,6 +544,149 @@ class CandidateDiscoveryRuntime:
             return "SOURCE_UNREADABLE"
         return "INTERNAL_UNCLASSIFIED"
 
+    def finalize_pending_commit(
+        self,
+        *,
+        audience: ArtifactAudienceBinding,
+        task_id: str,
+    ) -> dict[str, Any]:
+        """Commit an already generated discovery result without another model call."""
+
+        return self.finalize_pending_commit_with_registries(
+            artifacts=self._artifacts,
+            projects=self._projects,
+            tasks=self._tasks,
+            audience=audience,
+            task_id=task_id,
+        )
+
+    @classmethod
+    def finalize_pending_commit_with_registries(
+        cls,
+        *,
+        artifacts: ArtifactRegistry,
+        projects: ProjectRegistry,
+        tasks: StudyTaskCoordinator,
+        audience: ArtifactAudienceBinding,
+        task_id: str,
+    ) -> dict[str, Any]:
+        """Finish a pending project commit without constructing or binding a model."""
+
+        try:
+            record = tasks.get_recovery_record(task_id, audience)
+            task = record.get("task")
+            binding = record.get("completionBinding")
+            if (
+                not isinstance(task, Mapping)
+                or task.get("state") != "succeeded"
+                or not isinstance(binding, Mapping)
+                or binding.get("artifactStage") != "candidates_ready"
+            ):
+                raise CandidateDiscoveryRuntimeError(
+                    "DISCOVERY_COMMIT_NOT_READY",
+                    "Candidate discovery has no completed result waiting to commit",
+                )
+            task_input = record.get("taskInputManifest")
+            work = record.get("workReuseManifest")
+            subject = (
+                task_input.get("subject")
+                if isinstance(task_input, Mapping)
+                else None
+            )
+            if (
+                task.get("intent") != "discover_candidates"
+                or not isinstance(work, Mapping)
+                or work.get("actionId") != "discover_candidates"
+                or not isinstance(subject, Mapping)
+                or subject.get("kind") != "project_task"
+                or subject.get("projectId") != binding.get("projectId")
+                or subject.get("projectRevision")
+                != binding.get("expectedProjectRevision")
+            ):
+                raise CandidateDiscoveryRuntimeError(
+                    "DISCOVERY_COMMIT_NOT_READY",
+                    "Candidate discovery completion binding does not match its task",
+                )
+            final_task = tasks.get_task(task_id, audience)
+            paired = []
+            discovery_envelopes: list[Mapping[str, Any]] = []
+            for handle in final_task["resultHandles"]:
+                ref, envelope = artifacts.resolve_with_ref(handle, audience)
+                if ref.get("projectId") != binding.get("projectId"):
+                    raise CandidateDiscoveryRuntimeError(
+                        "DISCOVERY_RESULT_INVALID",
+                        "Candidate discovery result belongs to another project",
+                    )
+                if envelope.get("payloadSchema") == "study.discovery":
+                    discovery_envelopes.append(envelope)
+                paired.append((ref, handle))
+            paired.sort(key=lambda value: value[0]["artifactId"].encode("utf-8"))
+            if len(discovery_envelopes) != 1:
+                raise CandidateDiscoveryRuntimeError(
+                    "DISCOVERY_RESULT_INVALID",
+                    "Candidate discovery result must contain one DiscoveryArtifact",
+                )
+            discovery_payload = discovery_envelopes[0].get("payload")
+            if (
+                discovery_envelopes[0].get("inputFingerprint")
+                != final_task.get("inputFingerprint")
+                or not isinstance(discovery_payload, Mapping)
+                or not isinstance(discovery_payload.get("candidateRefs"), list)
+                or not isinstance(discovery_payload.get("counts"), Mapping)
+                or not isinstance(discovery_payload.get("completeness"), Mapping)
+            ):
+                raise CandidateDiscoveryRuntimeError(
+                    "DISCOVERY_RESULT_INVALID",
+                    "Candidate discovery result is not bound to the completed task",
+                )
+            cls._public_result_from_artifacts(
+                artifacts=artifacts,
+                audience=audience,
+                committed={
+                    "projectId": binding["projectId"],
+                    "projectRevision": binding["expectedProjectRevision"],
+                    "artifactStage": "candidates_ready",
+                    "artifactRefs": [value[0] for value in paired],
+                },
+                task_id=task_id,
+            )
+            committed = projects.commit_artifact_stage(
+                audience=audience,
+                project_id=str(binding["projectId"]),
+                expected_project_revision=int(binding["expectedProjectRevision"]),
+                operation_id=str(binding["operationId"]),
+                operation_digest=str(binding["operationDigest"]),
+                task_id=task_id,
+                artifact_stage="candidates_ready",
+                artifact_refs=[value[0] for value in paired],
+                artifact_handles=[value[1] for value in paired],
+            )
+            tasks.retire_recovery_lineage(task_id, audience)
+            return cls._public_result_from_artifacts(
+                artifacts=artifacts,
+                audience=audience,
+                committed=committed,
+                task_id=task_id,
+            )
+        except CandidateDiscoveryRuntimeError:
+            raise
+        except (
+            ArtifactRegistryError,
+            ProjectRegistryError,
+            StudyTaskError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as error:
+            raise CandidateDiscoveryRuntimeError(
+                getattr(error, "code", "DISCOVERY_COMMIT_FAILED"),
+                getattr(
+                    error,
+                    "message",
+                    "Candidate discovery result could not be committed safely",
+                ),
+            ) from error
+
     def start_discovery(
         self,
         *,
@@ -539,7 +697,9 @@ class CandidateDiscoveryRuntime:
         inspection_handle: str,
         candidate_budget: Mapping[str, Any],
         authorization: CandidateDiscoveryAuthorization,
-        task_ready_callback: Callable[[str], bool | None] | None = None,
+        task_ready_callback: Callable[
+            [str], Mapping[str, Any] | bool | None
+        ] | None = None,
         cancellation_requested: Callable[[], bool] | None = None,
         predecessor_task_id: str | None = None,
         resume_operation_id: str | None = None,
@@ -605,6 +765,13 @@ class CandidateDiscoveryRuntime:
             authorization=authorization,
         )
         operation_id = "discover:" + idempotency_key
+        completion_binding = {
+            "projectId": project_id,
+            "expectedProjectRevision": expected_project_revision,
+            "operationId": operation_id,
+            "operationDigest": operation_digest,
+            "artifactStage": "candidates_ready",
+        }
         try:
             prior = self._projects.get_operation_result(
                 audience=audience,
@@ -618,11 +785,17 @@ class CandidateDiscoveryRuntime:
             prior_task_id = str(prior["taskId"])
             if task_ready_callback is not None:
                 task_ready_callback(prior_task_id)
-            return self._public_result(
+            result = self._public_result(
                 audience=audience,
                 committed=prior,
                 task_id=prior_task_id,
             )
+            try:
+                self._tasks.retire_recovery_lineage(prior_task_id, audience)
+            except StudyTaskError as error:
+                if error.code != "TASK_NOT_FOUND":
+                    raise
+            return result
         if project["projectRevision"] != expected_project_revision:
             raise CandidateDiscoveryRuntimeError(
                 "PROJECT_REVISION_CONFLICT",
@@ -696,6 +869,7 @@ class CandidateDiscoveryRuntime:
                     cost_budget_digest=task_input.get("costBudgetDigest"),
                     batch_policy_digest=task_input.get("batchPolicyDigest"),
                     allow_reauthorization=True,
+                    completion_binding=completion_binding,
                 )
                 task_id = str(task["taskId"])
                 input_fingerprint = str(task["inputFingerprint"])
@@ -715,6 +889,7 @@ class CandidateDiscoveryRuntime:
                             }
                         ],
                         _task_id=task_id,
+                        _completion_binding=completion_binding,
                     )
                 except StudyTaskError as error:
                     if error.code != "TASK_ALREADY_EXISTS":
@@ -725,6 +900,11 @@ class CandidateDiscoveryRuntime:
                             "TASK_INPUT_MISMATCH",
                             "Recoverable discovery task input changed",
                         ) from error
+                    task = self._tasks.ensure_completion_binding(
+                        task_id,
+                        audience,
+                        completion_binding=completion_binding,
+                    )
         except StudyTaskError as error:
             raise CandidateDiscoveryRuntimeError(error.code, error.message) from error
         if task["state"] not in {"queued", "running", "succeeded"}:
@@ -732,14 +912,52 @@ class CandidateDiscoveryRuntime:
                 "TASK_RECOVERY_REQUIRED",
                 "Candidate discovery task requires explicit recovery",
             )
-        if (
-            task_ready_callback is not None
-            and task_ready_callback(task_id) is False
-        ):
-            raise CandidateDiscoveryRuntimeError(
-                "DISCOVERY_ALREADY_RUNNING",
-                "Candidate discovery is already running",
-            )
+        worker_lease: Mapping[str, Any] | None = None
+        ready_result = (
+            task_ready_callback(task_id)
+            if task_ready_callback is not None
+            else None
+        )
+        task = self._tasks.get_task(task_id, audience)
+        if task["state"] != "succeeded":
+            if task["state"] not in {"queued", "running"}:
+                raise CandidateDiscoveryRuntimeError(
+                    "TASK_RECOVERY_REQUIRED",
+                    "Candidate discovery task changed state before execution",
+                )
+            if ready_result is False:
+                raise CandidateDiscoveryRuntimeError(
+                    "DISCOVERY_ALREADY_RUNNING",
+                    "Candidate discovery is already running",
+                )
+            if not isinstance(ready_result, Mapping):
+                raise CandidateDiscoveryRuntimeError(
+                    "TASK_WORKER_FENCE_REQUIRED",
+                    "Candidate discovery requires an active worker lease",
+                )
+            owner_id = ready_result.get("ownerId")
+            fencing_token = ready_result.get("fencingToken")
+            if (
+                not isinstance(owner_id, str)
+                or not owner_id
+                or isinstance(fencing_token, bool)
+                or not isinstance(fencing_token, int)
+                or fencing_token < 1
+            ):
+                raise CandidateDiscoveryRuntimeError(
+                    "TASK_WORKER_FENCE_REJECTED",
+                    "Candidate discovery worker lease is invalid",
+                )
+            worker_lease = ready_result
+
+        worker_mutation = (
+            {
+                "worker_owner_id": str(worker_lease["ownerId"]),
+                "worker_fencing_token": int(worker_lease["fencingToken"]),
+            }
+            if worker_lease is not None
+            else {}
+        )
         try:
             if task["state"] != "succeeded":
                 if task["state"] == "queued":
@@ -748,6 +966,7 @@ class CandidateDiscoveryRuntime:
                         audience,
                         expected_revision=task["taskRevision"],
                         operation_id="start-" + operation_digest[:40],
+                        **worker_mutation,
                     )
                 unit = task["workUnits"][0]
                 if unit["state"] != "completed":
@@ -758,6 +977,7 @@ class CandidateDiscoveryRuntime:
                             expected_revision=task["taskRevision"],
                             operation_id="begin-" + operation_digest[:40],
                             work_unit_id="candidate-discovery",
+                            **worker_mutation,
                         )
                     elif unit["state"] != "active":
                         raise CandidateDiscoveryRuntimeError(
@@ -817,6 +1037,7 @@ class CandidateDiscoveryRuntime:
                         operation_id="complete-" + operation_digest[:37],
                         work_unit_id="candidate-discovery",
                         result_handles=self._discovery_handles(result),
+                        **worker_mutation,
                     )
                 task = self._tasks.get_task(task_id, audience)
                 if task["state"] == "running":
@@ -825,33 +1046,15 @@ class CandidateDiscoveryRuntime:
                         audience,
                         expected_revision=task["taskRevision"],
                         operation_id="succeed-" + operation_digest[:38],
+                        **worker_mutation,
                     )
             if cancellation_requested is not None and cancellation_requested():
                 raise CandidateDiscoveryError(
                     "DISCOVERY_CANCELLED",
                     "candidate discovery was cancelled safely",
                 )
-            final_task = self._tasks.get_task(task_id, audience)
-            paired = []
-            for handle in final_task["resultHandles"]:
-                ref, _envelope = self._artifacts.resolve_with_ref(handle, audience)
-                paired.append((ref, handle))
-            paired.sort(key=lambda value: value[0]["artifactId"].encode("utf-8"))
-            committed = self._projects.commit_artifact_stage(
-                audience=audience,
-                project_id=project_id,
-                expected_project_revision=expected_project_revision,
-                operation_id=operation_id,
-                operation_digest=operation_digest,
-                task_id=task_id,
-                artifact_stage="candidates_ready",
-                artifact_refs=[value[0] for value in paired],
-                artifact_handles=[value[1] for value in paired],
-            )
-            return self._public_result(
-                audience=audience,
-                committed=committed,
-                task_id=task_id,
+            return self.finalize_pending_commit(
+                audience=audience, task_id=task_id
             )
         except (
             ArtifactRegistryError,
@@ -879,6 +1082,7 @@ class CandidateDiscoveryRuntime:
                             expected_revision=current["taskRevision"],
                             operation_id="finish-cancel-" + operation_digest[:33],
                             safe_checkpoint_proven=True,
+                            **worker_mutation,
                         )
                 elif current["state"] == "running":
                     preserved = [
@@ -900,6 +1104,7 @@ class CandidateDiscoveryRuntime:
                         authorization_state="valid",
                         preserved_artifact_handles=preserved,
                         required_action="retry",
+                        **worker_mutation,
                     )
             except (ArtifactRegistryError, StudyTaskError):
                 pass

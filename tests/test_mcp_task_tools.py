@@ -60,6 +60,7 @@ class RecordingService:
             "schemaVersion": 1,
             "tasks": [_task()],
             "returnedTasks": 1,
+            "nextCursor": None,
             "nextAction": "resume_task",
         }
 
@@ -142,7 +143,7 @@ def test_task_recovery_tools_call_only_the_trusted_service_boundary() -> None:
     assert service.calls == [
         ("get", {"audience": session.audience, "task_id": TASK_ID}),
         ("cancel", {"audience": session.audience, "task_id": TASK_ID}),
-        ("list", {"audience": session.audience, "limit": 7}),
+        ("list", {"audience": session.audience, "limit": 7, "cursor": None}),
         (
             "resume",
             {
@@ -158,6 +159,7 @@ def test_task_recovery_tools_call_only_the_trusted_service_boundary() -> None:
     "tool_name,arguments",
     [
         (LIST_RECOVERABLE_TASKS_TOOL_NAME, {"limit": True}),
+        (LIST_RECOVERABLE_TASKS_TOOL_NAME, {"cursor": ""}),
         (LIST_RECOVERABLE_TASKS_TOOL_NAME, {"path": "C:/private"}),
         (RESUME_TASK_TOOL_NAME, {"taskId": TASK_ID}),
         (

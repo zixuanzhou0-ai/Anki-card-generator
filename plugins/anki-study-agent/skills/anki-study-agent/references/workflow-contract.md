@@ -36,7 +36,7 @@ Treat the exposed tool list returned by the installed runtime as authoritative. 
 12. `system.request_output_grant`, then `cards.export_apkg`; poll `study.get_task` and use `study.cancel_task` only on explicit cancellation.
 13. `anki.prepare_import`, `anki.request_import_confirmation`, then `anki.import_and_verify`; poll `study.get_task`.
 14. After generation, export, or Anki data verification, use `study.get_artifact` for the current authenticated artifact summary. Use `study.get_audit` only when the user requests evidence or when a completion claim needs its integrity, lineage, gate, and limitation certificate.
-15. On startup or after an interrupted discovery, call `study.list_recoverable_tasks`; use `study.resume_task` only for a returned candidate-discovery task.
+15. On startup or after an interrupted discovery, call `study.list_recoverable_tasks`; follow `nextCursor` until null when searching beyond the first page, and use `study.resume_task` only for a returned candidate-discovery task.
 
 Do not call tools that are not exposed by the installed plugin version.
 
@@ -50,7 +50,7 @@ Do not call `study.edit_candidate` until a future runtime exposes it. The curren
 
 - Treat `study.get_task` as authoritative; prose progress is not state.
 - Use `study.cancel_task` for explicit cancellation.
-- Use `study.list_projects` and `study.get_project` to recover the authoritative project/revision/stage view. Use `study.list_recoverable_tasks` as the only public task-resume inventory; `study.resume_task` currently accepts only returned failed, cancelled, or interrupted candidate-discovery tasks and creates or reuses an authenticated successor.
+- Use `study.list_projects` and `study.get_project` to recover the authoritative project/revision/stage view. Use `study.list_recoverable_tasks` as the only public task-resume inventory, and continue with its authenticated `nextCursor` until null when needed. A returned interrupted discovery may represent either a recoverable failed run or completed model work whose local project commit is pending; `study.resume_task` decides from authenticated state and must never trigger a second model call for the latter.
 - Export and Anki-import tasks have no public generic resume contract. Never use discovery recovery to replay either write boundary.
 - Retry the active or failed stage only when the returned task state and next action permit it.
 - For Anki import, `resumability=none`. If cancellation or failure crosses a possible write boundary, require `inspect_before_retry`; never blindly repeat the import.
